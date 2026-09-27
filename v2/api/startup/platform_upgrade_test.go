@@ -23,6 +23,30 @@ func platformUpgradePath(t *testing.T) string {
 	return path
 }
 
+func TestPlatformReleaseLaneIncludesSignedV3Bundle(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "platform-release.yml"))
+	if err != nil {
+		t.Fatalf("signed release workflow is missing: %v", err)
+	}
+	for _, required := range []string{
+		"refs/heads/master", "git merge-base --is-ancestor", "platform-release",
+		"norn-effect-runner", "platform-release-fetch-github", "platform-release-verify-github",
+	} {
+		if !strings.Contains(string(workflow), required) {
+			t.Errorf("signed release workflow is missing %q", required)
+		}
+	}
+	for _, helper := range []string{
+		"platform-release-artifact", "platform-release-fetch-github",
+		"platform-release-manifest", "platform-release-verify-github",
+	} {
+		if _, err := os.Stat(filepath.Join(root, "v2", "scripts", helper)); err != nil {
+			t.Errorf("signed release helper %s is missing: %v", helper, err)
+		}
+	}
+}
+
 func writeExecutable(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "norn-api")
@@ -128,13 +152,13 @@ func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegac
 		t.Fatal(err)
 	}
 	text := string(script)
-	build := strings.LastIndex(text, "build_release\nprobe_startup_contract")
-	if build < 0 {
-		t.Fatal("platform upgrade no longer builds a probed release")
+	fetch := strings.LastIndex(text, "fetch_signed_release_if_needed\nbuild_or_reuse_release\nprobe_startup_contract")
+	if fetch < 0 {
+		t.Fatal("platform upgrade no longer verifies or reuses the exact candidate before probing it")
 	}
-	preflight := strings.LastIndex(text[:build], "legacy_baseline_validate_backup_proof")
+	preflight := strings.LastIndex(text[:fetch], "legacy_baseline_validate_backup_proof")
 	if preflight < 0 {
-		t.Fatal("legacy baseline does not validate its backup proof before building a release")
+		t.Fatal("legacy baseline does not validate its backup proof before fetching the signed release")
 	}
 	branch := text[strings.LastIndex(text, `if [[ "$mode" == "legacy-baseline" ]]`):]
 	sequence := []string{
@@ -167,7 +191,7 @@ func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegac
 func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromotesCandidate(t *testing.T) {
 	fixture := newSchemaTransitionFixture(t, 2)
 	legacySHA := strings.Repeat("a", 40)
-	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+legacySHA+"\nNORN_RELEASE_VERSION=v-current-test\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+legacySHA+"\nNORN_RELEASE_VERSION=v2.20.0-platform\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	proofPath := filepath.Join(fixture.root, "legacy-backup-proof.json")
@@ -254,7 +278,7 @@ printf '%s\n' "$FAKE_LEGACY_PID"
 func TestPlatformUpgradeLegacyBaselinePostflightFailureKeepsLegacyFenced(t *testing.T) {
 	fixture := newSchemaTransitionFixture(t, 2)
 	legacySHA := strings.Repeat("a", 40)
-	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+legacySHA+"\nNORN_RELEASE_VERSION=v-current-test\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+legacySHA+"\nNORN_RELEASE_VERSION=v2.20.0-platform\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	artifact := []byte("private fixture backup artifact\n")
@@ -324,7 +348,7 @@ printf '%s\n' "$FAKE_LEGACY_PID"
 		t.Fatalf("failed postflight did not retain fence state: %v %s", err, state)
 	}
 	installed, err := os.ReadFile(filepath.Join(fixture.binDir, "norn-api"))
-	if err != nil || !strings.Contains(string(installed), "v-target-test") || strings.Contains(string(installed), "v-current-test") {
+	if err != nil || !strings.Contains(string(installed), "v2.21.0-platform") || strings.Contains(string(installed), "v2.20.0-platform") {
 		t.Fatalf("legacy binary was restored after migration: %v\n%s", err, installed)
 	}
 	linked, err := os.Readlink(fixture.currentLink)
@@ -376,7 +400,8 @@ func TestPlatformUpgradeRollbackExecutesPassiveCheckThenFreshActiveRestart(t *te
 	root := t.TempDir()
 	shimDir := filepath.Join(root, "shims")
 	releasesDir := filepath.Join(root, "releases")
-	target := filepath.Join(releasesDir, "HEAD")
+	targetSHA := strings.Repeat("a", 40)
+	target := filepath.Join(releasesDir, targetSHA)
 	previous := filepath.Join(releasesDir, "previous")
 	for _, dir := range []string{shimDir, filepath.Join(target, "bin"), filepath.Join(target, "logs"), filepath.Join(previous, "bin"), filepath.Join(root, "bin"), filepath.Join(root, "host")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -389,23 +414,24 @@ func TestPlatformUpgradeRollbackExecutesPassiveCheckThenFreshActiveRestart(t *te
 set -euo pipefail
 case "${1:-}" in
   --norn-startup-contract) printf '%s\n' '` + contract + `'; exit 0 ;;
-  --fake-version) printf '%s\n' 'v-target-test'; exit 0 ;;
+  --fake-version) printf '%s\n' 'v2.21.0-platform'; exit 0 ;;
 esac
 [[ "${NORN_STARTUP_MODE:-}" == "passive" ]]
-printf '%s %s\n' 'v-target-test' 'passive' > "$FAKE_STATE"
+printf '%s %s\n' 'v2.21.0-platform' 'passive' > "$FAKE_STATE"
 trap 'rm -f "$FAKE_STATE"' EXIT
 trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `
 	writeTestScript(t, filepath.Join(target, "bin", "norn-api"), apiScript)
-	for _, name := range []string{"norn", "norn-host-agent", "platform-upgrade", "host-runtime"} {
+	for _, name := range []string{"norn", "norn-host-agent", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "host-runtime"} {
 		writeTestScript(t, filepath.Join(target, "bin", name), "#!/usr/bin/env bash\nexit 0\n")
 	}
-	writeTestScript(t, filepath.Join(previous, "bin", "norn-api"), strings.ReplaceAll(apiScript, "v-target-test", "v-previous-test"))
-	if err := os.WriteFile(filepath.Join(target, "release.env"), []byte("NORN_RELEASE_VERSION=v-target-test\n"), 0o644); err != nil {
+	writeTestScript(t, filepath.Join(previous, "bin", "norn-api"), strings.ReplaceAll(apiScript, "v2.21.0-platform", "v2.19.0-platform"))
+	writeTestScript(t, filepath.Join(previous, "bin", "norn"), "#!/usr/bin/env bash\nexit 0\n")
+	if err := os.WriteFile(filepath.Join(target, "release.env"), []byte("NORN_RELEASE_VERSION=v2.21.0-platform\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(previous, "release.env"), []byte("NORN_RELEASE_VERSION=v-previous-test\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(previous, "release.env"), []byte("NORN_RELEASE_VERSION=v2.19.0-platform\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	currentLink := filepath.Join(root, "current")
@@ -441,7 +467,7 @@ esac
 exit 2
 `)
 	repo := filepath.Clean(filepath.Join(filepath.Dir(platformUpgradePath(t)), "..", ".."))
-	cmd := exec.Command(platformUpgradePath(t), "rollback", "HEAD")
+	cmd := exec.Command(platformUpgradePath(t), "rollback", targetSHA)
 	cmd.Env = append(os.Environ(),
 		"PATH="+shimDir+":"+os.Getenv("PATH"),
 		"FAKE_STATE="+state,
@@ -450,8 +476,11 @@ exit 2
 		"NORN_CURRENT_LINK="+currentLink,
 		"NORN_BIN_DIR="+filepath.Join(root, "bin"),
 		"NORN_HOST_AGENT_BIN="+filepath.Join(root, "host", "norn-host-agent"),
+		"NORN_HOST_CLI_BIN="+filepath.Join(root, "host", "norn"),
 		"NORN_PLATFORM_SCRIPT_BIN="+filepath.Join(root, "host", "platform-upgrade"),
 		"NORN_HOST_RUNTIME_BIN="+filepath.Join(root, "host", "host-runtime"),
+		"NORN_RELEASE_LOGS_DIR="+filepath.Join(root, "release-logs"),
+		"NORN_ALLOW_LEGACY_RELEASES=true",
 		"NORN_DRAIN_MODE=force",
 		"NORN_API_BASE=http://127.0.0.1:19999",
 		"NORN_CANDIDATE_PORT=19998",
@@ -460,7 +489,7 @@ exit 2
 	if err != nil {
 		t.Fatalf("fixture rollback failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "passive candidate schema check passed") || !strings.Contains(string(out), "upgrade complete: v-target-test") {
+	if !strings.Contains(string(out), "passive candidate schema check passed") || !strings.Contains(string(out), "upgrade complete: v2.21.0-platform") {
 		t.Fatalf("rollback did not exercise passive then active sequence:\n%s", out)
 	}
 	linked, err := os.Readlink(currentLink)
@@ -596,6 +625,14 @@ type schemaTransitionFixture struct {
 func newSchemaTransitionFixture(t *testing.T, liveWriter int) schemaTransitionFixture {
 	t.Helper()
 	root := t.TempDir()
+	t.Cleanup(func() {
+		_ = filepath.Walk(filepath.Join(root, "releases"), func(path string, info os.FileInfo, err error) error {
+			if err == nil && info.IsDir() {
+				_ = os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
 	fixture := schemaTransitionFixture{
 		root: root, repo: filepath.Join(root, "repo"), shimDir: filepath.Join(root, "shims"),
 		releasesDir: filepath.Join(root, "releases"), previousRelease: filepath.Join(root, "releases", "previous"),
@@ -618,13 +655,14 @@ func newSchemaTransitionFixture(t *testing.T, liveWriter int) schemaTransitionFi
 	}
 	targetContract := schemaProbeContract(1, 2, 2, 1, 2)
 	rollbackContract := schemaProbeContract(1, 2, 1, 1, 1)
-	targetTemplate := fakeSchemaContractBinary("v-target-test", targetContract, true)
-	rollbackBinary := fakeSchemaContractBinary("v-current-test", rollbackContract, false)
+	targetTemplate := fakeSchemaContractBinary("v2.21.0-platform", targetContract, true)
+	rollbackBinary := fakeSchemaContractBinary("v2.20.0-platform", rollbackContract, false)
 	targetTemplatePath := filepath.Join(root, "target-api-template")
 	writeTestScript(t, targetTemplatePath, targetTemplate)
 	writeTestScript(t, filepath.Join(fixture.previousRelease, "bin", "norn-api"), rollbackBinary)
+	writeTestScript(t, filepath.Join(fixture.previousRelease, "bin", "norn"), "#!/usr/bin/env bash\nexit 0\n")
 	writeTestScript(t, filepath.Join(fixture.binDir, "norn-api"), rollbackBinary)
-	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_VERSION=v-current-test\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_VERSION=v2.20.0-platform\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(fixture.previousRelease, fixture.currentLink); err != nil {
@@ -636,13 +674,17 @@ set -euo pipefail
 case " $* " in
   *" rev-parse --is-inside-work-tree "*) printf 'true\n' ;;
   *" rev-parse --verify "*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
-  *" describe "*) printf 'v-target-test\n' ;;
+  *" describe "*) printf 'v2.21.0-platform\n' ;;
+  *" show -s --format=%ct "*) printf '1780000000\n' ;;
+  *" show -s --format=%cI "*) printf '2026-05-26T00:00:00Z\n' ;;
   *" worktree add "*)
     worktree="${6}"
     mkdir -p "$worktree/v2/api" "$worktree/v2/cli" "$worktree/v2/scripts"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree/v2/scripts/platform-upgrade"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree/v2/scripts/host-runtime"
-    chmod +x "$worktree/v2/scripts/platform-upgrade" "$worktree/v2/scripts/host-runtime"
+    for helper in platform-upgrade platform-release-manifest platform-release-artifact platform-release-fetch-github platform-release-verify-github host-runtime; do
+      printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree/v2/scripts/$helper"
+      chmod +x "$worktree/v2/scripts/$helper"
+    done
+    cp "$FAKE_MANIFEST_HELPER" "$worktree/v2/scripts/platform-release-manifest"
     ;;
   *" worktree remove "*) ;;
   *) exit 2 ;;
@@ -650,6 +692,15 @@ esac
 `)
 	writeTestScript(t, filepath.Join(fixture.shimDir, "go"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == env ]]; then
+  case "${2:-}" in
+    GOVERSION) printf 'go1.26.1\n' ;;
+    GOOS) printf 'darwin\n' ;;
+    GOARCH) printf 'arm64\n' ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
 out=""
 while [[ "$#" -gt 0 ]]; do
   if [[ "$1" == "-o" ]]; then out="$2"; shift 2; continue; fi
@@ -663,6 +714,25 @@ else
   printf '#!/usr/bin/env bash\nexit 0\n' > "$out"
   chmod +x "$out"
 fi
+`)
+	writeTestScript(t, filepath.Join(root, "manifest-helper.py"), `#!/usr/bin/env python3
+import json, shutil, sys
+from pathlib import Path
+mode = sys.argv[1]
+def option(name): return Path(sys.argv[sys.argv.index(name)+1])
+if mode == 'create':
+    target = option('--release')
+    (target/'release.json').write_text(json.dumps({'version':'v2.21.0-platform'}))
+    (target/'release.signature.json').write_text('{}')
+elif mode == 'verify':
+    target = option('--release')
+    if not (target/'release.json').is_file(): sys.exit(1)
+    print('unsigned')
+elif mode == 'install':
+    shutil.copytree(option('--staging'), option('--destination'))
+elif mode == 'compare':
+    pass
+else: sys.exit(2)
 `)
 	writeTestScript(t, filepath.Join(fixture.shimDir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -686,7 +756,7 @@ if [[ -f "$FAKE_ACTIVE_STATE" ]]; then
   minimum_writer=2
   current_migration=2
 else
-  version='v-current-test'
+  version='v2.20.0-platform'
   writer="$FAKE_LIVE_WRITER"
   catalog=1
   minimum_writer="$FAKE_LIVE_WRITER"
@@ -749,8 +819,13 @@ func (f schemaTransitionFixture) command(t *testing.T) *exec.Cmd {
 		"NORN_CURRENT_LINK="+f.currentLink,
 		"NORN_BIN_DIR="+f.binDir,
 		"NORN_HOST_AGENT_BIN="+filepath.Join(f.root, "host", "norn-host-agent"),
+		"NORN_HOST_CLI_BIN="+filepath.Join(f.root, "host", "norn"),
 		"NORN_PLATFORM_SCRIPT_BIN="+filepath.Join(f.root, "host", "platform-upgrade"),
 		"NORN_HOST_RUNTIME_BIN="+filepath.Join(f.root, "host", "host-runtime"),
+		"NORN_RELEASE_MANIFEST_HELPER="+filepath.Join(f.root, "manifest-helper.py"),
+		"FAKE_MANIFEST_HELPER="+filepath.Join(f.root, "manifest-helper.py"),
+		"NORN_RELEASE_LOGS_DIR="+filepath.Join(f.root, "release-logs"),
+		"NORN_ALLOW_LEGACY_RELEASES=true",
 		"NORN_DRAIN_MODE=fail",
 		"NORN_TOKEN=test-drain-token",
 		"NORN_API_BASE=http://127.0.0.1:19999",
