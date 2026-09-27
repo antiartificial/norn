@@ -209,7 +209,9 @@ certificate-bound control handler while the worker holds its claim and pinned
 InfraSpec. A disposable-etcd test authorizes the named member and rejects the
 same request after Fleet inventory replacement. No runtime mTLS listener or
 host-to-control call invokes this handler yet; recovery must reacquire the
-claim, lock and pinned source before it can serve again.
+claim, lock and pinned source before it can serve again. A private-IP-only
+mTLS listener primitive now stops on worker-context or app-lock cancellation;
+the normal etcd deployment worker does not start it yet.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

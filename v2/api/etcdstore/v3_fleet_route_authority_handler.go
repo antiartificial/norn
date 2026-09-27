@@ -3,6 +3,7 @@ package etcdstore
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 
 	"norn/v2/api/ingress"
@@ -22,4 +23,15 @@ func (s *V3OperationStore) NewClaimedInitialFleetRouteAuthorityHandler(claim sto
 	return ingress.NewControlRouteAuthorityHandler(nodeURIs, func(ctx context.Context, intentID, nodeID string) (*ingress.AuthorizedRoutePublication, error) {
 		return s.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, observerPort, intentID, nodeID)
 	})
+}
+
+// ServeClaimedInitialFleetRouteAuthority is the worker-owned private listener.
+// It cannot outlive the worker context or monitored app lock. The normal etcd
+// deployment worker must explicitly invoke it while holding those inputs.
+func (s *V3OperationStore) ServeClaimedInitialFleetRouteAuthority(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int, nodeURIs map[string]string, listener net.Listener, certPEM, keyPEM, nodeCAPEM []byte) error {
+	handler, err := s.NewClaimedInitialFleetRouteAuthorityHandler(claim, lock, spec, observerPort, nodeURIs)
+	if err != nil {
+		return err
+	}
+	return ingress.ServePrivateControlRouteAuthority(ctx, lock.Context(), listener, handler, certPEM, keyPEM, nodeCAPEM)
 }
