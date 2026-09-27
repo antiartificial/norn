@@ -289,6 +289,10 @@ active pre-index work must first drain or reconcile it.
    GitHub's PR #177 contract job did not start: its annotation cites failed
    account payments or a spending limit. This is an external CI blocker, not
    a passing or failing contract-test result.
+   The proposed [per-node publisher contract](m4-ingress-node-publisher-contract.md)
+   spells out authority, generation, inventory, readback, probe, durable proof,
+   and interrupted-fanout recovery requirements. It is a design boundary,
+   not an installed publisher or positive active-weight evidence.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
