@@ -1,7 +1,11 @@
 # M4 ingress node publisher contract
 
 Status: proposed implementation boundary, not a deployed service or a release
-gate. This contract connects the existing canonical route renderer and local
+gate. The source tree has a node publish handler that accepts only a reserved
+intent ID from a pinned mTLS client and requires a trusted live-authority
+resolver to supply the exact route, predecessor and generation. No resolver
+or Fleet host wiring exists yet, so this is not an operational publish path.
+This contract connects the canonical route renderer and local
 generation-fenced file publisher to Fleet's loopback Traefik readback. The
 normal etcd app deployment route stays disabled until the complete path is
 qualified.
