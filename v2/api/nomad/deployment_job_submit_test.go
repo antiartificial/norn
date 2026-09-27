@@ -29,6 +29,21 @@ func deploymentCASRequest() CASDeploymentJobRequest {
 	return request
 }
 
+func TestDeploymentJobDigestExcludesDerivedExecutionMarker(t *testing.T) {
+	request := deploymentCASRequest()
+	baseline := request.JobDigest
+	request.Job.Meta[DeploymentExecutionIDMeta] = "nomad-deployment-derived-from-" + baseline
+	derived, err := DigestDeploymentJob(request.Job)
+	if err != nil || derived != baseline {
+		t.Fatalf("derived execution marker changed job digest: before=%q after=%q err=%v", baseline, derived, err)
+	}
+	request.Job.Meta[SpecDigestMeta] = "changed-spec"
+	changed, err := DigestDeploymentJob(request.Job)
+	if err != nil || changed == baseline {
+		t.Fatalf("changed workload identity retained job digest: before=%q after=%q err=%v", baseline, changed, err)
+	}
+}
+
 func TestRegisterDeploymentJobCASUsesExpectedRevision(t *testing.T) {
 	request := deploymentCASRequest()
 	requests := 0

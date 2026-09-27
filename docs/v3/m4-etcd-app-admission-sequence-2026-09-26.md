@@ -77,8 +77,10 @@ active pre-index work must first drain or reconcile it.
    must normalize those fields while covering every mutable workload field,
    including environment, templates, volumes, networking, and task config;
    a marker-only or source-spec digest is insufficient. The replacement
-   registration hashes the complete submitted JSON before writing and saves
-   that exact source in Nomad's versioned submission record. Readback checks
+   registration hashes the submitted JSON before writing, excluding only the
+   digest's own marker and its digest-derived execution marker, then saves
+   the full source in Nomad's versioned submission record. Both excluded
+   markers are checked separately against the reserved execution. Readback checks
    the source digest and markers, asks Nomad to plan that source against the
    current job with no diff, then rereads the revision. A deliberately changed
    workload with matching markers and submission source was rejected by the
@@ -122,11 +124,14 @@ active pre-index work must first drain or reconcile it.
    keeps the effect gate. The completion evidence binds the reserved input,
    execution, job digest, version and healthy allocation IDs. This worker
    path has unit coverage and passed a disposable Nomad 2.0.7 Docker worker
-   sequence from guarded submit through exact health completion. That sequence
-   used an in-memory effect store; the real etcd effect store passed separate
-   reservation, attempt, and completion tests. The combined real-etcd/Nomad
-   path and signed region checkpoint remain unproven. Canary jobs still
-   require their separate promotion proof.
+   sequence from guarded submit through exact health completion. A second
+   disposable test now passes the same sequence with signed private etcd
+   admission, a live claim and durable effect record, real Nomad 2.0.7, and
+   a healthy Docker allocation. It verifies replay keeps the same effect,
+   completion releases its gate, and the deployment operation remains active.
+   This caught and corrected a circular job digest/execution-ID dependency.
+   The normal dispatch path and signed region checkpoint remain unproven.
+   Canary jobs still require their separate promotion proof.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

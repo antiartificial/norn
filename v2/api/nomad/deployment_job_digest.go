@@ -9,9 +9,10 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 )
 
-// DigestDeploymentJob hashes the exact submitted JSON without the digest's
-// own marker. The job submission record retains that JSON by Nomad version;
-// no server-default normalization is needed to compare the source intent.
+// DigestDeploymentJob hashes the submitted JSON without the digest's own
+// marker or the execution marker derived from this digest. Both markers are
+// checked independently against the signed reservation during readback.
+// The job submission record retains the full JSON by Nomad version.
 func DigestDeploymentJob(job *nomadapi.Job) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("deployment job is missing")
@@ -25,6 +26,7 @@ func DigestDeploymentJob(job *nomadapi.Job) (string, error) {
 		return "", fmt.Errorf("decode deployment job")
 	}
 	delete(copy.Meta, DeploymentJobDigestMeta)
+	delete(copy.Meta, DeploymentExecutionIDMeta)
 	encoded, err = json.Marshal(&copy)
 	if err != nil {
 		return "", fmt.Errorf("encode deployment job digest material")
