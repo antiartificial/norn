@@ -9,7 +9,10 @@ against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
 The public `V3OperationStore.Accept` still rejects any deployment/region
 aggregate before a write. A private preparation path now atomically persists
 the signed operation, deployment, resolved regions, and app gate for real-etcd
-contract tests; it is not exposed to the API or worker. The store indexes
+contract tests; it is not exposed to the API or worker. A private terminal
+transaction now writes deployment and region results with a live claim and app
+lock, and releases the app gate only with the terminal operation. Generic
+operation completion refuses accepted deployments. The store indexes
 queued app operations, enforces exclusive app admission in the acceptance
 transaction, and releases the index in claim-fenced terminal
 transactions. Private invocation acceptance and completion participate, and
@@ -21,8 +24,9 @@ router has no ordinary app deployment route and responds with
 The PG acceptance transaction already persists a signed intent, operation,
 deployment, and regions together after checking that no queued/running
 operation exists for that app. The etcd adapter now shares the domain
-normalizer and has atomic deployment persistence, but no deployment lifecycle
-projection. The index initializes once per app only after a snapshot scan finds
+normalizer, atomic deployment persistence, and a private terminal projection;
+intermediate deployment stages, Nomad launch/reconciliation, and the normal
+router remain unwired. The index initializes once per app only after a snapshot scan finds
 no pre-index active or unresolved operations. Mixed-version
 API writers must be stopped before enabling the adapter; an upgrade retaining
 active pre-index work must first drain or reconcile it.
@@ -49,9 +53,11 @@ active pre-index work must first drain or reconcile it.
    not make a mutable deploy identity expire while its effect or result is
    unresolved.
 3. Implement claim-fenced deployment steps, region observations and terminal
-   result writes. A terminal operation, deployment result and app-gate release
-   need one proven ordering. Candidate startup and stale claim generation must
-   be unable to submit or complete a newer deployment.
+   result writes. The private terminal transaction now writes all results and
+   the app-gate release in one ordering; stale claim and lost app-lock tests
+   pass against real etcd. Intermediate checkpoints, effect verification, and
+   worker recovery remain open. Candidate startup must be unable to submit a
+   newer deployment while an older Nomad effect is unresolved.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

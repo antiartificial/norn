@@ -799,6 +799,25 @@ func (s *V3OperationStore) mutateClaimWithComparisons(ctx context.Context, c sto
 		v.Operation.Metadata = map[string]interface{}{}
 	}
 	f(&v.Operation)
+	if v.Operation.Status.Terminal() && (v.Operation.Kind == "app.deploy" || v.Operation.Kind == "app.rollback") {
+		index, err := s.kv.Get(ctx, s.operationAcceptanceIndexKey(v.Operation.ID))
+		if err != nil {
+			return err
+		}
+		if len(index.Kvs) != 1 {
+			return fmt.Errorf("deployment completion requires its signed acceptance index")
+		}
+		accepted, err := s.loadAcceptance(ctx, string(index.Kvs[0].Value))
+		if err != nil {
+			return fmt.Errorf("load deployment acceptance: %w", err)
+		}
+		if accepted.record.Accepted.Operation.ID != v.Operation.ID {
+			return fmt.Errorf("deployment completion acceptance link is invalid")
+		}
+		if accepted.record.Accepted.Intent.DeploymentID != "" {
+			return fmt.Errorf("deployment completion requires the aggregate terminal transaction")
+		}
+	}
 	encoded, e := json.Marshal(v)
 	if e != nil {
 		return e
