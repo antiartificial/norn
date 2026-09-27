@@ -24,6 +24,19 @@ jobs:
           ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         ports:
           - 2379:2379
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: norn_ci
+          POSTGRES_PASSWORD: norn_ci
+          POSTGRES_DB: norn_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U norn_ci -d norn_ci"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +64,7 @@ jobs:
         working-directory: ${{ matrix.directory }}
         env:
           NORN_TEST_ETCD_ENDPOINTS: ${{ matrix.component == 'api' && 'http://127.0.0.1:2379' || '' }}
+          NORN_TEST_DATABASE_URL: ${{ matrix.component == 'api' && 'postgres://norn_ci:norn_ci@127.0.0.1:5432/norn_ci?sslmode=disable' || '' }}
         run: go test ./...
 
   api-production-etcd:
