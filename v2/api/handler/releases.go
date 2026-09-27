@@ -70,7 +70,7 @@ type privateAttestationRequest struct {
 func (h *Handler) CreatePrivateReleaseAttestation(w http.ResponseWriter, r *http.Request) {
 	preventSensitiveResponseCaching(w)
 	appID := chi.URLParam(r, "id")
-	principal, ok := requireReleaseControlScope(w, r, ScopeReleaseAttest, appID)
+	principal, ok := h.requireReleaseControlScope(w, r, ScopeReleaseAttest, appID)
 	if !ok {
 		return
 	}
@@ -170,7 +170,7 @@ func (h *Handler) QueueReleaseDeployment(w http.ResponseWriter, r *http.Request)
 func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 	preventSensitiveResponseCaching(w)
 	appID := chi.URLParam(r, "id")
-	principal, ok := requireReleaseControlScope(w, r, ScopeReleaseRollback, appID)
+	principal, ok := h.requireReleaseControlScope(w, r, ScopeReleaseRollback, appID)
 	if !ok {
 		return
 	}
@@ -272,7 +272,7 @@ func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight
 	if promotion != nil {
 		requiredScope = ScopeReleasePromote
 	}
-	principal, ok := requireReleaseControlScope(w, r, requiredScope, chi.URLParam(r, "id"))
+	principal, ok := h.requireReleaseControlScope(w, r, requiredScope, chi.URLParam(r, "id"))
 	if !ok {
 		return
 	}
@@ -486,7 +486,7 @@ func recentUnexpiredQualifications(operations []model.Operation, now time.Time) 
 
 func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Request) {
 	preventSensitiveResponseCaching(w)
-	principal, ok := requireReleaseControlScope(w, r, ScopeReleaseQualify, chi.URLParam(r, "id"))
+	principal, ok := h.requireReleaseControlScope(w, r, ScopeReleaseQualify, chi.URLParam(r, "id"))
 	if !ok {
 		return
 	}
@@ -654,7 +654,7 @@ func releaseRepositoryMatchesPrincipal(candidate model.ReleaseCandidate, princip
 
 func (h *Handler) QueueReleasePromotion(w http.ResponseWriter, r *http.Request) {
 	preventSensitiveResponseCaching(w)
-	if _, ok := requireReleaseControlScope(w, r, ScopeReleasePromote, chi.URLParam(r, "id")); !ok {
+	if _, ok := h.requireReleaseControlScope(w, r, ScopeReleasePromote, chi.URLParam(r, "id")); !ok {
 		return
 	}
 	if h.cfg == nil || h.cfg.EnvironmentID() != "production" {
@@ -687,7 +687,7 @@ func (h *Handler) QueueReleasePromotion(w http.ResponseWriter, r *http.Request) 
 // requireReleaseControlScope deliberately narrows new managed tokens. The
 // direct static control token and pre-scope legacy JWTs retain compatibility;
 // every new scoped token must name the exact release capability and app/env.
-func requireReleaseControlScope(w http.ResponseWriter, r *http.Request, scope, app string) (AccessPrincipal, bool) {
+func (h *Handler) requireReleaseControlScope(w http.ResponseWriter, r *http.Request, scope, app string) (AccessPrincipal, bool) {
 	principal, exists := AccessPrincipalFromRequest(r)
 	if !exists {
 		return requireControlScope(w, r, scope)
@@ -699,7 +699,7 @@ func requireReleaseControlScope(w http.ResponseWriter, r *http.Request, scope, a
 		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+scope)
 		return AccessPrincipal{}, false
 	}
-	if principal.App != app || principal.Environment == "" {
+	if h.cfg == nil || principal.App != app || principal.Environment != h.cfg.EnvironmentID() || (principal.CI != nil && principal.CI.Environment != principal.Environment) {
 		WriteControlProblem(w, r, http.StatusForbidden, "release_token_binding_invalid", "release token is not bound to this app and environment")
 		return AccessPrincipal{}, false
 	}

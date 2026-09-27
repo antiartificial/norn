@@ -181,6 +181,45 @@ func TestReleaseRollbackFailsClosedWithoutDurableDependencies(t *testing.T) {
 	}
 }
 
+func TestScopedReleaseTokenRequiresCurrentControlEnvironment(t *testing.T) {
+	h := &Handler{cfg: &config.Config{Environment: "production"}}
+	for _, test := range []struct {
+		name      string
+		principal AccessPrincipal
+		allowed   bool
+	}{
+		{name: "matching production", principal: AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "production"}, allowed: true},
+		{name: "staging token on production", principal: AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "staging"}},
+		{name: "mismatched CI environment", principal: AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "production", CI: &CIIdentity{Environment: "staging"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/releases/promotions", nil), &test.principal)
+			recorder := httptest.NewRecorder()
+			_, allowed := h.requireReleaseControlScope(recorder, request, ScopeReleasePromote, "private-route")
+			if allowed != test.allowed {
+				t.Fatalf("allowed=%v status=%d", allowed, recorder.Code)
+			}
+			if !test.allowed {
+				requirePrivateRouteProblem(t, recorder, http.StatusForbidden, "release_token_binding_invalid")
+			}
+		})
+	}
+}
+
+func TestReleasePromotionRejectsStagingScopedTokenBeforeRequestProcessing(t *testing.T) {
+	h := &Handler{cfg: &config.Config{Environment: "production"}}
+	principal := AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "staging"}
+	request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/releases/promotions", nil), &principal)
+	recorder := httptest.NewRecorder()
+	router := chi.NewRouter()
+	router.Post("/api/v1/apps/{id}/releases/promotions", h.QueueReleasePromotion)
+	router.ServeHTTP(recorder, request)
+	requirePrivateRouteProblem(t, recorder, http.StatusForbidden, "release_token_binding_invalid")
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("promotion cache policy=%q", recorder.Header().Get("Cache-Control"))
+	}
+}
+
 func TestReleaseQualificationFailsClosedWithoutPipeline(t *testing.T) {
 	h := &Handler{cfg: &config.Config{Environment: "staging"}, db: &store.DB{}}
 	principal := AccessPrincipal{Scopes: []string{ScopeReleaseQualify}, App: "private-route", Environment: "staging"}

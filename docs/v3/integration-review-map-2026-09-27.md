@@ -105,6 +105,14 @@ the unavailable dependency and no-store header. PR #77 checks at exact head
 `4f8f7bd591c380536c5c22f28f36edc405f16eea` all completed without a
 reported failure; recheck CI on subsequent heads.
 
+A later release-scope review found that scoped tokens were checked for a
+nonempty environment but not against the environment of the control plane
+handling the request. The shared release-scope helper now requires the exact
+current environment and, for CI tokens, matching CI identity environment.
+Focused tests reject a staging-scoped promotion token on production before
+request processing. Existing legacy/admin and API-write compatibility paths
+remain separate; the change narrows scoped release tokens only.
+
 ## Lane 1 Mini-preservation checkpoint
 
 At exact head `7e21e324a410f40c72682ec7ed696660cb2240ad`, the hosted V3
