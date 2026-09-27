@@ -2,10 +2,12 @@
 
 Status: implementation boundary, 2026-09-27. This is not M1 sign-off.
 
-The first code slice defines an authenticated, secret-free migration intent
-descriptor. The generic `build.test` supervisor explicitly refuses it. No
-production path reserves or launches it yet; the private runner, verifier and
-database postcondition remain required before activation.
+The first code slices define an authenticated, secret-free migration intent
+descriptor and a private helper that discards command output while retaining
+only signed status. The generic `build.test` supervisor explicitly refuses the
+descriptor. No production path reserves or launches it yet; backend handoff,
+manager recovery, a migration verifier and the database postcondition remain
+required before activation.
 
 ## Current behavior and risk
 

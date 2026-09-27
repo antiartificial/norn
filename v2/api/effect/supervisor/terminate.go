@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,7 +142,7 @@ type lifecycleTrace func(string)
 // runContained runs the command under a timeout guard with this ordering:
 // start, observe leader exit without reaping, close the guard (joining any
 // in-flight terminate), then reap. The terminator is closed last.
-func runContained(material effect.LaunchMaterial, capture *boundedCapture, terminator commandTerminator, schedule scheduleFunc, trace lifecycleTrace) (bool, error) {
+func runContained(material effect.LaunchMaterial, output io.Writer, terminator commandTerminator, schedule scheduleFunc, trace lifecycleTrace) (bool, error) {
 	if trace == nil {
 		trace = func(string) {}
 	}
@@ -153,8 +154,8 @@ func runContained(material effect.LaunchMaterial, capture *boundedCapture, termi
 	command.Dir = material.Directory
 	command.Env = append([]string(nil), material.Environment...)
 	command.Stdin = nil
-	command.Stdout = capture
-	command.Stderr = capture
+	command.Stdout = output
+	command.Stderr = output
 	command.WaitDelay = outputDrainDelay
 	if err := terminator.configure(command); err != nil {
 		return false, err

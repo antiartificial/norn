@@ -93,6 +93,9 @@ func RunHelper(input io.Reader) error {
 	if protocol.Protocol == SnapshotProtocolV1 {
 		return runSnapshotHelper(data)
 	}
+	if protocol.Protocol == MigrationProtocolV1 {
+		return runMigrationHelper(data)
+	}
 	request, err := decodeRunnerRequestBytes(data)
 	if err != nil {
 		return err
