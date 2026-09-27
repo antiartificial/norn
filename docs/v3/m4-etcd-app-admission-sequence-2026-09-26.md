@@ -187,13 +187,23 @@ active pre-index work must first drain or reconcile it.
    `ActiveWeight` at zero.
 
    The first opt-in translator slice, `TranslateForManagedDeployment`, now
-   keeps the Nomad app job ID stable while deriving a distinct, deterministic
-   Consul service name for each app/process/region/deployment. Its service
+   derives distinct, deterministic Nomad job and Consul service names for
+   each deployment revision. Its service
    tags use a reserved `.norn.invalid` hostname instead of the public
    endpoint and omit the misleading desired-weight tag. An unmatched regional
    endpoint remains private. The normal v2 translator and private worker
    still use their existing paths; this helper does not apply a weighted
    file route, observe Traefik, or prove a deployment's active weight.
+   A correction after the local Traefik fixture found that one stable Nomad
+   job ID cannot sustain old/new weighted backends: its normal update replaces
+   old allocations, while the current private health verifier requires all
+   live allocations to carry the new job version. Revision-specific jobs
+   keep both backends addressable until the route moves and the old job is
+   explicitly drained. Job-scoped Nomad variable templates now follow the
+   revision job ID. The private CAS/readback/health path still assumes
+   `job.ID == app` and needs a signed revision-job identity, create-only
+   submission, job-scoped database/secret delivery, and fenced old-job
+   retirement before managed translation can be dispatched.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact

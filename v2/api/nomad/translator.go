@@ -34,7 +34,10 @@ func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 // TranslateForRegionAt reads the staged database delivery revision. Callers
 // must validate the InfraSpec before using this runtime-only translation.
 func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64) *nomadapi.Job {
-	jobID := spec.App
+	return translateForRegionAtWithJobID(spec, imageTag, env, region, databaseRevision, spec.App)
+}
+
+func translateForRegionAtWithJobID(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64, jobID string) *nomadapi.Job {
 	jobType := "service"
 
 	job := nomadapi.NewServiceJob(jobID, jobID, region.NomadRegion, 50)
@@ -120,7 +123,7 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 
 		// Nomad variable values are rendered into owner-only files, never task.Env.
 		task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
-		configureNomadVariableFiles(proc.NomadVariables, spec.App, task)
+		configureNomadVariableFiles(proc.NomadVariables, jobID, task)
 		addDatabaseTemplates(spec, jobID, databaseRevision, task)
 		applyStartupAdapter(spec, procName, imageTag, task)
 

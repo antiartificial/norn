@@ -22,15 +22,30 @@ func ManagedBackendServiceName(app, process, region, deploymentID string) (strin
 	return "norn-" + hex.EncodeToString(digest[:16]), nil
 }
 
-// TranslateForManagedDeployment keeps Nomad's app job identity stable while
-// separating each deployment revision's Consul backend. The backend has only
+// ManagedDeploymentJobID identifies one deployment revision's service job.
+// Keeping old and new jobs separate allows both backends to remain allocated
+// while a weighted ingress transition is observed and rolled back if needed.
+func ManagedDeploymentJobID(app, region, deploymentID string) (string, error) {
+	if app == "" || region == "" || deploymentID == "" {
+		return "", fmt.Errorf("managed deployment job identity is incomplete")
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%d:%s%d:%s%d:%s", len(app), app, len(region), region, len(deploymentID), deploymentID)))
+	return "norn-job-" + hex.EncodeToString(digest[:16]), nil
+}
+
+// TranslateForManagedDeployment separates each deployment revision's Nomad
+// job and Consul backend. The backend has only
 // an unroutable reserved hostname until an ingress controller publishes and
 // verifies the public file-provider route. Ordinary v2 translation is unchanged.
 func TranslateForManagedDeployment(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, deploymentID string) (*nomadapi.Job, error) {
-	job, err := TranslateForRegion(spec, imageTag, env, region)
+	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
+		return nil, err
+	}
+	jobID, err := ManagedDeploymentJobID(spec.App, region.Name, deploymentID)
 	if err != nil {
 		return nil, err
 	}
+	job := translateForRegionAtWithJobID(spec, imageTag, env, region, 0, jobID)
 	for process, definition := range spec.Processes {
 		if definition.Port <= 0 || !spec.ProcessRunsInRegion(definition, region.Name) {
 			continue

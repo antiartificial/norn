@@ -29,7 +29,11 @@ It does not apply a route to Fleet or close M4.
 ## Limits and next gate
 
 The fixture used one Traefik process, one Consul agent, loopback HTTP
-backends, and a local API router. It did not exercise Fleet's pinned Traefik
+backends, and a local API router. Its old/new Consul services were registered
+independently; this exposed a gap in Norn's then-stable Nomad job identity.
+The opt-in managed translator now gives revisions separate job IDs, but its
+private worker and Nomad delivery path have not yet been connected or tested
+with two simultaneous jobs. The fixture did not exercise Fleet's pinned Traefik
 binary, separate ingress hosts, privileged file publication, authentication
 or transport security for the API, a public load balancer, TLS certificate
 behavior, rollout interruption, or rollback. The observer compares effective

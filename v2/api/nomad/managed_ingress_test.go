@@ -11,7 +11,8 @@ func TestManagedDeploymentBackendsAreRevisionSpecificAndDoNotClaimPublicHost(t *
 	spec := &model.InfraSpec{
 		App: "orders",
 		Processes: map[string]model.Process{
-			"web": {Port: 8080},
+			"web": {Port: 8080, NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532,
+				Files: []model.NomadVariableFile{{Key: "API_TOKEN", Destination: "api-token"}}}},
 		},
 		Endpoints: []model.Endpoint{{URL: "https://orders.example.com"}},
 	}
@@ -24,8 +25,16 @@ func TestManagedDeploymentBackendsAreRevisionSpecificAndDoNotClaimPublicHost(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *first.ID != *second.ID || *first.ID != spec.App {
-		t.Fatalf("managed translation changed stable Nomad job identity: %q %q", *first.ID, *second.ID)
+	if *first.ID == *second.ID || *first.ID == spec.App || *second.ID == spec.App {
+		t.Fatalf("deployment revisions share an app or Nomad job identity: %q %q", *first.ID, *second.ID)
+	}
+	jobID, err := ManagedDeploymentJobID("orders", region.Name, "deployment-one")
+	if err != nil || *first.ID != jobID {
+		t.Fatalf("first revision job identity is unstable: %q, %v", *first.ID, err)
+	}
+	if len(first.TaskGroups[0].Tasks[0].Templates) != 1 ||
+		!strings.Contains(*first.TaskGroups[0].Tasks[0].Templates[0].EmbeddedTmpl, "nomad/jobs/"+jobID) {
+		t.Fatal("managed revision did not bind its variable template to its own job")
 	}
 	serviceOne := first.TaskGroups[0].Services[0]
 	serviceTwo := second.TaskGroups[0].Services[0]
