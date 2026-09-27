@@ -45,20 +45,16 @@ ingress node with a protected management readback path, followed by per-node
 and public endpoint probes and rollback. Only that evidence can support
 `ActiveWeight` and terminal deployment success.
 
-## Subsequent local publisher slice
+## Local publication and readback
 
-The `ingress.PublishRenderedRoute` primitive now guards one node's watched
-directory with a cross-process lock and expected SHA-256 revision. It checks
-the canonical single-router YAML, refuses a stale writer or symlink target,
-fsyncs a private temporary file, atomically renames it, and syncs the
-directory. `ReadPublishedRouteRevision` reads back the exact bounded regular
-file revision and refuses symlinks, allowing an indeterminate file write to
-be reconciled before retry. Package race tests passed for conflicting concurrent writers,
-idempotent replay, tampering and stale revisions. This is a local file apply
-primitive only: no Fleet node agent invokes it, and no multi-node publication,
-protected rawdata readback, endpoint probe, or rollback was exercised by
-these tests. A sync error after rename is an indeterminate apply and must be
-resolved by reading the node's actual file and Traefik state before retry.
+`ingress.PublishRenderedRoute` writes one canonical weighted route into a
+trusted file-provider directory under a cross-process lock. It fsyncs a
+private temporary file, atomically renames it, and syncs the directory.
+`ReadPublishedRouteRevision` returns the exact file content SHA-256 and its
+generation; a missing file is generation zero. Symlinks and oversized files
+are refused. A sync error after rename is indeterminate and requires file
+and Traefik readback before retry. These are per-node primitives; no Fleet
+node agent invokes them yet.
 
 ## Publisher-to-runtime rehearsal at `bc311d1d`
 
@@ -75,21 +71,28 @@ Traefik, one Consul, local HTTP, and an unprotected loopback management route;
 it still does not establish multi-node propagation, protected management
 access, public TLS/LB behavior, or rollback.
 
-## First-publication rollback primitive
+## Generation-fenced rollback and runtime correction
 
-`RemovePublishedRoute` now removes a route file only when its exact current
-SHA-256 matches the expected value under the same local cross-process lock;
-it refuses missing, changed, symlinked or oversized files and syncs the
-directory after removal. Race tests cover stale-revision refusal and deletion
-readback. This supports restoring the prior **absent** state on one node.
-For a prior populated route, the existing publisher can restore its retained
-rendered revision with an expected current digest. Neither operation has been
-run against multiple ingress nodes or through Fleet.
+The initial hash-only `RemovePublishedRoute` experiment was replaced after an
+A→B→A review showed that a repeated content hash would let a stale writer
+match again. The current file contains a monotonic generation comment in the
+same atomic file as the Traefik route. `PublishRenderedRoute` requires a
+matching prior per-node revision and a higher generation; an exact repeated
+generation/content is idempotent after an ambiguous response. Race tests
+cover competing writers, A→B→A, tampering, symlinks, and stale-generation
+refusal. The generation must be issued and authenticated by a future durable
+Fleet route intent; a caller cannot invent a high number and claim authority.
 
-Content-hash CAS is not an executor fence: after an A→B→A rollback, a stale
-writer expecting A could match again. The Fleet node agent must check a
-durable, monotonic operation generation or equivalent claim immediately
-before each local publish/removal; lost claims must not apply. A coordinator
-must retain the prior per-node revision, verify exact file and effective
-Traefik readback after rollback, and keep active traffic evidence pending if
-any node disagrees.
+A first attempt to retain an absent-state generation using an empty HTTP
+document failed a live Traefik watcher test: the old public router stayed
+loaded. `WithdrawPublishedRoute` now atomically replaces it with an explicit
+inert router for a reserved `.invalid` host. The same disposable Consul 2.0.4
+and Traefik 3.7.13 fixture passed with the generation-1 route: exact file
+readback, enabled effective route, and 70 old / 30 new responses over 100
+requests. Withdrawal at generation 2 removed the original public-host rule
+from `/api/rawdata`, and the original host returned HTTP 404. The rehearsal
+exited zero and cleaned up its loopback processes. This establishes only a
+one-node local apply/withdraw path. A Fleet controller still needs durable
+route intent, authorized generation delivery, every-node publication and
+protected readback, endpoint probes, rollback coordination, and failure
+recovery before `ActiveWeight` can be positive.

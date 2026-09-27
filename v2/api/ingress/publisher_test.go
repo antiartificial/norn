@@ -1,8 +1,6 @@
 package ingress
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,52 +8,87 @@ import (
 	"testing"
 )
 
-func TestPublishRenderedRouteCASAndTamperRefusal(t *testing.T) {
+func fixtureRoute(t *testing.T, deployment string) RenderedRoute {
+	t.Helper()
+	route, err := RenderWeightedRoute(WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com", Backends: []WeightedBackend{{DeploymentID: deployment, Weight: 100}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return route
+}
+
+func readFixtureRevision(t *testing.T, directory, routerName string) PublishedRouteRevision {
+	t.Helper()
+	revision, err := ReadPublishedRouteRevision(directory, routerName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return revision
+}
+
+func TestPublishedRouteGenerationFencesABAAndWithdrawal(t *testing.T) {
 	directory := t.TempDir()
-	input := WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com", Backends: []WeightedBackend{{DeploymentID: "old", Weight: 100}}}
-	first, err := RenderWeightedRoute(input)
-	if err != nil {
+	first := fixtureRoute(t, "old")
+	second := fixtureRoute(t, "new")
+	initial := readFixtureRevision(t, directory, first.RouterName)
+	if initial != (PublishedRouteRevision{}) {
+		t.Fatalf("initial revision=%+v", initial)
+	}
+	if err := PublishRenderedRoute(directory, first, initial, 1); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(directory, first.RouterName+".yaml")
-	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != "" {
-		t.Fatalf("missing route readback=%q, %v", revision, err)
+	r1 := readFixtureRevision(t, directory, first.RouterName)
+	if r1.Generation != 1 || r1.RouteSHA256 != first.SHA256 || !r1.Present {
+		t.Fatalf("first revision=%+v", r1)
 	}
-	if err := PublishRenderedRoute(directory, first, ""); err != nil {
+	if err := PublishRenderedRoute(directory, first, initial, 1); err != nil {
+		t.Fatalf("exact retry failed: %v", err)
+	}
+	if err := PublishRenderedRoute(directory, second, r1, 2); err != nil {
 		t.Fatal(err)
 	}
-	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != first.SHA256 {
-		t.Fatalf("first route readback=%q, %v", revision, err)
-	}
-	if err := PublishRenderedRoute(directory, first, first.SHA256); err != nil {
-		t.Fatalf("idempotent replay: %v", err)
-	}
-	input.Backends = []WeightedBackend{{DeploymentID: "old", Weight: 70}, {DeploymentID: "new", Weight: 30}}
-	second, err := RenderWeightedRoute(input)
-	if err != nil {
+	r2 := readFixtureRevision(t, directory, first.RouterName)
+	if err := PublishRenderedRoute(directory, first, r2, 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := PublishRenderedRoute(directory, second, ""); err == nil {
-		t.Fatal("stale absent revision overwrote route")
+	r3 := readFixtureRevision(t, directory, first.RouterName)
+	if r3.Generation != 3 || r3.RouteSHA256 != first.SHA256 {
+		t.Fatalf("rollback revision=%+v", r3)
 	}
-	if err := PublishRenderedRoute(directory, second, first.SHA256); err != nil {
+	if err := PublishRenderedRoute(directory, second, r1, 2); err == nil {
+		t.Fatal("stale A→B writer crossed A→B→A rollback")
+	}
+	if err := WithdrawPublishedRoute(directory, first.RouterName, r3, 4); err != nil {
 		t.Fatal(err)
 	}
-	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != second.SHA256 {
-		t.Fatalf("second route readback=%q, %v", revision, err)
+	r4 := readFixtureRevision(t, directory, first.RouterName)
+	if r4.Generation != 4 || r4.Present || r4.RouteSHA256 != "" {
+		t.Fatalf("withdrawal revision=%+v", r4)
 	}
-	body, err := os.ReadFile(path)
-	if err != nil || string(body) != string(second.YAML) {
-		t.Fatalf("published route mismatch: %v", err)
+	if err := WithdrawPublishedRoute(directory, first.RouterName, r3, 4); err != nil {
+		t.Fatalf("withdrawal retry failed: %v", err)
 	}
-	if err := PublishRenderedRoute(directory, first, first.SHA256); err == nil {
-		t.Fatal("stale first revision overwrote second")
+	if err := PublishRenderedRoute(directory, first, initial, 1); err == nil {
+		t.Fatal("stale first writer reintroduced withdrawn route")
 	}
+	if err := PublishRenderedRoute(directory, second, r4, 5); err != nil {
+		t.Fatalf("new generation after withdrawal: %v", err)
+	}
+}
+
+func TestPublishedRouteRejectsTamperAndSymlink(t *testing.T) {
+	directory := t.TempDir()
+	desired := fixtureRoute(t, "old")
+	path := filepath.Join(directory, desired.RouterName+".yaml")
+	if err := PublishRenderedRoute(directory, desired, PublishedRouteRevision{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	revision := readFixtureRevision(t, directory, desired.RouterName)
 	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := PublishRenderedRoute(directory, first, second.SHA256); err == nil {
-		t.Fatal("tampered route was replaced without reconciliation")
+	if err := PublishRenderedRoute(directory, desired, revision, 2); err == nil {
+		t.Fatal("unversioned tamper was replaced")
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
@@ -63,34 +96,25 @@ func TestPublishRenderedRouteCASAndTamperRefusal(t *testing.T) {
 	if err := os.Symlink(filepath.Join(directory, "victim"), path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadPublishedRouteRevision(directory, first.RouterName); err == nil {
-		t.Fatal("symlink readback was accepted")
+	if _, err := ReadPublishedRouteRevision(directory, desired.RouterName); err == nil {
+		t.Fatal("symlink readback succeeded")
 	}
-	if err := PublishRenderedRoute(directory, first, ""); err == nil {
-		t.Fatal("symlink route was accepted")
+	if err := WithdrawPublishedRoute(directory, desired.RouterName, revision, 2); err == nil {
+		t.Fatal("symlink withdrawal succeeded")
 	}
 }
 
-func TestPublishRenderedRouteConcurrentWritersOnlyOneWins(t *testing.T) {
+func TestPublishedRouteConcurrentGenerationOnlyOneWins(t *testing.T) {
 	directory := t.TempDir()
-	base := WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com"}
-	base.Backends = []WeightedBackend{{DeploymentID: "old", Weight: 100}}
-	first, err := RenderWeightedRoute(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base.Backends = []WeightedBackend{{DeploymentID: "new", Weight: 100}}
-	second, err := RenderWeightedRoute(base)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := fixtureRoute(t, "old")
+	second := fixtureRoute(t, "new")
 	results := make(chan error, 2)
 	var writers sync.WaitGroup
 	for _, route := range []RenderedRoute{first, second} {
 		writers.Add(1)
 		go func(route RenderedRoute) {
 			defer writers.Done()
-			results <- PublishRenderedRoute(directory, route, "")
+			results <- PublishRenderedRoute(directory, route, PublishedRouteRevision{}, 1)
 		}(route)
 	}
 	writers.Wait()
@@ -102,76 +126,24 @@ func TestPublishRenderedRouteConcurrentWritersOnlyOneWins(t *testing.T) {
 		}
 	}
 	if successes != 1 {
-		t.Fatalf("expected one winning writer, got %d", successes)
+		t.Fatalf("expected one winner, got %d", successes)
 	}
-	body, err := os.ReadFile(filepath.Join(directory, first.RouterName+".yaml"))
-	if err != nil || string(body) != string(first.YAML) && string(body) != string(second.YAML) {
-		t.Fatalf("published route is not a complete winner: %v", err)
+	revision := readFixtureRevision(t, directory, first.RouterName)
+	if revision.Generation != 1 || revision.RouteSHA256 != first.SHA256 && revision.RouteSHA256 != second.SHA256 {
+		t.Fatalf("winner revision=%+v", revision)
 	}
 }
 
-func TestPublishRenderedRouteRejectsAlteredDesiredContent(t *testing.T) {
+func TestPublishedRouteRejectsAlteredDesiredAndUnscopedName(t *testing.T) {
 	directory := t.TempDir()
-	desired, err := RenderWeightedRoute(WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com", Backends: []WeightedBackend{{DeploymentID: "old", Weight: 100}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	desired := fixtureRoute(t, "old")
 	desired.YAML = append(desired.YAML, []byte("# changed")...)
-	if err := PublishRenderedRoute(directory, desired, ""); err == nil {
+	if err := PublishRenderedRoute(directory, desired, PublishedRouteRevision{}, 1); err == nil {
 		t.Fatal("incorrect desired digest accepted")
 	}
-	sum := sha256.Sum256(desired.YAML)
-	desired.SHA256 = hex.EncodeToString(sum[:])
+	desired = fixtureRoute(t, "old")
 	desired.RouterName = strings.Replace(desired.RouterName, "norn-route", "other-route", 1)
-	if err := PublishRenderedRoute(directory, desired, ""); err == nil {
+	if err := PublishRenderedRoute(directory, desired, PublishedRouteRevision{}, 1); err == nil {
 		t.Fatal("unscoped route name accepted")
-	}
-}
-
-func TestRemovePublishedRouteRequiresExactCurrentRevision(t *testing.T) {
-	directory := t.TempDir()
-	input := WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com", Backends: []WeightedBackend{{DeploymentID: "old", Weight: 100}}}
-	first, err := RenderWeightedRoute(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(directory, first.RouterName+".yaml")
-	if err := RemovePublishedRoute(directory, first.RouterName, first.SHA256); err == nil {
-		t.Fatal("missing route removal succeeded")
-	}
-	if err := PublishRenderedRoute(directory, first, ""); err != nil {
-		t.Fatal(err)
-	}
-	input.Backends = []WeightedBackend{{DeploymentID: "new", Weight: 100}}
-	second, err := RenderWeightedRoute(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := PublishRenderedRoute(directory, second, first.SHA256); err != nil {
-		t.Fatal(err)
-	}
-	if err := RemovePublishedRoute(directory, first.RouterName, first.SHA256); err == nil {
-		t.Fatal("stale revision removed successor route")
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(directory, "victim"), path); err != nil {
-		t.Fatal(err)
-	}
-	if err := RemovePublishedRoute(directory, first.RouterName, second.SHA256); err == nil {
-		t.Fatal("symlink route removed")
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := PublishRenderedRoute(directory, second, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := RemovePublishedRoute(directory, first.RouterName, second.SHA256); err != nil {
-		t.Fatal(err)
-	}
-	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != "" {
-		t.Fatalf("route still present after rollback: %q, %v", revision, err)
 	}
 }
