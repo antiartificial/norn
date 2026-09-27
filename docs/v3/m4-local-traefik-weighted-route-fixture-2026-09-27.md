@@ -67,6 +67,11 @@ and duplicate node addresses; a TLS fixture rejects a certificate for the
 wrong public hostname. It does not enumerate Fleet nodes or prove the public
 load-balancer path, backend traffic percentage, or app-specific probe
 identity. Those checks remain required before positive `ActiveWeight`.
+`ProbeRenderedRoutePublic` separately resolves the public hostname through
+normal DNS, verifies TLS when applicable, disallows redirects/proxies, and
+checks the same bounded expected response. A local dial fixture covers its
+request and rejection behavior, but no actual public Fleet path has been
+probed. One public response cannot establish load-balancer distribution.
 
 `ingress.PublishRenderedRoute` writes one canonical weighted route into a
 trusted file-provider directory under a cross-process lock. It fsyncs a
