@@ -18,8 +18,14 @@ func TestPublishRenderedRouteCASAndTamperRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(directory, first.RouterName+".yaml")
+	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != "" {
+		t.Fatalf("missing route readback=%q, %v", revision, err)
+	}
 	if err := PublishRenderedRoute(directory, first, ""); err != nil {
 		t.Fatal(err)
+	}
+	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != first.SHA256 {
+		t.Fatalf("first route readback=%q, %v", revision, err)
 	}
 	if err := PublishRenderedRoute(directory, first, first.SHA256); err != nil {
 		t.Fatalf("idempotent replay: %v", err)
@@ -34,6 +40,9 @@ func TestPublishRenderedRouteCASAndTamperRefusal(t *testing.T) {
 	}
 	if err := PublishRenderedRoute(directory, second, first.SHA256); err != nil {
 		t.Fatal(err)
+	}
+	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != second.SHA256 {
+		t.Fatalf("second route readback=%q, %v", revision, err)
 	}
 	body, err := os.ReadFile(path)
 	if err != nil || string(body) != string(second.YAML) {
@@ -53,6 +62,9 @@ func TestPublishRenderedRouteCASAndTamperRefusal(t *testing.T) {
 	}
 	if err := os.Symlink(filepath.Join(directory, "victim"), path); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := ReadPublishedRouteRevision(directory, first.RouterName); err == nil {
+		t.Fatal("symlink readback was accepted")
 	}
 	if err := PublishRenderedRoute(directory, first, ""); err == nil {
 		t.Fatal("symlink route was accepted")

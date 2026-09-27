@@ -159,3 +159,39 @@ func validRouteSHA(value string) bool {
 	}
 	return true
 }
+
+// ReadPublishedRouteRevision returns the exact file revision on one node.
+// A missing route returns an empty revision. A symlink, special file, or
+// oversized file is an error rather than an absent route. This resolves an
+// indeterminate publish result; it does not prove Traefik loaded the file.
+func ReadPublishedRouteRevision(directory, routerName string) (string, error) {
+	if !filepath.IsAbs(directory) || !publishedRouteName.MatchString(routerName) {
+		return "", fmt.Errorf("invalid route readback path")
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	file, err := root.OpenFile(routerName+".yaml", os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxPublishedRouteBytes {
+		return "", fmt.Errorf("published route is not a bounded regular file")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, maxPublishedRouteBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read published route: %w", err)
+	}
+	if len(body) > maxPublishedRouteBytes {
+		return "", fmt.Errorf("published route exceeds size limit")
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
