@@ -148,7 +148,7 @@ func ObserveWithdrawnRoute(ctx context.Context, client *http.Client, nodes []Ing
 			if name == desired.RouterName+"@file" && router.Rule != "Host(`withdrawn-"+strings.TrimPrefix(desired.RouterName, "norn-route-")+".invalid`)" {
 				return fmt.Errorf("ingress node %s retained the managed public router", node.ID)
 			}
-			if strings.Contains(router.Rule, "Host(`"+desired.EndpointHost+"`)") {
+			if mayClaimPublicHost(router.Rule, desired.EndpointHost) {
 				return fmt.Errorf("ingress node %s retained a public-host router", node.ID)
 			}
 		}
@@ -176,7 +176,7 @@ func verifyRawData(body []byte, desired RenderedRoute, document routeDocument) e
 		return fmt.Errorf("effective router TLS mode differs from desired route")
 	}
 	for name, other := range observed.Routers {
-		if name != routerKey && strings.Contains(other.Rule, "Host(`"+desired.EndpointHost+"`)") && other.Status == "enabled" {
+		if name != routerKey && mayClaimPublicHost(other.Rule, desired.EndpointHost) && other.Status == "enabled" {
 			return fmt.Errorf("competing enabled public-host router %s", name)
 		}
 	}
@@ -202,4 +202,10 @@ func verifyRawData(body []byte, desired RenderedRoute, document routeDocument) e
 		return fmt.Errorf("effective backend set is incomplete")
 	}
 	return nil
+}
+
+// Traefik rules can combine matchers. An enabled HostRegexp router needs a
+// separate rule proof before this observer can rule out a hostname collision.
+func mayClaimPublicHost(rule, host string) bool {
+	return strings.Contains(rule, "Host(`"+host+"`)") || strings.Contains(rule, "Host(\""+host+"\")") || strings.Contains(rule, "HostRegexp(")
 }

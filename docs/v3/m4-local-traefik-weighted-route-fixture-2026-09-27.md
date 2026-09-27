@@ -51,7 +51,10 @@ and public endpoint probes and rollback. Only that evidence can support
 configuration to lack the managed public-host router after withdrawal. It
 accepts the generation-preserving `.invalid` tombstone and rejects a stale
 node or another enabled router claiming the public host. Local two-node HTTP
-fixtures cover those cases. This is only effective-config observation: exact
+fixtures cover those cases. Both active and withdrawn observers fail closed
+when another enabled router uses `HostRegexp`, because its overlap with the
+managed hostname has not been proved away. This is only effective-config
+observation: exact
 file-generation readback and public-host 404 probes are still separate
 requirements, and no Fleet node was observed through this function.
 

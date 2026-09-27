@@ -91,6 +91,12 @@ func TestObserveRenderedRouteRejectsWrongWeightAndCompetingRouter(t *testing.T) 
 	if _, err := ObserveRenderedRoute(context.Background(), competingNode.Client(), []IngressNode{{ID: "ingress-a", APIURL: competingNode.URL}}, desired); err == nil {
 		t.Fatal("competing public router accepted")
 	}
+	regexpRouter := observedRawData(t, desired)
+	regexpRouter["routers"].(map[string]any)["wildcard@file"] = map[string]any{"status": "enabled", "rule": "HostRegexp(`^orders[.]example[.]com$`)", "service": "other@file"}
+	regexpNode := testRawDataServer(t, regexpRouter)
+	if _, err := ObserveRenderedRoute(context.Background(), regexpNode.Client(), []IngressNode{{ID: "ingress-a", APIURL: regexpNode.URL}}, desired); err == nil {
+		t.Fatal("possible HostRegexp collision accepted")
+	}
 }
 
 func TestObserveRenderedRouteDoesNotFollowAPIOriginRedirect(t *testing.T) {
@@ -140,5 +146,16 @@ func TestObserveWithdrawnRouteRequiresEveryNodeToDropPublicHost(t *testing.T) {
 	other := testRawDataServer(t, competing)
 	if err := ObserveWithdrawnRoute(context.Background(), other.Client(), []IngressNode{{ID: "ingress-a", APIURL: other.URL}}, desired); err == nil {
 		t.Fatal("accepted competing public-host router")
+	}
+	regex := map[string]any{"routers": map[string]any{"wildcard@file": map[string]any{"status": "enabled", "rule": "HostRegexp(`^orders[.]example[.]com$`)"}}}
+	regexNode := testRawDataServer(t, regex)
+	if err := ObserveWithdrawnRoute(context.Background(), regexNode.Client(), []IngressNode{{ID: "ingress-a", APIURL: regexNode.URL}}, desired); err == nil {
+		t.Fatal("accepted possible HostRegexp collision after withdrawal")
+	}
+}
+
+func TestMayClaimPublicHostAcceptsTraefikQuotedHostRule(t *testing.T) {
+	if !mayClaimPublicHost(`Host("orders.example.com")`, "orders.example.com") {
+		t.Fatal("quoted Traefik Host rule was missed")
 	}
 }
