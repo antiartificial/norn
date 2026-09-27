@@ -111,6 +111,26 @@ func TestPlatformUpgradeLegacyBaselineRequiresBackupArtifactBeforeBuild(t *testi
 
 func TestPlatformUpgradeLegacyBaselineRejectsArtifactDigestBeforeBuild(t *testing.T) {
 	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"api", "cli"} {
+		if err := os.Mkdir(filepath.Join(root, "v2", dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "v2", "Makefile"), []byte("fixture:\n\t@true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q", root},
+		{"-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"},
+		{"-C", root, "tag", "v2.20.0-control"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("create tagged test repository: %v\n%s", err, out)
+		}
+	}
 	legacySHA := strings.Repeat("a", 40)
 	databaseURL := "postgresql://fixture@127.0.0.1:5432/norn_fixture?sslmode=disable"
 	auditKey := strings.Repeat("k", 32)
@@ -136,7 +156,7 @@ func TestPlatformUpgradeLegacyBaselineRejectsArtifactDigestBeforeBuild(t *testin
 		t.Fatal(err)
 	}
 	cmd := exec.Command(platformUpgradePath(t), "legacy-baseline", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath)
-	cmd.Env = append(os.Environ(), "NORN_DATABASE_URL="+databaseURL, "NORN_AUDIT_SIGNING_KEY="+auditKey)
+	cmd.Env = append(os.Environ(), "NORN_PLATFORM_REPO="+root, "NORN_DATABASE_URL="+databaseURL, "NORN_AUDIT_SIGNING_KEY="+auditKey)
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "backup proof is invalid") {
 		t.Fatalf("legacy baseline accepted a mismatched artifact digest: err=%v\n%s", err, out)
