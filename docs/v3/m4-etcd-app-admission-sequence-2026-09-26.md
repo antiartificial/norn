@@ -245,7 +245,13 @@ active pre-index work must first drain or reconcile it.
    revision from that verified acceptance plus the pinned InfraSpec digest;
    migration-only or snapshot-only signed databases do not become runtime
    delivery keys. It still needs a resolver that reopens and probes those
-   exact targets before Nomad preparation.
+   exact targets before Nomad preparation. The runtime item builder has moved
+   out of the PG deployment pipeline into the Nomad delivery layer, with the
+   existing pipeline calling it through a wrapper. The backend-neutral
+   resolver can use the same builder, but the etcd control plane still lacks
+   an active, revisioned database catalog reader/activation path. The normal
+   etcd deployment route must stay closed until catalog provenance, target
+   probing and delivery are connected.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact
