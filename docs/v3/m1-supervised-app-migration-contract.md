@@ -108,6 +108,12 @@ original PostgreSQL transaction is still open: the row is not yet visible,
 for that contained command to commit before completing the same effect. It
 also records one row, one completed migration step and no surviving writer.
 All three Linux tests passed on 2026-09-27.
+An additional PostgreSQL store test covers the boundary before effect
+reservation: even with source/build checkpoints and a completed snapshot, an
+expired claim whose `migrate` step is running but has no effect remains failed
+for manual recovery and cannot be claimed by a successor. That test passed
+against a disposable PostgreSQL server; it does not assert an actual command
+was launched.
 Other crash windows, MySQL and protected-runtime
 qualification remain open; this local test does not sign M1.
 

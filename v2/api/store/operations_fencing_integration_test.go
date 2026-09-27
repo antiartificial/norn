@@ -605,6 +605,48 @@ func TestExpiredDeploymentMigrationRequeuesOnlyWithPinnedPredecessors(t *testing
 	}
 }
 
+func TestExpiredDeploymentMigrationWithoutReservedEffectRequiresManualRecovery(t *testing.T) {
+	stores := operationTestStores(t, 2)
+	ctx := context.Background()
+	deployment, op := insertDeploymentOperationFixture(t, stores[0], 3)
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-before-launch", 100*time.Millisecond, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for stage, outputs := range map[string]json.RawMessage{
+		CheckpointSource: json.RawMessage(`{"treeDigest":"sha256:pinned"}`),
+		CheckpointBuild:  json.RawMessage(`{"imageTag":"registry.example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+	} {
+		if _, err := stores[0].RecordOperationCheckpoint(ctx, claim, stage, outputs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, step := range []struct{ name, status string }{{"snapshot", "complete"}, {"migrate", "running"}} {
+		if _, err := stores[0].Pool.Exec(ctx, `INSERT INTO deployment_steps(deployment_id,app,saga_id,step,kind,status,attempt) VALUES($1,$2,$3,$4,'mutable',$5,1)`, deployment.ID, deployment.App, deployment.SagaID, step.name, step.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The API dies after recording the mutable migration step but before
+	// reserving an effect. No successor may infer that launch was impossible.
+	if _, err := stores[0].Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := stores[1].GetOperation(ctx, op.ID)
+	if err != nil || recovered.Status != model.OperationFailed || recovered.Metadata["manualRecoveryRequired"] != true || recovered.Metadata["replayMigration"] == true {
+		t.Fatalf("unreserved migration recovery = %+v, %v", recovered, err)
+	}
+	assertOperationDeploymentStatus(t, stores[1], op.ID, deployment.ID, model.OperationFailed, model.StatusFailed)
+	if next, _, err := stores[1].ClaimNextOperation(ctx, "unapproved-successor", time.Minute, []string{"app.deploy"}); err != nil || next != nil {
+		t.Fatalf("unreserved migration was claimable: %+v, %v", next, err)
+	}
+	if _, err := stores[0].Pool.Exec(ctx, `DELETE FROM operation_checkpoints WHERE operation_id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExpiredRestartRequeuesForDurableEffectReconciliation(t *testing.T) {
 	stores := operationTestStores(t, 2)
 	ctx := context.Background()
