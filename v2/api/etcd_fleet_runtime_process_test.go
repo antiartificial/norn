@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
@@ -129,7 +130,7 @@ func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string, fixture etcdF
 	identities := etcdstore.NewAuthStore(client, prefix)
 	bootstrapFile := filepath.Join(t.TempDir(), "initial-token")
 	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secret, etcdBootstrapRequest{
-		Output: bootstrapFile, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite}, TTL: time.Hour,
+		Output: bootstrapFile, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite, handler.ScopePlatformOperate}, TTL: time.Hour,
 	}, publishBootstrapTokenFile); err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +215,30 @@ func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string, fixture etcdF
 	t.Cleanup(func() { _ = command.Process.Signal(os.Interrupt); _ = command.Wait() })
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	waitForSourceHealth(t, base, &output)
+	catalogAdmission := processJSONRequest(t, http.MethodPost, base+"/api/v1/database/catalog/activations", token, "catalog-production-process", map[string]interface{}{"expectedRevision": 0, "catalog": map[string]interface{}{"apiVersion": database.APIVersion, "services": []interface{}{}, "bindings": []interface{}{}, "profiles": []interface{}{}}})
+	if catalogAdmission.StatusCode != http.StatusAccepted || bytes.Contains(catalogAdmission.Body, []byte(`"catalog":`)) {
+		t.Fatalf("catalog admission=%d body=%s logs=%s", catalogAdmission.StatusCode, catalogAdmission.Body, output.String())
+	}
+	var catalogOperation model.Operation
+	if err := json.Unmarshal(catalogAdmission.Body, &catalogOperation); err != nil || catalogOperation.ID == "" {
+		t.Fatalf("catalog receipt=%s err=%v", catalogAdmission.Body, err)
+	}
+	catalogDeadline := time.Now().Add(10 * time.Second)
+	catalogFinished := false
+	for time.Now().Before(catalogDeadline) {
+		status := processJSONRequest(t, http.MethodGet, base+"/api/v1/operations/"+catalogOperation.ID, token, "", nil)
+		if status.StatusCode == http.StatusOK && bytes.Contains(status.Body, []byte(`"status":"succeeded"`)) {
+			catalogFinished = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !catalogFinished {
+		t.Fatalf("catalog worker did not finish: %s", output.String())
+	}
+	if catalogRead := processJSONRequest(t, http.MethodGet, base+"/api/v1/database/catalog", token, "", nil); catalogRead.StatusCode != http.StatusOK || !bytes.Contains(catalogRead.Body, []byte(`"revision":1`)) {
+		t.Fatalf("catalog read=%d body=%s logs=%s", catalogRead.StatusCode, catalogRead.Body, output.String())
+	}
 	request, err := http.NewRequest(http.MethodPost, base+"/api/v1/fleet/node-pools/control/plan", bytes.NewBufferString(`{"desired":4,"reason":"process proof"}`))
 	if err != nil {
 		t.Fatal(err)
