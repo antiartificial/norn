@@ -31,6 +31,18 @@ PostgreSQL. `pg_stat_archiver` showed zero archived files. Cluster-wide
 database, so no control-specific WAL retention estimate or 15-minute PITR
 proof follows from them.
 
+A read-only refresh at 2026-09-27 14:59 UTC measured **252,939,411 bytes**
+(241.22 MiB) for `norn_v2` and four connections. That is 2,908,160 bytes
+above the Sep 26 23:02 UTC sample, approximately 4.17 MiB/day if this short
+interval were linearized. `archive_mode=off`, `archive_timeout=0`, and
+`pg_stat_archiver.archived_count=0` remained unchanged. The Mini data volume
+reported about **35.6 GiB available** and 92% capacity used. That currently
+exceeds the proposed 2 GiB private-restore scratch reserve, but the reserve
+must be checked at the maintenance window alongside actual backup bytes and
+PostgreSQL data-directory space. A current user crontab and loaded-LaunchAgent
+name search showed no Norn/PostgreSQL backup match; it is a scoped inventory,
+not proof that no external backup exists.
+
 A read-only schedule inventory found no control-backup entry in the Mini user's
 crontab, no matching control-backup LaunchAgent among the loaded jobs, and no
 Nomad job named as a Norn/PostgreSQL control backup. A filename-only search of

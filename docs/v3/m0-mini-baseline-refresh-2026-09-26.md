@@ -26,8 +26,9 @@ disposition still require review.
 The later [Trove and bookmark workload check](m0-mini-trove-bookmark-workload-check-2026-09-26.md)
 confirmed a completed Like Trove daily-capture child and a successful
 bookmark-session read. It keeps the running `like-trove` workload separate
-from the absent `ft-trove` declaration. Paid X API credit balance remains
-unmeasured.
+from the absent `ft-trove` declaration. Subsequent point-in-time console
+checks in that record measured X API credit; they do not establish a future
+balance or a release backup guarantee.
 
 ## M0 exit work still required
 
