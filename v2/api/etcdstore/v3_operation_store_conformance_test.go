@@ -44,6 +44,56 @@ func TestV3OperationStoreSignedExecutionConformanceEtcd(t *testing.T) {
 	storetest.RunSignedExecutionConformance(t, authority, adapter.Accept, adapter)
 }
 
+// Until deployment admission persists the complete signed aggregate and app
+// gate atomically, a Fleet deploy request must leave no operation or intent
+// behind for a worker to claim.
+func TestV3DeploymentAdmissionFailsWithoutPartialEtcdAggregate(t *testing.T) {
+	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	prefix := "/norn-conf/v3-deploy-refusal/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-deploy-refusal-key-000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := uuid.NewString()
+	adapter, err := etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploymentID := uuid.NewString()
+	a := store.OperationAcceptance{
+		Identity:   store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "etcd-test", Subject: "operator"}, Kind: "app.deploy", Resource: "app/demo", Key: "deploy-key"},
+		Operation:  model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: "demo", SagaID: uuid.NewString(), Status: model.OperationQueued, MaxAttempts: 1, Payload: map[string]interface{}{"deploymentId": deploymentID}},
+		Deployment: &model.Deployment{ID: deploymentID, App: "demo", Status: model.StatusQueued},
+		Regions:    []model.ResolvedRegion{{Name: "local", NomadRegion: "global", Datacenters: []string{"dc1"}, TrafficWeight: 100}},
+		Audit:      store.AcceptanceAuditContext{Source: "etcd-test"},
+		Admission:  store.OperationAdmissionPolicy{OneActiveMutablePerApp: true},
+	}
+	a.Deployment.SagaID = a.Operation.SagaID
+	a.Fingerprint, err = store.CanonicalOperationRequestFingerprint(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Accept(context.Background(), a); !errors.Is(err, store.ErrAcceptanceInvalid) {
+		t.Fatalf("incomplete deployment aggregate was accepted: %v", err)
+	}
+	result, err := client.Get(context.Background(), prefix, clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Kvs) != 0 {
+		t.Fatalf("rejected deployment left %d etcd records", len(result.Kvs))
+	}
+}
+
 func TestV3OperationStoreListByKindFiltersBeforeApplyingLimitEtcd(t *testing.T) {
 	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
 	if endpoints == "" {
