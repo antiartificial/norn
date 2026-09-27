@@ -71,6 +71,21 @@ its effect exists; replay of earlier deployment steps has not been qualified.
 An unrecorded standalone migration likewise fails to manual recovery.
 Neither path may infer a repeat-safe failure from a nonzero command exit.
 
+The effect reservation itself is stable across claims when source, command,
+target and postcondition identity are unchanged: `Reserve` returns the existing
+record, and the supervisor execution ID is derived from the operation and
+input digest. This does not yet make deployment replay safe. A replacement
+claim restarts the ordered deploy steps, including the pre-migration snapshot.
+The pinned named-target dump can be verified and reused when present, but the
+current snapshot path may create a new dump if the original file is absent.
+That would mislabel a post-migration database as the pre-migration safety
+snapshot. Before requeueing an expired deploy at `migrate`, require the
+original snapshot's verified target-bound artifact, retained publication
+state when export was declared, source/build checkpoints, no later mutable
+step, and the original migration effect. Replay must hold if any of those are
+missing or changed;
+then test a real process crash before enabling this recovery branch.
+
 The generic effect runner is currently limited to `build.test`. Its descriptor
 omits environment values, but its verifier interprets a contained command's
 exit as a final result. A schema migration can partially commit before a
