@@ -184,8 +184,12 @@ type state struct {
 	// database target(s); database holds the opened targets (nil in legacy
 	// mode).
 	operationPayload map[string]interface{}
-	database         *boundDatabases
-	databaseOpened   bool
+	// replayMigration is set only by guarded expired-deployment recovery.
+	// The snapshot stage must reuse its original artifact before the durable
+	// migration effect can be observed again.
+	replayMigration bool
+	database        *boundDatabases
+	databaseOpened  bool
 	// deliveryRevision is the catalog revision whose staged database
 	// delivery this deploy's jobs read (0 when nothing is delivered).
 	deliveryRevision int64
@@ -590,12 +594,18 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		candidate = candidates[0]
 	}
 	var payload map[string]interface{}
+	var replayMigration bool
 	var operationStartedAt time.Time
 	if operationID != "" && p.DB != nil {
-		if op, err := p.DB.GetOperation(ctx, operationID); err == nil {
-			payload = op.Payload
-			operationStartedAt = op.StartedAt
+		op, err := p.DB.GetOperation(ctx, operationID)
+		if err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed,
+				Message:  fmt.Sprintf("load deploy replay state: %v", err),
+				Metadata: map[string]interface{}{"deploymentId": deploy.ID, "manualRecoveryRequired": true}}
 		}
+		payload = op.Payload
+		replayMigration = op.Metadata["replayMigration"] == true
+		operationStartedAt = op.StartedAt
 	}
 	st := &state{
 		spec:               spec,
@@ -609,6 +619,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		claim:              claim,
 		operationStartedAt: operationStartedAt,
 		operationPayload:   payload,
+		replayMigration:    replayMigration,
 	}
 	defer func() { _ = st.database.Close() }()
 

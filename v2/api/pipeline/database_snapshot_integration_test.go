@@ -192,6 +192,9 @@ func TestDatabaseTargetSnapshotPublicationSurvivesInterruption(t *testing.T) {
 	if err := verifyBoundDump(location, created.Filename, created.Size); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := reusePinnedDataSnapshotAt(location, "manual", orphanAt); err == nil {
+		t.Fatal("migration replay accepted an absent original snapshot")
+	}
 	if data, _ := os.ReadFile(path(name(orphanAt) + sidecarSuffix)); string(data) != string(orphan) {
 		t.Fatal("orphan sidecar was rewritten")
 	}
@@ -203,6 +206,9 @@ func TestDatabaseTargetSnapshotPublicationSurvivesInterruption(t *testing.T) {
 		t.Fatalf("first publication = %+v, %v", first, err)
 	}
 	before := directoryNames(t, location.dir)
+	if reused, err := reusePinnedDataSnapshotAt(location, "manual", reuseAt); err != nil || reused.Filename != first.Filename {
+		t.Fatalf("migration replay did not reuse original snapshot: %+v, %v", reused, err)
+	}
 	again, err := createDataSnapshotAt(ctx, location, "manual", reuseAt, true)
 	if err != nil || again.Filename != first.Filename || strings.Join(directoryNames(t, location.dir), ",") != strings.Join(before, ",") {
 		t.Fatalf("replay reuse = %+v, %v", again, err)
@@ -218,6 +224,9 @@ func TestDatabaseTargetSnapshotPublicationSurvivesInterruption(t *testing.T) {
 	}
 	if _, err := createDataSnapshotAt(ctx, location, "manual", reuseAt, true); err == nil || !strings.Contains(err.Error(), "differs from its target sidecar") {
 		t.Fatalf("tampered reuse = %v", err)
+	}
+	if _, err := reusePinnedDataSnapshotAt(location, "manual", reuseAt); err == nil {
+		t.Fatal("migration replay accepted a tampered original snapshot")
 	}
 
 	// A dump bound to another target under the op-derived name is left

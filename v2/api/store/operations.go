@@ -1052,7 +1052,12 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		UPDATE operations
 		SET status = 'queued',
 		    message = 'operation recovered after API restart and queued for a safe retry',
-		    metadata = metadata || '{"recoveredAfterRestart":true}'::jsonb,
+	    metadata = metadata || '{"recoveredAfterRestart":true}'::jsonb ||
+	      CASE WHEN kind = 'app.deploy' AND EXISTS (
+	        SELECT 1 FROM deployment_steps ds
+	        WHERE ds.deployment_id = operations.payload->>'deploymentId'
+	          AND ds.step = 'migrate' AND ds.status = 'running'
+	      ) THEN '{"replayMigration":true}'::jsonb ELSE '{}'::jsonb END,
 		    max_attempts = CASE
 		      WHEN kind = 'app.snapshot-export' THEN GREATEST(max_attempts, 3)
 		      WHEN kind = 'app.migrate' THEN GREATEST(max_attempts, 3)
@@ -1074,6 +1079,25 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 				  AND oe.supervisor = 'migration-runner'
 				  AND oe.resource LIKE 'database/%/migration'
 				  AND oe.lifecycle IN ('reserved','launched','completed')
+			)) OR
+			(kind = 'app.deploy' AND attempts < max_attempts AND EXISTS (
+				SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
+				  AND ds.step = 'migrate' AND ds.status = 'running'
+			) AND EXISTS (
+				SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
+				  AND ds.step = 'snapshot' AND ds.status = 'complete'
+			) AND EXISTS (
+				SELECT 1 FROM operation_checkpoints oc WHERE oc.operation_id = operations.id AND oc.stage = 'source'
+			) AND EXISTS (
+				SELECT 1 FROM operation_checkpoints oc WHERE oc.operation_id = operations.id AND oc.stage = 'build'
+				  AND encode(oc.outputs,'escape') ~ '"imageTag"[[:space:]]*:[[:space:]]*"[^"]+@sha256:[0-9A-Fa-f]{64}"'
+			) AND EXISTS (
+				SELECT 1 FROM operation_effects oe WHERE oe.operation_id = operations.id
+				  AND oe.stage = 'app.migrate' AND oe.supervisor = 'migration-runner'
+				  AND oe.resource LIKE 'database/%/migration' AND oe.lifecycle IN ('reserved','launched','completed')
+			) AND NOT EXISTS (
+				SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
+				  AND ds.kind = 'mutable' AND ds.step NOT IN ('snapshot','migrate')
 			)) OR
 			(kind = 'app.snapshot' AND EXISTS (
 				SELECT 1 FROM snapshot_publication_intents spi
@@ -1115,6 +1139,25 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		        AND oe.supervisor = 'migration-runner'
 		        AND oe.resource LIKE 'database/%/migration'
 		        AND oe.lifecycle IN ('reserved','launched','completed')
+		    ))
+		    OR (kind = 'app.deploy' AND attempts < max_attempts AND EXISTS (
+		      SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.step = 'migrate' AND ds.status = 'running'
+		    ) AND EXISTS (
+		      SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.step = 'snapshot' AND ds.status = 'complete'
+		    ) AND EXISTS (
+		      SELECT 1 FROM operation_checkpoints oc WHERE oc.operation_id = operations.id AND oc.stage = 'source'
+		    ) AND EXISTS (
+		      SELECT 1 FROM operation_checkpoints oc WHERE oc.operation_id = operations.id AND oc.stage = 'build'
+		        AND encode(oc.outputs,'escape') ~ '"imageTag"[[:space:]]*:[[:space:]]*"[^"]+@sha256:[0-9A-Fa-f]{64}"'
+		    ) AND EXISTS (
+		      SELECT 1 FROM operation_effects oe WHERE oe.operation_id = operations.id
+		        AND oe.stage = 'app.migrate' AND oe.supervisor = 'migration-runner'
+		        AND oe.resource LIKE 'database/%/migration' AND oe.lifecycle IN ('reserved','launched','completed')
+		    ) AND NOT EXISTS (
+		      SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.kind = 'mutable' AND ds.step NOT IN ('snapshot','migrate')
 		    ))
 		    OR (kind = 'app.snapshot-export' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
 		      SELECT 1 FROM snapshot_export_intents sei

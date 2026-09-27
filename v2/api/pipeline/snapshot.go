@@ -109,8 +109,15 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 		// The accepted operation owns one stable safety snapshot name.
 		label := "effect-" + st.claim.OperationID()
 		if target != nil {
-			created, err = createPinnedDataSnapshotAt(ctx, location, label, st.operationStartedAt)
+			if st.replayMigration {
+				created, err = reusePinnedDataSnapshotAt(location, label, st.operationStartedAt)
+			} else {
+				created, err = createPinnedDataSnapshotAt(ctx, location, label, st.operationStartedAt)
+			}
 		} else {
+			if st.replayMigration {
+				return fmt.Errorf("migration replay requires a named snapshot target")
+			}
 			created, err = createPinnedLegacySnapshotAt(ctx, location, label, st.operationStartedAt)
 		}
 	} else {

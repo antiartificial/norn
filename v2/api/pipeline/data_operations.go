@@ -286,6 +286,25 @@ func createPinnedDataSnapshotAt(ctx context.Context, location snapshotLocation, 
 	return createDataSnapshotAtMode(ctx, location, label, createdAt, true, true)
 }
 
+// A deployment resuming after its migration began must reuse the original
+// pre-migration dump. Creating a new dump here would capture the mutated
+// database and falsely label it as a safety snapshot.
+func reusePinnedDataSnapshotAt(location snapshotLocation, label string, createdAt time.Time) (*dataSnapshot, error) {
+	if location.bound == nil || !model.IsSafePostgresDatabaseName(location.database) {
+		return nil, fmt.Errorf("replayed snapshot requires a named target")
+	}
+	timestamp := createdAt.UTC().Format("20060102T150405")
+	filename := fmt.Sprintf("%s_%s_%s.dump", location.database, label, timestamp)
+	info, err := os.Lstat(filepath.Join(location.dir, filename))
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return nil, fmt.Errorf("original pre-migration snapshot is unavailable")
+	}
+	if err := verifyBoundDump(location, filename, info.Size()); err != nil {
+		return nil, fmt.Errorf("original pre-migration snapshot failed verification: %w", err)
+	}
+	return &dataSnapshot{Filename: filename, Timestamp: timestamp, Size: info.Size()}, nil
+}
+
 // Legacy dumps have no target sidecar. A replay must stop at its operation
 // name instead of trusting existing bytes or creating a second safety dump.
 func createPinnedLegacySnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time) (*dataSnapshot, error) {

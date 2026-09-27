@@ -538,6 +538,67 @@ func TestExpiredDeploymentMigrationRequiresManualReviewEvenWithDurableEffect(t *
 	assertOperationDeploymentStatus(t, stores[1], op.ID, deployment.ID, model.OperationFailed, model.StatusFailed)
 }
 
+func TestExpiredDeploymentMigrationRequeuesOnlyWithPinnedPredecessors(t *testing.T) {
+	stores := operationTestStores(t, 2)
+	ctx := context.Background()
+	effects, err := NewPGEffectStore(stores[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := effects.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, op := insertDeploymentOperationFixture(t, stores[0], 3)
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-migration-owner", 100*time.Millisecond, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for stage, outputs := range map[string]json.RawMessage{
+		CheckpointSource: json.RawMessage(`{"treeDigest":"sha256:pinned"}`),
+		CheckpointBuild:  json.RawMessage(`{"imageTag":"registry.example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+	} {
+		if _, err := stores[0].RecordOperationCheckpoint(ctx, claim, stage, outputs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, step := range []struct{ name, status string }{{"snapshot", "complete"}, {"migrate", "running"}} {
+		if _, err := stores[0].Pool.Exec(ctx, `INSERT INTO deployment_steps(deployment_id,app,saga_id,step,kind,status,attempt) VALUES($1,$2,$3,$4,'mutable',$5,1)`, deployment.ID, deployment.App, deployment.SagaID, step.name, step.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reservation := effectReservation(t, authority, "database/binding-1/migration", "deployment-migration-"+op.ID, claim)
+	reservation.Stage, reservation.Supervisor = "app.migrate", "migration-runner"
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := effects.Reserve(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID)
+	})
+	time.Sleep(180 * time.Millisecond)
+	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := stores[1].GetOperation(ctx, op.ID)
+	if err != nil || recovered.Status != model.OperationQueued || recovered.Metadata["replayMigration"] != true || recovered.Metadata["manualRecoveryRequired"] != nil {
+		t.Fatalf("guarded deployment migration recovery = %+v, %v", recovered, err)
+	}
+	assertOperationDeploymentStatus(t, stores[1], op.ID, deployment.ID, model.OperationQueued, model.StatusQueued)
+	_, next, err := stores[1].ClaimNextOperation(ctx, "successor-deployment-owner", time.Minute, []string{"app.deploy"})
+	if err != nil || next.Generation() == claim.Generation() {
+		t.Fatalf("replacement deployment claim = %+v, %v", next, err)
+	}
+	reservation.OperationClaim = effect.OperationClaim{OperationID: op.ID, OwnerID: next.OwnerID(), Generation: next.Generation()}
+	reused, err := effects.Reserve(ctx, reservation)
+	if err != nil || reused.Created || reused.Record.Reservation.OperationClaim.Generation != claim.Generation() {
+		t.Fatalf("replacement deployment reused wrong migration effect: %+v, %v", reused, err)
+	}
+}
+
 func TestExpiredRestartRequeuesForDurableEffectReconciliation(t *testing.T) {
 	stores := operationTestStores(t, 2)
 	ctx := context.Background()
