@@ -104,6 +104,52 @@ proof before positive active weight.
    authority before it can write a positive `ActiveWeight`. The current
    `finishClaimedDeployment` caller-supplied region value is insufficient.
 
+## Accepted route binding and completion fence
+
+The current `Deployment` and `ResolvedRegion` records identify the app,
+deployment, region, and desired regional traffic weight. They do not identify
+the public endpoint, process, previous deployment backend, or a complete
+old/new route split. `RenderedRoute` is presently a caller-supplied value.
+Passing that value through observation cannot authorize terminal traffic.
+
+The worker must create a durable route-intent record before any publish. It
+must contain a schema version; app, operation, deployment and region IDs; the
+signed acceptance's canonical digest and pinned InfraSpec digest; endpoint
+origin and process from that exact InfraSpec; the full old/new deployment ID
+and weight set; the canonical route SHA-256; Fleet plan ID, completed attempt
+ID, provider state serial, ingress inventory digest and member IDs; the
+previous route generation; and the new generation. The worker derives this
+record while holding the deployment claim and app lock. It resolves the old
+backend from the current durable route state and verified revision job, not
+from a request parameter. It must refuse a missing or changed source spec,
+unverified old backend, ambiguous endpoint, or a weight plan whose regional
+and revision semantics are not explicitly represented.
+
+The first intent write compares the signed acceptance, app gate, operation
+claim, current route revision, and Fleet plan/checkpoint revisions in one
+control transaction. A retry after an uncertain response loads the existing
+record and accepts only byte-identical identity, inputs, route digest and
+generation. It never allocates a fresh generation merely because the first
+response was lost. Every node publication carries this persisted generation
+and digest; the ingress host independently checks its local predecessor.
+
+After every node and public probe passes, a separate durable proof records the
+intent ID and revision, every observed node identity and file/Traefik
+revision, endpoint response identity, public response, and observation time.
+The terminal transaction compares the live claim/app lock, the signed
+acceptance, intent and proof revisions, and the still-current Fleet plan and
+checkpoint revisions. It also compares the current app route pointer to the
+proved generation. A replaced host, changed route, expired claim, or
+incomplete observation leaves the operation and app gate unresolved with
+`ActiveWeight` zero. The transaction derives the active weight from the
+proved route-intent backend set; callers cannot supply a positive value.
+
+Required failure tests: a forged endpoint or backend with matching Traefik
+readback; a lost intent-write response; a one-node publish interruption;
+Fleet host replacement between node and public probes; a route generation
+change after proof persistence; and a lost claim immediately before terminal
+commit. Each must refuse positive weight and preserve recovery authority.
+
 ## Recovery and qualification
 
 After a lost response, reread durable intent and each node's file/effective
