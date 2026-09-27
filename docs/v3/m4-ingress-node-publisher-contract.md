@@ -147,6 +147,10 @@ supplied by the request.
 The proposed [Fleet app route authority ADR](adrs/0008-fleet-app-route-authority.md)
 specifies the control-owned app target binding and prior-route pointer for
 the first v3 Fleet. It remains a proposal until review and implementation.
+The private etcd acceptance path now snapshots a generation-fenced Fleet app
+target and verifies it against signed request semantics under a target-revision
+CAS. Its writer remains private; route intent and prior-route authority are
+still absent.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

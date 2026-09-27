@@ -13,7 +13,7 @@ import (
 )
 
 func TestV3PrivateDeploymentCompletionRequiresIngressProofEtcd(t *testing.T) {
-	adapter, client, _ := privateInvocationEtcdStore(t)
+	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
@@ -62,7 +62,7 @@ func zeroTrafficDeploymentAdmissionRequest(t *testing.T, authority string) store
 }
 
 func TestV3PrivateDeploymentCompletionFencesAndReleasesEtcd(t *testing.T) {
-	adapter, client, _ := privateInvocationEtcdStore(t)
+	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := zeroTrafficDeploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
@@ -120,7 +120,7 @@ func TestV3PrivateDeploymentCompletionFencesAndReleasesEtcd(t *testing.T) {
 }
 
 func TestV3PrivateDeploymentCompletionRejectsLostAppLockEtcd(t *testing.T) {
-	adapter, client, _ := privateInvocationEtcdStore(t)
+	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
@@ -153,7 +153,7 @@ func TestV3PrivateDeploymentCompletionRejectsLostAppLockEtcd(t *testing.T) {
 }
 
 func TestV3PrivateDeploymentCompletionRejectsStaleClaimEtcd(t *testing.T) {
-	adapter, client, _ := privateInvocationEtcdStore(t)
+	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := zeroTrafficDeploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
@@ -191,7 +191,7 @@ func TestV3PrivateDeploymentCompletionRejectsStaleClaimEtcd(t *testing.T) {
 }
 
 func TestV3PrivateDeploymentCompletionRetainsUnresolvedEffectHoldEtcd(t *testing.T) {
-	adapter, client, _ := privateInvocationEtcdStore(t)
+	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)

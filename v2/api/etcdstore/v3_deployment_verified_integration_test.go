@@ -7,7 +7,7 @@ import (
 )
 
 func TestV3VerifyClaimedDeploymentRequiresSignedAggregateEtcd(t *testing.T) {
-	adapter, _, _ := privateInvocationEtcdStore(t)
+	adapter, _, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)

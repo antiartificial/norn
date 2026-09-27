@@ -59,6 +59,7 @@ func (r v3Record) MarshalJSON() ([]byte, error) {
 type v3Acceptance struct {
 	Identity              store.OperationRequestIdentity `json:"identity"`
 	Accepted              store.AcceptedOperation        `json:"accepted"`
+	FleetAppTarget        *FleetAppTarget                `json:"fleetAppTarget,omitempty"`
 	ReplayContractVersion string                         `json:"replayContractVersion,omitempty"`
 	ReplayExpiresAt       *time.Time                     `json:"replayExpiresAt,omitempty"`
 	ReplayExpiredAt       *time.Time                     `json:"replayExpiredAt,omitempty"`
@@ -73,14 +74,15 @@ func (a v3Acceptance) MarshalJSON() ([]byte, error) {
 			acceptedAlias
 			Operation storedOperation `json:"operation"`
 		} `json:"accepted"`
-		ReplayContractVersion string     `json:"replayContractVersion,omitempty"`
-		ReplayExpiresAt       *time.Time `json:"replayExpiresAt,omitempty"`
-		ReplayExpiredAt       *time.Time `json:"replayExpiredAt,omitempty"`
+		ReplayContractVersion string          `json:"replayContractVersion,omitempty"`
+		ReplayExpiresAt       *time.Time      `json:"replayExpiresAt,omitempty"`
+		ReplayExpiredAt       *time.Time      `json:"replayExpiredAt,omitempty"`
+		FleetAppTarget        *FleetAppTarget `json:"fleetAppTarget,omitempty"`
 	}{Identity: a.Identity, Accepted: struct {
 		acceptedAlias
 		Operation storedOperation `json:"operation"`
 	}{acceptedAlias(a.Accepted), storedOperation(a.Accepted.Operation)}, ReplayContractVersion: a.ReplayContractVersion,
-		ReplayExpiresAt: a.ReplayExpiresAt, ReplayExpiredAt: a.ReplayExpiredAt})
+		ReplayExpiresAt: a.ReplayExpiresAt, ReplayExpiredAt: a.ReplayExpiredAt, FleetAppTarget: a.FleetAppTarget})
 }
 
 // v3PrivateInvocation is deliberately separate from the public acceptance
@@ -301,6 +303,15 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 	if !errors.Is(err, ErrNotFound) {
 		return store.AcceptedOperation{}, err
 	}
+	var fleetTarget *FleetAppTarget
+	var fleetTargetCompare clientv3.Cmp
+	if allowDeployment && a.Deployment != nil {
+		selected, compare, targetErr := s.prepareFleetAppTargetAdmission(ctx, a)
+		if targetErr != nil {
+			return store.AcceptedOperation{}, targetErr
+		}
+		fleetTarget, fleetTargetCompare = &selected, compare
+	}
 	admission, err := s.prepareAppAdmission(ctx, a)
 	if err != nil {
 		return store.AcceptedOperation{}, err
@@ -312,7 +323,7 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 		return store.AcceptedOperation{}, err
 	}
 	accepted := store.AcceptedOperation{Operation: a.Operation, Deployment: a.Deployment, Regions: a.Regions, RequestIdentityID: identityID, AcceptanceIntentID: intentID, Intent: intent}
-	record := v3Acceptance{Identity: a.Identity, Accepted: accepted}
+	record := v3Acceptance{Identity: a.Identity, Accepted: accepted, FleetAppTarget: fleetTarget}
 	var replayLease clientv3.LeaseID
 	if s.policy.ReplayTTL > 0 {
 		lease, err := s.lease.Grant(ctx, leaseTTL(s.policy.ReplayTTL))
@@ -350,6 +361,9 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 	}
 	comparisons := append([]clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)}, admission.compares...)
 	comparisons = append(comparisons, deploymentCompares...)
+	if fleetTarget != nil {
+		comparisons = append(comparisons, fleetTargetCompare)
+	}
 	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(puts...).Commit()
 	if err != nil {
 		// A timed-out transaction can commit after the client loses its answer.
@@ -401,6 +415,12 @@ func (s *V3OperationStore) loadAcceptance(ctx context.Context, key string) (load
 }
 func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loadedV3Acceptance, identity store.OperationRequestIdentity, fp store.RequestFingerprint) (store.AcceptedOperation, error) {
 	record, got := loaded.record, loaded.record.Accepted
+	if got.Operation.Kind == "app.deploy" && got.Intent.DeploymentID != "" {
+		signedTarget, targetErr := fleetAppTargetFromSignedRequest(got.Intent.RequestCanonicalBytes)
+		if targetErr != nil || record.FleetAppTarget == nil || !sameFleetAppTarget(signedTarget, *record.FleetAppTarget) {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("accepted Fleet app target differs from signed request")}
+		}
+	}
 	if record.Identity != identity || got.RequestIdentityID != got.Intent.RequestIdentityID || got.AcceptanceIntentID != got.Intent.ID {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("etcd signed acceptance identity links differ")}
 	}

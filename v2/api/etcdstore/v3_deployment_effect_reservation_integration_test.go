@@ -35,7 +35,7 @@ func deploymentEffectReservation(t *testing.T, accepted store.AcceptedOperation,
 }
 
 func TestV3DeploymentSubmitAttemptRejectsLostClaimEtcd(t *testing.T) {
-	adapter, client, _ := privateInvocationEtcdStore(t)
+	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	request.Deployment.SpecDigest = "pinned-spec-digest"
@@ -76,7 +76,7 @@ func TestV3DeploymentSubmitAttemptRejectsLostClaimEtcd(t *testing.T) {
 }
 
 func TestV3DeploymentEffectReservationBindsSignedPlacementEtcd(t *testing.T) {
-	adapter, _, _ := privateInvocationEtcdStore(t)
+	adapter, _, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	request.Deployment.SpecDigest = "pinned-spec-digest"

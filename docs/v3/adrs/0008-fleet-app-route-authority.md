@@ -77,3 +77,15 @@ public probing and terminal commit. No interruption may record positive
 active weight or release the app gate before the exact bound route is proved.
 Rehearse rollback before and after new backend traffic, including public
 withdrawal and prior-route restoration.
+
+## Implementation checkpoint
+
+The private etcd deployment acceptance path now requires one explicit
+control-owned Fleet app target record and a matching target in the signed
+request semantics. The target has a generation and an etcd revision: admission
+compares the revision atomically with operation, deployment and app-gate writes.
+Replay checks the stored target snapshot against the signed request even after
+the current target changes. A disposable etcd test covers a forged cluster,
+target replacement, replay and snapshot tampering. The target writer is private
+to the store and tests; an authenticated operator configuration path is still
+required. No normal etcd deployment route or positive traffic path was enabled.

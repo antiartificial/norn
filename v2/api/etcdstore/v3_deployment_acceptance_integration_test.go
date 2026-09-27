@@ -2,6 +2,7 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -18,10 +19,11 @@ func deploymentAdmissionRequest(t *testing.T, authority string) store.OperationA
 	a := store.OperationAcceptance{
 		Identity:   store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: "app.deploy", Resource: "app/demo", Key: "deploy-once"},
 		Operation:  model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: "demo", SagaID: sagaID, Status: model.OperationQueued, Source: "release-control-api", Payload: map[string]interface{}{"deploymentId": deploymentID}},
-		Deployment: &model.Deployment{ID: deploymentID, App: "demo", SagaID: sagaID, Status: model.StatusQueued, CommitSHA: "0123456789abcdef", ImageTag: "example@sha256:abcdef", SourceKind: "release", SourceRef: "main"},
+		Deployment: &model.Deployment{ID: deploymentID, App: "demo", Environment: "staging", SagaID: sagaID, Status: model.StatusQueued, CommitSHA: "0123456789abcdef", ImageTag: "example@sha256:abcdef", SourceKind: "release", SourceRef: "main"},
 		Regions:    []model.ResolvedRegion{{Name: "west", NomadRegion: "global", Datacenters: []string{"dc2", "dc1"}, TrafficWeight: 100}},
 		Audit:      store.AcceptanceAuditContext{Source: "test"},
 		Admission:  store.OperationAdmissionPolicy{OneActiveMutablePerApp: true},
+		Semantics:  map[string]interface{}{"fleetAppTarget": FleetAppTarget{SchemaVersion: fleetAppTargetSchema, App: "demo", ControlEnvironment: "staging", Cluster: "norn-staging", FleetEnvironment: "staging/nyc3", Region: "west", NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}, Generation: 1}},
 	}
 	var err error
 	a.Fingerprint, err = store.CanonicalOperationRequestFingerprint(a)
@@ -31,15 +33,25 @@ func deploymentAdmissionRequest(t *testing.T, authority string) store.OperationA
 	return a
 }
 
-func TestV3PrivateDeploymentAggregateAtomicReplayEtcd(t *testing.T) {
+func deploymentEtcdStore(t *testing.T) (*V3OperationStore, *clientv3.Client, string) {
+	t.Helper()
 	adapter, client, prefix := privateInvocationEtcdStore(t)
+	target := FleetAppTarget{SchemaVersion: fleetAppTargetSchema, App: "demo", ControlEnvironment: "staging", Cluster: "norn-staging", FleetEnvironment: "staging/nyc3", Region: "west", NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}, Generation: 1}
+	if _, err := adapter.putFleetAppTarget(context.Background(), target, 0); err != nil {
+		t.Fatal(err)
+	}
+	return adapter, client, prefix
+}
+
+func TestV3PrivateDeploymentAggregateAtomicReplayEtcd(t *testing.T) {
+	adapter, client, prefix := deploymentEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	if _, err := adapter.Accept(ctx, request); !errors.Is(err, store.ErrAcceptanceInvalid) {
 		t.Fatalf("public deployment admission was enabled: %v", err)
 	}
 	before, err := client.Get(ctx, prefix+"/v3/", clientv3.WithPrefix())
-	if err != nil || len(before.Kvs) != 0 {
+	if err != nil || len(before.Kvs) != 1 || string(before.Kvs[0].Key) != adapter.fleetAppTargetKey("demo", "staging") {
 		t.Fatalf("public refusal wrote %d records: %v", len(before.Kvs), err)
 	}
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
@@ -77,5 +89,60 @@ func TestV3PrivateDeploymentAggregateAtomicReplayEtcd(t *testing.T) {
 	}
 	if _, err := adapter.ResolveIdentity(ctx, request.Identity); !errors.Is(err, store.ErrAcceptanceSignature) {
 		t.Fatalf("changed deployment did not fail verification: %v", err)
+	}
+}
+
+func TestV3PrivateDeploymentRejectsUnboundFleetTargetEtcd(t *testing.T) {
+	adapter, client, _ := deploymentEtcdStore(t)
+	ctx := context.Background()
+	request := deploymentAdmissionRequest(t, adapter.authority)
+	wrong := request
+	wrong.Semantics = map[string]interface{}{"fleetAppTarget": FleetAppTarget{SchemaVersion: fleetAppTargetSchema, App: "demo", ControlEnvironment: "staging", Cluster: "other-cluster", FleetEnvironment: "staging/nyc3", Region: "west", NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}, Generation: 1}}
+	var err error
+	wrong.Fingerprint, err = store.CanonicalOperationRequestFingerprint(wrong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.acceptDeploymentAggregate(ctx, wrong); err == nil {
+		t.Fatal("caller-selected Fleet cluster was admitted")
+	}
+	if op, err := client.Get(ctx, adapter.opKey(request.Operation.ID)); err != nil || len(op.Kvs) != 0 {
+		t.Fatalf("unbound target wrote operation: count=%d err=%v", len(op.Kvs), err)
+	}
+	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, revision, err := adapter.loadFleetAppTarget(ctx, "demo", "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.Generation++
+	target.Cluster = "replacement"
+	if _, err := adapter.putFleetAppTarget(ctx, target, revision); err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := adapter.ResolveIdentity(ctx, request.Identity); err != nil || !replayed.Replayed || replayed.Intent.ID != accepted.Intent.ID {
+		t.Fatalf("target replacement changed signed replay: %+v err=%v", replayed, err)
+	}
+	acceptanceKey := adapter.acceptanceKey(request.Identity)
+	stored, err := client.Get(ctx, acceptanceKey)
+	if err != nil || len(stored.Kvs) != 1 {
+		t.Fatal("accepted record is missing", err)
+	}
+	var record v3Acceptance
+	if err := json.Unmarshal(stored.Kvs[0].Value, &record); err != nil {
+		t.Fatal(err)
+	}
+	record.FleetAppTarget.Cluster = "forged"
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(ctx, acceptanceKey, string(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ResolveIdentity(ctx, request.Identity); !errors.Is(err, store.ErrAcceptanceSignature) {
+		t.Fatalf("tampered target snapshot did not fail replay: %v", err)
 	}
 }

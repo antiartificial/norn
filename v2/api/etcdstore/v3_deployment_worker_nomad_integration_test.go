@@ -33,7 +33,7 @@ func TestV3DeploymentWorkerEffectThroughEtcdAndDisposableNomad(t *testing.T) {
 	if err != nil || net.ParseIP(parsed.Hostname()) == nil || !net.ParseIP(parsed.Hostname()).IsLoopback() || !model.IsContentAddressedImage(image) {
 		t.Fatal("deployment integration requires loopback Nomad and a content-addressed image")
 	}
-	adapter, etcd, _ := privateInvocationEtcdStore(t)
+	adapter, etcd, _ := deploymentEtcdStore(t)
 	nomadClient, err := nomad.NewClient(address)
 	if err != nil {
 		t.Fatal(err)
