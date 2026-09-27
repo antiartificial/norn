@@ -211,7 +211,11 @@ same request after Fleet inventory replacement. No runtime mTLS listener or
 host-to-control call invokes this handler yet; recovery must reacquire the
 claim, lock and pinned source before it can serve again. A private-IP-only
 mTLS listener primitive now stops on worker-context or app-lock cancellation;
-the normal etcd deployment worker does not start it yet.
+the normal etcd deployment worker does not start it yet. A disposable-etcd
+integration test now carries the signed generation-one intent through this
+claimed listener, node mTLS client, and local file publisher, then rejects
+a new authority request after the Fleet inventory epoch changes. This is a
+local path test, not a protected host or public traffic proof.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

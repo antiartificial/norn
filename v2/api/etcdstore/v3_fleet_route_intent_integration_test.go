@@ -2,12 +2,19 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,6 +29,30 @@ import (
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
+
+func routeAuthorityTestIdentity(t *testing.T, parent *x509.Certificate, signer *ecdsa.PrivateKey, template *x509.Certificate) ([]byte, []byte, *x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent == nil {
+		parent, signer = template, key
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, parent, &key.PublicKey, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: private}), cert, key
+}
 
 func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
 	t.Helper()
@@ -209,6 +240,50 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if authorityResponse.Code != http.StatusOK {
 		t.Fatalf("claimed route authority status=%d body=%q", authorityResponse.Code, authorityResponse.Body.String())
 	}
+	const controlURI = "spiffe://norn.test/control/route-authority"
+	now := time.Now()
+	rootTemplate := x509.Certificate{SerialNumber: big.NewInt(41), Subject: pkix.Name{CommonName: "route path test CA"}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caPEM, _, ca, caKey := routeAuthorityTestIdentity(t, nil, nil, &rootTemplate)
+	controlURL, _ := url.Parse(controlURI)
+	serverTemplate := x509.Certificate{SerialNumber: big.NewInt(42), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, URIs: []*url.URL{controlURL}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	serverPEM, serverKey, _, _ := routeAuthorityTestIdentity(t, ca, caKey, &serverTemplate)
+	nodeURL, _ := url.Parse(nodeURI)
+	clientTemplate := x509.Certificate{SerialNumber: big.NewInt(43), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), URIs: []*url.URL{nodeURL}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	clientPEM, clientKey, _, _ := routeAuthorityTestIdentity(t, ca, caKey, &clientTemplate)
+	privateListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCtx, stopAuthority := context.WithCancel(ctx)
+	served := make(chan error, 1)
+	go func() {
+		served <- adapter.ServeClaimedInitialFleetRouteAuthority(workerCtx, claim, lock, spec, 18082, map[string]string{nodeURI: "ingress-01"}, privateListener, serverPEM, serverKey, caPEM)
+	}()
+	t.Cleanup(func() {
+		stopAuthority()
+		_ = privateListener.Close()
+		select {
+		case <-served:
+		case <-time.After(5 * time.Second):
+			t.Error("claimed route authority did not stop")
+		}
+	})
+	remoteResolve, err := ingress.NewRemoteRoutePublicationAuthority("https://"+privateListener.Addr().String(), controlURI, caPEM, clientPEM, clientKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteDecision, err := remoteResolve(ctx, first.ID, "ingress-01")
+	if err != nil || remoteDecision.Route.SHA256 != first.RenderedRoute.SHA256 || remoteDecision.Generation != 1 {
+		t.Fatalf("etcd-to-node mTLS decision=%+v err=%v", remoteDecision, err)
+	}
+	remoteRoutes := t.TempDir()
+	if err := ingress.PublishRenderedRoute(remoteRoutes, remoteDecision.Route, remoteDecision.Expected, remoteDecision.Generation); err != nil {
+		t.Fatalf("mTLS-authorized node publication: %v", err)
+	}
+	remoteRevision, err := ingress.ReadPublishedRouteRevision(remoteRoutes, remoteDecision.Route.RouterName)
+	if err != nil || !remoteRevision.Present || remoteRevision.RouteSHA256 != first.RenderedRoute.SHA256 {
+		t.Fatalf("mTLS-authorized file revision=%+v err=%v", remoteRevision, err)
+	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "unknown-node"); err == nil {
 		t.Fatal("unlisted ingress node received route publication")
 	}
@@ -223,6 +298,9 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "ingress-01"); err == nil {
 		t.Fatal("replaced Fleet inventory still authorized node publication")
+	}
+	if _, err := remoteResolve(ctx, first.ID, "ingress-01"); err == nil {
+		t.Fatal("replaced Fleet inventory still authorized over mTLS")
 	}
 	authorityResponse = httptest.NewRecorder()
 	authority.ServeHTTP(authorityResponse, authorityRequest())
