@@ -1,6 +1,7 @@
 package etcdstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -64,6 +65,17 @@ func (s *V3OperationStore) fleetActiveRouteKey(app, environment, region string) 
 // InfraSpec and signed deployment, and selects the current active Fleet plan
 // server-side. It never publishes a route or records active traffic.
 func (s *V3OperationStore) IntendInitialFleetRoute(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int) (*InitialFleetRouteIntent, error) {
+	return s.initialFleetRouteIntent(ctx, claim, lock, spec, observerPort, false)
+}
+
+// CurrentInitialFleetRouteIntent is read-only. A publisher must call it before
+// each external mutation and after readback; a replaced Fleet member or
+// changed control authority invalidates the previously reserved intent.
+func (s *V3OperationStore) CurrentInitialFleetRouteIntent(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int) (*InitialFleetRouteIntent, error) {
+	return s.initialFleetRouteIntent(ctx, claim, lock, spec, observerPort, true)
+}
+
+func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int, requireExisting bool) (*InitialFleetRouteIntent, error) {
 	if lock == nil || lock.Fence() == "" || lock.Context().Err() != nil || spec == nil || observerPort < 1024 || observerPort > 65535 {
 		return nil, store.ErrOperationOwnershipLost
 	}
@@ -112,7 +124,34 @@ func (s *V3OperationStore) IntendInitialFleetRoute(ctx context.Context, claim st
 		return nil, err
 	}
 	if len(reservation.Kvs) != 0 {
-		return s.replayInitialFleetRouteIntent(ctx, reservation.Kvs[0].Value, intentKey, accepted, endpoint, rendered)
+		intent, intentRevision, err := s.replayInitialFleetRouteIntent(ctx, reservation.Kvs[0].Value, intentKey, accepted, endpoint, rendered)
+		if err != nil || !requireExisting {
+			return intent, err
+		}
+		currentTarget, _, err := s.loadFleetAppTarget(ctx, target.App, target.ControlEnvironment)
+		if err != nil || !sameFleetAppTarget(target, currentTarget) {
+			return nil, fmt.Errorf("Fleet app target changed after route intent")
+		}
+		currentInventory, err := s.CurrentActiveFleetIngressInventory(ctx, target.Cluster, target.FleetEnvironment, observerPort)
+		if err != nil || !sameFleetIngressInventory(&intent.Inventory, currentInventory) {
+			return nil, fmt.Errorf("active Fleet ingress inventory changed after route intent")
+		}
+		reservationAfter, err := s.kv.Get(ctx, reservationKey)
+		if err != nil || len(reservationAfter.Kvs) != 1 || reservationAfter.Kvs[0].ModRevision != reservation.Kvs[0].ModRevision {
+			return nil, fmt.Errorf("Fleet route reservation changed during revalidation")
+		}
+		intentAfter, err := s.kv.Get(ctx, intentKey)
+		if err != nil || len(intentAfter.Kvs) != 1 || intentAfter.Kvs[0].ModRevision != intentRevision {
+			return nil, fmt.Errorf("Fleet route intent changed during revalidation")
+		}
+		activeRoute, err := s.kv.Get(ctx, activeRouteKey)
+		if err != nil || len(activeRoute.Kvs) != 0 {
+			return nil, fmt.Errorf("initial Fleet route was superseded by an active route")
+		}
+		return intent, nil
+	}
+	if requireExisting {
+		return nil, fmt.Errorf("initial Fleet route intent has not been reserved")
 	}
 	activeRoute, err := s.kv.Get(ctx, activeRouteKey)
 	if err != nil || len(activeRoute.Kvs) != 0 {
@@ -178,20 +217,22 @@ func (s *V3OperationStore) IntendInitialFleetRoute(ctx context.Context, claim st
 	return &intent, nil
 }
 
-func (s *V3OperationStore) replayInitialFleetRouteIntent(ctx context.Context, reservationRaw []byte, intentKey string, accepted store.AcceptedOperation, endpoint model.FleetRouteEndpoint, rendered ingress.RenderedRoute) (*InitialFleetRouteIntent, error) {
+func (s *V3OperationStore) replayInitialFleetRouteIntent(ctx context.Context, reservationRaw []byte, intentKey string, accepted store.AcceptedOperation, endpoint model.FleetRouteEndpoint, rendered ingress.RenderedRoute) (*InitialFleetRouteIntent, int64, error) {
 	var reservation initialFleetRouteReservation
 	if err := decodeV3Record(reservationRaw, &reservation); err != nil || reservation.IntentID == "" || reservation.Generation != 1 {
-		return nil, fmt.Errorf("Fleet route reservation is invalid")
+		return nil, 0, fmt.Errorf("Fleet route reservation is invalid")
 	}
 	response, err := s.kv.Get(ctx, intentKey)
 	if err != nil || len(response.Kvs) != 1 {
-		return nil, fmt.Errorf("Fleet route reservation has no matching intent")
+		return nil, 0, fmt.Errorf("Fleet route reservation has no matching intent")
 	}
 	var intent InitialFleetRouteIntent
 	if err := decodeV3Record(response.Kvs[0].Value, &intent); err != nil || intent.SchemaVersion != initialFleetRouteIntentSchema || intent.ID != reservation.IntentID || intent.Generation != reservation.Generation ||
 		intent.OperationID != accepted.Operation.ID || intent.DeploymentID != accepted.Deployment.ID || intent.AcceptanceID != accepted.Intent.ID || intent.AcceptanceDigest != accepted.Intent.CanonicalDigest || intent.SpecDigest != accepted.Deployment.SpecDigest ||
-		intent.Endpoint != endpoint || intent.RenderedRoute.SHA256 != rendered.SHA256 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
-		return nil, fmt.Errorf("Fleet route reservation conflicts with signed deployment")
+		intent.Endpoint != endpoint || intent.App != accepted.Operation.App || intent.ControlEnvironment != accepted.Deployment.Environment || intent.Region != accepted.Regions[0].Name || intent.NomadRegion != accepted.Regions[0].NomadRegion ||
+		intent.RenderedRoute.SHA256 != rendered.SHA256 || !bytes.Equal(intent.RenderedRoute.YAML, rendered.YAML) || intent.RenderedRoute.RouterName != rendered.RouterName || intent.RenderedRoute.ServiceName != rendered.ServiceName || intent.RenderedRoute.EndpointHost != rendered.EndpointHost || !slices.Equal(intent.RenderedRoute.BackendNames, rendered.BackendNames) ||
+		intent.Inventory.Cluster != accepted.FleetAppTarget.Cluster || intent.Inventory.Environment != accepted.FleetAppTarget.FleetEnvironment || intent.Inventory.ActivePointerRevision <= 0 || intent.Inventory.ActiveClusterEpochRevision <= 0 || len(intent.Inventory.Nodes) < 2 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
+		return nil, 0, fmt.Errorf("Fleet route reservation conflicts with signed deployment")
 	}
-	return &intent, nil
+	return &intent, response.Kvs[0].ModRevision, nil
 }

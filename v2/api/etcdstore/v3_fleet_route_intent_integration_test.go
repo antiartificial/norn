@@ -144,6 +144,9 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if _, err := client.Delete(ctx, activeKey); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
+		t.Fatal("publisher read an unreserved route intent")
+	}
 	first, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082)
 	if err != nil || first == nil || first.Generation != 1 || first.DeploymentID != accepted.Deployment.ID || first.Inventory.ActivePointerRevision <= 0 || first.RenderedRoute.SHA256 == "" {
 		t.Fatalf("route intent=%+v err=%v", first, err)
@@ -152,10 +155,43 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if err != nil || replayed.ID != first.ID || replayed.Generation != first.Generation {
 		t.Fatalf("route intent replay=%+v err=%v", replayed, err)
 	}
+	if current, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err != nil || current.ID != first.ID {
+		t.Fatalf("publishable route intent=%+v err=%v", current, err)
+	}
+	if _, err := client.Put(ctx, adapter.activeFleetIngressClusterEpochKey("norn-staging"), "replaced-plan"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
+		t.Fatal("stale Fleet inventory remained publishable after host replacement")
+	}
+	if retry, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082); err != nil || retry.ID != first.ID {
+		t.Fatalf("replacement allocated a new route generation: %+v err=%v", retry, err)
+	}
 	changedSpec := *spec
 	changedSpec.Endpoints = []model.Endpoint{{URL: "https://forged.example.test", Region: "west", Process: "web"}}
 	if _, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, &changedSpec, 18082); err == nil {
 		t.Fatal("changed source endpoint reused durable route intent")
+	}
+	intentKey := adapter.initialFleetRouteKey("demo", "staging", "west", accepted.Deployment.ID)
+	encodedIntent, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := *first
+	forged.RenderedRoute = first.RenderedRoute
+	forged.RenderedRoute.YAML = []byte("forged route")
+	forgedBytes, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(ctx, intentKey, string(forgedBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082); err == nil {
+		t.Fatal("tampered route content was accepted by retry")
+	}
+	if _, err := client.Put(ctx, intentKey, string(encodedIntent)); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := client.Put(ctx, adapter.fleetRouteReservationKey("demo", "staging", "west"), `{}`); err != nil {
 		t.Fatal(err)

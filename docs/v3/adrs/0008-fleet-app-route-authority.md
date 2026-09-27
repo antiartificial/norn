@@ -104,3 +104,10 @@ reuses the recorded intent instead of allocating another generation. This is
 unpublished intent only: the privileged host writer, readback/probe proof,
 prior-route transition, terminal active-weight comparison and normal worker
 entry remain absent.
+The separate read-only `CurrentInitialFleetRouteIntent` check refuses an
+unreserved intent, changed target, changed active Fleet inventory, or replaced
+route record before a publisher can consume it. Recovery can still read the
+original reservation after host replacement, but it cannot publish that stale
+generation as current. The eventual publisher must revalidate around every
+external write and readback; this control-store check is not a cross-system
+transaction with Traefik.
