@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"norn/v2/api/config"
 	"norn/v2/api/effect"
@@ -116,4 +117,27 @@ func configureSnapshotEffects(cfg *config.Config, db *store.DB, newBackend effec
 		return nil, fmt.Errorf("reconcile supervised snapshot artifacts: %w", err)
 	}
 	return effects, nil
+}
+
+func configureMigrationEffects(cfg *config.Config, db *store.DB, newBackend effectBackendFactory) (*pipeline.MigrationEffects, error) {
+	if cfg.MigrationExecution == "" {
+		return nil, nil
+	}
+	if cfg.MigrationExecution != "supervised" {
+		return nil, fmt.Errorf("NORN_MIGRATION_EXECUTION must be supervised when set")
+	}
+	if !filepath.IsAbs(cfg.EffectSupervisorDir) || len(cfg.EffectSigningKey) < 32 ||
+		cfg.EffectCgroupRoot == "" || cfg.MigrationTimeout <= 0 ||
+		cfg.MigrationTimeout > supervisor.MaxMigrationTimeout || cfg.MigrationTimeout < time.Millisecond {
+		return nil, fmt.Errorf("supervised app.migrate configuration is incomplete")
+	}
+	backend, err := newBackend(cfg.EffectCgroupRoot, cfg.EffectRunnerBinary, cfg.EffectRunnerSHA256, []byte(cfg.EffectSigningKey))
+	if err != nil {
+		return nil, err
+	}
+	manager, err := supervisor.NewManager(filepath.Join(cfg.EffectSupervisorDir, "migrations"), []byte(cfg.EffectSigningKey), backend)
+	if err != nil {
+		return nil, err
+	}
+	return pipeline.NewMigrationEffects(db, manager, cfg.MigrationTimeout)
 }

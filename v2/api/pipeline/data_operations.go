@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/saga"
@@ -217,13 +218,15 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 		if strings.TrimSpace(spec.Migrations) == "" {
 			return nil, fmt.Errorf("app has no migrations command")
 		}
-		st := &state{spec: spec, commitSHA: op.Ref, sourceRef: op.Ref, database: set, databaseOpened: true}
+		st := &state{spec: spec, commitSHA: op.Ref, sourceRef: op.Ref, database: set, databaseOpened: true,
+			claim: claim, operationPayload: op.Payload}
+		preserveSource := false
 		defer func() {
-			if st.workDir != "" {
+			if st.workDir != "" && !preserveSource {
 				_ = os.RemoveAll(st.workDir)
 			}
 		}()
-		if err := p.clone(ctx, st, sg); err != nil {
+		if err := p.checkpointedClone(ctx, st, sg); err != nil {
 			return nil, fmt.Errorf("prepare migration source: %w", err)
 		}
 		safety, err := createDataSnapshot(ctx, location, "pre-migrate")
@@ -231,6 +234,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 			return nil, fmt.Errorf("pre-migration snapshot: %w", err)
 		}
 		if err := p.migrate(ctx, st, sg); err != nil {
+			preserveSource = effect.IsDeferred(err)
 			return nil, err
 		}
 		if err := ctx.Err(); err != nil {

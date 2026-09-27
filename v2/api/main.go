@@ -381,6 +381,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("snapshot execution: %v", err)
 	}
+	migrationEffects, err := configureMigrationEffects(cfg, db, supervisor.NewCgroupBackend)
+	if err != nil {
+		log.Fatalf("migration execution: %v", err)
+	}
 	if buildTestEffects == nil {
 		log.Println("build.test runs in legacy unfenced mode (NORN_BUILD_TEST_EXECUTION=legacy-unfenced)")
 	} else {
@@ -428,6 +432,7 @@ func main() {
 		Redpanda:                        redpandaClient,
 		BuildTestEffects:                buildTestEffects,
 		SnapshotEffects:                 snapshotEffects,
+		MigrationEffects:                migrationEffects,
 		DatabaseTargets:                 databaseTargets,
 		WPColdStartGate:                 cfg.WPColdStartGate,
 	}

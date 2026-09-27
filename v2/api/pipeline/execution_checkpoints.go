@@ -49,7 +49,7 @@ func (e *SourceIdentityChangedError) Error() string {
 }
 
 func (p *Pipeline) executionCheckpointsEnabled(st *state) bool {
-	return p.checkpointStore() != nil && st.claim.OperationID() != "" && st.claim.Generation() > 0 && (p.CheckpointStore != nil || p.BuildTestEffects != nil)
+	return p.checkpointStore() != nil && st.claim.OperationID() != "" && st.claim.Generation() > 0 && (p.CheckpointStore != nil || p.BuildTestEffects != nil || p.MigrationEffects != nil)
 }
 
 func (p *Pipeline) checkpointStore() store.OperationCheckpointStore {

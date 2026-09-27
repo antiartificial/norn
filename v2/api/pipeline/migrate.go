@@ -43,6 +43,9 @@ func (p *Pipeline) migrate(ctx context.Context, st *state, sg *saga.Saga) error 
 		if err := bound.requireCapabilities(dbMigration); err != nil {
 			return err
 		}
+		if st.spec.MigrationPostcondition != nil {
+			return p.runSupervisedMigration(ctx, st, bound)
+		}
 		// The migration sees only the recorded target, as a connection URL
 		// value and/or a private URL file under the app's declared names
 		// (plus the private libpq service), never the API environment or
@@ -53,6 +56,9 @@ func (p *Pipeline) migrate(ctx context.Context, st *state, sg *saga.Saga) error 
 			return fmt.Errorf("migration failed: %s", bound.session.RedactCaptured(out))
 		}
 		return nil
+	}
+	if st.spec.MigrationPostcondition != nil {
+		return fmt.Errorf("supervised migration requires an accepted database binding")
 	}
 	// Legacy (no database profile): the command no longer inherits the API
 	// process's environment, which is control-plane environment (control
