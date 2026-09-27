@@ -71,6 +71,28 @@ proof before positive active weight.
 
 ## Authority and host boundary
 
+The current normal etcd API exposes managed bearer-token routes on its
+existing listener; it has no ingress-host mTLS authority route. Do not point
+the node publisher at that listener or provision a general Norn API token on
+an ingress host. The deployable path needs a separate private mTLS control
+listener (or an equivalently isolated control service) with a pinned ingress
+node client identity and one read-only authority operation. For the supplied
+intent ID and node ID, that operation must reload the durable reservation,
+signed deployment acceptance, pinned route identity, live operation owner
+lease and app lock, control-owned Fleet target, active ingress pointer and
+cluster epoch, and the exact member set. It returns the canonical route,
+predecessor revision and generation only when the named node is a member of
+that current inventory. The host then rechecks its local predecessor and
+writes the file. No response may be cached across publication attempts.
+
+The control worker must retain the app gate and repeat the durable-authority
+check after host readback and before terminal positive weight. The authority
+response alone cannot make a cross-system file write atomic with etcd; a
+claim loss or host replacement between the response and write is handled by
+fail-closed terminal proof and reconciliation of every node. Qualification
+must exercise that race and show that traffic is never marked active from a
+stale response.
+
 - Fleet must install one narrowly scoped publisher on every ingress host. It
   writes only `norn-route-<32 lowercase hex>.yaml` below
   `/etc/traefik/dynamic`; the existing TLS and readback files are outside its
