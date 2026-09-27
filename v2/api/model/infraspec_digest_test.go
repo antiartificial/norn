@@ -25,3 +25,19 @@ func TestInfraSpecDigestIncludesPrivateEnvAndIsStableAcrossMapOrder(t *testing.T
 		t.Fatalf("static env change was not detected: %q %q %v", first, fourth, err)
 	}
 }
+
+func TestInfraSpecDigestBindsEndpointProcess(t *testing.T) {
+	spec := &InfraSpec{App: "example", Processes: map[string]Process{"web": {Port: 8080}, "admin": {Port: 9090}}, Endpoints: []Endpoint{{URL: "https://example.test", Process: "web"}}}
+	webDigest, err := InfraSpecDigest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Endpoints[0].Process = "admin"
+	adminDigest, err := InfraSpecDigest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if webDigest == adminDigest {
+		t.Fatal("endpoint process change did not change source digest")
+	}
+}

@@ -179,6 +179,29 @@ func TestValidateSpecAcceptsLocalEndpointInLocalMode(t *testing.T) {
 	}
 }
 
+func TestValidateSpecEndpointProcessBinding(t *testing.T) {
+	base := &InfraSpec{
+		App: "route-app",
+		Processes: map[string]Process{
+			"web":    {Port: 8080},
+			"worker": {},
+		},
+		Endpoints: []Endpoint{{URL: "https://app.example.test", Process: "web"}},
+	}
+	if result := ValidateSpec(base); !result.Valid {
+		t.Fatalf("valid route binding rejected: %+v", result.Findings)
+	}
+	for _, process := range []string{"missing", "worker"} {
+		spec := *base
+		spec.Endpoints = []Endpoint{{URL: "https://app.example.test", Process: process}}
+		result := ValidateSpec(&spec)
+		if result.Valid {
+			t.Fatalf("invalid endpoint process %q accepted", process)
+		}
+		assertErrorFinding(t, result, "endpoints[0].process")
+	}
+}
+
 func TestValidateSpecRejectsInvalidScheduleTimezone(t *testing.T) {
 	spec := &InfraSpec{
 		App: "bad-cron-timezone",

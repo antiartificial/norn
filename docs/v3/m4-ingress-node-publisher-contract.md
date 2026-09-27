@@ -112,6 +112,12 @@ its terminal transaction. Zero-traffic completion still exercises the claim,
 app-lock and admission transaction in disposable etcd tests. This is a safety
 fence, not the missing proof implementation or normal app execution.
 
+The InfraSpec endpoint now has an optional `process` binding, validated against
+a declared service process with a port and included in the pinned spec digest.
+The Fleet pilot spec binds its endpoint to `web`. Existing Mini specs may omit
+the field, but Fleet route qualification must reject an absent binding rather
+than guess a process. No acceptance or route-intent path consumes it yet.
+
 The current `Deployment` and `ResolvedRegion` records identify the app,
 deployment, region, and desired regional traffic weight. They do not identify
 the public endpoint, process, previous deployment backend, or a complete

@@ -182,6 +182,14 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	// Endpoint URLs valid
 	for i, ep := range spec.Endpoints {
+		if ep.Process != "" {
+			proc, ok := spec.Processes[ep.Process]
+			if !ok {
+				r.add("error", fmt.Sprintf("endpoints[%d].process", i), fmt.Sprintf("process %q is not declared", ep.Process))
+			} else if proc.Port <= 0 || proc.Schedule != "" || proc.Function != nil {
+				r.add("error", fmt.Sprintf("endpoints[%d].process", i), "endpoint process must be a service with a port")
+			}
+		}
 		if ep.URL == "" {
 			r.add("error", fmt.Sprintf("endpoints[%d].url", i), "endpoint URL is required")
 			continue

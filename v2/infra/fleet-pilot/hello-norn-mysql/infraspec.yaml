@@ -72,5 +72,6 @@ endpoints:
   # Access-protected staging origin before deployment can be enabled.
   - url: https://hello-norn-mysql.invalid
     region: nyc3
+    process: web
 # Run migrate separately with the migration identity; the web identity should
 # have SELECT/INSERT/UPDATE only.
