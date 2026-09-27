@@ -48,18 +48,26 @@ func configureProcessCrashMigrationEffects(t *testing.T, p *Pipeline) {
 // These are opt-in because the command runner requires a disposable privileged
 // cgroup-v2 container.
 func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
-	runDeployMigrationProcessExit(t, false, false)
+	runDeployMigrationProcessExit(t, false, false, false, false)
 }
 
 func TestDeployMigrationWaitsForOriginalTransactionAfterAPIExit(t *testing.T) {
-	runDeployMigrationProcessExit(t, true, false)
+	runDeployMigrationProcessExit(t, true, false, false, false)
 }
 
 func TestDeployMigrationRecoversAfterSuccessorAPIExit(t *testing.T) {
-	runDeployMigrationProcessExit(t, false, true)
+	runDeployMigrationProcessExit(t, false, true, false, false)
 }
 
-func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit bool) {
+func TestDeployMigrationReplayVerifiesOriginalRemoteSnapshot(t *testing.T) {
+	runDeployMigrationProcessExit(t, false, false, true, false)
+}
+
+func TestDeployMigrationReplayRejectsChangedRemoteSnapshot(t *testing.T) {
+	runDeployMigrationProcessExit(t, false, false, true, true)
+}
+
+func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit, remoteExport, tamperRemote bool) {
 	t.Helper()
 	if os.Getenv("NORN_REAL_CGROUP_TEST") != "1" || os.Getenv("NORN_PIPELINE_EXTERNAL_PG_ROOT") == "" {
 		t.Skip("run with the disposable Linux pipeline cgroup harness")
@@ -116,6 +124,9 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit bool
 	}
 	image := "registry.example/demo@sha256:" + strings.Repeat("a", 64)
 	specText += fmt.Sprintf("build:\n  image: %s\nmigrationDatabase: primary\nmigrations: %q\nmigrationPostcondition:\n  query: 'SELECT count(*) FROM migration_probe'\n  expectedValue: '1'\n", image, command)
+	if remoteExport {
+		specText += "snapshots:\n  exportBucket: review\n"
+	}
 	if err := os.WriteFile(specPath, []byte(specText), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +168,9 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit bool
 	})
 	journal := t.TempDir()
 	snapshotJournal, snapshotObjects := t.TempDir(), t.TempDir()
+	if remoteExport {
+		f.p.SnapshotObjects = processCrashSnapshotObjects{root: snapshotObjects}
+	}
 	t.Setenv("NORN_DEPLOY_MIGRATION_CGROUP", cgroupRoot)
 	t.Setenv("NORN_DEPLOY_MIGRATION_JOURNAL", journal)
 	childEnv := append(os.Environ(),
@@ -177,6 +191,23 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit bool
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("migration did not reach API-exit point: %v", err)
+	}
+	var originalRemote map[string][sha256.Size]byte
+	if remoteExport {
+		originalRemote = snapshotObjectDigests(t, snapshotObjects)
+		if len(originalRemote) != 4 {
+			t.Fatalf("original remote dump and manifest count for two databases = %d", len(originalRemote))
+		}
+		if tamperRemote {
+			for name := range originalRemote {
+				if strings.HasSuffix(name, ".dump") {
+					if err := os.WriteFile(filepath.Join(snapshotObjects, name), []byte("changed remote dump"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					break
+				}
+			}
+		}
 	}
 	var originalRuntime, originalLifecycle string
 	if err := f.db.Pool.QueryRow(ctx, `SELECT runtime_instance_id,lifecycle FROM operation_effects WHERE operation_id=$1 AND stage=$2`, accepted.Operation.ID, supervisor.MigrationStage).Scan(&originalRuntime, &originalLifecycle); err != nil || originalRuntime == "" || originalLifecycle != "launched" {
@@ -249,6 +280,16 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit bool
 	if err != nil || second == nil || second.ID != accepted.Operation.ID || claim.Generation() < wantGeneration {
 		t.Fatalf("successor claim = %+v, %v", second, err)
 	}
+	if tamperRemote {
+		if result, err := f.p.ExecuteOperation(ctx, second, claim); err != nil || result == nil || result.Status != model.OperationFailed || !strings.Contains(result.Message, "remote snapshot differs") {
+			t.Fatalf("changed remote snapshot replay = %+v, %v", result, err)
+		}
+		var completedSteps int
+		if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM deployment_steps WHERE deployment_id=$1 AND step='migrate' AND status='complete'`, accepted.Intent.DeploymentID).Scan(&completedSteps); err != nil || completedSteps != 0 {
+			t.Fatalf("changed remote snapshot advanced migration step = %d, %v", completedSteps, err)
+		}
+		return
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		_, _ = f.p.ExecuteOperation(ctx, second, claim)
@@ -279,4 +320,39 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit bool
 	if err != nil || !strings.Contains(string(after), "populated 0") {
 		t.Fatalf("completed migration still has a command process: %q, %v", after, err)
 	}
+	if remoteExport {
+		latestRemote := snapshotObjectDigests(t, snapshotObjects)
+		if len(latestRemote) != len(originalRemote) {
+			t.Fatalf("remote replay changed object count: before=%d after=%d", len(originalRemote), len(latestRemote))
+		}
+		for name, digest := range originalRemote {
+			if latestRemote[name] != digest {
+				t.Fatalf("remote replay changed original object %s", name)
+			}
+		}
+	}
+}
+
+func snapshotObjectDigests(t *testing.T, root string) map[string][sha256.Size]byte {
+	t.Helper()
+	digests := map[string][sha256.Size]byte{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		name, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		digests[name] = sha256.Sum256(body)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digests
 }

@@ -145,9 +145,20 @@ record, and the supervisor execution ID is derived from the operation and
 input digest. A replacement claim restarts the ordered deploy steps,
 including the pre-migration snapshot. The guarded replay path now refuses an
 absent or invalid original snapshot; it does not silently create a new dump
-of a post-migration database. Remote publication must still be checked when
-an export was declared, and a real process-crash test must prove that this
-branch recovers the original effect without a second migration execution.
+of a post-migration database. When export is declared, the snapshot stage
+re-enters the claimed create-only publication path, rereads the remote dump
+and manifest, and verifies both against the pinned source before advancing.
+The separate export-crash and migration-crash fixtures exercise those paths,
+but a joined post-migration process-crash test with remote export remains to
+prove their combined recovery boundary without a second migration execution.
+The joined disposable Linux/PostgreSQL harness now covers that boundary for
+two named databases with remote export enabled. After the migration commits
+and the first API exits, successor replay keeps the same four remote dump and
+manifest objects byte for byte and completes the original effect with one
+database write. A negative run changes one remote dump before replay; the
+successor fails at the snapshot stage and does not complete the migration
+step. All six harness cases passed locally. This is not protected Mini/Fleet
+runtime qualification or a MySQL recovery proof.
 
 The generic effect runner is currently limited to `build.test`. Its descriptor
 omits environment values, but its verifier interprets a contained command's
