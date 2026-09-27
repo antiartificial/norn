@@ -67,15 +67,18 @@ func TestMobilityFixtureReconcilesRowsFilesWorkAndSchedule(t *testing.T) {
 			t.Fatalf("state status=%d body=%s", w.Code, w.Body.String())
 		}
 		var state struct {
-			Items                                        []struct{ ID, SHA256 string }
-			JobsPending, JobsAcknowledged, ScheduleTicks int
-			FilesMissing, FilesMismatched, FilesOrphaned int
+			Items                                          []struct{ ID, SHA256 string }
+			JobsPending, JobsAcknowledged, ScheduleTicks   int
+			FilesMissing, FilesMismatched, FilesOrphaned   int
+			PendingJobIds, AcknowledgedJobIds, TickMinutes []string
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
 			t.Fatal(err)
 		}
 		if len(state.Items) != 1 || state.Items[0].ID != created.ID || state.Items[0].SHA256 != created.SHA256 ||
 			state.JobsPending != 0 || state.JobsAcknowledged != 1 || state.ScheduleTicks != 1 ||
+			len(state.PendingJobIds) != 0 || len(state.AcknowledgedJobIds) != 1 || state.AcknowledgedJobIds[0] != created.ID ||
+			len(state.TickMinutes) != 1 || state.TickMinutes[0] != "2026-09-27T08:07:00Z" ||
 			state.FilesMissing != 0 || state.FilesMismatched != mismatch || state.FilesOrphaned != orphan {
 			t.Fatalf("unexpected state: %+v", state)
 		}

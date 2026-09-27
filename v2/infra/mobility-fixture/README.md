@@ -2,8 +2,8 @@
 
 This is a deploy-disabled rehearsal app for M7. It writes PostgreSQL rows and
 content-addressed file digests, queues one job per item, acknowledges jobs from
-the worker process, and records scheduled ticks. `GET /state` reports rows,
-acknowledgments, ticks, missing/mismatched files, and orphaned files. It is
+the worker process, and records scheduled ticks. `GET /state` reports exact
+item, job, and tick identities plus missing/mismatched and orphaned files. It is
 intended to run first on Mini, then on an independent Fleet with separate
 database and file storage.
 

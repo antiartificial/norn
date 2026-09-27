@@ -202,12 +202,56 @@ func (f fixture) state(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database read failed", http.StatusServiceUnavailable)
 		return
 	}
-	var pending, acked, ticks int64
-	if err := f.db.QueryRowContext(r.Context(), `SELECT count(*) FILTER (WHERE acked_at IS NULL), count(*) FILTER (WHERE acked_at IS NOT NULL) FROM mobility_jobs`).Scan(&pending, &acked); err != nil {
+	jobRows, err := f.db.QueryContext(r.Context(), `SELECT id, acked_at IS NOT NULL FROM mobility_jobs ORDER BY id`)
+	if err != nil {
 		http.Error(w, "job read failed", http.StatusServiceUnavailable)
 		return
 	}
-	if err := f.db.QueryRowContext(r.Context(), `SELECT count(*) FROM mobility_ticks`).Scan(&ticks); err != nil {
+	pendingIDs, acknowledgedIDs := make([]string, 0), make([]string, 0)
+	for jobRows.Next() {
+		var id string
+		var acknowledged bool
+		if err := jobRows.Scan(&id, &acknowledged); err != nil {
+			jobRows.Close()
+			http.Error(w, "job read failed", http.StatusServiceUnavailable)
+			return
+		}
+		if acknowledged {
+			acknowledgedIDs = append(acknowledgedIDs, id)
+		} else {
+			pendingIDs = append(pendingIDs, id)
+		}
+	}
+	if err := jobRows.Err(); err != nil {
+		jobRows.Close()
+		http.Error(w, "job read failed", http.StatusServiceUnavailable)
+		return
+	}
+	if err := jobRows.Close(); err != nil {
+		http.Error(w, "job read failed", http.StatusServiceUnavailable)
+		return
+	}
+	tickRows, err := f.db.QueryContext(r.Context(), `SELECT minute FROM mobility_ticks ORDER BY minute`)
+	if err != nil {
+		http.Error(w, "schedule read failed", http.StatusServiceUnavailable)
+		return
+	}
+	tickMinutes := make([]string, 0)
+	for tickRows.Next() {
+		var minute time.Time
+		if err := tickRows.Scan(&minute); err != nil {
+			tickRows.Close()
+			http.Error(w, "schedule read failed", http.StatusServiceUnavailable)
+			return
+		}
+		tickMinutes = append(tickMinutes, minute.UTC().Format(time.RFC3339))
+	}
+	if err := tickRows.Err(); err != nil {
+		tickRows.Close()
+		http.Error(w, "schedule read failed", http.StatusServiceUnavailable)
+		return
+	}
+	if err := tickRows.Close(); err != nil {
 		http.Error(w, "schedule read failed", http.StatusServiceUnavailable)
 		return
 	}
@@ -239,7 +283,12 @@ func (f fixture) state(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"schema": "norn.mobility-fixture/v1", "items": items, "jobsPending": pending, "jobsAcknowledged": acked, "scheduleTicks": ticks, "filesMissing": missing, "filesMismatched": mismatched, "filesOrphaned": orphans, "writerEnabled": f.writable})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"schema": "norn.mobility-fixture/v1", "items": items,
+		"pendingJobIds": pendingIDs, "acknowledgedJobIds": acknowledgedIDs, "tickMinutes": tickMinutes,
+		"jobsPending": len(pendingIDs), "jobsAcknowledged": len(acknowledgedIDs), "scheduleTicks": len(tickMinutes),
+		"filesMissing": missing, "filesMismatched": mismatched, "filesOrphaned": orphans, "writerEnabled": f.writable,
+	})
 }
 
 func randomID() (string, error) {
