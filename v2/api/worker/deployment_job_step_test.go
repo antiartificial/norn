@@ -18,12 +18,14 @@ import (
 var _ DeploymentJobEffectStore = (*etcdstore.V3DeploymentEffectReservations)(nil)
 
 type deploymentStepEffects struct {
-	record    effect.Record
-	created   bool
-	attempted bool
-	reserves  int
-	marks     int
-	launched  int
+	record     effect.Record
+	created    bool
+	attempted  bool
+	reserves   int
+	marks      int
+	launched   int
+	completed  int
+	completion effect.Completion
 }
 
 func (f *deploymentStepEffects) Reserve(_ context.Context, r effect.Reservation) (effect.ReservationResult, error) {
@@ -52,12 +54,19 @@ func (f *deploymentStepEffects) MarkLaunched(_ context.Context, _ effect.Token, 
 	f.record.Execution = identity
 	return nil
 }
+func (f *deploymentStepEffects) Complete(_ context.Context, _ effect.Token, completion effect.Completion) error {
+	f.completed++
+	f.completion = completion
+	return nil
+}
 
 type deploymentStepRemote struct {
-	submits int
-	lookups int
-	state   nomad.DeploymentJobObservationState
-	err     error
+	submits      int
+	lookups      int
+	state        nomad.DeploymentJobObservationState
+	err          error
+	health       nomad.DeploymentJobHealthObservation
+	healthChecks int
 }
 
 func (f *deploymentStepRemote) RegisterDeploymentJobCAS(context.Context, nomad.CASDeploymentJobRequest) (string, error) {
@@ -67,6 +76,10 @@ func (f *deploymentStepRemote) RegisterDeploymentJobCAS(context.Context, nomad.C
 func (f *deploymentStepRemote) LookupDeploymentJobRevision(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error) {
 	f.lookups++
 	return nomad.DeploymentJobObservation{State: f.state, JobModifyIndex: 12, Version: 1}, nil
+}
+func (f *deploymentStepRemote) ObserveDeploymentJobHealth(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobHealthObservation, error) {
+	f.healthChecks++
+	return f.health, f.err
 }
 
 func deploymentStepFixture(t *testing.T) (effect.Reservation, *nomadapi.Job) {
@@ -149,5 +162,55 @@ func TestObserveDeploymentJobEffectDoesNotSubmitDuringRecovery(t *testing.T) {
 	decision, err = ObserveDeploymentJobEffect(context.Background(), effects, remote, effects.record)
 	if err != nil || decision.State != DeploymentJobEffectObserved || remote.submits != 0 || effects.launched != 1 {
 		t.Fatalf("readback recovery=%+v submits=%d launched=%d err=%v", decision, remote.submits, effects.launched, err)
+	}
+}
+
+func TestCompleteDeploymentJobEffectRequiresExactReadyHealth(t *testing.T) {
+	r, _ := deploymentStepFixture(t)
+	record := effect.Record{Token: effect.Token{EffectID: "effect-1", Generation: 1}, Reservation: r, Lifecycle: effect.LifecycleLaunched,
+		Execution: effect.ExecutionIdentity{Supervisor: r.Supervisor, SupervisorExecutionID: r.SupervisorExecutionID,
+			RuntimeInstanceID: "nomad-job:global:demo:12"}}
+	effects := &deploymentStepEffects{record: record, attempted: true}
+	remote := &deploymentStepRemote{health: nomad.DeploymentJobHealthObservation{State: nomad.DeploymentJobHealthPending, JobModifyIndex: 12}}
+	if decision, err := CompleteDeploymentJobEffect(context.Background(), effects, remote, record); err != nil || decision.State != DeploymentJobEffectUnresolved || effects.completed != 0 {
+		t.Fatalf("pending health completed effect: decision=%+v completed=%d err=%v", decision, effects.completed, err)
+	}
+	remote.err = errors.New("Nomad observation unavailable")
+	remote.health.State = nomad.DeploymentJobHealthReady
+	remote.health.AllocationIDs = []string{"alloc-1"}
+	if decision, err := CompleteDeploymentJobEffect(context.Background(), effects, remote, record); err != nil || decision.State != DeploymentJobEffectUnresolved || effects.completed != 0 {
+		t.Fatalf("indeterminate health completed effect: decision=%+v completed=%d err=%v", decision, effects.completed, err)
+	}
+	remote.err = nil
+	remote.health = nomad.DeploymentJobHealthObservation{State: nomad.DeploymentJobHealthReady, JobModifyIndex: 13, AllocationIDs: []string{"alloc-1"}}
+	if decision, err := CompleteDeploymentJobEffect(context.Background(), effects, remote, record); err != nil || decision.State != DeploymentJobEffectUnresolved || effects.completed != 0 {
+		t.Fatalf("changed revision completed effect: decision=%+v completed=%d err=%v", decision, effects.completed, err)
+	}
+	remote.health.JobModifyIndex = 12
+	remote.health.JobVersion = 1
+	decision, err := CompleteDeploymentJobEffect(context.Background(), effects, remote, record)
+	if err != nil || decision.State != DeploymentJobEffectObserved || effects.completed != 1 ||
+		effects.completion.Outcome != effect.OutcomeSucceeded ||
+		effects.completion.Verification.InputDigest != r.InputDigest ||
+		effects.completion.Verification.RuntimeInstanceID != record.Execution.RuntimeInstanceID ||
+		effects.completion.Verification.ResultDigest == "" {
+		t.Fatalf("ready health did not bind completion: decision=%+v completion=%+v err=%v", decision, effects.completion, err)
+	}
+}
+
+func TestCompleteDeploymentJobEffectRequiresAttemptAndLaunch(t *testing.T) {
+	r, _ := deploymentStepFixture(t)
+	record := effect.Record{Token: effect.Token{EffectID: "effect-1", Generation: 1}, Reservation: r, Lifecycle: effect.LifecycleLaunched,
+		Execution: effect.ExecutionIdentity{Supervisor: r.Supervisor, SupervisorExecutionID: r.SupervisorExecutionID,
+			RuntimeInstanceID: "nomad-job:global:demo:12"}}
+	effects := &deploymentStepEffects{record: record}
+	remote := &deploymentStepRemote{health: nomad.DeploymentJobHealthObservation{State: nomad.DeploymentJobHealthReady, JobModifyIndex: 12, AllocationIDs: []string{"alloc-1"}}}
+	if _, err := CompleteDeploymentJobEffect(context.Background(), effects, remote, record); err != nil || effects.completed != 0 || remote.healthChecks != 0 {
+		t.Fatalf("unattempted effect reached health: checks=%d completed=%d err=%v", remote.healthChecks, effects.completed, err)
+	}
+	effects.attempted = true
+	record.Lifecycle = effect.LifecycleReserved
+	if _, err := CompleteDeploymentJobEffect(context.Background(), effects, remote, record); err == nil || effects.completed != 0 {
+		t.Fatalf("unlaunched effect completed: completed=%d err=%v", effects.completed, err)
 	}
 }

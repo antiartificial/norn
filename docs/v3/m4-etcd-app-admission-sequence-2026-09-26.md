@@ -84,8 +84,8 @@ active pre-index work must first drain or reconcile it.
    workload with matching markers and submission source was rejected by the
    plan against disposable Nomad 2.0.7. This covers the tested raw-exec and
    translated service shapes, not every app dialect, and no supervisor calls
-   the primitive yet. Allocation health, effect settlement, and app-gate
-   release remain separate work.
+   the primitive yet. Allocation health is available to the private worker;
+   signed region checkpoint and deployment-result writes remain separate work.
    Nomad calls the submitted source reference data, retains only the latest
    six job source files, and does not schedule from it. Missing source must
    leave recovery indeterminate; the separate no-diff plan is required.
@@ -108,7 +108,7 @@ active pre-index work must first drain or reconcile it.
    resubmit; an attempted 404 stays unresolved. The step passes worker tests,
    while its etcd store dependencies pass disposable real-etcd tests. It is
    not connected to normal claim dispatch, deployment stage checkpoints,
-   allocation health, or terminal result writes. Periodic jobs and other
+   or terminal result writes. Periodic jobs and other
    deployment shapes remain outside this one service-job step.
    A separate read-only health observation now requires the exact versioned
    job readback, a pinned image, every declared group's desired count of
@@ -116,9 +116,14 @@ active pre-index work must first drain or reconcile it.
    stable final job revision. Old terminal allocation history is ignored;
    live work from a removed group or changed provenance fails closed.
    A disposable Nomad 2.0.7 Docker service reached `ready` with one exact
-   allocation, and the test job was purged. This observation is not yet
-   consumed by the worker or persisted as a region checkpoint. Canary jobs
-   still require their separate promotion proof.
+   allocation, and the test job was purged. A private worker completion step
+   now consumes `ready` only for the original launched effect, recorded submit
+   attempt, and exact job revision; pending, unavailable, or changed revision
+   keeps the effect gate. The completion evidence binds the reserved input,
+   execution, job digest, version and healthy allocation IDs. This worker
+   path has unit coverage but has not been exercised through a real etcd and
+   Nomad pair or persisted as a signed region checkpoint. Canary jobs still
+   require their separate promotion proof.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

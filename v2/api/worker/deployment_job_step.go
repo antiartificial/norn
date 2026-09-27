@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 
@@ -16,11 +17,13 @@ type DeploymentJobEffectStore interface {
 	MarkSubmitAttempt(context.Context, effect.Token) (bool, error)
 	SubmitAttempted(context.Context, effect.Token) (bool, error)
 	MarkLaunched(context.Context, effect.Token, effect.ExecutionIdentity) error
+	Complete(context.Context, effect.Token, effect.Completion) error
 }
 
 type DeploymentJobRemote interface {
 	RegisterDeploymentJobCAS(context.Context, nomad.CASDeploymentJobRequest) (string, error)
 	LookupDeploymentJobRevision(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error)
+	ObserveDeploymentJobHealth(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobHealthObservation, error)
 }
 
 var _ DeploymentJobRemote = (*nomad.Client)(nil)
@@ -109,6 +112,62 @@ func ObserveDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffect
 		}
 	}
 	decision.State = DeploymentJobEffectObserved
+	return decision, nil
+}
+
+// CompleteDeploymentJobEffect releases the effect gate only after the original
+// launched job revision has healthy allocations. Pending or uncertain health
+// leaves the durable effect for a later observation under a successor claim.
+func CompleteDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffectStore, remote DeploymentJobRemote, record effect.Record) (DeploymentJobEffectDecision, error) {
+	if effects == nil || remote == nil || record.Token.EffectID == "" || record.Token.Generation <= 0 ||
+		record.Lifecycle != effect.LifecycleLaunched || record.Execution.Supervisor != record.Reservation.Supervisor ||
+		record.Execution.SupervisorExecutionID != record.Reservation.SupervisorExecutionID {
+		return DeploymentJobEffectDecision{}, fmt.Errorf("deployment job completion is unavailable")
+	}
+	request, _, err := deploymentJobRequestFromReservation(record.Reservation)
+	if err != nil {
+		return DeploymentJobEffectDecision{}, err
+	}
+	attempted, err := effects.SubmitAttempted(ctx, record.Token)
+	if err != nil {
+		return DeploymentJobEffectDecision{}, err
+	}
+	decision := DeploymentJobEffectDecision{State: DeploymentJobEffectUnresolved, EffectID: record.Token.EffectID, Attempted: attempted}
+	if !attempted {
+		return decision, nil
+	}
+	health, err := remote.ObserveDeploymentJobHealth(ctx, request)
+	if err != nil || health.State != nomad.DeploymentJobHealthReady ||
+		health.JobModifyIndex <= request.ExpectedJobModifyIndex || len(health.AllocationIDs) == 0 ||
+		record.Execution.RuntimeInstanceID != fmt.Sprintf("nomad-job:%s:%s:%d", request.Region, request.App, health.JobModifyIndex) {
+		return decision, nil
+	}
+	result, err := json.Marshal(struct {
+		App            string   `json:"app"`
+		DeploymentID   string   `json:"deploymentId"`
+		OperationID    string   `json:"operationId"`
+		ExecutionID    string   `json:"executionId"`
+		JobDigest      string   `json:"jobDigest"`
+		JobVersion     uint64   `json:"jobVersion"`
+		JobModifyIndex uint64   `json:"jobModifyIndex"`
+		AllocationIDs  []string `json:"allocationIds"`
+	}{request.App, request.DeploymentID, request.OperationID, request.ExecutionID, request.JobDigest,
+		health.JobVersion, health.JobModifyIndex, health.AllocationIDs})
+	if err != nil {
+		return decision, err
+	}
+	completion := effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: effect.Verification{
+		Decision: effect.VerificationSucceeded, InputDigest: record.Reservation.InputDigest,
+		ResultDigest: effect.DigestInput(result), ResultReference: record.Execution.RuntimeInstanceID,
+		SupervisorExecutionID: record.Reservation.SupervisorExecutionID, RuntimeInstanceID: record.Execution.RuntimeInstanceID,
+		EvidenceSource: "nomad-job-health", EvidenceReference: record.Execution.RuntimeInstanceID,
+		ObservedAt: time.Now().UTC(),
+	}}
+	if err := effects.Complete(ctx, record.Token, completion); err != nil {
+		return decision, err
+	}
+	decision.State = DeploymentJobEffectObserved
+	decision.Observation = nomad.DeploymentJobObservation{State: nomad.DeploymentJobFound, Version: health.JobVersion, JobModifyIndex: health.JobModifyIndex}
 	return decision, nil
 }
 
