@@ -182,8 +182,11 @@ The unique HTTPS endpoint/process resolver now lives in the shared model
 package, so that transaction can rederive source values from the pinned
 InfraSpec rather than trust worker-supplied endpoint fields.
 The first-route private etcd transaction now persists a generation-one intent
-and reservation against the current active Fleet pointer. It has no publisher
-or terminal proof path and cannot activate traffic. Old/new split transitions
+and reservation against the current active Fleet pointer. It also writes an
+intent-ID index in the same transaction so a future authority service can
+resolve the host's opaque request ID; retry checks the index against the
+reservation and route record. It has no operational authority resolver,
+publisher, or terminal proof path and cannot activate traffic. Old/new split transitions
 still require the durable prior route pointer described below.
 
 The worker must create a durable route-intent record before any publish. It

@@ -50,6 +50,10 @@ func (s *V3OperationStore) initialFleetRouteKey(app, environment, region, deploy
 	return s.prefix + "/v3/fleet-route-intents/" + hex.EncodeToString(sum[:])
 }
 
+func (s *V3OperationStore) initialFleetRouteIDKey(intentID string) string {
+	return s.prefix + "/v3/fleet-route-intent-ids/" + intentID
+}
+
 func (s *V3OperationStore) fleetRouteReservationKey(app, environment, region string) string {
 	sum := sha256.Sum256([]byte(app + "\x00" + environment + "\x00" + region))
 	return s.prefix + "/v3/fleet-route-reservations/" + hex.EncodeToString(sum[:])
@@ -124,7 +128,7 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 		return nil, err
 	}
 	if len(reservation.Kvs) != 0 {
-		intent, intentRevision, err := s.replayInitialFleetRouteIntent(ctx, reservation.Kvs[0].Value, intentKey, accepted, endpoint, rendered)
+		intent, intentRevision, idRevision, err := s.replayInitialFleetRouteIntent(ctx, reservation.Kvs[0].Value, intentKey, accepted, endpoint, rendered)
 		if err != nil || !requireExisting {
 			return intent, err
 		}
@@ -178,6 +182,7 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 			clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", loadedAcceptance.revision),
 			clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservation.Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(intentKey), "=", intentRevision),
+			clientv3.Compare(clientv3.ModRevision(s.initialFleetRouteIDKey(intent.ID)), "=", idRevision),
 			clientv3.Compare(clientv3.CreateRevision(activeRouteKey), "=", 0),
 		}
 		comparisons = append(comparisons, inventoryCompares...)
@@ -242,9 +247,10 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 		clientv3.Compare(clientv3.CreateRevision(activeRouteKey), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(reservationKey), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(intentKey), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.initialFleetRouteIDKey(intent.ID)), "=", 0),
 	}
 	comparisons = append(comparisons, inventoryCompares...)
-	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(clientv3.OpPut(intentKey, string(encoded)), clientv3.OpPut(reservationKey, string(reservationValue))).Commit()
+	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(clientv3.OpPut(intentKey, string(encoded)), clientv3.OpPut(reservationKey, string(reservationValue)), clientv3.OpPut(s.initialFleetRouteIDKey(intent.ID), intentKey)).Commit()
 	if err != nil {
 		return nil, err
 	}
@@ -254,14 +260,14 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 	return &intent, nil
 }
 
-func (s *V3OperationStore) replayInitialFleetRouteIntent(ctx context.Context, reservationRaw []byte, intentKey string, accepted store.AcceptedOperation, endpoint model.FleetRouteEndpoint, rendered ingress.RenderedRoute) (*InitialFleetRouteIntent, int64, error) {
+func (s *V3OperationStore) replayInitialFleetRouteIntent(ctx context.Context, reservationRaw []byte, intentKey string, accepted store.AcceptedOperation, endpoint model.FleetRouteEndpoint, rendered ingress.RenderedRoute) (*InitialFleetRouteIntent, int64, int64, error) {
 	var reservation initialFleetRouteReservation
 	if err := decodeV3Record(reservationRaw, &reservation); err != nil || reservation.IntentID == "" || reservation.Generation != 1 {
-		return nil, 0, fmt.Errorf("Fleet route reservation is invalid")
+		return nil, 0, 0, fmt.Errorf("Fleet route reservation is invalid")
 	}
 	response, err := s.kv.Get(ctx, intentKey)
 	if err != nil || len(response.Kvs) != 1 {
-		return nil, 0, fmt.Errorf("Fleet route reservation has no matching intent")
+		return nil, 0, 0, fmt.Errorf("Fleet route reservation has no matching intent")
 	}
 	var intent InitialFleetRouteIntent
 	if err := decodeV3Record(response.Kvs[0].Value, &intent); err != nil || intent.SchemaVersion != initialFleetRouteIntentSchema || intent.ID != reservation.IntentID || intent.Generation != reservation.Generation ||
@@ -269,7 +275,11 @@ func (s *V3OperationStore) replayInitialFleetRouteIntent(ctx context.Context, re
 		intent.Endpoint != endpoint || intent.App != accepted.Operation.App || intent.ControlEnvironment != accepted.Deployment.Environment || intent.Region != accepted.Regions[0].Name || intent.NomadRegion != accepted.Regions[0].NomadRegion ||
 		intent.RenderedRoute.SHA256 != rendered.SHA256 || !bytes.Equal(intent.RenderedRoute.YAML, rendered.YAML) || intent.RenderedRoute.RouterName != rendered.RouterName || intent.RenderedRoute.ServiceName != rendered.ServiceName || intent.RenderedRoute.EndpointHost != rendered.EndpointHost || !slices.Equal(intent.RenderedRoute.BackendNames, rendered.BackendNames) ||
 		intent.Inventory.Cluster != accepted.FleetAppTarget.Cluster || intent.Inventory.Environment != accepted.FleetAppTarget.FleetEnvironment || intent.Inventory.ActivePointerRevision <= 0 || intent.Inventory.ActiveClusterEpochRevision <= 0 || len(intent.Inventory.Nodes) < 2 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
-		return nil, 0, fmt.Errorf("Fleet route reservation conflicts with signed deployment")
+		return nil, 0, 0, fmt.Errorf("Fleet route reservation conflicts with signed deployment")
 	}
-	return &intent, response.Kvs[0].ModRevision, nil
+	index, err := s.kv.Get(ctx, s.initialFleetRouteIDKey(intent.ID))
+	if err != nil || len(index.Kvs) != 1 || string(index.Kvs[0].Value) != intentKey {
+		return nil, 0, 0, fmt.Errorf("Fleet route intent ID index differs from reservation")
+	}
+	return &intent, response.Kvs[0].ModRevision, index.Kvs[0].ModRevision, nil
 }

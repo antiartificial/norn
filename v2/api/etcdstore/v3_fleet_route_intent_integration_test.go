@@ -151,6 +151,21 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if err != nil || first == nil || first.Generation != 1 || first.DeploymentID != accepted.Deployment.ID || first.Inventory.ActivePointerRevision <= 0 || first.RenderedRoute.SHA256 == "" {
 		t.Fatalf("route intent=%+v err=%v", first, err)
 	}
+	intentKey := adapter.initialFleetRouteKey("demo", "staging", "west", accepted.Deployment.ID)
+	indexKey := adapter.initialFleetRouteIDKey(first.ID)
+	index, err := client.Get(ctx, indexKey)
+	if err != nil || len(index.Kvs) != 1 || string(index.Kvs[0].Value) != intentKey {
+		t.Fatalf("intent ID index=%+v err=%v", index, err)
+	}
+	if _, err := client.Put(ctx, indexKey, "wrong-intent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082); err == nil {
+		t.Fatal("route retry accepted a mismatched intent ID index")
+	}
+	if _, err := client.Put(ctx, indexKey, intentKey); err != nil {
+		t.Fatal(err)
+	}
 	replayed, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082)
 	if err != nil || replayed.ID != first.ID || replayed.Generation != first.Generation {
 		t.Fatalf("route intent replay=%+v err=%v", replayed, err)
@@ -172,7 +187,6 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if _, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, &changedSpec, 18082); err == nil {
 		t.Fatal("changed source endpoint reused durable route intent")
 	}
-	intentKey := adapter.initialFleetRouteKey("demo", "staging", "west", accepted.Deployment.ID)
 	encodedIntent, err := json.Marshal(first)
 	if err != nil {
 		t.Fatal(err)
