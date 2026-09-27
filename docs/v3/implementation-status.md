@@ -151,6 +151,18 @@ Nomad agent.
     include duplicated domain rows, PostgreSQL heap/index/TOAST/WAL overhead,
     or later operation, effect, and event growth. It is not a total hot-store
     byte bound; queued/running growth remains an M2 requirement.
+  - Migration 45 adds a separate logical-byte ledger for private release
+    attestations, backfills existing records and uses a database trigger to
+    account for inserts from both current and previous writers. The schema
+    remains at writer contract 31 for the Mini rollback window. The trigger
+    reserves stored JSON payload and metadata bytes atomically with the
+    operation. The optional
+    `NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES` defaults to `0`
+    pending an accepted M0 budget. This cap applies only to new private
+    attestations; terminal reconciliation receipts remain writable. The
+    reservation prevents deletion of hot evidence before a qualified archive
+    retirement path exists. Physical PostgreSQL overhead and archive-backed
+    retirement remain unbounded/unbuilt.
   - Tests: `TestEvidenceReserveRefusesAuditedMutationsUntilEvidenceIsArchived`
     (backlog, archive headroom, audit row, revocation, recovery after
     archiving), `TestEvidenceReservePolicyIsDurableAndOnlyExplicitlyDisabled`,
@@ -257,11 +269,12 @@ Remaining M2 retention requirements (not complete):
   reserve before inserting its operation and acceptance intent. Direct
   operation writers still bypass that transaction. Private release-attestation
   issuance now checks reserve backlog, age and archive capacity under the
-  durable policy lock before its terminal record is inserted. It does not
-  reserve signed-acceptance bytes or create an archive intent, so its own hot
-  bytes remain unbounded. Fleet reconciliation writes terminal evidence for an
-  existing attempt and remains available during archive exhaustion, both with
-  and without an attempt ID.
+  durable policy lock before its terminal record is inserted. It reserves
+  its own logical payload/metadata bytes separately when a cap is configured;
+  it does not create an archive intent, so long-term retirement and total hot
+  bytes remain unqualified. Fleet reconciliation writes terminal evidence for
+  an existing attempt and remains available during archive exhaustion, both
+  with and without an attempt ID.
   `InsertOperation`, `InsertDeploymentOperation`, and
   `InsertRollbackOperation` currently have no non-test callers, while the
   external-deployment admission in `store/external_deployments.go` inserts a

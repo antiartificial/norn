@@ -496,7 +496,7 @@ func TestControlAuthorityIsPersistedAndExpectedMatchIsEnforced(t *testing.T) {
 	if err := dbs[0].Pool.QueryRow(context.Background(), `SELECT current_migration_version,minimum_writer_version FROM norn_schema_compatibility WHERE singleton=true`).Scan(&version, &minimumWriter); err != nil {
 		t.Fatal(err)
 	}
-	if version != 44 || minimumWriter != SnapshotExportIntentWriterVersion {
+	if version != 45 || minimumWriter != SnapshotExportIntentWriterVersion {
 		t.Fatalf("schema version=%d minimum writer=%d", version, minimumWriter)
 	}
 }
@@ -704,6 +704,40 @@ func TestNewReleaseAttestationRefusesExhaustedReserveButTerminalReceiptCanFinish
 	}
 	if err := db.InsertNewReleaseAttestation(ctx, attestation); err != nil {
 		t.Fatalf("new release attestation after capacity recovery: %v", err)
+	}
+}
+
+func TestReleaseAttestationLogicalBytesAreReservedAtomically(t *testing.T) {
+	_, dbs := acceptanceIntegrationStores(t, 1)
+	db := dbs[0]
+	ctx := context.Background()
+	if err := db.SetEvidenceReservePolicy(ctx, EvidenceReservePolicy{Enabled: true, MaxPending: 10, MaxPendingAge: time.Hour, MaxReleaseAttestationBytes: 4}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	first := &model.Operation{ID: uuid.NewString(), Kind: "release.attestation", Status: model.OperationSucceeded, StartedAt: now, FinishedAt: &now}
+	if err := db.InsertNewReleaseAttestation(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	status, err := db.EvidenceReserve(ctx)
+	if err != nil || status.ReservedReleaseAttestationBytes != 4 || status.MaxReleaseAttestationBytes != 4 || status.Exhausted {
+		t.Fatalf("release attestation reserve status=%+v err=%v", status, err)
+	}
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM operations WHERE id=$1`, first.ID); err == nil {
+		t.Fatal("hot release attestation deleted while its evidence reservation remains")
+	}
+	second := &model.Operation{ID: uuid.NewString(), Kind: "release.attestation", Status: model.OperationSucceeded, StartedAt: now, FinishedAt: &now}
+	var exhausted *EvidenceReserveExhaustedError
+	if err := db.InsertNewReleaseAttestation(ctx, second); !errors.As(err, &exhausted) {
+		t.Fatalf("second attestation at logical-byte limit: %v", err)
+	}
+	legacyWriter := &model.Operation{ID: uuid.NewString(), Kind: "release.attestation", Status: model.OperationSucceeded, StartedAt: now, FinishedAt: &now}
+	if err := db.InsertCompletedOperation(ctx, legacyWriter); !errors.As(err, &exhausted) {
+		t.Fatalf("legacy direct writer bypassed attestation byte limit: %v", err)
+	}
+	var operations, reservations int
+	if err := db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM operations WHERE id=$1), (SELECT count(*) FROM release_attestation_byte_reservations WHERE operation_id=$1)`, second.ID).Scan(&operations, &reservations); err != nil || operations != 0 || reservations != 0 {
+		t.Fatalf("rejected attestation operations=%d reservations=%d err=%v", operations, reservations, err)
 	}
 }
 

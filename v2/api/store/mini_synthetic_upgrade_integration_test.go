@@ -79,7 +79,8 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if err := pool.QueryRow(ctx, legacyRead).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	migrator, err := NewControlSchemaMigrator(&DB{Pool: pool})
+	migrator, err := NewSchemaMigrator(pool, migrations[:44], BinarySchemaCompatibility{
+		ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: SnapshotExportIntentWriterVersion}, SchemaMigratorOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != migrations[len(migrations)-1].Version || len(status.AppliedVersions) != len(migrations) {
+	if status.CurrentMigrationVersion != 44 || len(status.AppliedVersions) != 44 {
 		t.Fatalf("migration status = %+v", status)
 	}
 	if err := pool.QueryRow(ctx, legacyRead).Scan(&after); err != nil {
@@ -139,6 +140,19 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	}
 	if _, err := previousStageSuccessorBinary.Check(ctx, SchemaAccessReadWrite); err != nil {
 		t.Fatalf("publish successor migration blocked previous stage-successor binary: %v", err)
+	}
+	// Migration 45 accounts for private release attestations in a database
+	// trigger, including inserts by an older writer. The writer-31 rollback
+	// contract must therefore remain valid after the additive migration.
+	migrator, err = NewControlSchemaMigrator(&DB{Pool: pool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, err = migrator.Migrate(ctx); err != nil || status.CurrentMigrationVersion != 45 || len(status.AppliedVersions) != 1 {
+		t.Fatalf("attestation reserve migration status=%+v err=%v", status, err)
+	}
+	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("additive attestation reserve blocked previous writer: %v", err)
 	}
 	// Migration 21 retires the preceding reader contract because it cannot
 	// decode function evidence bundles. A rollback to that reader must refuse

@@ -53,25 +53,28 @@ func evidenceReserveMigration() SchemaMigration {
 
 // EvidenceReservePolicy is the durable admission policy.
 type EvidenceReservePolicy struct {
-	Enabled                  bool
-	MaxPending               int
-	MaxPendingAge            time.Duration
-	MaxSignedAcceptanceBytes int64
+	Enabled                    bool
+	MaxPending                 int
+	MaxPendingAge              time.Duration
+	MaxSignedAcceptanceBytes   int64
+	MaxReleaseAttestationBytes int64
 }
 
 // EvidenceReserveStatus is the admission decision input.
 type EvidenceReserveStatus struct {
-	Enabled                       bool       `json:"enabled"`
-	Exhausted                     bool       `json:"exhausted"`
-	Reasons                       []string   `json:"reasons,omitempty"`
-	Pending                       int        `json:"pending"`
-	OldestPendingAt               *time.Time `json:"oldestPendingAt,omitempty"`
-	MaxPending                    int        `json:"maxPending"`
-	MaxPendingAge                 string     `json:"maxPendingAge"`
-	ReservedSignedAcceptanceBytes int64      `json:"reservedSignedAcceptanceBytes"`
-	MaxSignedAcceptanceBytes      int64      `json:"maxSignedAcceptanceBytes"`
-	ArchiveExhausted              bool       `json:"archiveExhausted"`
-	ArchiveDetail                 string     `json:"archiveDetail,omitempty"`
+	Enabled                         bool       `json:"enabled"`
+	Exhausted                       bool       `json:"exhausted"`
+	Reasons                         []string   `json:"reasons,omitempty"`
+	Pending                         int        `json:"pending"`
+	OldestPendingAt                 *time.Time `json:"oldestPendingAt,omitempty"`
+	MaxPending                      int        `json:"maxPending"`
+	MaxPendingAge                   string     `json:"maxPendingAge"`
+	ReservedSignedAcceptanceBytes   int64      `json:"reservedSignedAcceptanceBytes"`
+	MaxSignedAcceptanceBytes        int64      `json:"maxSignedAcceptanceBytes"`
+	ReservedReleaseAttestationBytes int64      `json:"reservedReleaseAttestationBytes"`
+	MaxReleaseAttestationBytes      int64      `json:"maxReleaseAttestationBytes"`
+	ArchiveExhausted                bool       `json:"archiveExhausted"`
+	ArchiveDetail                   string     `json:"archiveDetail,omitempty"`
 }
 
 // EvidenceReserveExhaustedError refuses a new acceptance before it writes any
@@ -85,8 +88,9 @@ func (e *EvidenceReserveExhaustedError) Error() string {
 
 // checkNewDirectEvidenceAdmission protects new evidence issued outside the
 // signed operation-acceptance path. The evidence payload may itself be signed,
-// but it has no operation-acceptance envelope. This does not reserve
-// signed-acceptance bytes or create an archive intent for an unsupported type.
+// but it has no operation-acceptance envelope. This check does not reserve
+// signed-acceptance bytes or create an archive intent for an unsupported type;
+// the database trigger separately accounts for release attestation bytes.
 // The caller must hold this transaction through its insert. Terminal receipts
 // for work already performed must not use this gate.
 func checkNewDirectEvidenceAdmission(ctx context.Context, tx pgx.Tx) error {
@@ -210,12 +214,12 @@ func (db *DB) SetEvidenceReservePolicy(ctx context.Context, policy EvidenceReser
 	if policy.MaxPending <= 0 || policy.MaxPendingAge <= 0 {
 		return fmt.Errorf("evidence reserve limits must be positive")
 	}
-	if policy.MaxSignedAcceptanceBytes < 0 {
-		return fmt.Errorf("signed acceptance byte limit cannot be negative")
+	if policy.MaxSignedAcceptanceBytes < 0 || policy.MaxReleaseAttestationBytes < 0 {
+		return fmt.Errorf("evidence byte limits cannot be negative")
 	}
 	_, err := db.Pool.Exec(ctx, `UPDATE evidence_reserve SET enabled = $1, max_pending = $2, max_pending_age_seconds = $3,
-		max_signed_acceptance_bytes = $4, updated_at = now() WHERE singleton`,
-		policy.Enabled, policy.MaxPending, int(policy.MaxPendingAge/time.Second), policy.MaxSignedAcceptanceBytes)
+		max_signed_acceptance_bytes = $4, max_release_attestation_bytes = $5, updated_at = now() WHERE singleton`,
+		policy.Enabled, policy.MaxPending, int(policy.MaxPendingAge/time.Second), policy.MaxSignedAcceptanceBytes, policy.MaxReleaseAttestationBytes)
 	return err
 }
 
@@ -231,12 +235,13 @@ func (db *DB) EvidenceReserve(ctx context.Context) (EvidenceReserveStatus, error
 	var status EvidenceReserveStatus
 	var ageSeconds int
 	err := db.Pool.QueryRow(ctx, `
-		SELECT r.enabled, r.max_pending, r.max_pending_age_seconds, r.max_signed_acceptance_bytes, r.archive_exhausted, r.archive_detail,
+		SELECT r.enabled, r.max_pending, r.max_pending_age_seconds, r.max_signed_acceptance_bytes, r.max_release_attestation_bytes, r.archive_exhausted, r.archive_detail,
 		       (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'),
 		       (SELECT min(created_at) FROM evidence_archive_intents WHERE state = 'pending'),
-		       (SELECT coalesce(sum(reserved_bytes), 0) FROM signed_acceptance_byte_reservations)
-		FROM evidence_reserve r WHERE r.singleton`).Scan(&status.Enabled, &status.MaxPending, &ageSeconds, &status.MaxSignedAcceptanceBytes,
-		&status.ArchiveExhausted, &status.ArchiveDetail, &status.Pending, &status.OldestPendingAt, &status.ReservedSignedAcceptanceBytes)
+		       (SELECT coalesce(sum(reserved_bytes), 0) FROM signed_acceptance_byte_reservations),
+		       (SELECT coalesce(sum(reserved_bytes), 0) FROM release_attestation_byte_reservations)
+		FROM evidence_reserve r WHERE r.singleton`).Scan(&status.Enabled, &status.MaxPending, &ageSeconds, &status.MaxSignedAcceptanceBytes, &status.MaxReleaseAttestationBytes,
+		&status.ArchiveExhausted, &status.ArchiveDetail, &status.Pending, &status.OldestPendingAt, &status.ReservedSignedAcceptanceBytes, &status.ReservedReleaseAttestationBytes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return status, fmt.Errorf("evidence reserve state is missing")
 	}

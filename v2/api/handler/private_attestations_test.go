@@ -349,8 +349,15 @@ func TestCreatePrivateReleaseAttestationSuccessReplayAndConflict(t *testing.T) {
 	if err := store.Migrate(database); err != nil {
 		t.Fatal(err)
 	}
+	if err := database.SetEvidenceReservePolicy(context.Background(), store.EvidenceReservePolicy{Enabled: true, MaxPending: 1000000, MaxPendingAge: 50 * 365 * 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordArchiveCapacity(context.Background(), false, ""); err != nil {
+		t.Fatal(err)
+	}
 	app := "private-route-" + strings.ToLower(strings.ReplaceAll(uuid.NewString(), "-", ""))
 	t.Cleanup(func() {
+		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM release_attestation_byte_reservations WHERE operation_id IN (SELECT id FROM operations WHERE app=$1 AND kind='release.attestation')`, app)
 		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM operations WHERE app=$1 AND kind='release.attestation'`, app)
 	})
 	h := privateRouteHandler(t, database, "staging", "norn-signed-private", app, "personal-owner/private-repo")
@@ -415,11 +422,12 @@ func TestCreatePrivateReleaseAttestationReserveExhaustion(t *testing.T) {
 	}
 	app := "private-reserve-" + strings.ToLower(strings.ReplaceAll(uuid.NewString(), "-", ""))
 	t.Cleanup(func() {
+		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM release_attestation_byte_reservations WHERE operation_id IN (SELECT id FROM operations WHERE app=$1 AND kind='release.attestation')`, app)
 		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM operations WHERE app=$1 AND kind='release.attestation'`, app)
 		_ = database.RecordArchiveCapacity(context.Background(), false, "")
 	})
 	ctx := context.Background()
-	if err := database.SetEvidenceReservePolicy(ctx, store.EvidenceReservePolicy{Enabled: true, MaxPending: 10, MaxPendingAge: time.Hour}); err != nil {
+	if err := database.SetEvidenceReservePolicy(ctx, store.EvidenceReservePolicy{Enabled: true, MaxPending: 1000000, MaxPendingAge: 50 * 365 * 24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.RecordArchiveCapacity(ctx, true, "test archive full"); err != nil {

@@ -88,7 +88,7 @@ func applyEvidenceReservePolicy(ctx context.Context, cfg *config.Config, db *sto
 	}
 	return db.SetEvidenceReservePolicy(ctx, store.EvidenceReservePolicy{Enabled: cfg.EvidenceReserve == "enforce",
 		MaxPending: cfg.EvidenceReserveMaxPending, MaxPendingAge: cfg.EvidenceReserveMaxPendingAge,
-		MaxSignedAcceptanceBytes: cfg.EvidenceReserveSignedBytes})
+		MaxSignedAcceptanceBytes: cfg.EvidenceReserveSignedBytes, MaxReleaseAttestationBytes: cfg.EvidenceReserveAttestBytes})
 }
 
 // runEvidenceArchiver runs bounded archive passes until ctx ends. Failures

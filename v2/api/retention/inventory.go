@@ -38,6 +38,7 @@ var PayloadInventory = []PayloadRetention{
 	{"operation_request_identities", ClassHotEvidence, nil, "versioned replay expiry retains the identity/fingerprint namespace tombstone; a matching control database backup is required for operation-receipt index recovery"},
 	{"operation_acceptance_intents", ClassHotEvidence, []string{"request_canonical_bytes", "canonical_bytes"}, "archive-verified expired terminal Fleet GitHub receipts can retire the hot signed payload; other acceptance kinds remain hot"},
 	{"signed_acceptance_byte_reservations", ClassHotEvidence, nil, "logical bytes are released atomically only with eligible archive-backed Fleet GitHub acceptance retirement; other reservations remain hot"},
+	{"release_attestation_byte_reservations", ClassHotEvidence, nil, "logical release attestation bytes remain reserved until their hot operation is retired through a qualified archive reader"},
 	{"retired_operation_acceptances", ClassCurrentState, nil, "permanent operation, replay-identity, audit-receipt and archive linkage after hot payload retirement"},
 	{"operation_effects", ClassHotEvidence, []string{"launch_payload"}, "unresolved effects and retry-safety evidence"},
 	{"restart_effect_sources", ClassHotEvidence, nil, "per-source restart attempt and acknowledgement evidence"},

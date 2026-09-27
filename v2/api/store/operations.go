@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"norn/v2/api/model"
 )
@@ -436,6 +437,10 @@ func (db *DB) insertCompletedOperation(ctx context.Context, op *model.Operation,
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now(), $16)
 	`, op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, payload, metadata, op.Attempts, op.MaxAttempts, op.NextAttemptAt, op.StartedAt, op.FinishedAt)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0045" {
+			return &EvidenceReserveExhaustedError{Reasons: []string{"release attestation logical byte limit reached"}}
+		}
 		return err
 	}
 	return tx.Commit(ctx)
