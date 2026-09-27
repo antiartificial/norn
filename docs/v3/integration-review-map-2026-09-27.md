@@ -134,8 +134,12 @@ upgrade, or a compatible rollback target. M0, M1, and M5 remain open.
 ## Lane 5 ingress stop condition
 
 Source review at head `4d8a024a` found that the private etcd
-`finishClaimedDeployment` path validates `ActiveWeight` against the accepted
-desired weight but accepts the terminal region value supplied by its caller.
+`finishClaimedDeployment` path validated `ActiveWeight` against the accepted
+desired weight but accepted the terminal region value supplied by its caller.
+The private path now rejects positive active weight without a deployment-bound
+ingress proof; disposable etcd tests exercise that refusal and zero-traffic
+terminal fencing. This keeps the known gap closed while proof persistence and
+worker integration are developed.
 `ingress.ObserveRenderedRoute`, node endpoint probes, and public-host probes
 are separate read-only helpers; no durable region result binds their output
 to the exact accepted deployment, route generation, complete Fleet ingress

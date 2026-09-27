@@ -89,7 +89,8 @@ func (s *V3OperationStore) verifyTerminalDeploymentProjection(ctx context.Contex
 }
 
 // finishClaimedDeployment is private until the etcd deploy worker verifies
-// every external effect and can supply a complete result. It terminalizes the
+// every external effect and a durable ingress proof can authorize positive
+// traffic. It terminalizes the
 // operation, deployment, region observations, and app admission in one claim-
 // and app-lock-fenced transaction.
 func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, result model.Deployment, regions []model.DeploymentRegion, status model.OperationStatus, message string, metadata map[string]interface{}) error {
@@ -192,6 +193,12 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 		region, found := byName[expected.Name]
 		if !found || region.NomadRegion != expected.NomadRegion || region.DesiredWeight != expected.TrafficWeight || region.ActiveWeight < 0 || region.ActiveWeight > expected.TrafficWeight {
 			return fmt.Errorf("deployment region result differs from accepted placement")
+		}
+		if region.ActiveWeight > 0 {
+			// Nomad health and caller-supplied weights cannot establish observed
+			// traffic. Keep the private completion path closed until a durable,
+			// deployment-bound ingress proof is compared in this transaction.
+			return fmt.Errorf("positive active traffic requires deployment-bound ingress proof")
 		}
 		if !validDeploymentStatus(region.Status) {
 			return fmt.Errorf("deployment region result status is invalid")

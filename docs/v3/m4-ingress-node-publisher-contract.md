@@ -106,6 +106,12 @@ proof before positive active weight.
 
 ## Accepted route binding and completion fence
 
+The private etcd `finishClaimedDeployment` path now rejects every positive
+`ActiveWeight` until a deployment-bound ingress proof is durably compared in
+its terminal transaction. Zero-traffic completion still exercises the claim,
+app-lock and admission transaction in disposable etcd tests. This is a safety
+fence, not the missing proof implementation or normal app execution.
+
 The current `Deployment` and `ResolvedRegion` records identify the app,
 deployment, region, and desired regional traffic weight. They do not identify
 the public endpoint, process, previous deployment backend, or a complete

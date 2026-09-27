@@ -170,21 +170,18 @@ func TestV3DeploymentWorkerEffectThroughEtcdAndDisposableNomad(t *testing.T) {
 	result.Status = model.StatusDeployed
 	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: input.Region, NomadRegion: input.NomadRegion,
 		Status: model.StatusDeployed, DesiredWeight: accepted.Regions[0].TrafficWeight, ActiveWeight: accepted.Regions[0].TrafficWeight}}
-	if err := adapter.finishClaimedDeployment(ctx, claim, lock, result, regions, model.OperationSucceeded, "deployed", nil); err != nil {
-		t.Fatal(err)
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, result, regions, model.OperationSucceeded, "deployed", nil); err == nil || !strings.Contains(err.Error(), "deployment-bound ingress proof") {
+		t.Fatalf("Nomad health alone permitted positive active traffic: %v", err)
 	}
-	replayedTerminal, err := adapter.ResolveIdentity(ctx, request.Identity)
-	if err != nil || replayedTerminal.Operation.Status != model.OperationSucceeded || replayedTerminal.Deployment == nil ||
-		replayedTerminal.Deployment.Status != model.StatusDeployed {
-		t.Fatalf("signed deployment replay is incomplete: operation=%+v deployment=%+v err=%v", replayedTerminal.Operation, replayedTerminal.Deployment, err)
+	stillRunning, err := adapter.GetOperation(ctx, accepted.Operation.ID)
+	if err != nil || stillRunning.Status != model.OperationRunning {
+		t.Fatalf("route-proof refusal changed operation: operation=%+v err=%v", stillRunning, err)
 	}
-	observedDeployment, err := adapter.GetDeployment(ctx, result.ID)
-	if err != nil || observedDeployment.Status != model.StatusDeployed || len(observedDeployment.Regions) != 1 ||
-		observedDeployment.Regions[0].Status != model.StatusDeployed {
-		t.Fatalf("terminal region projection is incomplete: deployment=%+v err=%v", observedDeployment, err)
+	if resultRows, err := etcd.Get(ctx, adapter.deploymentRegionResultPrefix(accepted.Deployment.ID), clientv3.WithPrefix()); err != nil || len(resultRows.Kvs) != 0 {
+		t.Fatalf("route-proof refusal wrote region result: rows=%d err=%v", len(resultRows.Kvs), err)
 	}
 	active, err := etcd.Get(ctx, adapter.appAdmissionActivePrefix(id), clientv3.WithPrefix())
-	if err != nil || len(active.Kvs) != 0 {
-		t.Fatalf("terminal deployment retained app admission: entries=%d err=%v", len(active.Kvs), err)
+	if err != nil || len(active.Kvs) != 1 {
+		t.Fatalf("route-proof refusal released app admission: entries=%d err=%v", len(active.Kvs), err)
 	}
 }

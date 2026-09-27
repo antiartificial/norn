@@ -3,6 +3,8 @@ package etcdstore
 import (
 	"context"
 	"errors"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,10 +12,59 @@ import (
 	"norn/v2/api/store"
 )
 
-func TestV3PrivateDeploymentCompletionFencesAndReleasesEtcd(t *testing.T) {
+func TestV3PrivateDeploymentCompletionRequiresIngressProofEtcd(t *testing.T) {
 	adapter, client, _ := privateInvocationEtcdStore(t)
 	ctx := context.Background()
 	request := deploymentAdmissionRequest(t, adapter.authority)
+	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := adapter.ClaimNextOperation(ctx, "deploy-worker", time.Minute, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, acquired, err := adapter.AcquireAppOperationLock(ctx, "demo")
+	if err != nil || !acquired {
+		t.Fatalf("app lock acquired=%v err=%v", acquired, err)
+	}
+	defer lock.Release()
+	result := *accepted.Deployment
+	result.Status = model.StatusDeployed
+	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: "west", NomadRegion: "global", Status: model.StatusDeployed, DesiredWeight: 100, ActiveWeight: 100}}
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, result, regions, model.OperationSucceeded, "deployed", nil); err == nil || !strings.Contains(err.Error(), "deployment-bound ingress proof") {
+		t.Fatalf("positive active traffic bypassed ingress proof: %v", err)
+	}
+	operation, err := adapter.GetOperation(ctx, accepted.Operation.ID)
+	if err != nil || operation.Status != model.OperationRunning {
+		t.Fatalf("ingress refusal changed operation: operation=%+v err=%v", operation, err)
+	}
+	results, err := client.Get(ctx, adapter.deploymentRegionResultPrefix(result.ID), clientv3.WithPrefix())
+	if err != nil || len(results.Kvs) != 0 {
+		t.Fatalf("ingress refusal wrote region result: count=%d err=%v", len(results.Kvs), err)
+	}
+	active, err := client.Get(ctx, adapter.appAdmissionActiveKey("demo", accepted.Operation.ID))
+	if err != nil || len(active.Kvs) != 1 {
+		t.Fatalf("ingress refusal released app admission: count=%d err=%v", len(active.Kvs), err)
+	}
+}
+
+func zeroTrafficDeploymentAdmissionRequest(t *testing.T, authority string) store.OperationAcceptance {
+	t.Helper()
+	request := deploymentAdmissionRequest(t, authority)
+	request.Regions[0].TrafficWeight = 0
+	var err error
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request
+}
+
+func TestV3PrivateDeploymentCompletionFencesAndReleasesEtcd(t *testing.T) {
+	adapter, client, _ := privateInvocationEtcdStore(t)
+	ctx := context.Background()
+	request := zeroTrafficDeploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +83,7 @@ func TestV3PrivateDeploymentCompletionFencesAndReleasesEtcd(t *testing.T) {
 	}
 	result := *accepted.Deployment
 	result.Status = model.StatusDeployed
-	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: "west", NomadRegion: "global", Status: model.StatusDeployed, DesiredWeight: 100, ActiveWeight: 100, EvalID: "eval-1"}}
+	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: "west", NomadRegion: "global", Status: model.StatusDeployed, DesiredWeight: 0, ActiveWeight: 0, EvalID: "eval-1"}}
 	if err := adapter.finishClaimedDeployment(ctx, claim, lock, result, regions, model.OperationSucceeded, "deployed", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +155,7 @@ func TestV3PrivateDeploymentCompletionRejectsLostAppLockEtcd(t *testing.T) {
 func TestV3PrivateDeploymentCompletionRejectsStaleClaimEtcd(t *testing.T) {
 	adapter, client, _ := privateInvocationEtcdStore(t)
 	ctx := context.Background()
-	request := deploymentAdmissionRequest(t, adapter.authority)
+	request := zeroTrafficDeploymentAdmissionRequest(t, adapter.authority)
 	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +178,7 @@ func TestV3PrivateDeploymentCompletionRejectsStaleClaimEtcd(t *testing.T) {
 	defer lock.Release()
 	result := *accepted.Deployment
 	result.Status = model.StatusDeployed
-	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: "west", NomadRegion: "global", Status: model.StatusDeployed, DesiredWeight: 100, ActiveWeight: 100}}
+	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: "west", NomadRegion: "global", Status: model.StatusDeployed, DesiredWeight: 0, ActiveWeight: 0}}
 	if err := adapter.finishClaimedDeployment(ctx, stale, lock, result, regions, model.OperationSucceeded, "stale", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("stale claim finished deployment: %v", err)
 	}
