@@ -3,10 +3,16 @@ package etcdstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/database"
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -20,6 +26,60 @@ func postgresCatalogFixture() database.Catalog {
 			CredentialRef: "secret:app/db", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}}},
 		Profiles: []database.DeploymentProfile{{APIVersion: database.APIVersion, ID: "local", Topology: database.DeploymentTopologyLocal,
 			AvailabilityClass: database.AvailabilitySingleHost, DatabaseBindings: map[string]string{"primary": "primary"}}}}
+}
+
+func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
+	adapter, client, _ := privateInvocationEtcdStore(t)
+	ctx := context.Background()
+	accept := func(key string) store.OperationClaim {
+		t.Helper()
+		request := store.OperationAcceptance{
+			Identity: store.OperationRequestIdentity{Authority: adapter.authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"},
+				Kind: "database.catalog-activate", Resource: "database-catalog", Key: key},
+			Operation: model.Operation{ID: uuid.NewString(), Kind: "database.catalog-activate", Ref: "database-catalog", Source: "test",
+				Risk: "write", MaxAttempts: 1},
+			Audit: store.AcceptanceAuditContext{Source: "test", Scopes: []string{"database:write"}},
+		}
+		var err error
+		request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adapter.Accept(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+		operation, claim, err := adapter.ClaimNextOperation(ctx, "catalog-worker", time.Minute, []string{"database.catalog-activate"})
+		if err != nil || operation == nil || operation.ID != request.Operation.ID {
+			t.Fatalf("claim %+v: %v", operation, err)
+		}
+		return claim
+	}
+	stale := accept("stale")
+	owner, err := client.Get(ctx, adapter.ownerKey(stale.OperationID()))
+	if err != nil || len(owner.Kvs) != 1 {
+		t.Fatalf("owner: %v", err)
+	}
+	if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, stale, 0, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("stale claim changed routing: %v", err)
+	}
+	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
+		t.Fatalf("catalog appeared: %v", err)
+	}
+	live := accept("live")
+	activated, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, 0, postgresCatalogFixture(), "operator", map[string]interface{}{"expectedRevision": 0})
+	if err != nil || activated.Revision != 1 {
+		t.Fatalf("activate %+v: %v", activated, err)
+	}
+	finished, err := adapter.GetOperation(ctx, live.OperationID())
+	if err != nil || finished.Status != model.OperationSucceeded || fmt.Sprint(finished.Metadata["revision"]) != "1" || finished.Metadata["storedDigest"] != activated.Digest {
+		t.Fatalf("terminal receipt %+v: %v", finished, err)
+	}
+	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, 1, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("completed claim reused: %v", err)
+	}
 }
 
 func TestV3PostgresCatalogActivationEtcd(t *testing.T) {
