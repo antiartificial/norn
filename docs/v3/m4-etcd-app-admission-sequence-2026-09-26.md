@@ -213,10 +213,15 @@ active pre-index work must first drain or reconcile it.
    positive staged catalog revision and renders the exact revision under
    `nomad/jobs/<revision-job-id>`. Existing checked Nomad Variable delivery
    can keep old and new revision job paths independent in a fake API test.
-   The deployment worker must still resolve authorized database targets,
-   stage that material in the revision job variable, and prove its target
-   identity before submitting the job; the translation and variable tests
-   alone do not deliver a live connection.
+   A private managed-job input plan now enumerates the exact revision-scoped
+   variable keys. The worker rejects a plan that omits a rendered template
+   key or staged database target, then reads the job Variable and compares
+   delivered target identity before reserving a Nomad effect. A constructor
+   binds this plan to the accepted deployment's spec digest and typed target
+   identities. The normal etcd dispatch still must obtain those targets from
+   signed acceptance, stage their material and required process secrets in
+   the revision job Variable, and invoke the constructor; no normal managed
+   job path is enabled by the private verifier alone.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact
