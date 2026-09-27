@@ -47,6 +47,9 @@ func TestCompleteDeploymentResultIsClaimFencedAndAtomicAcrossRegions(t *testing.
 	if err := db.CompleteDeploymentResult(ctx, claim, d, []DeploymentCompletionRegion{{Region: "east", ActiveWeight: 60}, {Region: "missing", ActiveWeight: 40}}, "done", nil); err == nil {
 		t.Fatal("partial region completion committed")
 	}
+	if err := db.CompleteDeploymentResult(ctx, claim, d, []DeploymentCompletionRegion{{Region: "east", ActiveWeight: 60}, {Region: "west", ActiveWeight: 41}}, "done", nil); err == nil {
+		t.Fatal("region weight differing from accepted intent committed")
+	}
 	var status model.DeployStatus
 	var deployedRegions int
 	if err := pool.QueryRow(ctx, `SELECT status FROM deployments WHERE id=$1`, d.ID).Scan(&status); err != nil || status != model.StatusQueued {

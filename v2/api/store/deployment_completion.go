@@ -69,7 +69,8 @@ func (db *DB) CompleteDeploymentResult(ctx context.Context, claim OperationClaim
 		result, err := tx.Exec(ctx, `UPDATE deployment_regions
 			SET status='deployed', eval_id=CASE WHEN $3='' THEN eval_id ELSE $3 END,
 			last_error='', active_weight=$4, updated_at=now()
-			WHERE deployment_id=$1 AND region=$2 AND status IN ('queued','submitting','healthy')`, d.ID, region.Region, region.EvalID, region.ActiveWeight)
+			WHERE deployment_id=$1 AND region=$2 AND desired_weight=$4
+			AND status IN ('queued','submitting','healthy')`, d.ID, region.Region, region.EvalID, region.ActiveWeight)
 		if err != nil {
 			return err
 		}
