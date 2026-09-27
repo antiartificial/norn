@@ -52,6 +52,15 @@ func (b *backendFake) StartSnapshot(ctx context.Context, execution BackendExecut
 	}
 	return b.Start(ctx, execution, effect.LaunchMaterial{})
 }
+func (b *backendFake) StartMigration(ctx context.Context, request migrationRunnerRequest) error {
+	if b.snapshotStartErr != nil {
+		return b.snapshotStartErr
+	}
+	return b.Start(ctx, request.Execution, effect.LaunchMaterial{})
+}
+func (b *backendFake) ObserveMigration(ctx context.Context, execution BackendExecution, _ MigrationDescriptor) (BackendState, error) {
+	return b.Observe(ctx, execution)
+}
 func (b *backendFake) ObserveSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor) (BackendState, error) {
 	return b.Observe(ctx, execution)
 }

@@ -58,6 +58,14 @@ type SnapshotBackend interface {
 	CopySnapshotArtifact(context.Context, BackendExecution, SnapshotDescriptor, io.Writer) (SnapshotManifest, error)
 }
 
+// MigrationBackend keeps private launch material out of the generic command
+// backend. Its terminal status proves process exit only; the database effect
+// still requires an independent postcondition verifier.
+type MigrationBackend interface {
+	StartMigration(context.Context, migrationRunnerRequest) error
+	ObserveMigration(context.Context, BackendExecution, MigrationDescriptor) (BackendState, error)
+}
+
 type Manager struct {
 	root                   string
 	rootID                 string
@@ -364,6 +372,60 @@ func (m *Manager) LaunchSnapshot(ctx context.Context, reservation effect.Reserva
 		}
 		if err := backend.StartSnapshot(ctx, backendExecution(record, directory), descriptor, material); err != nil {
 			return fmt.Errorf("start supervised snapshot: %w", err)
+		}
+		record.Phase = "launched"
+		if err := m.writeJournal(directory, record); err != nil {
+			return err
+		}
+		identity = journalIdentity(record)
+		return nil
+	})
+	return identity, err
+}
+
+// LaunchMigration records the runtime identity before handing private material
+// to the runner. An ambiguous Start is never retried under the same reservation.
+func (m *Manager) LaunchMigration(ctx context.Context, reservation effect.Reservation, material MigrationLaunchMaterial) (effect.ExecutionIdentity, error) {
+	descriptor, err := m.verifyMigrationDescriptor(reservation.LaunchPayload)
+	if err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	if err := validateMigrationLaunchMaterial(descriptor, material); err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	backend, ok := m.backend.(MigrationBackend)
+	if !ok {
+		return effect.ExecutionIdentity{}, fmt.Errorf("migration supervisor backend is unavailable")
+	}
+	var identity effect.ExecutionIdentity
+	err = m.withExecutionLock(reservation.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID})
+		if err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID != "" {
+			identity = journalIdentity(record)
+			return nil
+		}
+		record.RuntimeInstanceID, record.Phase = uuid.NewString(), "prepared"
+		if err := m.recordLaunchRuntime(record); err != nil {
+			return err
+		}
+		encoded, _ := json.Marshal(record)
+		if err := writeDurableJSON(directory, launchIntentName, map[string]string{"runtimeInstanceId": record.RuntimeInstanceID, "mac": m.mac(encoded)}); err != nil {
+			return err
+		}
+		if err := m.writeJournal(directory, record); err != nil {
+			return err
+		}
+		files := make([]migrationPrivateFile, len(material.PrivateFiles))
+		for i, file := range material.PrivateFiles {
+			files[i] = migrationPrivateFile{Name: file.Name, Contents: file.Contents, Template: file.Template}
+		}
+		request := migrationRunnerRequest{Execution: backendExecution(record, directory), Descriptor: descriptor,
+			Command: material.Command, Directory: material.Directory, Environment: material.Environment, PrivateFiles: files}
+		if err := backend.StartMigration(ctx, request); err != nil {
+			return fmt.Errorf("start supervised migration: %w", err)
 		}
 		record.Phase = "launched"
 		if err := m.writeJournal(directory, record); err != nil {

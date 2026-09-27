@@ -3,13 +3,75 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"norn/v2/api/effect"
 )
+
+func TestManagerMigrationLaunchIsDurableAndPrivate(t *testing.T) {
+	backend := newBackendFake()
+	root := t.TempDir()
+	manager := testManager(t, root, backend)
+	command := "printf done >/dev/null"
+	commandDigest := sha256.Sum256([]byte(command))
+	intent := testMigrationIntent()
+	intent.CommandSHA256 = hex.EncodeToString(commandDigest[:])
+	payload, err := manager.BuildMigrationDescriptor(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: "authority", Resource: "app/demo/migrate",
+		OperationClaim: effect.OperationClaim{OperationID: "operation", OwnerID: "worker", Generation: 1},
+		Stage:          MigrationStage, Supervisor: "migration-runner", SupervisorExecutionID: "migration-private", LaunchPayload: payload}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	material := MigrationLaunchMaterial{Command: command, Directory: t.TempDir(),
+		Environment:  []string{"PGPASSFILE={{private-file:passfile}}"},
+		PrivateFiles: []MigrationPrivateFile{{Name: "passfile", Contents: []byte("private-canary")}}}
+	wrong := material
+	wrong.Command = "printf changed >/dev/null"
+	if _, err := manager.LaunchMigration(context.Background(), reservation, wrong); err == nil {
+		t.Fatal("changed command crossed accepted intent")
+	}
+	backend.snapshotStartErr = errors.New("acknowledgement lost")
+	if _, err := manager.LaunchMigration(context.Background(), reservation, material); err == nil {
+		t.Fatal("ambiguous migration start was accepted")
+	}
+	backend.snapshotStartErr = nil
+	identity, err := manager.LaunchMigration(context.Background(), reservation, material)
+	if err != nil || identity.RuntimeInstanceID == "" || backend.starts != 0 {
+		t.Fatalf("ambiguous retry relaunched migration: identity=%+v starts=%d err=%v", identity, backend.starts, err)
+	}
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if bytes.Contains(data, []byte(command)) || bytes.Contains(data, []byte("private-canary")) {
+			t.Errorf("migration private material persisted in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func testMigrationIntent() MigrationIntent {
 	return MigrationIntent{
