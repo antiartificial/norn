@@ -13,6 +13,8 @@ with reviewed immutable identities, configure the destination database and
 persistent file volume, then explicitly admit writes only for the current
 owner. The web, worker, and tick commands all refuse writes when fenced.
 Never set `WRITE_ENABLED=true` on source and target at the same time.
+CI builds the Dockerfile to catch packaging failures; that build is not a
+signed or published release image.
 Run the explicit `migrate` command before the rehearsal; `serve` never runs
 schema changes on startup. Do not run migrations as part of a fenced source.
 

@@ -75,6 +75,14 @@ jobs:
           go test -count=1 ./...
           python3 -m unittest -v test_compare_state.py
 
+  mobility-fixture-image:
+    name: M7 mobility fixture image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - name: Build deploy-disabled fixture image
+        run: docker build --progress=plain --tag norn/mobility-fixture:ci v2/infra/mobility-fixture
+
   api-production-etcd:
     name: api production etcd TLS RBAC
     runs-on: ubuntu-24.04
