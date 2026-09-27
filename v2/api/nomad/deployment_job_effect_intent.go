@@ -5,6 +5,7 @@ package nomad
 // digest is calculated from the full private job immediately before Reserve.
 type DeploymentJobEffectInput struct {
 	App                    string `json:"app"`
+	JobID                  string `json:"jobId,omitempty"`
 	DeploymentID           string `json:"deploymentId"`
 	Region                 string `json:"region"`
 	NomadRegion            string `json:"nomadRegion"`

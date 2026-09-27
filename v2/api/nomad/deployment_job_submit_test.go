@@ -29,6 +29,24 @@ func deploymentCASRequest() CASDeploymentJobRequest {
 	return request
 }
 
+func managedDeploymentCASRequest() CASDeploymentJobRequest {
+	request := deploymentCASRequest()
+	request.PlacementRegion = "west"
+	request.ExpectedJobModifyIndex = 0
+	var err error
+	request.JobID, err = ManagedDeploymentJobID(request.App, request.PlacementRegion, request.DeploymentID)
+	if err != nil {
+		panic(err)
+	}
+	request.Job.ID = &request.JobID
+	request.JobDigest, err = DigestDeploymentJob(request.Job)
+	if err != nil {
+		panic(err)
+	}
+	request.Job.Meta[DeploymentJobDigestMeta] = request.JobDigest
+	return request
+}
+
 func TestDeploymentJobDigestExcludesDerivedExecutionMarker(t *testing.T) {
 	request := deploymentCASRequest()
 	baseline := request.JobDigest
@@ -75,6 +93,32 @@ func TestRegisterDeploymentJobCASUsesExpectedRevision(t *testing.T) {
 	evalID, err := client.RegisterDeploymentJobCAS(context.Background(), request)
 	if err != nil || evalID != "eval-1" || requests != 1 {
 		t.Fatalf("CAS submit eval=%q calls=%d err=%v", evalID, requests, err)
+	}
+}
+
+func TestRegisterManagedDeploymentJobCASUsesCreateOnlyRevisionJob(t *testing.T) {
+	request := managedDeploymentCASRequest()
+	writes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writes++
+		var body nomadapi.JobRegisterRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || r.Method != http.MethodPut || r.URL.Path != "/v1/jobs" ||
+			!body.EnforceIndex || body.JobModifyIndex != 0 || body.Job == nil || body.Job.ID == nil || *body.Job.ID != request.JobID {
+			t.Errorf("managed job write escaped create-only revision identity: body=%+v err=%v", body, err)
+		}
+		_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{EvalID: "eval-managed", JobModifyIndex: 1})
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RegisterDeploymentJobCAS(context.Background(), request); err != nil || writes != 1 {
+		t.Fatalf("managed registration writes=%d err=%v", writes, err)
+	}
+	request.JobID = "unbound-job"
+	if _, err := client.RegisterDeploymentJobCAS(context.Background(), request); err == nil || writes != 1 {
+		t.Fatalf("unbound managed identity reached Nomad: writes=%d err=%v", writes, err)
 	}
 }
 

@@ -35,14 +35,14 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 	indeterminate := func() (DeploymentJobObservation, error) {
 		return DeploymentJobObservation{State: DeploymentJobIndeterminate}, ErrDeploymentJobLookupIndeterminate
 	}
-	if c == nil || c.api == nil || strings.TrimSpace(request.App) == "" || strings.TrimSpace(request.Region) == "" ||
+	if c == nil || c.api == nil || strings.TrimSpace(request.App) == "" || !request.validJobIdentity() || strings.TrimSpace(request.Region) == "" ||
 		strings.TrimSpace(request.DeploymentID) == "" || strings.TrimSpace(request.SpecDigest) == "" ||
 		strings.TrimSpace(request.OperationID) == "" || strings.TrimSpace(request.ExecutionID) == "" ||
 		strings.TrimSpace(request.JobDigest) == "" {
 		return indeterminate()
 	}
 	query := (&nomadapi.QueryOptions{Region: request.Region}).WithContext(ctx)
-	job, _, err := c.api.Jobs().Info(request.App, query)
+	job, _, err := c.api.Jobs().Info(request.EffectiveJobID(), query)
 	if err != nil {
 		if nomadHTTPStatus(err) == http.StatusNotFound {
 			return DeploymentJobObservation{State: DeploymentJobNotFound}, nil
@@ -52,7 +52,7 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 	if !matchesDeploymentJobRevision(job, request) {
 		return indeterminate()
 	}
-	submission, _, err := c.api.Jobs().Submission(request.App, int(*job.Version), query)
+	submission, _, err := c.api.Jobs().Submission(request.EffectiveJobID(), int(*job.Version), query)
 	if err != nil || submission == nil || submission.Format != "json" || submission.Source == "" {
 		return indeterminate()
 	}
@@ -68,7 +68,7 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 	if err != nil || plan == nil || plan.JobModifyIndex != *job.JobModifyIndex || plan.Diff == nil || plan.Diff.Type != "None" {
 		return indeterminate()
 	}
-	current, _, err := c.api.Jobs().Info(request.App, query)
+	current, _, err := c.api.Jobs().Info(request.EffectiveJobID(), query)
 	if err != nil || !matchesDeploymentJobRevision(current, request) || current.Version == nil ||
 		*current.Version != *job.Version || *current.JobModifyIndex != *job.JobModifyIndex {
 		return indeterminate()
@@ -77,14 +77,14 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 }
 
 func matchesDeploymentSubmission(job *nomadapi.Job, request CASDeploymentJobRequest) bool {
-	return job != nil && job.ID != nil && *job.ID == request.App && job.Region != nil && *job.Region == request.Region &&
+	return job != nil && job.ID != nil && *job.ID == request.EffectiveJobID() && job.Region != nil && *job.Region == request.Region &&
 		job.Meta[DeploymentIDMeta] == request.DeploymentID && job.Meta[SpecDigestMeta] == request.SpecDigest &&
 		job.Meta[DeploymentOperationIDMeta] == request.OperationID && job.Meta[DeploymentExecutionIDMeta] == request.ExecutionID &&
 		job.Meta[DeploymentJobDigestMeta] == request.JobDigest
 }
 
 func matchesDeploymentJobRevision(job *nomadapi.Job, request CASDeploymentJobRequest) bool {
-	return job != nil && job.ID != nil && *job.ID == request.App && job.Region != nil && *job.Region == request.Region &&
+	return job != nil && job.ID != nil && *job.ID == request.EffectiveJobID() && job.Region != nil && *job.Region == request.Region &&
 		job.JobModifyIndex != nil && *job.JobModifyIndex > request.ExpectedJobModifyIndex && job.Version != nil &&
 		job.Meta[DeploymentIDMeta] == request.DeploymentID && job.Meta[SpecDigestMeta] == request.SpecDigest &&
 		job.Meta[DeploymentOperationIDMeta] == request.OperationID && job.Meta[DeploymentExecutionIDMeta] == request.ExecutionID &&

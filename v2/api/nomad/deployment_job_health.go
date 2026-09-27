@@ -44,11 +44,11 @@ func (c *Client) ObserveDeploymentJobHealth(ctx context.Context, request CASDepl
 		return indeterminate()
 	}
 	query := (&nomadapi.QueryOptions{Region: request.Region}).WithContext(ctx)
-	job, _, err := c.api.Jobs().Info(request.App, query)
+	job, _, err := c.api.Jobs().Info(request.EffectiveJobID(), query)
 	if err != nil || !exactDeploymentHealthJob(job, request, identity) {
 		return indeterminate()
 	}
-	stubs, _, err := c.api.Jobs().Allocations(request.App, true, query)
+	stubs, _, err := c.api.Jobs().Allocations(request.EffectiveJobID(), true, query)
 	if err != nil {
 		return indeterminate()
 	}
@@ -61,7 +61,7 @@ func (c *Client) ObserveDeploymentJobHealth(ctx context.Context, request CASDepl
 		expected[*group.Name] = true
 	}
 	for _, stub := range stubs {
-		if stub == nil || stub.ID == "" || stub.JobID != request.App || seenIDs[stub.ID] {
+		if stub == nil || stub.ID == "" || stub.JobID != request.EffectiveJobID() || seenIDs[stub.ID] {
 			return indeterminate()
 		}
 		seenIDs[stub.ID] = true
@@ -91,7 +91,7 @@ func (c *Client) ObserveDeploymentJobHealth(ctx context.Context, request CASDepl
 			pending = true
 		}
 	}
-	current, _, err := c.api.Jobs().Info(request.App, query)
+	current, _, err := c.api.Jobs().Info(request.EffectiveJobID(), query)
 	if err != nil || !exactDeploymentHealthJob(current, request, identity) {
 		return indeterminate()
 	}

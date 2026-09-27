@@ -106,7 +106,7 @@ func ObserveDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffect
 	decision.Observation = observed
 	if record.Lifecycle == effect.LifecycleReserved {
 		identity := effect.ExecutionIdentity{Supervisor: record.Reservation.Supervisor, SupervisorExecutionID: record.Reservation.SupervisorExecutionID,
-			RuntimeInstanceID: fmt.Sprintf("nomad-job:%s:%s:%d", request.Region, request.App, observed.JobModifyIndex)}
+			RuntimeInstanceID: fmt.Sprintf("nomad-job:%s:%s:%d", request.Region, request.EffectiveJobID(), observed.JobModifyIndex)}
 		if err := effects.MarkLaunched(ctx, record.Token, identity); err != nil {
 			return decision, nil
 		}
@@ -139,11 +139,12 @@ func CompleteDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffec
 	health, err := remote.ObserveDeploymentJobHealth(ctx, request)
 	if err != nil || health.State != nomad.DeploymentJobHealthReady ||
 		health.JobModifyIndex <= request.ExpectedJobModifyIndex || len(health.AllocationIDs) == 0 ||
-		record.Execution.RuntimeInstanceID != fmt.Sprintf("nomad-job:%s:%s:%d", request.Region, request.App, health.JobModifyIndex) {
+		record.Execution.RuntimeInstanceID != fmt.Sprintf("nomad-job:%s:%s:%d", request.Region, request.EffectiveJobID(), health.JobModifyIndex) {
 		return decision, nil
 	}
 	result, err := json.Marshal(struct {
 		App            string   `json:"app"`
+		JobID          string   `json:"jobId"`
 		DeploymentID   string   `json:"deploymentId"`
 		OperationID    string   `json:"operationId"`
 		ExecutionID    string   `json:"executionId"`
@@ -151,7 +152,7 @@ func CompleteDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffec
 		JobVersion     uint64   `json:"jobVersion"`
 		JobModifyIndex uint64   `json:"jobModifyIndex"`
 		AllocationIDs  []string `json:"allocationIds"`
-	}{request.App, request.DeploymentID, request.OperationID, request.ExecutionID, request.JobDigest,
+	}{request.App, request.EffectiveJobID(), request.DeploymentID, request.OperationID, request.ExecutionID, request.JobDigest,
 		health.JobVersion, health.JobModifyIndex, health.AllocationIDs})
 	if err != nil {
 		return decision, err
@@ -183,13 +184,23 @@ func deploymentJobRequestFromReservation(r effect.Reservation) (nomad.CASDeploym
 		r.Resource != "app/"+input.App+"/deploy/"+input.Region {
 		return nomad.CASDeploymentJobRequest{}, input, fmt.Errorf("deployment effect descriptor is incomplete")
 	}
-	return nomad.CASDeploymentJobRequest{App: input.App, Region: input.NomadRegion, ExpectedJobModifyIndex: input.ExpectedJobModifyIndex,
+	if input.JobID != "" {
+		want, err := nomad.ManagedDeploymentJobID(input.App, input.Region, input.DeploymentID)
+		if err != nil || input.JobID != want || input.ExpectedJobModifyIndex != 0 {
+			return nomad.CASDeploymentJobRequest{}, input, fmt.Errorf("managed deployment job identity is invalid")
+		}
+	}
+	request := nomad.CASDeploymentJobRequest{App: input.App, JobID: input.JobID, Region: input.NomadRegion, ExpectedJobModifyIndex: input.ExpectedJobModifyIndex,
 		DeploymentID: input.DeploymentID, SpecDigest: input.SpecDigest, OperationID: r.OperationClaim.OperationID,
-		ExecutionID: r.SupervisorExecutionID, JobDigest: input.JobDigest, ImageTag: input.ImageTag}, input, nil
+		ExecutionID: r.SupervisorExecutionID, JobDigest: input.JobDigest, ImageTag: input.ImageTag}
+	if input.JobID != "" {
+		request.PlacementRegion = input.Region
+	}
+	return request, input, nil
 }
 
 func exactDeploymentServiceJob(job *nomadapi.Job, input nomad.DeploymentJobEffectInput, request nomad.CASDeploymentJobRequest) bool {
-	if job == nil || job.ID == nil || *job.ID != input.App || job.Region == nil || *job.Region != input.NomadRegion ||
+	if job == nil || job.ID == nil || *job.ID != request.EffectiveJobID() || job.Region == nil || *job.Region != input.NomadRegion ||
 		job.Type == nil || *job.Type != "service" || len(job.TaskGroups) == 0 ||
 		job.Meta[nomad.DeploymentIDMeta] != request.DeploymentID || job.Meta[nomad.SpecDigestMeta] != request.SpecDigest ||
 		job.Meta[nomad.DeploymentOperationIDMeta] != request.OperationID || job.Meta[nomad.DeploymentExecutionIDMeta] != request.ExecutionID ||

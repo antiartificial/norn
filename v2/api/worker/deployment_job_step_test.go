@@ -63,22 +63,28 @@ func (f *deploymentStepEffects) Complete(_ context.Context, _ effect.Token, comp
 type deploymentStepRemote struct {
 	submits      int
 	lookups      int
+	lastSubmit   nomad.CASDeploymentJobRequest
+	lastLookup   nomad.CASDeploymentJobRequest
+	lastHealth   nomad.CASDeploymentJobRequest
 	state        nomad.DeploymentJobObservationState
 	err          error
 	health       nomad.DeploymentJobHealthObservation
 	healthChecks int
 }
 
-func (f *deploymentStepRemote) RegisterDeploymentJobCAS(context.Context, nomad.CASDeploymentJobRequest) (string, error) {
+func (f *deploymentStepRemote) RegisterDeploymentJobCAS(_ context.Context, request nomad.CASDeploymentJobRequest) (string, error) {
 	f.submits++
+	f.lastSubmit = request
 	return "", f.err
 }
-func (f *deploymentStepRemote) LookupDeploymentJobRevision(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error) {
+func (f *deploymentStepRemote) LookupDeploymentJobRevision(_ context.Context, request nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error) {
 	f.lookups++
+	f.lastLookup = request
 	return nomad.DeploymentJobObservation{State: f.state, JobModifyIndex: 12, Version: 1}, nil
 }
-func (f *deploymentStepRemote) ObserveDeploymentJobHealth(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobHealthObservation, error) {
+func (f *deploymentStepRemote) ObserveDeploymentJobHealth(_ context.Context, request nomad.CASDeploymentJobRequest) (nomad.DeploymentJobHealthObservation, error) {
 	f.healthChecks++
+	f.lastHealth = request
 	return f.health, f.err
 }
 
@@ -125,6 +131,50 @@ func TestEnsureDeploymentJobEffectSubmitsOnceThenObserves(t *testing.T) {
 	decision, err = EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job)
 	if err != nil || decision.State != DeploymentJobEffectObserved || remote.submits != 1 || effects.marks != 1 || effects.launched != 1 {
 		t.Fatalf("replay=%+v submits=%d marks=%d launched=%d err=%v", decision, remote.submits, effects.marks, effects.launched, err)
+	}
+}
+
+func TestManagedDeploymentEffectUsesRevisionJobThroughCompletion(t *testing.T) {
+	r, job := deploymentStepFixture(t)
+	var input nomad.DeploymentJobEffectInput
+	if err := json.Unmarshal(r.LaunchPayload, &input); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	input.JobID, err = nomad.ManagedDeploymentJobID(input.App, input.Region, input.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.ID = &input.JobID
+	input.ExpectedJobModifyIndex = 0
+	input.JobDigest, err = nomad.DigestDeploymentJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.Meta[nomad.DeploymentJobDigestMeta] = input.JobDigest
+	r.LaunchPayload, err = json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.InputDigest, err = effect.ComputeInputDigest(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects := &deploymentStepEffects{created: true}
+	remote := &deploymentStepRemote{state: nomad.DeploymentJobFound,
+		health: nomad.DeploymentJobHealthObservation{State: nomad.DeploymentJobHealthReady, JobVersion: 1, JobModifyIndex: 12, AllocationIDs: []string{"alloc-1"}}}
+	decision, err := EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job)
+	if err != nil || decision.State != DeploymentJobEffectObserved || effects.launched != 1 ||
+		remote.lastSubmit.EffectiveJobID() != input.JobID || remote.lastLookup.EffectiveJobID() != input.JobID ||
+		remote.lastSubmit.PlacementRegion != input.Region || remote.lastSubmit.ExpectedJobModifyIndex != 0 {
+		t.Fatalf("managed revision launch=%+v submit=%+v lookup=%+v err=%v", decision, remote.lastSubmit, remote.lastLookup, err)
+	}
+	completed, err := CompleteDeploymentJobEffect(context.Background(), effects, remote, effects.record)
+	if err != nil || completed.State != DeploymentJobEffectObserved || effects.completed != 1 || remote.lastHealth.EffectiveJobID() != input.JobID {
+		t.Fatalf("managed revision completion=%+v health=%+v err=%v", completed, remote.lastHealth, err)
+	}
+	if !strings.Contains(effects.completion.Verification.RuntimeInstanceID, input.JobID) {
+		t.Fatal("completed effect lost revision job provenance")
 	}
 }
 

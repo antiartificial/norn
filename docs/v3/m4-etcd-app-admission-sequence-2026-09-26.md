@@ -200,10 +200,15 @@ active pre-index work must first drain or reconcile it.
    live allocations to carry the new job version. Revision-specific jobs
    keep both backends addressable until the route moves and the old job is
    explicitly drained. Job-scoped Nomad variable templates now follow the
-   revision job ID. The private CAS/readback/health path still assumes
-   `job.ID == app` and needs a signed revision-job identity, create-only
-   submission, job-scoped database/secret delivery, and fenced old-job
-   retirement before managed translation can be dispatched.
+   revision job ID. The private CAS/readback/health path now accepts an
+   optional job ID only when it matches the accepted app, logical region,
+   and deployment ID and uses create-only Nomad CAS. Readback, allocation
+   health, and completion evidence follow that job ID; legacy callers retain
+   their app job lookup. Local fake-Nomad tests cover two simultaneously
+   addressable revision jobs and the worker's completion provenance. The
+   normal etcd dispatch still does not construct this managed job/effect,
+   and job-scoped database/secret delivery, protected Nomad concurrency,
+   ingress publication, and fenced old-job retirement remain required.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact

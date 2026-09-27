@@ -26,6 +26,8 @@ var (
 type CASDeploymentJobRequest struct {
 	Job                    *nomadapi.Job
 	App                    string
+	JobID                  string
+	PlacementRegion        string
 	Region                 string
 	ExpectedJobModifyIndex uint64
 	DeploymentID           string
@@ -36,6 +38,24 @@ type CASDeploymentJobRequest struct {
 	ImageTag               string
 }
 
+func (r CASDeploymentJobRequest) EffectiveJobID() string {
+	if r.JobID != "" {
+		return r.JobID
+	}
+	return r.App
+}
+
+func (r CASDeploymentJobRequest) validJobIdentity() bool {
+	if r.JobID == "" {
+		return r.PlacementRegion == ""
+	}
+	if r.PlacementRegion == "" || r.ExpectedJobModifyIndex != 0 {
+		return false
+	}
+	want, err := ManagedDeploymentJobID(r.App, r.PlacementRegion, r.DeploymentID)
+	return err == nil && r.JobID == want
+}
+
 // RegisterDeploymentJobCAS performs one guarded Nomad registration. A lost
 // response is never permission to submit again; the caller must read back the
 // exact execution marker and job revision before completing its effect.
@@ -43,7 +63,7 @@ func (c *Client) RegisterDeploymentJobCAS(ctx context.Context, request CASDeploy
 	jobDigest, digestErr := hex.DecodeString(request.JobDigest)
 	if c == nil || c.api == nil || request.Job == nil || request.Job.ID == nil || request.Job.Region == nil ||
 		strings.TrimSpace(request.Region) == "" || *request.Job.Region != request.Region ||
-		strings.TrimSpace(request.App) == "" || *request.Job.ID != request.App ||
+		strings.TrimSpace(request.App) == "" || !request.validJobIdentity() || *request.Job.ID != request.EffectiveJobID() ||
 		strings.TrimSpace(request.DeploymentID) == "" || strings.TrimSpace(request.SpecDigest) == "" ||
 		strings.TrimSpace(request.OperationID) == "" || strings.TrimSpace(request.ExecutionID) == "" || digestErr != nil || len(jobDigest) != sha256.Size || hex.EncodeToString(jobDigest) != request.JobDigest ||
 		*request.Job.ID == "" || request.Job.Meta[DeploymentIDMeta] != request.DeploymentID ||
