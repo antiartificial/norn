@@ -128,7 +128,7 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 		if err != nil || !requireExisting {
 			return intent, err
 		}
-		currentTarget, _, err := s.loadFleetAppTarget(ctx, target.App, target.ControlEnvironment)
+		currentTarget, targetRevision, err := s.loadFleetAppTarget(ctx, target.App, target.ControlEnvironment)
 		if err != nil || !sameFleetAppTarget(target, currentTarget) {
 			return nil, fmt.Errorf("Fleet app target changed after route intent")
 		}
@@ -147,6 +147,22 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 		activeRoute, err := s.kv.Get(ctx, activeRouteKey)
 		if err != nil || len(activeRoute.Kvs) != 0 {
 			return nil, fmt.Errorf("initial Fleet route was superseded by an active route")
+		}
+		// Inventory readback can take long enough for the operation lease or
+		// app lock to change. Recheck all local authority in one etcd snapshot
+		// before returning an intent as currently publishable.
+		stillCurrent, err := s.kv.Txn(ctx).If(
+			clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", operationRevision),
+			clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision),
+			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
+			clientv3.Compare(clientv3.Value(s.appLockKey(spec.App)), "=", lock.Fence()),
+			clientv3.Compare(clientv3.ModRevision(s.fleetAppTargetKey(target.App, target.ControlEnvironment)), "=", targetRevision),
+			clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservation.Kvs[0].ModRevision),
+			clientv3.Compare(clientv3.ModRevision(intentKey), "=", intentRevision),
+			clientv3.Compare(clientv3.CreateRevision(activeRouteKey), "=", 0),
+		).Then(clientv3.OpGet(s.ownerKey(claim.OperationID()))).Commit()
+		if err != nil || !stillCurrent.Succeeded || len(stillCurrent.Responses) != 1 || len(stillCurrent.Responses[0].GetResponseRange().Kvs) != 1 || stillCurrent.Responses[0].GetResponseRange().Kvs[0].Lease == 0 {
+			return nil, store.ErrOperationOwnershipLost
 		}
 		return intent, nil
 	}
