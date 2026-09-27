@@ -278,6 +278,17 @@ active pre-index work must first drain or reconcile it.
    subsequently loaded the rendered route, passed actual `/api/rawdata`
    observation, and returned 70 old / 30 new responses over 100 local
    requests. That validates this local composition, not Fleet propagation.
+   Fleet draft [PR #177](https://github.com/antiartificial/norn-fleet/pull/177),
+   stacked on #176, now adds a loopback-only `/api/rawdata` router to Linux
+   ingress bootstrap and requires its effective status in node readiness.
+   The rendered template and local Traefik 3.7.13 fixture passed: the loopback
+   route was enabled and the public entrypoint returned 404 for `/api/rawdata`.
+   No protected Fleet host was changed. Local users on an ingress host are
+   not authenticated by this route, and Norn still lacks a privileged
+   per-node transport, publication orchestration, and public endpoint probes.
+   GitHub's PR #177 contract job did not start: its annotation cites failed
+   account payments or a spending limit. This is an external CI blocker, not
+   a passing or failing contract-test result.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
