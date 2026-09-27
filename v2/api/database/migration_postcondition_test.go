@@ -97,6 +97,16 @@ func TestSQLMigrationPostconditionChecksOriginalMySQLTarget(t *testing.T) {
 	if err != nil || result.Satisfied {
 		t.Fatalf("false MySQL postcondition=%+v err=%v", result, err)
 	}
+	checker.Spec.Query = `SELECT SLEEP(5)`
+	checker.Timeout = 100 * time.Millisecond
+	intent.PostconditionSHA256, _ = checker.Spec.SHA256()
+	started := time.Now()
+	if _, err := checker.CheckMigrationPostcondition(ctx, intent); err == nil {
+		t.Fatal("unbounded MySQL postcondition was accepted")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("MySQL postcondition timeout took %s", elapsed)
+	}
 }
 
 func TestSQLMigrationPostconditionChecksOriginalPostgreSQLTarget(t *testing.T) {
