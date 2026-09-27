@@ -23,7 +23,7 @@ trap cleanup EXIT
   GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 go build -buildvcs=false -o "$scratch/norn-effect-runner" ./cmd/norn-effect-runner
 )
 
-for test_name in TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots TestDeployMigrationRecoversAfterLiteralProcessExit; do
+for test_name in TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots TestDeployMigrationRecoversAfterLiteralProcessExit TestDeployMigrationWaitsForOriginalTransactionAfterAPIExit; do
   docker run --rm --privileged --cgroupns=private \
     --env "NORN_PIPELINE_TEST_RUN=$test_name" \
     --mount "type=bind,src=$repo_root,dst=/src,readonly" \

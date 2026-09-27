@@ -45,10 +45,18 @@ func configureProcessCrashMigrationEffects(t *testing.T, p *Pipeline) {
 	}
 }
 
-// This is opt-in because its command runner requires a disposable privileged
-// cgroup-v2 container. The first API process exits after a real PostgreSQL
-// commit while the migration command is still contained and running.
+// These are opt-in because the command runner requires a disposable privileged
+// cgroup-v2 container.
 func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
+	runDeployMigrationProcessExit(t, false)
+}
+
+func TestDeployMigrationWaitsForOriginalTransactionAfterAPIExit(t *testing.T) {
+	runDeployMigrationProcessExit(t, true)
+}
+
+func runDeployMigrationProcessExit(t *testing.T, duringWrite bool) {
+	t.Helper()
 	if os.Getenv("NORN_REAL_CGROUP_TEST") != "1" || os.Getenv("NORN_PIPELINE_EXTERNAL_PG_ROOT") == "" {
 		t.Skip("run with the disposable Linux pipeline cgroup harness")
 	}
@@ -67,7 +75,7 @@ func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		t.Fatal("migration command did not commit before API exit")
+		t.Fatal("migration command did not reach its API-exit marker")
 	}
 
 	f := newNamedFixture(t)
@@ -82,8 +90,11 @@ func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
 	if strings.Contains(specText, "  - name: reports") || !strings.Contains(specText, "runtime, migration, snapshot") {
 		t.Fatal("migration fixture requirements were not found")
 	}
-	marker = filepath.Join(t.TempDir(), "committed")
+	marker = filepath.Join(t.TempDir(), "migration-progress")
 	command := fmt.Sprintf("psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c 'INSERT INTO migration_probe (id) VALUES (1)' >/dev/null && printf committed > %q && sleep 3", marker)
+	if duringWrite {
+		command = fmt.Sprintf("psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c 'BEGIN; INSERT INTO migration_probe (id) VALUES (1); SELECT pg_sleep(3); COMMIT' >/dev/null & writer=$!; sleep 0.4; printf running > %q; wait \"$writer\"", marker)
+	}
 	image := "registry.example/demo@sha256:" + strings.Repeat("a", 64)
 	specText += fmt.Sprintf("build:\n  image: %s\nmigrationDatabase: primary\nmigrations: %q\nmigrationPostcondition:\n  query: 'SELECT count(*) FROM migration_probe'\n  expectedValue: '1'\n", image, command)
 	if err := os.WriteFile(specPath, []byte(specText), 0o644); err != nil {
@@ -128,7 +139,7 @@ func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
 	journal := t.TempDir()
 	t.Setenv("NORN_DEPLOY_MIGRATION_CGROUP", cgroupRoot)
 	t.Setenv("NORN_DEPLOY_MIGRATION_JOURNAL", journal)
-	child := exec.Command(os.Args[0], "-test.run=^TestDeployMigrationRecoversAfterLiteralProcessExit$")
+	child := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
 	child.Env = append(os.Environ(),
 		"NORN_DEPLOY_MIGRATION_CHILD=1", "NORN_DEPLOY_MIGRATION_MARKER="+marker,
 		"NORN_DEPLOY_CRASH_DB="+os.Getenv("NORN_TEST_DATABASE_URL"), "NORN_DEPLOY_CRASH_SCHEMA="+schema,
@@ -144,7 +155,7 @@ func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
 		}
 	}
 	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("migration did not commit: %v", err)
+		t.Fatalf("migration did not reach API-exit point: %v", err)
 	}
 	var originalRuntime, originalLifecycle string
 	if err := f.db.Pool.QueryRow(ctx, `SELECT runtime_instance_id,lifecycle FROM operation_effects WHERE operation_id=$1 AND stage=$2`, accepted.Operation.ID, supervisor.MigrationStage).Scan(&originalRuntime, &originalLifecycle); err != nil || originalRuntime == "" || originalLifecycle != "launched" {
@@ -155,6 +166,20 @@ func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
 	before, err := os.ReadFile(filepath.Join(commandCgroup, "cgroup.events"))
 	if err != nil || !strings.Contains(string(before), "populated 1") {
 		t.Fatalf("migration command did not survive API exit: %q, %v", before, err)
+	}
+	if duringWrite {
+		connection, err := pgx.Connect(ctx, f.primary.URL("shop"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var visibleRows, activeWriters int
+		if err := connection.QueryRow(ctx, `SELECT count(*) FROM migration_probe`).Scan(&visibleRows); err != nil || visibleRows != 0 {
+			t.Fatalf("uncommitted migration rows were visible at API exit: %d, %v", visibleRows, err)
+		}
+		if err := connection.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname='shop' AND state='active' AND query LIKE '%migration_probe%' AND query LIKE '%pg_sleep%' AND pid <> pg_backend_pid()`).Scan(&activeWriters); err != nil || activeWriters != 1 {
+			t.Fatalf("original transaction active at API exit = %d, %v", activeWriters, err)
+		}
+		_ = connection.Close(ctx)
 	}
 	var sourceBuild, snapshot int
 	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM operation_checkpoints WHERE operation_id=$1 AND stage IN ('source','build')`, accepted.Operation.ID).Scan(&sourceBuild); err != nil || sourceBuild != 2 {

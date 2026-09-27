@@ -88,9 +88,10 @@ process. In a disposable privileged `postgres:16` container with a private
 cgroup namespace, giving `postgres` ownership of a new cgroup subtree and its
 `cgroup.procs` file still produced `Permission denied` when that user tried to
 join the child cgroup. Do not treat the current supervisor-only process-crash
-test as full-pipeline proof. The next fixture should start its PostgreSQL
-servers outside the test process as `postgres`, then run the pipeline/API crash
-case as root against those disposable servers and the real cgroup backend.
+test as full-pipeline proof. The pipeline fixture therefore starts its
+PostgreSQL servers outside the test process as `postgres`, then runs the
+pipeline/API crash case as root against those disposable servers and the real
+cgroup backend.
 That fixture is now available through
 `v2/scripts/test-pipeline-cgroup-linux.sh`: it starts three socket-only
 PostgreSQL servers as `postgres` in container tmpfs, then runs the pipeline
@@ -100,8 +101,14 @@ checkpoints, named snapshots, a PostgreSQL migration command and the real
 cgroup backend. The command commits one row and remains in its command cgroup
 when the first API test process exits. An expired claim is requeued; the
 successor observes the same runtime instance, records one completed effect,
-finds exactly one row, and sees the command cgroup empty. Both Linux tests
-passed on 2026-09-27. Other crash windows, MySQL and protected-runtime
+finds exactly one row, and sees the command cgroup empty. A third isolated
+Linux scenario exits the API while the
+original PostgreSQL transaction is still open: the row is not yet visible,
+`pg_stat_activity` shows the original writer active, and the successor waits
+for that contained command to commit before completing the same effect. It
+also records one row, one completed migration step and no surviving writer.
+All three Linux tests passed on 2026-09-27.
+Other crash windows, MySQL and protected-runtime
 qualification remain open; this local test does not sign M1.
 
 ## Current behavior and risk
