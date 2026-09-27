@@ -309,14 +309,32 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if err != nil || !remoteRevision.Present || remoteRevision.RouteSHA256 != first.RenderedRoute.SHA256 {
 		t.Fatalf("mTLS-authorized file revision=%+v err=%v", remoteRevision, err)
 	}
+	observedRoute := &FleetIngressRouteObservation{Inventory: first.Inventory, RouteSHA256: first.RenderedRoute.SHA256, Generation: first.Generation}
+	for _, node := range first.Inventory.Nodes {
+		observedRoute.Nodes = append(observedRoute.Nodes, ingress.NodeObservation{NodeID: node.ID, MatchedDesiredRouteSHA256: first.RenderedRoute.SHA256, PublishedGeneration: first.Generation})
+	}
+	observe := func(_ context.Context, intent *InitialFleetRouteIntent) (*FleetIngressRouteObservation, error) {
+		if intent.ID != first.ID || intent.RenderedRoute.SHA256 != first.RenderedRoute.SHA256 {
+			t.Fatal("readback used a caller-supplied route instead of the claimed intent")
+		}
+		return observedRoute, nil
+	}
+	if current, err := adapter.observeClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, observe); err != nil || current.RouteSHA256 != first.RenderedRoute.SHA256 {
+		t.Fatalf("claimed route readback=%+v err=%v", current, err)
+	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "unknown-node"); err == nil {
 		t.Fatal("unlisted ingress node received route publication")
 	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, uuid.NewString(), "ingress-01"); err == nil {
 		t.Fatal("unreserved intent ID received route publication")
 	}
-	if _, err := client.Put(ctx, adapter.activeFleetIngressClusterEpochKey("norn-staging"), "replaced-plan"); err != nil {
-		t.Fatal(err)
+	if _, err := adapter.observeClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, func(ctx context.Context, intent *InitialFleetRouteIntent) (*FleetIngressRouteObservation, error) {
+		if _, err := client.Put(ctx, adapter.activeFleetIngressClusterEpochKey("norn-staging"), "replaced-plan"); err != nil {
+			return nil, err
+		}
+		return observe(ctx, intent)
+	}); err == nil {
+		t.Fatal("Fleet inventory replacement during readback produced a claimed observation")
 	}
 	if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("stale Fleet inventory remained publishable after host replacement")

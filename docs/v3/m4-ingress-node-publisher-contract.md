@@ -78,6 +78,11 @@ mutual-TLS file/Traefik readback on every member, and rereads inventory to
 reject a replacement or active-pointer revision change during observation. This result is not a terminal
 traffic proof: app endpoint probes, public load-balancer behavior, accepted
 deployment binding and the completion transaction are still outstanding.
+`ObserveClaimedInitialFleetRoute` now derives the expected route and members
+from the signed, live claimed intent, requires its completed Nomad health
+effect, and rechecks the intent after readback. A disposable-etcd test rejects
+an inventory replacement during that interval. This is still file/Traefik
+observation; it does not prove app endpoint or public traffic.
 `ObserveCurrentFleetIngressTraffic` now composes that readback with an HTTPS
 app endpoint probe on each exact private ingress IP and a normal public DNS
 probe, then repeats every-node route readback and rechecks the active Fleet inventory and cluster epoch. The expected response digest and
