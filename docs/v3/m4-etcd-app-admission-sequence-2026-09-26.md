@@ -218,8 +218,10 @@ active pre-index work must first drain or reconcile it.
    key or staged database target, then reads the job Variable and compares
    delivered target identity before reserving a Nomad effect. A constructor
    binds this plan to the accepted deployment's spec digest and typed target
-   identities. The normal etcd dispatch still must obtain those targets from
-   signed acceptance, stage their material and required process secrets in
+   identities. The etcd effect reservation now compares the plan's catalog
+   revision and every expected runtime target to the signed
+   `databaseTargets` acceptance payload before reserving the effect. The
+   normal etcd dispatch still must stage target material and process secrets in
    the revision job Variable, and invoke the constructor; no normal managed
    job path is enabled by the private verifier alone.
 

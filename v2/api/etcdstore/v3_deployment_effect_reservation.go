@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
+	"norn/v2/api/database"
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
@@ -85,11 +87,73 @@ func (s *V3CanaryEffectReservations) validateDeploymentEffectReservation(ctx con
 	if !regionFound {
 		return "", fmt.Errorf("deployment effect region is not accepted")
 	}
+	if err := validateManagedEffectTargets(input, accepted.Operation.Payload); err != nil {
+		return "", err
+	}
 	digest, err := effect.ComputeInputDigest(r)
 	if err != nil || r.InputDigest != digest {
 		return "", fmt.Errorf("deployment effect digest differs from reservation")
 	}
 	return input.App, nil
+}
+
+func validateManagedEffectTargets(input deploymentEffectInput, payload map[string]interface{}) error {
+	if input.JobID == "" {
+		if input.ManagedInputs != nil || len(input.ExpectedDatabaseTargets) != 0 {
+			return fmt.Errorf("legacy deployment has managed input fields")
+		}
+		return nil
+	}
+	wantID, err := nomad.ManagedDeploymentJobID(input.App, input.Region, input.DeploymentID)
+	if err != nil || input.JobID != wantID || input.ManagedInputs == nil || input.ManagedInputs.JobID != wantID ||
+		input.ManagedInputs.VariablePath != nomad.DatabaseVariablePath(wantID) || input.ExpectedJobModifyIndex != 0 {
+		return fmt.Errorf("managed deployment job identity differs from accepted work")
+	}
+	plan := input.ManagedInputs
+	if len(plan.RuntimeDatabaseNames) == 0 {
+		if len(input.ExpectedDatabaseTargets) != 0 {
+			return fmt.Errorf("managed deployment has unexpected database targets")
+		}
+		return nil
+	}
+	raw, ok := payload["databaseTargets"].(string)
+	if !ok {
+		return fmt.Errorf("managed deployment has no signed database target set")
+	}
+	var signed struct {
+		Schema          string `json:"schema"`
+		ProfileID       string `json:"profileId"`
+		CatalogRevision int64  `json:"catalogRevision"`
+		Targets         []struct {
+			Name   string                  `json:"name"`
+			Target database.TargetIdentity `json:"target"`
+		} `json:"targets"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var trailing json.RawMessage
+	if decoder.Decode(&signed) != nil || decoder.Decode(&trailing) != io.EOF || signed.Schema != "norn.database-targets/v1" ||
+		signed.CatalogRevision < 1 || signed.CatalogRevision != plan.DatabaseRevision || len(signed.Targets) != len(plan.RuntimeDatabaseNames) ||
+		len(input.ExpectedDatabaseTargets) != len(plan.RuntimeDatabaseNames) {
+		return fmt.Errorf("managed deployment signed database targets differ")
+	}
+	known := map[string]string{}
+	for _, entry := range signed.Targets {
+		if entry.Name == "" || known[entry.Name] != "" {
+			return fmt.Errorf("managed deployment signed database targets are ambiguous")
+		}
+		encoded, err := json.Marshal(entry.Target)
+		if err != nil {
+			return fmt.Errorf("managed deployment signed database target is invalid")
+		}
+		known[entry.Name] = string(encoded)
+	}
+	for _, name := range plan.RuntimeDatabaseNames {
+		if known[name] == "" || input.ExpectedDatabaseTargets[name] != known[name] {
+			return fmt.Errorf("managed deployment target %s differs from signed acceptance", name)
+		}
+	}
+	return nil
 }
 
 // The normal etcd Fleet router still refuses deployment admission. This
