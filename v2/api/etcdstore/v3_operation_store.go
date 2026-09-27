@@ -286,8 +286,8 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 	// Canary promotion has an atomic effect aggregate. Its replay identity may
 	// expire only after the operation and every reserved Nomad effect are
 	// terminal; all other mutable kinds remain refused by this policy.
-	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" && strings.TrimSpace(a.Operation.Kind) != "app.canary-promote" {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight, fleet.capacity-plan, and app.canary-promote"}
+	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" && strings.TrimSpace(a.Operation.Kind) != "app.canary-promote" && strings.TrimSpace(a.Operation.Kind) != "database.catalog-activate" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight, fleet.capacity-plan, app.canary-promote, and database.catalog-activate"}
 	}
 	var err error
 	if a, err = s.normalize(a); err != nil {

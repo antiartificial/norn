@@ -71,7 +71,7 @@ func (s *V3OperationStore) ActiveDatabaseCatalog(ctx context.Context) (store.Dat
 		return store.DatabaseCatalogRevision{}, err
 	}
 	if len(active.Kvs) == 0 {
-		return store.DatabaseCatalogRevision{}, store.ErrDatabaseCatalogRevisionConflict
+		return store.DatabaseCatalogRevision{}, ErrNotFound
 	}
 	var revision int64
 	if revision, err = strconv.ParseInt(string(active.Kvs[0].Value), 10, 64); err != nil || revision < 1 {

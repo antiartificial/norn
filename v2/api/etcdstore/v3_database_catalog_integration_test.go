@@ -80,7 +80,7 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, stale, lock, 0, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("stale claim changed routing: %v", err)
 	}
-	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
+	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("catalog appeared: %v", err)
 	}
 	if err := adapter.RecoverExpiredOperations(ctx); err != nil {
@@ -97,7 +97,7 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, wrong, lock, 0, catalog, "operator", nil); err == nil {
 		t.Fatal("different signed catalog activated")
 	}
-	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
+	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong catalog changed routing: %v", err)
 	}
 	if err := adapter.FinishClaimedOperation(ctx, wrong, model.OperationFailed, "refused", nil); err != nil {

@@ -72,6 +72,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err != nil {
 		return err
 	}
+	catalogWorker := worker.NewOperationWorkerForKinds(operations, &pipeline.EtcdCatalogExecutor{Catalog: operations}, []string{pipeline.CatalogActivationKind})
 	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, operations); err != nil {
 		return fmt.Errorf("private invocation startup preflight: %w", err)
 	}
@@ -86,6 +87,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
+	go catalogWorker.Run(workerCtx)
 	workerEnabled, canaryHTTPEnabled, err := etcdCanaryPreviewFlags(os.Getenv)
 	if err != nil {
 		return err
@@ -114,8 +116,10 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	// require api:read.
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
+	catalogOperate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
 	router.With(read).Get("/api/v1/database/catalog", etcdFleetDatabaseCatalog(operations))
+	router.With(catalogOperate).Post("/api/v1/database/catalog/activations", etcdFleetCatalogActivation(operations))
 	router.With(read).Get("/api/v1/fleet/plans", etcdFleetPlans(operations))
 	router.With(plan).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
 	if canaryHTTPEnabled {
@@ -186,8 +190,8 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 }
 
 func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
-	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans", "database-catalog-inspection"}
-	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
+	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation"}
+	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
 		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
@@ -294,7 +298,7 @@ func etcdFleetOperation(operations *etcdstore.V3OperationStore, allowCanary bool
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}
-		if op.Kind != "fleet.capacity-plan" && !(allowCanary && op.Kind == "app.canary-promote") {
+		if op.Kind != "fleet.capacity-plan" && op.Kind != pipeline.CatalogActivationKind && !(allowCanary && op.Kind == "app.canary-promote") {
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}
@@ -311,7 +315,7 @@ func etcdFleetDatabaseCatalog(operations *etcdstore.V3OperationStore) http.Handl
 			return
 		}
 		active, err := operations.ActiveDatabaseCatalog(r.Context())
-		if errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
+		if errors.Is(err, etcdstore.ErrNotFound) {
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "database_catalog_not_active", "no database catalog revision is active")
 			return
 		}
@@ -460,6 +464,10 @@ func etcdFleetName(value string) bool {
 }
 
 func writeEtcdFleetAcceptanceError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, store.ErrAcceptanceExpired) {
+		handler.WriteControlProblem(w, r, http.StatusGone, "operation_replay_expired", "the accepted request's replay window expired; use a new Idempotency-Key after reviewing its operation receipt")
+		return
+	}
 	if errors.Is(err, store.ErrAcceptanceConflict) {
 		handler.WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different operation request")
 		return

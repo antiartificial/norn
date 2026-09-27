@@ -25,6 +25,7 @@ import (
 	"norn/v2/api/fleet"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -55,7 +56,7 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	const auditKey = "fleet-router-pgfree-audit-signing-key-000"
 	authority := uuid.NewString()
 	bootstrap := filepath.Join(t.TempDir(), "initial-token")
-	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secret, etcdBootstrapRequest{Output: bootstrap, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite}, TTL: time.Hour}, publishBootstrapTokenFile); err != nil {
+	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secret, etcdBootstrapRequest{Output: bootstrap, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite, handler.ScopePlatformOperate}, TTL: time.Hour}, publishBootstrapTokenFile); err != nil {
 		t.Fatal(err)
 	}
 	operatorBytes, err := os.ReadFile(bootstrap)
@@ -113,6 +114,30 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	}
 	if response := processJSONRequest(t, http.MethodPost, base+"/api/v1/auth/github-actions/exchange", "", "", map[string]string{"scope": handler.ScopeFleetOperate, "environment": "staging", "intent": "apply"}); response.StatusCode == http.StatusNotFound {
 		t.Fatalf("OIDC route was not registered: %s", response.Body)
+	}
+	catalogResponse := processJSONRequest(t, http.MethodPost, base+"/api/v1/database/catalog/activations", operatorToken, "router-catalog", map[string]interface{}{"expectedRevision": 0, "catalog": map[string]interface{}{"apiVersion": "norn.database/v1alpha1", "services": []interface{}{}, "bindings": []interface{}{}, "profiles": []interface{}{}}})
+	if catalogResponse.StatusCode != http.StatusAccepted || bytes.Contains(catalogResponse.Body, []byte(`"catalog":`)) {
+		t.Fatalf("catalog activation=%d body=%s logs=%s", catalogResponse.StatusCode, catalogResponse.Body, output.String())
+	}
+	var catalogOperation model.Operation
+	if err := json.Unmarshal(catalogResponse.Body, &catalogOperation); err != nil || catalogOperation.ID == "" {
+		t.Fatalf("catalog operation=%s err=%v", catalogResponse.Body, err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	catalogFinished := false
+	for time.Now().Before(deadline) {
+		status := processJSONRequest(t, http.MethodGet, base+"/api/v1/operations/"+catalogOperation.ID, operatorToken, "", nil)
+		if status.StatusCode == http.StatusOK && bytes.Contains(status.Body, []byte(`"status":"succeeded"`)) {
+			catalogFinished = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !catalogFinished {
+		t.Fatalf("catalog worker did not finish: %s", output.String())
+	}
+	if catalogRead := processJSONRequest(t, http.MethodGet, base+"/api/v1/database/catalog", operatorToken, "", nil); catalogRead.StatusCode != http.StatusOK || !bytes.Contains(catalogRead.Body, []byte(`"revision":1`)) {
+		t.Fatalf("catalog read=%d body=%s logs=%s", catalogRead.StatusCode, catalogRead.Body, output.String())
 	}
 	planResponse := processJSONRequest(t, http.MethodPost, base+"/api/v1/fleet/node-pools/control/plan", operatorToken, "router-plan", map[string]interface{}{"desired": 4, "reason": "PG-free router qualification"})
 	if planResponse.StatusCode != http.StatusCreated {
