@@ -121,8 +121,11 @@ active pre-index work must first drain or reconcile it.
    attempt, and exact job revision; pending, unavailable, or changed revision
    keeps the effect gate. The completion evidence binds the reserved input,
    execution, job digest, version and healthy allocation IDs. This worker
-   path has unit coverage but has not been exercised through a real etcd and
-   Nomad pair or persisted as a signed region checkpoint. Canary jobs still
+   path has unit coverage and passed a disposable Nomad 2.0.7 Docker worker
+   sequence from guarded submit through exact health completion. That sequence
+   used an in-memory effect store; the real etcd effect store passed separate
+   reservation, attempt, and completion tests. The combined real-etcd/Nomad
+   path and signed region checkpoint remain unproven. Canary jobs still
    require their separate promotion proof.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
