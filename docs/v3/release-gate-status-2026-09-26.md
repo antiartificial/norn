@@ -11,7 +11,7 @@ are substantial but cannot sign a broader gate.
 | Gate | Current disposition | Next decisive evidence |
 | --- | --- | --- |
 | M0 contracts and Mini baseline | Open. Mini source-copy and size/growth observations exist. Synthetic Postgres.app PITR and Mini-to-Mac logical restore fixtures passed, but live WAL archiving remains off; the 15-minute control RPO and 30-minute RTO are unqualified. | Owner chooses the [control recovery target](m0-mini-control-recovery-decision.md), off-host destination and retention; prove protected clean-host restore and measured end-to-end time. |
-| M1 shared control behavior | Open. Durable acceptance, claims, schema and passive startup have local tests. Reviewed PostgreSQL migrations have an opt-in private supervised effect; enabled supervised mode rejects unreviewed commands. A standalone expired claim with a source checkpoint and durable effect can requeue for observation. A guarded expired deployment migration can requeue with source/build checkpoints, completed snapshot step, original effect and no later mutable step; replay verifies and reuses the original target-bound dump. Legacy or unproven migrations remain manual recovery. | Qualify the [private migration effect contract](m1-supervised-app-migration-contract.md) on protected Linux runtime and process crashes, including original-effect replay and snapshot publication, then finish other external-effect reconciliation and Mini compatibility/rollback checks. |
+| M1 shared control behavior | Open. Durable acceptance, claims, schema and passive startup have local tests. Reviewed PostgreSQL migrations have an opt-in private supervised effect; enabled supervised mode rejects unreviewed commands. Disposable Linux/PostgreSQL tests now exercise actual deployment command crashes after commit, before commit, and during successor recovery, preserving one effect and the original snapshots. Guarded replay gets one additional claim; missing effect or an unproved predecessor remains manual recovery. | Qualify the [private migration effect contract](m1-supervised-app-migration-contract.md) on protected Linux runtime, including remaining crash/timeout windows and snapshot publication; finish other external-effect reconciliation and Mini compatibility/rollback checks. |
 | M2 profiles, databases and retention | Open. Local PostgreSQL/MySQL, WordPress and S3-emulator rehearsals passed. | Prove real-provider retention and separate-node restore, managed MySQL behavior, complete archive/accounting and profile parity. |
 | M3 etcd and fresh Fleet | Open. Disposable three-member and host-unit rehearsals exist; the normal etcd router remains narrow. | Protected separate-host empty-Fleet bootstrap, quorum/fault/restore/soak, no control-PG dependency, and hosted Fleet contract check. |
 | M4 capacity and placement | Open. Scale intent/visibility, a disposable claimed PostgreSQL→Nomad scale, active-deployment deferral, a local loaded drain safety check, and a private signed etcd-to-Nomad deployment rehearsal through terminal replay exist. A source audit of Fleet PR #176 identified Traefik/Consul as ingress but no consumer of Norn's desired traffic-weight tag. | Complete the [etcd app admission and execution sequence](m4-etcd-app-admission-sequence-2026-09-26.md), including an applied and observed ingress revision before recording active weight; then exact release-version placement and capacity proof on protected Fleet hosts, loaded 2→3→2 nodes, safe migration, worker acknowledgment continuity, and failed-drain retirement block. |
@@ -155,6 +155,29 @@ fingerprints passed. The transferred candidate and private-copy scratch were
 removed, and the live source still lacked the schema ledger. This refreshes
 compatibility evidence only; the protected backup, restore, rollback, and
 traffic-continuity gates remain open.
+
+At 2026-09-27 14:59 UTC, a read-only Mini refresh measured the `norn_v2`
+database at 252,939,411 bytes, 2,908,160 bytes above the prior evening's
+sample. WAL archiving remained off. The Mini volume reported about 35.6 GiB
+available, enough for the proposed 2 GiB private-restore scratch reserve at
+that instant. These measurements update the [M0 recovery budget proposal](m0-mini-control-budget-proposal-2026-09-26.md);
+they do not select an RPO or prove an off-host restore.
+
+At draft PR #77 code head `286ee751928e4d33260a4889fac64bf5c97981b8`,
+all 16 hosted checks passed. The four-test disposable Linux/PostgreSQL
+deployment recovery harness exercised a command that committed before API
+death, an uncommitted writer during API death, and successor API death during
+recovery. The original target-bound snapshots and effect were reused, and
+each path left exactly one result row. An expired migration lacking its
+reserved effect still failed closed to manual recovery. These are M1 local
+runtime proofs, not protected Mini/Fleet qualification.
+
+The private M4 etcd/Nomad completion fixture still constructs a positive
+`ActiveWeight` after Nomad health and effect completion. No test in that path
+applies a Traefik route revision, reads it back on each ingress node, or
+probes the public app endpoint. The fixture therefore cannot qualify traffic
+activation or M4 completion; the required ingress authority and observation
+are specified in the [M4 admission sequence](m4-etcd-app-admission-sequence-2026-09-26.md).
 
 At 2026-09-27, the current draft PR #77 head
 `1722ba427b9bcf08df317d29f5caae4ab0cdabbb` passed all 15 reported
