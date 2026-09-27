@@ -18,8 +18,9 @@ const (
 
 // MigrationIntent contains only accepted, nonsecret identifiers. Each digest
 // is the SHA-256 of the complete corresponding input, calculated before an
-// effect is reserved. TargetSHA256 must identify the accepted database target
-// without its password; PostconditionSHA256 identifies a reviewed check on
+// effect is reserved. TargetSHA256 is database.TargetIdentitySHA256 of the
+// accepted target (service and binding generations, engine, database, role);
+// it excludes credentials. PostconditionSHA256 identifies a reviewed check on
 // that original target. Neither a connection URL nor launch environment is
 // representable here.
 type MigrationIntent struct {

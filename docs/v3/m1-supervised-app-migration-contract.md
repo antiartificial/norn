@@ -5,7 +5,9 @@ Status: implementation boundary, 2026-09-27. This is not M1 sign-off.
 The first code slices define an authenticated, secret-free migration intent
 descriptor and a private helper that discards command output while retaining
 only signed status. The generic `build.test` supervisor explicitly refuses the
-descriptor. No production path reserves or launches it yet; backend handoff,
+descriptor. The database adapter now derives the target digest from its full
+accepted `TargetIdentity`, including service and binding generations. No
+production path reserves or launches it yet; backend handoff,
 manager recovery, a migration verifier and the database postcondition remain
 required before activation.
 
@@ -42,6 +44,9 @@ connection material never enter the control database or API logs. Credentials
 travel through a private launch channel to an owner-only runner context. A
 replacement claim may query the original execution without needing the old
 credential and must never launch a second command under the same identity.
+The runner must own any URL, service, passfile and TLS files for the command's
+lifetime; it cannot depend on API-session paths that disappear when the API
+process or claim exits. Scrub those files after confirmed command containment.
 
 ## Reconciliation rule
 
