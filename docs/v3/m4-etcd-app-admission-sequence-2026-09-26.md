@@ -69,6 +69,12 @@ active pre-index work must first drain or reconcile it.
    classifies ambiguous responses as indeterminate. Its create-only and stale
    index behavior passed against disposable Nomad 2.0.7; no supervisor calls
    it yet.
+   Readback can now distinguish a 404 from the current Nomad job revision
+   carrying the expected app, deployment, operation, execution, and digest
+   markers. That read proves marker and revision identity only. A closed job
+   projection and comparison with the reserved digest are still required
+   before the supervisor can settle an ambiguous submission or release the
+   app gate. The readback passed against disposable Nomad 2.0.7.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

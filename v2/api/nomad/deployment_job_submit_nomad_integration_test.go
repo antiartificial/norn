@@ -47,6 +47,10 @@ func TestRegisterDeploymentJobCASInDisposableNomad(t *testing.T) {
 	if err != nil || job == nil || job.JobModifyIndex == nil || *job.JobModifyIndex == 0 || job.Meta[DeploymentExecutionIDMeta] != request.ExecutionID {
 		t.Fatalf("registered deployment job=%+v err=%v", job, err)
 	}
+	observed, err := client.LookupDeploymentJobRevision(ctx, request)
+	if err != nil || observed.State != DeploymentJobFound || observed.JobModifyIndex != *job.JobModifyIndex {
+		t.Fatalf("readback revision=%+v err=%v", observed, err)
+	}
 	if _, err := client.RegisterDeploymentJobCAS(ctx, request); !errors.Is(err, ErrDeploymentJobSubmitConflict) {
 		t.Fatalf("stale zero-index CAS result=%v", err)
 	}
