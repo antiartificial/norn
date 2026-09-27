@@ -255,11 +255,14 @@ Remaining M2 retention requirements (not complete):
 - **Admission scope.** The HTTP middleware gates audited mutations, and the
   signed PostgreSQL acceptance transaction independently checks the durable
   reserve before inserting its operation and acceptance intent. Direct
-  operation writers still bypass that transaction: `InsertOperation`,
-  `InsertDeploymentOperation`, `InsertRollbackOperation`, and
-  `InsertCompletedOperation` in `store/operations.go`, the external-deployment
-  admission in `store/external_deployments.go`, and Fleet runner checkpoints in
-  `store/fleet_runner_attempts.go`. These need a writer-by-writer admission and
+  operation writers still bypass that transaction. The active call sites found
+  for `InsertCompletedOperation` are the private release-attestation handler
+  and Fleet reconciliation without an attempt ID; Fleet reconciliation with
+  an attempt ID inserts directly in `store/fleet_runner_attempts.go`.
+  `InsertOperation`, `InsertDeploymentOperation`, and
+  `InsertRollbackOperation` currently have no non-test callers, while the
+  external-deployment admission in `store/external_deployments.go` inserts
+  directly. These need a writer-by-writer admission and
   retention policy; applying the signed-acceptance byte reservation to their
   unsigned records would claim evidence that does not exist. The local engine
   cron scheduler dispatches a container directly and likewise does not create
