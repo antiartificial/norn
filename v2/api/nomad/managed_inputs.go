@@ -3,6 +3,7 @@ package nomad
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -19,6 +20,88 @@ type ManagedJobInputRequirements struct {
 	DatabaseRevision     int64    `json:"databaseRevision"`
 	RequiredKeys         []string `json:"requiredKeys"`
 	RuntimeDatabaseNames []string `json:"runtimeDatabaseNames"`
+}
+
+var managedTemplateKeyPattern = regexp.MustCompile(`\.([A-Za-z0-9_]+)\.Value`)
+
+// ValidateManagedJobInputPlan binds a signed input plan to the exact Nomad
+// templates being submitted. A template cannot read an unlisted key or a
+// different Variable path; staged database keys require an expected target.
+func ValidateManagedJobInputPlan(job *nomadapi.Job, plan ManagedJobInputRequirements) error {
+	if job == nil || job.ID == nil || *job.ID != plan.JobID || plan.VariablePath != DatabaseVariablePath(plan.JobID) {
+		return fmt.Errorf("managed job input plan has a different job identity")
+	}
+	planned := make(map[string]bool, len(plan.RequiredKeys))
+	for _, key := range plan.RequiredKeys {
+		if key == "" || planned[key] {
+			return fmt.Errorf("managed job input plan has an invalid key")
+		}
+		planned[key] = true
+	}
+	allowedDatabaseKeys := map[string]bool{}
+	for _, name := range plan.RuntimeDatabaseNames {
+		if name == "" || plan.DatabaseRevision < 1 || !planned[DatabaseRevisionTargetKey(name, plan.DatabaseRevision)] {
+			return fmt.Errorf("managed job input plan lacks a database target")
+		}
+		allowedDatabaseKeys[DatabaseRevisionItemKey(name, plan.DatabaseRevision)] = true
+		for _, field := range []string{"host", "user", "password", "name"} {
+			allowedDatabaseKeys[stagedKey(DatabaseComponentItemKey(name, field), plan.DatabaseRevision)] = true
+		}
+		for _, field := range []string{"ca", "client_cert", "client_key"} {
+			allowedDatabaseKeys[stagedKey(DatabaseTLSItemKey(name, field), plan.DatabaseRevision)] = true
+		}
+	}
+	read := map[string]bool{}
+	for _, group := range job.TaskGroups {
+		if group == nil {
+			return fmt.Errorf("managed job has a nil task group")
+		}
+		for _, task := range group.Tasks {
+			if task == nil {
+				return fmt.Errorf("managed job has a nil task")
+			}
+			for _, tmpl := range task.Templates {
+				if tmpl == nil || tmpl.EmbeddedTmpl == nil {
+					continue
+				}
+				data := *tmpl.EmbeddedTmpl
+				if !strings.Contains(data, "nomadVar") {
+					continue
+				}
+				if !strings.Contains(data, fmt.Sprintf("nomadVar %q", plan.VariablePath)) ||
+					strings.Count(data, "nomadVar") != 1 {
+					return fmt.Errorf("managed job template reads another Variable path")
+				}
+				matches := managedTemplateKeyPattern.FindAllStringSubmatch(data, -1)
+				if len(matches) == 0 {
+					return fmt.Errorf("managed job template has no recognizable Variable key")
+				}
+				for _, match := range matches {
+					key := match[1]
+					if !planned[key] || (strings.HasPrefix(key, "norn_rev") && !allowedDatabaseKeys[key]) {
+						return fmt.Errorf("managed job template reads an unverified Variable key")
+					}
+					read[key] = true
+				}
+			}
+		}
+	}
+	for key := range planned {
+		if read[key] {
+			continue
+		}
+		allowedTarget := false
+		for _, name := range plan.RuntimeDatabaseNames {
+			if key == DatabaseRevisionTargetKey(name, plan.DatabaseRevision) {
+				allowedTarget = true
+				break
+			}
+		}
+		if !allowedTarget {
+			return fmt.Errorf("managed job input plan includes a key no template reads")
+		}
+	}
+	return nil
 }
 
 // CheckManagedJobInputs confirms the private job variable contains every

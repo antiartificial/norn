@@ -199,7 +199,7 @@ func TestManagedDeploymentRefusesMissingInputsBeforeReserve(t *testing.T) {
 		t.Fatal(err)
 	}
 	job.ID = &input.JobID
-	input.ManagedInputs = &nomad.ManagedJobInputRequirements{JobID: input.JobID, VariablePath: nomad.DatabaseVariablePath(input.JobID), RequiredKeys: []string{"API_TOKEN"}}
+	input.ManagedInputs = &nomad.ManagedJobInputRequirements{JobID: input.JobID, VariablePath: nomad.DatabaseVariablePath(input.JobID)}
 	input.JobDigest, err = nomad.DigestDeploymentJob(job)
 	if err != nil {
 		t.Fatal(err)

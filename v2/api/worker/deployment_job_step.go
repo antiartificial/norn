@@ -57,6 +57,9 @@ func EnsureDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffectS
 	}
 	request.Job = job
 	if input.JobID != "" {
+		if err := nomad.ValidateManagedJobInputPlan(job, *input.ManagedInputs); err != nil {
+			return DeploymentJobEffectDecision{}, err
+		}
 		if err := remote.CheckManagedJobInputs(ctx, input.NomadRegion, *input.ManagedInputs, input.ExpectedDatabaseTargets); err != nil {
 			return DeploymentJobEffectDecision{}, err
 		}

@@ -55,7 +55,7 @@ func TestManagedDeploymentBackendsAreRevisionSpecificAndDoNotClaimPublicHost(t *
 
 func TestManagedJobInputPlanNamesExactRevisionScopedKeys(t *testing.T) {
 	spec := &model.InfraSpec{App: "orders", Processes: map[string]model.Process{
-		"web": {Port: 8080, NomadVariables: &model.NomadVariableFiles{Files: []model.NomadVariableFile{{Key: "API_TOKEN", Destination: "token"}}}},
+		"web": {Port: 8080, NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532, Files: []model.NomadVariableFile{{Key: "API_TOKEN", Destination: "token"}}}},
 	}, Databases: []model.DatabaseRequirement{{Name: "primary", Runtime: &model.DatabaseRuntime{Env: "DATABASE_URL"}}}}
 	region := spec.ResolvedRegions()[0]
 	if _, err := PlanManagedJobInputs(spec, region, "deployment-one", 0); err == nil {
@@ -69,6 +69,20 @@ func TestManagedJobInputPlanNamesExactRevisionScopedKeys(t *testing.T) {
 		"API_TOKEN", "norn_rev7_db_target_primary", "norn_rev7_db_url_primary",
 	}) || !reflect.DeepEqual(plan.RuntimeDatabaseNames, []string{"primary"}) {
 		t.Fatalf("incorrect managed input plan: %+v", plan)
+	}
+	job, err := TranslateManagedDeploymentForRegionAt(spec, "orders:test", nil, region, "deployment-one", 7)
+	if err != nil || ValidateManagedJobInputPlan(job, plan) != nil {
+		t.Fatalf("complete managed input plan rejected: %v", err)
+	}
+	missing := plan
+	missing.RequiredKeys = []string{DatabaseRevisionItemKey("primary", 7), DatabaseRevisionTargetKey("primary", 7)}
+	if err := ValidateManagedJobInputPlan(job, missing); err == nil {
+		t.Fatal("template key missing from signed plan was accepted")
+	}
+	missing = plan
+	missing.RuntimeDatabaseNames = nil
+	if err := ValidateManagedJobInputPlan(job, missing); err == nil {
+		t.Fatal("database template without target expectation was accepted")
 	}
 	spec.Processes["web"] = model.Process{Port: 8080, NomadVariables: &model.NomadVariableFiles{Files: []model.NomadVariableFile{{Key: "NORN_REV7_DB_URL_PRIMARY"}}}}
 	if _, err := PlanManagedJobInputs(spec, region, "deployment-one", 7); err == nil {
