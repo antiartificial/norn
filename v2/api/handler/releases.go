@@ -263,6 +263,7 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight bool, promotion *model.ReleaseQualification) {
+	preventSensitiveResponseCaching(w)
 	requiredScope := ScopeReleaseStage
 	if promotion != nil {
 		requiredScope = ScopeReleasePromote
@@ -648,6 +649,7 @@ func releaseRepositoryMatchesPrincipal(candidate model.ReleaseCandidate, princip
 }
 
 func (h *Handler) QueueReleasePromotion(w http.ResponseWriter, r *http.Request) {
+	preventSensitiveResponseCaching(w)
 	if _, ok := requireReleaseControlScope(w, r, ScopeReleasePromote, chi.URLParam(r, "id")); !ok {
 		return
 	}

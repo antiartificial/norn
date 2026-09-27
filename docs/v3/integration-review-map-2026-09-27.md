@@ -32,6 +32,19 @@ exceptions. Keep PR #77 draft while that record is incomplete. Independent
 implementation merges can be considered only after their default behavior
 and rollback boundary are reviewed; production qualification remains separate.
 
+## Lane 0 source-review finding
+
+The first protected-master comparison found one concrete response-policy
+regression: the integrated `queueRelease` path had dropped
+`preventSensitiveResponseCaching` from the entrypoint, although protected
+`master` set `Cache-Control: no-store` and `Pragma: no-cache` before release
+preflight/deployment responses. The header was restored on the shared queue
+path and set at promotion entry before its early validation responses.
+Focused cache-header and release-handler tests passed locally. This closes
+that source finding only; signed-release admission, OIDC identity-store
+changes, Fleet runner ownership, and exact-head protected CI still need
+lane-0 review.
+
 ## Immediate blocking decisions
 
 1. Choose Mini control-store RPO, off-host destination, and retention in the
