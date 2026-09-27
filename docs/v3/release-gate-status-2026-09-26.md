@@ -147,6 +147,15 @@ with 257,489 original rows preserved, a second migration pass, passive
 startup, and unchanged base job/cloudflared fingerprints. It remains a
 source-copy compatibility checkpoint, not a protected restore or M5 gate.
 
+The same read-only rehearsal passed again at exact integrated head
+`42b4dcec969607bbefdd9364465918e0c82d04b4`: 28 original tables and
+257,791 rows kept primary-key and full-row fingerprints through schema 45;
+second migration, passive startup, and live base-job/cloudflared pre/post
+fingerprints passed. The transferred candidate and private-copy scratch were
+removed, and the live source still lacked the schema ledger. This refreshes
+compatibility evidence only; the protected backup, restore, rollback, and
+traffic-continuity gates remain open.
+
 At 2026-09-27, the current draft PR #77 head
 `1722ba427b9bcf08df317d29f5caae4ab0cdabbb` passed all 15 reported
 checks. [Norn CI run 36304890397](https://github.com/antiartificial/norn/actions/runs/36304890397)

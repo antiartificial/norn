@@ -30,3 +30,26 @@ candidate. It is not a protected production-key backup, off-host restore,
 RPO/RTO proof, installed-binary rollback, live traffic continuity test, or
 M0/M5 sign-off. The new attestation byte cap is unset; archive retirement and
 total control-store growth remain M2 gates.
+
+## Exact PR #77 head refresh
+
+Later on 2026-09-27, the same read-only source-copy rehearsal passed against
+exact PR #77 head `42b4dcec969607bbefdd9364465918e0c82d04b4`. The
+disposable Darwin/arm64 binary embedded that SHA and had SHA-256
+`2fe088ca8e753859386da005550057c1b0b5dad5207ede90a170e673d9b6670f`.
+The source URL selected the owner's local Postgres.app Unix socket and
+`norn_v2` database; `pg_dump` was forced into a read-only transaction.
+
+The fresh copy contained 28 original tables and 257,791 rows. Original
+primary-key and full-row fingerprints matched after migrations 1–45. A
+second migrate-only pass and passive health passed with reader/writer floors
+5/31. The script verified unchanged live Nomad base-job versions and
+cloudflared configuration and reported no source mutations. Its disposable
+database, dump, and logs were removed. Separate follow-up removed and
+verified the transferred binary and script directory and local build, then
+confirmed the live database still lacked
+`public.norn_schema_migrations`.
+
+This refresh proves private-copy schema and passive-startup compatibility for
+the current integrated head. It is still not a production-key backup,
+off-host retained restore, live upgrade, rollback, or M5 signoff.
