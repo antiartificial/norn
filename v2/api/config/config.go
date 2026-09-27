@@ -259,7 +259,8 @@ type Config struct {
 	EvidenceReserveMaxPending    int           // NORN_EVIDENCE_RESERVE_MAX_PENDING
 	EvidenceReserveMaxPendingAge time.Duration // NORN_EVIDENCE_RESERVE_MAX_PENDING_AGE
 	EvidenceReserveSignedBytes   int64         // NORN_EVIDENCE_RESERVE_MAX_SIGNED_ACCEPTANCE_BYTES (0 disables this narrow gate)
-	EvidenceReserveAttestBytes   int64         // NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES (0 awaits an accepted budget)
+	EvidenceReserveAttestBytes   int64         // NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES
+	EvidenceReserveAttestSet     bool          // explicit env presence; unset preserves the durable limit
 	EvidenceReserveMinFreeBytes  int64         // NORN_EVIDENCE_RESERVE_MIN_FREE_BYTES (local archive headroom)
 	// Diagnostic log collection (separate from evidence): unset directory
 	// disables it. Limits bound the spool; the oldest output is dropped and
@@ -273,6 +274,7 @@ type Config struct {
 
 func Load() *Config {
 	environmentRaw, environmentExplicit := os.LookupEnv("NORN_ENVIRONMENT")
+	_, attestationLimitExplicit := os.LookupEnv("NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES")
 	environment := strings.ToLower(strings.TrimSpace(environmentRaw))
 	if !environmentExplicit {
 		environment = "development"
@@ -452,6 +454,7 @@ func Load() *Config {
 		EvidenceReserveMaxPendingAge: envDurationOr("NORN_EVIDENCE_RESERVE_MAX_PENDING_AGE", 24*time.Hour),
 		EvidenceReserveSignedBytes:   envInt64Or("NORN_EVIDENCE_RESERVE_MAX_SIGNED_ACCEPTANCE_BYTES", 0),
 		EvidenceReserveAttestBytes:   envInt64Or("NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES", 0),
+		EvidenceReserveAttestSet:     attestationLimitExplicit,
 		EvidenceReserveMinFreeBytes:  envInt64Or("NORN_EVIDENCE_RESERVE_MIN_FREE_BYTES", 1<<30),
 		LogSpoolDir:                  strings.TrimSpace(os.Getenv("NORN_LOG_SPOOL_DIR")),
 		LogSpoolMaxBytes:             envInt64Or("NORN_LOG_SPOOL_MAX_BYTES", 1<<30),

@@ -157,8 +157,10 @@ Nomad agent.
     remains at writer contract 31 for the Mini rollback window. The trigger
     reserves stored JSON payload and metadata bytes atomically with the
     operation. The optional
-    `NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES` defaults to `0`
-    pending an accepted M0 budget. This cap applies only to new private
+    `NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES` is unset pending an
+    accepted M0 budget; an unset process preserves any durable limit already
+    recorded by another process, and an explicit `0` clears it. This cap
+    applies only to new private
     attestations; terminal reconciliation receipts remain writable. The
     reservation prevents deletion of hot evidence before a qualified archive
     retirement path exists. Physical PostgreSQL overhead and archive-backed

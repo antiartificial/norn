@@ -53,11 +53,12 @@ func evidenceReserveMigration() SchemaMigration {
 
 // EvidenceReservePolicy is the durable admission policy.
 type EvidenceReservePolicy struct {
-	Enabled                    bool
-	MaxPending                 int
-	MaxPendingAge              time.Duration
-	MaxSignedAcceptanceBytes   int64
-	MaxReleaseAttestationBytes int64
+	Enabled                         bool
+	MaxPending                      int
+	MaxPendingAge                   time.Duration
+	MaxSignedAcceptanceBytes        int64
+	MaxReleaseAttestationBytes      int64
+	PreserveReleaseAttestationBytes bool
 }
 
 // EvidenceReserveStatus is the admission decision input.
@@ -218,8 +219,10 @@ func (db *DB) SetEvidenceReservePolicy(ctx context.Context, policy EvidenceReser
 		return fmt.Errorf("evidence byte limits cannot be negative")
 	}
 	_, err := db.Pool.Exec(ctx, `UPDATE evidence_reserve SET enabled = $1, max_pending = $2, max_pending_age_seconds = $3,
-		max_signed_acceptance_bytes = $4, max_release_attestation_bytes = $5, updated_at = now() WHERE singleton`,
-		policy.Enabled, policy.MaxPending, int(policy.MaxPendingAge/time.Second), policy.MaxSignedAcceptanceBytes, policy.MaxReleaseAttestationBytes)
+		max_signed_acceptance_bytes = $4,
+		max_release_attestation_bytes = CASE WHEN $6 THEN max_release_attestation_bytes ELSE $5 END,
+		updated_at = now() WHERE singleton`,
+		policy.Enabled, policy.MaxPending, int(policy.MaxPendingAge/time.Second), policy.MaxSignedAcceptanceBytes, policy.MaxReleaseAttestationBytes, policy.PreserveReleaseAttestationBytes)
 	return err
 }
 

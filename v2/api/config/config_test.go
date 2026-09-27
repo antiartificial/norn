@@ -29,6 +29,28 @@ func TestOperationReplayTTLIsExplicitAndDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestReleaseAttestationLimitDistinguishesUnsetFromExplicitZero(t *testing.T) {
+	const key = "NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES"
+	previous, wasSet := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(key, previous)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+	if cfg := Load(); cfg.EvidenceReserveAttestSet || cfg.EvidenceReserveAttestBytes != 0 {
+		t.Fatalf("unset attestation limit = set %v bytes %d", cfg.EvidenceReserveAttestSet, cfg.EvidenceReserveAttestBytes)
+	}
+	t.Setenv(key, "0")
+	if cfg := Load(); !cfg.EvidenceReserveAttestSet || cfg.EvidenceReserveAttestBytes != 0 {
+		t.Fatalf("explicit zero attestation limit = set %v bytes %d", cfg.EvidenceReserveAttestSet, cfg.EvidenceReserveAttestBytes)
+	}
+}
+
 func TestPrivateInvocationKeyRingRuntimeConfig(t *testing.T) {
 	t.Setenv("NORN_PRIVATE_INVOCATION_ENABLED", "true")
 	t.Setenv("NORN_FUNCTION_V3_PREVIEW_ENABLED", "true")

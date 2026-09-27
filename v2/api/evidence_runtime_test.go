@@ -85,6 +85,25 @@ func TestEvidenceReservePolicyIsDurableAndOnlyExplicitlyDisabled(t *testing.T) {
 	if status, err := db.EvidenceReserve(ctx); err != nil || status.MaxSignedAcceptanceBytes != 0 {
 		t.Fatalf("default signed-acceptance byte gate = %+v, %v", status, err)
 	}
+	cfg.EvidenceReserveAttestBytes, cfg.EvidenceReserveAttestSet = 4096, true
+	if err := applyEvidenceReservePolicy(ctx, cfg, db, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg.EvidenceReserveAttestBytes, cfg.EvidenceReserveAttestSet = 0, false
+	if err := applyEvidenceReservePolicy(ctx, cfg, db, false); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := db.EvidenceReserve(ctx); err != nil || status.MaxReleaseAttestationBytes != 4096 {
+		t.Fatalf("unset attestation cap overwrote durable policy: %+v, %v", status, err)
+	}
+	cfg.EvidenceReserveAttestSet = true
+	if err := applyEvidenceReservePolicy(ctx, cfg, db, true); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := db.EvidenceReserve(ctx); err != nil || status.MaxReleaseAttestationBytes != 0 {
+		t.Fatalf("explicit zero did not clear attestation cap: %+v, %v", status, err)
+	}
+	cfg.EvidenceReserveAttestSet = false
 	if err := applyEvidenceReservePolicy(ctx, cfg, db, false); err != nil || !enabled() {
 		t.Fatalf("process without an archive lifted the reserve: %v", err)
 	}
