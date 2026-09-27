@@ -26,3 +26,19 @@ for the **Sep 19–Oct 19, 2026** billing cycle, and a billing-cycle cap shown a
 prepaid X API balance was not exhausted at that instant; it does not attribute
 the spend to a particular app, guarantee the next capture, or change billing
 settings. The bookmark-session validity observation above remains separate.
+
+## Mini workload and bookmark session refresh — 2026-09-27 04:44 UTC
+
+Read-only Nomad status on Mini showed the Sep 26 20:10 America/Chicago Field
+Harbor PM sync child with one complete allocation and zero failed allocations.
+The owner-local bookmark progress marker advanced to
+`lastIncrementalSyncAt=2026-09-27T01:21:30.256Z` and **41,150 bookmarks** (57
+more than the earlier check). The Sep 26 21:17 America/Chicago Like Trove
+daily-capture child likewise had one complete allocation and zero failures.
+
+A fresh `Bookmarks` GraphQL GET with `count=1` returned HTTP 200, a data
+object, and zero GraphQL errors. The session values were loaded only on Mini
+from the same mode-`0600` owner file, and neither values nor bookmark content
+were copied into this record. This proves the bookmark session worked at the
+refresh instant. Job completion and the progress marker do not by themselves
+prove every downstream enrichment stage or future credential validity.
