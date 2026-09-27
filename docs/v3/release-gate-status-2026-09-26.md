@@ -17,7 +17,7 @@ are substantial but cannot sign a broader gate.
 | M4 capacity and placement | Open. Scale intent/visibility, a disposable claimed PostgreSQL→Nomad scale, active-deployment deferral, and a local loaded drain safety check exist. | Exact release-version placement and capacity proof on protected Fleet hosts; loaded 2→3→2 nodes, safe migration, worker acknowledgment continuity, and failed-drain retirement block. |
 | M5 Mini upgrade rehearsal | Open. Private source-copy schema/passive checks passed. | Production-key protected backup and private restore, exact signed candidate, isolated upgrade/rollback with unchanged jobs, routes and identities. |
 | M6 running upgrades and app databases | Open. Foundations only. | V3 A→B rolling rehearsal and fenced app database cutover/recovery for supported PG/MySQL paths. |
-| M7 representative app mobility | Open. Contract only. | One database-backed Mini app and its data/files/work move to independent Fleet with traffic and rollback proof. |
+| M7 representative app mobility | Open. A [read-only Mini candidate review](m7-mini-app-candidate-review-2026-09-26.md) identifies real database/file/workload shapes, but no app or destination is selected. | One database-backed Mini app and its data/files/work move to independent Fleet with traffic and rollback proof. |
 | M8 release qualification | Open. No signed release candidate. | Version/client matrix, fault/soak/growth evidence, operator runbooks and signed artifacts for the qualified scope. |
 | M9 controlled adoption | Open. No v3 Mini/Fleet deployment. | Separately verify Mini upgrade, empty Fleet launch and selected app migration after M8. |
 
