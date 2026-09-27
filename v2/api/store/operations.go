@@ -1021,7 +1021,10 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		SET status = 'queued',
 		    message = 'operation recovered after API restart and queued for a safe retry',
 		    metadata = metadata || '{"recoveredAfterRestart":true}'::jsonb,
-		    max_attempts = CASE WHEN kind = 'app.snapshot-export' THEN GREATEST(max_attempts, 3) ELSE max_attempts END,
+		    max_attempts = CASE
+		      WHEN kind = 'app.snapshot-export' THEN GREATEST(max_attempts, 3)
+		      WHEN kind = 'app.migrate' THEN GREATEST(max_attempts, 3)
+		      ELSE max_attempts END,
 		    locked_by = '',
 		    locked_until = NULL,
 		    next_attempt_at = now(),
@@ -1030,6 +1033,16 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		  AND kind LIKE 'app.%'
 		  AND (locked_until IS NULL OR locked_until < now())
 		  AND (attempts < max_attempts OR kind IN ('app.restart', 'app.canary-promote') OR
+			(kind = 'app.migrate' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
+				SELECT 1 FROM operation_checkpoints oc
+				WHERE oc.operation_id = operations.id AND oc.stage = 'source'
+			) AND EXISTS (
+				SELECT 1 FROM operation_effects oe
+				WHERE oe.operation_id = operations.id AND oe.stage = 'app.migrate'
+				  AND oe.supervisor = 'migration-runner'
+				  AND oe.resource LIKE 'database/%/migration'
+				  AND oe.lifecycle IN ('reserved','launched','completed')
+			)) OR
 			(kind = 'app.snapshot' AND EXISTS (
 				SELECT 1 FROM snapshot_publication_intents spi
 				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
@@ -1060,6 +1073,16 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		    OR (kind = 'app.snapshot' AND EXISTS (
 		      SELECT 1 FROM snapshot_publication_intents spi
 		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+		    ))
+		    OR (kind = 'app.migrate' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
+		      SELECT 1 FROM operation_checkpoints oc
+		      WHERE oc.operation_id = operations.id AND oc.stage = 'source'
+		    ) AND EXISTS (
+		      SELECT 1 FROM operation_effects oe
+		      WHERE oe.operation_id = operations.id AND oe.stage = 'app.migrate'
+		        AND oe.supervisor = 'migration-runner'
+		        AND oe.resource LIKE 'database/%/migration'
+		        AND oe.lifecycle IN ('reserved','launched','completed')
 		    ))
 		    OR (kind = 'app.snapshot-export' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
 		      SELECT 1 FROM snapshot_export_intents sei

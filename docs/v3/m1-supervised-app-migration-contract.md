@@ -10,8 +10,10 @@ status. A dead-helper cleanup preserves the signed running state and runs only
 after the backend proves the cgroup empty. The generic `build.test` launcher,
 query and verifier reject migration evidence. The database adapter derives the
 target digest from the full accepted `TargetIdentity`, including service and
-binding generations. No production pipeline path reserves or launches this
-effect yet. A resolved PostgreSQL session now produces runner-owned service,
+binding generations. Deployment `migrate` and standalone `app.migrate` now
+route a reviewed PostgreSQL migration through this effect when the operator
+sets `NORN_MIGRATION_EXECUTION=supervised`; the setting is off by default.
+A resolved PostgreSQL session produces runner-owned service,
 passfile, URL and TLS file material for private launch, including URL path
 remapping. A migration-specific verifier now requires contained zero exit and
 an independent original-target postcondition result; nonzero, timed-out and
@@ -26,19 +28,22 @@ command and selected named database, and the pipeline derives its digest with
 the accepted engine. The effect executor now has a migration-specific private
 launch, observation, revocation and empty-result adapter. A durably registered
 but never launched migration can be tombstoned and verified without reading
-the database; a launched stopped migration remains unresolved. The production
-caller must supply the pinned source assertion and route both deployment and
-standalone migrations through this adapter. Protected runtime qualification
-remains required before activation.
+the database; a launched stopped migration remains unresolved. The pipeline
+requires a claim, a pinned source checkpoint and an InfraSpec in the prepared
+checkout that agrees with the accepted command, database selection and
+postcondition. An expired standalone migration with both a source checkpoint
+and durable migration effect can be requeued to observe that original effect;
+legacy or unrecorded migrations still require manual recovery. Protected
+runtime and process-crash qualification remain required before activation.
 
 ## Current behavior and risk
 
-`pipeline/migrate.go` executes a declared migration with host `sh -c`. The
-deployment engine records `migrate` as a mutable step before the command.
-Expired deployment and standalone `app.migrate` claims fail to manual recovery;
-the PostgreSQL-backed recovery regression covers both. This prevents automatic
-replay, but a shell descendant may continue after claim cancellation and the
-control store cannot distinguish a committed write from a failed launch.
+Migrations without a reviewed postcondition still execute with host `sh -c`.
+The deployment engine records `migrate` as a mutable step before the command.
+An expired deployment migration claim still fails to manual recovery even if
+its effect exists; replay of earlier deployment steps has not been qualified.
+An unrecorded standalone migration likewise fails to manual recovery.
+Neither path may infer a repeat-safe failure from a nonzero command exit.
 
 The generic effect runner is currently limited to `build.test`. Its descriptor
 omits environment values, but its verifier interprets a contained command's

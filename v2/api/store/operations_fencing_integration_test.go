@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 )
 
@@ -386,6 +388,108 @@ func TestExpiredOperationRecoveryPreservesLiveAndClassifiesSafeWork(t *testing.T
 		if id == unsafeExport.ID && !strings.Contains(got.Message, "remote dump and manifest") {
 			t.Fatalf("export recovery did not identify remote inspection: %q", got.Message)
 		}
+	}
+}
+
+func TestExpiredMigrationRequeuesOnlyWithPinnedSourceAndDurableEffect(t *testing.T) {
+	stores := operationTestStores(t, 2)
+	ctx := context.Background()
+	effects, err := NewPGEffectStore(stores[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := effects.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := insertOperationFixture(t, stores[0], "app.migrate", 1, map[string]interface{}{"ref": "abc1234"})
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "migration-owner", 100*time.Millisecond, []string{"app.migrate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].RecordOperationCheckpoint(ctx, claim, CheckpointSource, json.RawMessage(`{"treeDigest":"sha256:pinned"}`)); err != nil {
+		t.Fatal(err)
+	}
+	reservation := effectReservation(t, authority, "database/binding-1/migration", "migration-recovery-"+op.ID, claim)
+	reservation.Stage, reservation.Supervisor = "app.migrate", "migration-runner"
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := effects.Reserve(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID)
+	})
+	time.Sleep(180 * time.Millisecond)
+	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := stores[1].GetOperation(ctx, op.ID)
+	if err != nil || recovered.Status != model.OperationQueued || recovered.MaxAttempts != 3 || recovered.Metadata["manualRecoveryRequired"] != nil {
+		t.Fatalf("supervised migration recovery = %+v, %v", recovered, err)
+	}
+	claimed, next, err := stores[1].ClaimNextOperation(ctx, "recovery-owner", time.Minute, []string{"app.migrate"})
+	if err != nil || claimed == nil || claimed.ID != op.ID || next.Generation() == claim.Generation() {
+		t.Fatalf("replacement claim = %+v, %+v, %v", claimed, next, err)
+	}
+	replayed, err := effects.Reserve(ctx, effect.Reservation{Authority: reservation.Authority, Resource: reservation.Resource,
+		OperationClaim: effect.OperationClaim{OperationID: op.ID, OwnerID: next.OwnerID(), Generation: next.Generation()},
+		Stage:          reservation.Stage, Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID,
+		InputDigest: reservation.InputDigest, LaunchPayload: reservation.LaunchPayload})
+	if err != nil || replayed.Created || replayed.Record.Reservation.OperationClaim.Generation != claim.Generation() {
+		t.Fatalf("replacement must reuse original effect: %+v, %v", replayed, err)
+	}
+	for attempt := 2; attempt <= 3; attempt++ {
+		if _, err := stores[0].Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, op.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		current, err := stores[1].GetOperation(ctx, op.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt == 3 {
+			if current.Status != model.OperationFailed || current.Metadata["manualRecoveryRequired"] != true {
+				t.Fatalf("exhausted migration recovery = %+v", current)
+			}
+			break
+		}
+		if current.Status != model.OperationQueued {
+			t.Fatalf("second recovery = %+v", current)
+		}
+		claimed, _, err := stores[1].ClaimNextOperation(ctx, "last-recovery-owner", time.Minute, []string{"app.migrate"})
+		if err != nil || claimed == nil || claimed.ID != op.ID {
+			t.Fatalf("last replacement claim = %+v, %v", claimed, err)
+		}
+	}
+	withoutSource := insertOperationFixture(t, stores[0], "app.migrate", 1, map[string]interface{}{"ref": "abc1234"})
+	_, missingClaim, err := stores[0].ClaimNextOperation(ctx, "uncheckpointed-owner", 100*time.Millisecond, []string{"app.migrate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := effectReservation(t, authority, "database/binding-2/migration", "migration-uncheckpointed-"+withoutSource.ID, missingClaim)
+	missing.Stage, missing.Supervisor = "app.migrate", "migration-runner"
+	missing.InputDigest, err = effect.ComputeInputDigest(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := effects.Reserve(ctx, missing); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, withoutSource.ID)
+	})
+	time.Sleep(180 * time.Millisecond)
+	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	uncheckpointed, err := stores[1].GetOperation(ctx, withoutSource.ID)
+	if err != nil || uncheckpointed.Status != model.OperationFailed || uncheckpointed.Metadata["manualRecoveryRequired"] != true {
+		t.Fatalf("uncheckpointed migration was retried: %+v, %v", uncheckpointed, err)
 	}
 }
 
