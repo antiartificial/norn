@@ -20,8 +20,12 @@ checker now binds one reviewed scalar SQL assertion to the accepted target
 digest, reconnects to that target, verifies database and role in a read-only
 transaction, and requires exactly one non-null result matching the expected
 value. PostgreSQL and MySQL paths passed disposable database tests. The
-production effect adapter must supply the pinned source's reviewed assertion
-and route both deployment and standalone migrations through this verifier;
+The v2 InfraSpec can now declare `migrationPostcondition.query` and
+`migrationPostcondition.expectedValue`; validation requires a migration
+command and selected named database, and the pipeline derives its digest with
+the accepted engine. The production effect adapter must supply that pinned
+source assertion and route both deployment and standalone migrations through
+this verifier;
 protected runtime qualification remains required before activation.
 
 ## Current behavior and risk

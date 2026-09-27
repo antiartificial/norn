@@ -36,6 +36,36 @@ func TestAppV2ExampleDecodesStrictlyAndValidates(t *testing.T) {
 	}
 }
 
+func TestMigrationPostconditionRequiresReviewedV2Database(t *testing.T) {
+	base := &InfraSpec{SchemaVersion: AppSchemaV2, App: "shop", Processes: map[string]Process{"web": {Command: "run"}},
+		Databases: []DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime", "migration"},
+			Runtime: &DatabaseRuntime{Env: "DATABASE_URL"}}}, Migrations: "npm run migrate",
+		MigrationPostcondition: &MigrationPostconditionSpec{Query: "SELECT version::text FROM schema_version", ExpectedValue: "42"}}
+	if findings := base.DatabaseDeclarationFindings(); len(findings) != 0 {
+		t.Fatalf("valid reviewed postcondition findings=%+v", findings)
+	}
+	for _, item := range []struct {
+		name   string
+		mutate func(*InfraSpec)
+	}{
+		{"legacy schema", func(s *InfraSpec) { s.SchemaVersion = "" }},
+		{"no command", func(s *InfraSpec) { s.Migrations = "" }},
+		{"unselected target", func(s *InfraSpec) { s.Databases = nil }},
+		{"write query", func(s *InfraSpec) { s.MigrationPostcondition.Query = "DELETE FROM schema_version" }},
+		{"second statement", func(s *InfraSpec) { s.MigrationPostcondition.Query = "SELECT 1; SELECT 2" }},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			copy := *base
+			postcondition := *base.MigrationPostcondition
+			copy.MigrationPostcondition = &postcondition
+			item.mutate(&copy)
+			if findings := copy.DatabaseDeclarationFindings(); len(findings) == 0 {
+				t.Fatal("invalid migration postcondition was accepted")
+			}
+		})
+	}
+}
+
 func TestAppV2UnknownFieldsFailEvenInLenientDiscovery(t *testing.T) {
 	document := "schemaVersion: norn.app/v2\nname: shop\nprocesses:\n  web:\n    command: x\ndatabases:\n  - name: primary\n    purpose: application\n    capabilities: [runtime]\n    runtime:\n      evn: DATABASE_URL\n"
 	if _, err := ParseInfraSpec([]byte(document)); err == nil {

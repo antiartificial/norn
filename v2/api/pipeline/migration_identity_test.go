@@ -9,7 +9,30 @@ import (
 	"time"
 
 	"norn/v2/api/database"
+	"norn/v2/api/model"
 )
+
+func TestMigrationPostconditionDigestUsesReviewedSpecAndAcceptedEngine(t *testing.T) {
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, Migrations: "migrate",
+		Databases:              []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"migration"}}},
+		MigrationPostcondition: &model.MigrationPostconditionSpec{Query: "SELECT version FROM migrations", ExpectedValue: "42"}}
+	target := database.TargetIdentity{ServiceID: "service", ServiceGeneration: 1, BindingID: "binding",
+		BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "app", Role: "writer"}
+	check, digest, err := migrationPostconditionForSpec(spec, target)
+	if err != nil || check.Engine != database.EnginePostgreSQL || digest == "" {
+		t.Fatalf("reviewed postcondition=%+v digest=%q err=%v", check, digest, err)
+	}
+	changed := target
+	changed.Engine = database.EngineMySQL
+	_, otherDigest, err := migrationPostconditionForSpec(spec, changed)
+	if err != nil || otherDigest == digest {
+		t.Fatal("different accepted engine reused the reviewed postcondition digest")
+	}
+	spec.MigrationPostcondition = nil
+	if _, _, err := migrationPostconditionForSpec(spec, target); err == nil {
+		t.Fatal("migration without reviewed postcondition was admitted")
+	}
+}
 
 func TestMigrationIntentUsesAcceptedTargetIdentityAndNoConnectionMaterial(t *testing.T) {
 	target := database.TargetIdentity{ServiceID: "app-pg", ServiceGeneration: 3,

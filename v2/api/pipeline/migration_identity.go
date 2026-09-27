@@ -9,7 +9,25 @@ import (
 
 	"norn/v2/api/database"
 	"norn/v2/api/effect/supervisor"
+	"norn/v2/api/model"
 )
+
+// migrationPostconditionForSpec binds the reviewed source assertion to the
+// accepted engine before a migration intent is reserved. A replacement claim
+// must recover this same pinned source or leave the original effect pending.
+func migrationPostconditionForSpec(spec *model.InfraSpec, target database.TargetIdentity) (database.MigrationPostconditionSQL, string, error) {
+	if spec == nil || spec.MigrationPostcondition == nil || spec.Migrations == "" ||
+		!spec.NamedDatabases() || spec.EffectiveMigrationDatabase() == "" {
+		return database.MigrationPostconditionSQL{}, "", fmt.Errorf("migration has no reviewed postcondition on a named database")
+	}
+	check := database.MigrationPostconditionSQL{Engine: target.Engine,
+		Query: spec.MigrationPostcondition.Query, ExpectedValue: spec.MigrationPostcondition.ExpectedValue}
+	digest, err := check.SHA256()
+	if err != nil {
+		return database.MigrationPostconditionSQL{}, "", err
+	}
+	return check, digest, nil
+}
 
 // migrationIntentForAcceptedTarget builds the public, durable half of a
 // migration launch from the resolver's recorded target. The private command

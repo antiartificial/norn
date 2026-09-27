@@ -20,16 +20,20 @@ type FunctionSpec struct {
 
 type InfraSpec struct {
 	// SchemaVersion is omitted for v1 specs; AppSchemaV2 enables Databases.
-	SchemaVersion  string             `yaml:"schemaVersion,omitempty" json:"schemaVersion,omitempty"`
-	App            string             `yaml:"name" json:"name"`
-	Repo           *RepoSpec          `yaml:"repo,omitempty" json:"repo,omitempty"`
-	Build          *BuildSpec         `yaml:"build,omitempty" json:"build,omitempty"`
-	Processes      map[string]Process `yaml:"processes" json:"processes"`
-	Services       []string           `yaml:"services,omitempty" json:"services,omitempty"`
-	Secrets        []string           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	Migrations     string             `yaml:"migrations,omitempty" json:"migrations,omitempty"`
-	Env            map[string]string  `yaml:"env,omitempty" json:"-"`
-	Infrastructure *Infrastructure    `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
+	SchemaVersion string             `yaml:"schemaVersion,omitempty" json:"schemaVersion,omitempty"`
+	App           string             `yaml:"name" json:"name"`
+	Repo          *RepoSpec          `yaml:"repo,omitempty" json:"repo,omitempty"`
+	Build         *BuildSpec         `yaml:"build,omitempty" json:"build,omitempty"`
+	Processes     map[string]Process `yaml:"processes" json:"processes"`
+	Services      []string           `yaml:"services,omitempty" json:"services,omitempty"`
+	Secrets       []string           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	Migrations    string             `yaml:"migrations,omitempty" json:"migrations,omitempty"`
+	// MigrationPostcondition is a reviewed scalar check on the accepted
+	// migration database. Its query and expected value travel with the pinned
+	// source; only their digest enters the durable effect reservation.
+	MigrationPostcondition *MigrationPostconditionSpec `yaml:"migrationPostcondition,omitempty" json:"migrationPostcondition,omitempty"`
+	Env                    map[string]string           `yaml:"env,omitempty" json:"-"`
+	Infrastructure         *Infrastructure             `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
 	// Databases and MigrationDatabase are AppSchemaV2 only; see
 	// database_requirements.go for validation.
 	Databases         []DatabaseRequirement `yaml:"databases,omitempty" json:"databases,omitempty"`
@@ -49,6 +53,11 @@ type InfraSpec struct {
 	// It is explicit because adapters can change an image's entrypoint and
 	// should never be inferred from its database variables alone.
 	StartupAdapter string `yaml:"startupAdapter,omitempty" json:"startupAdapter,omitempty"`
+}
+
+type MigrationPostconditionSpec struct {
+	Query         string `yaml:"query" json:"query"`
+	ExpectedValue string `yaml:"expectedValue" json:"expectedValue"`
 }
 
 // NomadVariableFiles is deliberately narrow: the translator derives the

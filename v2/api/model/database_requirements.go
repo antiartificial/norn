@@ -11,6 +11,8 @@ import (
 // It is required to declare named databases; Fleet documents are unaffected.
 const AppSchemaV2 = "norn.app/v2"
 
+var migrationPostconditionQueryRe = regexp.MustCompile(`(?is)^\s*(SELECT|WITH)\b`)
+
 const (
 	// StartupAdapterWordPressVerifiedTLS installs Norn's version-pinned wpdb
 	// drop-in before WordPress's normal Apache entrypoint when an exact OCI
@@ -183,7 +185,23 @@ func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
 		if spec.MigrationDatabase != "" {
 			r.add("error", "migrationDatabase", "migrationDatabase requires schemaVersion: "+AppSchemaV2)
 		}
+		if spec.MigrationPostcondition != nil {
+			r.add("error", "migrationPostcondition", "migrationPostcondition requires schemaVersion: "+AppSchemaV2)
+		}
 		return
+	}
+	if postcondition := spec.MigrationPostcondition; postcondition != nil {
+		if strings.TrimSpace(spec.Migrations) == "" || spec.EffectiveMigrationDatabase() == "" {
+			r.add("error", "migrationPostcondition", "a migration command and one selected database are required")
+		}
+		if len(postcondition.Query) == 0 || len(postcondition.Query) > 16<<10 ||
+			!migrationPostconditionQueryRe.MatchString(postcondition.Query) ||
+			strings.ContainsAny(postcondition.Query, ";\x00") {
+			r.add("error", "migrationPostcondition.query", "query must be one bounded SELECT or WITH statement")
+		}
+		if len(postcondition.ExpectedValue) > 4<<10 || strings.ContainsRune(postcondition.ExpectedValue, '\x00') {
+			r.add("error", "migrationPostcondition.expectedValue", "expected value is invalid")
+		}
 	}
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
 		r.add("error", "infrastructure.postgres", "a "+AppSchemaV2+" spec declares databases by name; infrastructure.postgres is v1 only")
