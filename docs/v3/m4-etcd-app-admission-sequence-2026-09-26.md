@@ -226,10 +226,12 @@ active pre-index work must first drain or reconcile it.
    database material; a different value at the same job ID is refused. A
    private source adapter selects only those keys from the app secret map and
    refuses missing values before any write. The normal etcd dispatch still
-   must resolve the accepted targets, obtain and stage their database material
-   and process secrets, and invoke the
-   constructor; no normal managed
-   job path is enabled by the private verifier alone.
+   must resolve the accepted targets, obtain their probed connection material,
+   and invoke the private delivery path. That path now refuses missing or extra
+   runtime database items and a target identity that differs from the signed
+   plan before staging the revision. Dispatch must call the secret source
+   adapter and managed descriptor constructor as well; no normal managed job
+   path is enabled by the private verifier alone.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact
