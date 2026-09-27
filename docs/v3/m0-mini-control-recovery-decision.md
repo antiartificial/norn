@@ -27,6 +27,16 @@ documented rollback decision. The owner must choose an option, off-host
 destination and retention period, then sign the measured result. Until then,
 M0 and M5 stay open.
 
+The current `norn.legacy-control-backup/v1` producer and verifier serve the
+**fresh M5 upgrade transition**. The verifier rejects proofs older than one
+hour by default (`NORN_LEGACY_BACKUP_MAX_AGE_SECONDS=3600`). That freshness
+guard must remain for the transition. It is not a recurring off-host backup
+catalog or a general disaster-recovery restore path: a daily retained backup
+would normally be older than the transition limit. Whichever RPO option is
+chosen needs its own backup inventory, retention and age policy, remote
+retrieval, and clean-host restore test. Do not widen the transition proof's
+age limit to claim disaster recovery.
+
 Recommendation for the release: retain **A** if the intended v3 recovery
 contract truly needs 15-minute loss bounds. If a 24-hour loss window is
 acceptable for this single-machine Mini, explicitly revise the release

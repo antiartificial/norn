@@ -40,6 +40,12 @@ python3 v2/scripts/test-mini-protected-backup.py
 bash -n v2/scripts/mini-private-copy-rehearsal
 ```
 
+This proof is intentionally fresh for the one-way upgrade transition: the
+default maximum age is one hour. It is not a recurring off-host disaster
+recovery catalog. The [M0 recovery decision](m0-mini-control-recovery-decision.md)
+requires a separate retained-backup path and clean-host restore qualification
+for either proposed RPO.
+
 The read-only source-dump mode now carries supported libpq URL settings,
 including host address and TLS certificate paths, into `pg_dump`. It rejects
 unknown or repeated URL parameters and clears inherited `PG*` variables before
