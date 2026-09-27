@@ -6,6 +6,17 @@ generation-fenced file publisher to Fleet's loopback Traefik readback. The
 normal etcd app deployment route stays disabled until the complete path is
 qualified.
 
+The source tree now includes `norn-ingress-observer`, a read-only mTLS server
+that pins one verified control-client URI SAN and exposes the local managed
+file revision plus bounded Traefik `/api/rawdata` from loopback. It refuses
+non-loopback Traefik origins, redirects, oversized or invalid JSON, and
+unverified clients in local tests. A local binary smoke test reached the
+revision endpoint with a trusted client, rejected a missing client
+certificate at the TLS handshake, and returned 401 for a validly signed
+client with the wrong URI. It has not been added to a signed release,
+installed on Fleet hosts, or connected to the control worker. It cannot
+publish or authorize a route, and supplies no public-path or inventory proof.
+
 ## Authority and host boundary
 
 - Fleet must install one narrowly scoped publisher on every ingress host. It
