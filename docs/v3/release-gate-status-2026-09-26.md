@@ -53,6 +53,17 @@ are substantial but cannot sign a broader gate.
   all clients ran on one Mac, so it does not substitute for hosted contract
   CI or a protected, separate-host Fleet.
 
+At 2026-09-27 07:52 UTC, the exact Fleet PR #176 head
+`6267655052b209b22dc8b3421cb9339f797af9bc` passed a local rerun of
+the workflow's pinned actionlint check, 1,410 Python contract tests (two
+documented skips), validation of all four Fleet documents, OpenTofu recursive
+formatting, Ansible syntax, and both disposable-root OpenTofu 1.12.6
+init/validate checks. The local Ansible version was 2.21.3 rather than the
+workflow's 2.18.3; the ordinary roots' OpenTofu 1.10.6 validation was not
+rerun. The hosted `contract` job at this head still has no assigned runner
+and no executed steps, so the required hosted check remains failed. Local
+checks do not replace that check or protected separate-host Fleet evidence.
+
 ## Protected-master integration audit — 2026-09-27 04:49 UTC
 
 PR #76 targets `feature/norn-v3-planning-handoff`, not protected `master`.
@@ -116,6 +127,11 @@ protected production-key backup, off-host restore, signed release rehearsal,
 rollback, or M5 sign-off. A separate read-only control-database check at
 07:37 UTC measured 251,595,923 bytes and still found `archive_mode=off` and
 `archive_timeout=0`, so the draft 15-minute backup-only RPO remains unproved.
+
+At this PR head, the complete API package suite also passed locally with
+disposable PostgreSQL 16 and etcd available together. Both fixtures were
+stopped and removed afterward. This exercises the combined test environment;
+it does not prove live concurrency, off-host restore, or a milestone gate.
 
 ## Shortest release path from here
 
