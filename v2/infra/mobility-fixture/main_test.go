@@ -75,6 +75,14 @@ func TestMobilityFixtureReconcilesRowsFilesWorkAndSchedule(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
 			t.Fatal(err)
 		}
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &wire); err != nil {
+			t.Fatal(err)
+		}
+		var wireItems []map[string]json.RawMessage
+		if err := json.Unmarshal(wire["items"], &wireItems); err != nil || len(wireItems) != 1 || wireItems[0]["id"] == nil || wireItems[0]["sha256"] == nil {
+			t.Fatalf("state item wire keys differ from comparison contract: %s", w.Body.String())
+		}
 		if len(state.Items) != 1 || state.Items[0].ID != created.ID || state.Items[0].SHA256 != created.SHA256 ||
 			state.JobsPending != 0 || state.JobsAcknowledged != 1 || state.ScheduleTicks != 1 ||
 			len(state.PendingJobIds) != 0 || len(state.AcknowledgedJobIds) != 1 || state.AcknowledgedJobIds[0] != created.ID ||

@@ -178,7 +178,10 @@ func (f fixture) tick(ctx context.Context, now time.Time) error {
 }
 
 func (f fixture) state(w http.ResponseWriter, r *http.Request) {
-	type item struct{ ID, SHA256 string }
+	type item struct {
+		ID     string `json:"id"`
+		SHA256 string `json:"sha256"`
+	}
 	rows, err := f.db.QueryContext(r.Context(), `SELECT id, sha256 FROM mobility_items ORDER BY id`)
 	if err != nil {
 		http.Error(w, "database unavailable", http.StatusServiceUnavailable)

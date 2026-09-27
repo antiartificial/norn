@@ -20,6 +20,11 @@ For a rehearsal, post known bodies to `/items`, run the worker and tick,
 and record `/state`, database backups, file inventory, and request results.
 Quiesce and fence source writers before final synchronization. Compare every
 item ID and digest, acknowledged job, tick, and file count on the target;
+`python3 compare_state.py source.json target.json` checks exact quiesced
+inventories before target writes and refuses incomplete file inventory or an
+observed live writer. Capture state from every serving allocation and prove
+old allocations have stopped separately; one HTTP response cannot establish
+that no other writer remains. Then
 exercise rollback before target writes and forward recovery after target
 writes. This fixture alone does not prove Norn's migration journal, traffic
 switch, provider restore, or M7 acceptance.
