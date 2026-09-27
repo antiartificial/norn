@@ -833,6 +833,36 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AppStatus' }
         '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/scale-status:
+    get:
+      operationId: getAppScaleStatus
+      description: Per-process, per-region declared and accepted replica intent beside Nomad desired, placed, running, and healthy counts. A missing task group is explicit; an unavailable control or Nomad read returns 503 rather than zero counts. Requires api:read.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+      responses:
+        '200':
+          description: Regional service-process scale projections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [region, nomadRegion, process, declared, desired, intentSource, nomadPresent]
+                  properties:
+                    region: { type: string }
+                    nomadRegion: { type: string }
+                    process: { type: string }
+                    declared: { type: integer, minimum: 0 }
+                    desired: { type: integer, minimum: 0 }
+                    intentSource: { type: string, enum: [declared, accepted-scale] }
+                    nomadPresent: { type: boolean }
+                    nomadDesired: { type: integer, minimum: 0 }
+                    placed: { type: integer, minimum: 0 }
+                    running: { type: integer, minimum: 0 }
+                    healthy: { type: integer, minimum: 0 }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/exec-sessions:
     post:
       operationId: createExecSession

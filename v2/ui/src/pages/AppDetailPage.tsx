@@ -5,7 +5,7 @@ import { apiFetch } from '../lib/api.ts'
 import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/durableIntent.ts'
 import { repoWebURL, statusTone } from '../lib/format.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { AccessPattern, AppStatus, Deployment, Operation, ServiceManifest } from '../types/index.ts'
+import type { AccessPattern, AppStatus, Deployment, Operation, ProcessScaleStatus, ServiceManifest } from '../types/index.ts'
 import { CronPanel } from '../components/CronPanel.tsx'
 import { ExecTerminal } from '../components/ExecTerminal.tsx'
 import { FunctionPanel } from '../components/FunctionPanel.tsx'
@@ -103,10 +103,25 @@ function AppRecoveryActions({ app }: { app: AppStatus }) {
 
 function AppOverviewTab({ app, services, idleCandidates }: { app: AppStatus; services: ServiceManifest['services']; idleCandidates: AccessPattern[] }) {
   const processes = Object.entries(app.spec.processes ?? {})
+  const scale = useQuery({
+    queryKey: ['app-scale-status', app.spec.name],
+    queryFn: () => apiFetch<ProcessScaleStatus[]>(`/api/v1/apps/${encodeURIComponent(app.spec.name)}/scale-status`),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  })
   return (
     <div className="detail-grid">
       <Panel title="Processes"><div className="compact-list">{processes.map(([name, process]) => <div className="compact-row" key={name}><span>{name}</span><small>{process.port ? `:${process.port}` : process.command ?? process.schedule ?? 'worker'}</small></div>)}</div></Panel>
       <Panel title="Allocations"><div className="metric-row"><Metric label="running" value={app.allocationSummary?.running ?? 0} tone="success" /><Metric label="active" value={app.allocationSummary?.active ?? 0} tone="info" /><Metric label="retained" value={app.allocationSummary?.retained ?? 0} tone="neutral" /></div></Panel>
+      <Panel title="Replica intent">
+        {scale.isLoading ? <Skeleton /> : scale.error ? <ErrorState message="Replica status is unavailable" onRetry={() => scale.refetch()} /> :
+          <div className="compact-list">{(scale.data ?? []).map((row) => <div className="compact-row" key={`${row.region}/${row.process}`}>
+            <span>{row.region} / {row.process}</span>
+            <StatusChip tone={!row.nomadPresent || row.nomadDesired !== row.desired ? 'danger' : row.placed !== row.desired || row.running !== row.desired ? 'warning' : 'success'}
+              label={!row.nomadPresent ? 'group missing' : row.nomadDesired !== row.desired ? 'intent drift' : row.placed !== row.desired || row.running !== row.desired ? 'changing' : 'matched'} />
+            <small>{row.intentSource === 'accepted-scale' ? 'accepted' : 'declared'} {row.desired} · Nomad {row.nomadPresent ? `${row.nomadDesired} desired, ${row.placed} placed, ${row.running} running` : 'group missing'}</small>
+          </div>)}</div>}
+      </Panel>
       <Panel title="Infrastructure"><div className="compact-list">{Object.keys(app.spec.infrastructure ?? {}).length === 0 ? <EmptyState icon="·" title="No backing services" hint="This app declares no infrastructure." /> : Object.keys(app.spec.infrastructure ?? {}).map((key) => <span key={key} className="process-badge">{key}</span>)}</div></Panel>
       <Panel title="Services"><div className="compact-list">{services.length === 0 ? <EmptyState icon="·" title="No services" hint="No service manifest entries yet." /> : services.map((service) => <div className="compact-row" key={service.name}><StatusChip tone={statusTone(service.status)} label={service.status} /><span>{service.name}</span><small>{service.reachability?.exposure}</small></div>)}</div></Panel>
       <Panel title="Secrets"><div className="compact-list">{(app.spec.secrets ?? []).length === 0 ? <EmptyState icon="·" title="No secrets" hint="No secret names declared." /> : app.spec.secrets?.map((secret) => <span key={secret} className="process-badge">{secret}</span>)}</div></Panel>

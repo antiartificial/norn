@@ -146,6 +146,21 @@ type Scaling struct {
 	Auto      *AutoScale `yaml:"auto,omitempty" json:"auto,omitempty"`
 }
 
+// DeclaredReplicaCount is the count a service process receives before an
+// acknowledged durable scale override is applied.
+func (p Process) DeclaredReplicaCount() int {
+	if p.Scaling == nil {
+		return 1
+	}
+	if p.Scaling.PerRegion > 0 {
+		return p.Scaling.PerRegion
+	}
+	if p.Scaling.Min > 0 {
+		return p.Scaling.Min
+	}
+	return 1
+}
+
 type AutoScale struct {
 	Metric string `yaml:"metric" json:"metric"` // cpu, memory, kafka_lag, custom
 	Target int    `yaml:"target" json:"target"`

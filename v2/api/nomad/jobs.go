@@ -678,7 +678,7 @@ func (c *Client) ScaleJobWithMeta(jobID, group, region string, count int, meta m
 // claim. A matching desired count alone is insufficient: another scaler can
 // produce it, and a failed event must never acknowledge this mutation.
 func (c *Client) ScaleStatus(jobID, group, region, operationID, generation, executionID string, count int, expectedEvalID string) (desired int, matched bool, evalID string, err error) {
-	status, _, err := c.api.Jobs().ScaleStatus(jobID, &nomadapi.QueryOptions{Region: region})
+	status, err := c.JobScaleStatusRegion(jobID, region)
 	if err != nil {
 		return 0, false, "", err
 	}
@@ -701,6 +701,13 @@ func (c *Client) ScaleStatus(jobID, group, region, operationID, generation, exec
 		break
 	}
 	return target.Desired, matched, evalID, nil
+}
+
+// JobScaleStatusRegion reads the scheduler's scale projection for all service
+// task groups in one Nomad region without applying a scaling mutation.
+func (c *Client) JobScaleStatusRegion(jobID, region string) (*nomadapi.JobScaleStatusResponse, error) {
+	status, _, err := c.api.Jobs().ScaleStatus(jobID, &nomadapi.QueryOptions{Region: region})
+	return status, err
 }
 
 // UptimeEntry describes a long-running allocation for the uptime leaderboard.

@@ -66,13 +66,7 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 
 		// Scaling
 		if proc.Scaling != nil && (proc.Scaling.Min > 0 || proc.Scaling.PerRegion > 0) {
-			count := proc.Scaling.Min
-			if count == 0 {
-				count = 1
-			}
-			if proc.Scaling.PerRegion > 0 {
-				count = proc.Scaling.PerRegion
-			}
+			count := proc.DeclaredReplicaCount()
 			tg.Count = &count
 		}
 

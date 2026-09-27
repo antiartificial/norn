@@ -46,6 +46,13 @@ strict placement choice: insufficient eligible hosts leave replicas pending.
 The default placement policy, capacity admission, live host-failure behavior,
 and loaded 2→3→2 gate remain unresolved.
 
+The app detail view now reads `GET /api/v1/apps/{id}/scale-status` to show each
+service process by logical region: declared count, accepted durable override,
+and Nomad desired/placed/running counts. Missing task groups are explicit and
+an unavailable control-store or Nomad read returns an error instead of zero.
+This is drift visibility, not capacity admission or proof that Nomad can place
+the requested replicas.
+
 ## Unresolved decisions
 
 Choose scale/config precedence, default placement policy by workload class, surge quota policy, drain deadlines and numerical request/job availability budgets. Settle per-process job identity migration before implementing the translator. These choices block their respective public contracts, not read-only capacity modeling.

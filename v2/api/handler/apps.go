@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -195,6 +196,80 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, status)
+}
+
+// GetAppScaleStatus compares accepted replica intent with Nomad's regional
+// scale projection. A failed read is an error, never an observed count of zero.
+func (h *Handler) GetAppScaleStatus(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil || h.nomad == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "scale_status_unavailable", "replica intent or Nomad status is unavailable")
+		return
+	}
+	appID := chi.URLParam(r, "id")
+	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover app intent")
+		return
+	}
+	var spec *model.InfraSpec
+	for _, candidate := range specs {
+		if candidate.App == appID {
+			spec = candidate
+			break
+		}
+	}
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found")
+		return
+	}
+	processes := make([]string, 0, len(spec.Processes))
+	for name, proc := range spec.Processes {
+		if proc.Schedule == "" && proc.Function == nil {
+			processes = append(processes, name)
+		}
+	}
+	sort.Strings(processes)
+	rows := make([]model.ProcessScaleStatus, 0, len(processes)*len(spec.ResolvedRegions()))
+	for _, region := range spec.ResolvedRegions() {
+		active := false
+		for _, name := range processes {
+			if spec.ProcessRunsInRegion(spec.Processes[name], region.Name) {
+				active = true
+				break
+			}
+		}
+		if !active {
+			continue
+		}
+		accepted, err := h.db.DesiredReplicaCounts(r.Context(), appID, region.Name)
+		if err != nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "scale_intent_unavailable", "accepted replica intent is unavailable")
+			return
+		}
+		observed, err := h.nomad.JobScaleStatusRegion(appID, region.NomadRegion)
+		if err != nil || observed == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "nomad_scale_status_unavailable", "Nomad scale status is unavailable")
+			return
+		}
+		for _, name := range processes {
+			proc := spec.Processes[name]
+			if !spec.ProcessRunsInRegion(proc, region.Name) {
+				continue
+			}
+			declared := proc.DeclaredReplicaCount()
+			row := model.ProcessScaleStatus{Region: region.Name, NomadRegion: region.NomadRegion,
+				Process: name, Declared: declared, Desired: declared, IntentSource: "declared"}
+			if count, ok := accepted[name]; ok {
+				row.Desired, row.IntentSource = count, "accepted-scale"
+			}
+			if group, ok := observed.TaskGroups[name]; ok {
+				row.NomadPresent = true
+				row.NomadDesired, row.Placed, row.Running, row.Healthy = &group.Desired, &group.Placed, &group.Running, &group.Healthy
+			}
+			rows = append(rows, row)
+		}
+	}
+	writeJSON(w, rows)
 }
 
 func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {

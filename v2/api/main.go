@@ -584,6 +584,7 @@ func main() {
 		r.Get("/v1/apps", h.ListApps)
 		r.Post("/v1/apps", h.CreateApp)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}", h.GetApp)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/scale-status", h.GetAppScaleStatus)
 		r.With(handler.ValidateAppID).Put("/v1/apps/{id}/deployment", h.UpdateAppDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/deployments", h.QueueReleaseDeployment)
