@@ -154,7 +154,8 @@ source, content-addressed build, completed snapshot step and original
 migration effect, with no later mutable step. Its replacement claim must
 reuse the verified original target-bound snapshot rather than create a new
 one. Missing evidence still fails to manual recovery. This branch has local
-store and snapshot tests, but no protected process-crash qualification yet.
+store, snapshot, and disposable Linux process-crash tests, but no
+protected-runtime process-crash qualification yet.
 An unrecorded standalone migration likewise fails to manual recovery.
 Neither path may infer a repeat-safe failure from a nonzero command exit.
 
@@ -167,10 +168,8 @@ absent or invalid original snapshot; it does not silently create a new dump
 of a post-migration database. When export is declared, the snapshot stage
 re-enters the claimed create-only publication path, rereads the remote dump
 and manifest, and verifies both against the pinned source before advancing.
-The separate export-crash and migration-crash fixtures exercise those paths,
-but a joined post-migration process-crash test with remote export remains to
-prove their combined recovery boundary without a second migration execution.
-The joined disposable Linux/PostgreSQL harness now covers that boundary for
+The separate export-crash and migration-crash fixtures exercise those paths.
+The joined disposable Linux/PostgreSQL harness covers their combined boundary for
 two named databases with remote export enabled. After the migration commits
 and the first API exits, successor replay keeps the same four remote dump and
 manifest objects byte for byte and completes the original effect with one
