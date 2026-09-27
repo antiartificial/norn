@@ -13,8 +13,11 @@ target digest from the full accepted `TargetIdentity`, including service and
 binding generations. No production pipeline path reserves or launches this
 effect yet. A resolved PostgreSQL session now produces runner-owned service,
 passfile, URL and TLS file material for private launch, including URL path
-remapping. An original-target database postcondition verifier and protected
-runtime qualification remain required before activation.
+remapping. A migration-specific verifier now requires contained zero exit and
+an independent original-target postcondition result; nonzero, timed-out and
+ambiguous command states remain unresolved. The concrete database checker,
+effect adapter, and protected runtime qualification remain required before
+activation.
 
 ## Current behavior and risk
 
