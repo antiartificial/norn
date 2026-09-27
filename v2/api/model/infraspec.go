@@ -89,6 +89,7 @@ type Process struct {
 	Health    *HealthSpec       `yaml:"health,omitempty" json:"health,omitempty"`
 	Metrics   *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Scaling   *Scaling          `yaml:"scaling,omitempty" json:"scaling,omitempty"`
+	Placement *ProcessPlacement `yaml:"placement,omitempty" json:"placement,omitempty"`
 	Drain     *Drain            `yaml:"drain,omitempty" json:"drain,omitempty"`
 	Resources *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
 	Tuning    *TuningPolicy     `yaml:"tuning,omitempty" json:"tuning,omitempty"`
@@ -96,6 +97,12 @@ type Process struct {
 	Env       map[string]string `yaml:"env,omitempty" json:"-"`
 	Regions   []string          `yaml:"regions,omitempty" json:"regions,omitempty"`
 	Singleton bool              `yaml:"singleton,omitempty" json:"singleton,omitempty"`
+}
+
+// ProcessPlacement controls scheduler behavior within the app's selected
+// logical node pool. It does not select a second pool or change job identity.
+type ProcessPlacement struct {
+	DistinctHosts bool `yaml:"distinctHosts,omitempty" json:"distinctHosts,omitempty"`
 }
 
 // EffectiveNodePool returns the application-level logical pool. An empty

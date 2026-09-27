@@ -60,6 +60,9 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 		}
 
 		tg := nomadapi.NewTaskGroup(procName, 1)
+		if proc.Placement != nil && proc.Placement.DistinctHosts {
+			tg.Constraints = append(tg.Constraints, nomadapi.NewConstraint("", nomadapi.ConstraintDistinctHosts, ""))
+		}
 
 		// Scaling
 		if proc.Scaling != nil && (proc.Scaling.Min > 0 || proc.Scaling.PerRegion > 0) {

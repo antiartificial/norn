@@ -37,6 +37,15 @@ Import current declared counts and explicit pool mappings into versioned desired
 
 Record a 2→3→2 app-node rehearsal under representative traffic, independent replica scaling, redeployment after scaling, node failure, constrained placement and interrupted replacement. Prove desired counts survive restart, old nodes are retired only after drain, and acknowledged jobs survive worker drain. Report request errors and latency against agreed budgets rather than treating successful provisioning as availability proof.
 
+### Implementation checkpoint
+
+The service-process `placement.distinctHosts: true` option translates to a
+[Nomad task-group `distinct_hosts` constraint](https://developer.hashicorp.com/nomad/docs/job-specification/constraint) within the app's selected node
+pool. A periodic or function process cannot request it. This is an explicit
+strict placement choice: insufficient eligible hosts leave replicas pending.
+The default placement policy, capacity admission, live host-failure behavior,
+and loaded 2→3→2 gate remain unresolved.
+
 ## Unresolved decisions
 
 Choose scale/config precedence, default placement policy by workload class, surge quota policy, drain deadlines and numerical request/job availability budgets. Settle per-process job identity migration before implementing the translator. These choices block their respective public contracts, not read-only capacity modeling.

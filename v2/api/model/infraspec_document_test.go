@@ -15,3 +15,10 @@ func TestParseInfraSpecDocumentIsStrictAndSingleDocument(t *testing.T) {
 		t.Fatal("multiple documents accepted")
 	}
 }
+
+func TestParseProcessDistinctHostPlacement(t *testing.T) {
+	spec, err := ParseInfraSpecDocument([]byte("name: toy\ndeploy: false\nplacement:\n  nodePool: app\nprocesses:\n  web:\n    command: run\n    placement:\n      distinctHosts: true\n"))
+	if err != nil || spec.Processes["web"].Placement == nil || !spec.Processes["web"].Placement.DistinctHosts {
+		t.Fatalf("process placement was not parsed: spec=%#v err=%v", spec, err)
+	}
+}

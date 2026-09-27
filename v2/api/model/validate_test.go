@@ -381,6 +381,13 @@ func TestValidateSpecRejectsInvalidKafkaTopics(t *testing.T) {
 	assertErrorFinding(t, result, "infrastructure.kafka.topics[3]")
 }
 
+func TestValidateSpecRejectsDistinctHostPlacementForPeriodicProcess(t *testing.T) {
+	spec := &InfraSpec{App: "toy", Processes: map[string]Process{
+		"digest": {Schedule: "0 8 * * *", Placement: &ProcessPlacement{DistinctHosts: true}},
+	}}
+	assertErrorFinding(t, ValidateSpec(spec), "processes.digest.placement.distinctHosts")
+}
+
 func assertFinding(t *testing.T, result *ValidationResult, field string) {
 	t.Helper()
 	for _, finding := range result.Findings {

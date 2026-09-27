@@ -29,6 +29,7 @@ export interface Process {
     max?: number
     perRegion?: number
   }
+  placement?: { distinctHosts?: boolean }
   resources?: {
     cpu?: number
     memory?: number

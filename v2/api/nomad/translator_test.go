@@ -176,6 +176,31 @@ func TestTranslatePinsServiceAndPeriodicJobsToLogicalNodePool(t *testing.T) {
 	}
 }
 
+func TestTranslateRequiresDistinctHostsOnlyForSelectedProcess(t *testing.T) {
+	spec := &model.InfraSpec{App: "orders", Placement: &model.PlacementSpec{NodePool: "app"}, Processes: map[string]model.Process{
+		"web":    {Port: 8080, Scaling: &model.Scaling{Min: 2}, Placement: &model.ProcessPlacement{DistinctHosts: true}},
+		"worker": {Command: "work", Scaling: &model.Scaling{Min: 2}},
+	}}
+	job := Translate(spec, "orders:test", nil)
+	if len(job.Constraints) != 0 {
+		t.Fatalf("job constraints unexpectedly affect every process: %#v", job.Constraints)
+	}
+	for _, group := range job.TaskGroups {
+		switch *group.Name {
+		case "web":
+			if len(group.Constraints) != 1 || group.Constraints[0].Operand != nomadapi.ConstraintDistinctHosts || group.Constraints[0].LTarget != "" || group.Constraints[0].RTarget != "" {
+				t.Fatalf("web placement constraint = %#v", group.Constraints)
+			}
+		case "worker":
+			if len(group.Constraints) != 0 {
+				t.Fatalf("worker unexpectedly constrained: %#v", group.Constraints)
+			}
+		default:
+			t.Fatalf("unexpected task group %q", *group.Name)
+		}
+	}
+}
+
 func TestTranslateForRegionFiltersPlacementAndAddsIngressTags(t *testing.T) {
 	spec := &model.InfraSpec{
 		App: "orders",
