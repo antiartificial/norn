@@ -152,6 +152,19 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 		if err != nil || len(activeRoute.Kvs) != 0 {
 			return nil, fmt.Errorf("initial Fleet route was superseded by an active route")
 		}
+		index, err := s.kv.Get(ctx, s.operationAcceptanceIndexKey(claim.OperationID()))
+		if err != nil || len(index.Kvs) != 1 {
+			return nil, fmt.Errorf("deployment acceptance index changed during route revalidation")
+		}
+		acceptanceKey := string(index.Kvs[0].Value)
+		loadedAcceptance, err := s.loadAcceptance(ctx, acceptanceKey)
+		if err != nil {
+			return nil, fmt.Errorf("deployment acceptance changed during route revalidation")
+		}
+		rechecked, err := s.replay(ctx, acceptanceKey, loadedAcceptance, loadedAcceptance.record.Identity, accepted.Intent.Fingerprint)
+		if err != nil || rechecked.Intent.ID != accepted.Intent.ID || rechecked.Intent.CanonicalDigest != accepted.Intent.CanonicalDigest || rechecked.Deployment == nil || rechecked.Deployment.ID != accepted.Deployment.ID {
+			return nil, fmt.Errorf("deployment acceptance changed during route revalidation")
+		}
 		// Inventory readback can take long enough for the operation lease or
 		// app lock to change. Recheck all local authority in one etcd snapshot
 		// before returning an intent as currently publishable.
@@ -161,6 +174,8 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
 			clientv3.Compare(clientv3.Value(s.appLockKey(spec.App)), "=", lock.Fence()),
 			clientv3.Compare(clientv3.ModRevision(s.fleetAppTargetKey(target.App, target.ControlEnvironment)), "=", targetRevision),
+			clientv3.Compare(clientv3.ModRevision(s.operationAcceptanceIndexKey(claim.OperationID())), "=", index.Kvs[0].ModRevision),
+			clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", loadedAcceptance.revision),
 			clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservation.Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(intentKey), "=", intentRevision),
 			clientv3.Compare(clientv3.CreateRevision(activeRouteKey), "=", 0),
