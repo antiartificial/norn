@@ -110,6 +110,10 @@ func main() {
             "package main\n\nfunc main() {}\n",
         )
         self.write(
+            "v2/api/cmd/norn-ingress-publisher/main.go",
+            "package main\n\nfunc main() {}\n",
+        )
+        self.write(
             "v2/api/cmd/norn-effect-runner/main.go",
             "package main\n\nfunc main() {}\n",
         )

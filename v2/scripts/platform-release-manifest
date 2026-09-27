@@ -27,6 +27,7 @@ REQUIRED_BINARIES = {
     "norn-effect-runner",
     "norn-host-agent",
     "norn-ingress-observer",
+    "norn-ingress-publisher",
     "platform-release-manifest",
     "platform-release-artifact",
     "platform-release-fetch-github",

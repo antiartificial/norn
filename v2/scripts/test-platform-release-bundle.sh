@@ -48,6 +48,7 @@ cp -R "$scratch/ui-source/dist/." "$release/ui/"
 build_go v2/api "$release/bin/norn-api" . "-buildid= -X main.Version=$version"
 build_go v2/api "$release/bin/norn-host-agent" ./cmd/norn-host-agent "-buildid="
 build_go v2/api "$release/bin/norn-ingress-observer" ./cmd/norn-ingress-observer "-buildid="
+build_go v2/api "$release/bin/norn-ingress-publisher" ./cmd/norn-ingress-publisher "-buildid="
 build_go v2/api "$release/bin/norn-effect-runner" ./cmd/norn-effect-runner "-buildid="
 build_go v2/cli "$release/bin/norn" . "-buildid= -X norn/v2/cli/cmd.Version=$version"
 for helper in host-runtime platform-release-artifact platform-release-fetch-github platform-release-manifest platform-release-verify-github platform-upgrade; do

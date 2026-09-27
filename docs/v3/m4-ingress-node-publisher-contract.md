@@ -7,9 +7,12 @@ resolver to supply the exact route, predecessor and generation. A separate
 control authority handler binds the node ID to a verified client URI; the
 host-side client pins both the control CA and server URI. A local mTLS test
 feeds its decision through the node publisher and checks the resulting file
-revision. The private store decision is not wired to that network handler,
-and neither listener is installed on Fleet hosts, so this is not an
-operational publish path.
+revision. The private store decision can serve that handler while its worker
+holds a live claim and app lock. The `norn-ingress-publisher` host binary uses
+separate inbound control and outbound node mTLS identities, rejects a
+non-private listen address, and is required in candidate release manifests.
+No runtime control listener or Fleet host service invokes this path yet, so
+it is not an operational publication path.
 This contract connects the canonical route renderer and local
 generation-fenced file publisher to Fleet's loopback Traefik readback. The
 normal etcd app deployment route stays disabled until the complete path is

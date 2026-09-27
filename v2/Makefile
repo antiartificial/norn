@@ -21,8 +21,11 @@ host-agent:
 ingress-observer:
 	cd api && go build -o ../bin/norn-ingress-observer ./cmd/norn-ingress-observer
 
-build: api cli host-agent ingress-observer
-	@echo "built api + cli + host agent + ingress observer → bin/"
+ingress-publisher:
+	cd api && go build -o ../bin/norn-ingress-publisher ./cmd/norn-ingress-publisher
+
+build: api cli host-agent ingress-observer ingress-publisher
+	@echo "built api + cli + host agent + ingress observer + publisher → bin/"
 
 ui:
 	cd ui && pnpm build

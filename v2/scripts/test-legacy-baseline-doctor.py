@@ -181,7 +181,7 @@ class DoctorFixtureTest(unittest.TestCase):
             target.write_text("fixture\n", encoding="utf-8")
         releases = self.root / "releases"
         binaries = ("host-runtime", "norn", "norn-api", "norn-effect-runner", "norn-host-agent",
-                    "norn-ingress-observer", "platform-release-artifact", "platform-release-fetch-github",
+                    "norn-ingress-observer", "norn-ingress-publisher", "platform-release-artifact", "platform-release-fetch-github",
                     "platform-release-manifest", "platform-release-verify-github", "platform-upgrade")
         for sha in (legacy_sha, candidate_sha):
             release = self.root / f"unsigned-{sha}"
