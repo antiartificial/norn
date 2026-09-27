@@ -155,6 +155,10 @@ Fleet cluster, environment and generation for a future route-intent transaction.
 The unique HTTPS endpoint/process resolver now lives in the shared model
 package, so that transaction can rederive source values from the pinned
 InfraSpec rather than trust worker-supplied endpoint fields.
+The first-route private etcd transaction now persists a generation-one intent
+and reservation against the current active Fleet pointer. It has no publisher
+or terminal proof path and cannot activate traffic. Old/new split transitions
+still require the durable prior route pointer described below.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

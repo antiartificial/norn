@@ -92,3 +92,15 @@ required. The claimed route-source resolver now consumes the verified accepted
 target and refuses a mismatched app, control environment, region, Nomad target
 or missing Fleet cluster. No normal etcd deployment route or positive traffic
 path was enabled.
+
+The private `IntendInitialFleetRoute` path now handles a first Fleet route with
+one accepted region at 100% weight. Under the live claim and app lock, it
+rechecks the signed acceptance, derives the HTTPS endpoint and process from
+the pinned InfraSpec, renders a revision-specific backend, selects the active
+Fleet ingress inventory, and atomically records generation one plus a durable
+reservation. The transaction compares the target, acceptance, Fleet plan,
+checkpoint, active pointer and cluster epoch revisions. An uncertain reply
+reuses the recorded intent instead of allocating another generation. This is
+unpublished intent only: the privileged host writer, readback/probe proof,
+prior-route transition, terminal active-weight comparison and normal worker
+entry remain absent.
