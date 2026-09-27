@@ -104,6 +104,13 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := accept("live", string(encodedCatalog))
+	if err := adapter.DeferClaimedOperationWithAppLock(ctx, live, lock, "uncertain commit", time.Now(), map[string]interface{}{"externalEffectRecoveryPending": true, "effectRecoveryReason": "uncertain commit"}); err != nil {
+		t.Fatal(err)
+	}
+	_, live, err = adapter.ClaimNextOperation(ctx, "catalog-retry-worker", time.Minute, []string{"database.catalog-activate"})
+	if err != nil || live.OperationID() == "" {
+		t.Fatalf("reclaim deferred catalog: %v", err)
+	}
 	lock.Release()
 	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, lock, 0, catalog, "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("released app lock changed routing: %v", err)
@@ -119,6 +126,9 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	finished, err := adapter.GetOperation(ctx, live.OperationID())
 	if err != nil || finished.Status != model.OperationSucceeded || fmt.Sprint(finished.Metadata["revision"]) != "1" || finished.Metadata["storedDigest"] != activated.Digest {
 		t.Fatalf("terminal receipt %+v: %v", finished, err)
+	}
+	if finished.Metadata["externalEffectRecoveryPending"] == true || finished.Metadata["effectRecoveryReason"] != nil {
+		t.Fatalf("successful catalog retained pending recovery marker: %+v", finished.Metadata)
 	}
 	public, err := json.Marshal(finished)
 	if err != nil || strings.Contains(string(public), "secret:app/db") || strings.Contains(string(public), `"catalog":`) {

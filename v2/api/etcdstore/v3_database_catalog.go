@@ -244,6 +244,9 @@ func (s *V3OperationStore) activatePostgresDatabaseCatalog(ctx context.Context, 
 		if operation.Operation.Metadata == nil {
 			operation.Operation.Metadata = make(map[string]interface{})
 		}
+		delete(operation.Operation.Metadata, "externalEffectRecoveryPending")
+		delete(operation.Operation.Metadata, "effectRecoveryReason")
+		delete(operation.Operation.Metadata, "effectResource")
 		for key, value := range metadata {
 			operation.Operation.Metadata[key] = value
 		}
@@ -272,13 +275,52 @@ func (s *V3OperationStore) activatePostgresDatabaseCatalog(ctx context.Context, 
 	}
 	txn, err := s.kv.Txn(ctx).If(compares...).Then(ops...).Commit()
 	if err != nil {
-		return store.DatabaseCatalogRevision{}, err
+		if claim != nil {
+			// A lost response can follow a committed transaction. The catalog
+			// revision and this operation's terminal receipt were written in
+			// that same transaction, so their joint readback proves success.
+			resolveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if resolved, resolveErr := s.resolveClaimedCatalogCommit(resolveCtx, *claim, revision, record.Digest); resolveErr == nil && resolved {
+				return store.DatabaseCatalogRevision{Revision: revision, Digest: record.Digest, Catalog: next}, nil
+			}
+		}
+		return store.DatabaseCatalogRevision{}, fmt.Errorf("%w: %v", store.ErrDatabaseCatalogCommitIndeterminate, err)
 	}
 	if !txn.Succeeded {
 		if claim != nil {
+			owner, ownerErr := s.kv.Get(ctx, s.ownerKey(claim.OperationID()))
+			if ownerErr == nil && len(owner.Kvs) == 1 && owner.Kvs[0].Lease != 0 && string(owner.Kvs[0].Value) == claimOwnerValue(claim.OwnerID(), claim.Generation()) {
+				active, activeErr := s.kv.Get(ctx, s.databaseCatalogActiveKey())
+				if activeErr == nil && len(active.Kvs) == 1 && string(active.Kvs[0].Value) != strconv.FormatInt(expectedCurrent, 10) {
+					return store.DatabaseCatalogRevision{}, store.ErrDatabaseCatalogRevisionConflict
+				}
+			}
 			return store.DatabaseCatalogRevision{}, store.ErrOperationOwnershipLost
 		}
 		return store.DatabaseCatalogRevision{}, store.ErrDatabaseCatalogRevisionConflict
 	}
 	return store.DatabaseCatalogRevision{Revision: revision, Digest: record.Digest, Catalog: next}, nil
+}
+
+func (s *V3OperationStore) resolveClaimedCatalogCommit(ctx context.Context, claim store.OperationClaim, revision int64, digest string) (bool, error) {
+	stored, err := s.DatabaseCatalogRevision(ctx, revision)
+	if err != nil || stored.Digest != digest {
+		return false, err
+	}
+	operation, _, err := s.load(ctx, claim.OperationID())
+	if err != nil {
+		return false, err
+	}
+	if operation.Operation.ID != claim.OperationID() || operation.Operation.Status != model.OperationSucceeded ||
+		operation.Operation.Kind != "database.catalog-activate" || operation.Generation != claim.Generation() ||
+		fmt.Sprint(operation.Operation.Metadata["revision"]) != strconv.FormatInt(revision, 10) || operation.Operation.Metadata["storedDigest"] != digest {
+		return false, nil
+	}
+	active, err := s.kv.Get(ctx, s.databaseCatalogActiveKey())
+	if err != nil || len(active.Kvs) != 1 {
+		return false, err
+	}
+	activeRevision, err := strconv.ParseInt(string(active.Kvs[0].Value), 10, 64)
+	return err == nil && activeRevision >= revision, err
 }

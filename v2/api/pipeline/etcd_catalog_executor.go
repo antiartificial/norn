@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"norn/v2/api/database"
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -36,6 +37,9 @@ func (e *EtcdCatalogExecutor) ExecuteOperationWithAppLock(ctx context.Context, o
 	}
 	metadata := map[string]interface{}{"expectedRevision": expected, "catalogDigest": digest}
 	activated, err := e.Catalog.ActivatePostgresDatabaseCatalogClaimed(ctx, claim, lock, expected, catalog, actor, metadata)
+	if errors.Is(err, store.ErrDatabaseCatalogCommitIndeterminate) {
+		return nil, &effect.PendingError{Resource: "database-catalog", Reason: "catalog activation commit outcome is unresolved", Cause: err}
+	}
 	var resolverErr *database.ResolverError
 	refused := errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) || errors.Is(err, store.ErrDatabaseCatalogRetiredIdentity) || errors.As(err, &resolverErr)
 	if err != nil && !refused {

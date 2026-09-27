@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	ErrDatabaseCatalogRevisionConflict = errors.New("database catalog revision changed")
-	ErrDatabaseCatalogRetiredIdentity  = errors.New("database catalog reuses a durably retired identity")
+	ErrDatabaseCatalogRevisionConflict    = errors.New("database catalog revision changed")
+	ErrDatabaseCatalogRetiredIdentity     = errors.New("database catalog reuses a durably retired identity")
+	ErrDatabaseCatalogCommitIndeterminate = errors.New("database catalog activation commit is indeterminate")
 )
 
 // DatabaseCatalogRevision is one activated, digest-verified catalog.
