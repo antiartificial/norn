@@ -126,11 +126,11 @@ rollback, or M5 sign-off. A separate read-only control-database check at
    and archive proof. Clear Fleet CI runner admission, then qualify an exact
    protected candidate on separate hosts with three etcd voters and app pools.
    Record all pins.
-3. Integrate V3 with current `master` in dependency-ordered, reviewable slices.
-   Resolve overlapping master behavior and restore its required CI contexts;
-   run both macOS and V3-specific checks. After the exact candidate is merged
-   to protected `master`, publish and verify its signed immutable bundle with
-   the protected release environment.
+3. Review the integrated candidate in draft PR #77, including the protected
+   release and Fleet boundaries, then merge only through protected `master`.
+   After the exact reviewed candidate is merged, publish and verify its signed
+   immutable bundle with the protected release environment. Preserve the
+   legacy macOS and V3-specific checks on the merge candidate.
 4. Run the loaded M4 placement/drain and isolated M5 Mini upgrade/rollback
    rehearsals. Complete M6–M7 for the supported app database and migration
    scope; sign M8 before the separately approved M9 adoption steps.
