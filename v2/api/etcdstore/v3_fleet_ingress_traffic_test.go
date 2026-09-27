@@ -59,4 +59,16 @@ func TestObserveFleetIngressTrafficJoinsEveryNodeAndPublicPath(t *testing.T) {
 	if _, err := observeFleetIngressTraffic(context.Background(), changedEpoch, readback, probes, public, 443, "/readyz", bodySHA); err == nil {
 		t.Fatal("changed active Fleet cluster epoch accepted")
 	}
+	readbacks := 0
+	changedRoute := func(context.Context) (*FleetIngressRouteObservation, error) {
+		readbacks++
+		result := &FleetIngressRouteObservation{Inventory: inventory, RouteSHA256: "route", Generation: 7}
+		if readbacks == 2 {
+			result.Generation++
+		}
+		return result, nil
+	}
+	if _, err := observeFleetIngressTraffic(context.Background(), load, changedRoute, probes, public, 443, "/readyz", bodySHA); err == nil {
+		t.Fatal("route generation change during public probe accepted")
+	}
 }

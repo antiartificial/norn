@@ -78,6 +78,15 @@ func observeFleetIngressTraffic(ctx context.Context, load func(context.Context) 
 	if err := probePublic(ctx); err != nil {
 		return nil, err
 	}
+	reconfirmed, err := readback(ctx)
+	if err != nil || reconfirmed == nil || !sameFleetIngressInventory(&route.Inventory, &reconfirmed.Inventory) || reconfirmed.RouteSHA256 != route.RouteSHA256 || reconfirmed.Generation != route.Generation || len(reconfirmed.Nodes) != len(route.Nodes) {
+		return nil, fmt.Errorf("Fleet ingress route changed during endpoint or public probes")
+	}
+	for i, node := range route.Nodes {
+		if reconfirmed.Nodes[i] != node {
+			return nil, fmt.Errorf("Fleet ingress node route changed during endpoint or public probes")
+		}
+	}
 	after, err := load(ctx)
 	if err != nil || !sameFleetIngressInventory(&route.Inventory, after) {
 		return nil, fmt.Errorf("Fleet ingress inventory changed during endpoint or public probes")

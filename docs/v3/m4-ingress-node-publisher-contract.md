@@ -60,7 +60,7 @@ traffic proof: app endpoint probes, public load-balancer behavior, accepted
 deployment binding and the completion transaction are still outstanding.
 `ObserveCurrentFleetIngressTraffic` now composes that readback with an HTTPS
 app endpoint probe on each exact private ingress IP and a normal public DNS
-probe, then rechecks the active Fleet inventory and cluster epoch. The expected response digest and
+probe, then repeats every-node route readback and rechecks the active Fleet inventory and cluster epoch. The expected response digest and
 probe path are explicit inputs. This remains an observation until the worker
 binds them to the accepted deployment and records a durable, revision-fenced
 proof before positive active weight.
