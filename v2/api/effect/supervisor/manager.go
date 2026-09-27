@@ -348,6 +348,11 @@ func (m *Manager) LaunchSnapshot(ctx context.Context, reservation effect.Reserva
 	}
 	var identity effect.ExecutionIdentity
 	err = m.withExecutionLock(reservation.SupervisorExecutionID, func(directory string) error {
+		if _, err := os.Stat(filepath.Join(directory, "tombstone")); err == nil {
+			return fmt.Errorf("supervisor execution id is durably revoked")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		record, err := m.readBoundJournal(directory, reservation, effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID})
 		if err != nil {
 			return err
@@ -399,6 +404,11 @@ func (m *Manager) LaunchMigration(ctx context.Context, reservation effect.Reserv
 	}
 	var identity effect.ExecutionIdentity
 	err = m.withExecutionLock(reservation.SupervisorExecutionID, func(directory string) error {
+		if _, err := os.Stat(filepath.Join(directory, "tombstone")); err == nil {
+			return fmt.Errorf("supervisor execution id is durably revoked")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		record, err := m.readBoundJournal(directory, reservation, effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID})
 		if err != nil {
 			return err
@@ -839,6 +849,60 @@ func (m *Manager) ObserveMigration(ctx context.Context, reservation effect.Reser
 		return err
 	})
 	return observation, err
+}
+
+// RevokeMigration can release a namespace that was durably registered but
+// never launched. A launched command is killed under its cgroup, but its
+// partial database writes remain unresolved for operator review.
+func (m *Manager) RevokeMigration(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
+	if _, err := m.verifyMigrationDescriptor(reservation.LaunchPayload); err != nil {
+		return effect.Observation{}, err
+	}
+	var observation effect.Observation
+	err := m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if err := m.writeTombstone(directory, record); err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID == "" {
+			observation, err = m.observationForProtocol(record, BackendState{Phase: effect.SupervisorNotFound,
+				ContainmentProven: true, EvidenceReference: "tombstone/" + record.SupervisorExecutionID}, MigrationProtocolV1)
+			return err
+		}
+		state, err := m.backend.Revoke(ctx, backendExecution(record, directory))
+		if err != nil {
+			return err
+		}
+		observation, err = m.observationForProtocol(record, state, MigrationProtocolV1)
+		return err
+	})
+	return observation, err
+}
+
+// RetrieveMigrationResult returns the intentionally empty command output only
+// for the exact durable execution. The effect completion record carries the
+// independent postcondition verification; runner stdout is never retained.
+func (m *Manager) RetrieveMigrationResult(_ context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, reference string) ([]byte, error) {
+	if _, err := m.verifyMigrationDescriptor(reservation.LaunchPayload); err != nil {
+		return nil, err
+	}
+	if reference != "result/"+reservation.SupervisorExecutionID {
+		return nil, fmt.Errorf("migration result reference mismatch")
+	}
+	err := m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID == "" {
+			return fmt.Errorf("migration has no durable launch identity")
+		}
+		return nil
+	})
+	return nil, err
 }
 
 // RetrieveSnapshotResult returns the authenticated terminal output preserved

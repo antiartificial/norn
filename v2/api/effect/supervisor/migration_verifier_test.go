@@ -109,3 +109,49 @@ func TestMigrationVerifierRequiresContainedSuccessAndOriginalTarget(t *testing.T
 }
 
 func intPointer(value int) *int { return &value }
+
+func TestMigrationNeverLaunchedRevocationIsAuthenticated(t *testing.T) {
+	manager := testManager(t, t.TempDir(), newBackendFake())
+	intent := testMigrationIntent()
+	commandHash := sha256.Sum256([]byte("true"))
+	intent.CommandSHA256 = hex.EncodeToString(commandHash[:])
+	payload, err := manager.BuildMigrationDescriptor(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: "authority", Resource: "app/demo/migrate",
+		OperationClaim: effect.OperationClaim{OperationID: "operation", OwnerID: "worker", Generation: 1},
+		Stage:          MigrationStage, Supervisor: "migration-runner", SupervisorExecutionID: "migration-never-launched", LaunchPayload: payload}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID}
+	checker := &migrationCheckerFake{}
+	verifier, err := NewMigrationVerifier(manager, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := manager.ObserveMigration(context.Background(), reservation, identity)
+	if err != nil || observation.Phase != effect.SupervisorNotFound {
+		t.Fatalf("registered migration=%+v err=%v", observation, err)
+	}
+	verified, err := verifier.Verify(context.Background(), effect.Record{Reservation: reservation}, observation)
+	if err != nil || verified.Decision != effect.VerificationNeverLaunched {
+		t.Fatalf("registered migration proof=%+v err=%v", verified, err)
+	}
+	revoked, err := manager.RevokeMigration(context.Background(), reservation, identity)
+	if err != nil || revoked.Phase != effect.SupervisorNotFound {
+		t.Fatalf("revoked migration=%+v err=%v", revoked, err)
+	}
+	verified, err = verifier.Verify(context.Background(), effect.Record{Reservation: reservation}, revoked)
+	if err != nil || verified.Decision != effect.VerificationNeverLaunched || checker.checks != 0 {
+		t.Fatalf("revocation proof=%+v checks=%d err=%v", verified, checker.checks, err)
+	}
+	if _, err := manager.LaunchMigration(context.Background(), reservation, MigrationLaunchMaterial{Command: "true", Directory: t.TempDir()}); err == nil {
+		t.Fatal("revoked migration was relaunched")
+	}
+}

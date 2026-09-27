@@ -56,6 +56,34 @@ func TestManagerLaunchSnapshotUsesPrivateMaterialAndStableDescriptor(t *testing.
 	}
 }
 
+func TestRevokedSnapshotCannotLaunchAfterTombstone(t *testing.T) {
+	manager := testManager(t, t.TempDir(), newBackendFake())
+	material := SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64),
+		ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"),
+		Password: "private", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}
+	payload, err := manager.BuildSnapshotDescriptor(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: "authority", Resource: "app/demo/snapshot",
+		OperationClaim: effect.OperationClaim{OperationID: "snapshot-op", OwnerID: "worker", Generation: 1},
+		Stage:          SnapshotStage, Supervisor: "snapshot-runner", SupervisorExecutionID: "snapshot-revoked", LaunchPayload: payload}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID}
+	if _, err := manager.Revoke(context.Background(), reservation, identity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.LaunchSnapshot(context.Background(), reservation, material); err == nil {
+		t.Fatal("revoked snapshot was launched")
+	}
+}
+
 func TestSnapshotTerminalResultReusesFirstAuthenticatedManifestBeforeCompletion(t *testing.T) {
 	manager := testManager(t, t.TempDir(), newBackendFake())
 	material := SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"), Password: "secret", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}

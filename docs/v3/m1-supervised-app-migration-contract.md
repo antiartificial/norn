@@ -19,14 +19,17 @@ ambiguous command states remain unresolved. A concrete PostgreSQL/MySQL
 checker now binds one reviewed scalar SQL assertion to the accepted target
 digest, reconnects to that target, verifies database and role in a read-only
 transaction, and requires exactly one non-null result matching the expected
-value. PostgreSQL and MySQL paths passed disposable database tests. The
-The v2 InfraSpec can now declare `migrationPostcondition.query` and
+value. PostgreSQL and MySQL paths passed disposable database tests. The v2
+InfraSpec can now declare `migrationPostcondition.query` and
 `migrationPostcondition.expectedValue`; validation requires a migration
 command and selected named database, and the pipeline derives its digest with
-the accepted engine. The production effect adapter must supply that pinned
-source assertion and route both deployment and standalone migrations through
-this verifier;
-protected runtime qualification remains required before activation.
+the accepted engine. The effect executor now has a migration-specific private
+launch, observation, revocation and empty-result adapter. A durably registered
+but never launched migration can be tombstoned and verified without reading
+the database; a launched stopped migration remains unresolved. The production
+caller must supply the pinned source assertion and route both deployment and
+standalone migrations through this adapter. Protected runtime qualification
+remains required before activation.
 
 ## Current behavior and risk
 

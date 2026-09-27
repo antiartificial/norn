@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"norn/v2/api/effect"
@@ -53,6 +54,20 @@ func (v *MigrationVerifier) Verify(ctx context.Context, record effect.Record, ob
 		return effect.Verification{}, fmt.Errorf("migration observation authentication failed")
 	}
 	a := envelope.Assertion
+	if a.Protocol == MigrationProtocolV1 && a.InputDigest == record.Reservation.InputDigest &&
+		a.SupervisorExecutionID == record.Reservation.SupervisorExecutionID &&
+		a.Phase == effect.SupervisorNotFound && observation.Phase == effect.SupervisorNotFound &&
+		a.RuntimeInstanceID == "" && observation.Identity.RuntimeInstanceID == "" &&
+		record.Execution.RuntimeInstanceID == "" && a.ContainmentProven &&
+		a.ExitCode == nil && observation.ExitCode == nil && len(observation.Output) == 0 &&
+		a.EvidenceReference == observation.Evidence.Reference && !a.ObservedAt.IsZero() &&
+		(strings.HasPrefix(a.EvidenceReference, "registered-not-launched/") ||
+			strings.HasPrefix(a.EvidenceReference, "tombstone/")) {
+		return effect.Verification{Decision: effect.VerificationNeverLaunched,
+			InputDigest: a.InputDigest, SupervisorExecutionID: a.SupervisorExecutionID,
+			EvidenceSource: evidenceSource, EvidenceReference: a.EvidenceReference,
+			ObservedAt: time.Now().UTC()}, nil
+	}
 	if a.Protocol != MigrationProtocolV1 || a.InputDigest != record.Reservation.InputDigest ||
 		a.SupervisorExecutionID != record.Reservation.SupervisorExecutionID ||
 		a.RuntimeInstanceID == "" || a.RuntimeInstanceID != observation.Identity.RuntimeInstanceID ||
