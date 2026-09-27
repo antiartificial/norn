@@ -16,6 +16,9 @@ func (p *Pipeline) migrate(ctx context.Context, st *state, sg *saga.Saga) error 
 	if st.spec.Migrations == "" {
 		return nil // skip
 	}
+	if p.MigrationEffects != nil && st.spec.MigrationPostcondition == nil {
+		return fmt.Errorf("supervised migration mode requires a reviewed migrationPostcondition")
+	}
 	if err := p.checkSecretConflicts(st.spec); err != nil {
 		return err
 	}

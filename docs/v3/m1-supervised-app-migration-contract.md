@@ -38,7 +38,9 @@ runtime and process-crash qualification remain required before activation.
 
 ## Current behavior and risk
 
-Migrations without a reviewed postcondition still execute with host `sh -c`.
+Migrations without a reviewed postcondition still execute with host `sh -c`
+when supervised migration mode is off. When the operator enables supervised
+mode, an unreviewed migration fails before launching a command.
 The deployment engine records `migrate` as a mutable step before the command.
 An expired deployment migration claim still fails to manual recovery even if
 its effect exists; replay of earlier deployment steps has not been qualified.

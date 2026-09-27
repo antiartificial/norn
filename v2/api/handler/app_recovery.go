@@ -262,6 +262,10 @@ func (h *Handler) queueAppDataOperation(w http.ResponseWriter, r *http.Request, 
 		WriteControlProblem(w, r, http.StatusConflict, "migration_not_configured", "app has no migrations command")
 		return
 	}
+	if kind == "app.migrate" && h.pipeline.MigrationEffects != nil && spec.MigrationPostcondition == nil {
+		WriteControlProblem(w, r, http.StatusConflict, "migration_postcondition_required", "supervised migration mode requires a reviewed migrationPostcondition")
+		return
+	}
 	ref := ""
 	if kind == "app.migrate" {
 		ref, _ = payload["ref"].(string)

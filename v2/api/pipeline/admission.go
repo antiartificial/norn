@@ -19,6 +19,9 @@ import (
 // production profile must verify the actual source provenance, not only the
 // requested ref or repository declaration.
 func (p *Pipeline) admission(_ context.Context, st *state, _ *saga.Saga) error {
+	if p.MigrationEffects != nil && st.spec.Migrations != "" && st.spec.MigrationPostcondition == nil {
+		return fmt.Errorf("supervised migration mode requires a reviewed migrationPostcondition before deployment")
+	}
 	// Connector admission belongs before builds, snapshots, migrations, or any
 	// scheduler mutation. In particular, the local Apple connector rejects
 	// unsupported regional, scheduled, canary, and endpoint-scaling shapes here

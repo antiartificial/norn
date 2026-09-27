@@ -38,6 +38,14 @@ func TestProductionAdmissionRequiresImmutableHealthySource(t *testing.T) {
 	}
 }
 
+func TestSupervisedMigrationAdmissionRejectsUnreviewedDeployment(t *testing.T) {
+	p := &Pipeline{MigrationEffects: &MigrationEffects{}}
+	st := &state{spec: &model.InfraSpec{App: "demo", Migrations: "./migrate"}}
+	if err := p.admission(context.Background(), st, nil); err == nil || !strings.Contains(err.Error(), "migrationPostcondition") {
+		t.Fatalf("unreviewed supervised deployment admission = %v", err)
+	}
+}
+
 func TestProductionArtifactAdmissionFailsWhenRegistryDigestDisappears(t *testing.T) {
 	p := &Pipeline{Production: true, VerifyArtifact: func(context.Context, string) error { return errors.New("manifest unknown") }}
 	st := &state{imageTag: "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)}
