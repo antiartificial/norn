@@ -102,6 +102,21 @@ validates unsupported specifications before checking the host OS, allowing
 the same contract tests to run on Linux while still refusing a valid Apple
 workload off macOS.
 
+At 2026-09-27 07:39 UTC, the exact PR candidate
+`b8e87439d76f80afd4c293bbcb4bd77b6b58cc8c`, built with the release
+version flag, passed `mini-private-copy-rehearsal` on Mini. The source
+`norn_v2` connection was forced read-only for a private dump; every migration
+and passive-startup check used a disposable socket-only PostgreSQL 17.7
+cluster. All 28 original tables and 256,533 rows preserved their primary-key
+and full-row fingerprints across migrations 1–44; a second migration pass and
+passive health passed. The live Nomad base-job identities/versions and
+cloudflared configuration matched before and after. Disposable candidate and
+database state were removed. This is a source-copy compatibility check, not a
+protected production-key backup, off-host restore, signed release rehearsal,
+rollback, or M5 sign-off. A separate read-only control-database check at
+07:37 UTC measured 251,595,923 bytes and still found `archive_mode=off` and
+`archive_timeout=0`, so the draft 15-minute backup-only RPO remains unproved.
+
 ## Shortest release path from here
 
 1. Decide Mini's control-store RPO and off-host retention, then qualify its
