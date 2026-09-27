@@ -48,14 +48,11 @@ func TranslateManagedDeploymentForRegionAt(spec *model.InfraSpec, imageTag strin
 	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
 		return nil, err
 	}
-	if HasRuntimeDatabases(spec) && databaseRevision < 1 {
-		return nil, fmt.Errorf("managed deployment has no staged database revision")
-	}
-	jobID, err := ManagedDeploymentJobID(spec.App, region.Name, deploymentID)
+	inputs, err := PlanManagedJobInputs(spec, region, deploymentID, databaseRevision)
 	if err != nil {
 		return nil, err
 	}
-	job := translateForRegionAtWithJobID(spec, imageTag, env, region, databaseRevision, jobID)
+	job := translateForRegionAtWithJobID(spec, imageTag, env, region, databaseRevision, inputs.JobID)
 	for process, definition := range spec.Processes {
 		if definition.Port <= 0 || !spec.ProcessRunsInRegion(definition, region.Name) {
 			continue

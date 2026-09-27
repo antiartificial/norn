@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -49,6 +50,29 @@ func TestManagedDeploymentBackendsAreRevisionSpecificAndDoNotClaimPublicHost(t *
 	repeated, err := ManagedBackendServiceName("orders", "web", region.Name, "deployment-one")
 	if err != nil || repeated != serviceOne.Name {
 		t.Fatalf("backend identity is not deterministic: %q, %v", repeated, err)
+	}
+}
+
+func TestManagedJobInputPlanNamesExactRevisionScopedKeys(t *testing.T) {
+	spec := &model.InfraSpec{App: "orders", Processes: map[string]model.Process{
+		"web": {Port: 8080, NomadVariables: &model.NomadVariableFiles{Files: []model.NomadVariableFile{{Key: "API_TOKEN", Destination: "token"}}}},
+	}, Databases: []model.DatabaseRequirement{{Name: "primary", Runtime: &model.DatabaseRuntime{Env: "DATABASE_URL"}}}}
+	region := spec.ResolvedRegions()[0]
+	if _, err := PlanManagedJobInputs(spec, region, "deployment-one", 0); err == nil {
+		t.Fatal("unstaged runtime database accepted")
+	}
+	plan, err := PlanManagedJobInputs(spec, region, "deployment-one", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.VariablePath != DatabaseVariablePath(plan.JobID) || !reflect.DeepEqual(plan.RequiredKeys, []string{
+		"API_TOKEN", "norn_rev7_db_target_primary", "norn_rev7_db_url_primary",
+	}) || !reflect.DeepEqual(plan.RuntimeDatabaseNames, []string{"primary"}) {
+		t.Fatalf("incorrect managed input plan: %+v", plan)
+	}
+	spec.Processes["web"] = model.Process{Port: 8080, NomadVariables: &model.NomadVariableFiles{Files: []model.NomadVariableFile{{Key: "NORN_REV7_DB_URL_PRIMARY"}}}}
+	if _, err := PlanManagedJobInputs(spec, region, "deployment-one", 7); err == nil {
+		t.Fatal("reserved variable key accepted")
 	}
 }
 
