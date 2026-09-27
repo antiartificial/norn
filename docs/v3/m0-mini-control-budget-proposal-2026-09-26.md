@@ -3,6 +3,8 @@
 Status: review proposal, not an accepted release budget or M0 sign-off. It
 covers Mini's control PostgreSQL only. Application databases, Nomad/Consul
 state, object archives, logs, secrets, and Fleet etcd need separate budgets.
+The [control recovery decision](m0-mini-control-recovery-decision.md) compares
+the two concrete RPO paths without treating either as qualified.
 
 ## Measured input
 
