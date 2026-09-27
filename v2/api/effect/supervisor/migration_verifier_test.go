@@ -21,7 +21,8 @@ func (f *migrationCheckerFake) CheckMigrationPostcondition(_ context.Context, _ 
 
 func TestMigrationVerifierRequiresContainedSuccessAndOriginalTarget(t *testing.T) {
 	backend := newBackendFake()
-	manager := testManager(t, t.TempDir(), backend)
+	root := t.TempDir()
+	manager := testManager(t, root, backend)
 	command := "true"
 	digest := sha256.Sum256([]byte(command))
 	intent := testMigrationIntent()
@@ -66,6 +67,25 @@ func TestMigrationVerifierRequiresContainedSuccessAndOriginalTarget(t *testing.T
 	reservedBeforeAck.Execution = effect.ExecutionIdentity{}
 	if recovered, err := verifier.Verify(context.Background(), reservedBeforeAck, observation); err != nil || recovered.RuntimeInstanceID != identity.RuntimeInstanceID {
 		t.Fatalf("migration committed before launch acknowledgement could not recover: %+v err=%v", recovered, err)
+	}
+	// Reopening the supervisor after the API process is lost must preserve
+	// the original runtime identity and never hand the command to the backend
+	// a second time, even when the durable effect lacks launch acknowledgement.
+	restarted := testManager(t, root, backend)
+	resumed, err := restarted.LaunchMigration(context.Background(), reservation, MigrationLaunchMaterial{Command: command, Directory: t.TempDir()})
+	if err != nil || resumed.RuntimeInstanceID != identity.RuntimeInstanceID || backend.starts != 1 {
+		t.Fatalf("restarted migration launch = %+v, starts=%d, err=%v", resumed, backend.starts, err)
+	}
+	restartedObservation, err := restarted.ObserveMigration(context.Background(), reservation, resumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedVerifier, err := NewMigrationVerifier(restarted, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := restartedVerifier.Verify(context.Background(), reservedBeforeAck, restartedObservation); err != nil || recovered.RuntimeInstanceID != identity.RuntimeInstanceID {
+		t.Fatalf("restarted verification = %+v, err=%v", recovered, err)
 	}
 	for _, mutate := range []struct {
 		name  string
