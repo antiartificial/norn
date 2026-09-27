@@ -89,3 +89,25 @@ GraphQL GET with `count=1` returned HTTP 200, data present, and zero GraphQL
 errors. The owner-only cookie file remained mode `0600`; no cookie value or
 bookmark content was copied. This proves the stored session worked at that
 instant, not that the next ingest or credit-funded capture will complete.
+
+## AM sync and X credit refresh — 2026-09-27 13:24 UTC
+
+The signed-in X Developer Console account listing `trovely` showed **$9.79
+remaining prepaid X API credit**, **$6.37 current spend** for Sep 19–Oct 19,
+an **Unlimited** cycle cap, and **Auto Recharge Off**. No billing setting was
+changed. This confirms the prepaid balance was not exhausted at the check
+instant; the console does not attribute spend to Like Trove.
+
+Mini's exact Field Harbor AM child
+`field-harbor-field-harbor-sync-am/periodic-1790514600` launched at 13:10:01
+UTC. Allocation `5602ac9d` was still running at 13:24 UTC, with zero
+restarts and no failure event. The owner-local marker advanced from 41,150
+bookmarks to **41,159** and `lastIncrementalSyncAt` advanced to
+`2026-09-27T13:21:50.910Z`. This is direct persisted ingest progress, but
+the child had not exited at this check. A read-only follow-up at 13:25:40 UTC
+showed the same allocation terminated at 13:25:12 UTC with **exit code 0** and
+zero restarts; the marker remained at 41,159. This confirms the scheduled
+ingest finished successfully with nine additional bookmarks. It does not
+prove every downstream enrichment stage or future credential validity. No job
+or sync was started manually, and no bookmark content or credential value was
+copied.
