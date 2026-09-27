@@ -210,10 +210,15 @@ type OperationResult struct {
 	// finished means the terminal record was already committed atomically
 	// with the operation's effect; the worker only publishes.
 	finished bool
+	// appLockFenced means that terminal transaction also compared the leased
+	// app operation lock held by the worker.
+	appLockFenced bool
 }
 
 // Finished reports that the operation's terminal record is already durable.
 func (r *OperationResult) Finished() bool { return r != nil && r.finished }
+
+func (r *OperationResult) AppLockFenced() bool { return r != nil && r.appLockFenced }
 
 func deferredResult(claim store.OperationClaim, err error) *OperationResult {
 	return &OperationResult{Claim: claim, deferred: err}

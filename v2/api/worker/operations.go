@@ -19,13 +19,19 @@ import (
 
 type OperationWorker struct {
 	db       store.ExecutionStore
-	pipeline interface {
-		ExecuteOperation(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error)
-	}
-	id    string
-	kinds []string
-	lease time.Duration
-	poll  time.Duration
+	pipeline operationExecutor
+	id       string
+	kinds    []string
+	lease    time.Duration
+	poll     time.Duration
+}
+
+type operationExecutor interface {
+	ExecuteOperation(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error)
+}
+
+type appLockOperationExecutor interface {
+	ExecuteOperationWithAppLock(context.Context, *model.Operation, store.OperationClaim, store.AppOperationLock) (*pipeline.OperationResult, error)
 }
 
 func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *OperationWorker {
@@ -41,7 +47,7 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 // NewOperationWorkerForKinds binds a runtime to an explicit execution
 // capability set. Backend-neutral runtimes use this to avoid claiming an
 // operation whose aggregate they cannot execute.
-func NewOperationWorkerForKinds(db store.ExecutionStore, p *pipeline.Pipeline, kinds []string) *OperationWorker {
+func NewOperationWorkerForKinds(db store.ExecutionStore, p operationExecutor, kinds []string) *OperationWorker {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "unknown-host"
@@ -116,7 +122,7 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 	renewalStop := make(chan struct{})
 	renewalDone := make(chan error, 1)
 	go func() { renewalDone <- w.renewLease(executionCtx, claim, cancelExecution, renewalStop) }()
-	result, execErr := w.execute(executionCtx, op, claim)
+	result, execErr := w.execute(executionCtx, op, claim, appLock)
 	close(renewalStop)
 	renewErr := <-renewalDone
 	if renewErr != nil {
@@ -157,7 +163,7 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		return
 	}
 	if result.Finished() {
-		if _, fenced := w.db.(store.AppLockFencedExecutionStore); fenced {
+		if _, fenced := w.db.(store.AppLockFencedExecutionStore); fenced && !result.AppLockFenced() {
 			// The V3 adapter can fence its own terminal CAS, but this result was
 			// committed by a separate effect boundary. Until that boundary accepts
 			// the app-lock fence in its own transaction, publishing would make an
@@ -194,7 +200,7 @@ func deferredEffectMetadata(err error) map[string]interface{} {
 	return metadata
 }
 
-func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, claim store.OperationClaim) (result *pipeline.OperationResult, err error) {
+func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, claim store.OperationClaim, lock store.AppOperationLock) (result *pipeline.OperationResult, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			log.Printf("operation worker: panic in %s: %v\n%s", op.ID, recovered, debug.Stack())
@@ -202,6 +208,9 @@ func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, clai
 			err = fmt.Errorf("operation executor panic; inspect server logs")
 		}
 	}()
+	if fenced, ok := w.pipeline.(appLockOperationExecutor); ok {
+		return fenced.ExecuteOperationWithAppLock(ctx, op, claim, lock)
+	}
 	return w.pipeline.ExecuteOperation(ctx, op, claim)
 }
 
