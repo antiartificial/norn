@@ -133,6 +133,12 @@ disposable PostgreSQL 16 and etcd available together. Both fixtures were
 stopped and removed afterward. This exercises the combined test environment;
 it does not prove live concurrency, off-host restore, or a milestone gate.
 
+The later [schema-45 private-copy rehearsal](m5-mini-private-copy-schema45-2026-09-27.md)
+passed on Mini at candidate `b24723f5946df97ffa2401832d7a860784c36684`
+with 257,489 original rows preserved, a second migration pass, passive
+startup, and unchanged base job/cloudflared fingerprints. It remains a
+source-copy compatibility checkpoint, not a protected restore or M5 gate.
+
 At 2026-09-27, the current draft PR #77 head
 `1722ba427b9bcf08df317d29f5caae4ab0cdabbb` passed all 15 reported
 checks. [Norn CI run 36304890397](https://github.com/antiartificial/norn/actions/runs/36304890397)
