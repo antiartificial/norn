@@ -111,3 +111,24 @@ ingest finished successfully with nine additional bookmarks. It does not
 prove every downstream enrichment stage or future credential validity. No job
 or sync was started manually, and no bookmark content or credential value was
 copied.
+
+## Read-only refresh — 2026-09-27 16:50–16:53 UTC
+
+The authenticated Mini inventory returned `host_status=ok`, zero active
+operations, and a passing `like-trove-web` service. The latest retained Like
+Trove daily-capture child, `periodic-1790518620`, had one complete allocation;
+its `daily-capture` task terminated with exit code 0. The latest Field Harbor
+AM child, `periodic-1790514600`, also had one complete allocation. The
+owner-local bookmark marker still recorded **41,159 bookmarks** and
+`lastIncrementalSyncAt=2026-09-27T13:21:50.910Z`, matching the completed AM
+sync. The `ft-trove` app remained declared without a running Nomad allocation;
+it must not be conflated with active Like Trove.
+
+A fresh read-only `Bookmarks` GraphQL GET with `count=1` returned HTTP 200,
+data present and zero GraphQL errors. The mode-`0600` cookie file was read
+only inside Mini; no cookie values or bookmark content were printed or copied.
+The signed-in X Developer Console account listing `trovely` showed **$9.73
+remaining prepaid X API credit**, **$6.43 current spend** in the Sep 19–Oct 19,
+2026 cycle, an **Unlimited** cycle cap, and **Auto Recharge Off**. No billing
+setting was changed. These checks establish current session and prepaid
+credit availability, not future validity or the cause of individual charges.
