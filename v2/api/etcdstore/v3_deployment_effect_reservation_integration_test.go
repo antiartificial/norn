@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"norn/v2/api/effect"
 	"norn/v2/api/store"
 )
@@ -30,6 +32,47 @@ func deploymentEffectReservation(t *testing.T, accepted store.AcceptedOperation,
 		t.Fatal(err)
 	}
 	return r
+}
+
+func TestV3DeploymentSubmitAttemptRejectsLostClaimEtcd(t *testing.T) {
+	adapter, client, _ := privateInvocationEtcdStore(t)
+	ctx := context.Background()
+	request := deploymentAdmissionRequest(t, adapter.authority)
+	request.Deployment.SpecDigest = "pinned-spec-digest"
+	var err error
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := adapter.ClaimNextOperation(ctx, "deploy-worker", time.Minute, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := NewV3DeploymentEffectReservations(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := effects.Reserve(ctx, deploymentEffectReservation(t, accepted, claim, adapter.authority))
+	if err != nil || !reserved.Created {
+		t.Fatalf("reserve=%+v err=%v", reserved, err)
+	}
+	owner, err := client.Get(ctx, adapter.ownerKey(claim.OperationID()))
+	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 {
+		t.Fatalf("live claim owner is missing: %v", err)
+	}
+	if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
+		t.Fatal(err)
+	}
+	if authorized, err := effects.MarkSubmitAttempt(ctx, reserved.Record.Token); !errors.Is(err, store.ErrOperationOwnershipLost) || authorized {
+		t.Fatalf("lost claim authorized Nomad submit: authorized=%t err=%v", authorized, err)
+	}
+	if attempted, err := effects.SubmitAttempted(ctx, reserved.Record.Token); err != nil || attempted {
+		t.Fatalf("lost claim wrote attempt marker: attempted=%t err=%v", attempted, err)
+	}
 }
 
 func TestV3DeploymentEffectReservationBindsSignedPlacementEtcd(t *testing.T) {
@@ -72,6 +115,24 @@ func TestV3DeploymentEffectReservationBindsSignedPlacementEtcd(t *testing.T) {
 	if err != nil || !reserved.Created {
 		t.Fatalf("reserve=%+v err=%v", reserved, err)
 	}
+	if attempted, err := effects.SubmitAttempted(ctx, reserved.Record.Token); err != nil || attempted {
+		t.Fatalf("unattempted reservation=%t err=%v", attempted, err)
+	}
+	first, err := effects.MarkSubmitAttempt(ctx, reserved.Record.Token)
+	if err != nil || !first {
+		t.Fatalf("first submit mark=%t err=%v", first, err)
+	}
+	secondStore, err := NewV3DeploymentEffectReservations(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := secondStore.MarkSubmitAttempt(ctx, reserved.Record.Token)
+	if err != nil || second {
+		t.Fatalf("second submit mark=%t err=%v", second, err)
+	}
+	if attempted, err := secondStore.SubmitAttempted(ctx, reserved.Record.Token); err != nil || !attempted {
+		t.Fatalf("durable submit attempt=%t err=%v", attempted, err)
+	}
 	identity := effect.ExecutionIdentity{Supervisor: r.Supervisor, SupervisorExecutionID: r.SupervisorExecutionID, RuntimeInstanceID: "nomad-deployment:demo:west"}
 	if err := effects.MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
 		t.Fatal(err)
@@ -83,6 +144,9 @@ func TestV3DeploymentEffectReservationBindsSignedPlacementEtcd(t *testing.T) {
 	}
 	if _, found, err := effects.UnresolvedForResource(ctx, adapter.authority, r.Resource); err != nil || found {
 		t.Fatalf("completed effect retained app gate: found=%v err=%v", found, err)
+	}
+	if _, err := effects.MarkSubmitAttempt(ctx, reserved.Record.Token); !errors.Is(err, effect.ErrStaleToken) {
+		t.Fatalf("terminal effect accepted submit attempt: %v", err)
 	}
 	if _, err := effects.Reserve(ctx, r); err != nil && !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("same-input reservation replay: %v", err)

@@ -94,6 +94,14 @@ active pre-index work must first drain or reconcile it.
    Norn logs or release evidence. The worker also needs Nomad `plan-job` or
    `submit-job` permission for recovery; check that capability before
    enabling admission. See the [Nomad Jobs API](https://developer.hashicorp.com/nomad/api-docs/jobs).
+   The etcd deployment effect store now has a separate claim-fenced,
+   create-once submit-attempt marker. Two callers cannot both receive write
+   authorization, and a lost operation lease cannot mark an attempt; both
+   passed disposable real-etcd tests. A marked attempt followed by Nomad 404
+   remains unresolved and must never auto-resubmit. The marker is not wired
+   into a supervisor yet. Manual resolution still needs a durable revocation
+   or a Nomad revision barrier that defeats a paused old submitter before the
+   app gate can be released.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
