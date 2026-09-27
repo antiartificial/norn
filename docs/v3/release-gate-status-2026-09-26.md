@@ -80,11 +80,11 @@ production candidate.
 
 ## Protected-master integration candidate — 2026-09-27
 
-Draft [PR #77](https://github.com/antiartificial/norn/pull/77) now targets
-protected `master` at exact head
-`300e3a3d817f8642f25b4636921c1ccb703b38ba`. It integrates the V3
-source with the current master-only release and Fleet behavior. The combined
-candidate passed all reported PR checks in the [legacy master run
+Draft [PR #77](https://github.com/antiartificial/norn/pull/77) targets
+protected `master`. Its integration code checkpoint
+`300e3a3d817f8642f25b4636921c1ccb703b38ba` combines the V3 source with
+the current master-only release and Fleet behavior. That checkpoint passed
+all reported PR checks in the [legacy master run
 36303333777](https://github.com/antiartificial/norn/actions/runs/36303333777)
 and [V3 run
 36303333772](https://github.com/antiartificial/norn/actions/runs/36303333772),
