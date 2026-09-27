@@ -130,7 +130,16 @@ active pre-index work must first drain or reconcile it.
    a healthy Docker allocation. It verifies replay keeps the same effect,
    completion releases its gate, and the deployment operation remains active.
    This caught and corrected a circular job digest/execution-ID dependency.
-   The normal dispatch path and signed region checkpoint remain unproven.
+   The same private test now carries the completed effect through the
+   claim- and lock-fenced terminal transaction, verifies signed-identity
+   replay and the region projection, and checks that terminalization releases
+   app admission. The terminal writer now refuses success or ordinary failure
+   while the app effect gate is unresolved, with a no-gate check in its etcd
+   compare transaction; success cannot use a recovery-pending flag to bypass
+   that fence. The test constructs the terminal region result after health;
+   a production worker still needs to derive and persist that result from
+   verified evidence, including separate traffic-weight proof. Normal dispatch
+   remains disabled.
    Canary jobs still require their separate promotion proof.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission

@@ -143,6 +143,9 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 	for key, value := range metadata {
 		op.Metadata[key] = value
 	}
+	if status == model.OperationSucceeded && (op.Metadata["manualRecoveryRequired"] == true || op.Metadata["externalEffectRecoveryPending"] == true) {
+		return fmt.Errorf("successful deployment cannot retain unresolved recovery")
+	}
 	op.Status, op.Message, op.LockedBy, op.LockedUntil, op.FinishedAt = status, message, "", nil, &now
 	result.StartedAt = accepted.Deployment.StartedAt
 	result.FinishedAt = &now
@@ -217,6 +220,17 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 	}
 	comparisons = append(comparisons, admissionCompares...)
 	ops = append(ops, admissionOps...)
+	if op.Metadata["manualRecoveryRequired"] != true && op.Metadata["externalEffectRecoveryPending"] != true {
+		gateKey := (&V3CanaryEffectReservations{operations: s}).gateKey(op.App)
+		gate, err := s.kv.Get(ctx, gateKey)
+		if err != nil {
+			return err
+		}
+		if len(gate.Kvs) != 0 {
+			return fmt.Errorf("deployment terminal result has an unresolved app effect")
+		}
+		comparisons = append(comparisons, clientv3.Compare(clientv3.CreateRevision(gateKey), "=", 0))
+	}
 	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(ops...).Commit()
 	if err != nil {
 		return err

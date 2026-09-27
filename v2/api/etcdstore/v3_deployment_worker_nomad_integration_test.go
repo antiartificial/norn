@@ -105,6 +105,26 @@ func TestV3DeploymentWorkerEffectThroughEtcdAndDisposableNomad(t *testing.T) {
 	if err != nil || replayed.State != worker.DeploymentJobEffectObserved || replayed.EffectID != first.EffectID {
 		t.Fatalf("etcd/Nomad replay=%+v err=%v", replayed, err)
 	}
+	prematureLock, acquired, err := adapter.AcquireAppOperationLock(ctx, id)
+	if err != nil || !acquired {
+		t.Fatalf("premature terminal app lock acquired=%t err=%v", acquired, err)
+	}
+	prematureResult := *accepted.Deployment
+	prematureResult.Status = model.StatusDeployed
+	prematureRegions := []model.DeploymentRegion{{DeploymentID: prematureResult.ID, Region: input.Region, NomadRegion: input.NomadRegion,
+		Status: model.StatusDeployed, DesiredWeight: accepted.Regions[0].TrafficWeight, ActiveWeight: accepted.Regions[0].TrafficWeight}}
+	if err := adapter.finishClaimedDeployment(ctx, claim, prematureLock, prematureResult, prematureRegions, model.OperationSucceeded,
+		"premature", map[string]interface{}{"externalEffectRecoveryPending": true}); err == nil || !strings.Contains(err.Error(), "successful deployment cannot retain unresolved recovery") {
+		t.Fatalf("successful deployment used recovery hold to bypass effect proof: %v", err)
+	}
+	prematureErr := adapter.finishClaimedDeployment(ctx, claim, prematureLock, prematureResult, prematureRegions, model.OperationSucceeded, "premature", nil)
+	prematureLock.Release()
+	if prematureErr == nil {
+		t.Fatal("unresolved Nomad effect permitted terminal deployment")
+	}
+	if resultRows, err := etcd.Get(ctx, adapter.deploymentRegionResultPrefix(accepted.Deployment.ID), clientv3.WithPrefix()); err != nil || len(resultRows.Kvs) != 0 {
+		t.Fatalf("premature terminal wrote region result: rows=%d err=%v", len(resultRows.Kvs), err)
+	}
 	for {
 		record, found, err := effects.UnresolvedForResource(ctx, adapter.authority, r.Resource)
 		if err != nil || !found || record.Lifecycle != effect.LifecycleLaunched {
@@ -125,12 +145,43 @@ func TestV3DeploymentWorkerEffectThroughEtcdAndDisposableNomad(t *testing.T) {
 			if err != nil || len(active.Kvs) != 1 {
 				t.Fatalf("effect completion released active app operation: entries=%d err=%v", len(active.Kvs), err)
 			}
-			return
+			break
 		}
 		select {
 		case <-ctx.Done():
 			t.Fatalf("Nomad job did not become healthy: %v", ctx.Err())
 		case <-time.After(time.Second):
 		}
+	}
+	completed, _, _, err := effects.loadToken(ctx, effect.Token{EffectID: first.EffectID, Generation: 1})
+	if err != nil || completed.Lifecycle != effect.LifecycleCompleted || completed.Completion == nil ||
+		completed.Completion.Outcome != effect.OutcomeSucceeded || completed.Completion.Verification.InputDigest != r.InputDigest {
+		t.Fatalf("durable healthy effect proof is unavailable: lifecycle=%q err=%v", completed.Lifecycle, err)
+	}
+	lock, acquired, err := adapter.AcquireAppOperationLock(ctx, id)
+	if err != nil || !acquired {
+		t.Fatalf("deployment app lock acquired=%t err=%v", acquired, err)
+	}
+	defer lock.Release()
+	result := *accepted.Deployment
+	result.Status = model.StatusDeployed
+	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: input.Region, NomadRegion: input.NomadRegion,
+		Status: model.StatusDeployed, DesiredWeight: accepted.Regions[0].TrafficWeight, ActiveWeight: accepted.Regions[0].TrafficWeight}}
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, result, regions, model.OperationSucceeded, "deployed", nil); err != nil {
+		t.Fatal(err)
+	}
+	replayedTerminal, err := adapter.ResolveIdentity(ctx, request.Identity)
+	if err != nil || replayedTerminal.Operation.Status != model.OperationSucceeded || replayedTerminal.Deployment == nil ||
+		replayedTerminal.Deployment.Status != model.StatusDeployed {
+		t.Fatalf("signed deployment replay is incomplete: operation=%+v deployment=%+v err=%v", replayedTerminal.Operation, replayedTerminal.Deployment, err)
+	}
+	observedDeployment, err := adapter.GetDeployment(ctx, result.ID)
+	if err != nil || observedDeployment.Status != model.StatusDeployed || len(observedDeployment.Regions) != 1 ||
+		observedDeployment.Regions[0].Status != model.StatusDeployed {
+		t.Fatalf("terminal region projection is incomplete: deployment=%+v err=%v", observedDeployment, err)
+	}
+	active, err := etcd.Get(ctx, adapter.appAdmissionActivePrefix(id), clientv3.WithPrefix())
+	if err != nil || len(active.Kvs) != 0 {
+		t.Fatalf("terminal deployment retained app admission: entries=%d err=%v", len(active.Kvs), err)
 	}
 }
