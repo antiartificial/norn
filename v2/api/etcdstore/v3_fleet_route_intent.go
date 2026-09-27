@@ -79,6 +79,29 @@ func (s *V3OperationStore) CurrentInitialFleetRouteIntent(ctx context.Context, c
 	return s.initialFleetRouteIntent(ctx, claim, lock, spec, observerPort, true)
 }
 
+// AuthorizeInitialFleetRouteForNode returns the exact first-route publication
+// only for a member of the still-current Fleet inventory. A private authority
+// service must bind nodeID to the verified host certificate, and the caller
+// must hold the live claim and app lock. This is not a public API route.
+func (s *V3OperationStore) AuthorizeInitialFleetRouteForNode(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int, intentID, nodeID string) (*ingress.AuthorizedRoutePublication, error) {
+	if intentID == "" || nodeID == "" {
+		return nil, fmt.Errorf("Fleet route publication identity is incomplete")
+	}
+	intent, err := s.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, observerPort)
+	if err != nil {
+		return nil, err
+	}
+	if intent.ID != intentID || intent.Generation != 1 {
+		return nil, fmt.Errorf("Fleet route publication differs from reserved intent")
+	}
+	for _, node := range intent.Inventory.Nodes {
+		if node.ID == nodeID {
+			return &ingress.AuthorizedRoutePublication{IntentID: intent.ID, NodeID: nodeID, Route: intent.RenderedRoute, Generation: intent.Generation}, nil
+		}
+	}
+	return nil, fmt.Errorf("ingress node is absent from current Fleet inventory")
+}
+
 func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int, requireExisting bool) (*InitialFleetRouteIntent, error) {
 	if lock == nil || lock.Fence() == "" || lock.Context().Err() != nil || spec == nil || observerPort < 1024 || observerPort > 65535 {
 		return nil, store.ErrOperationOwnershipLost

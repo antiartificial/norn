@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/ingress"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -173,11 +174,32 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if current, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err != nil || current.ID != first.ID {
 		t.Fatalf("publishable route intent=%+v err=%v", current, err)
 	}
+	publication, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "ingress-01")
+	if err != nil || publication.IntentID != first.ID || publication.NodeID != "ingress-01" || publication.Generation != 1 || publication.Route.SHA256 != first.RenderedRoute.SHA256 {
+		t.Fatalf("node publication=%+v err=%v", publication, err)
+	}
+	routes := t.TempDir()
+	if err := ingress.PublishRenderedRoute(routes, publication.Route, publication.Expected, publication.Generation); err != nil {
+		t.Fatalf("authorized first-route local publication: %v", err)
+	}
+	revision, err := ingress.ReadPublishedRouteRevision(routes, publication.Route.RouterName)
+	if err != nil || !revision.Present || revision.Generation != 1 || revision.RouteSHA256 != first.RenderedRoute.SHA256 {
+		t.Fatalf("authorized first-route readback=%+v err=%v", revision, err)
+	}
+	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "unknown-node"); err == nil {
+		t.Fatal("unlisted ingress node received route publication")
+	}
+	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, uuid.NewString(), "ingress-01"); err == nil {
+		t.Fatal("unreserved intent ID received route publication")
+	}
 	if _, err := client.Put(ctx, adapter.activeFleetIngressClusterEpochKey("norn-staging"), "replaced-plan"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("stale Fleet inventory remained publishable after host replacement")
+	}
+	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "ingress-01"); err == nil {
+		t.Fatal("replaced Fleet inventory still authorized node publication")
 	}
 	if retry, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082); err != nil || retry.ID != first.ID {
 		t.Fatalf("replacement allocated a new route generation: %+v err=%v", retry, err)

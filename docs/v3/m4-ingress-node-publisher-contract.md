@@ -185,9 +185,14 @@ The first-route private etcd transaction now persists a generation-one intent
 and reservation against the current active Fleet pointer. It also writes an
 intent-ID index in the same transaction so a future authority service can
 resolve the host's opaque request ID; retry checks the index against the
-reservation and route record. It has no operational authority resolver,
+reservation and route record. It has no operational network authority resolver,
 publisher, or terminal proof path and cannot activate traffic. Old/new split transitions
 still require the durable prior route pointer described below.
+The private `AuthorizeInitialFleetRouteForNode` method now rechecks a held
+claim, app lock, signed acceptance, exact intent ID and current Fleet
+inventory before returning the generation-one route for one named member.
+It is a control-side decision primitive; no mTLS authority listener or
+host-to-control call invokes it yet.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the
