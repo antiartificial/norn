@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -137,6 +138,93 @@ class DoctorFixtureTest(unittest.TestCase):
         source.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         key.unlink()
         with self.assertRaisesRegex(doctor.CheckFailure, "public key is absent"):
+            doctor.check_signed_release(args)
+
+    def test_signed_release_verifies_two_real_imports_and_rejects_wrong_key(self):
+        artifact = SCRIPT.with_name("platform-release-artifact")
+        manifest = SCRIPT.with_name("platform-release-manifest")
+        openssl = next((path for path in (
+            "/opt/homebrew/opt/openssl@3/bin/openssl", "/usr/local/opt/openssl@3/bin/openssl",
+            shutil.which("openssl")) if path and Path(path).is_file()), None)
+        if not openssl:
+            self.skipTest("OpenSSL is required")
+
+        def run(*argv, env=None):
+            return subprocess.run([str(item) for item in argv], env=env, check=True,
+                                  capture_output=True, text=True)
+
+        repo = self.root / "repo"
+        reviewed = repo / "v2/scripts/platform-release-artifact"
+        reviewed.parent.mkdir(parents=True)
+        shutil.copy2(artifact, reviewed)
+        run("git", "-C", repo, "init", "-q")
+        for setting, field in (("user.name", "%an"), ("user.email", "%ae")):
+            identity = run("git", "-C", SCRIPT.parent, "log", "-1", f"--format={field}").stdout.strip()
+            run("git", "-C", repo, "config", setting, identity)
+        run("git", "-C", repo, "add", ".")
+        run("git", "-C", repo, "commit", "-qm", "fixture")
+        candidate_sha = run("git", "-C", repo, "rev-parse", "HEAD").stdout.strip()
+        legacy_sha = "a" * 40
+
+        private_key = self.root / "private.pem"
+        public_key = self.root / "public.pem"
+        wrong_key = self.root / "wrong.pem"
+        run(openssl, "genpkey", "-algorithm", "ED25519", "-out", private_key)
+        run(openssl, "pkey", "-in", private_key, "-pubout", "-out", public_key)
+        other_private = self.root / "other-private.pem"
+        run(openssl, "genpkey", "-algorithm", "ED25519", "-out", other_private)
+        run(openssl, "pkey", "-in", other_private, "-pubout", "-out", wrong_key)
+        source = self.root / "source"
+        for relative in ("v2/api/go.sum", "v2/cli/go.sum", "v2/ui/pnpm-lock.yaml"):
+            target = source / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fixture\n", encoding="utf-8")
+        releases = self.root / "releases"
+        binaries = ("host-runtime", "norn", "norn-api", "norn-effect-runner", "norn-host-agent",
+                    "norn-ingress-observer", "platform-release-artifact", "platform-release-fetch-github",
+                    "platform-release-manifest", "platform-release-verify-github", "platform-upgrade")
+        for sha in (legacy_sha, candidate_sha):
+            release = self.root / f"unsigned-{sha}"
+            (release / "bin").mkdir(parents=True)
+            (release / "ui").mkdir()
+            (release / "ui/index.html").write_text("fixture\n", encoding="utf-8")
+            for name in binaries:
+                binary = release / "bin" / name
+                binary.write_text(f"{name}\n", encoding="utf-8")
+                binary.chmod(0o755)
+            (release / "release.env").write_text(
+                f"NORN_RELEASE_SHA={sha}\nNORN_RELEASE_VERSION=v2-test\n"
+                "NORN_RELEASE_CREATED_AT=2026-08-26T20:00:00Z\nNORN_UI_DIR=ui\n", encoding="utf-8")
+            run(manifest, "create", "--release", release, "--source", source,
+                "--sha", sha, "--version", "v2-test", "--created-at", "2026-08-26T20:00:00Z",
+                "--os", "linux", "--arch", "amd64", "--go-version", "go1.test",
+                "--node-version", "v24.19.0", "--node-required", "v24.19.0",
+                "--pnpm-version", "10.32.1", "--pnpm-required", "10.32.1",
+                "--go-flag=-trimpath", "--go-ldflag=-buildid=", "--cgo-enabled", "0",
+                "--source-date-epoch", "1787792400")
+            bundle = self.root / f"bundle-{sha}"
+            run(artifact, "package", "--release-dir", release, "--output-dir", bundle,
+                "--commit", sha, "--os", "linux", "--arch", "amd64",
+                "--repository", "antiartificial/norn", "--source-date-epoch", "1787792400")
+            run(artifact, "sign", "--bundle-dir", bundle,
+                env=os.environ | {"NORN_RELEASE_SIGNING_KEY": private_key.read_text()})
+            run(artifact, "import", "--bundle-dir", bundle, "--releases-dir", releases,
+                "--public-key", public_key)
+
+        current = self.root / "current"
+        current.symlink_to(releases / legacy_sha)
+        args = types.SimpleNamespace(repo=repo, candidate_sha=candidate_sha, legacy_release=legacy_sha,
+                                     releases=releases, current_link=current, release_verifier=manifest,
+                                     artifact_verifier=reviewed, public_key=public_key)
+        self.assertIn("Ed25519", doctor.check_signed_release(args))
+        args.public_key = wrong_key
+        with self.assertRaises(doctor.CheckFailure):
+            doctor.check_signed_release(args)
+        args.public_key = public_key
+        candidate_binary = releases / candidate_sha / "bin/norn-api"
+        candidate_binary.chmod(0o755)
+        candidate_binary.write_text("tampered\n", encoding="utf-8")
+        with self.assertRaises(doctor.CheckFailure):
             doctor.check_signed_release(args)
 
     def test_runtime_process_must_start_after_binding_change(self):

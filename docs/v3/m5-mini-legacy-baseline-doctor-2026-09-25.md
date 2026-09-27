@@ -36,7 +36,10 @@ preflight rather than attestation of process memory. It also checks
 `NORN_DRAIN_MODE=fail` and an authenticated zero active-operation count. Its
 messages contain fixed, non-secret descriptions.
 
-Fixture tests passed with `python3 v2/scripts/test-legacy-baseline-doctor.py`.
+Seven fixture tests passed with `python3 v2/scripts/test-legacy-baseline-doctor.py`.
+The signature test imports two disposable Ed25519-signed releases, accepts
+both with the pinned public key, and rejects a different key and a tampered
+installed candidate file. These are test-key fixtures, not Mini releases.
 The new process-start predicate was also streamed to Mini and passed against
 the current launcher process without writing a file or restarting the API.
 The doctor was then streamed to Mini through SSH and run read-only with the
