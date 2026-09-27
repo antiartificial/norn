@@ -1,0 +1,39 @@
+schemaVersion: norn.app/v2
+name: v3-mobility-fixture
+deploy: false
+repo:
+  url: https://example.invalid/norn/v3-mobility-fixture.git
+  branch: main
+build:
+  dockerfile: Dockerfile
+  image: registry.invalid/norn/v3-mobility-fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  test: go test ./...
+env:
+  DATA_DIR: /data
+  WRITE_ENABLED: "false"
+databases:
+  - name: primary
+    purpose: application
+    capabilities: [runtime, migration, snapshot, restore, health]
+    runtime:
+      env: DATABASE_URL
+      fileEnv: DATABASE_URL_FILE
+migrations: /mobility-fixture migrate
+volumes:
+  - name: mobility-files
+    mount: /data
+processes:
+  web:
+    port: 8080
+    command: /mobility-fixture serve
+    health:
+      path: /health
+    scaling:
+      min: 1
+      max: 1
+  worker:
+    command: /mobility-fixture worker
+    schedule: "* * * * *"
+  tick:
+    command: /mobility-fixture tick
+    schedule: "* * * * *"

@@ -20,6 +20,14 @@ First qualify the full journal with a disposable **Mini-hosted representative
 fixture** containing PostgreSQL rows, file objects, web requests, an
 acknowledged work queue, and a schedule. The fixture must really run on Mini
 and move to an independent Fleet; a local-only simulation is insufficient.
+The deploy-disabled [mobility fixture](../../v2/infra/mobility-fixture/README.md)
+now provides those five shapes and reports item digests, missing/mismatched/
+orphaned files, pending/acknowledged jobs, and schedule ticks. Its web, worker,
+and schedule writers all require explicit admission. A disposable PostgreSQL
+16 integration test passed locally for writes, acknowledgment, tick, inventory
+drift, and writer fencing; the Norn CI API job also runs this test. No Mini or
+Fleet deployment, traffic cutover, provider restore, or migration-journal
+rehearsal has been performed with it.
 Then select a real app with an owner-approved consistency group and rehearse
 its exact source and target providers. Do not use the fixture result to claim
 that either listed app's data engine, object/volume path, traffic, or worker

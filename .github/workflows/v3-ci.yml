@@ -66,6 +66,12 @@ jobs:
           NORN_TEST_ETCD_ENDPOINTS: ${{ matrix.component == 'api' && 'http://127.0.0.1:2379' || '' }}
           NORN_TEST_DATABASE_URL: ${{ matrix.component == 'api' && 'postgres://norn_ci:norn_ci@127.0.0.1:5432/norn_ci?sslmode=disable' || '' }}
         run: go test ./...
+      - name: Test M7 mobility fixture against PostgreSQL
+        if: matrix.component == 'api'
+        working-directory: v2/infra/mobility-fixture
+        env:
+          MOBILITY_TEST_DATABASE_URL: postgres://norn_ci:norn_ci@127.0.0.1:5432/norn_ci?sslmode=disable
+        run: go test -count=1 ./...
 
   api-production-etcd:
     name: api production etcd TLS RBAC
