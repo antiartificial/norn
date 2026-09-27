@@ -47,6 +47,14 @@ and public endpoint probes and rollback. Only that evidence can support
 
 ## Local publication and readback
 
+`ObserveWithdrawnRoute` now requires every named node's effective Traefik
+configuration to lack the managed public-host router after withdrawal. It
+accepts the generation-preserving `.invalid` tombstone and rejects a stale
+node or another enabled router claiming the public host. Local two-node HTTP
+fixtures cover those cases. This is only effective-config observation: exact
+file-generation readback and public-host 404 probes are still separate
+requirements, and no Fleet node was observed through this function.
+
 `ingress.PublishRenderedRoute` writes one canonical weighted route into a
 trusted file-provider directory under a cross-process lock. It fsyncs a
 private temporary file, atomically renames it, and syncs the directory.

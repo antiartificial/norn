@@ -112,3 +112,33 @@ func TestObserveRenderedRouteDoesNotFollowAPIOriginRedirect(t *testing.T) {
 		t.Fatalf("API redirect was followed or accepted: requests=%d err=%v", offOriginRequests.Load(), err)
 	}
 }
+
+func TestObserveWithdrawnRouteRequiresEveryNodeToDropPublicHost(t *testing.T) {
+	desired, err := RenderWeightedRoute(WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com",
+		Backends: []WeightedBackend{{DeploymentID: "old", Weight: 100}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withdrawn := observedRawData(t, desired)
+	withdrawn["routers"] = map[string]any{desired.RouterName + "@file": map[string]any{
+		"status": "enabled", "rule": "Host(`withdrawn-" + desired.RouterName[len("norn-route-"):] + ".invalid`)",
+		"entryPoints": []string{"web"}, "service": desired.RouterName + "-withdrawn@file",
+	}}
+	first := testRawDataServer(t, withdrawn)
+	second := testRawDataServer(t, withdrawn)
+	nodes := []IngressNode{{ID: "ingress-a", APIURL: first.URL}, {ID: "ingress-b", APIURL: second.URL}}
+	if err := ObserveWithdrawnRoute(context.Background(), first.Client(), nodes, desired); err != nil {
+		t.Fatalf("withdrawal observation: %v", err)
+	}
+	stale := testRawDataServer(t, observedRawData(t, desired))
+	nodes[1].APIURL = stale.URL
+	if err := ObserveWithdrawnRoute(context.Background(), first.Client(), nodes, desired); err == nil {
+		t.Fatal("accepted a node retaining the public router")
+	}
+	competing := observedRawData(t, desired)
+	competing["routers"].(map[string]any)["legacy@consulcatalog"] = map[string]any{"status": "enabled", "rule": "Host(`orders.example.com`)"}
+	other := testRawDataServer(t, competing)
+	if err := ObserveWithdrawnRoute(context.Background(), other.Client(), []IngressNode{{ID: "ingress-a", APIURL: other.URL}}, desired); err == nil {
+		t.Fatal("accepted competing public-host router")
+	}
+}

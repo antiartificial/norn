@@ -99,6 +99,63 @@ func ObserveRenderedRoute(ctx context.Context, client *http.Client, nodes []Ingr
 	return observations, nil
 }
 
+// ObserveWithdrawnRoute requires every named ingress node to have removed the
+// public host after a withdrawal. It checks Traefik's effective config only;
+// public-path probes and the publisher's generation readback are separate.
+func ObserveWithdrawnRoute(ctx context.Context, client *http.Client, nodes []IngressNode, desired RenderedRoute) error {
+	if client == nil || len(nodes) == 0 || desired.EndpointHost == "" || !routeHostname.MatchString(desired.EndpointHost) {
+		return fmt.Errorf("withdrawn ingress observation is incomplete")
+	}
+	if err := validateRenderedRoute(desired); err != nil {
+		return fmt.Errorf("invalid withdrawn ingress route: %w", err)
+	}
+	seen := map[string]bool{}
+	boundedClient := *client
+	boundedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	for _, node := range nodes {
+		if node.ID == "" || seen[node.ID] {
+			return fmt.Errorf("ingress node identity is missing or repeated")
+		}
+		seen[node.ID] = true
+		endpoint, err := url.Parse(node.APIURL)
+		if err != nil || endpoint == nil || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" || endpoint.RawPath != "" || endpoint.Hostname() == "" || (endpoint.Scheme != "https" && !(endpoint.Scheme == "http" && net.ParseIP(endpoint.Hostname()) != nil && net.ParseIP(endpoint.Hostname()).IsLoopback())) {
+			return fmt.Errorf("ingress node %s API origin is invalid", node.ID)
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(node.APIURL, "/")+"/api/rawdata", nil)
+		if err != nil {
+			return err
+		}
+		response, err := boundedClient.Do(request)
+		if err != nil {
+			return fmt.Errorf("read ingress node %s: %w", node.ID, err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+		closeErr := response.Body.Close()
+		if readErr != nil || closeErr != nil || response.StatusCode != http.StatusOK || len(body) > 1<<20 {
+			return fmt.Errorf("ingress node %s did not return bounded raw configuration", node.ID)
+		}
+		var observed rawData
+		if err := json.Unmarshal(body, &observed); err != nil {
+			return fmt.Errorf("ingress node %s raw configuration: %w", node.ID, err)
+		}
+		if len(observed.Errors) != 0 && string(observed.Errors) != "null" && string(observed.Errors) != "{}" && string(observed.Errors) != "[]" {
+			return fmt.Errorf("ingress node %s reports configuration errors", node.ID)
+		}
+		for name, router := range observed.Routers {
+			if router.Status != "enabled" {
+				continue
+			}
+			if name == desired.RouterName+"@file" && router.Rule != "Host(`withdrawn-"+strings.TrimPrefix(desired.RouterName, "norn-route-")+".invalid`)" {
+				return fmt.Errorf("ingress node %s retained the managed public router", node.ID)
+			}
+			if strings.Contains(router.Rule, "Host(`"+desired.EndpointHost+"`)") {
+				return fmt.Errorf("ingress node %s retained a public-host router", node.ID)
+			}
+		}
+	}
+	return nil
+}
+
 func verifyRawData(body []byte, desired RenderedRoute, document routeDocument) error {
 	var observed rawData
 	if err := json.Unmarshal(body, &observed); err != nil {
