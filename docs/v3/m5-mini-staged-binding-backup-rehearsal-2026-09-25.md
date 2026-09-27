@@ -92,3 +92,38 @@ the staged key as a protected recovery input, and repeat the inventory before
 activation in case new rows appear. Re-run the binding doctor after activation
 and before producing the production-key backup. This remains an M5 preflight,
 not approval to switch the launcher or promote V3.
+
+## Read-only Mini refresh — 2026-09-27 20:21 UTC
+
+The live API still reported `ok` and
+`v2.20.0-platform-30-ga5da8ef`; `current` still named release
+`a5da8ef15d12e9eca7561e90b90d96f6dc652a21`. The active and staged
+encrypted-file SHA-256 values still matched the digests above. Decryption
+inside Mini confirmed the active launcher environment still lacks the explicit
+database URL and audit key, while the inactive staged file still contains
+both. No value was printed or copied, and the service was not restarted.
+
+A read-only query through the staged binding found 59,703 mutation audit
+events, none with a digest or key ID, zero audit incidents, and zero
+`fleet.capacity-plan` operations. This refresh supports the first-key
+transition for those installed V2 consumers at this time; repeat it just
+before activation because the audit table continues to grow.
+
+The authenticated control inventory reported zero active operations, host
+status `ok`, and no configured Fleet node pools. It returned 27 app records
+for 26 unique names (Watchtower appeared twice): 18 records healthy and nine
+unhealthy. Five unhealthy apps declare `deploy: false`. Four declare
+`deploy: true` but have no healthy allocation: `ad-asset-verifier`,
+`ft-trove`, `hello-norn`, and `its-alive-api`. Thirteen incidents remained
+open, including health-critical history for `turnkey-offer-intake`,
+`vigil-gateway`, `mail-mcp`, `like-trove`, and `its-alive-api`, plus a capacity
+warning. A currently healthy allocation does not close its historical
+incident or prove uninterrupted service.
+
+Before the scheduled maintenance rehearsal, the operator must classify the
+four deploy-enabled absent workloads and the open incidents as intended
+suspension, existing fault, or rehearsal blocker. Capture an exact pre/post
+job, route, endpoint and database map. The live Mini checkout still lacks the
+new protected-backup helper; use the exact reviewed candidate tooling in the
+protected procedure. The staged binding remains inactive, and M5 remains
+open.
