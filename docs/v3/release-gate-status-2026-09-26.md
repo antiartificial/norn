@@ -201,7 +201,8 @@ integration candidate's CI baseline, not M0–M9 sign-off.
    that prevents Fleet's hosted contract job from starting, then qualify an exact
    protected candidate on separate hosts with three etcd voters and app pools.
    Record all pins.
-3. Review the integrated candidate in draft PR #77, including the protected
+3. Review the integrated candidate in draft PR #77 using the
+   [dependency-ordered review map](integration-review-map-2026-09-27.md), including the protected
    release and Fleet boundaries, then merge only through protected `master`.
    After the exact reviewed candidate is merged, publish and verify its signed
    immutable bundle with the protected release environment. Preserve the
