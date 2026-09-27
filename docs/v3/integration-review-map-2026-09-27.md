@@ -65,6 +65,13 @@ effect runner to the bundle without changing the protected release trigger
 or permissions. These checks do not replace exact-head protected CI or a
 review of the full Fleet dispatch/recovery path.
 
+The production rollback entrypoint also lacked the durable-dependency guard
+used by the shared release queue. An authorized request could reach a nil
+store or pipeline during a degraded startup. It now returns 503 before
+decoding the request when either dependency is absent. Focused handler tests
+cover both cases and the response cache policy. This is an entrypoint
+availability fix, not a rollback or release-gate qualification.
+
 ## Immediate blocking decisions
 
 1. Choose Mini control-store RPO, off-host destination, and retention in the

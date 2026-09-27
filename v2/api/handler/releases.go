@@ -178,6 +178,10 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusConflict, "rollback_environment_invalid", "release rollback is production-only")
 		return
 	}
+	if h.db == nil || h.pipeline == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "operation_store_unavailable", "durable release rollback is unavailable")
+		return
+	}
 	var request releaseRollbackRequest
 	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_release_rollback", err.Error())

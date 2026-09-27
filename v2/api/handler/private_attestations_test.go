@@ -156,6 +156,31 @@ func TestQualificationResponsesDisableCaching(t *testing.T) {
 	}
 }
 
+func TestReleaseRollbackFailsClosedWithoutDurableDependencies(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		db       *store.DB
+		pipeline *pipeline.Pipeline
+	}{
+		{name: "missing store", pipeline: &pipeline.Pipeline{}},
+		{name: "missing pipeline", db: &store.DB{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := &Handler{cfg: &config.Config{Environment: "production"}, db: test.db, pipeline: test.pipeline}
+			principal := AccessPrincipal{Scopes: []string{ScopeReleaseRollback}, App: "private-route", Environment: "production"}
+			request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/releases/rollbacks", nil), &principal)
+			recorder := httptest.NewRecorder()
+			router := chi.NewRouter()
+			router.Post("/api/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
+			router.ServeHTTP(recorder, request)
+			requirePrivateRouteProblem(t, recorder, http.StatusServiceUnavailable, "operation_store_unavailable")
+			if recorder.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("rollback cache policy=%q", recorder.Header().Get("Cache-Control"))
+			}
+		})
+	}
+}
+
 func TestQualificationListIsRecentBoundedAndUnexpired(t *testing.T) {
 	now := time.Now().UTC()
 	filter := releaseQualificationListFilter("private-route")
