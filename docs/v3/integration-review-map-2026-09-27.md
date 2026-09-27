@@ -96,6 +96,20 @@ This supports the passive-startup checkpoint only. It does not establish a
 production-key backup, off-host restore, unchanged live identity/traffic after
 upgrade, or a compatible rollback target. M0, M1, and M5 remain open.
 
+## Lane 5 ingress stop condition
+
+Source review at head `4d8a024a` found that the private etcd
+`finishClaimedDeployment` path validates `ActiveWeight` against the accepted
+desired weight but accepts the terminal region value supplied by its caller.
+`ingress.ObserveRenderedRoute`, node endpoint probes, and public-host probes
+are separate read-only helpers; no durable region result binds their output
+to the exact accepted deployment, route generation, complete Fleet ingress
+inventory, and public load-balancer response. The local two-ingress fixture
+therefore cannot authorize a positive active weight on Fleet. Keep normal
+etcd app dispatch closed until the publisher and proof-to-result boundary are
+implemented and exercised on protected separate hosts. A claimed Nomad
+health result or caller-filled region value is insufficient for this gate.
+
 ## Immediate blocking decisions
 
 1. Choose Mini control-store RPO, off-host destination, and retention in the
