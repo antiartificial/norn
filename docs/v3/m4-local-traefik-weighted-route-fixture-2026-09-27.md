@@ -59,3 +59,18 @@ primitive only: no Fleet node agent invokes it, and no multi-node publication,
 protected rawdata readback, endpoint probe, or rollback was exercised by
 these tests. A sync error after rename is an indeterminate apply and must be
 resolved by reading the node's actual file and Traefik state before retry.
+
+## Publisher-to-runtime rehearsal at `bc311d1d`
+
+On 2026-09-27, a second disposable loopback run replaced the earlier direct
+file write with `PublishRenderedRoute` and `ReadPublishedRouteRevision`. It
+started local Consul 2.0.4, Traefik 3.7.13, and two HTTP backends in a fresh
+watched directory. Exact file readback matched the rendered SHA-256
+`9cdb695b409edfd97b74136fa69140e3fa20a04caf927ce13f7185ae7f778e7a`.
+`ObserveRenderedRoute` accepted Traefik's live `/api/rawdata` response for the
+same revision, and 100 public-host requests through Traefik returned 70 old
+and 30 new. The shell rehearsal exited zero, and a post-run listener check
+found no processes on the five fixture ports. The fixture used one loopback
+Traefik, one Consul, local HTTP, and an unprotected loopback management route;
+it still does not establish multi-node propagation, protected management
+access, public TLS/LB behavior, or rollback.
