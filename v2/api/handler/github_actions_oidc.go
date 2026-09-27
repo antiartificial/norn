@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -150,7 +151,7 @@ type githubJWK struct {
 // Norn token. It intentionally accepts the assertion only in Authorization so
 // proxy/access logs do not capture it as a JSON field.
 func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Request) {
-	if h == nil {
+	if h == nil || h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "github_actions_oidc_unavailable", "GitHub Actions OIDC exchange is not configured")
 		return
 	}
@@ -164,7 +165,7 @@ func ExchangeFleetGitHubActionsOIDC(cfg *config.Config, identities store.AuthSto
 }
 
 func (h *Handler) exchangeGitHubActionsOIDC(identities store.IdentityStore, fleetOnly bool, w http.ResponseWriter, r *http.Request) {
-	if h.cfg == nil || h.cfg.APIToken == "" || identities == nil {
+	if h.cfg == nil || h.cfg.APIToken == "" || missingGitHubIdentityStore(identities) {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "github_actions_oidc_unavailable", "GitHub Actions OIDC exchange is not configured")
 		return
 	}
@@ -228,6 +229,14 @@ func (h *Handler) exchangeGitHubActionsOIDC(identities store.IdentityStore, flee
 		response["attestationMode"] = releaseAttestationMode(ci.RepositoryVisibility, h.cfg.ReleaseAttestationTrustMode)
 	}
 	writeJSONStatus(w, http.StatusCreated, response)
+}
+
+func missingGitHubIdentityStore(identities store.IdentityStore) bool {
+	if identities == nil {
+		return true
+	}
+	value := reflect.ValueOf(identities)
+	return value.Kind() == reflect.Ptr && value.IsNil()
 }
 
 func githubActionsExchangeScopeAllowed(scope string) bool {

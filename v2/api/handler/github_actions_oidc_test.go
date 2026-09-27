@@ -1,11 +1,33 @@
 package handler
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"norn/v2/api/config"
+	"norn/v2/api/etcdstore"
 )
+
+func TestGitHubOIDCExchangeWithoutPostgresIdentityStoreFailsClosed(t *testing.T) {
+	h := &Handler{cfg: &config.Config{APIToken: strings.Repeat("k", 40), Environment: "staging"}}
+	recorder := httptest.NewRecorder()
+	h.ExchangeGitHubActionsOIDC(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/auth/github-actions/exchange", strings.NewReader(`{}`)))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing PostgreSQL identity store status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestFleetOIDCExchangeWithTypedNilIdentityStoreFailsClosed(t *testing.T) {
+	var identities *etcdstore.AuthStore
+	recorder := httptest.NewRecorder()
+	ExchangeFleetGitHubActionsOIDC(&config.Config{APIToken: strings.Repeat("k", 40), Environment: "staging"}, identities,
+		recorder, httptest.NewRequest(http.MethodPost, "/api/v1/auth/github-actions/exchange", strings.NewReader(`{}`)))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("typed nil Fleet identity store status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestGitHubOIDCNumericIdentityClaims(t *testing.T) {
 	for _, value := range []string{"1", "101", "999999999999999999999999"} {

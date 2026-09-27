@@ -45,6 +45,17 @@ that source finding only; signed-release admission, OIDC identity-store
 changes, Fleet runner ownership, and exact-head protected CI still need
 lane-0 review.
 
+The next OIDC comparison found a typed-nil identity-store regression in the
+PostgreSQL exchange after the shared interface refactor. The prior code
+rejected a nil `h.db`; the integrated wrapper passed it as a non-nil
+interface value. The wrapper and shared exchange now fail with 503 before
+parsing an assertion when their backing store is missing, including a typed
+nil Fleet store. Focused negative tests passed. Separately, the Fleet OIDC
+single-use assertion and issued-token registry integration test passed
+against a disposable real etcd instance; its listener was stopped afterward.
+This verifies those bounded cases, not all production GitHub claim policies
+or Fleet runner recovery.
+
 ## Immediate blocking decisions
 
 1. Choose Mini control-store RPO, off-host destination, and retention in the
