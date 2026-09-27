@@ -78,6 +78,24 @@ the unavailable dependency and no-store header. PR #77 checks at exact head
 `4f8f7bd591c380536c5c22f28f36edc405f16eea` all completed without a
 reported failure; recheck CI on subsequent heads.
 
+## Lane 1 Mini-preservation checkpoint
+
+At exact head `7e21e324a410f40c72682ec7ed696660cb2240ad`, the hosted V3
+`api` job passed with PostgreSQL and etcd service fixtures. The job runs
+`go test ./...` under `v2/api` with `NORN_TEST_DATABASE_URL` set, so the
+real-binary passive startup test is eligible and is not skipped for a missing
+database URL. Source review confirms the PostgreSQL startup path checks schema
+compatibility before telemetry, recovery, watchers, and workers; passive mode
+requires `check`, validates loopback binding, and serves only health, version,
+and schema. The passive check uses a read-only repeatable-read transaction
+while validating serving-writer compatibility. None of `main.go`, `startup`,
+`startup_runtime.go`, or `store/schema_migrations.go` changed after the last
+[exact integrated-head Mini private-copy rehearsal](release-gate-status-2026-09-26.md).
+
+This supports the passive-startup checkpoint only. It does not establish a
+production-key backup, off-host restore, unchanged live identity/traffic after
+upgrade, or a compatible rollback target. M0, M1, and M5 remain open.
+
 ## Immediate blocking decisions
 
 1. Choose Mini control-store RPO, off-host destination, and retention in the
