@@ -33,6 +33,7 @@ type CASDeploymentJobRequest struct {
 	OperationID            string
 	ExecutionID            string
 	JobDigest              string
+	ImageTag               string
 }
 
 // RegisterDeploymentJobCAS performs one guarded Nomad registration. A lost

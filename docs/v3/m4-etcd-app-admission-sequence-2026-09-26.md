@@ -110,6 +110,15 @@ active pre-index work must first drain or reconcile it.
    not connected to normal claim dispatch, deployment stage checkpoints,
    allocation health, or terminal result writes. Periodic jobs and other
    deployment shapes remain outside this one service-job step.
+   A separate read-only health observation now requires the exact versioned
+   job readback, a pinned image, every declared group's desired count of
+   running healthy allocations, matching allocation job snapshots, and a
+   stable final job revision. Old terminal allocation history is ignored;
+   live work from a removed group or changed provenance fails closed.
+   A disposable Nomad 2.0.7 Docker service reached `ready` with one exact
+   allocation, and the test job was purged. This observation is not yet
+   consumed by the worker or persisted as a region checkpoint. Canary jobs
+   still require their separate promotion proof.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

@@ -126,7 +126,7 @@ func deploymentJobRequestFromReservation(r effect.Reservation) (nomad.CASDeploym
 	}
 	return nomad.CASDeploymentJobRequest{App: input.App, Region: input.NomadRegion, ExpectedJobModifyIndex: input.ExpectedJobModifyIndex,
 		DeploymentID: input.DeploymentID, SpecDigest: input.SpecDigest, OperationID: r.OperationClaim.OperationID,
-		ExecutionID: r.SupervisorExecutionID, JobDigest: input.JobDigest}, input, nil
+		ExecutionID: r.SupervisorExecutionID, JobDigest: input.JobDigest, ImageTag: input.ImageTag}, input, nil
 }
 
 func exactDeploymentServiceJob(job *nomadapi.Job, input nomad.DeploymentJobEffectInput, request nomad.CASDeploymentJobRequest) bool {
