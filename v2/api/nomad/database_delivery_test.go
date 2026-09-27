@@ -480,6 +480,35 @@ func TestDatabaseVariableWritesAreCheckedIdempotentAndRedacted(t *testing.T) {
 	}
 }
 
+func TestManagedDatabaseDeliveryKeepsRevisionJobsIsolated(t *testing.T) {
+	client, fake := newFakeVariableClient(t)
+	oldID, err := ManagedDeploymentJobID("orders", "iad", "deployment-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID, err := ManagedDeploymentJobID("orders", "iad", "deployment-new")
+	if err != nil || oldID == newID {
+		t.Fatalf("revision job IDs are not distinct: %q %q, %v", oldID, newID, err)
+	}
+	oldItems := DatabaseVariableItems(map[string]string{"primary": "postgresql://app:old@db:5432/shop"})
+	newItems := DatabaseVariableItems(map[string]string{"primary": "postgresql://app:new@db:5432/shop"})
+	if err := client.DeliverDatabaseVariable("global", oldID, oldItems, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeliverDatabaseVariable("global", newID, newItems, 8); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	oldVariable, newVariable := fake.variables[DatabaseVariablePath(oldID)], fake.variables[DatabaseVariablePath(newID)]
+	fake.mu.Unlock()
+	if oldVariable == nil || newVariable == nil || oldVariable.Path == newVariable.Path ||
+		oldVariable.Items[DatabaseRevisionItemKey("primary", 7)] != oldItems[DatabaseItemKey("primary")] ||
+		newVariable.Items[DatabaseRevisionItemKey("primary", 8)] != newItems[DatabaseItemKey("primary")] ||
+		oldVariable.Items[DatabaseRevisionItemKey("primary", 8)] != "" || newVariable.Items[DatabaseRevisionItemKey("primary", 7)] != "" {
+		t.Fatal("revision job variable delivery crossed deployment ownership")
+	}
+}
+
 // casRaceClient serves reads with a stale index so the following checked
 // write races a concurrent writer.
 type casRaceClient struct{ fake *fakeVariables }

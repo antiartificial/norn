@@ -209,6 +209,14 @@ active pre-index work must first drain or reconcile it.
    normal etcd dispatch still does not construct this managed job/effect,
    and job-scoped database/secret delivery, protected Nomad concurrency,
    ingress publication, and fenced old-job retirement remain required.
+   The managed translator now rejects a runtime-database job without a
+   positive staged catalog revision and renders the exact revision under
+   `nomad/jobs/<revision-job-id>`. Existing checked Nomad Variable delivery
+   can keep old and new revision job paths independent in a fake API test.
+   The deployment worker must still resolve authorized database targets,
+   stage that material in the revision job variable, and prove its target
+   identity before submitting the job; the translation and variable tests
+   alone do not deliver a live connection.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact

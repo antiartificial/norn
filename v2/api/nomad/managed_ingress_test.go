@@ -67,3 +67,29 @@ func TestManagedDeploymentWithoutRegionalEndpointStaysPrivate(t *testing.T) {
 		t.Fatal("empty deployment identity was accepted")
 	}
 }
+
+func TestManagedDatabaseJobRequiresStagedRevisionAndJobScopedVariable(t *testing.T) {
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: "orders",
+		Processes: map[string]model.Process{"web": {Port: 8080}},
+		Databases: []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime"},
+			Runtime: &model.DatabaseRuntime{Env: "DATABASE_URL"}}},
+	}
+	region := spec.ResolvedRegions()[0]
+	if _, err := TranslateForManagedDeployment(spec, "orders:test", nil, region, "deployment-one"); err == nil {
+		t.Fatal("managed database job accepted an unstaged revision")
+	}
+	job, err := TranslateManagedDeploymentForRegionAt(spec, "orders:test", nil, region, "deployment-one", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := ManagedDeploymentJobID(spec.App, region.Name, "deployment-one")
+	if err != nil || *job.ID != jobID {
+		t.Fatalf("managed database job identity=%q err=%v", *job.ID, err)
+	}
+	templates := job.TaskGroups[0].Tasks[0].Templates
+	if len(templates) != 1 || !strings.Contains(*templates[0].EmbeddedTmpl, "nomad/jobs/"+jobID) ||
+		!strings.Contains(*templates[0].EmbeddedTmpl, "norn_rev7_db_url_primary") ||
+		strings.Contains(*templates[0].EmbeddedTmpl, "nomad/jobs/orders\"") {
+		t.Fatalf("database template did not bind staged revision and job: %+v", templates)
+	}
+}

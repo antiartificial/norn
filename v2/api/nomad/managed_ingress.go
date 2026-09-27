@@ -38,14 +38,24 @@ func ManagedDeploymentJobID(app, region, deploymentID string) (string, error) {
 // an unroutable reserved hostname until an ingress controller publishes and
 // verifies the public file-provider route. Ordinary v2 translation is unchanged.
 func TranslateForManagedDeployment(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, deploymentID string) (*nomadapi.Job, error) {
+	return TranslateManagedDeploymentForRegionAt(spec, imageTag, env, region, deploymentID, 0)
+}
+
+// TranslateManagedDeploymentForRegionAt binds runtime database templates to
+// the exact staged catalog revision in this deployment's private job variable.
+// A database-backed job without a staged revision is rejected before submit.
+func TranslateManagedDeploymentForRegionAt(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, deploymentID string, databaseRevision int64) (*nomadapi.Job, error) {
 	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
 		return nil, err
+	}
+	if HasRuntimeDatabases(spec) && databaseRevision < 1 {
+		return nil, fmt.Errorf("managed deployment has no staged database revision")
 	}
 	jobID, err := ManagedDeploymentJobID(spec.App, region.Name, deploymentID)
 	if err != nil {
 		return nil, err
 	}
-	job := translateForRegionAtWithJobID(spec, imageTag, env, region, 0, jobID)
+	job := translateForRegionAtWithJobID(spec, imageTag, env, region, databaseRevision, jobID)
 	for process, definition := range spec.Processes {
 		if definition.Port <= 0 || !spec.ProcessRunsInRegion(definition, region.Name) {
 			continue
