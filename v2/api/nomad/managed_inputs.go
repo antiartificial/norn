@@ -1,9 +1,12 @@
 package nomad
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
+
+	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/model"
 )
@@ -16,6 +19,39 @@ type ManagedJobInputRequirements struct {
 	DatabaseRevision     int64
 	RequiredKeys         []string
 	RuntimeDatabaseNames []string
+}
+
+// CheckManagedJobInputs confirms the private job variable contains every
+// planned value and the accepted identity of each staged database target.
+// No variable value is included in an error.
+func (c *Client) CheckManagedJobInputs(ctx context.Context, region string, plan ManagedJobInputRequirements, expectedTargets map[string]string) error {
+	if c == nil || c.api == nil || region == "" || plan.JobID == "" || plan.VariablePath != DatabaseVariablePath(plan.JobID) ||
+		(len(plan.RuntimeDatabaseNames) > 0 && plan.DatabaseRevision < 1) {
+		return fmt.Errorf("managed job input check is incomplete")
+	}
+	for _, name := range plan.RuntimeDatabaseNames {
+		if expectedTargets[name] == "" {
+			return fmt.Errorf("managed job database target expectation is missing for %s", name)
+		}
+	}
+	if len(plan.RequiredKeys) == 0 && len(plan.RuntimeDatabaseNames) == 0 {
+		return nil
+	}
+	variable, _, err := c.api.Variables().Read(plan.VariablePath, (&nomadapi.QueryOptions{Region: region}).WithContext(ctx))
+	if err != nil || variable == nil || variable.Path != plan.VariablePath {
+		return fmt.Errorf("managed job inputs are unavailable for %s", plan.JobID)
+	}
+	for _, key := range plan.RequiredKeys {
+		if key == "" || variable.Items[key] == "" {
+			return fmt.Errorf("managed job input %s is missing for %s", key, plan.JobID)
+		}
+	}
+	for _, name := range plan.RuntimeDatabaseNames {
+		if variable.Items[DatabaseRevisionTargetKey(name, plan.DatabaseRevision)] != expectedTargets[name] {
+			return fmt.Errorf("managed job database target differs for %s", name)
+		}
+	}
+	return nil
 }
 
 func PlanManagedJobInputs(spec *model.InfraSpec, region model.ResolvedRegion, deploymentID string, databaseRevision int64) (ManagedJobInputRequirements, error) {
