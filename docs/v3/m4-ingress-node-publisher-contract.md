@@ -3,8 +3,13 @@
 Status: proposed implementation boundary, not a deployed service or a release
 gate. The source tree has a node publish handler that accepts only a reserved
 intent ID from a pinned mTLS client and requires a trusted live-authority
-resolver to supply the exact route, predecessor and generation. No resolver
-or Fleet host wiring exists yet, so this is not an operational publish path.
+resolver to supply the exact route, predecessor and generation. A separate
+control authority handler binds the node ID to a verified client URI; the
+host-side client pins both the control CA and server URI. A local mTLS test
+feeds its decision through the node publisher and checks the resulting file
+revision. The private store decision is not wired to that network handler,
+and neither listener is installed on Fleet hosts, so this is not an
+operational publish path.
 This contract connects the canonical route renderer and local
 generation-fenced file publisher to Fleet's loopback Traefik readback. The
 normal etcd app deployment route stays disabled until the complete path is
@@ -191,8 +196,8 @@ still require the durable prior route pointer described below.
 The private `AuthorizeInitialFleetRouteForNode` method now rechecks a held
 claim, app lock, signed acceptance, exact intent ID and current Fleet
 inventory before returning the generation-one route for one named member.
-It is a control-side decision primitive; no mTLS authority listener or
-host-to-control call invokes it yet.
+It is a control-side decision primitive; no runtime mTLS authority listener
+or host-to-control call invokes it yet.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the
