@@ -91,6 +91,11 @@ func TestMutualTLSNodeClientObservesPrivateReadback(t *testing.T) {
 	if _, err := ObservePublishedRenderedRouteWithTLS(context.Background(), caPEM, clientPEM, clientKey, []IngressNode{{ID: "ingress-a", APIURL: "http://127.0.0.1:18082"}}, desired, generation); err == nil {
 		t.Fatal("plaintext node accepted")
 	}
+	for _, address := range []string{"https://observer.example.test:18082", "https://203.0.113.10:18082"} {
+		if _, err := ObservePublishedRenderedRouteWithTLS(context.Background(), caPEM, clientPEM, clientKey, []IngressNode{{ID: "ingress-a", APIURL: address}}, desired, generation); err == nil {
+			t.Fatalf("non-private observer endpoint accepted: %s", address)
+		}
+	}
 	otherCA, _, _, _ := nodeTestCertificate(t, nil, nil, &base)
 	if _, err := ObservePublishedRenderedRouteWithTLS(context.Background(), otherCA, clientPEM, clientKey, nodes, desired, generation); err == nil {
 		t.Fatal("untrusted server accepted")

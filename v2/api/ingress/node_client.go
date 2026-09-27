@@ -47,6 +47,10 @@ func ObservePublishedRenderedRouteWithTLS(ctx context.Context, caPEM, certPEM, k
 		if err != nil || parsed.Scheme != "https" {
 			return nil, fmt.Errorf("ingress node %s requires HTTPS readback", node.ID)
 		}
+		ip := net.ParseIP(parsed.Hostname())
+		if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) {
+			return nil, fmt.Errorf("ingress node %s requires a private IP readback endpoint", node.ID)
+		}
 	}
 	client, err := NewMutualTLSNodeClient(caPEM, certPEM, keyPEM)
 	if err != nil {
