@@ -21,6 +21,7 @@ type DeploymentJobEffectStore interface {
 }
 
 type DeploymentJobRemote interface {
+	CheckManagedJobInputs(context.Context, string, nomad.ManagedJobInputRequirements, map[string]string) error
 	RegisterDeploymentJobCAS(context.Context, nomad.CASDeploymentJobRequest) (string, error)
 	LookupDeploymentJobRevision(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error)
 	ObserveDeploymentJobHealth(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobHealthObservation, error)
@@ -55,6 +56,11 @@ func EnsureDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffectS
 		return DeploymentJobEffectDecision{}, fmt.Errorf("deployment job differs from reserved effect")
 	}
 	request.Job = job
+	if input.JobID != "" {
+		if err := remote.CheckManagedJobInputs(ctx, input.NomadRegion, *input.ManagedInputs, input.ExpectedDatabaseTargets); err != nil {
+			return DeploymentJobEffectDecision{}, err
+		}
+	}
 	reserved, err := effects.Reserve(ctx, reservation)
 	if err != nil {
 		return DeploymentJobEffectDecision{}, err
@@ -186,9 +192,12 @@ func deploymentJobRequestFromReservation(r effect.Reservation) (nomad.CASDeploym
 	}
 	if input.JobID != "" {
 		want, err := nomad.ManagedDeploymentJobID(input.App, input.Region, input.DeploymentID)
-		if err != nil || input.JobID != want || input.ExpectedJobModifyIndex != 0 {
+		if err != nil || input.JobID != want || input.ExpectedJobModifyIndex != 0 || input.ManagedInputs == nil ||
+			input.ManagedInputs.JobID != want || input.ManagedInputs.VariablePath != nomad.DatabaseVariablePath(want) {
 			return nomad.CASDeploymentJobRequest{}, input, fmt.Errorf("managed deployment job identity is invalid")
 		}
+	} else if input.ManagedInputs != nil || len(input.ExpectedDatabaseTargets) > 0 {
+		return nomad.CASDeploymentJobRequest{}, input, fmt.Errorf("legacy deployment cannot declare managed inputs")
 	}
 	request := nomad.CASDeploymentJobRequest{App: input.App, JobID: input.JobID, Region: input.NomadRegion, ExpectedJobModifyIndex: input.ExpectedJobModifyIndex,
 		DeploymentID: input.DeploymentID, SpecDigest: input.SpecDigest, OperationID: r.OperationClaim.OperationID,

@@ -14,11 +14,11 @@ import (
 // ManagedJobInputRequirements names the private Nomad Variable keys a
 // revision job's templates read. It contains no connection or secret values.
 type ManagedJobInputRequirements struct {
-	JobID                string
-	VariablePath         string
-	DatabaseRevision     int64
-	RequiredKeys         []string
-	RuntimeDatabaseNames []string
+	JobID                string   `json:"jobId"`
+	VariablePath         string   `json:"variablePath"`
+	DatabaseRevision     int64    `json:"databaseRevision"`
+	RequiredKeys         []string `json:"requiredKeys"`
+	RuntimeDatabaseNames []string `json:"runtimeDatabaseNames"`
 }
 
 // CheckManagedJobInputs confirms the private job variable contains every

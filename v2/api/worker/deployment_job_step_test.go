@@ -61,6 +61,8 @@ func (f *deploymentStepEffects) Complete(_ context.Context, _ effect.Token, comp
 }
 
 type deploymentStepRemote struct {
+	inputChecks  int
+	inputError   error
 	submits      int
 	lookups      int
 	lastSubmit   nomad.CASDeploymentJobRequest
@@ -70,6 +72,11 @@ type deploymentStepRemote struct {
 	err          error
 	health       nomad.DeploymentJobHealthObservation
 	healthChecks int
+}
+
+func (f *deploymentStepRemote) CheckManagedJobInputs(_ context.Context, _ string, _ nomad.ManagedJobInputRequirements, _ map[string]string) error {
+	f.inputChecks++
+	return f.inputError
 }
 
 func (f *deploymentStepRemote) RegisterDeploymentJobCAS(_ context.Context, request nomad.CASDeploymentJobRequest) (string, error) {
@@ -146,6 +153,7 @@ func TestManagedDeploymentEffectUsesRevisionJobThroughCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	job.ID = &input.JobID
+	input.ManagedInputs = &nomad.ManagedJobInputRequirements{JobID: input.JobID, VariablePath: nomad.DatabaseVariablePath(input.JobID)}
 	input.ExpectedJobModifyIndex = 0
 	input.JobDigest, err = nomad.DigestDeploymentJob(job)
 	if err != nil {
@@ -165,6 +173,7 @@ func TestManagedDeploymentEffectUsesRevisionJobThroughCompletion(t *testing.T) {
 		health: nomad.DeploymentJobHealthObservation{State: nomad.DeploymentJobHealthReady, JobVersion: 1, JobModifyIndex: 12, AllocationIDs: []string{"alloc-1"}}}
 	decision, err := EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job)
 	if err != nil || decision.State != DeploymentJobEffectObserved || effects.launched != 1 ||
+		remote.inputChecks != 1 ||
 		remote.lastSubmit.EffectiveJobID() != input.JobID || remote.lastLookup.EffectiveJobID() != input.JobID ||
 		remote.lastSubmit.PlacementRegion != input.Region || remote.lastSubmit.ExpectedJobModifyIndex != 0 {
 		t.Fatalf("managed revision launch=%+v submit=%+v lookup=%+v err=%v", decision, remote.lastSubmit, remote.lastLookup, err)
@@ -175,6 +184,39 @@ func TestManagedDeploymentEffectUsesRevisionJobThroughCompletion(t *testing.T) {
 	}
 	if !strings.Contains(effects.completion.Verification.RuntimeInstanceID, input.JobID) {
 		t.Fatal("completed effect lost revision job provenance")
+	}
+}
+
+func TestManagedDeploymentRefusesMissingInputsBeforeReserve(t *testing.T) {
+	r, job := deploymentStepFixture(t)
+	var input nomad.DeploymentJobEffectInput
+	if err := json.Unmarshal(r.LaunchPayload, &input); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	input.JobID, err = nomad.ManagedDeploymentJobID(input.App, input.Region, input.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.ID = &input.JobID
+	input.ManagedInputs = &nomad.ManagedJobInputRequirements{JobID: input.JobID, VariablePath: nomad.DatabaseVariablePath(input.JobID), RequiredKeys: []string{"API_TOKEN"}}
+	input.JobDigest, err = nomad.DigestDeploymentJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.Meta[nomad.DeploymentJobDigestMeta] = input.JobDigest
+	r.LaunchPayload, err = json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.InputDigest, err = effect.ComputeInputDigest(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects := &deploymentStepEffects{created: true}
+	remote := &deploymentStepRemote{inputError: errors.New("inputs unavailable")}
+	if _, err := EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job); err == nil || effects.reserves != 0 || effects.marks != 0 || remote.submits != 0 || remote.inputChecks != 1 {
+		t.Fatalf("missing inputs reached effect or Nomad: reserves=%d marks=%d submits=%d checks=%d err=%v", effects.reserves, effects.marks, remote.submits, remote.inputChecks, err)
 	}
 }
 
