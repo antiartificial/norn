@@ -185,6 +185,15 @@ active pre-index work must first drain or reconcile it.
    and probe the endpoint through each node and the public path. A partial
    rollout or a backend whose revision identity cannot be read back keeps
    `ActiveWeight` at zero.
+
+   The first opt-in translator slice, `TranslateForManagedDeployment`, now
+   keeps the Nomad app job ID stable while deriving a distinct, deterministic
+   Consul service name for each app/process/region/deployment. Its service
+   tags use a reserved `.norn.invalid` hostname instead of the public
+   endpoint and omit the misleading desired-weight tag. An unmatched regional
+   endpoint remains private. The normal v2 translator and private worker
+   still use their existing paths; this helper does not apply a weighted
+   file route, observe Traefik, or prove a deployment's active weight.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
