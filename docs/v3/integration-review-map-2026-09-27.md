@@ -65,6 +65,18 @@ effect runner to the bundle without changing the protected release trigger
 or permissions. These checks do not replace exact-head protected CI or a
 review of the full Fleet dispatch/recovery path.
 
+At head `22a000c516e1f9eb41847745e97c88f2bd13143b`, a direct
+`origin/master...HEAD` workflow comparison confirmed that
+`platform-release.yml` changes only the bundle build line for
+`norn-effect-runner`. The protected `master` dispatch check, secretless build
+jobs, `platform-release` publish environment, `contents: write` only on the
+publish job, signing, remote asset comparison, and immutable-publication
+checks are unchanged. The effect runner is also required by the bundle
+manifest and installed and verified by the platform-upgrade path. The exact
+head's reported GitHub checks all passed, including release bundle rehearsal.
+This closes the workflow-delta review only; it does not sign the candidate or
+prove the full admission/rollback chain.
+
 The production rollback entrypoint also lacked the durable-dependency guard
 used by the shared release queue. An authorized request could reach a nil
 store or pipeline during a degraded startup. It now returns 503 before
