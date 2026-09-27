@@ -68,6 +68,17 @@ exit, and finds exactly one committed row. This qualifies the local runner
 process boundary; it does not exercise the full deployment claim/store path
 or replace the protected Mini/Fleet rehearsal.
 
+A PostgreSQL-backed integration fixture now crosses signed deployment
+acceptance, named database snapshot publication, source/build checkpoints,
+an expired migration-step claim, the original reserved migration effect,
+and a replacement claim. After changing the application database, the
+successor reuses both target-bound pre-migration dump/sidecar pairs byte for
+byte and reserves the original effect; deleting one original dump makes the
+snapshot stage fail closed. The focused fixture and full pipeline package
+passed locally against disposable PostgreSQL. This fixture seeds the
+migration-step/effect boundary instead of running a real migration command,
+so the full deployment process-crash and protected-runtime proof remains open.
+
 ## Current behavior and risk
 
 Migrations without a reviewed postcondition still execute with host `sh -c`

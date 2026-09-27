@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/database"
+	"norn/v2/api/effect"
 	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/hub"
 	"norn/v2/api/internal/pgtest"
@@ -216,5 +218,167 @@ func TestDeploySnapshotRecoversAfterLiteralProcessExit(t *testing.T) {
 	var laterMutable int
 	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM deployment_steps WHERE deployment_id=$1 AND kind='mutable' AND step<>'snapshot'`, accepted.Intent.DeploymentID).Scan(&laterMutable); err != nil || laterMutable != 0 {
 		t.Fatalf("later mutable steps = %d, %v", laterMutable, err)
+	}
+}
+
+func TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots(t *testing.T) {
+	f := newNamedFixture(t)
+	ctx := context.Background()
+	specPath := filepath.Join(f.p.AppsDir, f.app, "infraspec.yaml")
+	specBytes, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specText := strings.Replace(string(specBytes), "  - name: reports\n    purpose: application\n    capabilities: [health]\n", "", 1)
+	if specText == string(specBytes) {
+		t.Fatal("reports fixture requirement was not found")
+	}
+	image := "registry.example/demo@sha256:" + strings.Repeat("a", 64)
+	if err := os.WriteFile(specPath, []byte(specText+"build:\n  image: "+image+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.spec, err = model.LoadInfraSpec(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(f.catalog.Profiles[0].DatabaseBindings, "reports")
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 1, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := f.queue(t, DatabaseBaselineKind, map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineResult, err := f.execute(t, baseline.ID)
+	if err != nil || baselineResult.Status != model.OperationSucceeded {
+		t.Fatalf("database baseline = %+v, %v", baselineResult, err)
+	}
+	if err := f.db.FinishClaimedOperation(ctx, baselineResult.Claim, baselineResult.Status, baselineResult.Message, baselineResult.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := f.p.Run(ctx, f.spec, "abc1234", f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, firstClaim, err := f.db.ClaimNextOperation(ctx, "original-migration-owner", time.Minute, []string{"app.deploy"})
+	if err != nil || first == nil || first.ID != accepted.Operation.ID {
+		t.Fatalf("first deployment claim = %+v, %v", first, err)
+	}
+	firstState := &state{spec: f.spec, commitSHA: "abc1234", deploymentID: accepted.Intent.DeploymentID,
+		claim: firstClaim, operationStartedAt: first.StartedAt, operationPayload: first.Payload}
+	log := saga.New(discardSagaStore{}, f.app, "test", "deploy")
+	if err := f.p.snapshot(ctx, firstState, log); err != nil {
+		t.Fatal(err)
+	}
+	defer firstState.database.Close()
+	original := map[string]map[string][sha256.Size]byte{}
+	var primaryDump string
+	for _, name := range []string{"primary", "analytics"} {
+		target := firstState.database.named[name]
+		location, err := f.p.prepareSnapshotLocation("shop", target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original[name] = map[string][sha256.Size]byte{}
+		for _, filename := range directoryNames(t, location.dir) {
+			data, err := os.ReadFile(filepath.Join(location.dir, filename))
+			if err != nil {
+				t.Fatal(err)
+			}
+			original[name][filename] = sha256.Sum256(data)
+			if name == "primary" && strings.HasSuffix(filename, ".dump") {
+				primaryDump = filepath.Join(location.dir, filename)
+			}
+		}
+		if len(original[name]) != 2 {
+			t.Fatalf("original %s snapshot files = %d", name, len(original[name]))
+		}
+	}
+	if primaryDump == "" {
+		t.Fatal("primary pre-migration dump is missing")
+	}
+	for stage, outputs := range map[string]json.RawMessage{
+		store.CheckpointSource: json.RawMessage(`{"treeDigest":"sha256:pinned"}`),
+		store.CheckpointBuild:  json.RawMessage(`{"imageTag":"` + image + `"}`),
+	} {
+		if _, err := f.db.RecordOperationCheckpoint(ctx, firstClaim, stage, outputs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, step := range []struct{ name, status string }{{"snapshot", "complete"}, {"migrate", "running"}} {
+		if _, err := f.db.Pool.Exec(ctx, `INSERT INTO deployment_steps(deployment_id,app,saga_id,step,kind,status,attempt) VALUES($1,$2,$3,$4,'mutable',$5,1)`,
+			accepted.Intent.DeploymentID, f.app, first.SagaID, step.name, step.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	effects, err := store.NewPGEffectStore(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := effects.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: authority, Resource: "database/shop-primary/migration",
+		OperationClaim: effect.OperationClaim{OperationID: first.ID, OwnerID: firstClaim.OwnerID(), Generation: firstClaim.Generation()},
+		Stage:          supervisor.MigrationStage, Supervisor: "migration-runner", SupervisorExecutionID: "migration-" + first.ID,
+		LaunchPayload: json.RawMessage(`{}`)}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := effects.Reserve(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.db.Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, first.ID)
+		_, _ = f.db.Pool.Exec(context.Background(), `DELETE FROM operation_checkpoints WHERE operation_id=$1`, first.ID)
+	})
+	setOrderState(t, f.primary, "after-migration")
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := f.db.GetOperation(ctx, first.ID)
+	if err != nil || recovered.Status != model.OperationQueued || recovered.Metadata["replayMigration"] != true {
+		t.Fatalf("guarded deployment recovery = %+v, %v", recovered, err)
+	}
+	second, secondClaim, err := f.db.ClaimNextOperation(ctx, "successor-migration-owner", time.Minute, []string{"app.deploy"})
+	if err != nil || second == nil || second.ID != first.ID || secondClaim.Generation() <= firstClaim.Generation() {
+		t.Fatalf("successor claim = %+v, %v", second, err)
+	}
+	reservation.OperationClaim = effect.OperationClaim{OperationID: second.ID, OwnerID: secondClaim.OwnerID(), Generation: secondClaim.Generation()}
+	reused, err := effects.Reserve(ctx, reservation)
+	if err != nil || reused.Created || reused.Record.Reservation.OperationClaim.Generation != firstClaim.Generation() {
+		t.Fatalf("successor replaced original migration effect: %+v, %v", reused, err)
+	}
+	secondState := &state{spec: f.spec, commitSHA: "abc1234", deploymentID: accepted.Intent.DeploymentID,
+		claim: secondClaim, operationStartedAt: second.StartedAt, operationPayload: second.Payload, replayMigration: second.Metadata["replayMigration"] == true}
+	if err := f.p.snapshot(ctx, secondState, log); err != nil {
+		t.Fatalf("successor snapshot stage: %v", err)
+	}
+	defer secondState.database.Close()
+	for _, name := range []string{"primary", "analytics"} {
+		location, err := f.p.prepareSnapshotLocation("shop", secondState.database.named[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(directoryNames(t, location.dir)) != len(original[name]) {
+			t.Fatalf("successor created a new %s dump", name)
+		}
+		for filename, digest := range original[name] {
+			data, err := os.ReadFile(filepath.Join(location.dir, filename))
+			if err != nil || sha256.Sum256(data) != digest {
+				t.Fatalf("successor changed %s/%s: %v", name, filename, err)
+			}
+		}
+	}
+	if err := os.Remove(primaryDump); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.p.snapshot(ctx, secondState, log); err == nil || !strings.Contains(err.Error(), "original pre-migration snapshot is unavailable") {
+		t.Fatalf("successor accepted missing original pre-migration dump: %v", err)
 	}
 }
