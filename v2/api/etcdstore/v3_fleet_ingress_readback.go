@@ -17,9 +17,9 @@ type FleetIngressRouteObservation struct {
 	Nodes       []ingress.NodeObservation
 }
 
-func (s *V3OperationStore) ObserveCurrentFleetIngressRoute(ctx context.Context, planID, cluster, environment string, port int, caPEM, certPEM, keyPEM []byte, desired ingress.RenderedRoute, generation uint64) (*FleetIngressRouteObservation, error) {
+func (s *V3OperationStore) ObserveCurrentFleetIngressRoute(ctx context.Context, cluster, environment string, port int, caPEM, certPEM, keyPEM []byte, desired ingress.RenderedRoute, generation uint64) (*FleetIngressRouteObservation, error) {
 	load := func(ctx context.Context) (*FleetIngressInventoryEvidence, error) {
-		return s.CurrentFleetIngressInventory(ctx, planID, cluster, environment, port)
+		return s.CurrentActiveFleetIngressInventory(ctx, cluster, environment, port)
 	}
 	observe := func(ctx context.Context, nodes []ingress.IngressNode) ([]ingress.NodeObservation, error) {
 		return ingress.ObservePublishedRenderedRouteWithTLS(ctx, caPEM, certPEM, keyPEM, nodes, desired, generation)
@@ -35,7 +35,7 @@ func observeFleetIngressRouteWithInventory(ctx context.Context, load func(contex
 	if err != nil {
 		return nil, err
 	}
-	if before == nil || before.PlanStateModRevision <= 0 || before.CheckpointModRevision <= 0 || len(before.Nodes) < 2 {
+	if before == nil || before.PlanStateModRevision <= 0 || before.CheckpointModRevision <= 0 || before.ActivePointerRevision <= 0 || before.ActiveClusterEpochRevision <= 0 || len(before.Nodes) < 2 {
 		return nil, fmt.Errorf("Fleet ingress inventory is unavailable for route observation")
 	}
 	observed, err := observe(ctx, before.Nodes)
@@ -58,5 +58,5 @@ func observeFleetIngressRouteWithInventory(ctx context.Context, load func(contex
 }
 
 func sameFleetIngressInventory(before, after *FleetIngressInventoryEvidence) bool {
-	return before != nil && after != nil && after.PlanID == before.PlanID && after.AttemptID == before.AttemptID && after.AttemptRevision == before.AttemptRevision && after.PlanStateModRevision == before.PlanStateModRevision && after.CheckpointID == before.CheckpointID && after.CheckpointModRevision == before.CheckpointModRevision && after.StateSerial == before.StateSerial && after.Digest == before.Digest && slices.Equal(after.Nodes, before.Nodes)
+	return before != nil && after != nil && after.PlanID == before.PlanID && after.AttemptID == before.AttemptID && after.AttemptRevision == before.AttemptRevision && after.PlanStateModRevision == before.PlanStateModRevision && after.CheckpointID == before.CheckpointID && after.CheckpointModRevision == before.CheckpointModRevision && after.StateSerial == before.StateSerial && after.Digest == before.Digest && after.ActivePointerRevision == before.ActivePointerRevision && after.ActiveClusterEpochRevision == before.ActiveClusterEpochRevision && slices.Equal(after.Nodes, before.Nodes)
 }

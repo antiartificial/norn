@@ -53,14 +53,14 @@ The result includes the plan-state and checkpoint etcd revisions needed for
 terminal fencing. The control worker must bind that Fleet plan and attempt to
 its accepted deployment, compare those revisions again at completion,
 and reject host replacement between observation and deployment completion.
-`ObserveCurrentFleetIngressRoute` now reads the completed inventory, performs
+`ObserveCurrentFleetIngressRoute` now reads the server-selected active inventory, performs
 mutual-TLS file/Traefik readback on every member, and rereads inventory to
-reject a replacement during observation. This result is not a terminal
+reject a replacement or active-pointer revision change during observation. This result is not a terminal
 traffic proof: app endpoint probes, public load-balancer behavior, accepted
 deployment binding and the completion transaction are still outstanding.
 `ObserveCurrentFleetIngressTraffic` now composes that readback with an HTTPS
 app endpoint probe on each exact private ingress IP and a normal public DNS
-probe, then rechecks the Fleet inventory. The expected response digest and
+probe, then rechecks the active Fleet inventory and cluster epoch. The expected response digest and
 probe path are explicit inputs. This remains an observation until the worker
 binds them to the accepted deployment and records a durable, revision-fenced
 proof before positive active weight.

@@ -13,6 +13,7 @@ func TestObserveFleetIngressTrafficJoinsEveryNodeAndPublicPath(t *testing.T) {
 	bodySHA := strings.Repeat("a", 64)
 	inventory := FleetIngressInventoryEvidence{PlanID: "plan", AttemptID: "attempt", AttemptRevision: 7, PlanStateModRevision: 41,
 		CheckpointID: "checkpoint", CheckpointModRevision: 42, StateSerial: 8, Digest: "sha256:inventory",
+		ActivePointerRevision: 43, ActiveClusterEpochRevision: 44,
 		Nodes: []ingress.IngressNode{{ID: "ingress-01", APIURL: "https://10.43.0.21:18082"}, {ID: "ingress-02", APIURL: "https://10.43.0.22:18082"}}}
 	loads, publicCalls := 0, 0
 	load := func(context.Context) (*FleetIngressInventoryEvidence, error) {
@@ -49,5 +50,13 @@ func TestObserveFleetIngressTrafficJoinsEveryNodeAndPublicPath(t *testing.T) {
 	}
 	if _, err := observeFleetIngressTraffic(context.Background(), changed, readback, probes, public, 443, "/readyz", bodySHA); err == nil {
 		t.Fatal("changed Fleet inventory accepted")
+	}
+	changedEpoch := func(context.Context) (*FleetIngressInventoryEvidence, error) {
+		copy := inventory
+		copy.ActiveClusterEpochRevision++
+		return &copy, nil
+	}
+	if _, err := observeFleetIngressTraffic(context.Background(), changedEpoch, readback, probes, public, 443, "/readyz", bodySHA); err == nil {
+		t.Fatal("changed active Fleet cluster epoch accepted")
 	}
 }

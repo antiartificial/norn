@@ -22,15 +22,15 @@ type FleetIngressTrafficObservation struct {
 	PublicMatched      bool
 }
 
-func (s *V3OperationStore) ObserveCurrentFleetIngressTraffic(ctx context.Context, planID, cluster, environment string, observerPort, endpointPort int, caPEM, certPEM, keyPEM []byte, desired ingress.RenderedRoute, generation uint64, probePath, expectedBodySHA256 string, publicRoots *x509.CertPool) (*FleetIngressTrafficObservation, error) {
+func (s *V3OperationStore) ObserveCurrentFleetIngressTraffic(ctx context.Context, cluster, environment string, observerPort, endpointPort int, caPEM, certPEM, keyPEM []byte, desired ingress.RenderedRoute, generation uint64, probePath, expectedBodySHA256 string, publicRoots *x509.CertPool) (*FleetIngressTrafficObservation, error) {
 	if err := ingress.RequireTLSRenderedRoute(desired); err != nil {
 		return nil, err
 	}
 	load := func(ctx context.Context) (*FleetIngressInventoryEvidence, error) {
-		return s.CurrentFleetIngressInventory(ctx, planID, cluster, environment, observerPort)
+		return s.CurrentActiveFleetIngressInventory(ctx, cluster, environment, observerPort)
 	}
 	readback := func(ctx context.Context) (*FleetIngressRouteObservation, error) {
-		return s.ObserveCurrentFleetIngressRoute(ctx, planID, cluster, environment, observerPort, caPEM, certPEM, keyPEM, desired, generation)
+		return s.ObserveCurrentFleetIngressRoute(ctx, cluster, environment, observerPort, caPEM, certPEM, keyPEM, desired, generation)
 	}
 	probeNodes := func(ctx context.Context, nodes []ingress.RouteProbeNode) ([]ingress.NodeEndpointProbe, error) {
 		return ingress.ProbeRenderedRouteNodes(ctx, nodes, desired, probePath, expectedBodySHA256, publicRoots)
@@ -51,6 +51,9 @@ func observeFleetIngressTraffic(ctx context.Context, load func(context.Context) 
 	}
 	if route == nil {
 		return nil, fmt.Errorf("Fleet ingress route readback is unavailable")
+	}
+	if route.Inventory.ActivePointerRevision <= 0 || route.Inventory.ActiveClusterEpochRevision <= 0 {
+		return nil, fmt.Errorf("Fleet ingress route is not bound to the active inventory")
 	}
 	probeTargets := make([]ingress.RouteProbeNode, 0, len(route.Inventory.Nodes))
 	for _, node := range route.Inventory.Nodes {
