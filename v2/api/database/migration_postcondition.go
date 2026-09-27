@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -49,7 +50,10 @@ type SQLMigrationPostconditionChecker struct {
 	Resolved ResolvedBinding
 	Secrets  SecretSource
 	Spec     MigrationPostconditionSQL
+	Timeout  time.Duration
 }
+
+const defaultMigrationPostconditionTimeout = 30 * time.Second
 
 func (c *SQLMigrationPostconditionChecker) CheckMigrationPostcondition(ctx context.Context, intent supervisor.MigrationIntent) (supervisor.MigrationPostconditionResult, error) {
 	if c == nil || c.Secrets == nil || c.Resolved.Target.Engine != c.Spec.Engine {
@@ -65,7 +69,13 @@ func (c *SQLMigrationPostconditionChecker) CheckMigrationPostcondition(ctx conte
 		int64(c.Resolved.Target.BindingGeneration) != intent.TargetGeneration {
 		return supervisor.MigrationPostconditionResult{}, fmt.Errorf("migration target differs from accepted intent")
 	}
-	session, err := OpenSession(ctx, c.Resolved, c.Secrets)
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = defaultMigrationPostconditionTimeout
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	session, err := OpenSession(checkCtx, c.Resolved, c.Secrets)
 	if err != nil {
 		return supervisor.MigrationPostconditionResult{}, fmt.Errorf("migration original target cannot be opened: %w", err)
 	}
@@ -73,9 +83,9 @@ func (c *SQLMigrationPostconditionChecker) CheckMigrationPostcondition(ctx conte
 	var actual string
 	switch c.Spec.Engine {
 	case EnginePostgreSQL:
-		actual, err = checkPostgreSQLMigrationSQL(ctx, session, c.Spec.Query)
+		actual, err = checkPostgreSQLMigrationSQL(checkCtx, session, c.Spec.Query)
 	case EngineMySQL:
-		actual, err = checkMySQLMigrationSQL(ctx, session, c.Spec.Query)
+		actual, err = checkMySQLMigrationSQL(checkCtx, session, c.Spec.Query)
 	}
 	if err != nil {
 		return supervisor.MigrationPostconditionResult{}, err

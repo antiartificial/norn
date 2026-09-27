@@ -140,6 +140,16 @@ func TestSQLMigrationPostconditionChecksOriginalPostgreSQLTarget(t *testing.T) {
 	if _, err := checker.CheckMigrationPostcondition(context.Background(), intent); err == nil {
 		t.Fatal("multiple postcondition rows were accepted")
 	}
+	checker.Spec.Query = `SELECT pg_sleep(5)`
+	checker.Timeout = 100 * time.Millisecond
+	intent.PostconditionSHA256, _ = checker.Spec.SHA256()
+	started := time.Now()
+	if _, err := checker.CheckMigrationPostcondition(context.Background(), intent); err == nil {
+		t.Fatal("unbounded PostgreSQL postcondition was accepted")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("postcondition timeout took %s", elapsed)
+	}
 	if strings.Contains(result.TargetSHA256, server.SocketDir) {
 		t.Fatal("postcondition result exposed private connection location")
 	}
