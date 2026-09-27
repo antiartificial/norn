@@ -63,6 +63,22 @@ type routeBackend struct {
 	Weight int    `yaml:"weight"`
 }
 
+// RequireTLSRenderedRoute rejects a plaintext route at release traffic
+// qualification. The generic route renderer still supports local HTTP fixtures.
+func RequireTLSRenderedRoute(desired RenderedRoute) error {
+	if err := validateRenderedRoute(desired); err != nil {
+		return err
+	}
+	var document routeDocument
+	if err := yaml.Unmarshal(desired.YAML, &document); err != nil {
+		return err
+	}
+	if document.HTTP.Routers[desired.RouterName].TLS == nil {
+		return fmt.Errorf("release ingress route requires HTTPS")
+	}
+	return nil
+}
+
 // RenderWeightedRoute produces one desired Traefik file-provider route. It
 // does not apply the file or assert that any ingress node has loaded it.
 func RenderWeightedRoute(input WeightedRoute) (RenderedRoute, error) {

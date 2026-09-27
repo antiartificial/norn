@@ -51,8 +51,12 @@ func observeFleetIngressRouteWithInventory(ctx context.Context, load func(contex
 		}
 	}
 	after, err := load(ctx)
-	if err != nil || after == nil || after.PlanID != before.PlanID || after.AttemptID != before.AttemptID || after.AttemptRevision != before.AttemptRevision || after.PlanStateModRevision != before.PlanStateModRevision || after.CheckpointID != before.CheckpointID || after.CheckpointModRevision != before.CheckpointModRevision || after.StateSerial != before.StateSerial || after.Digest != before.Digest || !slices.Equal(after.Nodes, before.Nodes) {
+	if err != nil || !sameFleetIngressInventory(before, after) {
 		return nil, fmt.Errorf("Fleet ingress inventory changed during route readback")
 	}
 	return &FleetIngressRouteObservation{Inventory: *before, RouteSHA256: desiredSHA, Generation: generation, Nodes: observed}, nil
+}
+
+func sameFleetIngressInventory(before, after *FleetIngressInventoryEvidence) bool {
+	return before != nil && after != nil && after.PlanID == before.PlanID && after.AttemptID == before.AttemptID && after.AttemptRevision == before.AttemptRevision && after.PlanStateModRevision == before.PlanStateModRevision && after.CheckpointID == before.CheckpointID && after.CheckpointModRevision == before.CheckpointModRevision && after.StateSerial == before.StateSerial && after.Digest == before.Digest && slices.Equal(after.Nodes, before.Nodes)
 }

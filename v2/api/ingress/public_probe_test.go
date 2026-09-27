@@ -41,3 +41,17 @@ func TestPublicProbePreservesHostAndRejectsWrongResponse(t *testing.T) {
 		t.Fatal("accepted public endpoint redirect")
 	}
 }
+
+func TestReleaseTrafficRequiresTLSRoute(t *testing.T) {
+	secure := fixtureRoute(t, "release-a")
+	if err := RequireTLSRenderedRoute(secure); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := RenderWeightedRoute(WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "http://orders.example.com", Backends: []WeightedBackend{{DeploymentID: "release-a", Weight: 100}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireTLSRenderedRoute(plain); err == nil {
+		t.Fatal("plaintext release route accepted")
+	}
+}

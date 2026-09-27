@@ -50,6 +50,12 @@ mutual-TLS file/Traefik readback on every member, and rereads inventory to
 reject a replacement during observation. This result is not a terminal
 traffic proof: app endpoint probes, public load-balancer behavior, accepted
 deployment binding and the completion transaction are still outstanding.
+`ObserveCurrentFleetIngressTraffic` now composes that readback with an HTTPS
+app endpoint probe on each exact private ingress IP and a normal public DNS
+probe, then rechecks the Fleet inventory. The expected response digest and
+probe path are explicit inputs. This remains an observation until the worker
+binds them to the accepted deployment and records a durable, revision-fenced
+proof before positive active weight.
 
 ## Authority and host boundary
 
