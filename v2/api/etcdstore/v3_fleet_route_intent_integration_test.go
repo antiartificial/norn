@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/fleet"
 	"norn/v2/api/ingress"
 	"norn/v2/api/model"
@@ -211,7 +212,31 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if current, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err != nil || current.ID != first.ID {
 		t.Fatalf("publishable route intent=%+v err=%v", current, err)
 	}
-	publication, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "ingress-01")
+	effects, err := NewV3DeploymentEffectReservations(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := effects.Reserve(ctx, deploymentEffectReservation(t, accepted, claim, adapter.authority))
+	if err != nil || !reserved.Created {
+		t.Fatalf("deployment effect reservation=%+v err=%v", reserved, err)
+	}
+	healthToken := reserved.Record.Token
+	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "ingress-01"); err == nil {
+		t.Fatal("unhealthy Nomad deployment authorized public route publication")
+	}
+	if attempted, err := effects.MarkSubmitAttempt(ctx, healthToken); err != nil || !attempted {
+		t.Fatalf("Nomad submit attempt=%t err=%v", attempted, err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: reserved.Record.Reservation.Supervisor, SupervisorExecutionID: reserved.Record.Reservation.SupervisorExecutionID, RuntimeInstanceID: "nomad-job:global:demo:7"}
+	if err := effects.MarkLaunched(ctx, healthToken, identity); err != nil {
+		t.Fatal(err)
+	}
+	verification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: reserved.Record.Reservation.InputDigest, ResultDigest: "sha256:healthy-fixture", ResultReference: identity.RuntimeInstanceID,
+		SupervisorExecutionID: identity.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "nomad-job-health", EvidenceReference: identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, healthToken, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	publication, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "ingress-01")
 	if err != nil || publication.IntentID != first.ID || publication.NodeID != "ingress-01" || publication.Generation != 1 || publication.Route.SHA256 != first.RenderedRoute.SHA256 {
 		t.Fatalf("node publication=%+v err=%v", publication, err)
 	}
@@ -224,7 +249,7 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 		t.Fatalf("authorized first-route readback=%+v err=%v", revision, err)
 	}
 	const nodeURI = "spiffe://norn.test/fleet/ingress-01"
-	authority, err := adapter.NewClaimedInitialFleetRouteAuthorityHandler(claim, lock, spec, 18082, map[string]string{nodeURI: "ingress-01"})
+	authority, err := adapter.NewClaimedInitialFleetRouteAuthorityHandler(claim, lock, spec, 18082, healthToken, map[string]string{nodeURI: "ingress-01"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +282,7 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	workerCtx, stopAuthority := context.WithCancel(ctx)
 	served := make(chan error, 1)
 	go func() {
-		served <- adapter.ServeClaimedInitialFleetRouteAuthority(workerCtx, claim, lock, spec, 18082, map[string]string{nodeURI: "ingress-01"}, privateListener, serverPEM, serverKey, caPEM)
+		served <- adapter.ServeClaimedInitialFleetRouteAuthority(workerCtx, claim, lock, spec, 18082, healthToken, map[string]string{nodeURI: "ingress-01"}, privateListener, serverPEM, serverKey, caPEM)
 	}()
 	t.Cleanup(func() {
 		stopAuthority()
@@ -284,10 +309,10 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if err != nil || !remoteRevision.Present || remoteRevision.RouteSHA256 != first.RenderedRoute.SHA256 {
 		t.Fatalf("mTLS-authorized file revision=%+v err=%v", remoteRevision, err)
 	}
-	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "unknown-node"); err == nil {
+	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "unknown-node"); err == nil {
 		t.Fatal("unlisted ingress node received route publication")
 	}
-	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, uuid.NewString(), "ingress-01"); err == nil {
+	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, uuid.NewString(), "ingress-01"); err == nil {
 		t.Fatal("unreserved intent ID received route publication")
 	}
 	if _, err := client.Put(ctx, adapter.activeFleetIngressClusterEpochKey("norn-staging"), "replaced-plan"); err != nil {
@@ -296,7 +321,7 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("stale Fleet inventory remained publishable after host replacement")
 	}
-	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "ingress-01"); err == nil {
+	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "ingress-01"); err == nil {
 		t.Fatal("replaced Fleet inventory still authorized node publication")
 	}
 	if _, err := remoteResolve(ctx, first.ID, "ingress-01"); err == nil {

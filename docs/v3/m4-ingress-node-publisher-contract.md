@@ -8,7 +8,9 @@ control authority handler binds the node ID to a verified client URI; the
 host-side client pins both the control CA and server URI. A local mTLS test
 feeds its decision through the node publisher and checks the resulting file
 revision. The private store decision can serve that handler while its worker
-holds a live claim and app lock. The `norn-ingress-publisher` host binary uses
+holds a live claim, app lock, and completed deployment-bound Nomad job-health
+effect. An accepted route intent alone cannot authorize publication. The
+`norn-ingress-publisher` host binary uses
 separate inbound control and outbound node mTLS identities, rejects a
 non-private listen address, and is required in candidate release manifests.
 No runtime control listener or Fleet host service invokes this path yet, so
@@ -226,7 +228,11 @@ publisher, or terminal proof path and cannot activate traffic. Old/new split tra
 still require the durable prior route pointer described below.
 The private `AuthorizeInitialFleetRouteForNode` method now rechecks a held
 claim, app lock, signed acceptance, exact intent ID and current Fleet
-inventory before returning the generation-one route for one named member.
+inventory before returning the generation-one route for one named member. It
+also reloads the completed Nomad job-health effect and recorded submit attempt
+for that deployment, then rechecks route authority. The completed effect proves
+one observed healthy allocation state, not continuing app or public-route
+health; endpoint and public probes remain necessary after publication.
 `NewClaimedInitialFleetRouteAuthorityHandler` connects that decision to the
 certificate-bound control handler while the worker holds its claim and pinned
 InfraSpec. A disposable-etcd test authorizes the named member and rejects the

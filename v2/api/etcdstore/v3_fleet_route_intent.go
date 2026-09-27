@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/ingress"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
@@ -83,7 +84,7 @@ func (s *V3OperationStore) CurrentInitialFleetRouteIntent(ctx context.Context, c
 // only for a member of the still-current Fleet inventory. A private authority
 // service must bind nodeID to the verified host certificate, and the caller
 // must hold the live claim and app lock. This is not a public API route.
-func (s *V3OperationStore) AuthorizeInitialFleetRouteForNode(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int, intentID, nodeID string) (*ingress.AuthorizedRoutePublication, error) {
+func (s *V3OperationStore) AuthorizeInitialFleetRouteForNode(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int, healthEffect effect.Token, intentID, nodeID string) (*ingress.AuthorizedRoutePublication, error) {
 	if intentID == "" || nodeID == "" {
 		return nil, fmt.Errorf("Fleet route publication identity is incomplete")
 	}
@@ -94,12 +95,56 @@ func (s *V3OperationStore) AuthorizeInitialFleetRouteForNode(ctx context.Context
 	if intent.ID != intentID || intent.Generation != 1 {
 		return nil, fmt.Errorf("Fleet route publication differs from reserved intent")
 	}
+	if err := s.requireHealthyDeploymentEffect(ctx, claim, intent, healthEffect); err != nil {
+		return nil, err
+	}
+	reconfirmed, err := s.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, observerPort)
+	if err != nil || reconfirmed == nil || reconfirmed.ID != intent.ID || reconfirmed.RenderedRoute.SHA256 != intent.RenderedRoute.SHA256 {
+		return nil, fmt.Errorf("Fleet route authority changed during health revalidation")
+	}
 	for _, node := range intent.Inventory.Nodes {
 		if node.ID == nodeID {
 			return &ingress.AuthorizedRoutePublication{IntentID: intent.ID, NodeID: nodeID, Route: intent.RenderedRoute, Generation: intent.Generation}, nil
 		}
 	}
 	return nil, fmt.Errorf("ingress node is absent from current Fleet inventory")
+}
+
+// requireHealthyDeploymentEffect binds publication to the same completed
+// Nomad job-health observation that the deploy worker obtained after submit.
+// Live endpoint and public traffic probes are still required after publish.
+func (s *V3OperationStore) requireHealthyDeploymentEffect(ctx context.Context, claim store.OperationClaim, intent *InitialFleetRouteIntent, token effect.Token) error {
+	if intent == nil || token.EffectID == "" || token.Generation <= 0 || token.Generation > claim.Generation() {
+		return fmt.Errorf("deployment health effect is unavailable")
+	}
+	effects, err := NewV3DeploymentEffectReservations(s)
+	if err != nil {
+		return err
+	}
+	record, _, _, err := effects.loadToken(ctx, token)
+	if err != nil || record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil ||
+		record.Completion.Outcome != effect.OutcomeSucceeded || record.Completion.Verification.Decision != effect.VerificationSucceeded ||
+		record.Completion.Verification.EvidenceSource != "nomad-job-health" ||
+		record.Reservation.OperationClaim.OperationID != claim.OperationID() || record.Reservation.OperationClaim.Generation != token.Generation ||
+		record.Reservation.Resource != "app/"+intent.App+"/deploy/"+intent.Region {
+		return fmt.Errorf("deployment health effect is not complete for this route")
+	}
+	var input deploymentEffectInput
+	if err := json.Unmarshal(record.Reservation.LaunchPayload, &input); err != nil || input.DeploymentID != intent.DeploymentID || input.SpecDigest != intent.SpecDigest || input.NomadRegion != intent.NomadRegion {
+		return fmt.Errorf("deployment health effect differs from route intent")
+	}
+	current, _, err := s.load(ctx, claim.OperationID())
+	if err != nil {
+		return err
+	}
+	if _, err := effects.validateDeploymentEffectReservation(ctx, record.Reservation, current.Operation); err != nil {
+		return fmt.Errorf("deployment health effect lost signed acceptance: %w", err)
+	}
+	attempted, err := effects.SubmitAttempted(ctx, token)
+	if err != nil || !attempted {
+		return fmt.Errorf("deployment health effect has no recorded Nomad submission")
+	}
+	return nil
 }
 
 func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int, requireExisting bool) (*InitialFleetRouteIntent, error) {
