@@ -221,8 +221,12 @@ active pre-index work must first drain or reconcile it.
    identities. The etcd effect reservation now compares the plan's catalog
    revision and every expected runtime target to the signed
    `databaseTargets` acceptance payload before reserving the effect. The
-   normal etcd dispatch still must stage target material and process secrets in
-   the revision job Variable, and invoke the constructor; no normal managed
+   private Nomad Variable delivery can now CAS-add exactly the planned
+   process secret file keys to that revision job without overwriting staged
+   database material; a different value at the same job ID is refused. The
+   normal etcd dispatch still must resolve the accepted targets, obtain and
+   stage their database material and process secrets, and invoke the
+   constructor; no normal managed
    job path is enabled by the private verifier alone.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
