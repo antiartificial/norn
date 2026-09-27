@@ -15,9 +15,14 @@ effect yet. A resolved PostgreSQL session now produces runner-owned service,
 passfile, URL and TLS file material for private launch, including URL path
 remapping. A migration-specific verifier now requires contained zero exit and
 an independent original-target postcondition result; nonzero, timed-out and
-ambiguous command states remain unresolved. The concrete database checker,
-effect adapter, and protected runtime qualification remain required before
-activation.
+ambiguous command states remain unresolved. A concrete PostgreSQL/MySQL
+checker now binds one reviewed scalar SQL assertion to the accepted target
+digest, reconnects to that target, verifies database and role in a read-only
+transaction, and requires exactly one non-null result matching the expected
+value. PostgreSQL and MySQL paths passed disposable database tests. The
+production effect adapter must supply the pinned source's reviewed assertion
+and route both deployment and standalone migrations through this verifier;
+protected runtime qualification remains required before activation.
 
 ## Current behavior and risk
 
