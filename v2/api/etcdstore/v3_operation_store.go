@@ -225,20 +225,33 @@ func (s *V3OperationStore) privateInvocationPrefix() string {
 func (s *V3OperationStore) Authority(context.Context) (string, error) { return s.authority, nil }
 
 func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
+	return s.acceptOperationAggregate(ctx, a, false)
+}
+
+// acceptDeploymentAggregate prepares the durable deployment domain for the
+// future etcd worker. It is deliberately private until that worker and its
+// required capabilities are wired into the normal Fleet route.
+func (s *V3OperationStore) acceptDeploymentAggregate(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
+	if a.Deployment == nil || !a.Admission.OneActiveMutablePerApp || a.FleetRunnerAttempt != nil || a.FleetReconciliation != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd deployment requires deployment fields and exclusive app admission"}
+	}
+	return s.acceptOperationAggregate(ctx, a, true)
+}
+
+func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store.OperationAcceptance, allowDeployment bool) (store.AcceptedOperation, error) {
 	if a.Identity.Kind == store.PrivateInvocationOperationKind || a.Operation.Kind == store.PrivateInvocationOperationKind {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "function invocation requires atomic private material acceptance"}
 	}
-	// The current adapter does not yet implement these multi-record admission
-	// aggregates. Refuse them before any write instead of storing a receipt
-	// whose domain state or policy was never enforced.
+	// The public adapter cannot execute deployment aggregates yet. Refuse
+	// them before any specialized Fleet admission path can create a receipt.
+	if !allowDeployment && (a.Deployment != nil || len(a.Regions) > 0) {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd deployment admission is not enabled"}
+	}
 	if a.FleetRunnerAttempt != nil {
 		return s.acceptFleetRunnerAttempt(ctx, a)
 	}
 	if a.FleetReconciliation != nil {
 		return s.acceptFleetReconciliation(ctx, a)
-	}
-	if a.Deployment != nil || len(a.Regions) > 0 {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
 	// Canary promotion has an atomic effect aggregate. Its replay identity may
 	// expire only after the operation and every reserved Nomad effect are
@@ -296,11 +309,17 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		return store.AcceptedOperation{}, err
 	}
 	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(a.Operation.ID), key)}
+	deploymentCompares, deploymentPuts, err := s.prepareDeploymentAdmission(a)
+	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
+	puts = append(puts, deploymentPuts...)
 	puts = append(puts, admission.puts...)
 	if replayLease != 0 {
 		puts = append(puts, clientv3.OpPut(s.replayLiveKey(key), store.OperationReplayContractVersion, clientv3.WithLease(replayLease)))
 	}
 	comparisons := append([]clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)}, admission.compares...)
+	comparisons = append(comparisons, deploymentCompares...)
 	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(puts...).Commit()
 	if err != nil {
 		// A timed-out transaction can commit after the client loses its answer.
@@ -378,9 +397,14 @@ func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loaded
 		}
 		fleetLineageValid = fleetValidateLineage(lineage) == nil
 	}
-	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation, FleetRunnerAttempt: fleetAttempt, FleetRunnerLineageValid: fleetLineageValid}); e != nil {
+	deployment, regions, e := s.loadAcceptedDeployment(ctx, got.Intent.DeploymentID)
+	if e != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load accepted etcd deployment: %w", e)}
+	}
+	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation, Deployment: deployment, Regions: regions, FleetRunnerAttempt: fleetAttempt, FleetRunnerLineageValid: fleetLineageValid}); e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
 	}
+	got.Deployment, got.Regions = deployment, regions
 	if got.FleetRunnerAttempt != nil {
 		attempt, verifyErr := s.verifyFleetRunnerAttemptReplay(ctx, got)
 		if verifyErr != nil {

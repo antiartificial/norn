@@ -6,20 +6,24 @@ against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
 
 ## Current boundary
 
-`V3OperationStore.Accept` rejects any deployment/region aggregate before a
-write. It now indexes queued app operations, enforces exclusive app admission
-in the acceptance transaction, and releases the index in claim-fenced terminal
+The public `V3OperationStore.Accept` still rejects any deployment/region
+aggregate before a write. A private preparation path now atomically persists
+the signed operation, deployment, resolved regions, and app gate for real-etcd
+contract tests; it is not exposed to the API or worker. The store indexes
+queued app operations, enforces exclusive app admission in the acceptance
+transaction, and releases the index in claim-fenced terminal
 transactions. Private invocation acceptance and completion participate, and
 the canary preview requests exclusive admission. A terminal operation with
 manual or external-effect recovery pending retains the index. The normal etcd
 router has no ordinary app deployment route and responds with
 `backend_route_unsupported`.
+
 The PG acceptance transaction already persists a signed intent, operation,
 deployment, and regions together after checking that no queued/running
 operation exists for that app. The etcd adapter now shares the domain
-normalizer, but it has no corresponding atomic deployment persistence or
-deployment lifecycle projection. The index initializes once per app only after
-a snapshot scan finds no pre-index active or unresolved operations. Mixed-version
+normalizer and has atomic deployment persistence, but no deployment lifecycle
+projection. The index initializes once per app only after a snapshot scan finds
+no pre-index active or unresolved operations. Mixed-version
 API writers must be stopped before enabling the adapter; an upgrade retaining
 active pre-index work must first drain or reconcile it.
 
@@ -35,7 +39,9 @@ active pre-index work must first drain or reconcile it.
    Two-client exclusive acceptance and pre-index active-operation rejection
    are now covered by real-etcd tests; mixed-version writes remain outside
    the supported transition.
-2. Persist deployment and region rows atomically with acceptance. On
+2. Persist deployment and region rows atomically with acceptance. The private
+   preparation path and signature-verified replay now pass a real-etcd test;
+   the public path remains disabled until execution is available. On
    ambiguous transaction responses, resolve by the same request identity and
    verify the signed intent plus the exact immutable deployment/region fields.
    A partial or changed domain record is a signature/integrity failure, not a
