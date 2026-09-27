@@ -133,6 +133,18 @@ disposable PostgreSQL 16 and etcd available together. Both fixtures were
 stopped and removed afterward. This exercises the combined test environment;
 it does not prove live concurrency, off-host restore, or a milestone gate.
 
+At 2026-09-27, the current draft PR #77 head
+`1722ba427b9bcf08df317d29f5caae4ab0cdabbb` passed all 15 reported
+checks. [Norn CI run 36304890397](https://github.com/antiartificial/norn/actions/runs/36304890397)
+ran the complete API suite on Linux with disposable PostgreSQL 16 and etcd
+together, plus the production etcd TLS/RBAC, Mini schema, web, CLI, workflow,
+and release-bundle checks. [Repository CI run 36304890452](https://github.com/antiartificial/norn/actions/runs/36304890452)
+passed the protected-master legacy contexts. A PostgreSQL timestamp assertion
+was corrected to compare against the database-persisted precision before
+this exact-head run. GitHub reports the draft PR mergeable; no protected merge,
+production signing, Mini upgrade, or Fleet launch has occurred. This is the
+integration candidate's CI baseline, not M0–M9 sign-off.
+
 ## Shortest release path from here
 
 1. Decide Mini's control-store RPO and off-host retention, then qualify its
