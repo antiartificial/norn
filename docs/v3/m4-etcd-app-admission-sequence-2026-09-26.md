@@ -64,6 +64,11 @@ active pre-index work must first drain or reconcile it.
    accepted region, pinned image, spec digest, and job digest to the shared
    etcd app effect gate. Its lifecycle passes a real-etcd test, but a Nomad
    supervisor has not yet proven the submitted job or recovery observation.
+   A Nomad create/update registration primitive now uses an expected job
+   modify index, validates the app and execution markers before sending, and
+   classifies ambiguous responses as indeterminate. Its create-only and stale
+   index behavior passed against disposable Nomad 2.0.7; no supervisor calls
+   it yet.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
