@@ -707,7 +707,7 @@ func TestReleaseQualificationHTTPUsesSignedAtomicAcceptance(t *testing.T) {
 		t.Fatalf("state advance changed replay receipt=%q want=%q", advancedReceipt.ID, firstReceipt.ID)
 	}
 
-	ci := &CIIdentity{Provider: candidate.Provider, Repository: candidate.Repository, RepositoryID: candidate.RepositoryID, RepositoryOwnerID: candidate.OwnerID, RepositoryVisibility: candidate.RepositoryVisibility, RunID: candidate.RunID, RunAttempt: candidate.RunAttempt, WorkflowRef: candidate.WorkflowRef, WorkflowSHA: candidate.WorkflowSHA, JobWorkflowRef: candidate.SignerWorkflowRef, JobWorkflowSHA: candidate.SignerWorkflowSHA, Ref: candidate.Ref, SHA: candidate.Attestation.MaterialSHA, Intent: "qualify"}
+	ci := &CIIdentity{Provider: candidate.Provider, Repository: candidate.Repository, RepositoryID: candidate.RepositoryID, RepositoryOwnerID: candidate.OwnerID, RepositoryVisibility: candidate.RepositoryVisibility, RunID: candidate.RunID, RunAttempt: candidate.RunAttempt, WorkflowRef: candidate.WorkflowRef, WorkflowSHA: candidate.WorkflowSHA, JobWorkflowRef: candidate.SignerWorkflowRef, JobWorkflowSHA: candidate.SignerWorkflowSHA, Ref: candidate.Ref, SHA: candidate.Attestation.MaterialSHA, Environment: "staging", Intent: "qualify"}
 	ciPrincipal := AccessPrincipal{Subject: "workflow", TokenID: "ci-token-one", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeReleaseQualify}, App: "demo", Environment: "staging", CI: ci}
 	ciFirst := servePrincipal(ciPrincipal, "qualification-current-auth", thirdDeployment.ID)
 	if ciFirst.Code != http.StatusCreated {

@@ -130,7 +130,12 @@ func TestCreatePrivateReleaseAttestationRejectsWrongEnvironmentAndMode(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := privateRouteHandler(t, nil, test.environment, test.mode, app, "personal-owner/private-repo")
-			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, principal, body, "wrong-lane"), http.StatusConflict, "private_attestation_unavailable")
+			bound := principal
+			bound.Environment = test.environment
+			identity := *principal.CI
+			identity.Environment = test.environment
+			bound.CI = &identity
+			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, bound, body, "wrong-lane"), http.StatusConflict, "private_attestation_unavailable")
 		})
 	}
 }
@@ -314,7 +319,11 @@ func TestCreatePrivateReleaseAttestationRequiresScopedStagingCI(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			principal := privateRoutePrincipal(app)
 			mutate(&principal)
-			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, principal, body, "bad-ci-"+strings.ReplaceAll(name, " ", "-")), http.StatusForbidden, "private_attestation_lane_invalid")
+			expected := "private_attestation_lane_invalid"
+			if name == "token environment" || name == "CI environment" {
+				expected = "release_token_binding_invalid"
+			}
+			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, principal, body, "bad-ci-"+strings.ReplaceAll(name, " ", "-")), http.StatusForbidden, expected)
 		})
 	}
 }
