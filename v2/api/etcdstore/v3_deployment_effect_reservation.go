@@ -133,7 +133,7 @@ func validateManagedEffectTargets(input deploymentEffectInput, payload map[strin
 	decoder.DisallowUnknownFields()
 	var trailing json.RawMessage
 	if decoder.Decode(&signed) != nil || decoder.Decode(&trailing) != io.EOF || signed.Schema != "norn.database-targets/v1" ||
-		signed.CatalogRevision < 1 || signed.CatalogRevision != plan.DatabaseRevision || len(signed.Targets) != len(plan.RuntimeDatabaseNames) ||
+		signed.CatalogRevision < 1 || signed.CatalogRevision != plan.DatabaseRevision || len(signed.Targets) < len(plan.RuntimeDatabaseNames) ||
 		len(input.ExpectedDatabaseTargets) != len(plan.RuntimeDatabaseNames) {
 		return fmt.Errorf("managed deployment signed database targets differ")
 	}

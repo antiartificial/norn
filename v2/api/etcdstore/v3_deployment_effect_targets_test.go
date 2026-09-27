@@ -31,6 +31,14 @@ func TestManagedEffectTargetsMustMatchSignedAcceptance(t *testing.T) {
 	if err := validateManagedEffectTargets(input, payload); err != nil {
 		t.Fatal(err)
 	}
+	extra, err := json.Marshal(map[string]interface{}{"schema": "norn.database-targets/v1", "profileId": "fleet", "catalogRevision": 7,
+		"targets": []map[string]interface{}{{"name": "primary", "target": target}, {"name": "migration-only", "target": target}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateManagedEffectTargets(input, map[string]interface{}{"databaseTargets": string(extra)}); err != nil {
+		t.Fatalf("additional signed non-runtime target rejected: %v", err)
+	}
 	input.ExpectedDatabaseTargets["primary"] = `{"serviceId":"other"}`
 	if err := validateManagedEffectTargets(input, payload); err == nil {
 		t.Fatal("different target accepted")
