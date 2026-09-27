@@ -132,3 +132,22 @@ remaining prepaid X API credit**, **$6.43 current spend** in the Sep 19–Oct 19
 2026 cycle, an **Unlimited** cycle cap, and **Auto Recharge Off**. No billing
 setting was changed. These checks establish current session and prepaid
 credit availability, not future validity or the cause of individual charges.
+
+## Read-only refresh — 2026-09-27 17:45 UTC
+
+Mini's `like-trove` service remained running with one active web allocation and
+a successful latest deployment. Its latest retained daily-capture child,
+`periodic-1790518620`, remained complete with one complete allocation and
+zero failed allocations. The owner-local bookmark marker still showed
+**41,159 bookmarks** and `lastIncrementalSyncAt=2026-09-27T13:21:50.910Z`;
+the completed AM sync remained the latest observed ingest.
+
+A fresh read-only `Bookmarks` GraphQL GET with `count=1` returned HTTP 200,
+data present, and zero GraphQL errors. Session values stayed inside Mini in a
+mode-`0600` owner file. The signed-in X Developer Console dashboard for the
+account listing `trovely` showed **$9.73 total balance**, all prepaid credits,
+and **357 API calls over the last 30 days**. The dashboard did not show a fresh
+cycle-spend figure in this refresh; the $6.43 figure above is from 16:53 UTC.
+No job, sync, or billing action was initiated. These observations establish a
+working bookmark read and available account credit at this instant, while the
+next scheduled capture and future token validity remain unproved.
