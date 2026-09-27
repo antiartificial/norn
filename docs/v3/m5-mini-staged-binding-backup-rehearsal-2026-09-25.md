@@ -145,3 +145,22 @@ The first three have a successful latest deployment, but that does not prove
 an intentional stop or continuing health. Keep all four out of an
 "unchanged healthy workload" assertion until their owners record the intended
 state and expected post-upgrade behavior.
+
+### Open incident interpretation
+
+The same 2026-09-27 inventory joined each open incident to current app health.
+Nine incidents were attached to apps currently reporting healthy:
+`turnkey-offer-intake` (two), `turnkey-paddle-ocr-private` (one),
+`vigil-gateway` (two), `mail-mcp` (two), and `like-trove` (two). Their latest
+incident events were dated 2026-09-10 through 2026-09-22. These are open
+historical events, not proof of a current allocation failure; a current
+healthy result also does not prove continuous health since each event.
+
+Three open incidents belong to `its-alive-api`, which still reports a dead
+Nomad job and no allocation. Treat that as an existing failure in the
+pre-upgrade baseline. The thirteenth is a host capacity warning from
+2026-09-16. The latest recorded host assurance succeeded on 2026-09-06,
+before that warning, so host status `ok` alone cannot clear it. Three of the
+absent deploy-enabled web processes declare a minimum replica count of one;
+the owner must review current capacity and decide whether the warning remains
+applicable. No incident was acknowledged or changed by this read-only pass.
