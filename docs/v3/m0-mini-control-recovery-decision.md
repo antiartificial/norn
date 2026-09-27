@@ -24,6 +24,13 @@ passed the transport and clean-target restore step on another host. It used a
 temporary source cluster, not the control database or the protected backup
 catalog, and did not preserve production roles or ACLs.
 
+A read-only Mini refresh on 2026-09-27 at approximately 17:00 UTC still showed
+PostgreSQL `archive_mode=off`, `archive_timeout=0`, and zero archived/failed WAL
+files in `pg_stat_archiver`. `tmutil destinationinfo` reported no Time Machine
+destination configured, and `tmutil latestbackup` could not mount a backup
+destination. This does not exclude an unrelated external backup system, but
+neither proposed control RPO has an evidenced current off-host mechanism.
+
 ## Decision options
 
 | Option | User-visible data-loss bound after a host/storage loss | Implementation to qualify | Practical trade-off |
