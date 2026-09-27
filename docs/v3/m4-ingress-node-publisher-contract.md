@@ -128,6 +128,13 @@ deployment, region, and desired regional traffic weight. They do not identify
 the public endpoint, process, previous deployment backend, or a complete
 old/new route split. `RenderedRoute` is presently a caller-supplied value.
 Passing that value through observation cannot authorize terminal traffic.
+The deployment acceptance and v3 operation-store configuration also do not
+select an authoritative Fleet plan for this app. `CurrentFleetIngressInventory`
+currently receives its plan ID from its caller. Before route-intent admission,
+the control plane must bind the accepted deployment to the intended Fleet plan
+through a server-owned source, and compare that plan's current checkpoint in
+the intent transaction. The app's prior route pointer must likewise be loaded
+from durable state, not supplied by the request.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the
