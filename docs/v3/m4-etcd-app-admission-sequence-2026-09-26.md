@@ -67,16 +67,14 @@ active pre-index work must first drain or reconcile it.
    A Nomad create/update registration primitive now uses an expected job
    modify index, validates the app and execution markers before sending, and
    classifies ambiguous responses as indeterminate. Its create-only and stale
-   index behavior passed against disposable Nomad 2.0.7; no supervisor calls
-   it yet.
+   index behavior passed against disposable Nomad 2.0.7; the private worker
+   calls it, while normal claim dispatch does not.
    Readback distinguishes a 404 from the current Nomad job revision carrying
    the expected app, deployment, operation, execution, and digest markers.
-   An experimental full-job JSON hash failed readback against that same Nomad:
-   the server populated job and task-group defaults and runtime fields absent
-   from the submitted shape. The experiment was removed. A digest projection
-   must normalize those fields while covering every mutable workload field,
-   including environment, templates, volumes, networking, and task config;
-   a marker-only or source-spec digest is insufficient. The replacement
+   An experimental hash of Nomad's rendered job failed because the server
+   populated defaults and runtime fields absent from the submitted shape.
+   That experiment was removed. A marker-only or source-spec digest would
+   miss mutable workload fields. The replacement
    registration hashes the submitted JSON before writing, excluding only the
    digest's own marker and its digest-derived execution marker, then saves
    the full source in Nomad's versioned submission record. Both excluded
@@ -85,8 +83,7 @@ active pre-index work must first drain or reconcile it.
    current job with no diff, then rereads the revision. A deliberately changed
    workload with matching markers and submission source was rejected by the
    plan against disposable Nomad 2.0.7. This covers the tested raw-exec and
-   translated service shapes, not every app dialect, and no supervisor calls
-   the primitive yet. Allocation health is available to the private worker;
+   translated service shapes, not every app dialect. Allocation health is available to the private worker;
    signed region checkpoint and deployment-result writes remain separate work.
    Nomad calls the submitted source reference data, retains only the latest
    six job source files, and does not schedule from it. Missing source must
@@ -138,8 +135,12 @@ active pre-index work must first drain or reconcile it.
    compare transaction; success cannot use a recovery-pending flag to bypass
    that fence. The test constructs the terminal region result after health;
    a production worker still needs to derive and persist that result from
-   verified evidence, including separate traffic-weight proof. Normal dispatch
-   remains disabled.
+   verified evidence. The translator emits `norn.traffic-weight` as a Consul
+   service tag, while the PostgreSQL pipeline writes desired weight after
+   Nomad readiness; neither observes effective ingress weight. Identify the
+   responsible ingress or traffic controller, then observe its effective
+   configuration and endpoint behavior before writing nonzero `ActiveWeight`.
+   Normal dispatch remains disabled.
    Canary jobs still require their separate promotion proof.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission

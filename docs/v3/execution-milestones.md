@@ -91,7 +91,7 @@ Suggested review units:
 3. Required/preferred host spreading, resources, graceful drain, web/worker priorities and stateful-storage constraints.
 4. Generation-based surge/join/readiness/drain/retire executor with exact node identities and interruption recovery.
 
-Gate: VM growth independently from replicas; redeploy preserves desired scale; placement matches policy; 2→3→2 under load; failed drain blocks retirement; N-1 and rollout reserve fit actual allocations. Worker drain preserves acknowledged work. Node addition alone is not a rebalance guarantee.
+Gate: VM growth independently from replicas; redeploy preserves desired scale; placement matches policy; 2→3→2 under load; failed drain blocks retirement; N-1 and rollout reserve fit actual allocations. Worker drain preserves acknowledged work. For routed services, observe the effective ingress configuration and endpoint response before recording an active traffic weight; a desired weight in Nomad or Consul metadata is insufficient. Node addition alone is not a rebalance guarantee.
 
 Rollback: retain prior node generation until replacement readiness; restore desired revisions through reviewed operations. Restore old job identity only through a declared mapping/traffic handoff.
 
