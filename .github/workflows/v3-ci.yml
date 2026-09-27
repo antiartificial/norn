@@ -181,6 +181,8 @@ jobs:
         run: |
           python3 v2/scripts/platform-release-manifest_test.py
           python3 v2/scripts/platform_release_artifact_test.py
+      - name: Verify platform upgrade preflight and promotion lock
+        run: python3 v2/scripts/platform_upgrade_integration_test.py
       - name: Build, package, sign and import a disposable release
         run: bash v2/scripts/test-platform-release-bundle.sh
 
