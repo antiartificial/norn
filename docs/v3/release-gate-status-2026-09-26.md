@@ -14,25 +14,32 @@ are substantial but cannot sign a broader gate.
 | M1 shared control behavior | Open. Durable acceptance, claims, schema and passive startup have local tests. | Finish external-effect fencing/reconciliation coverage and Mini runtime compatibility/rollback checks. |
 | M2 profiles, databases and retention | Open. Local PostgreSQL/MySQL, WordPress and S3-emulator rehearsals passed. | Prove real-provider retention and separate-node restore, managed MySQL behavior, complete archive/accounting and profile parity. |
 | M3 etcd and fresh Fleet | Open. Disposable three-member and host-unit rehearsals exist. | Protected separate-host bootstrap, quorum/fault/restore/soak, no control-PG dependency, and hosted Fleet contract check. |
-| M4 capacity and placement | Open. Scale intent/visibility and a local loaded drain safety check exist. | Exact release-version placement and capacity proof; loaded 2→3→2 nodes, safe migration and failed-drain retirement block. |
+| M4 capacity and placement | Open. Scale intent/visibility, a disposable claimed PostgreSQL→Nomad scale, active-deployment deferral, and a local loaded drain safety check exist. | Exact release-version placement and capacity proof on protected Fleet hosts; loaded 2→3→2 nodes, safe migration, worker acknowledgment continuity, and failed-drain retirement block. |
 | M5 Mini upgrade rehearsal | Open. Private source-copy schema/passive checks passed. | Production-key protected backup and private restore, exact signed candidate, isolated upgrade/rollback with unchanged jobs, routes and identities. |
 | M6 running upgrades and app databases | Open. Foundations only. | V3 A→B rolling rehearsal and fenced app database cutover/recovery for supported PG/MySQL paths. |
 | M7 representative app mobility | Open. Contract only. | One database-backed Mini app and its data/files/work move to independent Fleet with traffic and rollback proof. |
 | M8 release qualification | Open. No signed release candidate. | Version/client matrix, fault/soak/growth evidence, operator runbooks and signed artifacts for the qualified scope. |
 | M9 controlled adoption | Open. No v3 Mini/Fleet deployment. | Separately verify Mini upgrade, empty Fleet launch and selected app migration after M8. |
 
-## Current review branches
+## Review branches checked on 2026-09-26
 
 - Draft Norn [PR #76](https://github.com/antiartificial/norn/pull/76):
-  `39d79861c71f73b15e3007c6fa05b639c79304ef`; all eight checks passed
-  in [run 36284522950](https://github.com/antiartificial/norn/actions/runs/36284522950).
-  This is source validation, not Mini promotion or milestone sign-off.
+  implementation head `67a79a6653b19d4651e74d1e1c17ae4e9f209a66`; all eight
+  checks passed in [run 36285815881](https://github.com/antiartificial/norn/actions/runs/36285815881).
+  The disposable Nomad 2.0.7/PostgreSQL 16 rehearsal proved that an active
+  deployment defers a claimed scale without reserving an effect, then the
+  same claim completes and persists replica intent after deployment success.
+  A race between preflight and launch can still leave an ambiguous effect for
+  operator reconciliation. This is source and local-runtime validation, not
+  protected Fleet qualification or milestone sign-off.
 - Draft Fleet [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
-  `8f5760fcb8b645f19a6e67caff8438f48e9daa28`; the hosted `contract`
+  `6267655052b209b22dc8b3421cb9339f797af9bc`; the hosted `contract`
   job failed before runner assignment because of the GitHub account
   billing/spending-limit condition. The repository currently has no generic
-  ephemeral CI fallback runner registered. Local contract tests and Nomad
-  drain checks do not substitute for that check or a protected Fleet.
+  ephemeral CI fallback runner registered. The local three-client Nomad 2.0.7
+  rehearsal verified loaded 2→3→2 placement and exact-node drain predicates;
+  all clients ran on one Mac, so it does not substitute for hosted contract
+  CI or a protected, separate-host Fleet.
 
 ## Shortest release path from here
 
