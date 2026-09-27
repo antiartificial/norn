@@ -28,6 +28,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"norn/v2/api/config"
+	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
 	"norn/v2/api/githubapp"
@@ -114,6 +115,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
+	router.With(read).Get("/api/v1/database/catalog", etcdFleetDatabaseCatalog(operations))
 	router.With(read).Get("/api/v1/fleet/plans", etcdFleetPlans(operations))
 	router.With(plan).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
 	if canaryHTTPEnabled {
@@ -184,8 +186,8 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 }
 
 func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
-	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans"}
-	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
+	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans", "database-catalog-inspection"}
+	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
 		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
@@ -298,6 +300,26 @@ func etcdFleetOperation(operations *etcdstore.V3OperationStore, allowCanary bool
 		}
 		op.AttachReceipt()
 		writeEtcdSourceJSON(w, http.StatusOK, op)
+	}
+}
+
+func etcdFleetDatabaseCatalog(operations *etcdstore.V3OperationStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := handler.AccessPrincipalFromRequest(r)
+		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || !principal.Allows(handler.ScopeAPIRead) {
+			handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "database catalog inspection requires a managed api:read principal")
+			return
+		}
+		active, err := operations.ActiveDatabaseCatalog(r.Context())
+		if errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
+			handler.WriteControlProblem(w, r, http.StatusNotFound, "database_catalog_not_active", "no database catalog revision is active")
+			return
+		}
+		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusInternalServerError, "database_catalog_unreadable", "the active database catalog could not be verified")
+			return
+		}
+		writeEtcdSourceJSON(w, http.StatusOK, database.InspectCatalog(active.Revision, active.Digest, active.Catalog))
 	}
 }
 
