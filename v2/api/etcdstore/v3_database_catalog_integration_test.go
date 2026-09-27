@@ -65,6 +65,11 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 		return claim
 	}
 	stale := accept("stale", string(encodedCatalog))
+	lock, acquired, err := adapter.AcquireAppOperationLock(ctx, "database.catalog-activate:database-catalog")
+	if err != nil || !acquired {
+		t.Fatalf("catalog app lock: %v", err)
+	}
+	defer func() { lock.Release() }()
 	owner, err := client.Get(ctx, adapter.ownerKey(stale.OperationID()))
 	if err != nil || len(owner.Kvs) != 1 {
 		t.Fatalf("owner: %v", err)
@@ -72,14 +77,24 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, stale, 0, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, stale, lock, 0, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("stale claim changed routing: %v", err)
 	}
 	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
 		t.Fatalf("catalog appeared: %v", err)
 	}
+	if err := adapter.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, recoveredClaim, err := adapter.ClaimNextOperation(ctx, "catalog-recovery-worker", time.Minute, []string{"database.catalog-activate"})
+	if err != nil || recovered == nil || recovered.ID != stale.OperationID() || recovered.Metadata["recoveredAfterLeaseExpiry"] != true {
+		t.Fatalf("expired catalog claim was not safely requeued: %+v %v", recovered, err)
+	}
+	if err := adapter.FinishClaimedOperation(ctx, recoveredClaim, model.OperationFailed, "test cleanup", nil); err != nil {
+		t.Fatal(err)
+	}
 	wrong := accept("wrong", `{"apiVersion":"wrong"}`)
-	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, wrong, 0, catalog, "operator", nil); err == nil {
+	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, wrong, lock, 0, catalog, "operator", nil); err == nil {
 		t.Fatal("different signed catalog activated")
 	}
 	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
@@ -89,7 +104,15 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := accept("live", string(encodedCatalog))
-	activated, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, 0, postgresCatalogFixture(), "operator", map[string]interface{}{"expectedRevision": 0})
+	lock.Release()
+	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, lock, 0, catalog, "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("released app lock changed routing: %v", err)
+	}
+	lock, acquired, err = adapter.AcquireAppOperationLock(ctx, "database.catalog-activate:database-catalog")
+	if err != nil || !acquired {
+		t.Fatalf("reacquire catalog lock: %v", err)
+	}
+	activated, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, lock, 0, postgresCatalogFixture(), "operator", map[string]interface{}{"expectedRevision": 0})
 	if err != nil || activated.Revision != 1 {
 		t.Fatalf("activate %+v: %v", activated, err)
 	}
@@ -101,7 +124,7 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	if err != nil || strings.Contains(string(public), "secret:app/db") || strings.Contains(string(public), `"catalog":`) {
 		t.Fatalf("catalog leaked through operation read projection: %v", err)
 	}
-	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, 1, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, lock, 1, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("completed claim reused: %v", err)
 	}
 }

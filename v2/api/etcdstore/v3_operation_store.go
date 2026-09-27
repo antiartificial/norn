@@ -1033,11 +1033,11 @@ func (s *V3OperationStore) mutateClaimWithAppLock(ctx context.Context, c store.O
 	}, f)
 }
 
-// RecoverExpiredOperations requeues only the canary operation whose Nomad
-// effect has an atomic etcd reservation and a read-only reconciliation path.
-// Other expired claims remain manual recovery until their mutable effects have
-// equivalent durable boundaries. A concurrent renew or finish changes the
-// record revision and wins instead.
+// RecoverExpiredOperations requeues canary promotion through its effect
+// reconciliation path and catalog activation through its atomic routing and
+// terminal-receipt transaction. Other expired claims remain manual recovery
+// until their mutable effects have equivalent durable boundaries. A concurrent
+// renew or finish changes the record revision and wins instead.
 func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 	if s == nil || s.kv == nil || s.lease == nil {
 		return fmt.Errorf("etcd operation recovery is unavailable")
@@ -1090,7 +1090,18 @@ func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 			if op.Metadata == nil {
 				op.Metadata = map[string]interface{}{}
 			}
-			if op.Kind == "app.canary-promote" {
+			if op.Kind == "database.catalog-activate" {
+				// Catalog activation and its terminal receipt share one etcd
+				// transaction. A still-running record proves no routing change
+				// committed, so a successor may safely retry the same intent.
+				op.Status = model.OperationQueued
+				if op.Attempts > 0 {
+					op.Attempts--
+				}
+				op.NextAttemptAt = now
+				op.Message = "catalog activation owner lease expired; retrying signed intent"
+				op.Metadata["recoveredAfterLeaseExpiry"] = true
+			} else if op.Kind == "app.canary-promote" {
 				op.Status = model.OperationQueued
 				if op.Attempts > 0 {
 					op.Attempts--

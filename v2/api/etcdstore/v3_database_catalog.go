@@ -97,20 +97,20 @@ func (s *V3OperationStore) DatabaseCatalogRevision(ctx context.Context, revision
 // ActivatePostgresDatabaseCatalog is a private, PostgreSQL-only bootstrap CAS.
 // Normal activation uses the claimed method and its atomic operation receipt.
 func (s *V3OperationStore) ActivatePostgresDatabaseCatalog(ctx context.Context, expectedCurrent int64, next database.Catalog, actor string) (store.DatabaseCatalogRevision, error) {
-	return s.activatePostgresDatabaseCatalog(ctx, nil, expectedCurrent, next, actor, nil)
+	return s.activatePostgresDatabaseCatalog(ctx, nil, nil, expectedCurrent, next, actor, nil)
 }
 
 // ActivatePostgresDatabaseCatalogClaimed commits the PostgreSQL-only catalog
 // revision and terminal operation receipt atomically. A lapsed or replaced
 // lease cannot activate routing, including when the expected revision matches.
-func (s *V3OperationStore) ActivatePostgresDatabaseCatalogClaimed(ctx context.Context, claim store.OperationClaim, expectedCurrent int64, next database.Catalog, actor string, metadata map[string]interface{}) (store.DatabaseCatalogRevision, error) {
-	if claim.OperationID() == "" || claim.OwnerID() == "" || claim.Generation() < 1 {
+func (s *V3OperationStore) ActivatePostgresDatabaseCatalogClaimed(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, expectedCurrent int64, next database.Catalog, actor string, metadata map[string]interface{}) (store.DatabaseCatalogRevision, error) {
+	if claim.OperationID() == "" || claim.OwnerID() == "" || claim.Generation() < 1 || lock == nil || lock.Fence() == "" {
 		return store.DatabaseCatalogRevision{}, store.ErrOperationOwnershipLost
 	}
-	return s.activatePostgresDatabaseCatalog(ctx, &claim, expectedCurrent, next, actor, metadata)
+	return s.activatePostgresDatabaseCatalog(ctx, &claim, lock, expectedCurrent, next, actor, metadata)
 }
 
-func (s *V3OperationStore) activatePostgresDatabaseCatalog(ctx context.Context, claim *store.OperationClaim, expectedCurrent int64, next database.Catalog, actor string, metadata map[string]interface{}) (store.DatabaseCatalogRevision, error) {
+func (s *V3OperationStore) activatePostgresDatabaseCatalog(ctx context.Context, claim *store.OperationClaim, lock store.AppOperationLock, expectedCurrent int64, next database.Catalog, actor string, metadata map[string]interface{}) (store.DatabaseCatalogRevision, error) {
 	if s == nil || s.kv == nil || expectedCurrent < 0 || strings.TrimSpace(actor) == "" {
 		return store.DatabaseCatalogRevision{}, fmt.Errorf("database catalog activation requires store, actor, and expected revision")
 	}
@@ -265,7 +265,8 @@ func (s *V3OperationStore) activatePostgresDatabaseCatalog(ctx context.Context, 
 			clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
 			clientv3.Compare(clientv3.ModRevision(indexKey), "=", index.Kvs[0].ModRevision),
-			clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", accepted.revision))
+			clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", accepted.revision),
+			clientv3.Compare(clientv3.Value(s.appLockKey("database.catalog-activate:database-catalog")), "=", lock.Fence()))
 		ops = append(ops, clientv3.OpPut(s.opKey(claim.OperationID()), string(encodedOperation)),
 			clientv3.OpDelete(s.ownerKey(claim.OperationID())), clientv3.OpDelete(s.runningKey(claim.OperationID())))
 	}
