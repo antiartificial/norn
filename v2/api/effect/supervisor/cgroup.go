@@ -80,6 +80,46 @@ func (b *cgroupBackend) ObserveSnapshot(_ context.Context, execution BackendExec
 	return BackendState{Phase: status.Phase, ExitCode: status.ExitCode, Output: output, ContainmentProven: true, TimedOut: status.TimedOut, EvidenceReference: b.reference(execution)}, nil
 }
 
+// ObserveMigration reports a terminal command status only after all descendants
+// have exited. A signed command exit is not a database postcondition.
+func (b *cgroupBackend) ObserveMigration(_ context.Context, execution BackendExecution, descriptor MigrationDescriptor) (BackendState, error) {
+	unknown := BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: b.reference(execution)}
+	populated, err := cgroupPopulated(b.cgroupPath(execution.RuntimeInstanceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return unknown, nil
+	}
+	if err != nil {
+		return BackendState{}, err
+	}
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		return BackendState{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	key := runnerStatusKey(b.key, execution.RuntimeInstanceID)
+	status, err := readMigrationStatus(execution.StateDirectory, key, execution.RuntimeInstanceID, hex.EncodeToString(digest[:]))
+	if errors.Is(err, os.ErrNotExist) {
+		if populated {
+			return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
+		}
+		return unknown, nil
+	}
+	if err != nil {
+		return BackendState{}, err
+	}
+	if populated {
+		return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
+	}
+	if status.Phase == effect.SupervisorRunning {
+		if err := recoverMigrationPrivateMaterial(execution.StateDirectory, key, execution.RuntimeInstanceID, hex.EncodeToString(digest[:])); err != nil {
+			return BackendState{}, fmt.Errorf("recover dead migration private material: %w", err)
+		}
+		return unknown, nil
+	}
+	return BackendState{Phase: status.Phase, ExitCode: status.ExitCode, ContainmentProven: true,
+		TimedOut: status.TimedOut, EvidenceReference: b.reference(execution)}, nil
+}
+
 func (b *cgroupBackend) CopySnapshotArtifact(ctx context.Context, execution BackendExecution, descriptor SnapshotDescriptor, destination io.Writer) (SnapshotManifest, error) {
 	manifest, err := b.QuerySnapshot(ctx, execution, descriptor)
 	if err != nil {

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,39 @@ type fakeCgroup struct {
 	backend   *cgroupBackend
 	execution BackendExecution
 	cgroup    string
+}
+
+func TestMigrationObservationRequiresEmptyCgroupAndSignedStatus(t *testing.T) {
+	fake := newFakeCgroup(t)
+	descriptor := MigrationDescriptor{Protocol: MigrationProtocolV1, Stage: MigrationStage, MigrationIntent: testMigrationIntent()}
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	key := runnerStatusKey(fake.backend.key, fake.execution.RuntimeInstanceID)
+	exitCode := 0
+	if err := writeMigrationStatus(fake.execution.StateDirectory, key, migrationRunnerStatus{
+		Protocol: MigrationProtocolV1, RuntimeInstanceID: fake.execution.RuntimeInstanceID,
+		DescriptorSHA256: hex.EncodeToString(digest[:]), Phase: effect.SupervisorSucceeded,
+		ExitCode: &exitCode, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake.events(t, "populated 1\n")
+	state, err := fake.backend.ObserveMigration(context.Background(), fake.execution, descriptor)
+	if err != nil || state.Phase != effect.SupervisorRunning || state.ContainmentProven {
+		t.Fatalf("populated migration state=%+v err=%v", state, err)
+	}
+	fake.events(t, "populated 0\n")
+	state, err = fake.backend.ObserveMigration(context.Background(), fake.execution, descriptor)
+	if err != nil || state.Phase != effect.SupervisorSucceeded || !state.ContainmentProven || len(state.Output) != 0 {
+		t.Fatalf("contained migration state=%+v err=%v", state, err)
+	}
+	descriptor.TargetGeneration++
+	if _, err := fake.backend.ObserveMigration(context.Background(), fake.execution, descriptor); err == nil {
+		t.Fatal("migration status was accepted for a changed target")
+	}
 }
 
 func newFakeCgroup(t *testing.T) *fakeCgroup {

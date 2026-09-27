@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -191,6 +192,92 @@ func (b *cgroupBackend) StartSnapshot(ctx context.Context, execution BackendExec
 			return fmt.Errorf("snapshot runner startup is ambiguous: %w", ctx.Err())
 		case <-timeout.C:
 			return fmt.Errorf("snapshot runner startup handshake timed out")
+		case <-ticker.C:
+		}
+	}
+}
+
+// StartMigration sends all command and database material over the helper's
+// private pipe. Its durable descriptor and cgroup names contain no secrets.
+func (b *cgroupBackend) StartMigration(ctx context.Context, request migrationRunnerRequest) error {
+	execution := request.Execution
+	cgroupPath := b.cgroupPath(execution.RuntimeInstanceID)
+	if err := os.Mkdir(cgroupPath, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	commandCgroup := filepath.Join(cgroupPath, "command")
+	if err := os.Mkdir(commandCgroup, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	cgroup, err := os.Open(cgroupPath)
+	if err != nil {
+		return err
+	}
+	defer cgroup.Close()
+	request.Protocol = MigrationProtocolV1
+	request.StatusKey = hex.EncodeToString(runnerStatusKey(b.key, execution.RuntimeInstanceID))
+	request.CommandCgroup = commandCgroup
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	if len(encoded) > maxRunnerRequestBytes {
+		return fmt.Errorf("migration runner request exceeds private pipe limit")
+	}
+	logFile, err := os.OpenFile(filepath.Join(execution.StateDirectory, "migration-runner.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		_ = logFile.Close()
+		return err
+	}
+	command := exec.Command(b.runnerBinary)
+	command.Stdin, command.Stdout, command.Stderr = inputReader, logFile, logFile
+	command.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: int(cgroup.Fd())}
+	startErr := command.Start()
+	_ = inputReader.Close()
+	_ = logFile.Close()
+	if startErr != nil {
+		_ = inputWriter.Close()
+		return startErr
+	}
+	go func() { _ = command.Wait() }()
+	written := make(chan error, 1)
+	go func() {
+		_, e := inputWriter.Write(encoded)
+		if closeErr := inputWriter.Close(); e == nil {
+			e = closeErr
+		}
+		written <- e
+	}()
+	select {
+	case e := <-written:
+		if e != nil {
+			return fmt.Errorf("send migration runner request: %w", e)
+		}
+	case <-ctx.Done():
+		return fmt.Errorf("migration runner request handoff is ambiguous: %w", ctx.Err())
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	descriptorBytes, _ := json.Marshal(request.Descriptor)
+	descriptorSHA := sha256.Sum256(descriptorBytes)
+	for {
+		if _, e := readMigrationStatus(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID, hex.EncodeToString(descriptorSHA[:])); e == nil {
+			return nil
+		} else if !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("migration runner startup is ambiguous: %w", ctx.Err())
+		case <-timeout.C:
+			return fmt.Errorf("migration runner startup handshake timed out")
 		case <-ticker.C:
 		}
 	}

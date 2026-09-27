@@ -20,3 +20,7 @@ func (b *cgroupBackend) Start(context.Context, BackendExecution, effect.LaunchMa
 func (b *cgroupBackend) StartSnapshot(context.Context, BackendExecution, SnapshotDescriptor, SnapshotLaunchMaterial) error {
 	return fmt.Errorf("cgroup-v2 snapshot containment is supported only on Linux")
 }
+
+func (b *cgroupBackend) StartMigration(context.Context, migrationRunnerRequest) error {
+	return fmt.Errorf("cgroup-v2 migration containment is supported only on Linux")
+}
