@@ -21,6 +21,7 @@ import (
 	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/internal/pgtest"
 	"norn/v2/api/model"
+	"norn/v2/api/saga"
 )
 
 const namedCanary = "NORN_NAMED_CANARY_c41"
@@ -229,6 +230,78 @@ func orderStateOn(t *testing.T, server *pgtest.Server) string {
 func setOrderState(t *testing.T, server *pgtest.Server, state string) {
 	t.Helper()
 	server.Exec(t, "shop", fmt.Sprintf(`UPDATE orders SET state='%s'`, state))
+}
+
+func TestMigrationReplaySnapshotStageRequiresOriginalTargetSnapshot(t *testing.T) {
+	f := newNamedFixture(t)
+	ctx := context.Background()
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{"database": "primary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := f.db.ClaimNextOperation(ctx, "snapshot-replay-test", time.Minute, []string{"app.snapshot"})
+	if err != nil || claimed == nil || claimed.ID != op.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+	bound, err := f.p.openDatabaseTargets(ctx, claimed.Payload, f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	target := bound.named["primary"]
+	if target == nil {
+		t.Fatal("accepted primary target is missing")
+	}
+	st := &state{spec: f.spec, commitSHA: "abc1234", claim: claim, operationStartedAt: claimed.StartedAt}
+	log := saga.New(discardSagaStore{}, f.app, "test", "snapshot")
+	if err := f.p.snapshotTarget(ctx, st, log, "shop", target, "abc1234"); err != nil {
+		t.Fatal(err)
+	}
+	location, err := f.p.prepareSnapshotLocation("shop", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := directoryNames(t, location.dir)
+	if len(before) != 2 {
+		t.Fatalf("original snapshot files = %v", before)
+	}
+	var originalDump string
+	var originalDigest [sha256.Size]byte
+	for _, name := range before {
+		if !strings.HasSuffix(name, ".dump") {
+			continue
+		}
+		originalDump = name
+		data, err := os.ReadFile(filepath.Join(location.dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		originalDigest = sha256.Sum256(data)
+	}
+	if originalDump == "" {
+		t.Fatalf("no original dump in %v", before)
+	}
+	setOrderState(t, f.primary, "after-migration")
+	st.replayMigration = true
+	if err := f.p.snapshotTarget(ctx, st, log, "shop", target, "abc1234"); err != nil {
+		t.Fatalf("replay original snapshot: %v", err)
+	}
+	if after := directoryNames(t, location.dir); strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Fatalf("replay created a post-migration snapshot: before=%v after=%v", before, after)
+	}
+	reusedBytes, err := os.ReadFile(filepath.Join(location.dir, originalDump))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha256.Sum256(reusedBytes) != originalDigest {
+		t.Fatal("replay replaced the original pre-migration dump bytes")
+	}
+	if err := os.Remove(filepath.Join(location.dir, originalDump)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.p.snapshotTarget(ctx, st, log, "shop", target, "abc1234"); err == nil || !strings.Contains(err.Error(), "original pre-migration snapshot is unavailable") {
+		t.Fatalf("replay without original dump = %v", err)
+	}
 }
 
 func TestNamedDatabasesSnapshotRestoreInventoryExportAndHealthAreTargetBound(t *testing.T) {
