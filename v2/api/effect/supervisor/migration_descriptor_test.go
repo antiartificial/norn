@@ -49,7 +49,8 @@ func TestMigrationDescriptorIsSecretFreeAndBoundToAcceptedIntent(t *testing.T) {
 	if _, err := manager.verifyMigrationDescriptor(tampered); err == nil {
 		t.Fatal("changed migration command reused an immutable descriptor")
 	}
-	// A descriptor alone must not accidentally activate the build.test runner.
+	// Preparation records only the secret-free reservation. It must not
+	// accidentally activate the build.test runner.
 	reservation := effect.Reservation{Authority: "authority", Resource: "app/demo/migrate",
 		OperationClaim: effect.OperationClaim{OperationID: "operation", OwnerID: "worker", Generation: 1},
 		Stage:          MigrationStage, Supervisor: "norn-effect-runner", SupervisorExecutionID: "migration-1", LaunchPayload: payload}
@@ -57,8 +58,14 @@ func TestMigrationDescriptorIsSecretFreeAndBoundToAcceptedIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Prepare(context.Background(), reservation); err == nil {
-		t.Fatal("migration descriptor was admitted by the generic command runner")
+	if err := manager.Prepare(context.Background(), reservation); err != nil {
+		t.Fatalf("prepare immutable migration reservation: %v", err)
+	}
+	if _, err := manager.Launch(context.Background(), reservation, effect.LaunchMaterial{}); err == nil {
+		t.Fatal("migration descriptor was launched by the generic command runner")
+	}
+	if got := manager.backend.(*backendFake).starts; got != 0 {
+		t.Fatalf("generic backend started %d migrations", got)
 	}
 }
 

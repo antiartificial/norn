@@ -210,6 +210,13 @@ func (m *Manager) verifyAnyDescriptor(payload json.RawMessage) (Descriptor, erro
 		}
 		return Descriptor{Protocol: s.Protocol, SupervisorRootID: s.SupervisorRootID, Stage: s.Stage, MaterialMAC: s.MaterialMAC}, nil
 	}
+	if header.Protocol == MigrationProtocolV1 && header.Stage == MigrationStage {
+		d, err := m.verifyMigrationDescriptor(payload)
+		if err != nil {
+			return Descriptor{}, err
+		}
+		return Descriptor{Protocol: d.Protocol, SupervisorRootID: d.SupervisorRootID, Stage: d.Stage, MaterialMAC: d.IntentMAC}, nil
+	}
 	return m.verifyDescriptor(payload, nil)
 }
 
