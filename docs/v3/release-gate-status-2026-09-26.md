@@ -78,6 +78,30 @@ tested. The publisher must still be dispatched from protected `master` for an
 exact commit already merged there; the draft PR head cannot be the signed
 production candidate.
 
+## Protected-master integration candidate — 2026-09-27
+
+Draft [PR #77](https://github.com/antiartificial/norn/pull/77) now targets
+protected `master` at exact head
+`300e3a3d817f8642f25b4636921c1ccb703b38ba`. It integrates the V3
+source with the current master-only release and Fleet behavior. The combined
+candidate passed all reported PR checks in the [legacy master run
+36303333777](https://github.com/antiartificial/norn/actions/runs/36303333777)
+and [V3 run
+36303333772](https://github.com/antiartificial/norn/actions/runs/36303333772),
+including API/CLI, web, OpenAPI, Fleet pilot, workflow lint, production etcd
+TLS/RBAC, Mini synthetic schema, and release-bundle rehearsal. A full API
+suite also passed locally against disposable etcd at this head. These are
+integration checks; the PR remains draft and no protected-master merge,
+signed publication, live Mini upgrade, or Fleet launch occurred. Signed
+milestone gates remain **0/10**.
+
+The CI repair exposed a real source integration defect: the normal etcd Fleet
+runtime omitted the configured GitHub App environment. The candidate now
+passes that binding through and proves its process path. The Apple connector
+validates unsupported specifications before checking the host OS, allowing
+the same contract tests to run on Linux while still refusing a valid Apple
+workload off macOS.
+
 ## Shortest release path from here
 
 1. Decide Mini's control-store RPO and off-host retention, then qualify its
