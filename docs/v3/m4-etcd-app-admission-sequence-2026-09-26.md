@@ -142,6 +142,24 @@ active pre-index work must first drain or reconcile it.
    configuration and endpoint behavior before writing nonzero `ActiveWeight`.
    Normal dispatch remains disabled.
    Canary jobs still require their separate promotion proof.
+
+   A source audit on 2026-09-27 checked the exact Fleet PR #176 head
+   `6267655052b209b22dc8b3421cb9339f797af9bc`: Traefik runs on each
+   ingress node with the Consul Catalog provider, and the DigitalOcean load
+   balancer forwards to those ingress nodes. The checked Fleet templates have
+   no renderer, API route, or controller consuming `norn.traffic-weight` as a
+   Traefik weighted service. The load balancer's target pool is ingress nodes,
+   not app deployment revisions. Thus Nomad health, Consul tags, and the
+   load-balancer health check cannot establish an effective app traffic
+   percentage. The next implementation slice must name one traffic authority,
+   apply the accepted deployment's desired weight there with a durable
+   revision, read back the resulting route on **each** ingress node, and
+   probe the intended app endpoint through those nodes and the public ingress.
+   Record the observed revision and endpoint identity with the region result
+   before setting positive `ActiveWeight`; partial propagation stays pending.
+   Multi-region or canary percentages also need explicit weighted routing
+   semantics and rollback evidence rather than interpreting service tags as
+   routing policy.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
