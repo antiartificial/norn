@@ -16,7 +16,13 @@ Never set `WRITE_ENABLED=true` on source and target at the same time.
 CI builds the Dockerfile to catch packaging failures; that build is not a
 signed or published release image.
 Run the explicit `migrate` command before the rehearsal; `serve` never runs
-schema changes on startup. Do not run migrations as part of a fenced source.
+schema changes on startup. Norn's InfraSpec migration command runs on the
+control host, so the fixture omits that field and needs a reviewed one-off
+`/mobility-fixture migrate` invocation inside its image against the selected
+application database before web activation. Do not run migrations as part of
+a fenced source. The three regular processes select their mode through
+`MOBILITY_MODE` and use the image entrypoint directly; a nonempty InfraSpec
+`command` would invoke `/bin/sh`, which the distroless image does not contain.
 
 For a rehearsal, post known bodies to `/items`, run the worker and tick,
 and record `/state`, database backups, file inventory, and request results.

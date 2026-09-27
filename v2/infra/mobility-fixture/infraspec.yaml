@@ -18,22 +18,24 @@ databases:
     runtime:
       env: DATABASE_URL
       fileEnv: DATABASE_URL_FILE
-migrations: /mobility-fixture migrate
 volumes:
   - name: mobility-files
     mount: /data
 processes:
   web:
     port: 8080
-    command: /mobility-fixture serve
+    env:
+      MOBILITY_MODE: serve
     health:
       path: /health
     scaling:
       min: 1
       max: 1
   worker:
-    command: /mobility-fixture worker
+    env:
+      MOBILITY_MODE: worker
     schedule: "* * * * *"
   tick:
-    command: /mobility-fixture tick
+    env:
+      MOBILITY_MODE: tick
     schedule: "* * * * *"

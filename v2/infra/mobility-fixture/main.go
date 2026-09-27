@@ -27,11 +27,12 @@ type fixture struct {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		log.Fatal("usage: mobility-fixture serve|worker|tick|migrate")
+	mode, err := commandMode(os.Args, os.Getenv("MOBILITY_MODE"))
+	if err != nil {
+		log.Fatal(err)
 	}
-	if os.Getenv("DATABASE_URL") == "" || os.Getenv("DATA_DIR") == "" {
-		log.Fatal("DATABASE_URL and DATA_DIR are required")
+	if os.Getenv("DATABASE_URL") == "" || (mode == "serve" && os.Getenv("DATA_DIR") == "") {
+		log.Fatal("DATABASE_URL is required; serve also requires DATA_DIR")
 	}
 	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
 	if err != nil {
@@ -45,7 +46,7 @@ func main() {
 		log.Fatal(err)
 	}
 	f := fixture{db: db, files: os.Getenv("DATA_DIR"), writable: os.Getenv("WRITE_ENABLED") == "true"}
-	switch os.Args[1] {
+	switch mode {
 	case "migrate":
 		err = f.migrate(ctx)
 	case "serve":
@@ -55,11 +56,24 @@ func main() {
 		err = f.ackOne(ctx)
 	case "tick":
 		err = f.tick(ctx, time.Now().UTC())
-	default:
-		log.Fatal("unknown mode")
 	}
 	if err != nil {
 		log.Fatal(err)
+	}
+}
+
+func commandMode(args []string, configured string) (string, error) {
+	mode := configured
+	if len(args) == 2 {
+		mode = args[1]
+	} else if len(args) != 1 {
+		return "", errors.New("usage: mobility-fixture serve|worker|tick|migrate")
+	}
+	switch mode {
+	case "serve", "worker", "tick", "migrate":
+		return mode, nil
+	default:
+		return "", errors.New("MOBILITY_MODE must be serve, worker, tick, or migrate")
 	}
 }
 

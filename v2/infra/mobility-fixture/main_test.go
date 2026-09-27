@@ -13,6 +13,22 @@ import (
 	"time"
 )
 
+func TestCommandModeUsesProcessEnvironmentWithoutShell(t *testing.T) {
+	for _, mode := range []string{"serve", "worker", "tick"} {
+		got, err := commandMode([]string{"/mobility-fixture"}, mode)
+		if err != nil || got != mode {
+			t.Fatalf("environment mode %q = %q, %v", mode, got, err)
+		}
+	}
+	got, err := commandMode([]string{"/mobility-fixture", "migrate"}, "serve")
+	if err != nil || got != "migrate" {
+		t.Fatalf("explicit migration mode = %q, %v", got, err)
+	}
+	if _, err := commandMode([]string{"/mobility-fixture"}, ""); err == nil {
+		t.Fatal("missing process mode was accepted")
+	}
+}
+
 func TestMobilityFixtureReconcilesRowsFilesWorkAndSchedule(t *testing.T) {
 	dsn := os.Getenv("MOBILITY_TEST_DATABASE_URL")
 	if dsn == "" {
