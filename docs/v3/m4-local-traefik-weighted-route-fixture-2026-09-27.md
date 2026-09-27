@@ -58,6 +58,16 @@ observation: exact
 file-generation readback and public-host 404 probes are still separate
 requirements, and no Fleet node was observed through this function.
 
+`ProbeRenderedRouteNodes` now sends the intended public-host request through
+each explicitly named ingress IP:port. It keeps the Host header and TLS server
+name, verifies normal TLS trust and hostname rules, disables redirects and
+proxies, bounds time and response size, and compares a caller-supplied exact
+response digest. Two-node local HTTP fixtures reject a stale second response
+and duplicate node addresses; a TLS fixture rejects a certificate for the
+wrong public hostname. It does not enumerate Fleet nodes or prove the public
+load-balancer path, backend traffic percentage, or app-specific probe
+identity. Those checks remain required before positive `ActiveWeight`.
+
 `ingress.PublishRenderedRoute` writes one canonical weighted route into a
 trusted file-provider directory under a cross-process lock. It fsyncs a
 private temporary file, atomically renames it, and syncs the directory.
