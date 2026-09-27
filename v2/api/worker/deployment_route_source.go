@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 
 	"norn/v2/api/model"
 )
@@ -12,16 +13,19 @@ import (
 // claimed deployment. It is only a source identity; route intent and traffic
 // proof still need durable publication and readback.
 type VerifiedFleetRouteSource struct {
-	App              string
-	OperationID      string
-	DeploymentID     string
-	AcceptanceID     string
-	AcceptanceDigest string
-	Region           string
-	Endpoint         string
-	Process          string
-	Port             int
-	SpecDigest       string
+	App                string
+	ControlEnvironment string
+	OperationID        string
+	DeploymentID       string
+	AcceptanceID       string
+	AcceptanceDigest   string
+	Region             string
+	NomadRegion        string
+	DesiredWeight      int
+	Endpoint           string
+	Process            string
+	Port               int
+	SpecDigest         string
 }
 
 // VerifyClaimedFleetRouteSource never accepts a caller-selected endpoint or
@@ -32,7 +36,7 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 		return VerifiedFleetRouteSource{}, err
 	}
 	accepted := verified.Accepted
-	if accepted.Deployment.ID == "" || accepted.Intent.ID == "" || accepted.Intent.CanonicalDigest == "" ||
+	if accepted.Deployment.ID == "" || accepted.Deployment.Environment == "" || accepted.Intent.ID == "" || accepted.Intent.CanonicalDigest == "" ||
 		accepted.Intent.OperationID != claimed.ID || accepted.Intent.DeploymentID != accepted.Deployment.ID ||
 		accepted.Operation.Payload["deploymentId"] != accepted.Deployment.ID {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route source lacks a matching signed deployment intent")
@@ -40,15 +44,29 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 	if region == "" {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route region is missing")
 	}
-	regionAccepted := false
-	for _, acceptedRegion := range verified.Accepted.Regions {
-		if acceptedRegion.Name == region {
-			regionAccepted = true
+	var sourceRegion *model.ResolvedRegion
+	for _, candidate := range spec.ResolvedRegions() {
+		if candidate.Name == region {
+			copy := candidate
+			sourceRegion = &copy
 			break
 		}
 	}
-	if !regionAccepted {
-		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route region is not in signed placement")
+	if sourceRegion == nil {
+		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route region is absent from pinned InfraSpec")
+	}
+	var acceptedRegion *model.ResolvedRegion
+	for _, candidate := range verified.Accepted.Regions {
+		if candidate.Name == region {
+			if acceptedRegion != nil {
+				return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route region is repeated in signed placement")
+			}
+			copy := candidate
+			acceptedRegion = &copy
+		}
+	}
+	if acceptedRegion == nil || acceptedRegion.NomadRegion != sourceRegion.NomadRegion || acceptedRegion.TrafficWeight != sourceRegion.TrafficWeight || !slices.Equal(acceptedRegion.Datacenters, sourceRegion.Datacenters) {
+		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route region differs from signed placement")
 	}
 	var selected *model.Endpoint
 	for i := range spec.Endpoints {
@@ -72,7 +90,8 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || u.RawPath != "" {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route endpoint must be an HTTPS origin")
 	}
-	return VerifiedFleetRouteSource{App: spec.App, OperationID: claimed.ID, DeploymentID: accepted.Deployment.ID,
+	return VerifiedFleetRouteSource{App: spec.App, ControlEnvironment: accepted.Deployment.Environment, OperationID: claimed.ID, DeploymentID: accepted.Deployment.ID,
 		AcceptanceID: accepted.Intent.ID, AcceptanceDigest: accepted.Intent.CanonicalDigest,
-		Region: region, Endpoint: selected.URL, Process: selected.Process, Port: process.Port, SpecDigest: accepted.Deployment.SpecDigest}, nil
+		Region: region, NomadRegion: acceptedRegion.NomadRegion, DesiredWeight: acceptedRegion.TrafficWeight,
+		Endpoint: selected.URL, Process: selected.Process, Port: process.Port, SpecDigest: accepted.Deployment.SpecDigest}, nil
 }
