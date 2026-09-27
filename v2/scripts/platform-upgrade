@@ -949,10 +949,13 @@ build_release_into() {
     require_cmd "$node_bin"
     node_version="$("$node_bin" --version)"
     [[ "$node_version" == "$expected_node" ]] || fail "Node.js $expected_node is required for release builds (got $node_version)"
+    local resolved_node node_path
+    resolved_node="$(command -v "$node_bin")"
+    node_path="$(dirname "$resolved_node"):$PATH"
     pnpm_bin="$(command -v pnpm)"
-    pnpm_version="$("$node_bin" "$pnpm_bin" --version)"
+    pnpm_version="$(PATH="$node_path" "$pnpm_bin" --version)"
     [[ "$pnpm_version" == "$expected_pnpm" ]] || fail "pnpm $expected_pnpm is required for release builds (got $pnpm_version)"
-    (cd "$worktree/v2/ui" && SOURCE_DATE_EPOCH="$source_date_epoch" "$node_bin" "$pnpm_bin" install --frozen-lockfile && SOURCE_DATE_EPOCH="$source_date_epoch" "$node_bin" "$pnpm_bin" build)
+    (cd "$worktree/v2/ui" && PATH="$node_path" SOURCE_DATE_EPOCH="$source_date_epoch" "$pnpm_bin" install --frozen-lockfile && PATH="$node_path" SOURCE_DATE_EPOCH="$source_date_epoch" "$pnpm_bin" build)
     cp -R "$worktree/v2/ui/dist/." "$target/ui/"
   fi
 

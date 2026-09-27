@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import shutil
 import socket
 import stat
@@ -179,6 +180,24 @@ func main() {
         )
         environment.update(extra_environment or {})
         return environment
+
+    def test_shell_pnpm_launcher_uses_pinned_node(self) -> None:
+        actual_pnpm = shutil.which("pnpm")
+        self.assertIsNotNone(actual_pnpm)
+        fake_bin = self.root / "shell-pnpm"
+        fake_bin.mkdir()
+        shim = fake_bin / "pnpm"
+        shim.write_text(
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(actual_pnpm)} \"$@\"\n",
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+        result = self.platform(
+            "preflight", "HEAD",
+            extra_environment={"PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+        )
+        self.assertIn("preflight complete", result.stdout)
 
     def test_atomic_immutable_reuse_and_verified_rebuild(self) -> None:
         self.platform("preflight", "HEAD")
