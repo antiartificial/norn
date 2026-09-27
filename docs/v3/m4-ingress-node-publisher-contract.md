@@ -144,6 +144,9 @@ pointer and bind the accepted deployment to its cluster/environment. The
 intent transaction must compare that pointer and its current checkpoint. The
 app's prior route pointer must likewise be loaded from durable state, not
 supplied by the request.
+The proposed [Fleet app route authority ADR](adrs/0008-fleet-app-route-authority.md)
+specifies the control-owned app target binding and prior-route pointer for
+the first v3 Fleet. It remains a proposal until review and implementation.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

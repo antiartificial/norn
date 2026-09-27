@@ -11,6 +11,7 @@ This is a reconciliation of the v3 planning ADRs and the accepted auth-aggregate
 | [0005: Upgrade compatibility](adrs/0005-upgrade-compatibility.md) | Proposed; passive candidate/schema foundations implemented | Accept rollback window, old-data compatibility and exact Mini/Fleet rehearsal evidence. |
 | [0006: Migration authority](adrs/0006-migration-authority.md) | Proposed; no migration authority granted | Accept source/provenance, dry-run, cutover and rollback boundaries after migration rehearsal. |
 | [0007: Auth aggregate and revocation](adrs/0007-auth-aggregate-and-revocation.md) | Accepted on durable branch; reconciled here | Qualify cross-process crash/partition and execution-boundary fencing; acceptance of invariant is not runtime sign-off. |
+| [0008: Fleet app route authority](adrs/0008-fleet-app-route-authority.md) | Proposed; active Fleet inventory and readback primitives exist | Review the control-owned app target, prior-route pointer and terminal proof contract before enabling etcd app deployment. |
 
 ADR owners and numeric acceptance budgets still need explicit review. This register prevents a code checkpoint from silently changing a proposed decision to accepted or claiming release readiness.
 
