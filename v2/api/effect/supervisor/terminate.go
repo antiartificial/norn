@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -95,6 +96,20 @@ func (t *cgroupTerminator) terminate() error {
 }
 
 func (t *cgroupTerminator) close() error { return t.directory.Close() }
+
+func (t *cgroupTerminator) hasDirectProcesses() (bool, error) {
+	fd, err := unix.Openat(int(t.directory.Fd()), "cgroup.procs", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, fmt.Errorf("open cgroup.procs: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), "cgroup.procs")
+	data, readErr := io.ReadAll(io.LimitReader(file, maxCgroupEventsBytes+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(data) > maxCgroupEventsBytes {
+		return false, fmt.Errorf("read cgroup.procs")
+	}
+	return len(strings.TrimSpace(string(data))) > 0, nil
+}
 
 func (t *migrationCgroupTerminator) awaitEmpty(deadline time.Time) error {
 	ticker := time.NewTicker(20 * time.Millisecond)

@@ -45,6 +45,16 @@ background `sleep` that required timeout termination in a disposable privileged
 Alpine container on 2026-09-27. The general API suite and protected Mini/Fleet
 runtime qualification remain separate gates.
 
+Observation now also checks the helper's direct cgroup membership when a
+signed migration status remains running and the execution cgroup is populated.
+If the helper is gone, it kills the dedicated command child cgroup. The later
+empty-cgroup observation scrubs private connection material and stays unknown
+for manual review; it never converts the interrupted command into success or
+repeat-safe failure. A second opt-in real Linux cgroup test killed the helper
+while its command was sleeping and proved that orphan containment and private
+material cleanup completed. A protected-runtime crash and database-write
+reconciliation rehearsal is still required for M1 qualification.
+
 ## Current behavior and risk
 
 Migrations without a reviewed postcondition still execute with host `sh -c`

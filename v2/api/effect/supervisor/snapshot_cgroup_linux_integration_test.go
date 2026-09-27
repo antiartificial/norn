@@ -11,7 +11,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -139,6 +141,106 @@ func TestLinuxCgroupMigrationDescendantTimeout(t *testing.T) {
 			}
 			assertCgroupEmpty(t, path)
 		})
+	}
+}
+
+// The helper owns the timeout guard. Killing only that helper must not leave
+// its command able to write forever, or turn an unknown result into success.
+func TestLinuxCgroupMigrationHelperDeath(t *testing.T) {
+	if os.Getenv("NORN_REAL_CGROUP_TEST") != "1" {
+		t.Skip("set NORN_REAL_CGROUP_TEST=1 in the privileged Linux container harness")
+	}
+	runner := requireExecutable(t, "NORN_EFFECT_RUNNER_BINARY")
+	root := filepath.Join("/sys/fs/cgroup", "norn-migration-helper-death")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(root, "cgroup.kill"), []byte("1\n"), 0o200)
+		_ = os.Remove(root)
+	})
+	key := bytes.Repeat([]byte("migration-helper-death-key-"), 2)
+	backend, err := NewCgroupBackend(root, runner, fileSHA256(t, runner), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(t.TempDir(), key, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "started")
+	command := "printf begun > " + shellQuote(marker) + "; sleep 30"
+	commandSHA := sha256.Sum256([]byte(command))
+	intent := testMigrationIntent()
+	intent.CommandSHA256 = hex.EncodeToString(commandSHA[:])
+	intent.TimeoutMillis = 30_000
+	payload, err := manager.BuildMigrationDescriptor(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: "linux-integration", Resource: "app/integration/migrate",
+		OperationClaim: effect.OperationClaim{OperationID: "helper-death", OwnerID: "test", Generation: 1},
+		Stage:          MigrationStage, Supervisor: "norn-effect-runner", SupervisorExecutionID: "migration-helper-death", LaunchPayload: payload}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := manager.LaunchMigration(context.Background(), reservation, MigrationLaunchMaterial{Command: command,
+		Directory: t.TempDir(), Environment: []string{"PATH=/usr/bin:/bin", "PGPASSFILE={{private-file:passfile}}"},
+		PrivateFiles: []MigrationPrivateFile{{Name: "passfile", Contents: []byte("test-only-private")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cgroup := backend.(*cgroupBackend).cgroupPath(identity.RuntimeInstanceID)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("migration command did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	active, err := manager.ObserveMigration(context.Background(), reservation, identity)
+	if err != nil || active.Phase != effect.SupervisorRunning {
+		t.Fatalf("live helper observation=%+v err=%v", active, err)
+	}
+	if populated, err := cgroupPopulated(filepath.Join(cgroup, "command")); err != nil || !populated {
+		t.Fatalf("live helper command containment=%v err=%v", populated, err)
+	}
+	procs, err := os.ReadFile(filepath.Join(cgroup, "cgroup.procs"))
+	if err != nil || len(strings.Fields(string(procs))) != 1 {
+		t.Fatalf("helper cgroup processes=%q err=%v", procs, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(procs)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		observation, err := manager.ObserveMigration(context.Background(), reservation, identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if observation.Phase == effect.SupervisorUnknown {
+			break
+		}
+		if observation.Phase != effect.SupervisorRunning || time.Now().After(deadline) {
+			t.Fatalf("orphan migration observation=%+v", observation)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assertCgroupEmpty(t, cgroup)
+	privateDirs, err := filepath.Glob(filepath.Join(manager.root, sha256DirectoryName(reservation.SupervisorExecutionID), ".migration-*"))
+	if err != nil || len(privateDirs) != 0 {
+		t.Fatalf("orphan migration private files remain: %v, %v", privateDirs, err)
 	}
 }
 

@@ -80,6 +80,35 @@ func (b *cgroupBackend) ObserveSnapshot(_ context.Context, execution BackendExec
 	return BackendState{Phase: status.Phase, ExitCode: status.ExitCode, Output: output, ContainmentProven: true, TimedOut: status.TimedOut, EvidenceReference: b.reference(execution)}, nil
 }
 
+// containOrphanMigration ends a command only when the signed status is still
+// running and the parent execution cgroup contains no helper process. The
+// child command cgroup may otherwise keep writing after the helper and its
+// timeout guard have died. A killed command has no authenticated terminal
+// result, so later observation remains unknown and requires manual review.
+func (b *cgroupBackend) containOrphanMigration(execution BackendExecution) error {
+	parent, err := openCgroupTerminator(b.cgroupPath(execution.RuntimeInstanceID))
+	if err != nil {
+		return fmt.Errorf("open migration helper cgroup: %w", err)
+	}
+	defer parent.close()
+	hasHelper, err := parent.hasDirectProcesses()
+	if err != nil {
+		return fmt.Errorf("check migration helper cgroup: %w", err)
+	}
+	if hasHelper {
+		return nil
+	}
+	command, err := openCgroupTerminator(filepath.Join(b.cgroupPath(execution.RuntimeInstanceID), "command"))
+	if err != nil {
+		return fmt.Errorf("open orphan migration command cgroup: %w", err)
+	}
+	defer command.close()
+	if err := command.terminate(); err != nil {
+		return fmt.Errorf("kill orphan migration command cgroup: %w", err)
+	}
+	return nil
+}
+
 // ObserveMigration reports a terminal command status only after all descendants
 // have exited. A signed command exit is not a database postcondition.
 func (b *cgroupBackend) ObserveMigration(_ context.Context, execution BackendExecution, descriptor MigrationDescriptor) (BackendState, error) {
@@ -108,6 +137,11 @@ func (b *cgroupBackend) ObserveMigration(_ context.Context, execution BackendExe
 		return BackendState{}, err
 	}
 	if populated {
+		if status.Phase == effect.SupervisorRunning {
+			if err := b.containOrphanMigration(execution); err != nil {
+				return BackendState{}, err
+			}
+		}
 		return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
 	}
 	if status.Phase == effect.SupervisorRunning {
