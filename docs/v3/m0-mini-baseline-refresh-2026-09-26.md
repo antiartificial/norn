@@ -23,12 +23,9 @@ dirty checkouts. Three have no current Nomad base job; `its-alive-api` has a
 dead job with no current allocation. Their intended ownership and fixture
 disposition still require review.
 
-The later [Trove and bookmark workload check](m0-mini-trove-bookmark-workload-check-2026-09-26.md)
-confirmed a completed Like Trove daily-capture child and a successful
-bookmark-session read. It keeps the running `like-trove` workload separate
-from the absent `ft-trove` declaration. Subsequent point-in-time console
-checks in that record measured X API credit; they do not establish a future
-balance or a release backup guarantee.
+The workload inventory keeps the running `like-trove` service separate from
+the absent `ft-trove` declaration. Application-specific external account
+checks are outside this V3 release assessment.
 
 ## M0 exit work still required
 

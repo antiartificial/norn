@@ -137,6 +137,26 @@ As of 2026-09-27, **0 of 10 M0–M9 gates are signed (0%)**. This is the release
 gate completion ratio, not an estimate of code completed. The integration is
 under review in draft PR #77; passing local tests and CI do not sign a gate.
 
+For planning, the estimated implementation progress on 2026-09-27 is below.
+These are judgment estimates rounded to 5%, based on the breadth of working
+implementation and evidence relative to each exit. They are not release
+sign-offs, schedule forecasts, or a substitute for the gate evidence below.
+The simple, equally weighted mean is about **32%**; later Fleet and adoption
+milestones may require disproportionate time.
+
+| Milestone | Estimated work complete | Main remaining boundary |
+| --- | ---: | --- |
+| M0 | 60% | Off-host recovery target and protected restore |
+| M1 | 65% | Protected runtime and remaining effect recovery proof |
+| M2 | 55% | Real-provider retention and separate-node restore |
+| M3 | 50% | Protected multi-host bootstrap, faults and soak |
+| M4 | 35% | Normal app execution, ingress authority and loaded Fleet proof |
+| M5 | 25% | Representative Mini upgrade and rollback |
+| M6 | 10% | Rolling upgrade and app database cutover rehearsals |
+| M7 | 5% | Complete app mobility and traffic rollback rehearsal |
+| M8 | 10% | Signed candidate and release qualification |
+| M9 | 0% | Controlled adoption after qualification |
+
 | Gate | Current disposition | Evidence and next qualification boundary |
 | --- | --- | --- |
 | M0 | Open | Mini baseline and private restore rehearsals exist; off-host backup RPO, destination, retention and owner decisions remain unresolved. |

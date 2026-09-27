@@ -41,9 +41,6 @@ are substantial but cannot sign a broader gate.
   Nomad 2.0.7 rehearsal. Terminal writes now refuse unresolved app effects.
   The test constructs the region's active weight; actual ingress activation,
   normal worker dispatch, and the ordinary etcd Fleet route remain open.
-  The [Mini Trove/bookmark refresh](m0-mini-trove-bookmark-workload-check-2026-09-26.md)
-  separately records a completed PM sync and daily capture, a successful
-  bookmark-session read, and $10.00 remaining X API credit at its check time.
 - Draft Fleet [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
   `6267655052b209b22dc8b3421cb9339f797af9bc`; the hosted `contract`
   job failed before runner assignment because of the GitHub account
@@ -67,10 +64,10 @@ checks do not replace that check or protected separate-host Fleet evidence.
 An exact-head rerun on 2026-09-27 (run `36285145209`, attempt 3) again
 terminated before runner assignment with zero steps. Its fresh GitHub check
 annotation cites failed account payments or an Actions spending limit. The
-Norn repository is public, while Fleet and Like Trove are private; Norn's
-passing hosted runs therefore do not establish runner availability for those
-two companion repositories. The account owner must clear the private-repo
-Actions billing condition, then rerun the exact Fleet and Like Trove heads.
+Norn repository is public while Fleet is private; Norn's passing hosted runs
+therefore do not establish runner availability for Fleet. The account owner
+must clear the private-repo Actions billing condition, then rerun the exact
+Fleet head.
 
 ## Protected-master integration audit — 2026-09-27 04:49 UTC
 
@@ -189,7 +186,7 @@ passed the protected-master legacy contexts. The Fleet draft PR #177
 `contract` job at `9919af7e4e3c9fa705ed86bb313af47f4276f7b9` has no
 steps: [run 36336261798](https://github.com/antiartificial/norn-fleet/actions/runs/36336261798)
 was rejected before starting because of GitHub account payments or spending
-limit, according to its check annotation. This is independent of X API credit.
+limit, according to its check annotation.
 No protected merge, production signing, Mini upgrade, or Fleet launch has
 occurred. These are candidate CI observations, not M0–M9 sign-off.
 
