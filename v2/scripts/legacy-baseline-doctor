@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -197,6 +198,34 @@ def check_listener(args):
     return "direct loopback listener is solely owned by legacy launchd PID"
 
 
+def check_runtime_process_freshness(args):
+    state = command("launchctl", "print", f"gui/{os.geteuid()}/{args.launch_label}").decode(errors="replace")
+    match = re.search(r"^\s*pid = ([1-9][0-9]+)\s*$", state, re.MULTILINE)
+    if not match:
+        raise CheckFailure("legacy launchd service has no running PID")
+    locale_env = {**os.environ, "LC_ALL": "C"}
+    started = command("ps", "-p", match.group(1), "-o", "lstart=", env=locale_env).decode(errors="replace").strip()
+    try:
+        process_start = time.mktime(time.strptime(started, "%a %b %d %H:%M:%S %Y"))
+        latest_file_change = max(args.launcher.stat().st_ctime, args.sops_env.stat().st_ctime)
+    except (OSError, ValueError) as exc:
+        raise CheckFailure("runtime process or launch input change time is unavailable") from exc
+    if process_start <= latest_file_change:
+        raise CheckFailure("API process predates launcher or SOPS binding change; restart and recheck")
+    mappings = command("lsof", "-nP", "-a", "-p", match.group(1), "-d", "txt", "-F", "in").decode(errors="replace")
+    expected_path = str(args.legacy_api.resolve())
+    expected_inode = str(args.legacy_api.stat().st_ino)
+    inode = ""
+    for line in mappings.splitlines():
+        if line.startswith("i"):
+            inode = line[1:]
+        elif line.startswith("n"):
+            if line[1:] == expected_path and inode == expected_inode:
+                return "API process started after launcher and SOPS binding changes and maps installed executable"
+            inode = ""
+    raise CheckFailure("API process does not map the installed legacy executable inode")
+
+
 def check_drain(args):
     direct_port(args.api_base)
     if os.environ.get("NORN_DRAIN_MODE") != "fail" or os.environ.get("NORN_PLATFORM_UPGRADE_MODE", "restart") != "restart":
@@ -254,6 +283,7 @@ def main():
         ("legacy_release", check_legacy_release),
         ("signed_release", check_signed_release),
         ("listener_owner", check_listener),
+        ("runtime_process_freshness", check_runtime_process_freshness),
         ("operation_drain", check_drain),
     )
     results = []

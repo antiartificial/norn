@@ -23,10 +23,18 @@ The doctor checks the reviewed script against the exact candidate Git commit,
 the candidate release identity and startup contract, and both release
 signatures using the currently installed verifier. It also checks the current
 release and launch executable, sole launchd ownership of the direct loopback
-listener, `NORN_DRAIN_MODE=fail`, and an authenticated zero active-operation
-count. Its messages contain fixed, non-secret descriptions.
+listener, that the running API process started after the launcher and active
+SOPS file last changed, and that its mapped executable inode matches the
+installed API file. This catches an activated SOPS file or replaced executable
+that was not followed by an API restart; file equality alone cannot establish
+the running process's binding. The process-start check is a conservative local
+preflight rather than attestation of process memory. It also checks
+`NORN_DRAIN_MODE=fail` and an authenticated zero active-operation count. Its
+messages contain fixed, non-secret descriptions.
 
 Fixture tests passed with `python3 v2/scripts/test-legacy-baseline-doctor.py`.
+The new process-start predicate was also streamed to Mini and passed against
+the current launcher process without writing a file or restarting the API.
 The doctor was then streamed to Mini through SSH and run read-only with the
 existing SOPS values loaded only in process. No file, service, or secret
 configuration was changed on Mini. At that point it reported:

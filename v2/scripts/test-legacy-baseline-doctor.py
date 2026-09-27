@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -108,6 +109,23 @@ class DoctorFixtureTest(unittest.TestCase):
         installed.write_bytes(b"other")
         with self.assertRaises(doctor.CheckFailure):
             doctor.check_legacy_release(args)
+
+    def test_runtime_process_must_start_after_binding_change(self):
+        installed = self.root / "norn-api"
+        installed.write_bytes(b"legacy-binary")
+        args = types.SimpleNamespace(launcher=self.launcher, sops_env=self.sops, legacy_api=installed, launch_label="com.norn.api")
+        state = b"    pid = 12345\n"
+        old_start = time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(time.time() - 60)).encode()
+        new_start = time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(time.time() + 60)).encode()
+        mapped = f"i{installed.stat().st_ino}\nn{installed.resolve()}\n".encode()
+        with mock.patch.object(doctor, "command", side_effect=[state, old_start]):
+            with self.assertRaisesRegex(doctor.CheckFailure, "predates launcher or SOPS"):
+                doctor.check_runtime_process_freshness(args)
+        with mock.patch.object(doctor, "command", side_effect=[state, new_start, mapped]):
+            self.assertIn("maps installed executable", doctor.check_runtime_process_freshness(args))
+        with mock.patch.object(doctor, "command", side_effect=[state, new_start, b"i1\nn/elsewhere/api\n"]):
+            with self.assertRaisesRegex(doctor.CheckFailure, "does not map"):
+                doctor.check_runtime_process_freshness(args)
 
     def test_drain_requires_fail_mode_before_http(self):
         args = types.SimpleNamespace(api_base="http://127.0.0.1:8800")
