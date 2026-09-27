@@ -24,8 +24,10 @@ are substantial but cannot sign a broader gate.
 ## Review branches checked on 2026-09-26
 
 - Draft Norn [PR #76](https://github.com/antiartificial/norn/pull/76):
-  last reviewed implementation head `37472689e7ede4a73a68559d101630d4654e449b`; all eight
-  checks passed in [run 36291945901](https://github.com/antiartificial/norn/actions/runs/36291945901).
+  last reviewed implementation head `baa9ec3dbbe9531e6b597e3fc3db3d5e9410b0ed`; all nine
+  checks passed in [run 36295224334](https://github.com/antiartificial/norn/actions/runs/36295224334),
+  including a secretless full release-bundle build, ephemeral signing, import,
+  and installed-release verification. This is not a production signing run.
   The disposable Nomad 2.0.7/PostgreSQL 16 rehearsal proved that an active
   deployment defers a claimed scale without reserving an effect, then the
   same claim completes and persists replica intent after deployment success.
@@ -39,6 +41,9 @@ are substantial but cannot sign a broader gate.
   Nomad 2.0.7 rehearsal. Terminal writes now refuse unresolved app effects.
   The test constructs the region's active weight; actual ingress activation,
   normal worker dispatch, and the ordinary etcd Fleet route remain open.
+  The [Mini Trove/bookmark refresh](m0-mini-trove-bookmark-workload-check-2026-09-26.md)
+  separately records a completed PM sync and daily capture, a successful
+  bookmark-session read, and $10.00 remaining X API credit at its check time.
 - Draft Fleet [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
   `6267655052b209b22dc8b3421cb9339f797af9bc`; the hosted `contract`
   job failed before runner assignment because of the GitHub account
@@ -47,6 +52,31 @@ are substantial but cannot sign a broader gate.
   rehearsal verified loaded 2→3→2 placement and exact-node drain predicates;
   all clients ran on one Mac, so it does not substitute for hosted contract
   CI or a protected, separate-host Fleet.
+
+## Protected-master integration audit — 2026-09-27 04:49 UTC
+
+PR #76 targets `feature/norn-v3-planning-handoff`, not protected `master`.
+At its reviewed head, the V3 branch is 757 commits ahead of the common base
+with `master`; `master` has 39 commits absent from V3. A read-only Git merge-tree
+simulation reported **126 file conflicts** (82 content, 44 add/add), including
+CI, the signed-release workflow and helpers, API handlers and stores, HA lab,
+and UI. PR #76 itself changes 556 files relative to its feature-branch base.
+Retargeting that PR directly to `master` would therefore not produce a
+reviewable or verified release candidate.
+
+The protected `master` branch requires six legacy CI contexts, including
+macOS API and CLI tests, the Fleet pilot workload and OpenAPI contract. The
+current V3 feature-branch CI emits different context names and runs its main
+API/CLI checks on Linux. A master integration must preserve the master-only
+workloads and verify the required checks alongside the V3-specific tests.
+
+GitHub reports `master` branch protection and immutable releases enabled.
+The `platform-release` environment has branch policy, a required reviewer,
+and the expected names for its signing key, immutability-check token, and
+public-key variable. Their values and operational validity were not read or
+tested. The publisher must still be dispatched from protected `master` for an
+exact commit already merged there; the draft PR head cannot be the signed
+production candidate.
 
 ## Shortest release path from here
 
@@ -57,6 +87,11 @@ are substantial but cannot sign a broader gate.
    and archive proof. Clear Fleet CI runner admission, then qualify an exact
    protected candidate on separate hosts with three etcd voters and app pools.
    Record all pins.
-3. Run the loaded M4 placement/drain and isolated M5 Mini upgrade/rollback
+3. Integrate V3 with current `master` in dependency-ordered, reviewable slices.
+   Resolve overlapping master behavior and restore its required CI contexts;
+   run both macOS and V3-specific checks. After the exact candidate is merged
+   to protected `master`, publish and verify its signed immutable bundle with
+   the protected release environment.
+4. Run the loaded M4 placement/drain and isolated M5 Mini upgrade/rollback
    rehearsals. Complete M6–M7 for the supported app database and migration
    scope; sign M8 before the separately approved M9 adoption steps.
