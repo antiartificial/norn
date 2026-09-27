@@ -19,6 +19,10 @@ A later read-only Mini check on 2026-09-26 still found `archive_mode=off` and
 user schedule. A separate [synthetic Postgres.app PITR fixture](m0-mini-postgresapp-disposable-pitr-2026-09-26.md)
 proved local Mac base-backup/WAL recovery mechanics, including a timestamped
 recovery boundary. It did not use off-host storage or production control data.
+A separate [Mini-to-Mac synthetic logical restore](m0-mini-separate-host-logical-restore-2026-09-26.md)
+passed the transport and clean-target restore step on another host. It used a
+temporary source cluster, not the control database or the protected backup
+catalog, and did not preserve production roles or ACLs.
 
 ## Decision options
 
