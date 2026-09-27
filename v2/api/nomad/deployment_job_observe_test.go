@@ -13,18 +13,32 @@ import (
 
 func TestLookupDeploymentJobRevisionSeparatesAbsenceAndExactMarkers(t *testing.T) {
 	request := deploymentCASRequest()
+	source, err := json.Marshal(request.Job)
+	if err != nil {
+		t.Fatal(err)
+	}
 	index, version := uint64(43), uint64(7)
 	request.Job.JobModifyIndex, request.Job.Version = &index, &version
 	status := http.StatusNotFound
+	planDiff := "None"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/job/"+request.App || r.URL.Query().Get("region") != request.Region {
-			t.Errorf("unexpected Nomad read %s %s", r.Method, r.URL)
+		switch r.URL.Path {
+		case "/v1/job/" + request.App:
+			if r.Method != http.MethodGet || r.URL.Query().Get("region") != request.Region {
+				t.Errorf("unexpected Nomad read %s %s", r.Method, r.URL)
+			}
+			if status != http.StatusOK {
+				http.Error(w, "private Nomad response", status)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(request.Job)
+		case "/v1/job/" + request.App + "/submission":
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobSubmission{Source: string(source), Format: "json"})
+		case "/v1/job/" + request.App + "/plan":
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobPlanResponse{JobModifyIndex: index, Diff: &nomadapi.JobDiff{Type: planDiff}})
+		default:
+			t.Errorf("unexpected Nomad request %s %s", r.Method, r.URL)
 		}
-		if status != http.StatusOK {
-			http.Error(w, "private Nomad response", status)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(request.Job)
 	}))
 	defer server.Close()
 	client, err := NewClient(server.URL)
@@ -40,6 +54,12 @@ func TestLookupDeploymentJobRevisionSeparatesAbsenceAndExactMarkers(t *testing.T
 	if err != nil || observed.State != DeploymentJobFound || observed.JobModifyIndex != index || observed.Version != version {
 		t.Fatalf("exact job observation=%+v err=%v", observed, err)
 	}
+	planDiff = "Edited"
+	observed, err = client.LookupDeploymentJobRevision(context.Background(), request)
+	if !errors.Is(err, ErrDeploymentJobLookupIndeterminate) || observed.State != DeploymentJobIndeterminate {
+		t.Fatalf("changed workload observation=%+v err=%v", observed, err)
+	}
+	planDiff = "None"
 	request.Job.Meta[DeploymentExecutionIDMeta] = "foreign-execution"
 	observed, err = client.LookupDeploymentJobRevision(context.Background(), request)
 	if !errors.Is(err, ErrDeploymentJobLookupIndeterminate) || observed.State != DeploymentJobIndeterminate {

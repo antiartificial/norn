@@ -69,18 +69,23 @@ active pre-index work must first drain or reconcile it.
    classifies ambiguous responses as indeterminate. Its create-only and stale
    index behavior passed against disposable Nomad 2.0.7; no supervisor calls
    it yet.
-   Readback can now distinguish a 404 from the current Nomad job revision
-   carrying the expected app, deployment, operation, execution, and digest
-   markers. That read proves marker and revision identity only. A closed job
-   projection and comparison with the reserved digest are still required
-   before the supervisor can settle an ambiguous submission or release the
-   app gate. The readback passed against disposable Nomad 2.0.7.
+   Readback distinguishes a 404 from the current Nomad job revision carrying
+   the expected app, deployment, operation, execution, and digest markers.
    An experimental full-job JSON hash failed readback against that same Nomad:
    the server populated job and task-group defaults and runtime fields absent
    from the submitted shape. The experiment was removed. A digest projection
    must normalize those fields while covering every mutable workload field,
    including environment, templates, volumes, networking, and task config;
-   a marker-only or source-spec digest is insufficient.
+   a marker-only or source-spec digest is insufficient. The replacement
+   registration hashes the complete submitted JSON before writing and saves
+   that exact source in Nomad's versioned submission record. Readback checks
+   the source digest and markers, asks Nomad to plan that source against the
+   current job with no diff, then rereads the revision. A deliberately changed
+   workload with matching markers and submission source was rejected by the
+   plan against disposable Nomad 2.0.7. This covers the tested raw-exec and
+   translated service shapes, not every app dialect, and no supervisor calls
+   the primitive yet. Allocation health, effect settlement, and app-gate
+   release remain separate work.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

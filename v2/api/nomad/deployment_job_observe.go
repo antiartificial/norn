@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -19,9 +20,9 @@ const (
 	DeploymentJobIndeterminate DeploymentJobObservationState = "indeterminate"
 )
 
-// DeploymentJobObservation proves only the current Nomad revision and its
-// control-plane markers. A supervisor must separately verify the actual job
-// projection against the reserved digest before completing a deployment.
+// DeploymentJobObservation proves the current Nomad revision, its exact
+// submitted source digest, and a no-diff Nomad plan for that source. It does
+// not prove allocation health or authorize release of the app effect gate.
 type DeploymentJobObservation struct {
 	State          DeploymentJobObservationState
 	JobModifyIndex uint64
@@ -51,7 +52,35 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 	if !matchesDeploymentJobRevision(job, request) {
 		return indeterminate()
 	}
+	submission, _, err := c.api.Jobs().Submission(request.App, int(*job.Version), query)
+	if err != nil || submission == nil || submission.Format != "json" || submission.Source == "" {
+		return indeterminate()
+	}
+	var submitted nomadapi.Job
+	if err := json.Unmarshal([]byte(submission.Source), &submitted); err != nil || !matchesDeploymentSubmission(&submitted, request) {
+		return indeterminate()
+	}
+	digest, err := DigestDeploymentJob(&submitted)
+	if err != nil || digest != request.JobDigest {
+		return indeterminate()
+	}
+	plan, _, err := c.api.Jobs().Plan(&submitted, true, (&nomadapi.WriteOptions{Region: request.Region}).WithContext(ctx))
+	if err != nil || plan == nil || plan.JobModifyIndex != *job.JobModifyIndex || plan.Diff == nil || plan.Diff.Type != "None" {
+		return indeterminate()
+	}
+	current, _, err := c.api.Jobs().Info(request.App, query)
+	if err != nil || !matchesDeploymentJobRevision(current, request) || current.Version == nil ||
+		*current.Version != *job.Version || *current.JobModifyIndex != *job.JobModifyIndex {
+		return indeterminate()
+	}
 	return DeploymentJobObservation{State: DeploymentJobFound, JobModifyIndex: *job.JobModifyIndex, Version: *job.Version}, nil
+}
+
+func matchesDeploymentSubmission(job *nomadapi.Job, request CASDeploymentJobRequest) bool {
+	return job != nil && job.ID != nil && *job.ID == request.App && job.Region != nil && *job.Region == request.Region &&
+		job.Meta[DeploymentIDMeta] == request.DeploymentID && job.Meta[SpecDigestMeta] == request.SpecDigest &&
+		job.Meta[DeploymentOperationIDMeta] == request.OperationID && job.Meta[DeploymentExecutionIDMeta] == request.ExecutionID &&
+		job.Meta[DeploymentJobDigestMeta] == request.JobDigest
 }
 
 func matchesDeploymentJobRevision(job *nomadapi.Job, request CASDeploymentJobRequest) bool {

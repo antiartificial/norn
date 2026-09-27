@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -51,9 +52,18 @@ func (c *Client) RegisterDeploymentJobCAS(ctx context.Context, request CASDeploy
 		request.Job.Meta[DeploymentJobDigestMeta] != request.JobDigest {
 		return "", fmt.Errorf("deployment CAS job identity is incomplete")
 	}
+	actualDigest, err := DigestDeploymentJob(request.Job)
+	if err != nil || actualDigest != request.JobDigest {
+		return "", fmt.Errorf("deployment CAS job digest differs from the submitted job")
+	}
+	source, err := json.Marshal(request.Job)
+	if err != nil {
+		return "", fmt.Errorf("encode deployment job submission")
+	}
 	response, _, err := c.api.Jobs().RegisterOpts(request.Job, &nomadapi.RegisterOptions{
 		EnforceIndex: true,
 		ModifyIndex:  request.ExpectedJobModifyIndex,
+		Submission:   &nomadapi.JobSubmission{Source: string(source), Format: "json"},
 	}, (&nomadapi.WriteOptions{Region: request.Region}).WithContext(ctx))
 	if err != nil {
 		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
