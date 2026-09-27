@@ -110,10 +110,12 @@ func runMigrationHelper(data []byte) error {
 	defer func() { _ = cleanup() }()
 	var terminator commandTerminator = &processGroupTerminator{}
 	if request.CommandCgroup != "" {
-		terminator, err = openCgroupTerminator(request.CommandCgroup)
+		var cgroup *cgroupTerminator
+		cgroup, err = openCgroupTerminator(request.CommandCgroup)
 		if err != nil {
 			return fmt.Errorf("migration command containment is unavailable")
 		}
+		terminator = &migrationCgroupTerminator{cgroup}
 	}
 	material := effect.LaunchMaterial{Argv: []string{"sh", "-c", request.Command}, Directory: request.Directory,
 		Environment: environment, Timeout: time.Duration(request.Descriptor.TimeoutMillis) * time.Millisecond}

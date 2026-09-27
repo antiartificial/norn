@@ -98,6 +98,50 @@ func TestLinuxCgroupSnapshotRunner(t *testing.T) {
 	assertNoSnapshotCredentials(t, dead.directory)
 }
 
+// TestLinuxCgroupMigrationDescendantTimeout proves the migration timeout owns
+// the whole command cgroup after the shell leader has exited.
+func TestLinuxCgroupMigrationDescendantTimeout(t *testing.T) {
+	if os.Getenv("NORN_REAL_CGROUP_TEST") != "1" {
+		t.Skip("set NORN_REAL_CGROUP_TEST=1 in the privileged Linux container harness")
+	}
+	root := filepath.Join("/sys/fs/cgroup", "norn-migration-timeout-integration")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("create migration cgroup root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(root) })
+	for _, test := range []struct {
+		name         string
+		command      string
+		timeout      time.Duration
+		wantTimedOut bool
+	}{
+		{name: "descendant completes", command: "sleep 0.1 &", timeout: 2 * time.Second},
+		{name: "descendant outlives timeout", command: "sleep 30 &", timeout: 500 * time.Millisecond, wantTimedOut: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(root, strings.ReplaceAll(test.name, " ", "-"))
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = os.WriteFile(filepath.Join(path, "cgroup.kill"), []byte("1\n"), 0o200)
+				_ = os.Remove(path)
+			})
+			terminator, err := openCgroupTerminator(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			material := effect.LaunchMaterial{Argv: []string{"sh", "-c", test.command},
+				Directory: t.TempDir(), Environment: []string{"PATH=/usr/bin:/bin"}, Timeout: test.timeout}
+			timedOut, runErr := runContained(material, io.Discard, &migrationCgroupTerminator{terminator}, realSchedule, nil)
+			if timedOut != test.wantTimedOut || (runErr != nil && !timedOut) {
+				t.Fatalf("runContained timeout=%v err=%v, want timeout=%v", timedOut, runErr, test.wantTimedOut)
+			}
+			assertCgroupEmpty(t, path)
+		})
+	}
+}
+
 type linuxSnapshot struct {
 	reservation effect.Reservation
 	identity    effect.ExecutionIdentity

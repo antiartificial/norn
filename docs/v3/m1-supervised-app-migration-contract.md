@@ -36,6 +36,15 @@ and durable migration effect can be requeued to observe that original effect;
 legacy or unrecorded migrations still require manual recovery. Protected
 runtime and process-crash qualification remain required before activation.
 
+The migration command timeout now remains armed after the shell leader exits
+until its dedicated Linux cgroup is empty. If a background descendant outlives
+the timeout, the runner kills the command cgroup and records a timed-out
+failure rather than allowing a later successful observation. An opt-in real
+Linux cgroup test passed both a descendant that drained before timeout and a
+background `sleep` that required timeout termination in a disposable privileged
+Alpine container on 2026-09-27. The general API suite and protected Mini/Fleet
+runtime qualification remain separate gates.
+
 ## Current behavior and risk
 
 Migrations without a reviewed postcondition still execute with host `sh -c`

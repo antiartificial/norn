@@ -251,6 +251,10 @@ func cgroupPopulated(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return parseCgroupEvents(data)
+}
+
+func parseCgroupEvents(data []byte) (bool, error) {
 	found, populated := false, false
 	for _, line := range strings.Split(string(data), "\n") {
 		if line == "" {

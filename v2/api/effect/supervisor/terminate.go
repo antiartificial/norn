@@ -25,6 +25,13 @@ type commandTerminator interface {
 	close() error
 }
 
+// commandTreeAwaiter is used by migration commands whose shell leader can
+// exit while descendants continue writing to the database. The timeout guard
+// remains armed until the dedicated command cgroup is empty.
+type commandTreeAwaiter interface {
+	awaitEmpty(time.Time) error
+}
+
 // processGroupTerminator kills the command's process group. A process group
 // ID cannot be reused while its leader is unreaped, and runContained reaps the
 // leader only after the timeout guard is closed, so the numeric group ID is
@@ -57,6 +64,8 @@ type cgroupTerminator struct {
 	directory *os.File
 }
 
+type migrationCgroupTerminator struct{ *cgroupTerminator }
+
 func openCgroupTerminator(path string) (*cgroupTerminator, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("command cgroup path must be absolute")
@@ -86,6 +95,34 @@ func (t *cgroupTerminator) terminate() error {
 }
 
 func (t *cgroupTerminator) close() error { return t.directory.Close() }
+
+func (t *migrationCgroupTerminator) awaitEmpty(deadline time.Time) error {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		fd, err := unix.Openat(int(t.directory.Fd()), "cgroup.events", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return fmt.Errorf("open migration command cgroup.events: %w", err)
+		}
+		file := os.NewFile(uintptr(fd), "cgroup.events")
+		data, readErr := io.ReadAll(io.LimitReader(file, maxCgroupEventsBytes+1))
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil || len(data) > maxCgroupEventsBytes {
+			return fmt.Errorf("read migration command cgroup.events")
+		}
+		populated, err := parseCgroupEvents(data)
+		if err != nil {
+			return err
+		}
+		if !populated {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("migration command descendants did not stop after timeout")
+		}
+		<-ticker.C
+	}
+}
 
 // timeoutGuard owns the only path to terminate. fire and close serialize on
 // one mutex and terminate runs while it is held, so close returns only after
@@ -139,9 +176,9 @@ func (g *timeoutGuard) close() (bool, error) {
 // lifecycleTrace records runContained ordering for deterministic tests.
 type lifecycleTrace func(string)
 
-// runContained runs the command under a timeout guard with this ordering:
-// start, observe leader exit without reaping, close the guard (joining any
-// in-flight terminate), then reap. The terminator is closed last.
+// runContained starts a timeout guard after launch. Process-group commands
+// disarm it before reaping the leader to prevent PID reuse. Migration cgroup
+// commands keep it armed until the entire command cgroup is empty.
 func runContained(material effect.LaunchMaterial, output io.Writer, terminator commandTerminator, schedule scheduleFunc, trace lifecycleTrace) (bool, error) {
 	if trace == nil {
 		trace = func(string) {}
@@ -163,11 +200,31 @@ func runContained(material effect.LaunchMaterial, output io.Writer, terminator c
 	if err := command.Start(); err != nil {
 		return false, err
 	}
+	startedAt := time.Now()
 	trace("started")
 	terminator.started(command.Process.Pid)
 	guard := startTimeoutGuard(material.Timeout, terminator.terminate, schedule)
 	exitErr := waitExitWithoutReaping(command.Process.Pid)
 	trace("exited")
+	if awaiter, ok := terminator.(commandTreeAwaiter); ok {
+		// The cgroup directory descriptor remains stable after reaping the
+		// leader, so the timeout can still kill descendants without a PID race.
+		err := command.Wait()
+		trace("reaped")
+		containedErr := awaiter.awaitEmpty(startedAt.Add(material.Timeout + 5*time.Second))
+		timedOut, terminateErr := guard.close()
+		trace("guard-closed")
+		if exitErr != nil && err == nil {
+			err = fmt.Errorf("observe command exit: %w", exitErr)
+		}
+		if containedErr != nil {
+			return timedOut, containedErr
+		}
+		if terminateErr != nil {
+			return timedOut, terminateErr
+		}
+		return timedOut, err
+	}
 	timedOut, _ := guard.close()
 	trace("guard-closed")
 	err := command.Wait()

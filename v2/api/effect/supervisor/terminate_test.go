@@ -3,6 +3,7 @@ package supervisor
 import (
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,6 +224,96 @@ func TestRunContainedNeverTerminatesAfterGuardCloses(t *testing.T) {
 func TestProcessGroupTerminatorRequiresStartedProcess(t *testing.T) {
 	if err := (&processGroupTerminator{}).terminate(); err == nil {
 		t.Fatal("terminate without a started process group was accepted")
+	}
+}
+
+type migrationTreeTerminatorFake struct {
+	processGroupTerminator
+	empty chan struct{}
+	once  sync.Once
+}
+
+func (t *migrationTreeTerminatorFake) terminate() error {
+	t.once.Do(func() { close(t.empty) })
+	return nil
+}
+func (t *migrationTreeTerminatorFake) awaitEmpty(deadline time.Time) error {
+	select {
+	case <-t.empty:
+		return nil
+	case <-time.After(time.Until(deadline)):
+		return errors.New("descendant containment timed out")
+	}
+}
+
+func TestMigrationTimeoutStaysArmedAfterShellLeaderExits(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		drainAfter time.Duration
+		timeout    time.Duration
+		wantTimed  bool
+	}{
+		{name: "descendant drains", drainAfter: 20 * time.Millisecond, timeout: 250 * time.Millisecond},
+		{name: "descendant outlives timeout", timeout: 50 * time.Millisecond, wantTimed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			terminator := &migrationTreeTerminatorFake{empty: make(chan struct{})}
+			if test.drainAfter > 0 {
+				time.AfterFunc(test.drainAfter, func() { terminator.once.Do(func() { close(terminator.empty) }) })
+			}
+			material := effect.LaunchMaterial{Argv: []string{"sh", "-c", "exit 0"}, Directory: t.TempDir(),
+				Environment: []string{"PATH=/usr/bin:/bin"}, Timeout: test.timeout}
+			timedOut, err := runContained(material, io.Discard, terminator, realSchedule, nil)
+			if err != nil || timedOut != test.wantTimed {
+				t.Fatalf("migration tree timeout=%v err=%v, want timeout=%v", timedOut, err, test.wantTimed)
+			}
+		})
+	}
+}
+
+func TestMigrationCgroupWaitReadsOpenedDirectory(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "command")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "cgroup.events"), []byte("populated 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := openCgroupTerminator(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.close()
+	other := filepath.Join(root, "replacement")
+	if err := os.Rename(path, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "cgroup.events"), []byte("populated 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updated := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		staged := filepath.Join(other, "cgroup.events.next")
+		if err := os.WriteFile(staged, []byte("populated 0\n"), 0o600); err != nil {
+			updated <- err
+			return
+		}
+		updated <- os.Rename(staged, filepath.Join(other, "cgroup.events"))
+	}()
+	started := time.Now()
+	if err := (&migrationCgroupTerminator{opened}).awaitEmpty(started.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-updated; err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) < 20*time.Millisecond {
+		t.Fatal("migration tree wait trusted replacement cgroup path")
 	}
 }
 
