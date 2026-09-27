@@ -2,6 +2,11 @@
 
 Status: implementation boundary, 2026-09-27. This is not M1 sign-off.
 
+The first code slice defines an authenticated, secret-free migration intent
+descriptor. The generic `build.test` supervisor explicitly refuses it. No
+production path reserves or launches it yet; the private runner, verifier and
+database postcondition remain required before activation.
+
 ## Current behavior and risk
 
 `pipeline/migrate.go` executes a declared migration with host `sh -c`. The
