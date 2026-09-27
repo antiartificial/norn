@@ -358,6 +358,65 @@ func main() {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("startup contract probe target is not executable", result.stderr)
 
+    def test_signed_release_fetch_reaches_passive_preflight(self) -> None:
+        self.platform("preflight", "HEAD")
+        artifact = self.repo / "v2/scripts/platform-release-artifact"
+        bundle = self.root / "signed-bundle"
+        source_epoch = self.git("show", "-s", "--format=%ct", self.sha).stdout.strip()
+        package = subprocess.run(
+            [str(artifact), "package", "--release-dir", str(self.releases / self.sha),
+             "--output-dir", str(bundle), "--commit", self.sha,
+             "--os", subprocess.check_output(["go", "env", "GOOS"], text=True).strip(),
+             "--arch", subprocess.check_output(["go", "env", "GOARCH"], text=True).strip(),
+             "--repository", "antiartificial/norn", "--source-date-epoch", source_epoch],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(package.returncode, 0, package.stdout + package.stderr)
+        private_key = self.root / "signing-private.pem"
+        public_key = self.root / "signing-public.pem"
+        openssl = next(
+            path for path in (
+                "/opt/homebrew/opt/openssl@3/bin/openssl",
+                "/usr/local/opt/openssl@3/bin/openssl",
+                shutil.which("openssl"),
+            ) if path and Path(path).is_file()
+        )
+        subprocess.run([openssl, "genpkey", "-algorithm", "ED25519", "-out", str(private_key)],
+                       check=True, capture_output=True)
+        subprocess.run([openssl, "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)],
+                       check=True, capture_output=True)
+        signed = subprocess.run(
+            [str(artifact), "sign", "--bundle-dir", str(bundle)],
+            env=os.environ | {"NORN_RELEASE_SIGNING_KEY_FILE": str(private_key), "NORN_OPENSSL": openssl},
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(signed.returncode, 0, signed.stdout + signed.stderr)
+
+        fetched_releases = self.root / "fetched-releases"
+        fetch_hook = self.root / "import-signed-release"
+        fetch_hook.write_text(
+            "#!/bin/sh\nset -eu\n"
+            f"test \"$1\" = {shlex.quote(self.sha)}\n"
+            f"exec {shlex.quote(str(artifact))} import --bundle-dir {shlex.quote(str(bundle))} "
+            f"--releases-dir \"$2\" --public-key {shlex.quote(str(public_key))}\n",
+            encoding="utf-8",
+        )
+        fetch_hook.chmod(0o755)
+        result = self.platform(
+            "preflight", self.sha,
+            extra_environment={
+                "NORN_RELEASES_DIR": str(fetched_releases),
+                "NORN_RELEASE_SIGNATURE_POLICY": "require-signed",
+                "NORN_RELEASE_FETCH_HOOK": str(fetch_hook),
+                "NORN_RELEASE_VERIFY_HOOK": str(self.repo / "v2/scripts/platform-release-verify-github"),
+                "NORN_RELEASE_PUBLIC_KEY": str(public_key),
+                "NORN_OPENSSL": openssl,
+            },
+        )
+        self.assertIn("preflight complete", result.stdout)
+        self.assertIn("verified release", result.stdout)
+        self.assertTrue((fetched_releases / self.sha / "signatures").is_dir())
+
     def test_concurrent_promotions_fail_closed_and_lock_recovers(self) -> None:
         fake_bin = self.root / "fake-bin"
         fake_bin.mkdir()
