@@ -189,6 +189,10 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	if attempt.RootAttemptID != attempt.ID {
 		t.Fatalf("initial root attempt = %q, want %q", attempt.RootAttemptID, attempt.ID)
 	}
+	storedAttempt, err := db.GetFleetRunnerAttempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	concurrent := *attempt
 	concurrent.ID, concurrent.RunnerAttemptID, concurrent.Attempt = uuid.NewString(), "integration-2", 0
 	if err := db.CreateFleetRunnerAttempt(ctx, &concurrent); err == nil {
@@ -212,8 +216,8 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	if err := db.InsertFleetReconciliation(ctx, success, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	if !success.StartedAt.Equal(attempt.PhaseStartedAt) {
-		t.Fatalf("checkpoint start = %s, want server-owned phase start %s", success.StartedAt, attempt.PhaseStartedAt)
+	if !success.StartedAt.Equal(storedAttempt.PhaseStartedAt) {
+		t.Fatalf("checkpoint start = %s, want stored server-owned phase start %s", success.StartedAt, storedAttempt.PhaseStartedAt)
 	}
 	live, err = db.AdvanceFleetRunnerAttempt(ctx, attempt.ID, "infrastructure_applied", "inventory_generated", live.Revision, false)
 	if err != nil || live.CurrentPhase != "inventory_generated" || !live.PhaseStartedAt.After(attempt.PhaseStartedAt) {
