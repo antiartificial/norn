@@ -3,8 +3,14 @@ package etcdstore
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +192,23 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if err != nil || !revision.Present || revision.Generation != 1 || revision.RouteSHA256 != first.RenderedRoute.SHA256 {
 		t.Fatalf("authorized first-route readback=%+v err=%v", revision, err)
 	}
+	const nodeURI = "spiffe://norn.test/fleet/ingress-01"
+	authority, err := adapter.NewClaimedInitialFleetRouteAuthorityHandler(claim, lock, spec, 18082, map[string]string{nodeURI: "ingress-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/v1/route-authorizations", io.NopCloser(strings.NewReader(`{"intentId":"`+first.ID+`"}`)))
+		request.Header.Set("Content-Type", "application/json")
+		identity, _ := url.Parse(nodeURI)
+		request.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{URIs: []*url.URL{identity}}}}}
+		return request
+	}
+	authorityResponse := httptest.NewRecorder()
+	authority.ServeHTTP(authorityResponse, authorityRequest())
+	if authorityResponse.Code != http.StatusOK {
+		t.Fatalf("claimed route authority status=%d body=%q", authorityResponse.Code, authorityResponse.Body.String())
+	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "unknown-node"); err == nil {
 		t.Fatal("unlisted ingress node received route publication")
 	}
@@ -200,6 +223,11 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, first.ID, "ingress-01"); err == nil {
 		t.Fatal("replaced Fleet inventory still authorized node publication")
+	}
+	authorityResponse = httptest.NewRecorder()
+	authority.ServeHTTP(authorityResponse, authorityRequest())
+	if authorityResponse.Code != http.StatusConflict {
+		t.Fatalf("stale claimed route authority status=%d", authorityResponse.Code)
 	}
 	if retry, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082); err != nil || retry.ID != first.ID {
 		t.Fatalf("replacement allocated a new route generation: %+v err=%v", retry, err)

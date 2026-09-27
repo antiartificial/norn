@@ -196,8 +196,12 @@ still require the durable prior route pointer described below.
 The private `AuthorizeInitialFleetRouteForNode` method now rechecks a held
 claim, app lock, signed acceptance, exact intent ID and current Fleet
 inventory before returning the generation-one route for one named member.
-It is a control-side decision primitive; no runtime mTLS authority listener
-or host-to-control call invokes it yet.
+`NewClaimedInitialFleetRouteAuthorityHandler` connects that decision to the
+certificate-bound control handler while the worker holds its claim and pinned
+InfraSpec. A disposable-etcd test authorizes the named member and rejects the
+same request after Fleet inventory replacement. No runtime mTLS listener or
+host-to-control call invokes this handler yet; recovery must reacquire the
+claim, lock and pinned source before it can serve again.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the
