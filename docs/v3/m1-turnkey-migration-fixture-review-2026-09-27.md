@@ -58,6 +58,19 @@ runner-owned migration target; the runtime `DATABASE_URL` source must change
 with the binding. A catalog/profile binding for this app was not proved by
 this check.
 
+A scratch conversion of the complete current InfraSpec to `norn.app/v2`
+replaced the SOPS migration wrapper with `node pilot-dist/migrate.js`, removed
+the app-secret `DATABASE_URL` source and v1 `infrastructure.postgres`, and
+declared a named `primary` PostgreSQL runtime/migration binding with the
+exact-file postcondition above. The current v3 `ParseInfraSpecDocument` and
+`ValidateSpec` accepted that candidate: named target `primary`, no errors,
+and one existing warning that its public endpoint needs cloudflared/forge
+routing in local network mode. This proves declaration syntax only; the
+scratch file was not placed in the source checkout or used for deployment.
+A fresh read-only Mini control query found `database_catalog_revisions`
+absent, as expected before the v3 upgrade. No live named catalog/profile
+binding was created or tested.
+
 Before any PR that changes the app declaration is merged or used on Mini:
 
 1. Name and prove the v3 database catalog/profile binding to the existing
