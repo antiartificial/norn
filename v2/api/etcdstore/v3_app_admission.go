@@ -25,6 +25,9 @@ func (s *V3OperationStore) appAdmissionPrefix(app string) string {
 func (s *V3OperationStore) appAdmissionFenceKey(app string) string {
 	return s.appAdmissionPrefix(app) + "fence"
 }
+func (s *V3OperationStore) appAdmissionInitializedKey(app string) string {
+	return s.appAdmissionPrefix(app) + "initialized"
+}
 func (s *V3OperationStore) appAdmissionExclusiveKey(app string) string {
 	return s.appAdmissionPrefix(app) + "exclusive"
 }
@@ -49,6 +52,16 @@ func (s *V3OperationStore) prepareAppAdmission(ctx context.Context, acceptance s
 		return appAdmissionPlan{}, nil
 	}
 	fenceKey, exclusiveKey := s.appAdmissionFenceKey(op.App), s.appAdmissionExclusiveKey(op.App)
+	initializedKey := s.appAdmissionInitializedKey(op.App)
+	initialized, err := s.kv.Get(ctx, initializedKey)
+	if err != nil {
+		return appAdmissionPlan{}, err
+	}
+	if len(initialized.Kvs) == 0 {
+		if err := s.rejectPreIndexActiveAppOperations(ctx, op.App); err != nil {
+			return appAdmissionPlan{}, err
+		}
+	}
 	fence, err := s.kv.Get(ctx, fenceKey)
 	if err != nil {
 		return appAdmissionPlan{}, err
@@ -64,6 +77,14 @@ func (s *V3OperationStore) prepareAppAdmission(ctx context.Context, acceptance s
 		clientv3.Compare(clientv3.CreateRevision(exclusiveKey), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.appAdmissionActiveKey(op.App, op.ID)), "=", 0),
 	}}
+	if len(initialized.Kvs) == 0 {
+		plan.compares = append(plan.compares, clientv3.Compare(clientv3.CreateRevision(initializedKey), "=", 0))
+		plan.puts = append(plan.puts, clientv3.OpPut(initializedKey, "v1"))
+	} else if string(initialized.Kvs[0].Value) != "v1" {
+		return appAdmissionPlan{}, fmt.Errorf("app admission initialization marker is invalid")
+	} else {
+		plan.compares = append(plan.compares, clientv3.Compare(clientv3.ModRevision(initializedKey), "=", initialized.Kvs[0].ModRevision))
+	}
 	if len(fence.Kvs) == 0 {
 		plan.compares = append(plan.compares, clientv3.Compare(clientv3.CreateRevision(fenceKey), "=", 0))
 	} else {
@@ -78,14 +99,50 @@ func (s *V3OperationStore) prepareAppAdmission(ctx context.Context, acceptance s
 			return appAdmissionPlan{}, &store.AcceptanceAdmissionError{App: op.App}
 		}
 	}
-	plan.puts = []clientv3.Op{
+	plan.puts = append(plan.puts,
 		clientv3.OpPut(fenceKey, uuid.NewString()),
 		clientv3.OpPut(s.appAdmissionActiveKey(op.App, op.ID), op.ID),
-	}
+	)
 	if acceptance.Admission.OneActiveMutablePerApp {
 		plan.puts = append(plan.puts, clientv3.OpPut(exclusiveKey, op.ID))
 	}
 	return plan, nil
+}
+
+// The first indexed app acceptance can only start after any prior active
+// operations have drained. This is a one-time scan per app; the marker is
+// created atomically with the first indexed acceptance. Mixed-version API
+// writers must be stopped before enabling this adapter.
+func (s *V3OperationStore) rejectPreIndexActiveAppOperations(ctx context.Context, app string) error {
+	prefix := s.prefix + "/v3/operations/"
+	cursor, end := prefix, clientv3.GetPrefixRangeEnd(prefix)
+	var revision int64
+	for {
+		options := []clientv3.OpOption{clientv3.WithRange(end), clientv3.WithLimit(256)}
+		if revision != 0 {
+			options = append(options, clientv3.WithRev(revision))
+		}
+		response, err := s.kv.Get(ctx, cursor, options...)
+		if err != nil {
+			return err
+		}
+		if revision == 0 {
+			revision = response.Header.Revision
+		}
+		for _, item := range response.Kvs {
+			var record v3Record
+			if err := decodeV3Record(item.Value, &record); err != nil {
+				return fmt.Errorf("decode pre-index operation: %w", err)
+			}
+			if record.Operation.App == app && (!record.Operation.Status.Terminal() || record.Operation.Metadata["manualRecoveryRequired"] == true || record.Operation.Metadata["externalEffectRecoveryPending"] == true) {
+				return &store.AcceptanceAdmissionError{App: app}
+			}
+		}
+		if !response.More || len(response.Kvs) == 0 {
+			return nil
+		}
+		cursor = string(response.Kvs[len(response.Kvs)-1].Key) + "\x00"
+	}
 }
 
 func (s *V3OperationStore) releaseAppAdmission(ctx context.Context, op model.Operation) ([]clientv3.Cmp, []clientv3.Op, error) {

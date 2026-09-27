@@ -11,15 +11,17 @@ write. It now indexes queued app operations, enforces exclusive app admission
 in the acceptance transaction, and releases the index in claim-fenced terminal
 transactions. Private invocation acceptance and completion participate, and
 the canary preview requests exclusive admission. A terminal operation with
-manual or external-effect recovery pending retains the index. The normal etcd router has no
-ordinary app deployment route and responds with `backend_route_unsupported`.
+manual or external-effect recovery pending retains the index. The normal etcd
+router has no ordinary app deployment route and responds with
+`backend_route_unsupported`.
 The PG acceptance transaction already persists a signed intent, operation,
 deployment, and regions together after checking that no queued/running
 operation exists for that app. The etcd adapter now shares the domain
 normalizer, but it has no corresponding atomic deployment persistence or
-deployment lifecycle projection. The index is a new-store contract; upgrade
-admission for pre-index active operations still requires an explicit migration
-guard before enabling deployment on an existing etcd authority.
+deployment lifecycle projection. The index initializes once per app only after
+a snapshot scan finds no pre-index active or unresolved operations. Mixed-version
+API writers must be stopped before enabling the adapter; an upgrade retaining
+active pre-index work must first drain or reconcile it.
 
 ## Required implementation order
 
@@ -29,9 +31,10 @@ guard before enabling deployment on an existing etcd authority.
    signed acceptance, operation, deployment and region records. A completed
    operation may release or replace the active pointer only with a revision
    check against its terminal operation record. An unresolved external effect
-   must retain the gate. Bound index growth, reject missing/corrupt links,
-   prove concurrent acceptance on separate API clients, and handle
-   pre-index operations on upgrade.
+   must retain the gate. Bound index growth and reject missing/corrupt links.
+   Two-client exclusive acceptance and pre-index active-operation rejection
+   are now covered by real-etcd tests; mixed-version writes remain outside
+   the supported transition.
 2. Persist deployment and region rows atomically with acceptance. On
    ambiguous transaction responses, resolve by the same request identity and
    verify the signed intent plus the exact immutable deployment/region fields.
