@@ -44,3 +44,16 @@ The next M4 implementation gate is a versioned, atomic publisher to every
 ingress node with a protected management readback path, followed by per-node
 and public endpoint probes and rollback. Only that evidence can support
 `ActiveWeight` and terminal deployment success.
+
+## Subsequent local publisher slice
+
+The `ingress.PublishRenderedRoute` primitive now guards one node's watched
+directory with a cross-process lock and expected SHA-256 revision. It checks
+the canonical single-router YAML, refuses a stale writer or symlink target,
+fsyncs a private temporary file, atomically renames it, and syncs the
+directory. Package race tests passed for conflicting concurrent writers,
+idempotent replay, tampering and stale revisions. This is a local file apply
+primitive only: no Fleet node agent invokes it, and no multi-node publication,
+protected rawdata readback, endpoint probe, or rollback was exercised by
+these tests. A sync error after rename is an indeterminate apply and must be
+resolved by reading the node's actual file and Traefik state before retry.
