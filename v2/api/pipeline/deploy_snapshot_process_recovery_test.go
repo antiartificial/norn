@@ -264,17 +264,38 @@ func TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots(t *test
 	if err != nil || first == nil || first.ID != accepted.Operation.ID {
 		t.Fatalf("first deployment claim = %+v, %v", first, err)
 	}
-	firstState := &state{spec: f.spec, commitSHA: "abc1234", deploymentID: accepted.Intent.DeploymentID,
-		claim: firstClaim, operationStartedAt: first.StartedAt, operationPayload: first.Payload}
-	log := saga.New(discardSagaStore{}, f.app, "test", "deploy")
-	if err := f.p.snapshot(ctx, firstState, log); err != nil {
+	f.p.WS = hub.New(nil)
+	f.p.CheckpointStore = f.db
+	stopBeforeMigration := errors.New("stop after recording migration step")
+	f.p.StartDeploymentStep = func(ctx context.Context, step model.DeploymentStep) error {
+		if err := f.db.StartDeploymentStep(ctx, step); err != nil {
+			return err
+		}
+		if step.Step == "migrate" {
+			return stopBeforeMigration
+		}
+		return nil
+	}
+	firstResult, err := f.p.ExecuteOperation(ctx, first, firstClaim)
+	if err != nil || firstResult == nil || firstResult.Status != model.OperationFailed || !strings.Contains(firstResult.Message, stopBeforeMigration.Error()) {
+		t.Fatalf("first deployment predecessor stages = %+v, %v", firstResult, err)
+	}
+	for _, stage := range []string{store.CheckpointSource, store.CheckpointBuild} {
+		checkpoint, err := f.db.LoadOperationCheckpoint(ctx, first.ID, stage)
+		if err != nil || checkpoint == nil || checkpoint.ClaimGeneration != firstClaim.Generation() {
+			t.Fatalf("first deployment %s checkpoint = %+v, %v", stage, checkpoint, err)
+		}
+	}
+	bound, err := f.p.openDatabaseTargets(ctx, first.Payload, f.spec)
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer firstState.database.Close()
+	defer bound.Close()
+	log := saga.New(discardSagaStore{}, f.app, "test", "deploy")
 	original := map[string]map[string][sha256.Size]byte{}
 	var primaryDump string
 	for _, name := range []string{"primary", "analytics"} {
-		target := firstState.database.named[name]
+		target := bound.named[name]
 		location, err := f.p.prepareSnapshotLocation("shop", target)
 		if err != nil {
 			t.Fatal(err)
@@ -296,20 +317,6 @@ func TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots(t *test
 	}
 	if primaryDump == "" {
 		t.Fatal("primary pre-migration dump is missing")
-	}
-	for stage, outputs := range map[string]json.RawMessage{
-		store.CheckpointSource: json.RawMessage(`{"treeDigest":"sha256:pinned"}`),
-		store.CheckpointBuild:  json.RawMessage(`{"imageTag":"` + image + `"}`),
-	} {
-		if _, err := f.db.RecordOperationCheckpoint(ctx, firstClaim, stage, outputs); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, step := range []struct{ name, status string }{{"snapshot", "complete"}, {"migrate", "running"}} {
-		if _, err := f.db.Pool.Exec(ctx, `INSERT INTO deployment_steps(deployment_id,app,saga_id,step,kind,status,attempt) VALUES($1,$2,$3,$4,'mutable',$5,1)`,
-			accepted.Intent.DeploymentID, f.app, first.SagaID, step.name, step.status); err != nil {
-			t.Fatal(err)
-		}
 	}
 	effects, err := store.NewPGEffectStore(f.db)
 	if err != nil {
@@ -343,7 +350,18 @@ func TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots(t *test
 	}
 	recovered, err := f.db.GetOperation(ctx, first.ID)
 	if err != nil || recovered.Status != model.OperationQueued || recovered.Metadata["replayMigration"] != true {
-		t.Fatalf("guarded deployment recovery = %+v, %v", recovered, err)
+		steps, _ := f.db.ListDeploymentSteps(ctx, accepted.Intent.DeploymentID)
+		var checkpoints []string
+		rows, _ := f.db.Pool.Query(ctx, `SELECT stage FROM operation_checkpoints WHERE operation_id=$1 ORDER BY stage`, first.ID)
+		if rows != nil {
+			for rows.Next() {
+				var stage string
+				_ = rows.Scan(&stage)
+				checkpoints = append(checkpoints, stage)
+			}
+			rows.Close()
+		}
+		t.Fatalf("guarded deployment recovery = %+v, %v; steps=%+v checkpoints=%v", recovered, err, steps, checkpoints)
 	}
 	second, secondClaim, err := f.db.ClaimNextOperation(ctx, "successor-migration-owner", time.Minute, []string{"app.deploy"})
 	if err != nil || second == nil || second.ID != first.ID || secondClaim.Generation() <= firstClaim.Generation() {
@@ -354,11 +372,17 @@ func TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots(t *test
 	if err != nil || reused.Created || reused.Record.Reservation.OperationClaim.Generation != firstClaim.Generation() {
 		t.Fatalf("successor replaced original migration effect: %+v, %v", reused, err)
 	}
+	secondResult, err := f.p.ExecuteOperation(ctx, second, secondClaim)
+	if err != nil || secondResult == nil || secondResult.Status != model.OperationFailed || !strings.Contains(secondResult.Message, stopBeforeMigration.Error()) {
+		t.Fatalf("successor deployment replay = %+v, %v", secondResult, err)
+	}
 	secondState := &state{spec: f.spec, commitSHA: "abc1234", deploymentID: accepted.Intent.DeploymentID,
 		claim: secondClaim, operationStartedAt: second.StartedAt, operationPayload: second.Payload, replayMigration: second.Metadata["replayMigration"] == true}
-	if err := f.p.snapshot(ctx, secondState, log); err != nil {
-		t.Fatalf("successor snapshot stage: %v", err)
+	secondState.database, err = f.p.openDatabaseTargets(ctx, second.Payload, f.spec)
+	if err != nil {
+		t.Fatal(err)
 	}
+	secondState.databaseOpened = true
 	defer secondState.database.Close()
 	for _, name := range []string{"primary", "analytics"} {
 		location, err := f.p.prepareSnapshotLocation("shop", secondState.database.named[name])

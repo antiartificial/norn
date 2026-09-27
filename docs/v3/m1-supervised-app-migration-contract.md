@@ -74,9 +74,11 @@ an expired migration-step claim, the original reserved migration effect,
 and a replacement claim. After changing the application database, the
 successor reuses both target-bound pre-migration dump/sidecar pairs byte for
 byte and reserves the original effect; deleting one original dump makes the
-snapshot stage fail closed. The focused fixture and full pipeline package
-passed locally against disposable PostgreSQL. This fixture seeds the
-migration-step/effect boundary instead of running a real migration command,
+snapshot stage fail closed. Both claims run the actual deployment pipeline
+through its snapshot stage; the first pass records the source/build
+checkpoints and migration-step start. The focused fixture and full pipeline
+package passed locally against disposable PostgreSQL. The test seeds the
+original migration effect and stops before launching the migration command,
 so the full deployment process-crash and protected-runtime proof remains open.
 
 ## Current behavior and risk
