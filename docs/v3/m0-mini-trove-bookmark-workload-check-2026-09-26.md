@@ -64,3 +64,28 @@ data present, and zero GraphQL errors. The probe loaded session values inside
 Mini from the owner mode-`0600` file and emitted only status flags. This proves
 the stored session was valid for this read at the check instant. It does not
 guarantee the next sync or the future credit balance.
+
+## Read-only refresh — 2026-09-27 11:33 UTC
+
+The signed-in X Developer Console account listing `trovely` showed **$9.79
+remaining prepaid X API credit**, **$6.37 current spend** for Sep 19–Oct 19,
+2026, an **Unlimited** cycle cap, and **Auto Recharge Off**. These values have
+not changed from the 10:38 UTC check. The console does not attribute spend to
+Like Trove or guarantee the next scheduled call.
+
+Mini's latest retained Like Trove daily-capture child was submitted at 08:17
+UTC and had one complete allocation; its `daily-capture` task terminated with
+exit code 0. The task log was unavailable through this read-only Nomad query.
+A separate attempted read-only query of the capture job's declared PostgreSQL
+URL from the Mini host failed at name resolution, so no poll-row counts were
+claimed from this refresh. This does not change the allocation result or
+establish a database failure inside the allocation.
+
+The Field Harbor AM/PM sync parents were running, with no retained AM/PM child
+in the current job listing. The owner-local bookmark marker remained at
+`lastIncrementalSyncAt=2026-09-27T01:21:30.256Z` and **41,150 bookmarks**;
+the next AM sync was not yet due at this check. A fresh read-only `Bookmarks`
+GraphQL GET with `count=1` returned HTTP 200, data present, and zero GraphQL
+errors. The owner-only cookie file remained mode `0600`; no cookie value or
+bookmark content was copied. This proves the stored session worked at that
+instant, not that the next ingest or credit-funded capture will complete.
