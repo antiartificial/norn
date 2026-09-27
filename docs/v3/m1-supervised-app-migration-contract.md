@@ -81,6 +81,17 @@ package passed locally against disposable PostgreSQL. The test seeds the
 original migration effect and stops before launching the migration command,
 so the full deployment process-crash and protected-runtime proof remains open.
 
+The 2026-09-27 full-pipeline Linux harness probe found an execution constraint:
+the existing cgroup test runs as root, while `newNamedFixture` starts its own
+PostgreSQL servers through `pgtest` and therefore needs a non-root test
+process. In a disposable privileged `postgres:16` container with a private
+cgroup namespace, giving `postgres` ownership of a new cgroup subtree and its
+`cgroup.procs` file still produced `Permission denied` when that user tried to
+join the child cgroup. Do not treat the current supervisor-only process-crash
+test as full-pipeline proof. The next fixture should start its PostgreSQL
+servers outside the test process as `postgres`, then run the pipeline/API crash
+case as root against those disposable servers and the real cgroup backend.
+
 ## Current behavior and risk
 
 Migrations without a reviewed postcondition still execute with host `sh -c`
