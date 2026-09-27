@@ -1,30 +1,37 @@
 # Etcd app deployment admission sequence — 2026-09-26
 
-Status: implementation contract for the next M4 slice. App deployment on
-the normal etcd Fleet router is still unsupported. This review follows the
-current source and a passing `go test ./etcdstore -count=1` against a
-disposable real etcd member at `127.0.0.1:14675`; the member was stopped and
-its ports were free afterward.
+Status: implementation contract for M4. App deployment on the normal etcd
+Fleet router is still unsupported. The first app-index slice was verified
+against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
 
 ## Current boundary
 
-`V3OperationStore.Accept` rejects any deployment/region aggregate or
-`OneActiveMutablePerApp` request before a write. The normal etcd router has no
+`V3OperationStore.Accept` rejects any deployment/region aggregate before a
+write. It now indexes queued app operations, enforces exclusive app admission
+in the acceptance transaction, and releases the index in claim-fenced terminal
+transactions. Private invocation acceptance and completion participate, and
+the canary preview requests exclusive admission. A terminal operation with
+manual or external-effect recovery pending retains the index. The normal etcd router has no
 ordinary app deployment route and responds with `backend_route_unsupported`.
 The PG acceptance transaction already persists a signed intent, operation,
 deployment, and regions together after checking that no queued/running
 operation exists for that app. The etcd adapter now shares the domain
-normalizer, but it has no corresponding atomic persistence or lifecycle index.
+normalizer, but it has no corresponding atomic deployment persistence or
+deployment lifecycle projection. The index is a new-store contract; upgrade
+admission for pre-index active operations still requires an explicit migration
+guard before enabling deployment on an existing etcd authority.
 
 ## Required implementation order
 
-1. Add an app-scoped active-operation index covering **every** queued/running
+1. Complete and harden the app-scoped active-operation index covering **every** queued/running
    app mutation admitted through etcd, including the canary preview. Its
    condition must be checked in the same etcd transaction that creates the
    signed acceptance, operation, deployment and region records. A completed
    operation may release or replace the active pointer only with a revision
    check against its terminal operation record. An unresolved external effect
-   must retain the gate. Bound index growth and reject missing/corrupt links.
+   must retain the gate. Bound index growth, reject missing/corrupt links,
+   prove concurrent acceptance on separate API clients, and handle
+   pre-index operations on upgrade.
 2. Persist deployment and region rows atomically with acceptance. On
    ambiguous transaction responses, resolve by the same request identity and
    verify the signed intent plus the exact immutable deployment/region fields.

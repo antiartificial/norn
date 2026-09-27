@@ -98,6 +98,7 @@ func etcdCanaryPromote(cfg *config.Config, operations *etcdstore.V3OperationStor
 			return
 		}
 		enqueue.Semantics = map[string]interface{}{"app": app, "region": logicalRegion, "nomadRegion": nomadRegion, "deploymentId": info.ID}
+		enqueue.Admission.OneActiveMutablePerApp = true
 		now := time.Now().UTC()
 		op := model.Operation{ID: uuid.NewString(), Kind: "app.canary-promote", App: app, SagaID: uuid.NewString(), Ref: logicalRegion + "/" + info.ID,
 			Status: model.OperationQueued, Risk: "Nomad canary promotion", Source: "etcd-canary-preview", Message: fmt.Sprintf("queued canary promotion for %s in %s", app, logicalRegion),
@@ -144,6 +145,8 @@ func writeEtcdCanaryAcceptanceError(w http.ResponseWriter, r *http.Request, err 
 	switch {
 	case errors.Is(err, store.ErrAcceptanceConflict):
 		handler.WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for different canary promotion work")
+	case errors.Is(err, store.ErrAcceptanceAdmission):
+		handler.WriteControlProblem(w, r, http.StatusConflict, "app_operation_active", "another app operation is active")
 	case errors.Is(err, store.ErrAcceptanceExpired):
 		handler.WriteControlProblem(w, r, http.StatusGone, "operation_replay_expired", "the canary promotion replay window expired")
 	case errors.Is(err, store.ErrAcceptanceIndeterminate):

@@ -66,6 +66,10 @@ func (s *V3OperationStore) AcceptPrivateInvocation(ctx context.Context, input st
 	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
+	appAdmission, err := s.prepareAppAdmission(ctx, acceptance)
+	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
 	key := s.acceptanceKey(acceptance.Identity)
 	acceptedAt := time.Now().UTC().Truncate(time.Microsecond)
 	identityID, intentID := uuid.NewString(), uuid.NewString()
@@ -88,18 +92,22 @@ func (s *V3OperationStore) AcceptPrivateInvocation(ctx context.Context, input st
 	}
 	privateKey := s.privateInvocationKey(acceptance.Operation.ID)
 	acceptanceIndex := s.privateInvocationAcceptanceIndexKey(acceptance.Operation.ID)
-	txn, err := s.kv.Txn(ctx).If(
+	comparisons := []clientv3.Cmp{
 		clientv3.Compare(clientv3.CreateRevision(key), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(privateKey), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(acceptanceIndex), "=", 0),
-	).Then(
+	}
+	comparisons = append(comparisons, appAdmission.compares...)
+	puts := []clientv3.Op{
 		clientv3.OpPut(key, string(acceptanceRecord)),
 		clientv3.OpPut(acceptanceIndex, key),
 		clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(operationRecord)),
 		clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, acceptedAt, acceptance.Operation.ID), acceptance.Operation.ID),
 		clientv3.OpPut(privateKey, string(privateRecord)),
-	).Commit()
+	}
+	puts = append(puts, appAdmission.puts...)
+	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(puts...).Commit()
 	if err != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
 	}
@@ -107,6 +115,11 @@ func (s *V3OperationStore) AcceptPrivateInvocation(ctx context.Context, input st
 		return accepted, nil
 	}
 	prior, resolveErr := s.ResolveIdentity(ctx, input.Identity)
+	if errors.Is(resolveErr, store.ErrAcceptanceNotFound) {
+		if _, admissionErr := s.prepareAppAdmission(ctx, acceptance); admissionErr != nil {
+			return store.AcceptedOperation{}, admissionErr
+		}
+	}
 	if resolveErr != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: errors.Join(errors.New("private invocation acceptance transaction did not commit"), resolveErr)}
 	}

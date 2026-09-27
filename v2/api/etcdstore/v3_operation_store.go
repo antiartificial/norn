@@ -237,7 +237,7 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	if a.FleetReconciliation != nil {
 		return s.acceptFleetReconciliation(ctx, a)
 	}
-	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp {
+	if a.Deployment != nil || len(a.Regions) > 0 {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
 	// Canary promotion has an atomic effect aggregate. Its replay identity may
@@ -256,6 +256,10 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		return s.replay(ctx, key, existing, a.Identity, a.Fingerprint)
 	}
 	if !errors.Is(err, ErrNotFound) {
+		return store.AcceptedOperation{}, err
+	}
+	admission, err := s.prepareAppAdmission(ctx, a)
+	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
 	acceptedAt := time.Now().UTC().Truncate(time.Microsecond)
@@ -292,10 +296,12 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		return store.AcceptedOperation{}, err
 	}
 	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(a.Operation.ID), key)}
+	puts = append(puts, admission.puts...)
 	if replayLease != 0 {
 		puts = append(puts, clientv3.OpPut(s.replayLiveKey(key), store.OperationReplayContractVersion, clientv3.WithLease(replayLease)))
 	}
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)).Then(puts...).Commit()
+	comparisons := append([]clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)}, admission.compares...)
+	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(puts...).Commit()
 	if err != nil {
 		// A timed-out transaction can commit after the client loses its answer.
 		// Revoking the lease here could erase a committed replay-live marker.
@@ -316,6 +322,12 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 			_, _ = s.lease.Revoke(context.Background(), replayLease)
 		}
 		existing, err := s.loadAcceptance(ctx, key)
+		if errors.Is(err, ErrNotFound) {
+			if _, admissionErr := s.prepareAppAdmission(ctx, a); admissionErr != nil {
+				return store.AcceptedOperation{}, admissionErr
+			}
+			return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: errors.New("app admission changed while accepting operation; retry with the same key")}
+		}
 		if err != nil {
 			return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
 		}
@@ -779,6 +791,12 @@ func (s *V3OperationStore) mutateClaimWithComparisons(ctx context.Context, c sto
 	if comparisonsForOperation != nil {
 		baseComparisons = append(baseComparisons, comparisonsForOperation(&v.Operation)...)
 	}
+	admissionComparisons, admissionOps, e := s.releaseAppAdmission(ctx, v.Operation)
+	if e != nil {
+		return e
+	}
+	baseComparisons = append(baseComparisons, admissionComparisons...)
+	ops = append(ops, admissionOps...)
 	txn, e := s.kv.Txn(ctx).If(baseComparisons...).Then(ops...).Commit()
 	if e != nil {
 		return e

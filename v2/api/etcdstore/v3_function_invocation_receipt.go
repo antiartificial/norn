@@ -120,12 +120,19 @@ func (s *V3OperationStore) finishClaimedFunctionInvocation(ctx context.Context, 
 		if lock != nil {
 			comparisons = append(comparisons, clientv3.Compare(clientv3.Value(s.appLockKey(record.Operation.App)), "=", lock.Fence()))
 		}
-		txn, err := s.kv.Txn(ctx).If(comparisons...).Then(
+		admissionComparisons, admissionOps, err := s.releaseAppAdmission(ctx, record.Operation)
+		if err != nil {
+			return err
+		}
+		comparisons = append(comparisons, admissionComparisons...)
+		ops := []clientv3.Op{
 			clientv3.OpPut(s.opKey(claim.OperationID()), string(encodedOperation)),
 			clientv3.OpPut(receiptKey, string(encodedReceipt)),
 			clientv3.OpDelete(s.ownerKey(claim.OperationID())),
 			clientv3.OpDelete(s.runningKey(claim.OperationID())),
-		).Commit()
+		}
+		ops = append(ops, admissionOps...)
+		txn, err := s.kv.Txn(ctx).If(comparisons...).Then(ops...).Commit()
 		if err != nil {
 			return err
 		}
