@@ -194,6 +194,15 @@ active pre-index work must first drain or reconcile it.
    endpoint remains private. The normal v2 translator and private worker
    still use their existing paths; this helper does not apply a weighted
    file route, observe Traefik, or prove a deployment's active weight.
+
+   The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
+   hostname router and a weighted service referencing those exact
+   `@consulcatalog` backend names. It requires an origin URL, distinct
+   deployment IDs, positive weights totaling 100, and returns a SHA-256 of
+   canonical YAML. Input order cannot change that desired-route revision.
+   Package tests cover both-revision routing and unsafe or incomplete plans.
+   The renderer is not connected to a privileged file publisher, Traefik
+   readback, or endpoint probes, so it supplies no effective-weight evidence.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
