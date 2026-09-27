@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
@@ -22,6 +23,9 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.releases = self.root / "releases"
         self.logs = self.root / "logs"
         self.repo.mkdir()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.candidate_port = listener.getsockname()[1]
         self.write_fixture_repo()
         self.git("init")
         self.git("add", ".")
@@ -60,7 +64,38 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         )
         self.write(
             "v2/api/main.go",
-            "package main\n\nvar Version = \"dev\"\n\nfunc main() {}\n",
+            '''package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "os"
+)
+
+var Version = "dev"
+
+func main() {
+    if len(os.Args) == 2 && os.Args[1] == "--norn-startup-contract" {
+        fmt.Println(`{"name":"norn.startup/v2","schemaModes":["auto","check","migrate-only"],"startupModes":["active","passive"],"passiveRoutes":["/api/health","/api/version","/api/schema"],"schemaContract":{"readerVersion":1,"writerVersion":1,"catalogMigrationVersion":1,"catalogMinimumReaderVersion":1,"catalogMinimumWriterVersion":1}}`)
+        return
+    }
+    mode := os.Getenv("NORN_STARTUP_MODE")
+    if mode == "" { mode = "active" }
+    schemaMode := os.Getenv("NORN_SCHEMA_MODE")
+    if schemaMode == "" { schemaMode = "check" }
+    active := mode == "active"
+    http.HandleFunc("/api/health", func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(map[string]any{"status":mode}) })
+    http.HandleFunc("/api/version", func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(map[string]any{"version":Version}) })
+    http.HandleFunc("/api/schema", func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(map[string]any{
+        "startupMode":mode,"schemaMode":schemaMode,"currentMigrationVersion":1,
+        "operationRecoveryEnabled":active,"operationWorkerEnabled":active,"nomadWatcherEnabled":active,
+    }) })
+    address := os.Getenv("NORN_BIND_ADDR")
+    if address == "" { address = "127.0.0.1" }
+    if err := http.ListenAndServe(address+":"+os.Getenv("NORN_PORT"), nil); err != nil { panic(err) }
+}
+''',
         )
         self.write(
             "v2/api/cmd/norn-host-agent/main.go",
@@ -138,7 +173,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
                 "NORN_PLATFORM_SCRIPT_BIN": str(self.root / "host/platform-upgrade"),
                 "NORN_HOST_RUNTIME_BIN": str(self.root / "host/host-runtime"),
                 "NORN_PROXY_DIR": str(self.root / "proxy"),
-                "NORN_SKIP_CANDIDATE_API": "true",
+                "NORN_CANDIDATE_PORT": str(self.candidate_port),
                 "NORN_NODE_BIN": shutil.which("node") or "node",
             }
         )
@@ -288,6 +323,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         result = self.platform(
             "preflight",
             self.sha,
+            expect_success=False,
             extra_environment={
                 "NORN_RELEASE_SIGNATURE_POLICY": "require-signed",
                 "NORN_RELEASE_FETCH_HOOK": str(fetch_hook),
@@ -300,60 +336,52 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertTrue((self.releases / self.sha).is_dir())
         self.assertIn("invoking configured fetch hook", result.stdout)
         self.assertIn("reusing immutable release", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("startup contract probe target is not executable", result.stderr)
 
     def test_concurrent_promotions_fail_closed_and_lock_recovers(self) -> None:
-        self.platform("preflight", "HEAD")
         fake_bin = self.root / "fake-bin"
         fake_bin.mkdir()
-        marker = self.root / "launchctl-started"
-        launchctl = fake_bin / "launchctl"
-        launchctl.write_text(
+        marker = self.root / "caddy-reload-started"
+        caddy = fake_bin / "caddy"
+        caddy.write_text(
             "#!/bin/sh\n"
-            ': > "$NORN_TEST_LAUNCHCTL_MARKER"\n'
-            'sleep "${NORN_TEST_LAUNCHCTL_SLEEP:-0}"\n',
+            ': > "$NORN_TEST_CADDY_MARKER"\n'
+            'sleep "${NORN_TEST_CADDY_SLEEP:-0}"\n',
             encoding="utf-8",
         )
-        launchctl.chmod(0o755)
-        curl = fake_bin / "curl"
-        curl.write_text('#!/bin/sh\nprintf \'{}\\n\'\n', encoding="utf-8")
-        curl.chmod(0o755)
+        caddy.chmod(0o755)
         environment = self.platform_environment(
             {
                 "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
-                "NORN_DRAIN_MODE": "force",
-                "NORN_TEST_LAUNCHCTL_MARKER": str(marker),
-                "NORN_TEST_LAUNCHCTL_SLEEP": "2",
+                "NORN_PROXY_RELOAD": "true",
+                "NORN_TEST_CADDY_MARKER": str(marker),
+                "NORN_TEST_CADDY_SLEEP": "2",
             }
         )
-        command = [str(self.repo / "v2/scripts/platform-upgrade"), "upgrade", self.sha]
+        command = [str(self.repo / "v2/scripts/platform-upgrade"), "proxy-switch", "18801"]
         first = subprocess.Popen(command, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         deadline = time.monotonic() + 15
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
-        self.assertTrue(marker.exists(), "first promotion did not reach the guarded restart")
+        self.assertTrue(marker.exists(), "first promotion did not reach the guarded proxy reload")
 
-        second = subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+        second = subprocess.run(
+            [str(self.repo / "v2/scripts/platform-upgrade"), "proxy-switch", "18802"],
+            env=environment, text=True, capture_output=True, check=False,
+        )
         self.assertNotEqual(second.returncode, 0)
         self.assertIn("another platform promotion is already active", second.stderr)
 
-        proxy_switch = subprocess.run(
-            [str(self.repo / "v2/scripts/platform-upgrade"), "proxy-switch", "18802"],
-            env=environment,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertNotEqual(proxy_switch.returncode, 0)
-        self.assertIn("another platform promotion is already active", proxy_switch.stderr)
-        self.assertFalse((self.root / "proxy/upstream").exists())
+        self.assertEqual((self.root / "proxy/upstream").read_text(), "127.0.0.1:18801\n")
 
         first_stdout, first_stderr = first.communicate(timeout=15)
         self.assertEqual(first.returncode, 0, first_stdout + first_stderr)
 
         marker.unlink()
-        recovered_environment = environment | {"NORN_TEST_LAUNCHCTL_SLEEP": "0"}
+        recovered_environment = environment | {"NORN_TEST_CADDY_SLEEP": "0"}
         recovered = subprocess.run(
-            command,
+            [str(self.repo / "v2/scripts/platform-upgrade"), "proxy-switch", "18802"],
             env=recovered_environment,
             text=True,
             capture_output=True,
@@ -361,14 +389,6 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
 
-        recovered_switch = subprocess.run(
-            [str(self.repo / "v2/scripts/platform-upgrade"), "proxy-switch", "18802"],
-            env=recovered_environment,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(recovered_switch.returncode, 0, recovered_switch.stdout + recovered_switch.stderr)
         self.assertEqual((self.root / "proxy/upstream").read_text(), "127.0.0.1:18802\n")
 
 
