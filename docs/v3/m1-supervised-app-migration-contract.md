@@ -124,6 +124,25 @@ was launched.
 Other crash windows, MySQL and protected-runtime
 qualification remain open; this local test does not sign M1.
 
+## MySQL supervised-launch boundary
+
+Source review at head `95b76873` confirms that the SQL postcondition checker
+supports MySQL, but `runSupervisedMigration` rejects a MySQL target before
+effect reservation. `Session.WithMigrationLaunchMaterial` is deliberately
+PostgreSQL-only: it builds a libpq service file, passfile, connection URL, and
+remapped TLS files for the private runner. A MySQL session instead exposes
+structured host/user/password/database values and separately verified TLS
+material. Dropping the engine check would neither supply the runner's private
+MySQL connection format nor prove credential cleanup after API death.
+
+The MySQL implementation needs an accepted-target-bound private material
+adapter for both disabled and verified TLS, explicit declared migration
+environment names, runner-owned files that survive the API process, a
+MySQL-specific command and postcondition fixture, and the same crash/replay
+negative cases as PostgreSQL. Keep the current fail-closed engine check until
+that path is implemented and qualified. The PostgreSQL crash evidence does
+not establish MySQL migration safety.
+
 ## Current behavior and risk
 
 Migrations without a reviewed postcondition still execute with host `sh -c`

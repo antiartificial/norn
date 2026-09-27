@@ -59,6 +59,28 @@ func TestMigrationLaunchMaterialOwnsConnectionAfterSessionClose(t *testing.T) {
 	}
 }
 
+func TestMigrationLaunchMaterialKeepsMySQLOutsideUnqualifiedRunner(t *testing.T) {
+	resolved := ResolvedBinding{
+		Target: TargetIdentity{ServiceID: "review-mysql", ServiceGeneration: 1, BindingID: "review-mysql-app", BindingGeneration: 1,
+			Engine: EngineMySQL, Database: "review", Role: "review"},
+		Purpose: PurposeApplication, CredentialRef: "secret:review/app", TLS: DatabaseTLS{Mode: TLSDisabled},
+		Endpoint: DatabaseEndpoint{Host: "127.0.0.1", Port: 3306},
+	}
+	session, err := OpenSession(context.Background(), resolved, reviewMaterialSource(`{"password":"mysql-private-canary"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	called := false
+	err = session.WithMigrationLaunchMaterial("true", t.TempDir(), "DATABASE_URL", "", func(supervisor.MigrationLaunchMaterial) error {
+		called = true
+		return nil
+	})
+	if err == nil || called || strings.Contains(err.Error(), "mysql-private-canary") {
+		t.Fatalf("unqualified MySQL migration material was delivered: callback=%v err=%v", called, err)
+	}
+}
+
 func TestMigrationLaunchMaterialRemapsTLSFiles(t *testing.T) {
 	session, err := OpenSession(context.Background(), reviewMaterialBinding(), reviewMaterialSource(`{"password":"review-only"}`))
 	if err != nil {
