@@ -13,6 +13,12 @@ separate inbound control and outbound node mTLS identities, rejects a
 non-private listen address, and is required in candidate release manifests.
 No runtime control listener or Fleet host service invokes this path yet, so
 it is not an operational publication path.
+The control-side private mTLS client now sends only the reserved intent ID to
+every prevalidated private publisher origin and requires each host's immediate
+file-revision receipt. On a failed or uncertain request it returns the receipts
+already confirmed; the current or failed host may still have published and
+must be reconciled by readback. This client is not connected to normal app
+execution and its receipts do not establish effective Traefik or public traffic.
 This contract connects the canonical route renderer and local
 generation-fenced file publisher to Fleet's loopback Traefik readback. The
 normal etcd app deployment route stays disabled until the complete path is

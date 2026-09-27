@@ -1,0 +1,52 @@
+package ingress
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+func TestPublishRouteIntentToNodesReportsPartialPublication(t *testing.T) {
+	const intentID = "intent-1"
+	digest := strings.Repeat("a", 64)
+	var firstCalls atomic.Int32
+	first := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/routes/publish" || r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("unexpected publication request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 1 || body["intentId"] != intentID {
+			t.Errorf("caller sent an unauthorized route payload: %v, %v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"generation":1,"routeSHA256":"` + digest + `"}`))
+	}))
+	defer first.Close()
+	var secondCalls atomic.Int32
+	second := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		http.Error(w, "authority lost", http.StatusConflict)
+	}))
+	defer second.Close()
+	client := first.Client()
+	client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // Test transport only; production wrapper pins the CA.
+	nodes := []IngressNode{{ID: "ingress-01", APIURL: first.URL}, {ID: "ingress-02", APIURL: second.URL}}
+	receipts, err := publishRouteIntentToNodes(context.Background(), client, nodes, intentID, 1, digest)
+	if err == nil || len(receipts) != 1 || receipts[0].NodeID != "ingress-01" || receipts[0].RouteSHA256 != digest || firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("partial publication = %+v, %v; calls = %d/%d", receipts, err, firstCalls.Load(), secondCalls.Load())
+	}
+	nodes[1].APIURL = "https://203.0.113.10:18083"
+	if receipts, err := publishRouteIntentToNodes(context.Background(), client, nodes, intentID, 1, digest); err == nil || len(receipts) != 0 || firstCalls.Load() != 1 {
+		t.Fatalf("invalid inventory caused publication: %+v, %v", receipts, err)
+	}
+	nodes[1].APIURL = first.URL
+	if _, err := publishRouteIntentToNodes(context.Background(), client, nodes, intentID, 1, digest); err == nil || firstCalls.Load() != 1 {
+		t.Fatal("duplicate publisher origin caused publication")
+	}
+}
