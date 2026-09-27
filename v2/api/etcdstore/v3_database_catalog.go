@@ -216,6 +216,31 @@ func (s *V3OperationStore) activatePostgresDatabaseCatalog(ctx context.Context, 
 			operation.Operation.Kind != "database.catalog-activate" || operation.Operation.Ref != "database-catalog" {
 			return store.DatabaseCatalogRevision{}, store.ErrOperationOwnershipLost
 		}
+		indexKey := s.operationAcceptanceIndexKey(claim.OperationID())
+		index, err := s.kv.Get(ctx, indexKey)
+		if err != nil || len(index.Kvs) != 1 {
+			return store.DatabaseCatalogRevision{}, fmt.Errorf("catalog acceptance index is unavailable")
+		}
+		acceptanceKey := string(index.Kvs[0].Value)
+		accepted, err := s.loadAcceptance(ctx, acceptanceKey)
+		if err != nil {
+			return store.DatabaseCatalogRevision{}, fmt.Errorf("catalog signed acceptance is unavailable: %w", err)
+		}
+		identity, evidence := accepted.record.Identity, accepted.record.Accepted
+		if acceptanceKey != s.acceptanceKey(identity) || identity.Kind != "database.catalog-activate" || identity.Resource != "database-catalog" ||
+			evidence.Operation.ID != claim.OperationID() || evidence.Intent.OperationID != claim.OperationID() ||
+			evidence.Operation.Payload["expectedRevision"] != strconv.FormatInt(expectedCurrent, 10) ||
+			evidence.Operation.Payload["catalog"] != string(encodedCatalog) ||
+			evidence.Operation.Payload["catalogDigest"] != "sha256:"+record.Digest || evidence.Operation.Payload["requestedBy"] != actor {
+			return store.DatabaseCatalogRevision{}, fmt.Errorf("catalog activation differs from signed acceptance")
+		}
+		if err := s.signer.Verify(ctx, evidence.Intent.Signature, evidence.Intent.CanonicalBytes); err != nil {
+			return store.DatabaseCatalogRevision{}, fmt.Errorf("catalog acceptance signature is invalid: %w", err)
+		}
+		if err := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: evidence.Intent.Fingerprint,
+			IdentityOperationID: evidence.Operation.ID, Intent: evidence.Intent, Operation: operation.Operation}); err != nil {
+			return store.DatabaseCatalogRevision{}, fmt.Errorf("catalog accepted operation is invalid: %w", err)
+		}
 		if operation.Operation.Metadata == nil {
 			operation.Operation.Metadata = make(map[string]interface{})
 		}
@@ -238,7 +263,9 @@ func (s *V3OperationStore) activatePostgresDatabaseCatalog(ctx context.Context, 
 		compares = append(compares,
 			clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", operationRevision),
 			clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision),
-			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())))
+			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
+			clientv3.Compare(clientv3.ModRevision(indexKey), "=", index.Kvs[0].ModRevision),
+			clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", accepted.revision))
 		ops = append(ops, clientv3.OpPut(s.opKey(claim.OperationID()), string(encodedOperation)),
 			clientv3.OpDelete(s.ownerKey(claim.OperationID())), clientv3.OpDelete(s.runningKey(claim.OperationID())))
 	}

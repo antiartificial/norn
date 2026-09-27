@@ -45,12 +45,42 @@ type v3Record struct {
 	Operation  model.Operation `json:"operation"`
 	Generation int64           `json:"generation"`
 }
+
+// Storage must bypass Operation.MarshalJSON, which is intentionally a redacted
+// reader projection. The catalog activation payload is private execution data.
+func (r v3Record) MarshalJSON() ([]byte, error) {
+	type storedOperation model.Operation
+	return json.Marshal(struct {
+		Operation  storedOperation `json:"operation"`
+		Generation int64           `json:"generation"`
+	}{storedOperation(r.Operation), r.Generation})
+}
+
 type v3Acceptance struct {
 	Identity              store.OperationRequestIdentity `json:"identity"`
 	Accepted              store.AcceptedOperation        `json:"accepted"`
 	ReplayContractVersion string                         `json:"replayContractVersion,omitempty"`
 	ReplayExpiresAt       *time.Time                     `json:"replayExpiresAt,omitempty"`
 	ReplayExpiredAt       *time.Time                     `json:"replayExpiredAt,omitempty"`
+}
+
+func (a v3Acceptance) MarshalJSON() ([]byte, error) {
+	type storedOperation model.Operation
+	type acceptedAlias store.AcceptedOperation
+	return json.Marshal(struct {
+		Identity store.OperationRequestIdentity `json:"identity"`
+		Accepted struct {
+			acceptedAlias
+			Operation storedOperation `json:"operation"`
+		} `json:"accepted"`
+		ReplayContractVersion string     `json:"replayContractVersion,omitempty"`
+		ReplayExpiresAt       *time.Time `json:"replayExpiresAt,omitempty"`
+		ReplayExpiredAt       *time.Time `json:"replayExpiredAt,omitempty"`
+	}{Identity: a.Identity, Accepted: struct {
+		acceptedAlias
+		Operation storedOperation `json:"operation"`
+	}{acceptedAlias(a.Accepted), storedOperation(a.Accepted.Operation)}, ReplayContractVersion: a.ReplayContractVersion,
+		ReplayExpiresAt: a.ReplayExpiresAt, ReplayExpiredAt: a.ReplayExpiredAt})
 }
 
 // v3PrivateInvocation is deliberately separate from the public acceptance

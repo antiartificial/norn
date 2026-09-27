@@ -2,6 +2,9 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -31,13 +34,20 @@ func postgresCatalogFixture() database.Catalog {
 func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	adapter, client, _ := privateInvocationEtcdStore(t)
 	ctx := context.Background()
-	accept := func(key string) store.OperationClaim {
+	catalog := postgresCatalogFixture()
+	encodedCatalog, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encodedCatalog)
+	accept := func(key, catalogValue string) store.OperationClaim {
 		t.Helper()
 		request := store.OperationAcceptance{
 			Identity: store.OperationRequestIdentity{Authority: adapter.authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"},
 				Kind: "database.catalog-activate", Resource: "database-catalog", Key: key},
 			Operation: model.Operation{ID: uuid.NewString(), Kind: "database.catalog-activate", Ref: "database-catalog", Source: "test",
-				Risk: "write", MaxAttempts: 1},
+				Risk: "write", MaxAttempts: 1, Payload: map[string]interface{}{"expectedRevision": "0", "catalog": catalogValue,
+					"catalogDigest": "sha256:" + hex.EncodeToString(digest[:]), "requestedBy": "operator"}},
 			Audit: store.AcceptanceAuditContext{Source: "test", Scopes: []string{"database:write"}},
 		}
 		var err error
@@ -54,7 +64,7 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 		}
 		return claim
 	}
-	stale := accept("stale")
+	stale := accept("stale", string(encodedCatalog))
 	owner, err := client.Get(ctx, adapter.ownerKey(stale.OperationID()))
 	if err != nil || len(owner.Kvs) != 1 {
 		t.Fatalf("owner: %v", err)
@@ -68,7 +78,17 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
 		t.Fatalf("catalog appeared: %v", err)
 	}
-	live := accept("live")
+	wrong := accept("wrong", `{"apiVersion":"wrong"}`)
+	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, wrong, 0, catalog, "operator", nil); err == nil {
+		t.Fatal("different signed catalog activated")
+	}
+	if _, err := adapter.ActiveDatabaseCatalog(ctx); !errors.Is(err, store.ErrDatabaseCatalogRevisionConflict) {
+		t.Fatalf("wrong catalog changed routing: %v", err)
+	}
+	if err := adapter.FinishClaimedOperation(ctx, wrong, model.OperationFailed, "refused", nil); err != nil {
+		t.Fatal(err)
+	}
+	live := accept("live", string(encodedCatalog))
 	activated, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, 0, postgresCatalogFixture(), "operator", map[string]interface{}{"expectedRevision": 0})
 	if err != nil || activated.Revision != 1 {
 		t.Fatalf("activate %+v: %v", activated, err)
@@ -76,6 +96,10 @@ func TestV3PostgresCatalogClaimedActivationEtcd(t *testing.T) {
 	finished, err := adapter.GetOperation(ctx, live.OperationID())
 	if err != nil || finished.Status != model.OperationSucceeded || fmt.Sprint(finished.Metadata["revision"]) != "1" || finished.Metadata["storedDigest"] != activated.Digest {
 		t.Fatalf("terminal receipt %+v: %v", finished, err)
+	}
+	public, err := json.Marshal(finished)
+	if err != nil || strings.Contains(string(public), "secret:app/db") || strings.Contains(string(public), `"catalog":`) {
+		t.Fatalf("catalog leaked through operation read projection: %v", err)
 	}
 	if _, err := adapter.ActivatePostgresDatabaseCatalogClaimed(ctx, live, 1, postgresCatalogFixture(), "operator", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("completed claim reused: %v", err)
