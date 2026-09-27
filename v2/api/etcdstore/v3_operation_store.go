@@ -523,50 +523,8 @@ func (s *V3OperationStore) normalize(a store.OperationAcceptance) (store.Operati
 	if err := store.NormalizeAcceptanceAudit(&a.Audit); err != nil {
 		return store.OperationAcceptance{}, err
 	}
-	a.Operation.ID, a.Operation.Kind = strings.TrimSpace(a.Operation.ID), strings.TrimSpace(a.Operation.Kind)
-	if a.Operation.ID == "" || a.Operation.Kind == "" || a.Operation.Kind != a.Identity.Kind {
-		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "operation ID and identity-matching kind are required"}
-	}
-	if _, exists := a.Operation.Metadata["idempotencyKey"]; exists {
-		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "new acceptance cannot use the legacy global idempotency key"}
-	}
-	if a.Operation.Status == "" {
-		a.Operation.Status = model.OperationQueued
-	}
-	if a.Operation.Status != model.OperationQueued && !a.Operation.Status.Terminal() {
-		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "accepted operation must be queued or terminal"}
-	}
-	if a.Operation.Status == model.OperationQueued && (a.Operation.FinishedAt != nil || a.Operation.Attempts != 0 || a.Operation.LockGeneration != 0 || a.Operation.LockedBy != "" || a.Operation.LockedUntil != nil) {
-		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "new queued operation cannot carry execution ownership or terminal state"}
-	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	if a.Operation.StartedAt.IsZero() {
-		a.Operation.StartedAt = now
-	} else {
-		a.Operation.StartedAt = a.Operation.StartedAt.UTC().Truncate(time.Microsecond)
-	}
-	if a.Operation.NextAttemptAt.IsZero() {
-		a.Operation.NextAttemptAt = a.Operation.StartedAt
-	} else {
-		a.Operation.NextAttemptAt = a.Operation.NextAttemptAt.UTC().Truncate(time.Microsecond)
-	}
-	if a.Operation.MaxAttempts <= 0 {
-		a.Operation.MaxAttempts = 1
-	}
-	if a.Operation.Payload == nil {
-		a.Operation.Payload = map[string]interface{}{}
-	}
-	if a.Operation.Metadata == nil {
-		a.Operation.Metadata = map[string]interface{}{}
-	}
-	if a.Operation.Status.Terminal() {
-		if a.Operation.FinishedAt == nil {
-			finished := a.Operation.StartedAt
-			a.Operation.FinishedAt = &finished
-		} else {
-			finished := a.Operation.FinishedAt.UTC().Truncate(time.Microsecond)
-			a.Operation.FinishedAt = &finished
-		}
+	if err := store.NormalizeOperationDomain(&a); err != nil {
+		return store.OperationAcceptance{}, err
 	}
 	want, err := store.CanonicalOperationRequestFingerprint(a)
 	if err != nil {

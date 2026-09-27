@@ -361,7 +361,7 @@ func (s *PGOperationStore) normalize(ctx context.Context, input OperationAccepta
 	if err := NormalizeAcceptanceAudit(&input.Audit); err != nil {
 		return OperationAcceptance{}, err
 	}
-	if err := normalizeOperationDomain(&input); err != nil {
+	if err := NormalizeOperationDomain(&input); err != nil {
 		return OperationAcceptance{}, err
 	}
 	if err := normalizeFleetReconciliationAcceptance(&input); err != nil {
@@ -454,7 +454,10 @@ func sameFingerprint(a, b RequestFingerprint) bool {
 	return a.Version == b.Version && subtle.ConstantTimeCompare([]byte(a.Digest), []byte(b.Digest)) == 1
 }
 
-func normalizeOperationDomain(acceptance *OperationAcceptance) error {
+// NormalizeOperationDomain applies the shared operation and deployment
+// admission invariants before a backend seals an acceptance intent. Backends
+// remain responsible for their own atomic persistence and replay policy.
+func NormalizeOperationDomain(acceptance *OperationAcceptance) error {
 	op := &acceptance.Operation
 	op.ID = strings.TrimSpace(op.ID)
 	op.Kind = strings.TrimSpace(op.Kind)
