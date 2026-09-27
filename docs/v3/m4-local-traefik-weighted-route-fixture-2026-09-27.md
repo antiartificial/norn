@@ -96,6 +96,27 @@ ingress node and unprotected local HTTP. It does not run
 TLS on Fleet, prove simultaneous multi-node propagation, or connect a durable
 controller intent to `ActiveWeight`.
 
+## Two-ingress partial-propagation rehearsal
+
+A second disposable run used two independent Traefik 3.7.13 processes with
+separate watched route directories and loopback web/API ports, sharing the
+same local Consul 2.0.4 catalog and two backend servers. Publishing only to
+ingress A made `ObserveRenderedRoute` return no observations and report that
+ingress B's effective public router differed. After publishing the same
+generation-1 route to B, both effective-route observations and both exact
+`/readyz` response probes passed. Thirty root requests through each ingress
+returned 21 old and 9 new in this deterministic local run.
+
+Withdrawing only A made `ObserveWithdrawnRoute` reject B's retained public
+router. After generation-2 withdrawal on B, both withdrawal observations
+passed and the public-host request returned 404 through each ingress. The
+script exited zero; all seven fixture listeners were gone after cleanup.
+This proves the local observers reject those two partial rollout states.
+Both processes still ran on one Mac using unprotected loopback HTTP; the
+rehearsal does not qualify protected Fleet hosts, node enumeration, the
+public load balancer, TLS, durable controller authority, or real traffic
+percentages.
+
 `ingress.PublishRenderedRoute` writes one canonical weighted route into a
 trusted file-provider directory under a cross-process lock. It fsyncs a
 private temporary file, atomically renames it, and syncs the directory.
