@@ -399,3 +399,47 @@ func TestCreatePrivateReleaseAttestationSuccessReplayAndConflict(t *testing.T) {
 	conflict := invokePrivateRoute(h, app, principal, privateRouteRequestBody(app, 1), "stable-build")
 	requirePrivateRouteProblem(t, conflict, http.StatusConflict, "idempotency_key_reused")
 }
+
+func TestCreatePrivateReleaseAttestationReserveExhaustion(t *testing.T) {
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	database, err := store.Connect(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(database.Close)
+	if err := store.Migrate(database); err != nil {
+		t.Fatal(err)
+	}
+	app := "private-reserve-" + strings.ToLower(strings.ReplaceAll(uuid.NewString(), "-", ""))
+	t.Cleanup(func() {
+		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM operations WHERE app=$1 AND kind='release.attestation'`, app)
+		_ = database.RecordArchiveCapacity(context.Background(), false, "")
+	})
+	ctx := context.Background()
+	if err := database.SetEvidenceReservePolicy(ctx, store.EvidenceReservePolicy{Enabled: true, MaxPending: 10, MaxPendingAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordArchiveCapacity(ctx, true, "test archive full"); err != nil {
+		t.Fatal(err)
+	}
+	h := privateRouteHandler(t, database, "staging", "norn-signed-private", app, "personal-owner/private-repo")
+	principal := privateRoutePrincipal(app)
+	principal.TokenID = uuid.NewString()
+	body := privateRouteRequestBody(app, 0)
+	rejected := invokePrivateRoute(h, app, principal, body, "reserve-retry")
+	requirePrivateRouteProblem(t, rejected, http.StatusServiceUnavailable, "evidence_reserve_exhausted")
+	var rows int
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE app=$1 AND kind='release.attestation'`, app).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("rejected attestation rows=%d err=%v", rows, err)
+	}
+	if err := database.RecordArchiveCapacity(ctx, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	created := invokePrivateRoute(h, app, principal, body, "reserve-retry")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("retry after reserve recovery status=%d body=%s", created.Code, created.Body.String())
+	}
+}

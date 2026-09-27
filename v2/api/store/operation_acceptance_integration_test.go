@@ -675,6 +675,38 @@ func TestAcceptanceReservesEvidenceAtomicallyAndReplaysDuringExhaustion(t *testi
 	}
 }
 
+func TestNewReleaseAttestationRefusesExhaustedReserveButTerminalReceiptCanFinish(t *testing.T) {
+	_, dbs := acceptanceIntegrationStores(t, 1)
+	db := dbs[0]
+	ctx := context.Background()
+	if err := db.SetEvidenceReservePolicy(ctx, EvidenceReservePolicy{Enabled: true, MaxPending: 10, MaxPendingAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordArchiveCapacity(ctx, true, "test archive full"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	attestation := &model.Operation{ID: uuid.NewString(), Kind: "release.attestation", App: "reserve-app", Status: model.OperationSucceeded, StartedAt: now, FinishedAt: &now}
+	var exhausted *EvidenceReserveExhaustedError
+	if err := db.InsertNewReleaseAttestation(ctx, attestation); !errors.As(err, &exhausted) {
+		t.Fatalf("new release attestation with exhausted reserve: %v", err)
+	}
+	var rows int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE id=$1`, attestation.ID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("refused attestation rows=%d err=%v", rows, err)
+	}
+	terminal := &model.Operation{ID: uuid.NewString(), Kind: "fleet.reconciliation", Status: model.OperationSucceeded, StartedAt: now, FinishedAt: &now}
+	if err := db.InsertCompletedOperation(ctx, terminal); err != nil {
+		t.Fatalf("terminal receipt under exhausted reserve: %v", err)
+	}
+	if err := db.RecordArchiveCapacity(ctx, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertNewReleaseAttestation(ctx, attestation); err != nil {
+		t.Fatalf("new release attestation after capacity recovery: %v", err)
+	}
+}
+
 func TestAcceptanceEvidenceReservationSerializesConcurrentNewRequests(t *testing.T) {
 	stores, dbs := acceptanceIntegrationStores(t, 2)
 	ctx := context.Background()

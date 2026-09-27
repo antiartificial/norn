@@ -387,6 +387,20 @@ func (db *DB) GetPromotionOperationByDeploymentID(ctx context.Context, deploymen
 // FinishOperation for receipts that are already complete: a failure between
 // those statements leaves an ambiguous terminal record without finished_at.
 func (db *DB) InsertCompletedOperation(ctx context.Context, op *model.Operation) error {
+	return db.insertCompletedOperation(ctx, op, false)
+}
+
+// InsertNewReleaseAttestation admits newly issued private release evidence.
+// Unlike terminal reconciliation receipts, issuance can safely be refused
+// before the operation exists when archive capacity is exhausted.
+func (db *DB) InsertNewReleaseAttestation(ctx context.Context, op *model.Operation) error {
+	if op == nil || op.Kind != "release.attestation" {
+		return fmt.Errorf("release attestation operation is required")
+	}
+	return db.insertCompletedOperation(ctx, op, true)
+}
+
+func (db *DB) insertCompletedOperation(ctx context.Context, op *model.Operation, requireReserve bool) error {
 	if db == nil || db.Pool == nil {
 		return fmt.Errorf("operation store is unavailable")
 	}
@@ -407,11 +421,24 @@ func (db *DB) InsertCompletedOperation(ctx context.Context, op *model.Operation)
 	if err != nil {
 		return err
 	}
-	_, err = db.Pool.Exec(ctx, `
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if requireReserve {
+		if err := checkNewDirectEvidenceAdmission(ctx, tx); err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO operations (id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, next_attempt_at, started_at, updated_at, finished_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now(), $16)
 	`, op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, payload, metadata, op.Attempts, op.MaxAttempts, op.NextAttemptAt, op.StartedAt, op.FinishedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // FinishReservedFleetGitHubOperation turns a pre-external, signed Fleet

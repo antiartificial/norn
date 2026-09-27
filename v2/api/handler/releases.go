@@ -129,13 +129,18 @@ func (h *Handler) CreatePrivateReleaseAttestation(w http.ResponseWriter, r *http
 	now := time.Now().UTC()
 	payload := map[string]interface{}{"schemaVersion": model.NornPrivateAttestationSchema, "candidate": candidate}
 	op := &model.Operation{ID: uuid.NewString(), Kind: "release.attestation", App: appID, Ref: request.SourceSHA, Status: model.OperationSucceeded, Risk: "private release evidence", Source: "release-control-api", Message: "private release evidence signed", Payload: payload, Metadata: map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "environment": h.cfg.EnvironmentID(), "requestCI": principal.CI}, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
-	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
+	if err := h.db.InsertNewReleaseAttestation(r.Context(), op); err != nil {
 		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), key); lookupErr == nil {
 			storedDigest, _ := existing.Metadata["requestDigest"].(string)
 			if existing.Kind == "release.attestation" && existing.App == appID && storedDigest == digest {
 				writeJSON(w, existing.Payload)
 				return
 			}
+		}
+		var reserveExhausted *store.EvidenceReserveExhaustedError
+		if errors.As(err, &reserveExhausted) {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "evidence_reserve_exhausted", "private release evidence capacity is exhausted; retry after archived evidence is available")
+			return
 		}
 		WriteControlProblem(w, r, http.StatusInternalServerError, "private_attestation_store_failed", "failed to durably store private release evidence")
 		return

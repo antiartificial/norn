@@ -83,6 +83,45 @@ func (e *EvidenceReserveExhaustedError) Error() string {
 	return "evidence reserve exhausted: " + strings.Join(e.Reasons, "; ")
 }
 
+// checkNewDirectEvidenceAdmission protects new evidence issued outside the
+// signed operation-acceptance path. The evidence payload may itself be signed,
+// but it has no operation-acceptance envelope. This does not reserve
+// signed-acceptance bytes or create an archive intent for an unsupported type.
+// The caller must hold this transaction through its insert. Terminal receipts
+// for work already performed must not use this gate.
+func checkNewDirectEvidenceAdmission(ctx context.Context, tx pgx.Tx) error {
+	var enabled, archiveExhausted bool
+	var maxPending, maxAgeSeconds int
+	var archiveDetail string
+	if err := tx.QueryRow(ctx, `SELECT enabled, max_pending, max_pending_age_seconds, archive_exhausted, archive_detail
+		FROM evidence_reserve WHERE singleton FOR UPDATE`).Scan(&enabled, &maxPending, &maxAgeSeconds, &archiveExhausted, &archiveDetail); err != nil {
+		return err
+	}
+	if !enabled {
+		return nil
+	}
+	var pending int
+	var oldest *time.Time
+	var databaseNow time.Time
+	if err := tx.QueryRow(ctx, `SELECT count(*), min(created_at), clock_timestamp() FROM evidence_archive_intents WHERE state = 'pending'`).Scan(&pending, &oldest, &databaseNow); err != nil {
+		return err
+	}
+	var reasons []string
+	if pending >= maxPending {
+		reasons = append(reasons, fmt.Sprintf("%d unarchived evidence bundles reach the reserve limit of %d", pending, maxPending))
+	}
+	if oldest != nil && databaseNow.Sub(*oldest) >= time.Duration(maxAgeSeconds)*time.Second {
+		reasons = append(reasons, fmt.Sprintf("evidence has waited for archiving longer than %s", time.Duration(maxAgeSeconds)*time.Second))
+	}
+	if archiveExhausted {
+		reasons = append(reasons, "archive capacity is exhausted: "+archiveDetail)
+	}
+	if len(reasons) > 0 {
+		return &EvidenceReserveExhaustedError{Reasons: reasons}
+	}
+	return nil
+}
+
 // reserveAcceptedEvidence creates an exact signed-payload byte reservation
 // and, where the archive supports the subject, an outbox intent in the same
 // transaction as signed operation acceptance. Locking the singleton policy
