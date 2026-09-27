@@ -502,55 +502,6 @@ func (s *OperationStore) CancelQueuedOperation(ctx context.Context, id, requeste
 	return nil, false, fmt.Errorf("cancel %s: exhausted retries under contention", id)
 }
 
-func (s *OperationStore) RecoverInFlightOperations(ctx context.Context) error {
-	all, err := s.scanAll(ctx)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	for _, item := range all {
-		op := item.op
-		if op.Status != model.OperationRunning || !strings.HasPrefix(op.Kind, "app.") {
-			continue
-		}
-		if op.LockedUntil != nil && op.LockedUntil.After(now) {
-			continue
-		}
-		id := op.ID
-		if err := s.update(ctx, id, func(op *model.Operation) bool {
-			if op.Status != model.OperationRunning || !strings.HasPrefix(op.Kind, "app.") {
-				return false
-			}
-			if op.LockedUntil != nil && op.LockedUntil.After(time.Now()) {
-				return false
-			}
-			ts := time.Now()
-			if op.Attempts < op.MaxAttempts {
-				op.Status = model.OperationQueued
-				op.Message = "operation recovered after API restart and queued for a safe retry"
-				mergeMetadata(op, map[string]interface{}{"recoveredAfterRestart": true})
-				op.LockedBy = ""
-				op.LockedUntil = nil
-				op.NextAttemptAt = ts
-				op.UpdatedAt = ts
-				return true
-			}
-			op.Status = model.OperationFailed
-			op.Message = "operation interrupted after a non-retryable stage; manual review required"
-			op.LastError = "operation executor lease expired"
-			mergeMetadata(op, map[string]interface{}{"manualRecoveryRequired": true})
-			op.LockedBy = ""
-			op.LockedUntil = nil
-			op.UpdatedAt = ts
-			op.FinishedAt = &ts
-			return true
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *OperationStore) RecoverMaintenanceOperations(ctx context.Context) error {
 	all, err := s.scanAll(ctx)
 	if err != nil {
