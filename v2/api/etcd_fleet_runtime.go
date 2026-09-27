@@ -75,7 +75,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return fmt.Errorf("private invocation startup preflight: %w", err)
 	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
-	githubConfig := githubapp.Config{AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID, PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository, DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath, PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow, APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production()}
+	githubConfig := githubapp.Config{AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID, PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository, Environment: cfg.FleetGitHubEnvironment, PilotRunID: cfg.FleetGitHubPilotRunID, DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath, PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow, APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production()}
 	var fleetGitHub *githubapp.Client
 	if githubapp.Configured(githubConfig) {
 		fleetGitHub, err = githubapp.New(githubConfig, nil)

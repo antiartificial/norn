@@ -91,8 +91,8 @@ func TestEtcdFleetGitHubDispatchProcess(t *testing.T) {
 		"NORN_PROFILE=development", "NORN_ENVIRONMENT=staging", "NORN_QUALIFICATION_SIGNING_KEY="+testEd25519Private('g'), "NORN_API_TOKEN="+secret, "NORN_AUDIT_SIGNING_KEY="+auditKey, "NORN_AUDIT_RETENTION_DAYS=365", "NORN_REQUIRE_EXPLICIT_AUTH=true",
 		"NORN_NOMAD_ADDR=https://nomad.example.test:4646", "NORN_CONSUL_ADDR=https://consul.example.test:8501", "NORN_REGISTRY_URL=registry.example.test/norn", "NORN_LEGACY_TOKEN_SIGNING_UNTIL=2020-01-01T00:00:00Z",
 		"NORN_BIND_ADDR=127.0.0.1", fmt.Sprintf("NORN_PORT=%d", port), "NORN_FLEET_CONFIG="+configPath, "NORN_UI_DIR=",
-		"NORN_FLEET_GITHUB_APP_ID=1234", "NORN_FLEET_GITHUB_INSTALLATION_ID=1", "NORN_FLEET_GITHUB_PRIVATE_KEY_FILE="+keyPath, "NORN_FLEET_GITHUB_REPOSITORY=acme/norn-fleet", "NORN_FLEET_GITHUB_CONFIG_PATH=environments/staging/nyc3/cluster.yaml", "NORN_FLEET_GITHUB_API_BASE_URL="+github.URL,
-		"NORN_GITHUB_ACTIONS_OIDC_AUDIENCE=norn-fleet-staging", "NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES=acme/norn-fleet@101@202", "NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS=acme/norn-fleet/.github/workflows/apply.yml@"+strings.Repeat("a", 40), "NORN_GITHUB_ACTIONS_ALLOWED_REFS=refs/heads/main", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS=workflow_dispatch", "NORN_GITHUB_ACTIONS_ALLOWED_APPS=fleet", "NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS=staging", "NORN_GITHUB_ACTIONS_DEFAULT_BRANCH=main",
+		"NORN_FLEET_GITHUB_APP_ID=1234", "NORN_FLEET_GITHUB_INSTALLATION_ID=1", "NORN_FLEET_GITHUB_PRIVATE_KEY_FILE="+keyPath, "NORN_FLEET_GITHUB_REPOSITORY=acme/norn-fleet", "NORN_FLEET_GITHUB_CONFIG_PATH=environments/staging/nyc3/cluster.yaml", "NORN_FLEET_GITHUB_ENVIRONMENT=staging", "NORN_FLEET_GITHUB_API_BASE_URL="+github.URL,
+		"NORN_GITHUB_ACTIONS_OIDC_AUDIENCE=norn-fleet-staging", "NORN_GITHUB_ACTIONS_RELEASE_BINDINGS=fleet=acme/norn-fleet@101@202", "NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES=acme/norn-fleet@101@202", "NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS=acme/norn-fleet/.github/workflows/apply.yml@"+strings.Repeat("a", 40), "NORN_GITHUB_ACTIONS_ALLOWED_REFS=refs/heads/main", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS=workflow_dispatch", "NORN_GITHUB_ACTIONS_ALLOWED_APPS=fleet", "NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS=staging", "NORN_GITHUB_ACTIONS_DEFAULT_BRANCH=main",
 	)
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
@@ -118,8 +118,8 @@ func TestEtcdFleetGitHubDispatchProcess(t *testing.T) {
 		t.Fatalf("unacknowledged contraction status=%d body=%s dispatches=%d", refused.StatusCode, refused.Body, github.Dispatches())
 	}
 	first := processJSONRequest(t, http.MethodPost, dispatchURL, operatorToken, "", map[string]bool{"allowDestructive": true})
-	if first.StatusCode != http.StatusBadGateway || !bytes.Contains(first.Body, []byte("fleet_github_dispatch_unproven")) || github.Dispatches() != 1 {
-		t.Fatalf("lost response status=%d body=%s dispatches=%d", first.StatusCode, first.Body, github.Dispatches())
+	if first.StatusCode != http.StatusCreated || github.Dispatches() != 1 {
+		t.Fatalf("recovered lost response status=%d body=%s dispatches=%d", first.StatusCode, first.Body, github.Dispatches())
 	}
 	if nonce := github.Nonce(); nonce == "" || bytes.Contains(first.Body, []byte(nonce)) {
 		t.Fatalf("first dispatch leaked or omitted nonce: body=%s nonce=%q", first.Body, nonce)
@@ -129,7 +129,7 @@ func TestEtcdFleetGitHubDispatchProcess(t *testing.T) {
 		t.Fatalf("changed intent status=%d body=%s dispatches=%d", changed.StatusCode, changed.Body, github.Dispatches())
 	}
 	recovered := processJSONRequest(t, http.MethodPost, dispatchURL, operatorToken, "", map[string]bool{"allowDestructive": true})
-	if recovered.StatusCode != http.StatusCreated || bytes.Contains(recovered.Body, []byte(github.Nonce())) || github.Dispatches() != 1 {
+	if recovered.StatusCode != http.StatusOK || bytes.Contains(recovered.Body, []byte(github.Nonce())) || github.Dispatches() != 1 {
 		t.Fatalf("recovery status=%d body=%s dispatches=%d", recovered.StatusCode, recovered.Body, github.Dispatches())
 	}
 	var dispatched model.Operation
