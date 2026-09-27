@@ -39,8 +39,13 @@ configured node source and includes both the snapshot and
 checkpoint. The control API checks their canonical digest and node membership.
 Older checkpoints without these fields remain valid history but cannot supply
 M4 ingress inventory proof. `CurrentFleetIngressInventory` now resolves only
-the latest successful Fleet attempt with matching configuration and completion
-checkpoints and one provider state serial; a newer pending attempt fails closed.
+the latest successful Fleet attempt with matching configuration and signed
+terminal-predecessor checkpoints and one provider state serial; a newer pending
+attempt fails closed. The runner's revision-fenced transition to `succeeded`
+now atomically selects the active ingress inventory for its cluster and
+environment when that attempt carries a valid inventory. The server-owned
+active-inventory readback refuses an unrelated plan and carries the pointer
+revision for later route-intent comparison.
 The result includes the plan-state and checkpoint etcd revisions needed for
 terminal fencing. The control worker must bind that Fleet plan and attempt to
 its accepted deployment, compare those revisions again at completion,
@@ -128,13 +133,13 @@ deployment, region, and desired regional traffic weight. They do not identify
 the public endpoint, process, previous deployment backend, or a complete
 old/new route split. `RenderedRoute` is presently a caller-supplied value.
 Passing that value through observation cannot authorize terminal traffic.
-The deployment acceptance and v3 operation-store configuration also do not
-select an authoritative Fleet plan for this app. `CurrentFleetIngressInventory`
-currently receives its plan ID from its caller. Before route-intent admission,
-the control plane must bind the accepted deployment to the intended Fleet plan
-through a server-owned source, and compare that plan's current checkpoint in
-the intent transaction. The app's prior route pointer must likewise be loaded
-from durable state, not supplied by the request.
+The deployment acceptance still does not bind this app to a Fleet cluster and
+environment. `CurrentFleetIngressInventory` accepts a caller plan ID for
+diagnostic readback; the route-intent worker must use the server-owned active
+pointer and bind the accepted deployment to its cluster/environment. The
+intent transaction must compare that pointer and its current checkpoint. The
+app's prior route pointer must likewise be loaded from durable state, not
+supplied by the request.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

@@ -39,7 +39,7 @@ func TestResolveFleetIngressInventoryRequiresLatestCompletedAttempt(t *testing.T
 	sum := sha256.Sum256(canonical)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
 	configured := inventoryCheckpointOperation(t, attempt, "nodes_configured", snapshot, digest)
-	completed := inventoryCheckpointOperation(t, attempt, "complete", nil, "")
+	completed := inventoryCheckpointOperation(t, attempt, "readiness_verified", nil, "")
 	revisions := map[string]int64{configured.ID: 42, completed.ID: 43}
 	evidence, err := resolveFleetIngressInventory(planID, "norn-staging", "staging/nyc3", 18082, []fleet.RunnerAttempt{attempt}, []model.Operation{configured, completed}, revisions)
 	if err != nil || evidence.Digest != digest || evidence.AttemptID != attempt.ID || evidence.StateSerial != 7 || evidence.CheckpointModRevision != 42 || len(evidence.Nodes) != 2 || evidence.Nodes[1].APIURL != "https://10.43.0.22:18082" {
@@ -49,6 +49,11 @@ func TestResolveFleetIngressInventoryRequiresLatestCompletedAttempt(t *testing.T
 	compares, err := (&V3OperationStore{prefix: "/test"}).fleetIngressInventoryCompares(*evidence)
 	if err != nil || len(compares) != 2 {
 		t.Fatalf("inventory terminal compares = %d, %v", len(compares), err)
+	}
+	evidence.Cluster, evidence.Environment, evidence.ActivePointerRevision = "norn-staging", "staging/nyc3", 44
+	compares, err = (&V3OperationStore{prefix: "/test"}).fleetIngressInventoryCompares(*evidence)
+	if err != nil || len(compares) != 3 {
+		t.Fatalf("active inventory pointer compare = %d, %v", len(compares), err)
 	}
 	incomplete := *evidence
 	incomplete.PlanStateModRevision = 0
@@ -62,7 +67,7 @@ func TestResolveFleetIngressInventoryRequiresLatestCompletedAttempt(t *testing.T
 		history  []model.Operation
 	}{
 		"newer pending attempt":   {[]fleet.RunnerAttempt{pending, attempt}, []model.Operation{configured, completed}},
-		"missing completion":      {[]fleet.RunnerAttempt{attempt}, []model.Operation{configured}},
+		"missing terminal proof":  {[]fleet.RunnerAttempt{attempt}, []model.Operation{configured}},
 		"duplicate configuration": {[]fleet.RunnerAttempt{attempt}, []model.Operation{configured, configured, completed}},
 	} {
 		if _, err := resolveFleetIngressInventory(planID, "norn-staging", "staging/nyc3", 18082, attemptsAndHistory.attempts, attemptsAndHistory.history, revisions); err == nil {

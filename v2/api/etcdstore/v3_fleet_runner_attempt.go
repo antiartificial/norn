@@ -371,7 +371,17 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 			return nil, err
 		}
 		nextState, _ := json.Marshal(v3FleetRunnerPlanState{Version: state.Version + 1})
-		txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.fleetRunnerAttemptKey(planID, id)), "=", response.Kvs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerPlanStateKey(planID)), "=", stateResponse.Kvs[0].ModRevision)).Then(clientv3.OpPut(s.fleetRunnerAttemptKey(planID, id), string(encoded)), clientv3.OpPut(s.fleetRunnerPlanStateKey(planID), string(nextState))).Commit()
+		compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.fleetRunnerAttemptKey(planID, id)), "=", response.Kvs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerPlanStateKey(planID)), "=", stateResponse.Kvs[0].ModRevision)}
+		puts := []clientv3.Op{clientv3.OpPut(s.fleetRunnerAttemptKey(planID, id), string(encoded)), clientv3.OpPut(s.fleetRunnerPlanStateKey(planID), string(nextState))}
+		if action == "advance" && item.Status == "succeeded" {
+			pointerCompares, pointerPuts, err := s.activeFleetIngressTransition(ctx, planID, item)
+			if err != nil {
+				return nil, err
+			}
+			compares = append(compares, pointerCompares...)
+			puts = append(puts, pointerPuts...)
+		}
+		txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
 		if err != nil {
 			return nil, err
 		}
