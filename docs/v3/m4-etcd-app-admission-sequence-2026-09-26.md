@@ -235,6 +235,12 @@ active pre-index work must first drain or reconcile it.
    local inputs before either write. Dispatch still must resolve and probe
    the accepted targets and invoke that entry point; no normal managed job
    path is enabled by this private preparation alone.
+   Etcd now has a read-only claimed-deployment verifier that follows the
+   acceptance index, rechecks the retained signature and immutable deployment
+   aggregate, and compares the claimed payload. It passed against a disposable
+   local etcd member, including forged app and payload refusals. A dedicated
+   deployment worker must call it while holding a live claim and app lock;
+   the existing general `app.deploy` worker still enters the PG pipeline.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact
