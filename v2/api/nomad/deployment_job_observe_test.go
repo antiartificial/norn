@@ -17,6 +17,7 @@ func TestLookupDeploymentJobRevisionSeparatesAbsenceAndExactMarkers(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	submissionSource := string(source)
 	index, version := uint64(43), uint64(7)
 	request.Job.JobModifyIndex, request.Job.Version = &index, &version
 	status := http.StatusNotFound
@@ -33,7 +34,7 @@ func TestLookupDeploymentJobRevisionSeparatesAbsenceAndExactMarkers(t *testing.T
 			}
 			_ = json.NewEncoder(w).Encode(request.Job)
 		case "/v1/job/" + request.App + "/submission":
-			_ = json.NewEncoder(w).Encode(&nomadapi.JobSubmission{Source: string(source), Format: "json"})
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobSubmission{Source: submissionSource, Format: "json"})
 		case "/v1/job/" + request.App + "/plan":
 			_ = json.NewEncoder(w).Encode(&nomadapi.JobPlanResponse{JobModifyIndex: index, Diff: &nomadapi.JobDiff{Type: planDiff}})
 		default:
@@ -54,6 +55,12 @@ func TestLookupDeploymentJobRevisionSeparatesAbsenceAndExactMarkers(t *testing.T
 	if err != nil || observed.State != DeploymentJobFound || observed.JobModifyIndex != index || observed.Version != version {
 		t.Fatalf("exact job observation=%+v err=%v", observed, err)
 	}
+	submissionSource = ""
+	observed, err = client.LookupDeploymentJobRevision(context.Background(), request)
+	if !errors.Is(err, ErrDeploymentJobLookupIndeterminate) || observed.State != DeploymentJobIndeterminate {
+		t.Fatalf("missing versioned source observation=%+v err=%v", observed, err)
+	}
+	submissionSource = string(source)
 	planDiff = "Edited"
 	observed, err = client.LookupDeploymentJobRevision(context.Background(), request)
 	if !errors.Is(err, ErrDeploymentJobLookupIndeterminate) || observed.State != DeploymentJobIndeterminate {

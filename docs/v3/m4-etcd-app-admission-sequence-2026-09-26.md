@@ -86,6 +86,14 @@ active pre-index work must first drain or reconcile it.
    translated service shapes, not every app dialect, and no supervisor calls
    the primitive yet. Allocation health, effect settlement, and app-gate
    release remain separate work.
+   Nomad calls the submitted source reference data, retains only the latest
+   six job source files, and does not schedule from it. Missing source must
+   leave recovery indeterminate; the separate no-diff plan is required.
+   Since the source can include task environment and templates, use the same
+   restricted Nomad job-data boundary as the live job and never copy it to
+   Norn logs or release evidence. The worker also needs Nomad `plan-job` or
+   `submit-job` permission for recovery; check that capability before
+   enabling admission. See the [Nomad Jobs API](https://developer.hashicorp.com/nomad/api-docs/jobs).
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
