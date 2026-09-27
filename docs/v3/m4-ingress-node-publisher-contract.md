@@ -40,9 +40,10 @@ checkpoint. The control API checks their canonical digest and node membership.
 Older checkpoints without these fields remain valid history but cannot supply
 M4 ingress inventory proof. `CurrentFleetIngressInventory` now resolves only
 the latest successful Fleet attempt with matching configuration and completion
-checkpoints; a newer pending attempt fails closed. The control worker must bind
-that Fleet plan and attempt to its accepted deployment, compare the inventory
-revision again at completion,
+checkpoints and one provider state serial; a newer pending attempt fails closed.
+The result includes the plan-state and checkpoint etcd revisions needed for
+terminal fencing. The control worker must bind that Fleet plan and attempt to
+its accepted deployment, compare those revisions again at completion,
 and reject host replacement between observation and deployment completion.
 
 ## Authority and host boundary
