@@ -24,14 +24,19 @@ are substantial but cannot sign a broader gate.
 ## Review branches checked on 2026-09-26
 
 - Draft Norn [PR #76](https://github.com/antiartificial/norn/pull/76):
-  implementation head `67a79a6653b19d4651e74d1e1c17ae4e9f209a66`; all eight
-  checks passed in [run 36285815881](https://github.com/antiartificial/norn/actions/runs/36285815881).
+  implementation head `a479b6a0f7b964e28740ac4f3ef26cb16f437815`; all eight
+  checks passed in [run 36289232279](https://github.com/antiartificial/norn/actions/runs/36289232279).
   The disposable Nomad 2.0.7/PostgreSQL 16 rehearsal proved that an active
   deployment defers a claimed scale without reserving an effect, then the
   same claim completes and persists replica intent after deployment success.
   A race between preflight and launch can still leave an ambiguous effect for
   operator reconciliation. This is source and local-runtime validation, not
-  protected Fleet qualification or milestone sign-off.
+  protected Fleet qualification or milestone sign-off. Subsequent private
+  etcd app acceptance, terminal results and effect reservation passed
+  disposable real-etcd tests. A guarded Nomad deployment registration and a
+  marker/revision readback passed against disposable Nomad 2.0.7. The
+  readback does not yet prove the actual job content against the reserved
+  digest, and no deployment supervisor or ordinary etcd Fleet route uses it.
 - Draft Fleet [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
   `6267655052b209b22dc8b3421cb9339f797af9bc`; the hosted `contract`
   job failed before runner assignment because of the GitHub account
