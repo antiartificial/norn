@@ -157,8 +157,14 @@ func openRoutePublication(directory, routerName string) (*os.Root, *os.File, err
 		return nil, nil, fmt.Errorf("invalid route publication path")
 	}
 	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o022 != 0 {
-		return nil, nil, fmt.Errorf("route directory must exist without group or world write access")
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o002 != 0 {
+		return nil, nil, fmt.Errorf("route directory must exist without world write access")
+	}
+	if info.Mode().Perm()&0o020 != 0 {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 || info.Mode()&os.ModeSticky == 0 {
+			return nil, nil, fmt.Errorf("group-writable route directory must be root-owned and sticky")
+		}
 	}
 	root, err := os.OpenRoot(directory)
 	if err != nil {
@@ -189,7 +195,10 @@ func writeRouteFile(root *os.Root, directory, routerName string, generation uint
 		return err
 	}
 	temporaryName := "." + routerName + "." + hex.EncodeToString(random) + ".tmp"
-	temporary, err := root.OpenFile(temporaryName, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	// The route directory is group-owned by the dedicated publisher group on
+	// Fleet. Traefik reads these route files through that group, while its own
+	// TLS and readback files remain owner-only.
+	temporary, err := root.OpenFile(temporaryName, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o640)
 	if err != nil {
 		return err
 	}

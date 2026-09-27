@@ -147,3 +147,24 @@ func TestPublishedRouteRejectsAlteredDesiredAndUnscopedName(t *testing.T) {
 		t.Fatal("unscoped route name accepted")
 	}
 }
+
+func TestPublishedRouteRejectsUnsafeWritableDirectory(t *testing.T) {
+	directory := t.TempDir()
+	desired := fixtureRoute(t, "directory-permissions")
+	for _, mode := range []os.FileMode{0o770, 0o777} {
+		if err := os.Chmod(directory, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := PublishRenderedRoute(directory, desired, PublishedRouteRevision{}, 1); err == nil {
+			t.Fatalf("unsafe route directory mode %o was accepted", mode)
+		}
+	}
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(directory, 0o770|os.ModeSticky); err != nil {
+			t.Fatal(err)
+		}
+		if err := PublishRenderedRoute(directory, desired, PublishedRouteRevision{}, 1); err == nil {
+			t.Fatal("non-root sticky route directory was accepted")
+		}
+	}
+}

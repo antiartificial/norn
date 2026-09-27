@@ -106,6 +106,11 @@ stale response.
   `/etc/traefik/dynamic`; the existing TLS and readback files are outside its
   write scope. The service must run under an identity authorized to write this
   directory, with no provider, OpenTofu, or general Nomad credentials.
+  The file primitive accepts a group-writable directory only when root owns
+  it and the sticky bit is set; it rejects world write. Fleet must use a
+  separate publisher account and group, keep TLS/readback files owner-only,
+  and grant Traefik read access to generated route files. The publisher must
+  not run as the Traefik account, which holds separate Consul and TLS keys.
 - Norn's accepted deployment and live operation claim are the source of route
   intent. A caller cannot supply an unbound hostname, backend, weight, route
   generation, or withdrawal. The publisher authenticates the caller and checks
