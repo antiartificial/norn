@@ -10,6 +10,7 @@ import (
 
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
 // V3DeploymentEffectReservations uses the same unresolved app gate and effect
@@ -29,15 +30,7 @@ func NewV3DeploymentEffectReservations(operations *V3OperationStore) (*V3Deploym
 	return &V3DeploymentEffectReservations{&V3CanaryEffectReservations{operations: operations, namespace: "deploy"}}, nil
 }
 
-type deploymentEffectInput struct {
-	App          string `json:"app"`
-	DeploymentID string `json:"deploymentId"`
-	Region       string `json:"region"`
-	NomadRegion  string `json:"nomadRegion"`
-	ImageTag     string `json:"imageTag"`
-	SpecDigest   string `json:"specDigest"`
-	JobDigest    string `json:"jobDigest"`
-}
+type deploymentEffectInput = nomad.DeploymentJobEffectInput
 
 func deploymentEffectExecutionID(operationID, region, jobDigest string) string {
 	sum := sha256.Sum256([]byte(operationID + "\x00" + region + "\x00" + jobDigest))

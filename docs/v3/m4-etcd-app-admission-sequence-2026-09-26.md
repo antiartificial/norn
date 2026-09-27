@@ -102,6 +102,14 @@ active pre-index work must first drain or reconcile it.
    into a supervisor yet. Manual resolution still needs a durable revocation
    or a Nomad revision barrier that defeats a paused old submitter before the
    app gate can be released.
+   A private worker step now binds a translated service job and pinned image
+   to that reservation, marks the one allowed submit attempt, calls Nomad CAS,
+   and reconciles via the versioned readback. Replay and recovery never
+   resubmit; an attempted 404 stays unresolved. The step passes worker tests,
+   while its etcd store dependencies pass disposable real-etcd tests. It is
+   not connected to normal claim dispatch, deployment stage checkpoints,
+   allocation health, or terminal result writes. Periodic jobs and other
+   deployment shapes remain outside this one service-job step.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
