@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/config"
 	"norn/v2/api/store"
 )
 
@@ -254,51 +256,73 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) RotateCurrentToken(w http.ResponseWriter, r *http.Request) {
+	RotateManagedToken(h.cfg, h.db, h.closeExecSessionConnections, w, r)
+}
+
+// RotateManagedToken serves the credential aggregate through its backend-neutral
+// boundary. The returned session IDs were cancelled atomically with rotation;
+// closeConnections only tears down their in-memory transports afterward.
+func RotateManagedToken(cfg *config.Config, auth store.AuthStore, closeConnections func([]string), w http.ResponseWriter, r *http.Request) {
 	principal, ok := AccessPrincipalFromRequest(r)
 	if !ok || principal.TokenID == "" {
 		WriteControlProblem(w, r, http.StatusUnauthorized, "managed_token_required", "rotation requires a managed device token")
 		return
 	}
-	lifetime, err := h.rotatedDeviceTokenLifetime(r.Context(), principal.DeviceID)
-	if err != nil {
+	// CI credentials must be refreshed through the verified OIDC exchange.
+	if principal.CI != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "github_actions_rotation_unsupported", "GitHub Actions tokens must be refreshed through the OIDC exchange")
+		return
+	}
+	device, err := auth.ActiveAccessDevice(r.Context(), principal.DeviceID)
+	if err != nil || device == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "device_lookup_failed", "device token lifetime could not be determined")
 		return
 	}
-	token, record, err := h.issueDeviceTokenWithTTL(principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID, lifetime)
+	token, record, err := issueDeviceTokenWithTTL(cfg, principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID, deviceTokenLifetimeForPlatform(device.Platform))
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to rotate token")
 		return
 	}
-	sessions, err := h.db.RotateAccessToken(r.Context(), principal.TokenID, record)
+	sessions, err := auth.RotateAccessToken(r.Context(), principal.TokenID, record)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrIdentityNotFound) {
 			WriteControlProblem(w, r, http.StatusConflict, "token_not_managed", "token is not active in the token registry")
 			return
 		}
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_revoke_failed", "failed to retire previous token")
 		return
 	}
-	h.closeExecSessionConnections(sessions)
+	if closeConnections != nil {
+		closeConnections(sessions)
+	}
 	preventSensitiveResponseCaching(w)
 	writeJSON(w, map[string]interface{}{"token": token, "tokenId": record.JTI, "deviceId": record.DeviceID, "scopes": record.Scopes, "expiresAt": record.ExpiresAt})
 }
 
 func (h *Handler) RevokeCurrentToken(w http.ResponseWriter, r *http.Request) {
+	RevokeManagedToken(h.db, h.closeExecSessionConnections, w, r)
+}
+
+// RevokeManagedToken uses AuthStore so every backend atomically cancels the
+// credential's exec sessions before the HTTP request can succeed.
+func RevokeManagedToken(auth store.AuthStore, closeConnections func([]string), w http.ResponseWriter, r *http.Request) {
 	principal, ok := AccessPrincipalFromRequest(r)
 	if !ok || principal.TokenID == "" {
 		WriteControlProblem(w, r, http.StatusUnauthorized, "managed_token_required", "revocation requires a managed token")
 		return
 	}
-	sessions, err := h.db.RevokeAccessToken(r.Context(), principal.TokenID)
+	sessions, err := auth.RevokeAccessToken(r.Context(), principal.TokenID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrIdentityNotFound) {
 			WriteControlProblem(w, r, http.StatusConflict, "token_not_managed", "token is not managed by the device registry")
 			return
 		}
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_revoke_failed", "failed to revoke token")
 		return
 	}
-	h.closeExecSessionConnections(sessions)
+	if closeConnections != nil {
+		closeConnections(sessions)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -307,9 +331,13 @@ func (h *Handler) issueDeviceToken(deviceID, subject string, scopes []string, ro
 }
 
 func (h *Handler) issueDeviceTokenWithTTL(deviceID, subject string, scopes []string, rotatedFrom string, lifetime time.Duration) (string, *store.AccessToken, error) {
-	if h.cfg != nil && h.cfg.IsFleetAuthorityOnly() {
+	return issueDeviceTokenWithTTL(h.cfg, deviceID, subject, scopes, rotatedFrom, lifetime)
+}
+
+func issueDeviceTokenWithTTL(cfg *config.Config, deviceID, subject string, scopes []string, rotatedFrom string, lifetime time.Duration) (string, *store.AccessToken, error) {
+	if cfg != nil && cfg.IsFleetAuthorityOnly() {
 		var err error
-		scopes, err = h.deviceEnrollmentScopes(scopes)
+		scopes, err = (&Handler{cfg: cfg}).deviceEnrollmentScopes(scopes)
 		if err != nil {
 			return "", nil, err
 		}
@@ -322,7 +350,7 @@ func (h *Handler) issueDeviceTokenWithTTL(deviceID, subject string, scopes []str
 	jti := "norn_" + uuid.NewString()
 	claims := tokenClaims{Sub: subject, Iat: now.Unix(), Exp: expires.Unix(), Jti: jti, Did: deviceID, Scopes: scopes}
 	claims.Iss, claims.Aud, claims.Use, claims.Managed = "norn", "norn-control", "access", true
-	token, err := signToken(h.cfg.APIToken, claims)
+	token, err := signToken(cfg.APIToken, claims)
 	return token, &store.AccessToken{JTI: jti, DeviceID: deviceID, Subject: subject, Scopes: scopes, IssuedAt: now, ExpiresAt: expires, RotatedFrom: rotatedFrom}, err
 }
 

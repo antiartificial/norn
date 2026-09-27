@@ -119,7 +119,7 @@ func streamViaWebSocket(sagaID string) error {
 			fmt.Println()
 			fmt.Printf("  %s %s\n", style.Unhealthy.Render("✗"), evt.Payload["error"])
 			fmt.Println(style.ErrorBox.Render("failed"))
-			return nil
+			return fmt.Errorf("operation failed: %s", evt.Payload["error"])
 		}
 
 		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
@@ -127,14 +127,29 @@ func streamViaWebSocket(sagaID string) error {
 }
 
 func streamViaPolling(sagaID string) error {
+	return streamViaDurablePolling("", sagaID, 2*time.Second)
+}
+
+func streamViaDurablePolling(operationID, sagaID string, interval time.Duration) error {
 	seen := map[string]bool{}
 	// Track step count for index/total from saga metadata
 	stepCount := 0
 
 	for i := 0; i < 150; i++ {
+		if operationID != "" {
+			if operation, err := client.GetOperation(operationID); err == nil {
+				switch operation.Status {
+				case "succeeded":
+					fmt.Println(style.SuccessBox.Render("complete"))
+					return nil
+				case "failed", "canceled":
+					return fmt.Errorf("operation %s %s: %s", operation.ID, operation.Status, operation.Message)
+				}
+			}
+		}
 		events, err := client.GetSagaEvents(sagaID)
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			time.Sleep(interval)
 			continue
 		}
 
@@ -165,7 +180,7 @@ func streamViaPolling(sagaID string) error {
 			case "deploy.failed", "preflight.failed":
 				fmt.Println()
 				fmt.Println(style.ErrorBox.Render("failed"))
-				return nil
+				return fmt.Errorf("operation failed: %s", evt.Message)
 			default:
 				// Log/progress events
 				if evt.Action != "step.start" {
@@ -174,7 +189,7 @@ func streamViaPolling(sagaID string) error {
 			}
 		}
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(interval)
 	}
 
 	return fmt.Errorf("timeout waiting for completion")

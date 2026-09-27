@@ -125,6 +125,9 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 		if proc.HostPort > 0 && proc.Scaling != nil && (proc.Scaling.Min > 1 || proc.Scaling.PerRegion > 1) {
 			r.add("error", field+".hostPort", "fixed hostPort cannot be used with multiple allocations in one region")
 		}
+		if proc.Placement != nil && proc.Placement.DistinctHosts && (proc.Schedule != "" || proc.Function != nil) {
+			r.add("error", field+".placement.distinctHosts", "distinctHosts requires a service process")
+		}
 
 		// Resource bounds
 		if proc.Resources != nil {
@@ -207,6 +210,8 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			r.add("error", field+".mount", "volume mount path must be absolute")
 		}
 	}
+
+	validateDatabaseDeclarations(r, spec)
 
 	// Postgres infra requires database name
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {

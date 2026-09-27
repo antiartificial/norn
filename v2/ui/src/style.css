@@ -3441,3 +3441,17 @@ body,
 .fleet-github-links { display: flex; flex-wrap: wrap; gap: .75rem; font-size: .86rem; }
  .connection-context { color: var(--text-secondary, #a9b4c5); font-size: .78rem; white-space: nowrap; }
  .management-only-state { max-inline-size: 48rem; }
+
+/* V3 release and operation panels. */
+.release-inputs { display: grid; gap: 12px; grid-template-columns: minmax(160px, .8fr) minmax(240px, 1fr) minmax(280px, 1.4fr); }
+.release-inputs label { color: var(--text-2); display: grid; font-size: 12px; font-weight: 650; gap: 6px; }
+.release-inputs input, .release-inputs select { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-1); font: 13px var(--font); min-height: 36px; padding: 7px 9px; width: 100%; }
+.release-inputs input { font-family: var(--mono); }
+.release-inputs input:focus-visible, .release-inputs select:focus-visible, .release-evidence-import textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.release-optional { color: var(--text-3); font-weight: 500; }
+.fleet-checkpoints { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.fleet-checkpoints li { align-items: center; color: var(--text-3); display: grid; gap: 9px; grid-template-columns: 18px minmax(0, 1fr) auto; }
+.fleet-checkpoints li.complete { color: var(--text-1); }
+.fleet-checkpoints li.complete > span:first-child { color: var(--success); }
+.deploy-group-result { display: grid; gap: 8px; margin-block-start: 12px; overflow-wrap: anywhere; }
+.deploy-group-result ul { margin: 0; padding-inline-start: 20px; }

@@ -32,6 +32,7 @@ import (
 	"norn/v2/api/connector"
 	"norn/v2/api/consul"
 	"norn/v2/api/contract"
+	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/engine"
 	"norn/v2/api/fleet"
 	"norn/v2/api/githubattestation"
@@ -46,6 +47,7 @@ import (
 	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
+	"norn/v2/api/startup"
 	"norn/v2/api/storage"
 	"norn/v2/api/store"
 	"norn/v2/api/watch"
@@ -53,14 +55,117 @@ import (
 )
 
 func main() {
+	if handled, err := startup.WriteControlBackendProbe(os.Args[1:], os.Getenv, os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if handled, err := startup.WriteContractProbe(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	startupCfg, err := startup.Parse(os.Getenv)
+	if err != nil {
+		log.Fatalf("startup configuration: %v", err)
+	}
+	backendCfg, err := startup.ParseControlBackend(os.Getenv)
+	if err != nil {
+		log.Fatalf("control backend: %v", err)
+	}
 	cfg := config.Load()
-	if err := validateControlSecurity(cfg); err != nil {
+	if err := validateControlSecurityForBackend(cfg, backendCfg); err != nil {
 		log.Fatalf("security configuration: %v", err)
+	}
+	if handled, err := runEtcdManagedCredentialBootstrap(os.Args[1:], cfg, backendCfg); handled {
+		if err != nil {
+			log.Fatalf("etcd managed credential bootstrap: %v", err)
+		}
+		return
+	}
+	if backendCfg.Backend == startup.BackendEtcd && backendCfg.SourceValidation {
+		if err := startup.RequireEtcdSourceValidationStartup(startupCfg); err != nil {
+			log.Fatalf("etcd source validation: %v", err)
+		}
+		if err := runEtcdSourceValidation(cfg, backendCfg); err != nil {
+			log.Fatalf("etcd source validation: %v", err)
+		}
+		return
+	}
+	if backendCfg.Backend == startup.BackendEtcd {
+		if startupCfg.SchemaMode == startup.SchemaModeMigrateOnly {
+			if err := runEtcdMigrateOnly(backendCfg); err != nil {
+				log.Fatalf("etcd migrate-only: %v", err)
+			}
+			return
+		}
+		if startupCfg.StartupMode == startup.ModePassive {
+			if err := validatePassiveBind(cfg.BindAddr); err != nil {
+				log.Fatalf("startup configuration: %v", err)
+			}
+			if err := runEtcdPassiveRuntime(cfg, backendCfg); err != nil {
+				log.Fatalf("etcd passive runtime: %v", err)
+			}
+			return
+		}
+		if err := runEtcdFleetRuntime(cfg, backendCfg); err != nil {
+			log.Fatalf("etcd fleet runtime: %v", err)
+		}
+		return
+	}
+	if err := startup.RequireRuntimeCapabilities(backendCfg); err != nil {
+		log.Fatalf("control backend: %v", err)
+	}
+	databaseID := databaseIdentity(cfg.DatabaseURL, cfg.AuditSigningKey)
+	if startupCfg.StartupMode == startup.ModePassive {
+		if err := validatePassiveBind(cfg.BindAddr); err != nil {
+			log.Fatalf("startup configuration: %v", err)
+		}
+	}
+
+	// Establish schema compatibility before telemetry, runtime clients,
+	// recovery, watchers, or workers. Passive mode must remain a read-only
+	// database check and exposes only its three loopback status routes.
+	db, err := store.Connect(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+	defer db.Close()
+	migrator, err := store.NewControlSchemaMigrator(db)
+	if err != nil {
+		log.Fatalf("schema migration catalog: %v", err)
+	}
+	schemaStatus, err := startup.ApplySchemaMode(context.Background(), migrator, startupCfg)
+	if err != nil {
+		log.Fatalf("schema: %v", err)
+	}
+	if startupCfg.SchemaMode == startup.SchemaModeMigrateOnly {
+		log.Printf("schema migration complete at version %d", schemaStatus.CurrentMigrationVersion)
+		return
+	}
+	if startupCfg.StartupMode == startup.ModePassive {
+		srv := newPassiveServer(cfg.BindAddr, cfg.Port, Version, databaseID, schemaStatus, startupCfg)
+		go func() {
+			log.Printf("norn %s passive schema status listening on %s", Version, srv.Addr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("passive server: %v", err)
+			}
+		}()
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		_ = srv.Shutdown(shutdownCtx)
+		return
 	}
 	var privateAttestationVerifier *githubattestation.Verifier
 	var nornPrivateSigner privateattestation.Signer
 	var nornPrivateVerifier *privateattestation.Verifier
-	var err error
 	if cfg.ReleaseAttestationTrustMode == "github-private" {
 		privateAttestationVerifier, err = githubattestation.New(githubattestation.Config{
 			AppID: cfg.ReleaseAttestationGitHubAppID, InstallationID: cfg.ReleaseAttestationGitHubInstallationID,
@@ -93,6 +198,7 @@ func main() {
 			}
 		}
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownOTEL, err := observe.Setup(ctx, observe.ConfigFromEnv("norn-api"))
 	cancel()
@@ -112,29 +218,22 @@ func main() {
 	cloudflared.SetBinaryPath(cfg.CloudflaredBinary)
 	cloudflared.SetLaunchLabel(cfg.CloudflaredLaunchLabel)
 
-	// Database
-	db, err := store.Connect(cfg.DatabaseURL)
-	if err != nil {
-		log.Fatalf("database: %v", err)
-	}
-	defer db.Close()
-
-	if err := store.Migrate(db); err != nil {
-		log.Fatalf("migration: %v", err)
+	if err := db.ReconcileExecSessions(context.Background()); err != nil {
+		log.Printf("WARNING: exec session lease recovery: %v", err)
 	}
 	if cfg.IsFleetAuthorityOnly() {
 		serveFleetAuthorityOnly(cfg, db)
 		return
 	}
-
 	if os.Getenv("NORN_SKIP_DEPLOYMENT_RECOVERY") == "true" {
 		log.Println("deployment recovery skipped")
 	} else if err := db.RecoverInFlightDeployments(context.Background()); err != nil {
 		log.Printf("WARNING: deployment recovery: %v", err)
 	}
+
 	if os.Getenv("NORN_SKIP_OPERATION_RECOVERY") == "true" {
 		log.Println("operation recovery skipped")
-	} else if err := db.RecoverInFlightOperations(context.Background()); err != nil {
+	} else if err := db.RecoverExpiredOperations(context.Background()); err != nil {
 		log.Printf("WARNING: operation recovery: %v", err)
 	}
 
@@ -226,15 +325,18 @@ func main() {
 	notifier := beacon.NewNotifier(db)
 	beaconSvc.SetNotifier(notifier)
 
-	// Saga store
-	sagaStore := saga.NewPostgresStore(db.Pool)
+	// Saga store (archive-aware reads when an evidence archive is configured)
+	historyStore, evidenceArchiver, err := configureEvidenceArchive(cfg, db, saga.NewPostgresStore(db.Pool))
+	if err != nil {
+		log.Fatalf("evidence archive: %v", err)
+	}
+	if err := applyEvidenceReservePolicy(context.Background(), cfg, db, evidenceArchiver != nil); err != nil {
+		log.Fatalf("evidence reserve: %v", err)
+	}
+	sagaStore := historyStore
 
 	// Secrets manager
 	sec := secrets.NewManager(cfg.AppsDir)
-
-	// Workload connector. Selection is explicit: production and existing hosts
-	// stay on Nomad/Consul unless an operator opts a development Mac into the
-	// Apple Container connector.
 	var localEngine *engine.Engine
 	var workloads connector.Connector
 	var runtimeBackend containerruntime.Backend
@@ -262,9 +364,33 @@ func main() {
 	}
 	log.Printf("workload connector: %s (container runtime: %s)", workloads.Name(), containerRuntime.Backend())
 
+	databaseTargets, err := configureDatabaseTargets(context.Background(), cfg, db)
+	if err != nil {
+		log.Fatalf("database targets: %v", err)
+	}
+	if databaseTargets == nil {
+		log.Println("application databases use v2 routing (NORN_DATABASE_PROFILE unset)")
+	} else {
+		log.Printf("application database work binds catalog targets for profile %s", databaseTargets.ProfileID)
+	}
+	buildTestEffects, err := configureBuildTestEffects(cfg, db, supervisor.NewCgroupBackend)
+	if err != nil {
+		log.Fatalf("build.test execution: %v", err)
+	}
+	snapshotEffects, err := configureSnapshotEffects(cfg, db, supervisor.NewCgroupBackend)
+	if err != nil {
+		log.Fatalf("snapshot execution: %v", err)
+	}
+	if buildTestEffects == nil {
+		log.Println("build.test runs in legacy unfenced mode (NORN_BUILD_TEST_EXECUTION=legacy-unfenced)")
+	} else {
+		log.Println("build.test runs through the supervised external-effect executor")
+	}
+
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
 		DB:                              db,
+		CheckpointStore:                 db,
 		Nomad:                           nomadClient,
 		Consul:                          consulClient,
 		Workloads:                       workloads,
@@ -287,24 +413,102 @@ func main() {
 		TrivyPath:                       cfg.TrivyPath,
 		ReleaseAdmissionMode:            cfg.ReleaseAdmissionMode,
 		ReleaseEnvironment:              cfg.EnvironmentID(),
-		ReleaseAttestationIssuer:        cfg.ReleaseAttestationIssuer,
 		ReleaseAttestationTrustMode:     cfg.ReleaseAttestationTrustMode,
 		ReleaseRegistryAuthFile:         cfg.ReleaseAttestationRegistryAuthFile,
 		ReleaseRegistryNodePullReady:    cfg.ReleaseRegistryNodePullReady,
+		ExternalFleetBootstrapSignerRef: externalFleetBootstrapSignerForPipeline(cfg),
+		TrustedQualificationSigningKeys: cfg.TrustedQualificationSigningKeys,
+		ReleaseAttestationIssuer:        cfg.ReleaseAttestationIssuer,
 		ReleaseAttestationRepositories:  cfg.ReleaseAttestationRepositories,
 		ReleaseAttestationWorkflowRefs:  cfg.ReleaseAttestationWorkflowRefs,
-		ExternalFleetBootstrapSignerRef: externalFleetBootstrapSignerForPipeline(cfg),
 		ReleaseRequireSBOM:              cfg.ReleaseRequireSBOM,
-		TrustedQualificationSigningKeys: cfg.TrustedQualificationSigningKeys,
 		Beacon:                          beaconSvc,
 		Storage:                         s3Client,
+		SnapshotObjects:                 s3Client,
 		Redpanda:                        redpandaClient,
+		BuildTestEffects:                buildTestEffects,
+		SnapshotEffects:                 snapshotEffects,
+		DatabaseTargets:                 databaseTargets,
+		WPColdStartGate:                 cfg.WPColdStartGate,
 	}
 	if privateAttestationVerifier != nil {
 		pipe.VerifyPrivateKeylessAttestations = privateAttestationVerifier.Verify
 	}
 	if nornPrivateVerifier != nil {
 		pipe.VerifyNornPrivateAttestations = nornPrivateVerifier.Verify
+	}
+	scaleEffects, err := pipeline.NewNomadScaleEffects(db, nomadClient)
+	if err != nil {
+		log.Fatalf("configure durable app.scale effects: %v", err)
+	}
+	pipe.ScaleEffects = scaleEffects
+	restartEffects, err := pipeline.NewNomadRestartEffects(db, nomadClient)
+	if err != nil {
+		log.Fatalf("configure durable app.restart effects: %v", err)
+	}
+	pipe.RestartEffects = restartEffects
+	cronPauseEffects, err := pipeline.NewNomadCronPauseEffects(db, nomadClient)
+	if err != nil {
+		log.Fatalf("configure durable app.cron-pause effects: %v", err)
+	}
+	pipe.CronPauseEffects = cronPauseEffects
+	cronResumeEffects, err := pipeline.NewNomadCronResumeEffects(db, nomadClient, pipe)
+	if err != nil {
+		log.Fatalf("configure durable app.cron-resume effects: %v", err)
+	}
+	pipe.CronResumeEffects = cronResumeEffects
+	cronScheduleEffects, err := pipeline.NewNomadCronScheduleEffects(db, nomadClient, pipe)
+	if err != nil {
+		log.Fatalf("configure durable app.cron-schedule effects: %v", err)
+	}
+	pipe.CronScheduleEffects = cronScheduleEffects
+	if nomadClient != nil {
+		cronTriggerEffects, triggerErr := pipeline.NewCronTriggerEffects(db, nomadClient)
+		if triggerErr != nil {
+			log.Printf("WARNING: cron trigger effects unavailable: %v", triggerErr)
+		} else {
+			pipe.CronTriggerEffects = cronTriggerEffects
+		}
+	}
+	canaryPromotionEffects, err := pipeline.NewNomadCanaryPromotionEffects(db, nomadClient)
+	if err != nil {
+		log.Fatalf("configure durable app.canary-promote effects: %v", err)
+	}
+	pipe.CanaryPromotionEffects = canaryPromotionEffects
+	cloudflaredEffects, err := pipeline.NewCloudflaredEffects(db)
+	if err != nil {
+		log.Fatalf("configure durable cloudflared effects: %v", err)
+	}
+	pipe.CloudflaredEffects = cloudflaredEffects
+
+	// Construct the acceptance boundary and verify any retained private
+	// invocation envelopes before a worker can claim operations.
+	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
+	h.ConfigureWorkloads(workloads, localEngine, containerRuntime)
+	h.ConfigurePrivateReleaseSigner(nornPrivateSigner)
+	if cfg.EnvironmentID() == "staging" && externalFleetVerifierRequested(cfg) {
+		verifier, verifierErr := handler.ExternalFleetDeploymentVerifierFromConfig(cfg)
+		if verifierErr != nil {
+			log.Fatalf("external Fleet deployment verifier: %v", verifierErr)
+		}
+		h.ConfigureExternalFleetDeploymentVerifier(verifier)
+	}
+	if err := h.OperationStoreError(); err != nil {
+		log.Fatalf("operation acceptance: %v", err)
+	}
+	pipe.SetOperationStore(h.OperationStore())
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, h.OperationStore()); err != nil {
+		log.Fatalf("private invocation startup preflight: %v", err)
+	}
+	functionV3Admission, functionV3Worker, err := configureFunctionV3(cfg, db, pipe, nomadClient, sec, h.OperationStore())
+	if err != nil {
+		log.Fatalf("function v3 startup: %v", err)
+	}
+	if functionV3Worker != nil && os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
+		log.Fatal("function v3 requires the claimed operation worker")
+	}
+	if functionV3Worker != nil && evidenceArchiver == nil {
+		log.Fatal("function v3 requires an evidence archiver")
 	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -318,6 +522,14 @@ func main() {
 	} else {
 		opWorker := worker.NewOperationWorker(db, pipe)
 		go opWorker.Run(workerCtx)
+		if functionV3Worker != nil {
+			go functionV3Worker.Run(workerCtx, 2*time.Second)
+			go (&worker.FunctionInvocationCleanupConsumer{Store: db, Remote: nomadClient}).Run(workerCtx, 5*time.Second)
+		}
+	}
+	if evidenceArchiver != nil {
+		log.Printf("evidence archive enabled in %s mode", evidenceArchiver.Mode)
+		go runEvidenceArchiver(workerCtx, evidenceArchiver, time.Minute)
 	}
 	if cfg.WorkloadConnector == connector.AppleContainer {
 		if os.Getenv("NORN_SKIP_ENGINE_WATCHER") == "true" {
@@ -333,16 +545,17 @@ func main() {
 		go nomadWatcher.Run(workerCtx)
 	}
 
-	// Handler
-	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
-	h.ConfigureWorkloads(workloads, localEngine, containerRuntime)
-	h.ConfigurePrivateReleaseSigner(nornPrivateSigner)
-	if cfg.EnvironmentID() == "staging" && externalFleetVerifierRequested(cfg) {
-		verifier, verifierErr := handler.ExternalFleetDeploymentVerifierFromConfig(cfg)
-		if verifierErr != nil {
-			log.Fatalf("external Fleet deployment verifier: %v", verifierErr)
-		}
-		h.ConfigureExternalFleetDeploymentVerifier(verifier)
+	logSpool, logCollector, err := configureLogCollection(cfg, nomadClient)
+	if err != nil {
+		log.Fatalf("log collection: %v", err)
+	}
+	if logSpool != nil {
+		defer logSpool.Close()
+		h.SetLogSpool(logSpool)
+	}
+	if logCollector != nil {
+		log.Printf("log collection enabled in %s", cfg.LogSpoolDir)
+		go logCollector.Run(workerCtx, cfg.LogCollectInterval)
 	}
 
 	// Router
@@ -374,6 +587,7 @@ func main() {
 	}
 	r.Use(h.MutationAuditMiddleware)
 	r.Use(h.ProductionMutationAdmissionMiddleware)
+	r.Use(h.EvidenceReserveAdmissionMiddleware)
 	r.Use(h.AccessMiddleware)
 	r.Get("/metrics", h.Metrics)
 
@@ -384,6 +598,10 @@ func main() {
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"version": Version})
+		})
+		r.Get("/schema", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(schemaPayload(Version, databaseID, schemaStatus, startupCfg))
 		})
 
 		r.Post("/webhooks/{provider}", h.Webhook)
@@ -480,6 +698,7 @@ func main() {
 		r.Get("/v1/apps", h.ListApps)
 		r.Post("/v1/apps", h.CreateApp)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}", h.GetApp)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/scale-status", h.GetAppScaleStatus)
 		r.With(handler.ValidateAppID).Put("/v1/apps/{id}/deployment", h.UpdateAppDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/private-attestations", h.CreatePrivateReleaseAttestation)
@@ -508,6 +727,15 @@ func main() {
 		r.Get("/v1/deployments/{id}", h.GetDeploymentV1)
 		r.Get("/v1/deployments/{id}/steps", h.ListDeploymentStepsV1)
 		r.Get("/v1/services/manifest", h.ServiceManifestV1)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/databases/health", h.AppDatabaseHealth)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/databases/baseline", h.RecordDatabaseBaseline)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/sagas/{sagaId}", h.GetAppSagaHistory)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/logs/history", h.GetAppLogHistory)
+		r.Get("/v1/evidence/archive", h.GetEvidenceArchiveHealth)
+		r.Get("/v1/database/catalog", h.GetDatabaseCatalog)
+		r.Post("/v1/database/catalog/activations", h.ActivateDatabaseCatalog)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/operations/{operationID}/deployment-reconciliation", h.QueueDeploymentReconciliation)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/operations/{operationID}/cron-trigger-reconciliation", h.QueueCronTriggerReconciliation)
 		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
 		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
 		r.Get("/v1/fleet/node-pools", h.FleetInventory)
@@ -527,6 +755,7 @@ func main() {
 		r.Post("/v1/fleet/plans/{planID}/github/execute", h.ExecuteFleetGitHubApply)
 		r.Post("/v1/fleet/plans/{planID}/github/rerun", h.RerunFleetGitHubApply)
 		r.Post("/v1/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
+		r.Post("/v1/fleet/plans/{planID}/github/reconcile", h.ReconcileFleetGitHubReservation)
 		r.Post("/v1/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
 		r.Get("/v1/exec-sessions", h.ListExecSessions)
 		r.Get("/v1/exec-sessions/{id}", h.GetExecSession)
@@ -546,6 +775,7 @@ func main() {
 		r.Get("/v1/events/info", ws.HandleInfo)
 		r.Get("/v1/events", ws.HandleConnect)
 		r.Get("/v1/operations/{id}", h.GetOperation)
+		r.Get("/v1/operations/{id}/mysql-restore-inspection", h.GetMySQLRestoreInspection)
 		r.Post("/v1/operations/{id}/cancel", h.CancelOperation)
 		r.Post("/v1/platform/preflights", h.QueuePlatformPreflight)
 		r.Post("/v1/platform/upgrades", h.QueuePlatformUpgrade)
@@ -574,7 +804,11 @@ func main() {
 			r.Post("/cron/pause", h.CronPause)
 			r.Post("/cron/resume", h.CronResume)
 			r.Put("/cron/schedule", h.CronUpdateSchedule)
-			r.Post("/invoke", h.InvokeFunction)
+			// Function invocation has one execution boundary: signed acceptance
+			// followed by the claimed worker. An incomplete capability is an
+			// explicit unavailable endpoint; it must never fall back to the
+			// legacy HTTP-to-Nomad submission path.
+			r.Post("/invoke", functionInvocationRoute(functionV3Admission))
 			r.Get("/function/history", h.FunctionHistory)
 			r.Get("/canary", h.CanaryStatus)
 			r.Post("/promote", h.PromoteCanary)
@@ -622,8 +856,40 @@ func main() {
 }
 
 func validateControlSecurity(cfg *config.Config) error {
+	return validateControlSecurityForBackend(cfg, startup.ControlBackendConfig{Backend: startup.BackendPostgres})
+}
+
+// preflightConfiguredPrivateInvocationKeys leaves the existing runtime fully
+// dormant unless its capability is explicitly enabled. When enabled, the
+// control store is read before workers or HTTP serving begin so a restored
+// record cannot become unreadable after the process accepts traffic.
+func preflightConfiguredPrivateInvocationKeys(ctx context.Context, cfg *config.Config, operations store.OperationStore) error {
+	if cfg == nil || !cfg.PrivateInvocationEnabled {
+		return nil
+	}
+	ring, err := startup.PrivateInvocationKeyRingFromRuntimeConfig(true, cfg.PrivateInvocationCurrentKeyID, cfg.PrivateInvocationKeys)
+	if err != nil {
+		return err
+	}
+	invocationStore, ok := operations.(store.PrivateInvocationStore)
+	if !ok {
+		return fmt.Errorf("private invocation store is unavailable")
+	}
+	return startup.PreflightPrivateInvocationKeys(ctx, invocationStore, ring)
+}
+
+func validateControlSecurityForBackend(cfg *config.Config, backend startup.ControlBackendConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
+	}
+	if cfg.FunctionV3PreviewEnabled && (!cfg.PrivateInvocationEnabled || backend.Backend != startup.BackendPostgres) {
+		return fmt.Errorf("NORN_FUNCTION_V3_PREVIEW_ENABLED requires private invocation acceptance on PostgreSQL")
+	}
+	if cfg.OperationReplayTTL < 0 {
+		return fmt.Errorf("NORN_OPERATION_REPLAY_TTL must be zero or a positive Go duration")
+	}
+	if _, err := startup.PrivateInvocationKeyRingFromRuntimeConfig(cfg.PrivateInvocationEnabled, cfg.PrivateInvocationCurrentKeyID, cfg.PrivateInvocationKeys); err != nil {
+		return err
 	}
 	if cfg.APIToken != "" && len(cfg.APIToken) < 32 {
 		return fmt.Errorf("NORN_API_TOKEN must contain at least 32 bytes")
@@ -732,9 +998,22 @@ func validateControlSecurity(cfg *config.Config) error {
 			}
 		}
 	}
+	workloadConnector := cfg.WorkloadConnector
+	if workloadConnector == "" {
+		workloadConnector = connector.NomadConsul
+	}
+	if workloadConnector != connector.NomadConsul && workloadConnector != connector.AppleContainer {
+		return fmt.Errorf("NORN_WORKLOAD_CONNECTOR must be nomad-consul or apple-container")
+	}
+	if err := validateAllowedOrigins(cfg.AllowedOrigins, profile == "production"); err != nil {
+		return err
+	}
 	if environment == "staging" {
 		if err := handler.ValidateQualificationSigningConfiguration(cfg.QualificationSigningKey, nil, true); err != nil {
-			return fmt.Errorf("staging requires a valid qualification signing key: %w", err)
+			return fmt.Errorf("NORN_ENVIRONMENT=staging requires a valid Ed25519 NORN_QUALIFICATION_SIGNING_KEY: %w", err)
+		}
+		if qualificationKeyOverlapsAuditKeys(cfg, cfg.QualificationSigningKey) {
+			return fmt.Errorf("NORN_QUALIFICATION_SIGNING_KEY must be distinct from NORN_AUDIT_SIGNING_KEY")
 		}
 	}
 	if environment == "production" {
@@ -742,18 +1021,25 @@ func validateControlSecurity(cfg *config.Config) error {
 			return fmt.Errorf("production must not be configured with the staging qualification signing key")
 		}
 		if len(cfg.TrustedQualificationSigningKeys) == 0 {
-			return fmt.Errorf("production requires a trusted staging qualification signing key")
+			return fmt.Errorf("NORN_ENVIRONMENT=production requires NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")
 		}
-		if err := handler.ValidateQualificationSigningConfiguration("", cfg.TrustedQualificationSigningKeys, false); err != nil {
-			return fmt.Errorf("production qualification signing configuration: %w", err)
+		for _, key := range cfg.TrustedQualificationSigningKeys {
+			if err := handler.ValidateQualificationSigningConfiguration("", []string{key}, false); err != nil {
+				return fmt.Errorf("every NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS entry must be an Ed25519 public key: %w", err)
+			}
+			if qualificationKeyOverlapsAuditKeys(cfg, key) {
+				return fmt.Errorf("trusted qualification signing keys must be distinct from NORN_AUDIT_SIGNING_KEY")
+			}
 		}
 	}
-	workloadConnector := cfg.WorkloadConnector
-	if workloadConnector == "" {
-		workloadConnector = connector.NomadConsul
-	}
-	if workloadConnector != connector.NomadConsul && workloadConnector != connector.AppleContainer {
-		return fmt.Errorf("NORN_WORKLOAD_CONNECTOR must be nomad-consul or apple-container")
+	if environment == "staging" || environment == "production" {
+		if strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || len(cfg.GitHubActionsAllowedRepositories) == 0 || len(cfg.GitHubActionsAllowedWorkflowRefs) == 0 || len(cfg.GitHubActionsAllowedRefs) == 0 || len(cfg.GitHubActionsAllowedEvents) == 0 || len(cfg.GitHubActionsAllowedApps) == 0 || len(cfg.GitHubActionsAllowedEnvironments) == 0 || !validGitHubActionsDefaultBranch(cfg.GitHubActionsDefaultBranch) {
+			return fmt.Errorf("staging/production requires explicit NORN_GITHUB_ACTIONS_OIDC_* release identity allowlists and a valid NORN_GITHUB_ACTIONS_DEFAULT_BRANCH")
+		}
+		parsed, err := url.Parse(cfg.GitHubActionsOIDCJWKSURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "token.actions.githubusercontent.com" || parsed.Path != "/.well-known/jwks" {
+			return fmt.Errorf("NORN_GITHUB_ACTIONS_OIDC_JWKS_URL must be the fixed GitHub issuer JWKS")
+		}
 	}
 	if err := validateAllowedOrigins(cfg.AllowedOrigins, profile == "production"); err != nil {
 		return err
@@ -774,11 +1060,22 @@ func validateControlSecurity(cfg *config.Config) error {
 		}
 	}
 	if profile == "production" {
+		if backend.Backend == startup.BackendEtcd {
+			if err := backend.ValidateEtcdProductionTransport(); err != nil {
+				return err
+			}
+		}
 		if !filepath.IsAbs(strings.TrimSpace(cfg.CosignPath)) || !filepath.IsAbs(strings.TrimSpace(cfg.TrivyPath)) {
 			return fmt.Errorf("NORN_PROFILE=production requires absolute NORN_COSIGN_PATH and NORN_TRIVY_PATH; PATH lookup is not permitted")
 		}
 		if workloadConnector != connector.NomadConsul {
 			return fmt.Errorf("NORN_PROFILE=production requires NORN_WORKLOAD_CONNECTOR=nomad-consul")
+		}
+		if cfg.ReleaseAdmissionMode != "keyless" && !(cfg.ReleaseAdmissionMode == "attested" && cfg.ReleaseAttestationTrustMode == "norn-signed-private") {
+			return fmt.Errorf("NORN_PROFILE=production requires keyless or Norn signed private attestation admission")
+		}
+		if strings.TrimSpace(cfg.ReleaseAttestationIssuer) == "" || len(cfg.ReleaseAttestationRepositories) == 0 || len(cfg.ReleaseAttestationWorkflowRefs) == 0 || !cfg.ReleaseRequireSBOM {
+			return fmt.Errorf("NORN_PROFILE=production requires keyless release attestation issuer/repository/workflow and SBOM policy")
 		}
 		if !cfg.RequireExplicitAuth {
 			return fmt.Errorf("NORN_PROFILE=production requires NORN_REQUIRE_EXPLICIT_AUTH=true")
@@ -798,7 +1095,7 @@ func validateControlSecurity(cfg *config.Config) error {
 		if cfg.ConsulTLSSkipVerify {
 			return fmt.Errorf("NORN_PROFILE=production requires CONSUL_HTTP_SSL_VERIFY=true")
 		}
-		if !secureDatabaseDSN(cfg.DatabaseURL) {
+		if backend.Backend != startup.BackendEtcd && !secureDatabaseDSN(cfg.DatabaseURL) {
 			return fmt.Errorf("NORN_PROFILE=production requires PostgreSQL sslmode=verify-full")
 		}
 		if strings.TrimSpace(cfg.RegistryURL) == "" {
@@ -1048,6 +1345,34 @@ func immutableGitHubWorkflowRef(value string) bool {
 	return true
 }
 
+func validGitHubActionsDefaultBranch(value string) bool {
+	branch := strings.TrimSpace(value)
+	if branch == "" || len(branch) > 200 || strings.HasPrefix(branch, "refs/") || strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.HasPrefix(branch, ".") || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, ".lock") || strings.Contains(branch, "//") || strings.Contains(branch, "..") || strings.Contains(branch, "@{") {
+		return false
+	}
+	for _, r := range branch {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("~^:?*[\\", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func qualificationKeyOverlapsAuditKeys(cfg *config.Config, qualificationKey string) bool {
+	if cfg == nil || qualificationKey == "" {
+		return false
+	}
+	auditKeys := make([]string, 0, 1+len(cfg.AuditPreviousSigningKeys))
+	auditKeys = append(auditKeys, cfg.AuditSigningKey)
+	auditKeys = append(auditKeys, cfg.AuditPreviousSigningKeys...)
+	for _, auditKey := range auditKeys {
+		if auditKey != "" && len(auditKey) == len(qualificationKey) && subtle.ConstantTimeCompare([]byte(auditKey), []byte(qualificationKey)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
 func validateAllowedOrigins(raw string, production bool) error {
 	for _, value := range strings.Split(raw, ",") {
 		origin := strings.TrimSpace(value)
@@ -1130,20 +1455,20 @@ func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(htt
 					subject = strings.TrimSpace(claims.Subject)
 				}
 				next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{
-					Subject: subject, Scopes: []string{handler.ScopeAdmin},
+					Subject: subject, Scopes: []string{handler.ScopeAdmin}, Source: handler.AccessPrincipalSourceCloudflareAccess,
 				}))
 				return
 			}
 			authorization := r.Header.Get("Authorization")
 			if token != "" && strings.HasPrefix(authorization, "Bearer ") && subtle.ConstantTimeCompare([]byte(authorization[7:]), []byte(token)) == 1 {
 				next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{
-					Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true,
+					Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true, Source: handler.AccessPrincipalSourceSharedAPI,
 				}))
 				return
 			}
 			if strings.HasPrefix(authorization, "Bearer ") && h != nil {
 				if principal, ok := h.VerifyAccessToken(authorization[7:]); ok {
-					if !principal.Allows(requiredScope) {
+					if !principal.Allows(requiredScope) && !allowsScopedRead(principal, r, requiredScope) && !allowsReleaseOperatorWrite(principal, r, requiredScope) && !allowsFleetOperatorWrite(principal, r, requiredScope) {
 						handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+requiredScope)
 						return
 					}
@@ -1264,6 +1589,18 @@ func controlScopeForRequest(r *http.Request) string {
 	}
 }
 
+func allowsScopedRead(principal *handler.AccessPrincipal, r *http.Request, requiredScope string) bool {
+	return principal != nil && r.Method == http.MethodGet && requiredScope == handler.ScopeAPIRead && exactOperationPath(r.URL.Path) && (principal.Allows(handler.ScopeReleaseStage) || principal.Allows(handler.ScopeReleaseQualify) || principal.Allows(handler.ScopeReleasePromote) || principal.Allows(handler.ScopeReleaseRollback))
+}
+
+func allowsReleaseOperatorWrite(principal *handler.AccessPrincipal, r *http.Request, requiredScope string) bool {
+	return principal != nil && r.Method != http.MethodGet && principal.CI == nil && principal.Allows(handler.ScopeAPIWrite) && (requiredScope == handler.ScopeReleaseStage || requiredScope == handler.ScopeReleaseQualify || requiredScope == handler.ScopeReleasePromote || requiredScope == handler.ScopeReleaseRollback)
+}
+
+func allowsFleetOperatorWrite(principal *handler.AccessPrincipal, r *http.Request, requiredScope string) bool {
+	return principal != nil && r.Method != http.MethodGet && principal.CI == nil && principal.Allows(handler.ScopeAPIWrite) && requiredScope == handler.ScopeFleetOperate
+}
+
 func exactOperationPath(path string) bool {
 	id := strings.TrimPrefix(path, "/api/v1/operations/")
 	return id != path && id != "" && !strings.Contains(id, "/")
@@ -1332,15 +1669,16 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		}
 	}
 	endpoints := map[string]string{
-		"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
+		"events": "/api/v1/events", "operations": "/api/v1/operations/{id}", "mysqlRestoreInspection": "/api/v1/operations/{id}/mysql-restore-inspection",
 		"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 		"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
 		"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment", "deployments": "/api/v1/deployments", "deployment": "/api/v1/deployments/{id}", "deploymentSteps": "/api/v1/deployments/{id}/steps", "serviceManifest": "/api/v1/services/manifest",
 		"appSnapshots": "/api/v1/apps/{id}/snapshots", "appSnapshotRetention": "/api/v1/apps/{id}/snapshots/retention", "appSnapshotRestore": "/api/v1/apps/{id}/snapshots/{snapshot}/restore", "appMigrations": "/api/v1/apps/{id}/migrations", "appRollbacks": "/api/v1/apps/{id}/rollbacks",
+		"appDatabaseHealth": "/api/v1/apps/{id}/databases/health", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "appScaleStatus": "/api/v1/apps/{id}/scale-status", "appSagaHistory": "/api/v1/apps/{id}/sagas/{sagaId}", "appLogHistory": "/api/v1/apps/{id}/logs/history", "evidenceArchive": "/api/v1/evidence/archive",
 		"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "hostMetricsHistory": "/api/v1/host/metrics/history", "hostRuntime": "/api/v1/host/runtime", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 		"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 		"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
-		"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+		"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch", "fleetGitHubReconcile": "/api/v1/fleet/plans/{planID}/github/reconcile",
 	}
 	if releaseConfigured {
 		endpoints["githubActionsExchange"] = "/api/v1/auth/github-actions/exchange"
@@ -1581,7 +1919,12 @@ func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler)
 }
 
 func newFleetAuthorityOnlyHandler(cfg *config.Config, db *store.DB) (*handler.Handler, error) {
-	h := handler.New(db, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil)
+	pipe := &pipeline.Pipeline{DB: db}
+	h := handler.New(db, nil, nil, nil, cfg, pipe, nil, nil, nil, nil, nil)
+	if err := h.OperationStoreError(); err != nil {
+		return nil, fmt.Errorf("Fleet authority operation acceptance: %w", err)
+	}
+	pipe.SetOperationStore(h.OperationStore())
 	if !externalFleetAdmissionRequested(cfg) {
 		return h, nil
 	}

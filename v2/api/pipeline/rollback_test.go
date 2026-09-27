@@ -136,6 +136,7 @@ func TestVerifyReleaseArtifactRechecksAllControlsOutsideNormalProductionDeploy(t
 	checks := []string{}
 	pipeline := &Pipeline{
 		ReleaseAdmissionMode: "keyed",
+		RegistryURL:          "registry.example.test",
 		VerifyArtifact: func(context.Context, string) error {
 			checks = append(checks, "registry")
 			return nil
@@ -191,6 +192,7 @@ func TestNornPrivateRollbackAdmissionBindsServerOwnedApp(t *testing.T) {
 	}
 	pipeline := &Pipeline{
 		ReleaseAdmissionMode: "attested", ReleaseAttestationTrustMode: "norn-signed-private", ReleaseAttestationIssuer: candidate.Attestation.Issuer, ReleaseAttestationRepositories: []string{candidate.Repository}, ReleaseAttestationWorkflowRefs: []string{signerRef}, ReleaseRequireSBOM: true,
+		RegistryURL:    "registry.example.test/norn",
 		VerifyArtifact: func(context.Context, string) error { return nil }, ScanArtifact: func(context.Context, string) error { return nil }, VerifyNornPrivateAttestations: verifier.Verify,
 	}
 	if err := pipeline.VerifyReleaseArtifact(context.Background(), &model.InfraSpec{App: "demo"}, sourceSHA, artifact, candidate); err != nil {

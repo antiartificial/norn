@@ -116,11 +116,16 @@ type Status struct {
 }
 
 type PullRequest struct {
-	Number int    `json:"number"`
-	URL    string `json:"url"`
-	Branch string `json:"branch"`
-	State  string `json:"state"`
-	Merged bool   `json:"merged"`
+	Number     int    `json:"number"`
+	URL        string `json:"url"`
+	Branch     string `json:"branch"`
+	State      string `json:"state"`
+	Merged     bool   `json:"merged"`
+	HeadSHA    string `json:"headSha,omitempty"`
+	HeadBranch string `json:"headBranch,omitempty"`
+	BaseBranch string `json:"baseBranch,omitempty"`
+	Title      string `json:"-"`
+	Body       string `json:"-"`
 }
 
 type Dispatch struct {
@@ -257,13 +262,13 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	}
 	document, report := fleet.ParseAndValidate(content)
 	if document == nil || report == nil || !report.Valid {
-		return nil, fmt.Errorf("GitHub fleet document does not pass Norn validation")
+		return nil, fmt.Errorf("%w: GitHub fleet document does not pass Norn validation", ErrPermanentNoWrite)
 	}
 	if !strings.EqualFold(document.Metadata.Repository, c.cfg.Repository) {
-		return nil, fmt.Errorf("GitHub fleet document repository does not match the configured installation")
+		return nil, fmt.Errorf("%w: GitHub fleet document repository does not match the configured installation", ErrPermanentNoWrite)
 	}
 	if _, ok := document.NodePools[poolName]; !ok {
-		return nil, fmt.Errorf("capacity plan node pool is not present on GitHub main")
+		return nil, fmt.Errorf("%w: capacity plan node pool is not present on GitHub main", ErrPermanentNoWrite)
 	}
 	noDesiredChange := reflect.DeepEqual(document.NodePools[poolName], proposed)
 	var updated []byte
@@ -281,7 +286,7 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 			return nil, fmt.Errorf("encode fleet document: %w", err)
 		}
 		if _, check := fleet.ParseAndValidate(updated); check == nil || !check.Valid {
-			return nil, fmt.Errorf("proposed fleet document failed validation")
+			return nil, fmt.Errorf("%w: proposed fleet document failed validation", ErrPermanentNoWrite)
 		}
 	}
 	branch := "norn/plan-" + planID
@@ -315,13 +320,16 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 		if noDesiredChange {
 			expected = receipt
 		}
-		if getErr != nil || !bytes.Equal(existing, expected) {
-			return nil, fmt.Errorf("plan branch already exists with different content")
+		if getErr != nil {
+			return nil, fmt.Errorf("read existing plan branch: %w", getErr)
+		}
+		if !bytes.Equal(existing, expected) {
+			return nil, fmt.Errorf("%w: plan branch already exists with different content", ErrPermanentAfterMutation)
 		}
 	}
 	if existing, _ := c.findPullRequest(ctx, token, branch); existing != nil {
 		if existing.State == "closed" && !existing.Merged {
-			return nil, fmt.Errorf("fleet pull request was closed without merge; create a fresh Norn plan")
+			return nil, fmt.Errorf("%w: fleet pull request was closed without merge; create a fresh Norn plan", ErrPermanentAfterMutation)
 		}
 		return existing, nil
 	}
@@ -761,17 +769,18 @@ func (c *Client) findApplyRunByNonceHash(ctx context.Context, token, planID, fle
 }
 
 type applyRun struct {
-	ID           int64  `json:"id"`
-	HTMLURL      string `json:"html_url"`
-	Event        string `json:"event"`
-	HeadSHA      string `json:"head_sha"`
-	HeadBranch   string `json:"head_branch"`
-	Path         string `json:"path"`
-	Name         string `json:"name"`
-	DisplayTitle string `json:"display_title"`
-	Status       string `json:"status"`
-	Conclusion   string `json:"conclusion"`
-	RunAttempt   int    `json:"run_attempt"`
+	ID           int64             `json:"id"`
+	HTMLURL      string            `json:"html_url"`
+	Event        string            `json:"event"`
+	HeadSHA      string            `json:"head_sha"`
+	HeadBranch   string            `json:"head_branch"`
+	Path         string            `json:"path"`
+	Name         string            `json:"name"`
+	DisplayTitle string            `json:"display_title"`
+	Status       string            `json:"status"`
+	Conclusion   string            `json:"conclusion"`
+	RunAttempt   int               `json:"run_attempt"`
+	Inputs       map[string]string `json:"inputs"`
 	Actor        struct {
 		Login string `json:"login"`
 		Type  string `json:"type"`
@@ -904,6 +913,15 @@ func (c *Client) findPullRequest(ctx context.Context, token, branch string) (*Pu
 		HTMLURL  string `json:"html_url"`
 		State    string `json:"state"`
 		MergedAt string `json:"merged_at"`
+		Head     struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
 	}
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/pulls"+query), nil, &pulls); err != nil {
 		return nil, err
@@ -911,7 +929,7 @@ func (c *Client) findPullRequest(ctx context.Context, token, branch string) (*Pu
 	if len(pulls) == 0 {
 		return nil, nil
 	}
-	return &PullRequest{Number: pulls[0].Number, URL: pulls[0].HTMLURL, Branch: branch, State: pulls[0].State, Merged: pulls[0].MergedAt != ""}, nil
+	return &PullRequest{Number: pulls[0].Number, URL: pulls[0].HTMLURL, Branch: branch, State: pulls[0].State, Merged: pulls[0].MergedAt != "", HeadSHA: pulls[0].Head.SHA, HeadBranch: pulls[0].Head.Ref, BaseBranch: pulls[0].Base.Ref, Title: pulls[0].Title, Body: pulls[0].Body}, nil
 }
 
 func (c *Client) getRef(ctx context.Context, token, branch string) (string, error) {

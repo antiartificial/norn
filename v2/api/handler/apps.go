@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/connector"
@@ -171,30 +174,121 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status)
 }
 
+// GetAppScaleStatus compares accepted replica intent with Nomad's regional
+// scale projection. A failed read is an error, never an observed count of zero.
+func (h *Handler) GetAppScaleStatus(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil || h.nomad == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "scale_status_unavailable", "replica intent or Nomad status is unavailable")
+		return
+	}
+	appID := chi.URLParam(r, "id")
+	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover app intent")
+		return
+	}
+	var spec *model.InfraSpec
+	for _, candidate := range specs {
+		if candidate.App == appID {
+			spec = candidate
+			break
+		}
+	}
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found")
+		return
+	}
+	processes := make([]string, 0, len(spec.Processes))
+	for name, proc := range spec.Processes {
+		if proc.Schedule == "" && proc.Function == nil {
+			processes = append(processes, name)
+		}
+	}
+	sort.Strings(processes)
+	rows := make([]model.ProcessScaleStatus, 0, len(processes)*len(spec.ResolvedRegions()))
+	for _, region := range spec.ResolvedRegions() {
+		active := false
+		for _, name := range processes {
+			if spec.ProcessRunsInRegion(spec.Processes[name], region.Name) {
+				active = true
+				break
+			}
+		}
+		if !active {
+			continue
+		}
+		accepted, err := h.db.DesiredReplicaCounts(r.Context(), appID, region.Name)
+		if err != nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "scale_intent_unavailable", "accepted replica intent is unavailable")
+			return
+		}
+		observed, err := h.nomad.JobScaleStatusRegion(appID, region.NomadRegion)
+		if err != nil || observed == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "nomad_scale_status_unavailable", "Nomad scale status is unavailable")
+			return
+		}
+		for _, name := range processes {
+			proc := spec.Processes[name]
+			if !spec.ProcessRunsInRegion(proc, region.Name) {
+				continue
+			}
+			declared := proc.DeclaredReplicaCount()
+			row := model.ProcessScaleStatus{Region: region.Name, NomadRegion: region.NomadRegion,
+				Process: name, Declared: declared, Desired: declared, IntentSource: "declared"}
+			if count, ok := accepted[name]; ok {
+				row.Desired, row.IntentSource = count, "accepted-scale"
+			}
+			if group, ok := observed.TaskGroups[name]; ok {
+				row.NomadPresent = true
+				row.NomadDesired, row.Placed, row.Running, row.Healthy = &group.Desired, &group.Placed, &group.Running, &group.Healthy
+			}
+			rows = append(rows, row)
+		}
+	}
+	writeJSON(w, rows)
+}
+
 func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.workloads == nil {
-		writeError(w, http.StatusServiceUnavailable, "workload connector not available")
+	if h.workloads != nil && h.workloads.Name() == connector.AppleContainer {
+		if err := h.workloads.Restart(r.Context(), id); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		h.emitAppActivity(r, id, "app.restarted", "App restarted", id+" was restarted", nil)
+		writeJSON(w, map[string]string{"status": "restarted"})
 		return
 	}
-	if err := h.workloads.Restart(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if h.pipeline == nil || !h.pipeline.RestartAvailable() {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "durable_restart_unavailable", "durable Nomad restart execution is unavailable")
 		return
 	}
-	h.emitAppActivity(r, id, "app.restarted", "App restarted", id+" was restarted", nil)
-	writeJSON(w, map[string]string{"status": "restarted"})
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id})
+	if !ok {
+		return
+	}
+	now := time.Now().UTC()
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.restart", App: id, SagaID: uuid.NewString(), Ref: id, Status: model.OperationQueued, Risk: "replace active Nomad allocations", Source: "app-control-api", Message: "queued app restart", StartedAt: now, NextAttemptAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id}}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.workloads == nil {
-		writeError(w, http.StatusServiceUnavailable, "workload connector not available")
-		return
-	}
-
 	var req struct {
-		Group string `json:"group"`
-		Count int    `json:"count"`
+		Group  string `json:"group"`
+		Region string `json:"region"`
+		Count  int    `json:"count"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -204,13 +298,80 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "group and count required")
 		return
 	}
-
-	if err := h.workloads.Scale(r.Context(), id, req.Group, req.Count); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if h.workloads != nil && h.workloads.Name() == connector.AppleContainer {
+		if err := h.workloads.Scale(r.Context(), id, req.Group, req.Count); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		h.emitAppActivity(r, id, "app.scaled", "App scaled", fmt.Sprintf("%s process %q scaled to %d", id, req.Group, req.Count), map[string]interface{}{"group": req.Group, "count": req.Count})
+		writeJSON(w, map[string]string{"status": "scaled"})
 		return
 	}
-	h.emitAppActivity(r, id, "app.scaled", "App scaled",
-		fmt.Sprintf("%s process %q scaled to %d", id, req.Group, req.Count),
-		map[string]interface{}{"group": req.Group, "count": req.Count})
-	writeJSON(w, map[string]string{"status": "scaled"})
+	if h.pipeline == nil || !h.pipeline.ScaleAvailable() {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "durable_scale_unavailable", "durable Nomad scale execution is unavailable")
+		return
+	}
+	// Validate the stable app/group target before accepting a mutable durable
+	// request, so a 202 always names a task group that exists in declared app
+	// intent rather than a request guaranteed to fail in the worker.
+	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover app intent")
+		return
+	}
+	var spec *model.InfraSpec
+	for _, candidate := range specs {
+		if candidate.App == id {
+			spec = candidate
+			break
+		}
+	}
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or process group was not found")
+		return
+	}
+	process, found := spec.Processes[req.Group]
+	if !found {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or process group was not found")
+		return
+	}
+	if process.Schedule != "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "scheduled_process_not_scalable", "scheduled process groups use periodic jobs and cannot be scaled")
+		return
+	}
+	regions := spec.ResolvedRegions()
+	if req.Region == "" && len(regions) == 1 {
+		req.Region = regions[0].Name
+	}
+	validRegion := false
+	nomadRegion := ""
+	for _, region := range regions {
+		if region.Name == req.Region && spec.ProcessRunsInRegion(process, region.Name) {
+			validRegion = true
+			nomadRegion = region.NomadRegion
+			break
+		}
+	}
+	if !validRegion {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scale_region", "region is required for this process and must be declared for the app")
+		return
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "nomadRegion": nomadRegion, "count": req.Count})
+	if !ok {
+		return
+	}
+	now := time.Now().UTC()
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: id, SagaID: uuid.NewString(), Ref: req.Region + "/" + req.Group, Status: model.OperationQueued, Risk: "Nomad task-group scale", Source: "app-control-api", Message: fmt.Sprintf("queued scale for %s/%s process %q to %d", id, req.Region, req.Group, req.Count), StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "nomadRegion": nomadRegion, "count": req.Count}}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }

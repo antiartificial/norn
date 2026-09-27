@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"time"
@@ -139,7 +140,7 @@ func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) 
 			out.Secrets.NeedsAttention++
 			out.Warnings = append(out.Warnings, "secrets need attention: "+status.App)
 		}
-		if snapshotStatus := summarizeSnapshots(spec); snapshotStatus != nil {
+		if snapshotStatus := h.summarizeSnapshots(r.Context(), spec); snapshotStatus != nil {
 			out.Snapshots = append(out.Snapshots, *snapshotStatus)
 			if snapshotStatus.OverLimit > 0 {
 				out.Warnings = append(out.Warnings, "snapshot retention over limit: "+snapshotStatus.App)
@@ -229,15 +230,15 @@ func summarizeServices(services []model.ServiceManifestEntry) platformServiceSum
 	return out
 }
 
-func summarizeSnapshots(spec *model.InfraSpec) *platformSnapshotStatus {
-	if spec == nil || spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+func (h *Handler) summarizeSnapshots(ctx context.Context, spec *model.InfraSpec) *platformSnapshotStatus {
+	if spec == nil || !spec.DeclaresDatabase() {
 		return nil
 	}
 	keep := snapshotKeepForSpec(spec, 3)
-	snapshots := listSnapshotsForSpec(spec)
+	snapshots := h.snapshotsForSpec(ctx, spec)
 	out := &platformSnapshotStatus{
 		App:       spec.App,
-		Database:  spec.Infrastructure.Postgres.Database,
+		Database:  databaseLabel(spec),
 		Keep:      keep,
 		Count:     len(snapshots),
 		OverLimit: maxInt(0, len(snapshots)-keep),

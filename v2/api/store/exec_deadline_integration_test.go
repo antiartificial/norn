@@ -51,8 +51,8 @@ func TestExpiredRunningExecSessionsReleaseQuota(t *testing.T) {
 		if err := db.CreateExecSession(ctx, s); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.ConnectExecSession(ctx, sessionID); err != nil {
-			t.Fatal(err)
+		if claimed, err := db.ConnectExecSession(ctx, sessionID, ExecSessionClaim{OwnerID: "deadline-test", OwnerToken: uuid.NewString(), LeaseDuration: time.Minute}); err != nil || !claimed {
+			t.Fatalf("connect exec session: claimed=%v err=%v", claimed, err)
 		}
 		return sessionID
 	}

@@ -461,3 +461,10 @@ func assertErrorFinding(t *testing.T, result *ValidationResult, field string) {
 	}
 	t.Fatalf("missing error for %s in %+v", field, result.Findings)
 }
+
+func TestValidateSpecRejectsDistinctHostPlacementForPeriodicProcess(t *testing.T) {
+	spec := &InfraSpec{App: "toy", Processes: map[string]Process{
+		"digest": {Schedule: "0 8 * * *", Placement: &ProcessPlacement{DistinctHosts: true}},
+	}}
+	assertErrorFinding(t, ValidateSpec(spec), "processes.digest.placement.distinctHosts")
+}

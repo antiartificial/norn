@@ -18,20 +18,32 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 	// Release lanes adopt a CI-published immutable digest. Rebuilding here
 	// would sever the attestation subject from the deployed artifact.
 	if st.artifactBound {
-		return nil
+		if !model.IsContentAddressedImage(st.imageTag) {
+			return fmt.Errorf("bound release artifact must be pinned by sha256 OCI digest")
+		}
+		return p.recordBuild(ctx, st)
 	}
 	if st.spec.Build == nil {
 		st.imageTag = fmt.Sprintf("%s:latest", st.spec.App)
-		return nil
+		return p.recordBuild(ctx, st)
 	}
 	if image := strings.TrimSpace(st.spec.Build.Image); image != "" {
 		if p.Production && !model.IsContentAddressedImage(image) {
 			return fmt.Errorf("production prebuilt image must be pinned by sha256 OCI digest")
 		}
 		st.imageTag = image
-		return nil
+		return p.recordBuild(ctx, st)
 	}
+	if reused, err := p.reuseCheckpointedBuild(ctx, st, sg); err != nil || reused {
+		return err
+	}
+	if err := p.buildImage(ctx, st); err != nil {
+		return err
+	}
+	return p.recordBuild(ctx, st)
+}
 
+func (p *Pipeline) buildImage(ctx context.Context, st *state) error {
 	sha := st.commitSHA
 	if len(sha) > 12 {
 		sha = sha[:12]
@@ -99,8 +111,7 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 		args = append(args, st.workDir)
 		// Use buildx to build multi-arch and push in one step
-		cmd := exec.CommandContext(ctx, "docker", args...)
-		out, err := cmd.CombinedOutput()
+		out, err := p.runBuildCommand(ctx, "docker", args...)
 		if err != nil {
 			return fmt.Errorf("docker build: %s", string(out))
 		}
@@ -125,12 +136,11 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 			st.imageTag = image
 			return nil
 		}
-		cmd := exec.CommandContext(ctx, "docker", "build",
+		out, err := p.runBuildCommand(ctx, "docker", "build",
 			"--build-arg", fmt.Sprintf("VERSION=%s", st.commitSHA),
 			"--build-arg", fmt.Sprintf("BUILD_NUMBER=%s", buildNumber),
 			"-f", dockerfilePath,
 			"-t", localTag, st.workDir)
-		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("docker build: %s", string(out))
 		}

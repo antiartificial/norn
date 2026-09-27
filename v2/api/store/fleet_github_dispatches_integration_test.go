@@ -10,19 +10,12 @@ import (
 	"norn/v2/api/model"
 )
 
-// TestFleetGitHubDispatchPilotRunMigrationRoundTrip proves the pilot binding
-// migration against an isolated PostgreSQL database. It deliberately creates
-// a real legacy row after dropping the column, so this test cannot pass merely
-// because new inserts happen to use the default.
+// TestFleetGitHubDispatchPilotRunMigrationRoundTrip upgrades a real version-43
+// dispatch row into the protected pilot schema without retaining its raw nonce.
 func TestFleetGitHubDispatchPilotRunMigrationRoundTrip(t *testing.T) {
 	db := isolatedMigrationDB(t)
-	if err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
+	migrateControlThrough43(t, db)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `ALTER TABLE fleet_github_dispatches DROP COLUMN IF EXISTS pilot_run_id`); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC()
 	finished := now
 	legacyPlanID, disposablePlanID := uuid.NewString(), uuid.NewString()
@@ -35,8 +28,8 @@ func TestFleetGitHubDispatchPilotRunMigrationRoundTrip(t *testing.T) {
 	}
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO fleet_github_dispatches (
 		plan_id, plan_run_id, plan_sha256, approved_head_sha, fleet_environment,
-		allow_destructive, dispatch_nonce_sha256, dispatch_state, run_id, workflow_url
-	) VALUES ($1,19,$2,$3,'staging',false,$4,'prepared',0,'')`, legacyPlanID,
+		allow_destructive, dispatch_nonce, dispatch_nonce_sha256, run_id, workflow_url
+	) VALUES ($1,19,$2,$3,'staging',false,'legacy-raw-nonce',$4,0,'')`, legacyPlanID,
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err != nil {

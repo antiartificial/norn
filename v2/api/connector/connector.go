@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/model"
 )
@@ -77,11 +78,14 @@ type UptimeEntry struct {
 }
 
 type SubmitRequest struct {
-	Spec         *model.InfraSpec
-	Image        string
-	Environment  map[string]string
-	Region       model.ResolvedRegion
-	DeploymentID string
+	Spec                 *model.InfraSpec
+	Image                string
+	Environment          map[string]string
+	Region               model.ResolvedRegion
+	DeploymentID         string
+	DatabaseRevision     int64
+	DesiredReplicaCounts map[string]int
+	PrepareNomadJob      func(*nomadapi.Job) error
 }
 
 // Connector is the scheduler/runtime contract used by deployments and the

@@ -23,6 +23,17 @@ Complete field reference for `infraspec.yaml`.
 | `snapshots` | [SnapshotPolicy](#snapshotpolicy) | no | Snapshot retention defaults |
 | `deployPolicy` | [DeployPolicy](#deploypolicy) | no | Deploy safety policy such as auto-rollback |
 | `placement` | [Placement](#placement) | no | Logical norn-fleet node pool for all processes unless overridden |
+| `startupAdapter` | string | no | Version-pinned startup adapter; currently only `wordpress-verified-tls/v1` for the qualified WordPress image and named MySQL runtime |
+
+The WordPress verified-TLS adapter requires `schemaVersion: norn.app/v2`,
+`build.image: docker.io/library/wordpress:6.8.2-php8.3-apache@sha256:09ac1315368f234db7559e4f9dcca3178a5efc6f2193b88289252abe18551522`,
+one `web` process using the image entrypoint, one `primary` runtime database
+with `WORDPRESS_DB_HOST`, `WORDPRESS_DB_USER`, `WORDPRESS_DB_PASSWORD`,
+`WORDPRESS_DB_NAME`, and `MYSQL_SSL_CA`, plus a writable host volume mounted
+at `/var/www/html/wp-content`. The adapter installs the reviewed `db.php`
+drop-in only when any existing file has the expected managed digest. MySQL
+verified-runtime delivery remains gated pending production allocation and
+persistent-content qualification.
 
 ## Process
 

@@ -420,13 +420,14 @@ paths:
       operationId: queueReleaseDeployment
       description: Staging-only immutable release deployment. Requires release:stage and an Idempotency-Key.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ReleaseRequest' }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
@@ -438,13 +439,14 @@ paths:
       operationId: queueReleasePreflight
       description: Staging-only immutable release preflight. Requires release:stage and an Idempotency-Key.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ReleaseRequest' }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
@@ -463,6 +465,14 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ExternalFleetAdmissionBeginRequest' }
       responses:
+        '410':
+          description: Idempotency replay window expired
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: Existing terminal admission recovered by exact idempotent replay
           headers:
@@ -493,6 +503,14 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ExternalFleetAdmissionResumeRequest' }
       responses:
+        '410':
+          description: Idempotency replay window expired
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: Existing terminal admission recovered or current durable context returned
           headers:
@@ -523,6 +541,14 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ExternalFleetDeploymentAdmissionRequest' }
       responses:
+        '410':
+          description: Idempotency replay window expired
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: Existing immutable operation recovered by exact idempotent replay
           headers:
@@ -554,6 +580,14 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ExternalFleetAdmissionCleanupRequest' }
       responses:
+        '410':
+          description: Idempotency replay window expired
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: Server-owned cleanup context
           headers:
@@ -641,11 +675,13 @@ paths:
     post:
       operationId: createReleaseQualification
       parameters:
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content: { application/json: { schema: { type: object, required: [deploymentId], properties: { deploymentId: { type: string, format: uuid } } } } }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '201': { description: Signed staging qualification, content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualification' } } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
@@ -655,11 +691,13 @@ paths:
     post:
       operationId: queueReleasePromotion
       parameters:
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ReleasePromotionRequest' } } }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
@@ -670,11 +708,13 @@ paths:
     post:
       operationId: queueReleaseRollback
       parameters:
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRollbackRequest' } } }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
@@ -774,6 +814,7 @@ paths:
       parameters:
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '200': { $ref: '#/components/responses/AcceptedOperation' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
@@ -796,6 +837,7 @@ paths:
                 keep: { type: integer, minimum: 1, maximum: 1000 }
                 confirm: { const: true }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '200': { $ref: '#/components/responses/AcceptedOperation' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
@@ -817,6 +859,7 @@ paths:
               required: [confirm]
               properties: { confirm: { const: true } }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '200': { $ref: '#/components/responses/AcceptedOperation' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
@@ -839,6 +882,7 @@ paths:
                 ref: { type: string, default: HEAD }
                 confirm: { const: true }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '200': { $ref: '#/components/responses/AcceptedOperation' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
@@ -861,6 +905,7 @@ paths:
                 regions: { type: array, items: { type: string } }
                 confirm: { const: true }
       responses:
+        '410': { $ref: '#/components/responses/Problem' }
         '200': { $ref: '#/components/responses/AcceptedOperation' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
@@ -1383,17 +1428,17 @@ paths:
   /api/v1/platform/upgrades:
     post:
       operationId: queuePlatformUpgrade
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PlatformUpgradeRequest' }
-      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' }, '410': { $ref: '#/components/responses/Problem' } }
   /api/v1/platform/rollbacks:
     post:
       operationId: queuePlatformRollback
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content:
@@ -1402,7 +1447,7 @@ paths:
               type: object
               required: [sha]
               properties: { sha: { type: string } }
-      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' }, '410': { $ref: '#/components/responses/Problem' } }
   /api/v1/platform/smoke:
     post:
       operationId: queuePlatformSmoke
@@ -1413,6 +1458,206 @@ paths:
       operationId: queueHostAssurance
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+  /api/v1/fleet/plans/{planID}/github/reconcile:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: reconcileFleetGitHubReservation
+      description: Read-only GitHub verification that seals a queued reservation as remote success or verified no-write. Ambiguous observations remain queued. Requires api:write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties: { kind: { type: string, enum: [pull-request, apply-dispatch] } }
+      responses:
+        '200': { description: Reconciliation observation and current operation }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/databases/health:
+    get:
+      operationId: getAppDatabaseHealth
+      description: Probes each database the app declares at its current catalog target (connects with private material and verifies database and role). Independent of Consul service health; engines without an adapter report unsupported. Requires api:read and a database profile.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+      responses:
+        '200':
+          description: Per-database probe results
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [app, databases]
+                properties:
+                  app: { type: string }
+                  databases:
+                    type: array
+                    items:
+                      type: object
+                      required: [database, status, checkedAt]
+                      properties:
+                        database: { type: string }
+                        status: { type: string, enum: [ok, failed, unsupported] }
+                        databaseName: { type: string }
+                        serviceId: { type: string }
+                        bindingId: { type: string }
+                        bindingGeneration: { type: integer, format: int64 }
+                        engine: { type: string }
+                        serverVersion: { type: string }
+                        detail: { type: string }
+                        checkedAt: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/sagas/{sagaId}:
+    get:
+      operationId: getAppSagaHistory
+      description: Complete saga history (hot events merged with verified archived bundles). Requires api:read; an app-bound credential may read only its own app; a saga is served only under its owning app. Unverifiable archived history returns 503 rather than partial history.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: sagaId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Saga history, content: { application/json: { schema: { type: object } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/logs/history:
+    get:
+      operationId: getAppLogHistory
+      description: Collected diagnostic output of the app, oldest first, labelled by node, job, allocation, task group, task, stream, log file and offset. Requires api:read; an app-bound credential may read only its own app. Bounded (limit and scan budget, with a truncated flag); dropped diagnostics are reported as gap records and loss counters. 503 when log collection is not configured.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: alloc, in: query, schema: { type: string } }
+        - { name: task, in: query, schema: { type: string } }
+        - { name: stream, in: query, schema: { type: string, enum: [stdout, stderr] } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 5000 } }
+      responses:
+        '200': { description: Labelled log records, content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/evidence/archive:
+    get:
+      operationId: getEvidenceArchiveHealth
+      description: Evidence archive status (pending, verified and pruned bundles, oldest pending, latest publication error) and the durable evidence reserve (policy, live backlog, archive capacity, and whether audited mutations are currently refused). Requires api:read.
+      responses:
+        '200': { description: Archive health, content: { application/json: { schema: { type: object } } } }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/databases/baseline:
+    post:
+      operationId: recordAppDatabaseBaseline
+      description: Accepts an audited attestation that the app's running writers already use its current named targets (legacy-to-named transition). Execution probes each writer database. It cannot contradict recorded targets and is not a cutover. Requires platform:operate and a database profile.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [confirm], properties: { confirm: { const: true } } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
+  /api/v1/database/catalog:
+    get:
+      operationId: getDatabaseCatalog
+      description: Redacted inspection of the active database catalog revision (identity, endpoints, generations, whether credential/TLS material is configured; never secrets or secret references). Requires api:read.
+      responses:
+        '200': { description: Redacted catalog inspection, content: { application/json: { schema: { type: object } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/database/catalog/activations:
+    post:
+      operationId: activateDatabaseCatalog
+      description: Accepts a norn.database/v1alpha1 catalog activation as a durable, idempotent operation bound to the request's audit receipt. The catalog and its transition from expectedRevision are validated before acceptance; the operation worker applies it with an expected-revision compare-and-set. Requires platform:operate.
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedRevision, catalog]
+              properties:
+                expectedRevision: { type: integer, format: int64, minimum: 0 }
+                catalog: { type: object }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/scale-status:
+    get:
+      operationId: getAppScaleStatus
+      description: Per-process, per-region declared and accepted replica intent beside Nomad desired, placed, running, and healthy counts. A missing task group is explicit; an unavailable control or Nomad read returns 503 rather than zero counts. Requires api:read.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+      responses:
+        '200':
+          description: Regional service-process scale projections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [region, nomadRegion, process, declared, desired, intentSource, nomadPresent]
+                  properties:
+                    region: { type: string }
+                    nomadRegion: { type: string }
+                    process: { type: string }
+                    declared: { type: integer, minimum: 0 }
+                    desired: { type: integer, minimum: 0 }
+                    intentSource: { type: string, enum: [declared, accepted-scale] }
+                    nomadPresent: { type: boolean }
+                    nomadDesired: { type: integer, minimum: 0 }
+                    placed: { type: integer, minimum: 0 }
+                    running: { type: integer, minimum: 0 }
+                    healthy: { type: integer, minimum: 0 }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/operations/{id}/mysql-restore-inspection:
+    get:
+      operationId: getMySQLRestoreInspection
+      description: Returns verified signed identity and redacted status for an executing or ambiguous private MySQL restore. This endpoint cannot retry, complete, or acknowledge a restore.
+      parameters:
+        - $ref: '#/components/parameters/OperationID'
+      responses:
+        '200':
+          description: Verified restore inspection evidence
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operationId, operationKind, operationStatus, intentState, manualRecoveryRequired, acceptanceIntentId, acceptanceSchema, canonicalDigest, signature, catalogRevision, catalogDigest, target, artifact, startedAt]
+                properties:
+                  operationId: { type: string }
+                  operationKind: { const: database.mysql-restore }
+                  operationStatus: { type: string, enum: [running, failed] }
+                  intentState: { type: string, enum: [executing, needs-inspection] }
+                  manualRecoveryRequired: { type: boolean }
+                  acceptanceIntentId: { type: string }
+                  acceptanceSchema: { type: string }
+                  canonicalDigest: { type: string, pattern: '^[0-9a-f]{64}$' }
+                  signature: { type: object }
+                  catalogRevision: { type: integer, format: int64, minimum: 1 }
+                  catalogDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+                  target: { type: object }
+                  artifact: { type: object }
+                  startedAt: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
@@ -1491,6 +1736,7 @@ components:
         - operation_not_cancelable
         - invalid_idempotency_key
         - idempotency_key_reused
+        - idempotency_window_expired
         - app_operation_active
         - postgres_not_configured
         - migration_not_configured
@@ -3027,3 +3273,63 @@ components:
         sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
         confirm: { const: true }
+    ReleaseQualificationRequest:
+      type: object
+      additionalProperties: false
+      required: [deploymentId]
+      properties:
+        deploymentId: { type: string, format: uuid }
+    ReleaseQualificationList:
+      type: object
+      required: [schemaVersion, qualifications, count]
+      properties:
+        schemaVersion: { const: norn.release-qualifications/v2 }
+        qualifications: { type: array, items: { $ref: '#/components/schemas/ReleaseQualification' } }
+        count: { type: integer, minimum: 0 }
+    FleetRunnerAttemptCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, runnerAttemptId, commitSha, planSha256, workflowUrl, dispatchNonce, sourceDispatchRunId, heartbeatTimeoutSeconds]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        runnerAttemptId: { type: string, minLength: 1, maxLength: 200 }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workflowUrl: { type: string, format: uri }
+        dispatchNonce: { type: string, pattern: '^[0-9a-f]{64}$' }
+        sourceDispatchRunId: { type: string, pattern: '^[1-9][0-9]*$' }
+        heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900 }
+        resume: { type: boolean, default: false }
+    FleetRunnerAttemptHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, phase, sequence, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        phase: { type: string }
+        sequence: { type: integer, format: int64, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        message: { type: string, maxLength: 500 }
+    FleetRunnerAttemptAdvanceRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, expectedPhase, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        expectedPhase: { type: string }
+        revision: { type: integer, format: int64, minimum: 1 }
+    FleetRunnerAttemptCancelRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, maxLength: 1000 }
+    EventResyncDecision:
+      type: object
+      required: [replayable]
+      properties:
+        replayable: { type: boolean }
+        resyncCursor: { type: integer, format: int64 }
+        reason: { type: string }

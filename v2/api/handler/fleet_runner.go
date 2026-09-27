@@ -66,12 +66,12 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 	// Serialize attempt creation with the same per-plan lock used by the
 	// GitHub rerun fence. Without this, a runner could adopt consumed authority
 	// between the rerun's history check and its POST.
-	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
+	lock, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch or same-run retry is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer lock.Release()
 	var request fleet.RunnerAttemptStartRequest
 	if err := decodeControlJSON(w, r, &request); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_runner_attempt", err.Error())
@@ -716,8 +716,14 @@ func fleetRunnerPrincipalOwnsAttempt(principal AccessPrincipal, attempt *model.F
 	if attempt == nil || principal.CI == nil || principal.CI.Provider != "github-actions" || !principalHasExactScope(principal, ScopeFleetOperate) {
 		return false
 	}
-	identity := principalIdentity(principal)
-	if identity == "" || attempt.PrincipalSubject != identity {
+	// Older attempts persist the token display subject. Signed V3 acceptance
+	// persists the stable GitHub Actions actor derived from verified claims.
+	stableIdentity := ""
+	if principal.CI.RepositoryOwnerID != "" && principal.CI.RepositoryID != "" && principal.CI.RunID != "" && principal.CI.RunAttempt != "" {
+		stableIdentity = strings.Join([]string{principal.CI.RepositoryOwnerID, principal.CI.RepositoryID, principal.CI.RunID, principal.CI.RunAttempt}, ":")
+	}
+	legacyIdentity := principalIdentity(principal)
+	if attempt.PrincipalSubject == "" || (attempt.PrincipalSubject != legacyIdentity && (stableIdentity == "" || attempt.PrincipalSubject != stableIdentity)) {
 		return false
 	}
 	return attempt.RunnerAttemptID == canonicalFleetRunnerAttemptID(principal.CI) && attempt.WorkflowURL == canonicalFleetWorkflowURL(principal.CI)

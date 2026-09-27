@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
-import { ConfirmDialog, ErrorState, Skeleton, useToast } from './ui/index.ts'
+import { ErrorState, Skeleton } from './ui/index.ts'
 
 interface OpsSummary {
   generatedAt: string
@@ -127,11 +127,8 @@ export function OpsPanel() {
   const [summary, setSummary] = useState<OpsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [busyRollback, setBusyRollback] = useState<string | null>(null)
   const [evalReadiness, setEvalReadiness] = useState<EvaluatorReadinessData | null>(null)
   const [readinessError, setReadinessError] = useState<string | null>(null)
-  const [rollbackTarget, setRollbackTarget] = useState<string | null>(null)
-  const { toast } = useToast()
 
   const loadSummary = () => {
     let cancelled = false
@@ -178,27 +175,6 @@ export function OpsPanel() {
   const latestRun = summary.workerRuns?.[0]
   const latestDeployment = summary.deployments?.[0]
   const rollbackTargets = new Set(summary.rollbacks.map((receipt) => receipt.rolled_back_event_id))
-
-  const rollbackFeedback = async (eventID: string) => {
-    setBusyRollback(eventID)
-    try {
-      const res = await fetch(apiUrl(`/api/ops/contextdb/feedback/${eventID}/rollback`), {
-        ...fetchOpts,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: 'operator rollback from norn ops', owner: 'norn-ui' }),
-      })
-      if (!res.ok) throw new Error(await res.text())
-      toast({ kind: 'success', title: 'Feedback rollback started', description: short(eventID) })
-      setRollbackTarget(null)
-      loadSummary()
-    } catch (err) {
-      setError(String(err))
-      toast({ kind: 'error', title: 'Feedback rollback failed', description: String(err) })
-    } finally {
-      setBusyRollback(null)
-    }
-  }
 
   return (
     <div className="ops-panel">
@@ -326,11 +302,7 @@ export function OpsPanel() {
               <div className="ops-row ops-row-audit" key={`${event.tx_time}:${event.node_id}:${i}`}>
                 <span>{formatTime(event.tx_time)}</span><span>{event.action}</span><span>{event.confidence.toFixed(2)}</span><span>{short(event.node_id)}</span><span>{short(event.event_id)}</span>
                 <span>
-                  {rollbackTargets.has(event.event_id) ? 'rolled back' : (
-                    <button className="btn btn-small" disabled={busyRollback === event.event_id} onClick={() => setRollbackTarget(event.event_id)}>
-                      {busyRollback === event.event_id ? '...' : 'Rollback'}
-                    </button>
-                  )}
+                  {rollbackTargets.has(event.event_id) ? 'rolled back' : 'unavailable'}
                 </span>
                 <span>{event.reason || '-'}</span>
               </div>
@@ -362,16 +334,6 @@ export function OpsPanel() {
           {summary.warnings?.map((warning) => <p key={warning}>{warning}</p>)}
         </section>
       )}
-      <ConfirmDialog
-        open={!!rollbackTarget}
-        title="Rollback feedback event"
-        message={`Rollback feedback event ${short(rollbackTarget ?? undefined)}?`}
-        consequence="ContextDB will write a rollback receipt and restore the previous confidence value."
-        confirmLabel="Rollback"
-        danger
-        onClose={() => setRollbackTarget(null)}
-        onConfirm={() => rollbackTarget && rollbackFeedback(rollbackTarget)}
-      />
     </div>
   )
 }

@@ -1,0 +1,35 @@
+{
+  "key": "recovery-known-vector-audit-key-0123456789",
+  "event": {
+    "id": "audit-vector-1",
+    "requestId": "request-vector-1",
+    "principalSubject": "operator@example.test",
+    "tokenId": "token-1",
+    "deviceId": "device-1",
+    "keyId": "8ce725a9708b7025",
+    "scopes": [
+      "api:write",
+      "platform:operate"
+    ],
+    "method": "POST",
+    "path": "/api/v1/apps/{id}/deploy",
+    "clientIp": "100.64.0.10",
+    "userAgent": "NornUI/1",
+    "status": 202,
+    "outcome": "succeeded",
+    "startedAt": "2026-09-22T12:34:55.123456789Z",
+    "finishedAt": "2026-09-22T12:34:56.654321Z",
+    "durationMs": 1530
+  },
+  "digest": "594e025ea7e47915219ea2fd4d233b71a83ab16cea232f72f28faab3d01344ea",
+  "incident": {
+    "id": "incident-vector-1",
+    "auditEventId": "audit-vector-1",
+    "reasonCode": "legacy_timestamp_precision",
+    "explanation": "PostgreSQL truncated nanoseconds before the canonicalization fix.",
+    "acknowledgedBy": "operator@example.test",
+    "acknowledgedAt": "2026-09-22T13:00:00.5Z",
+    "keyId": "8ce725a9708b7025"
+  },
+  "incidentDigest": "1730f2567a273f0be5d8f29be9e245d3ff465f6708f63e0c82aba553d26e1d40"
+}

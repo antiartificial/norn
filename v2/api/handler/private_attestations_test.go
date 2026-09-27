@@ -308,6 +308,7 @@ func TestHandlerRollbackPassesServerOwnedAppToNornVerifier(t *testing.T) {
 	signerRef := "personal-owner/norn/.github/workflows/norn-app-release.yml@" + signerSHA
 	candidate := model.ReleaseCandidate{Repository: "personal-owner/private-repo", RepositoryVisibility: "private", SignerWorkflowRef: signerRef, SignerWorkflowSHA: signerSHA, Attestation: model.ReleaseAttestationIdentity{Mode: "norn-signed-private", Issuer: githubActionsOIDCIssuer, SubjectDigest: digest, MaterialSHA: sourceSHA}}
 	p := &pipeline.Pipeline{
+		RegistryURL:          "registry.example.test/norn",
 		ReleaseAdmissionMode: "attested", ReleaseAttestationTrustMode: "norn-signed-private", ReleaseAttestationIssuer: githubActionsOIDCIssuer, ReleaseAttestationRepositories: []string{candidate.Repository}, ReleaseAttestationWorkflowRefs: []string{signerRef}, ReleaseRequireSBOM: true,
 		VerifyArtifact: func(context.Context, string) error { return nil }, ScanArtifact: func(context.Context, string) error { return nil },
 		VerifyNornPrivateAttestations: func(_ context.Context, _ string, _ string, app string, _ model.ReleaseCandidate) error {
@@ -319,10 +320,10 @@ func TestHandlerRollbackPassesServerOwnedAppToNornVerifier(t *testing.T) {
 	}
 	h := &Handler{pipeline: p}
 	target := &model.Deployment{CommitSHA: sourceSHA, ImageTag: artifact}
-	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "private-route"}, target, candidate); err != nil {
+	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "private-route", Repo: &model.RepoSpec{URL: "https://github.com/personal-owner/private-repo"}}, target, candidate); err != nil {
 		t.Fatalf("handler rejected valid Norn-private rollback: %v", err)
 	}
-	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "another-app"}, target, candidate); err == nil {
+	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "another-app", Repo: &model.RepoSpec{URL: "https://github.com/personal-owner/private-repo"}}, target, candidate); err == nil {
 		t.Fatal("handler accepted Norn-private rollback for the wrong app")
 	}
 }

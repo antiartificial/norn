@@ -19,14 +19,6 @@ type DB struct {
 	Pool *pgxpool.Pool
 }
 
-// migrationAdvisoryLockKey serializes the whole idempotent schema program
-// across API processes and parallel package tests sharing a PostgreSQL 16
-// database. It is transaction-scoped so rollback releases it with every DDL
-// lock rather than leaving a session waiter during a failed migration.
-const migrationAdvisoryLockKey int64 = 0x4e4f524e5f4d4947
-
-const migrationAttempts = 5
-
 func Connect(databaseURL string) (*DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -57,63 +49,42 @@ func operationPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	if config.MaxConns < 4 {
 		return nil, fmt.Errorf("postgres pool_max_conns must be at least 4 for durable operation locking")
 	}
+	DeclareReaderContract(config, "control")
 	return config, nil
+}
+
+// readerApplicationPrefix is how a control-store session declares the saga
+// history reader contract of the binary that opened it. Pruning refuses
+// while any session of the control role declares less than
+// EvidenceArchiveReaderVersion (or nothing: pre-archive binaries), because a
+// startup schema floor cannot retire processes that are already running.
+const readerApplicationPrefix = "norn/reader="
+
+// DeclareReaderContract sets application_name to this binary's reader
+// contract and component, overriding any value in the connection string.
+func DeclareReaderContract(config *pgxpool.Config, component string) {
+	config.ConnConfig.RuntimeParams["application_name"] = ReaderApplicationName(component)
+}
+
+// ReaderApplicationName is the application_name declaring this binary's
+// reader contract, bounded to PostgreSQL's 63-byte limit.
+func ReaderApplicationName(component string) string {
+	name := fmt.Sprintf("%s%d/%s", readerApplicationPrefix, ControlSchemaReaderVersion, component)
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return name
 }
 
 func (db *DB) Close() {
 	db.Pool.Close()
 }
 
-func Migrate(db *DB) error {
-	if db == nil || db.Pool == nil {
-		return fmt.Errorf("postgres migration database is unavailable")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	var err error
-	for attempt := 0; attempt < migrationAttempts; attempt++ {
-		err = migrateOnce(ctx, db)
-		if err == nil {
-			return nil
-		}
-		if !migrationLockContention(err) || attempt == migrationAttempts-1 {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("postgres migration: %w", ctx.Err())
-		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
-		}
-	}
-	return err
-}
-
-// migrateOnce makes the complete schema program atomic. Before any DDL it
-// locks every extant application relation in lexical order. This drains live
-// DML before ALTER/CREATE INDEX begins, and a deadlock/lock-timeout is rolled
-// back as one unit then retried from no partial schema state. New databases
-// have no extant relations and therefore take the same atomic path directly.
-func migrateOnce(ctx context.Context, db *DB) error {
-	conn, err := db.Pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire postgres migration session: %w", err)
-	}
-	defer conn.Release()
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin postgres migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := configureMigrationSession(ctx, tx); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationAdvisoryLockKey); err != nil {
-		return fmt.Errorf("lock postgres migration: %w", err)
-	}
-	if err := lockMigrationRelations(ctx, tx); err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `
+// controlSchemaBaselineSQL is immutable migration 1. It intentionally retains
+// every legacy idempotent DDL statement and the historical fleet attempt
+// lineage repair so an existing unversioned v2 database can be adopted without
+// replacing IDs, receipts, or populated lineage.
+const controlSchemaBaselineSQL = `
 		CREATE TABLE IF NOT EXISTS saga_events (
 			id         TEXT PRIMARY KEY,
 			saga_id    TEXT NOT NULL,
@@ -256,6 +227,7 @@ func migrateOnce(ctx context.Context, db *DB) error {
 			attempts    INT NOT NULL DEFAULT 0,
 			max_attempts INT NOT NULL DEFAULT 1,
 			locked_by  TEXT NOT NULL DEFAULT '',
+			lock_generation BIGINT NOT NULL DEFAULT 0,
 			locked_until TIMESTAMPTZ,
 			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			last_error TEXT NOT NULL DEFAULT '',
@@ -270,224 +242,67 @@ func migrateOnce(ctx context.Context, db *DB) error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_idempotency
 			ON operations ((metadata->>'idempotencyKey'))
 			WHERE metadata ? 'idempotencyKey' AND metadata->>'idempotencyKey' <> '';
-
-		CREATE TABLE IF NOT EXISTS fleet_runner_attempts (
-			id                        TEXT PRIMARY KEY,
-			plan_id                   TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-			attempt                   INT NOT NULL,
-			root_attempt_id           TEXT NOT NULL DEFAULT '',
-			source_dispatch_run_id    BIGINT NOT NULL DEFAULT 0,
-			pilot_run_id              TEXT NOT NULL DEFAULT '',
-			recovery                  BOOLEAN NOT NULL DEFAULT false,
-			runner_attempt_id         TEXT NOT NULL DEFAULT '',
-			status                    TEXT NOT NULL DEFAULT 'queued',
-			current_phase             TEXT NOT NULL,
-			commit_sha                TEXT NOT NULL,
-			plan_sha256               TEXT NOT NULL,
-			workflow_url              TEXT NOT NULL DEFAULT '',
-			principal_subject         TEXT NOT NULL DEFAULT '',
-			retry_of                  TEXT NOT NULL DEFAULT '',
-			heartbeat_sequence        BIGINT NOT NULL DEFAULT 0,
-			heartbeat_timeout_seconds INT NOT NULL DEFAULT 120,
-			revision                  BIGINT NOT NULL DEFAULT 1,
-			started_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-			phase_started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-			heartbeat_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-			finished_at               TIMESTAMPTZ,
-			last_error                TEXT NOT NULL DEFAULT '',
-			metadata                  JSONB NOT NULL DEFAULT '{}',
-			CHECK (attempt > 0),
-			CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'canceled', 'abandoned')),
-			CHECK (heartbeat_sequence >= 0),
-			CHECK (heartbeat_timeout_seconds BETWEEN 30 AND 900),
-			CHECK (revision > 0),
-			UNIQUE (plan_id, attempt)
-		);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_external_attempt
-			ON fleet_runner_attempts(plan_id, runner_attempt_id)
-			WHERE runner_attempt_id <> '';
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_one_live_attempt
-			ON fleet_runner_attempts(plan_id)
-			WHERE status IN ('queued', 'running');
-		CREATE INDEX IF NOT EXISTS idx_fleet_runner_plan
-			ON fleet_runner_attempts(plan_id, attempt DESC);
-		CREATE INDEX IF NOT EXISTS idx_fleet_runner_liveness
-			ON fleet_runner_attempts(status, heartbeat_at);
-		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS root_attempt_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS source_dispatch_run_id BIGINT NOT NULL DEFAULT 0;
-		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS pilot_run_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS recovery BOOLEAN NOT NULL DEFAULT false;
-		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS phase_started_at TIMESTAMPTZ;
-		-- Legacy records predate phase timing. Their original attempt start is the
-		-- only honest lower bound; new attempts set this server-owned field exactly.
-		UPDATE fleet_runner_attempts SET phase_started_at = started_at WHERE phase_started_at IS NULL;
-		ALTER TABLE fleet_runner_attempts ALTER COLUMN phase_started_at SET NOT NULL;
-		-- Existing durable histories predate root_attempt_id. Backfill every
-		-- member of each plan lineage from its immutable first attempt.
-		UPDATE fleet_runner_attempts target SET root_attempt_id = first_attempt.id
-		FROM (SELECT DISTINCT ON (plan_id) plan_id, id FROM fleet_runner_attempts ORDER BY plan_id, attempt ASC) first_attempt
-		WHERE target.plan_id = first_attempt.plan_id AND target.root_attempt_id = '';
-
-		CREATE TABLE IF NOT EXISTS fleet_github_dispatches (
-			plan_id TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE,
-			plan_run_id BIGINT NOT NULL,
-			plan_sha256 TEXT NOT NULL,
-			approved_head_sha TEXT NOT NULL,
-			pilot_run_id TEXT NOT NULL DEFAULT '',
-			fleet_environment TEXT NOT NULL,
-			allow_destructive BOOLEAN NOT NULL,
-			dispatch_nonce_sha256 TEXT NOT NULL,
-			approval_envelope_sha256 TEXT NOT NULL DEFAULT '',
-			dispatch_state TEXT NOT NULL DEFAULT 'prepared',
-			submission_started_at TIMESTAMPTZ,
-			run_id BIGINT NOT NULL DEFAULT 0,
-			run_attempt INT NOT NULL DEFAULT 0,
-			workflow_url TEXT NOT NULL DEFAULT '',
-			rerun_started_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		);
-		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS dispatch_state TEXT NOT NULL DEFAULT 'prepared';
-		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS submission_started_at TIMESTAMPTZ;
-		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS pilot_run_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS approval_envelope_sha256 TEXT NOT NULL DEFAULT '';
-		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS run_attempt INT NOT NULL DEFAULT 0;
-		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS rerun_started_at TIMESTAMPTZ;
-		ALTER TABLE fleet_github_dispatches DROP COLUMN IF EXISTS dispatch_nonce;
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_github_dispatch_nonce ON fleet_github_dispatches(dispatch_nonce_sha256);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_promotion_qualification
+			ON operations ((metadata->'promotionQualification'->>'id'))
+			WHERE kind = 'app.deploy' AND metadata->'promotionQualification'->>'id' <> '';
 
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 1;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS locked_by TEXT NOT NULL DEFAULT '';
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS lock_generation BIGINT NOT NULL DEFAULT 0;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now();
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_operations_queue ON operations(status, next_attempt_at, kind);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_promotion_qualification
-			ON operations ((metadata->'promotionQualification'->>'id'))
-			WHERE kind = 'app.deploy' AND metadata->'promotionQualification'->>'id' <> '';
 
-		CREATE TABLE IF NOT EXISTS github_actions_assertion_uses (
-			issuer TEXT NOT NULL,
-			jti TEXT NOT NULL,
-			expires_at TIMESTAMPTZ NOT NULL,
-			used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			PRIMARY KEY (issuer, jti)
-		);
-		CREATE INDEX IF NOT EXISTS idx_github_actions_assertion_uses_expiry ON github_actions_assertion_uses(expires_at);
-
-		-- The raw Norn-issued external-admission nonce is never retained. The
-		-- hash is bound to the exact protected Fleet CI run and can be consumed
-		-- once only after independent runtime verification succeeds.
-		CREATE TABLE IF NOT EXISTS external_deployment_nonces (
+		CREATE TABLE IF NOT EXISTS fleet_runner_attempts (
 			id TEXT PRIMARY KEY,
-			nonce_sha256 TEXT NOT NULL UNIQUE,
-			app TEXT NOT NULL,
-			environment TEXT NOT NULL,
-			ci_repository TEXT NOT NULL,
-			ci_run_id TEXT NOT NULL,
-			ci_run_attempt TEXT NOT NULL,
-			expires_at TIMESTAMPTZ NOT NULL,
-			issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			consumed_at TIMESTAMPTZ
-		);
-		CREATE INDEX IF NOT EXISTS idx_external_deployment_nonces_expiry ON external_deployment_nonces(expires_at);
-
-		-- The admission row is deliberately separate from operations: it starts
-		-- before an external verifier is invoked and preserves nonce issuance and
-		-- failure lifecycle without storing an unredacted receipt or nonce.
-		CREATE TABLE IF NOT EXISTS external_deployment_admissions (
-			id TEXT PRIMARY KEY,
-			idempotency_key TEXT NOT NULL UNIQUE,
-			request_digest TEXT NOT NULL,
-			app TEXT NOT NULL,
-			environment TEXT NOT NULL,
-			ci_repository TEXT NOT NULL,
-			state TEXT NOT NULL DEFAULT 'initiated',
-			nonce_id TEXT REFERENCES external_deployment_nonces(id) ON DELETE SET NULL,
-			nonce_generation BIGINT NOT NULL DEFAULT 0,
-			registration_ref TEXT NOT NULL DEFAULT '',
-			operation_id TEXT REFERENCES operations(id) ON DELETE SET NULL,
-			failure_code TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			plan_id TEXT NOT NULL,
+			attempt INT NOT NULL,
+			runner_attempt_id TEXT NOT NULL,
+			commit_sha TEXT NOT NULL,
+			plan_sha256 TEXT NOT NULL,
+			workflow_url TEXT NOT NULL,
+			status TEXT NOT NULL,
+			current_phase TEXT NOT NULL,
+			root_attempt_id TEXT NOT NULL DEFAULT '',
+			retry_of TEXT NOT NULL DEFAULT '',
+			heartbeat_sequence BIGINT NOT NULL DEFAULT 0,
+			heartbeat_timeout_seconds INT NOT NULL,
+			revision BIGINT NOT NULL DEFAULT 1,
+			heartbeat_at TIMESTAMPTZ NOT NULL,
+			heartbeat_expires_at TIMESTAMPTZ NOT NULL,
+			message TEXT NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			completed_at TIMESTAMPTZ,
-			CHECK (state IN ('initiated','nonce_registering','nonce_ready','evidence_claimed','committed','cleanup_pending','complete','expired')),
-			CHECK (nonce_generation >= 0)
+			finished_at TIMESTAMPTZ
 		);
-		CREATE INDEX IF NOT EXISTS idx_external_deployment_admissions_nonce ON external_deployment_admissions(nonce_id);
-		CREATE INDEX IF NOT EXISTS idx_external_deployment_admissions_state ON external_deployment_admissions(state, updated_at DESC);
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS root_attempt_id TEXT NOT NULL DEFAULT '';
+		UPDATE fleet_runner_attempts target SET root_attempt_id = first_attempt.id
+		FROM (SELECT DISTINCT ON (plan_id) plan_id, id FROM fleet_runner_attempts ORDER BY plan_id, attempt ASC) first_attempt
+		WHERE target.plan_id = first_attempt.plan_id AND target.root_attempt_id = '';
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_attempt_identity ON fleet_runner_attempts(plan_id, runner_attempt_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_attempt_number ON fleet_runner_attempts(plan_id, attempt);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_attempt_live_plan ON fleet_runner_attempts(plan_id) WHERE status IN ('queued', 'running');
+		CREATE INDEX IF NOT EXISTS idx_fleet_runner_attempt_plan ON fleet_runner_attempts(plan_id, attempt DESC);
+		CREATE INDEX IF NOT EXISTS idx_fleet_runner_attempt_expiry ON fleet_runner_attempts(status, heartbeat_expires_at);
 
-		-- These ALTERs make the v4 lifecycle additive for an already-running
-		-- control plane. Legacy nonce rows retain empty registration bindings.
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS admission_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registration_generation BIGINT NOT NULL DEFAULT 0;
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registration_ref TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS issuer_subject TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS issuer_token_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registration_metadata JSONB NOT NULL DEFAULT '{}';
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'ready';
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ;
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ;
-		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_ref TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_sha256 TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_retry_lineage JSONB NOT NULL DEFAULT '[]';
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_receipt_sha256 TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_proof_sha256 TEXT NOT NULL DEFAULT '';
-		-- A redacted, canonical claim envelope is stored before the remote claim.
-		-- It has no raw nonce and lets the protected owner reconcile a crash
-		-- without asking Actions to resubmit a one-use secret.
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS claimed_receipt JSONB NOT NULL DEFAULT '{}';
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_claim_revision BIGINT NOT NULL DEFAULT 0;
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_commit_revision BIGINT NOT NULL DEFAULT 0;
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_cleanup_revision BIGINT NOT NULL DEFAULT 0;
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS cleanup_intent_sha256 TEXT NOT NULL DEFAULT '';
-		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS absence_proof_sha256 TEXT NOT NULL DEFAULT '';
-		DO $$ BEGIN
-			ALTER TABLE external_deployment_nonces ADD CONSTRAINT external_deployment_nonces_state_check
-				CHECK (state IN ('registering','ready','claimed','superseded','expired'));
-		EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-		DO $$ BEGIN
-			ALTER TABLE external_deployment_nonces ADD CONSTRAINT external_deployment_nonces_revision_check CHECK (revision > 0);
-		EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_external_deployment_nonces_admission_generation
-			ON external_deployment_nonces(admission_id, registration_generation)
-			WHERE admission_id <> '';
-		CREATE INDEX IF NOT EXISTS idx_external_deployment_nonces_admission ON external_deployment_nonces(admission_id)
-			WHERE admission_id <> '';
-
-		CREATE TABLE IF NOT EXISTS external_deployment_admission_checkpoints (
-			admission_id TEXT NOT NULL REFERENCES external_deployment_admissions(id) ON DELETE CASCADE,
-			phase TEXT NOT NULL,
-			checkpoint_id TEXT NOT NULL,
-			attempt_id TEXT NOT NULL,
-			evidence_ref TEXT NOT NULL,
-			evidence_sha256 TEXT NOT NULL DEFAULT '',
+		CREATE TABLE IF NOT EXISTS fleet_github_dispatches (
+			plan_id TEXT PRIMARY KEY,
+			plan_run_id BIGINT NOT NULL,
+			plan_sha256 TEXT NOT NULL,
+			approved_head_sha TEXT NOT NULL,
+			fleet_environment TEXT NOT NULL,
+			allow_destructive BOOLEAN NOT NULL,
+			dispatch_nonce TEXT NOT NULL,
+			dispatch_nonce_sha256 TEXT NOT NULL,
+			run_id BIGINT NOT NULL DEFAULT 0,
+			workflow_url TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			PRIMARY KEY (admission_id, phase),
-			UNIQUE (admission_id, checkpoint_id)
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
-
-		-- Keep the append-only checkpoint pointers in their own durable namespace
-		-- as well as the admission-context projection above. The duplicate
-		-- projection preserves the v4 context API while this table is the
-		-- server-owned runner evidence ledger used for reconciliation.
-		CREATE TABLE IF NOT EXISTS fleet_runner_checkpoint_refs (
-			admission_id TEXT NOT NULL REFERENCES external_deployment_admissions(id) ON DELETE CASCADE,
-			phase TEXT NOT NULL,
-			checkpoint_id TEXT NOT NULL,
-			attempt_id TEXT NOT NULL,
-			evidence_ref TEXT NOT NULL,
-			evidence_sha256 TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			PRIMARY KEY (admission_id, phase),
-			UNIQUE (admission_id, checkpoint_id)
-		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_github_dispatch_nonce ON fleet_github_dispatches(dispatch_nonce_sha256);
 
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
@@ -560,6 +375,14 @@ func migrateOnce(ctx context.Context, db *DB) error {
 			revoked_at   TIMESTAMPTZ,
 			rotated_from TEXT NOT NULL DEFAULT ''
 		);
+		CREATE TABLE IF NOT EXISTS github_actions_assertion_uses (
+			issuer     TEXT NOT NULL,
+			jti        TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			used_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (issuer, jti)
+		);
+		CREATE INDEX IF NOT EXISTS idx_github_actions_assertion_uses_expiry ON github_actions_assertion_uses(expires_at);
 		CREATE INDEX IF NOT EXISTS idx_access_tokens_device ON access_tokens(device_id, issued_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_access_tokens_active ON access_tokens(revoked_at, expires_at);
 
@@ -628,8 +451,14 @@ func migrateOnce(ctx context.Context, db *DB) error {
 			user_agent    TEXT NOT NULL DEFAULT ''
 		);
 		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS command_digest TEXT NOT NULL DEFAULT '';
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS owner_token TEXT NOT NULL DEFAULT '';
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS owner_lease_until TIMESTAMPTZ;
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_device ON exec_sessions(device_id, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_status ON exec_sessions(status, expires_at);
+		CREATE INDEX IF NOT EXISTS idx_exec_sessions_running_lease
+			ON exec_sessions(owner_lease_until)
+			WHERE status='running' AND owner_id<>'';
 
 		CREATE TABLE IF NOT EXISTS mutation_audit_events (
 			id                TEXT PRIMARY KEY,
@@ -696,75 +525,61 @@ func migrateOnce(ctx context.Context, db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_access_observation_app_last ON access_observation_buckets(app, process, last_seen DESC);
 		CREATE INDEX IF NOT EXISTS idx_access_observation_bucket ON access_observation_buckets(bucket_start DESC);
-	`)
+	`
+
+// Reader contract 2 (EvidenceArchiveReaderVersion): saga history reads are
+// archive-aware and never serve pruned history as complete.
+const (
+	EvidenceArchiveReaderVersion int64 = 2
+	ControlSchemaReaderVersion   int64 = MySQLRetainedArtifactReaderVersion
+	ControlSchemaWriterVersion   int64 = SnapshotExportIntentWriterVersion
+)
+
+// ControlSchemaMigrations returns a copy of the ordered, forward-only control
+// schema catalog. Never edit an applied definition; append a new version.
+func ControlSchemaMigrations() []SchemaMigration {
+	return []SchemaMigration{{
+		Version:              1,
+		Name:                 "legacy-control-schema-baseline",
+		SQL:                  controlSchemaBaselineSQL,
+		MinimumReaderVersion: 0,
+		MinimumWriterVersion: 0,
+	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration(), functionDeploymentProvenanceMigration(), functionInvocationReaderContractMigration(), mysqlRestoreIntentMigration(), mysqlRestoreMaintenanceFenceMigration(), mysqlRuntimeLaunchReservationMigration(), mysqlRestoreRuntimeLockMigration(), runtimeMutationFenceMigration(), mysqlSourceSnapshotIntentMigration(), mysqlSourceSnapshotStopMigration(), mysqlSourceSnapshotAccountLockMigration(), mysqlSourceSnapshotArtifactMigration(), mysqlRestoreReceiptMigration(), mysqlRestoreFenceTransferMigration(), mysqlSourceSnapshotRetentionMigration(), mysqlRestoreRecoveryMigration(), mysqlRestoreRecoveryUnlockMigration(), mysqlRestoreRecoveryReleaseMigration(), snapshotExportIntentMigration(), mysqlSourceSnapshotReconciliationMigration(), mysqlSourceSnapshotProvedSuccessorMigration(), mysqlSourceSnapshotStageSuccessorMigration(), mysqlSourceSnapshotPublishSuccessorMigration(), masterProtectedPilotMigration()}
+}
+
+func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
+	if db == nil || db.Pool == nil {
+		return nil, fmt.Errorf("control schema database is unavailable")
+	}
+	migrator, err := NewSchemaMigrator(db.Pool, ControlSchemaMigrations(), BinarySchemaCompatibility{
+		ReaderVersion: ControlSchemaReaderVersion,
+		WriterVersion: ControlSchemaWriterVersion,
+	}, SchemaMigratorOptions{})
 	if err != nil {
-		return fmt.Errorf("apply postgres migration: %w", err)
+		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit postgres migration: %w", err)
-	}
-	return nil
+	migrator.adoptUnversioned = adoptMiniControlSchema
+	return migrator, nil
 }
 
-// configureMigrationSession only changes settings ordinary application roles
-// may set themselves. deadlock_timeout is a superuser-only setting in
-// PostgreSQL, so migrations rely on PostgreSQL's configured deadlock detector
-// and retain the retry path below for any reported deadlock.
-func configureMigrationSession(ctx context.Context, tx migrationSession) error {
-	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
-		return fmt.Errorf("configure postgres migration lock timeout: %w", err)
-	}
-	return nil
-}
-
-type migrationSession interface {
-	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
-}
-
-func lockMigrationRelations(ctx context.Context, tx pgx.Tx) error {
-	rows, err := tx.Query(ctx, `
-		SELECT quote_ident(tablename)
-		FROM pg_tables
-		WHERE schemaname = current_schema()
-		ORDER BY tablename
-	`)
+// Migrate retains the compatibility entry point for existing tests and tools
+// while delegating all schema ownership and history validation to the
+// versioned runner.
+func Migrate(db *DB) error {
+	migrator, err := NewControlSchemaMigrator(db)
 	if err != nil {
-		return fmt.Errorf("list postgres migration relations: %w", err)
+		return err
 	}
-	defer rows.Close()
-	var relations []string
-	for rows.Next() {
-		var relation string
-		if err := rows.Scan(&relation); err != nil {
-			return fmt.Errorf("scan postgres migration relation: %w", err)
-		}
-		relations = append(relations, relation)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read postgres migration relations: %w", err)
-	}
-	if len(relations) == 0 {
-		return nil
-	}
-	// SHARE ROW EXCLUSIVE blocks writers before this migration can take a
-	// stronger DDL lock. All known tables are acquired in one sorted statement.
-	if _, err := tx.Exec(ctx, `LOCK TABLE `+strings.Join(relations, ", ")+` IN SHARE ROW EXCLUSIVE MODE`); err != nil {
-		return fmt.Errorf("gate live DML during postgres migration: %w", err)
-	}
-	return nil
-}
-
-func migrationLockContention(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "55P03")
+	_, err = migrator.Migrate(context.Background())
+	return err
 }
 
 func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {
 	changes, _ := json.Marshal(d.SourceChanges)
 	_, err := db.Pool.Exec(ctx,
-		`INSERT INTO deployments (id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
+		`INSERT INTO deployments (id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SpecDigest, d.Environment, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
 	)
 	return err
 }
@@ -845,55 +660,76 @@ func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) e
 	}
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE deployments
-		 SET status = $1, commit_sha = $2, image_tag = $3, source_kind = $4, source_ref = $5, source_dirty = $6, source_changes = $7, finished_at = $8
-		 WHERE id = $9`,
-		d.Status, d.CommitSHA, d.ImageTag, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.ID,
+		 SET status = $1, commit_sha = $2, image_tag = $3, environment = $4, source_kind = $5, source_ref = $6, source_dirty = $7, source_changes = $8, finished_at = $9, spec_digest = $10
+		 WHERE id = $11`,
+		d.Status, d.CommitSHA, d.ImageTag, d.Environment, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.SpecDigest, d.ID,
 	)
 	return err
 }
 
-func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]model.Deployment, error) {
-	return db.ListDeploymentsPage(ctx, app, "", limit, 0)
+// FunctionDeploymentBinding returns the active environment's last successful
+// image and the spec digest recorded with that deployment's result. Failed
+// attempts do not displace it. Newer active attempts and unproven rollbacks
+// fail closed because Nomad may already be running a different image.
+func (db *DB) FunctionDeploymentBinding(ctx context.Context, app, environment string) (image, specDigest string, err error) {
+	err = db.Pool.QueryRow(ctx, `SELECT d.image_tag, d.spec_digest FROM deployments d
+		WHERE d.app=$1 AND d.environment=$2 AND d.status='deployed'
+		AND NOT EXISTS (
+			SELECT 1 FROM deployments newer WHERE newer.app=d.app AND newer.environment=d.environment
+			AND (newer.started_at, newer.id) > (d.started_at, d.id)
+			AND newer.status NOT IN ('deployed','failed')
+		)
+		ORDER BY d.started_at DESC, d.id DESC LIMIT 1`, app, environment).Scan(&image, &specDigest)
+	if err != nil {
+		return "", "", err
+	}
+	if image == "" || specDigest == "" {
+		return "", "", fmt.Errorf("function deployment binding unavailable")
+	}
+	return image, specDigest, nil
 }
 
-func (db *DB) ListDeploymentsPage(ctx context.Context, app, status string, limit, offset int) ([]model.Deployment, error) {
+func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]model.Deployment, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	query := `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+	query := `SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments`
 	args := []interface{}{}
-	conditions := []string{}
 	if app != "" {
-		args = append(args, app)
-		conditions = append(conditions, fmt.Sprintf("app = $%d", len(args)))
+		query += " WHERE app = $1 ORDER BY started_at DESC LIMIT $2"
+		args = append(args, app, limit)
+	} else {
+		query += " ORDER BY started_at DESC LIMIT $1"
+		args = append(args, limit)
 	}
-	if status != "" {
-		args = append(args, status)
-		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
-	}
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
-	args = append(args, limit, offset)
-	query += fmt.Sprintf(" ORDER BY started_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
 
 	rows, err := db.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var deployments []model.Deployment
 	for rows.Next() {
 		var d model.Deployment
 		var changes []byte
-		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		_ = json.Unmarshal(changes, &d.SourceChanges)
-		d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
 		deployments = append(deployments, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// Release the row cursor's connection before fetching regions. Concurrent
+	// readers can otherwise occupy every pool connection with open deployment
+	// cursors and deadlock while each waits for a nested region query.
+	rows.Close()
+	for i := range deployments {
+		deployments[i].Regions, _ = db.DeploymentRegions(ctx, deployments[i].ID)
 	}
 	return deployments, nil
 }
@@ -902,11 +738,11 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE id = $1`,
 		id,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -915,16 +751,16 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	return &d, nil
 }
 
-func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID string) (*model.Deployment, error) {
+func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, environment, excludeID string) (*model.Deployment, error) {
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
-		 WHERE app = $1 AND status = 'deployed' AND id != $2
+		 WHERE app = $1 AND environment = $2 AND status = 'deployed' AND id != $3
 		 ORDER BY started_at DESC LIMIT 1`,
-		app, excludeID,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+		app, environment, excludeID,
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -933,21 +769,20 @@ func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID strin
 	return &d, nil
 }
 
-func (db *DB) RecoverInFlightDeployments(ctx context.Context) error {
-	_, err := db.Pool.Exec(ctx,
-		`WITH recovered AS (
-			SELECT id FROM deployments WHERE status NOT IN ('deployed', 'failed')
-		), failed_regions AS (
-			UPDATE deployment_regions
-			SET status='failed', active_weight=0,
-				last_error=CASE WHEN last_error = '' THEN 'norn restarted during deployment' ELSE last_error END,
-				updated_at=now()
-			WHERE deployment_id IN (SELECT id FROM recovered)
-		)
-		UPDATE deployments SET status = 'failed', finished_at = now()
-		WHERE id IN (SELECT id FROM recovered)`,
-	)
-	return err
+// LatestSuccessfulDeployment is the authoritative active deployment for a
+// control-plane environment. Failed or queued rows must never displace it.
+func (db *DB) LatestSuccessfulDeployment(ctx context.Context, app, environment string) (*model.Deployment, error) {
+	var d model.Deployment
+	var changes []byte
+	err := db.Pool.QueryRow(ctx, `SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		 FROM deployments WHERE app=$1 AND environment=$2 AND status='deployed' ORDER BY started_at DESC LIMIT 1`, app, environment).
+		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(changes, &d.SourceChanges)
+	d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
+	return &d, nil
 }
 
 // Healthy checks the database connection.
@@ -1082,6 +917,70 @@ func (db *DB) UpsertCronState(ctx context.Context, app, process string, paused b
 	return err
 }
 
+// FinishCronPauseClaimedOperation atomically makes a verified pause visible
+// with its terminal receipt. The operation lease is checked in the same
+// transaction so a superseded worker cannot publish stale cron state.
+func (db *DB) FinishCronPauseClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, true, message, metadata)
+}
+
+// FinishCronResumeClaimedOperation commits the verified Nomad resume and the
+// durable unpaused state under one operation claim fence.
+func (db *DB) FinishCronResumeClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, false, message, metadata)
+}
+
+// FinishCronScheduleClaimedOperation commits a verified periodic replacement,
+// its effective schedule, and its terminal evidence intent in one claim-fenced
+// transaction. The previous state remains intact until this point.
+func (db *DB) FinishCronScheduleClaimedOperation(ctx context.Context, claim OperationClaim, app, process string, paused bool, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, paused, message, metadata)
+}
+
+func (db *DB) finishCronClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule string, paused bool, message string, metadata map[string]interface{}) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
+	if app == "" || process == "" || schedule == "" {
+		return fmt.Errorf("cron pause intent is invalid")
+	}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	data, _ := json.Marshal(metadata)
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var status, owner string
+	var generation int64
+	var lockedUntil *time.Time
+	if err = tx.QueryRow(ctx, `SELECT status, locked_by, lock_generation, locked_until FROM operations WHERE id=$1 FOR UPDATE`, claim.OperationID()).Scan(&status, &owner, &generation, &lockedUntil); err != nil {
+		return err
+	}
+	var now time.Time
+	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return err
+	}
+	if status != "running" || owner != claim.OwnerID() || generation != claim.Generation() || lockedUntil == nil || !lockedUntil.After(now) {
+		return ownershipLost(claim)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO cron_states (app, process, paused, schedule, updated_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT (app,process) DO UPDATE SET paused=EXCLUDED.paused,schedule=EXCLUDED.schedule,updated_at=now()`, app, process, paused, schedule); err != nil {
+		return err
+	}
+	var sagaID, operationApp string
+	if err = tx.QueryRow(ctx, `UPDATE operations SET status='succeeded', message=$1, metadata=metadata || $2::jsonb, locked_by='', locked_until=NULL, updated_at=now(), finished_at=now() WHERE id=$3 RETURNING saga_id,app`, message, data, claim.OperationID()).Scan(&sagaID, &operationApp); err != nil {
+		return err
+	}
+	if sagaID != "" {
+		if _, err = tx.Exec(ctx, `INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state) VALUES ('ei-' || gen_random_uuid()::text,'saga',$1,$2,$3,1,'pending') ON CONFLICT (subject_kind,subject_id,sequence) DO NOTHING`, sagaID, operationApp, claim.OperationID()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // FuncExecution represents a function invocation record.
 type FuncExecution struct {
 	ID         string     `json:"id"`
@@ -1134,3 +1033,117 @@ func (db *DB) ListFuncExecutions(ctx context.Context, app string, limit int) ([]
 	}
 	return execs, nil
 }
+
+// configureMigrationSession only changes settings ordinary application roles
+// may set themselves. deadlock_timeout is a superuser-only setting in
+// PostgreSQL, so migrations rely on PostgreSQL's configured deadlock detector
+// and retain the retry path below for any reported deadlock.
+func configureMigrationSession(ctx context.Context, tx migrationSession) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
+		return fmt.Errorf("configure postgres migration lock timeout: %w", err)
+	}
+	return nil
+}
+
+type migrationSession interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func lockMigrationRelations(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `
+		SELECT quote_ident(tablename)
+		FROM pg_tables
+		WHERE schemaname = current_schema()
+		ORDER BY tablename
+	`)
+	if err != nil {
+		return fmt.Errorf("list postgres migration relations: %w", err)
+	}
+	defer rows.Close()
+	var relations []string
+	for rows.Next() {
+		var relation string
+		if err := rows.Scan(&relation); err != nil {
+			return fmt.Errorf("scan postgres migration relation: %w", err)
+		}
+		relations = append(relations, relation)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read postgres migration relations: %w", err)
+	}
+	if len(relations) == 0 {
+		return nil
+	}
+	// SHARE ROW EXCLUSIVE blocks writers before this migration can take a
+	// stronger DDL lock. All known tables are acquired in one sorted statement.
+	if _, err := tx.Exec(ctx, `LOCK TABLE `+strings.Join(relations, ", ")+` IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return fmt.Errorf("gate live DML during postgres migration: %w", err)
+	}
+	return nil
+}
+
+func migrationLockContention(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "55P03")
+}
+
+func (db *DB) ListDeploymentsPage(ctx context.Context, app, status string, limit, offset int) ([]model.Deployment, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		 FROM deployments`
+	args := []interface{}{}
+	conditions := []string{}
+	if app != "" {
+		args = append(args, app)
+		conditions = append(conditions, fmt.Sprintf("app = $%d", len(args)))
+	}
+	if status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	args = append(args, limit, offset)
+	query += fmt.Sprintf(" ORDER BY started_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+
+	rows, err := db.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deployments []model.Deployment
+	for rows.Next() {
+		var d model.Deployment
+		var changes []byte
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(changes, &d.SourceChanges)
+		d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
+		deployments = append(deployments, d)
+	}
+	return deployments, nil
+}
+
+func (db *DB) RecoverInFlightDeployments(ctx context.Context) error {
+	_, err := db.Pool.Exec(ctx,
+		`WITH recovered AS (
+			SELECT id FROM deployments WHERE status NOT IN ('deployed', 'failed')
+		), failed_regions AS (
+			UPDATE deployment_regions
+			SET status='failed', active_weight=0,
+				last_error=CASE WHEN last_error = '' THEN 'norn restarted during deployment' ELSE last_error END,
+				updated_at=now()
+			WHERE deployment_id IN (SELECT id FROM recovered)
+		)
+		UPDATE deployments SET status = 'failed', finished_at = now()
+		WHERE id IN (SELECT id FROM recovered)`,
+	)
+	return err
+}
+
+// Healthy checks the database connection.

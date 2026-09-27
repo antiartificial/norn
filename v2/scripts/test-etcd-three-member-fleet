@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Disposable TLS/RBAC three-member qualification for the normal etcd Fleet API.
+# Requires Docker, OpenSSL, etcdctl, Go, and Python 3. Never targets a named/live cluster.
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/norn-etcd-three.XXXXXX")"
+chmod 700 "$work_dir"
+suffix="$(basename "$work_dir" | tr -cd '[:alnum:]' | tail -c 8)"
+network="norn-etcd-qual-$suffix"
+image="quay.io/coreos/etcd:v3.5.17"
+containers=()
+cleanup() {
+  local status=$? attempt
+  trap - EXIT
+  for container in "${containers[@]-}"; do
+    [ -n "$container" ] && docker rm -f "$container" >/dev/null 2>&1 || true
+  done
+  for attempt in {1..10}; do
+    if ! docker network inspect "$network" >/dev/null 2>&1 || docker network rm "$network" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.2
+  done
+  if docker network inspect "$network" >/dev/null 2>&1; then
+    echo "disposable etcd network remains: $network" >&2
+    status=1
+  fi
+  rm -rf "$work_dir"
+  exit "$status"
+}
+trap cleanup EXIT
+
+command -v docker >/dev/null
+command -v openssl >/dev/null
+command -v etcdctl >/dev/null
+command -v go >/dev/null
+command -v timeout >/dev/null
+command -v python3 >/dev/null
+docker image inspect "$image" >/dev/null
+docker network create "$network" >/dev/null
+
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj '/CN=Norn disposable etcd CA' \
+  -keyout "$work_dir/ca.key" -out "$work_dir/ca.crt" >/dev/null 2>&1
+cat >"$work_dir/server.cnf" <<'EOF'
+[req]
+distinguished_name=req_dn
+req_extensions=v3_req
+prompt=no
+[req_dn]
+CN=localhost
+[v3_req]
+subjectAltName=DNS:localhost,DNS:m1,DNS:m2,DNS:m3,IP:127.0.0.1
+extendedKeyUsage=serverAuth,clientAuth
+EOF
+openssl req -newkey rsa:2048 -nodes -sha256 -config "$work_dir/server.cnf" \
+  -keyout "$work_dir/server.key" -out "$work_dir/server.csr" >/dev/null 2>&1
+openssl x509 -req -in "$work_dir/server.csr" -CA "$work_dir/ca.crt" -CAkey "$work_dir/ca.key" \
+  -CAcreateserial -days 1 -sha256 -extfile "$work_dir/server.cnf" -extensions v3_req \
+  -out "$work_dir/server.crt" >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes -sha256 -subj '/CN=norn-qual-client' \
+  -keyout "$work_dir/client.key" -out "$work_dir/client.csr" >/dev/null 2>&1
+printf 'extendedKeyUsage=clientAuth\n' >"$work_dir/client.ext"
+openssl x509 -req -in "$work_dir/client.csr" -CA "$work_dir/ca.crt" -CAkey "$work_dir/ca.key" \
+  -CAcreateserial -days 1 -sha256 -extfile "$work_dir/client.ext" \
+  -out "$work_dir/client.crt" >/dev/null 2>&1
+
+cluster='m1=https://m1:2380,m2=https://m2:2380,m3=https://m3:2380'
+start_member() {
+  local member="$1" data_dir="$2" container="$network-$1"
+  mkdir -p "$work_dir/${data_dir##*/}"
+  docker run -d --name "$container" --network "$network" --network-alias "$member" \
+    -p '127.0.0.1::2379' -v "$work_dir:/qual" "$image" /usr/local/bin/etcd \
+    --name "$member" --data-dir "$data_dir" \
+    --listen-client-urls 'https://0.0.0.0:2379' --advertise-client-urls "https://$member:2379" \
+    --listen-peer-urls 'https://0.0.0.0:2380' --initial-advertise-peer-urls "https://$member:2380" \
+    --initial-cluster "$cluster" --initial-cluster-state new \
+    --cert-file /qual/server.crt --key-file /qual/server.key \
+    --client-cert-auth --trusted-ca-file /qual/ca.crt \
+    --peer-cert-file /qual/server.crt --peer-key-file /qual/server.key \
+    --peer-client-cert-auth --peer-trusted-ca-file /qual/ca.crt >/dev/null
+  containers+=("$container")
+}
+for member in m1 m2 m3; do start_member "$member" "/qual/data-$member"; done
+
+endpoint_for() {
+  local port
+  port="$(docker port "$network-$1" 2379/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)"
+  printf 'https://127.0.0.1:%s' "$port"
+}
+endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
+export ETCDCTL_ENDPOINTS="$endpoints" ETCDCTL_CACERT="$work_dir/ca.crt"
+export ETCDCTL_CERT="$work_dir/client.crt" ETCDCTL_KEY="$work_dir/client.key"
+for _ in {1..30}; do
+  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+etcdctl endpoint health >/dev/null
+
+root_password="$(openssl rand -hex 24)"
+runtime_password="$(openssl rand -hex 24)"
+printf '%s\n' "$root_password" | etcdctl user add root --interactive=false >/dev/null
+etcdctl user grant-role root root >/dev/null
+printf '%s\n' "$runtime_password" | etcdctl user add norn-qual --interactive=false >/dev/null
+etcdctl role add norn-qual >/dev/null
+etcdctl role grant-permission --prefix=true norn-qual readwrite '/norn-test/tls-fleet-runtime/' >/dev/null
+etcdctl user grant-role norn-qual norn-qual >/dev/null
+etcdctl auth enable >/dev/null
+export ETCDCTL_USER="root:$root_password"
+etcdctl put '/norn-test/tls-fleet-runtime/qualification-sentinel' 'snapshot-retained' >/dev/null
+
+export NORN_TEST_ETCD_TLS_ENDPOINTS="$endpoints"
+export NORN_TEST_ETCD_TLS_CA_FILE="$work_dir/ca.crt"
+export NORN_TEST_ETCD_TLS_CERT_FILE="$work_dir/client.crt"
+export NORN_TEST_ETCD_TLS_KEY_FILE="$work_dir/client.key"
+export NORN_TEST_ETCD_TLS_USERNAME=norn-qual
+export NORN_TEST_ETCD_TLS_PASSWORD="$runtime_password"
+export NORN_TEST_ETCD_TLS_PREFIX='/norn-test/tls-fleet-runtime/'
+run_process_test() {
+  (cd "$repo_dir/api" && go test . -run '^TestEtcdFleetRuntimeProductionTLSRBACProcess$' -count=1 -v)
+}
+echo 'Three-member TLS/RBAC normal runtime'
+run_process_test
+
+echo 'One-member network partition: two-member quorum and normal runtime survive'
+docker network disconnect "$network" "$network-m3"
+if [ "$(docker inspect "$network-m3" --format '{{len .NetworkSettings.Networks}}')" != 0 ]; then
+  echo 'partitioned member still has a Docker network attachment' >&2; exit 1
+fi
+NORN_TEST_ETCD_TLS_ENDPOINTS="$(endpoint_for m1),$(endpoint_for m2)"
+export NORN_TEST_ETCD_TLS_ENDPOINTS
+ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" etcdctl endpoint health >/dev/null
+run_process_test
+docker network connect --alias m3 "$network" "$network-m3"
+endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
+export ETCDCTL_ENDPOINTS="$endpoints" NORN_TEST_ETCD_TLS_ENDPOINTS="$endpoints"
+for _ in {1..30}; do
+  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+etcdctl endpoint health >/dev/null
+
+echo 'One-member loss: quorum and normal runtime survive'
+docker stop "$network-m3" >/dev/null
+NORN_TEST_ETCD_TLS_ENDPOINTS="$(endpoint_for m1),$(endpoint_for m2)"
+export NORN_TEST_ETCD_TLS_ENDPOINTS
+ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" etcdctl endpoint health >/dev/null
+run_process_test
+
+echo 'Quorum loss: linearizable read and write refuse'
+docker stop "$network-m2" >/dev/null
+ETCDCTL_ENDPOINTS="$(endpoint_for m1)"
+export ETCDCTL_ENDPOINTS
+if timeout 8 etcdctl get '/norn-test/tls-fleet-runtime/qualification-sentinel' --command-timeout=3s >/dev/null 2>&1; then
+  echo 'linearizable read succeeded without quorum' >&2; exit 1
+fi
+if timeout 8 etcdctl put '/norn-test/tls-fleet-runtime/qualification-sentinel' 'wrong' --command-timeout=3s >/dev/null 2>&1; then
+  echo 'write succeeded without quorum' >&2; exit 1
+fi
+
+echo 'Recover quorum and take an authenticated snapshot'
+docker start "$network-m2" "$network-m3" >/dev/null
+endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
+export ETCDCTL_ENDPOINTS="$endpoints"
+for _ in {1..30}; do
+  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+etcdctl endpoint health >/dev/null
+ETCDCTL_ENDPOINTS="$(endpoint_for m1)" etcdctl snapshot save "$work_dir/snapshot.db" >/dev/null
+etcdctl snapshot status "$work_dir/snapshot.db" >/dev/null
+
+echo 'Corrupted snapshot must be rejected before restore'
+python3 - "$work_dir/snapshot.db" "$work_dir/corrupt.db" <<'PY'
+from pathlib import Path
+import sys
+
+snapshot = bytearray(Path(sys.argv[1]).read_bytes())
+if len(snapshot) < 1024:
+    raise SystemExit("snapshot unexpectedly small")
+snapshot[len(snapshot) // 2] ^= 0xFF
+Path(sys.argv[2]).write_bytes(snapshot)
+PY
+if docker run --rm -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/corrupt.db \
+  --name m1 --initial-cluster "$cluster" \
+  --initial-advertise-peer-urls 'https://m1:2380' \
+  --data-dir /qual/corrupt-restore >/dev/null 2>&1; then
+  echo 'corrupted snapshot was accepted' >&2; exit 1
+fi
+
+echo 'Full-cluster restore from snapshot and normal runtime replay'
+for member in m1 m2 m3; do docker rm -f "$network-$member" >/dev/null; done
+containers=()
+for member in m1 m2 m3; do
+  docker run --rm -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/snapshot.db \
+    --name "$member" --initial-cluster "$cluster" \
+    --initial-advertise-peer-urls "https://$member:2380" \
+    --data-dir "/qual/restored-$member" >/dev/null
+done
+for member in m1 m2 m3; do start_member "$member" "/qual/restored-$member"; done
+endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
+export ETCDCTL_ENDPOINTS="$endpoints" NORN_TEST_ETCD_TLS_ENDPOINTS="$endpoints"
+for _ in {1..30}; do
+  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+etcdctl endpoint health >/dev/null
+value="$(etcdctl get '/norn-test/tls-fleet-runtime/qualification-sentinel' --print-value-only)"
+test "$value" = snapshot-retained
+run_process_test
+echo 'PASS: disposable three-member TLS/RBAC, isolated-member partition and rejoin, one loss, quorum refusal, corruption rejection, snapshot restore'

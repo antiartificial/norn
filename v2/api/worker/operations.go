@@ -2,27 +2,46 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"runtime/debug"
 	"time"
 
+	"github.com/google/uuid"
+
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
 type OperationWorker struct {
-	db       *store.DB
-	pipeline *pipeline.Pipeline
-	id       string
-	kinds    []string
-	lease    time.Duration
-	poll     time.Duration
+	db       store.ExecutionStore
+	pipeline interface {
+		ExecuteOperation(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error)
+	}
+	id    string
+	kinds []string
+	lease time.Duration
+	poll  time.Duration
 }
 
-func NewOperationWorker(db *store.DB, p *pipeline.Pipeline) *OperationWorker {
+func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *OperationWorker {
+	return NewOperationWorkerForKinds(db, p, []string{
+		"app.preflight", "app.deploy", "app.rollback", "app.deployment-reconcile", "app.restart", "app.snapshot",
+		"app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.snapshot-export", "app.migrate",
+		"app.scale", "app.cron-pause", "app.cron-resume", "app.cron-schedule", "app.cron-trigger", "app.cron-trigger-reconcile",
+		"app.canary-promote", "app.cloudflared-mutate",
+		pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
+	})
+}
+
+// NewOperationWorkerForKinds binds a runtime to an explicit execution
+// capability set. Backend-neutral runtimes use this to avoid claiming an
+// operation whose aggregate they cannot execute.
+func NewOperationWorkerForKinds(db store.ExecutionStore, p *pipeline.Pipeline, kinds []string) *OperationWorker {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "unknown-host"
@@ -30,13 +49,10 @@ func NewOperationWorker(db *store.DB, p *pipeline.Pipeline) *OperationWorker {
 	return &OperationWorker{
 		db:       db,
 		pipeline: p,
-		id:       fmt.Sprintf("%s:%d", host, os.Getpid()),
-		kinds: []string{
-			"app.preflight", "app.deploy", "app.rollback", "app.snapshot",
-			"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
-		},
-		lease: 90 * time.Second,
-		poll:  2 * time.Second,
+		id:       fmt.Sprintf("%s:%d:%s", host, os.Getpid(), uuid.NewString()),
+		kinds:    append([]string(nil), kinds...),
+		lease:    90 * time.Second,
+		poll:     2 * time.Second,
 	}
 }
 
@@ -59,78 +75,213 @@ func (w *OperationWorker) Run(ctx context.Context) {
 }
 
 func (w *OperationWorker) runOnce(ctx context.Context) error {
-	if err := w.db.RecoverInFlightOperations(ctx); err != nil {
+	if err := w.db.RecoverExpiredOperations(ctx); err != nil {
 		return fmt.Errorf("recover expired app operations: %w", err)
 	}
 	for {
-		op, err := w.db.ClaimNextOperation(ctx, w.id, w.lease, w.kinds)
+		op, claim, err := w.db.ClaimNextOperation(ctx, w.id, w.lease, w.kinds)
 		if err != nil {
 			return err
 		}
 		if op == nil {
 			return nil
 		}
-		w.handle(ctx, op)
+		w.handle(ctx, op, claim)
 	}
 }
 
-func (w *OperationWorker) handle(ctx context.Context, op *model.Operation) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Printf("operation worker: panic in %s: %v\n%s", op.ID, recovered, debug.Stack())
-			w.recordFailure(ctx, op, fmt.Errorf("operation executor panic; inspect server logs"))
-		}
-	}()
+func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim store.OperationClaim) {
 	log.Printf("operation worker: claimed %s %s app=%s attempt=%d/%d", op.ID, op.Kind, op.App, op.Attempts, op.MaxAttempts)
-	release, locked, lockErr := w.db.AcquireAppOperationLock(ctx, op.App)
+	// App-less operations (the database catalog) serialize on kind:ref,
+	// which can never equal an app name (^[a-z0-9-]+$).
+	lockKey := op.App
+	if lockKey == "" {
+		lockKey = op.Kind + ":" + op.Ref
+	}
+	appLock, locked, lockErr := w.db.AcquireAppOperationLock(ctx, lockKey)
 	if lockErr != nil || !locked {
 		message := "another mutable operation is active for this app"
 		if lockErr != nil {
 			message = "could not acquire the durable app operation lock: " + lockErr.Error()
 		}
 		delay := 5 * time.Second
-		if err := w.db.DeferClaimedOperation(ctx, op.ID, message, time.Now().Add(delay), map[string]interface{}{"lockRetry": true}); err != nil {
+		if err := w.db.DeferClaimedOperation(ctx, claim, message, time.Now().Add(delay), map[string]interface{}{"lockRetry": true}); err != nil {
 			log.Printf("operation worker: defer locked operation %s: %v", op.ID, err)
 		}
 		return
 	}
-	defer release()
-	executionCtx, stopRenewal := context.WithCancel(ctx)
-	defer stopRenewal()
-	go w.renewLease(executionCtx, op.ID)
-	err := w.pipeline.ExecuteOperation(executionCtx, op)
-	if err == nil {
+	defer appLock.Release()
+	executionCtx, cancelExecution := context.WithCancel(appLock.Context())
+	defer cancelExecution()
+	renewalStop := make(chan struct{})
+	renewalDone := make(chan error, 1)
+	go func() { renewalDone <- w.renewLease(executionCtx, claim, cancelExecution, renewalStop) }()
+	result, execErr := w.execute(executionCtx, op, claim)
+	close(renewalStop)
+	renewErr := <-renewalDone
+	if renewErr != nil {
+		// Do not guess whether a mutable downstream effect committed. The
+		// expired-claim recovery path classifies safe retry versus review after
+		// the executor has stopped and while this app lock is still held.
+		log.Printf("operation worker: ownership renewal stopped %s: %v", op.ID, renewErr)
 		return
 	}
-	w.recordFailure(ctx, op, err)
+	if lockErr := appLock.Context().Err(); lockErr != nil {
+		// A backend lease can expire while an executor is unwinding. Its result
+		// cannot be terminalized because a newer holder may have started work.
+		log.Printf("operation worker: app lock ownership stopped %s: %v", op.ID, context.Cause(appLock.Context()))
+		return
+	}
+	if execErr != nil {
+		if effect.IsDeferred(execErr) {
+			message := fmt.Sprintf("external effect recovery pending: %v", execErr)
+			metadata := deferredEffectMetadata(execErr)
+			if op.Kind == "app.cron-pause" || op.Kind == "app.cron-resume" || op.Kind == "app.cron-schedule" || op.Kind == "app.cron-trigger" {
+				if terminal, deferErr := w.deferOrFailCronPauseClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), metadata); deferErr != nil {
+					log.Printf("operation worker: defer unresolved cron effect %s: %v", op.ID, deferErr)
+				} else if terminal {
+					log.Printf("operation worker: cron effect retry budget exhausted %s", op.ID)
+				}
+				return
+			}
+			if deferErr := w.deferClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), metadata); deferErr != nil {
+				log.Printf("operation worker: defer unresolved effect %s: %v", op.ID, deferErr)
+			}
+			return
+		}
+		w.recordFailure(ctx, op, claim, appLock, execErr)
+		return
+	}
+	if result == nil {
+		w.recordFailure(ctx, op, claim, appLock, fmt.Errorf("operation executor returned no result"))
+		return
+	}
+	if result.Finished() {
+		if _, fenced := w.db.(store.AppLockFencedExecutionStore); fenced {
+			// The V3 adapter can fence its own terminal CAS, but this result was
+			// committed by a separate effect boundary. Until that boundary accepts
+			// the app-lock fence in its own transaction, publishing would make an
+			// unfenced mutable execution visible.
+			log.Printf("operation worker: refusing unfenced pre-finished result %s", op.ID)
+			return
+		}
+		// Committed atomically with the effect (catalog activation or
+		// PostgreSQL deployment completion).
+		result.Publish(ctx)
+		return
+	}
+	if finishErr := w.finishClaimedOperation(ctx, claim, appLock, result.Status, result.Message, result.Metadata); finishErr != nil {
+		log.Printf("operation worker: finish %s: %v", op.ID, finishErr)
+		return
+	}
+	result.Publish(ctx)
 }
 
-func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, err error) {
+func deferredEffectMetadata(err error) map[string]interface{} {
+	metadata := map[string]interface{}{"externalEffectRecoveryPending": true}
+	var pending *effect.PendingError
+	if errors.As(err, &pending) {
+		if pending.EffectID != "" {
+			metadata["effectId"] = pending.EffectID
+		}
+		if pending.Resource != "" {
+			metadata["effectResource"] = pending.Resource
+		}
+		if pending.Reason != "" {
+			metadata["effectRecoveryReason"] = pending.Reason
+		}
+	}
+	return metadata
+}
+
+func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, claim store.OperationClaim) (result *pipeline.OperationResult, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("operation worker: panic in %s: %v\n%s", op.ID, recovered, debug.Stack())
+			result = nil
+			err = fmt.Errorf("operation executor panic; inspect server logs")
+		}
+	}()
+	return w.pipeline.ExecuteOperation(ctx, op, claim)
+}
+
+func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, claim store.OperationClaim, appLock store.AppOperationLock, err error) {
 	message := fmt.Sprintf("%s failed: %v", op.Kind, err)
-	if op.Attempts < op.MaxAttempts {
+	if op.Attempts < op.MaxAttempts && (op.Kind == "app.preflight" || op.Kind == "app.deploy") {
 		delay := retryDelay(op.Attempts)
-		if retryErr := w.db.RetryOperation(ctx, op.ID, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
+		if retryErr := w.retryClaimedOperation(ctx, claim, appLock, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
 			"retryDelaySeconds": int(delay.Seconds()),
 		}); retryErr != nil {
-			log.Printf("operation worker: retry %s: %v", op.ID, retryErr)
+			if !errors.Is(retryErr, store.ErrOperationRetryUnsafe) {
+				log.Printf("operation worker: retry %s: %v", op.ID, retryErr)
+				return
+			}
+			log.Printf("operation worker: retry refused for %s: %v", op.ID, retryErr)
+		} else {
+			return
 		}
-		return
 	}
-	if finishErr := w.db.FinishOperation(ctx, op.ID, model.OperationFailed, message, map[string]interface{}{}); finishErr != nil {
+	metadata := map[string]interface{}{}
+	if op.Kind != "app.preflight" {
+		metadata["manualRecoveryRequired"] = true
+	}
+	if finishErr := w.finishClaimedOperation(ctx, claim, appLock, model.OperationFailed, message, metadata); finishErr != nil {
 		log.Printf("operation worker: finish failed %s: %v", op.ID, finishErr)
 	}
 }
 
-func (w *OperationWorker) renewLease(ctx context.Context, operationID string) {
+func (w *OperationWorker) deferClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.DeferClaimedOperationWithAppLock(ctx, claim, appLock, message, next, metadata)
+	}
+	return w.db.DeferClaimedOperation(ctx, claim, message, next, metadata)
+}
+
+func (w *OperationWorker) deferOrFailCronPauseClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) (bool, error) {
+	if recovery, ok := w.db.(store.CronPauseRecoveryStore); ok {
+		return recovery.DeferOrFailCronPauseClaimedOperation(ctx, claim, appLock, message, next, metadata)
+	}
+	// Every durable production store implements the dedicated path. A legacy
+	// adapter cannot safely refund an ambiguous cron-pause effect, so preserve
+	// its evidence in a claim-fenced manual-review receipt.
+	metadata["manualRecoveryRequired"] = true
+	metadata["retryBudgetExhausted"] = true
+	return true, w.finishClaimedOperation(ctx, claim, appLock, model.OperationFailed, "cron pause effect recovery path is unavailable; manual recovery is required: "+message, metadata)
+}
+
+func (w *OperationWorker) retryClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message, lastError string, next time.Time, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.RetryClaimedOperationWithAppLock(ctx, claim, appLock, message, lastError, next, metadata)
+	}
+	return w.db.RetryClaimedOperation(ctx, claim, message, lastError, next, metadata)
+}
+
+func (w *OperationWorker) finishClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.FinishClaimedOperationWithAppLock(ctx, claim, appLock, status, message, metadata)
+	}
+	return w.db.FinishClaimedOperation(ctx, claim, status, message, metadata)
+}
+
+func (w *OperationWorker) renewLease(ctx context.Context, claim store.OperationClaim, cancelExecution context.CancelFunc, stop <-chan struct{}) error {
 	ticker := time.NewTicker(w.lease / 3)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
+		case <-stop:
+			return nil
 		case <-ticker.C:
-			if err := w.db.RenewOperationLease(ctx, operationID, w.id, time.Now().Add(w.lease)); err != nil {
-				log.Printf("operation worker: renew lease %s: %v", operationID, err)
+			renewCtx, cancel := context.WithTimeout(ctx, w.lease/3)
+			err := w.db.RenewOperationClaim(renewCtx, claim, w.lease)
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				cancelExecution()
+				return err
 			}
 		}
 	}

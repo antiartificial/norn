@@ -101,7 +101,21 @@ type AccessPrincipal struct {
 	App         string      `json:"app,omitempty"`
 	Environment string      `json:"environment,omitempty"`
 	CI          *CIIdentity `json:"ci,omitempty"`
+	// Source records the authentication path that established this principal.
+	// It is set by trusted authentication middleware and is deliberately not
+	// serialized into API responses. Acceptance code must not infer provenance
+	// from Subject, which is only a display label for several credential types.
+	Source AccessPrincipalSource `json:"-"`
 }
+
+type AccessPrincipalSource string
+
+const (
+	AccessPrincipalSourceCloudflareAccess AccessPrincipalSource = "cloudflare-access"
+	AccessPrincipalSourceSharedAPI        AccessPrincipalSource = "shared-api-credential"
+	AccessPrincipalSourceManagedToken     AccessPrincipalSource = "managed-token"
+	AccessPrincipalSourceUnmanagedLegacy  AccessPrincipalSource = "unmanaged-legacy-token"
+)
 
 type accessPrincipalContextKey struct{}
 
@@ -216,6 +230,65 @@ func verifyToken(secret, token string, legacySigningUntil time.Time) (*tokenClai
 	return &claims, nil
 }
 
+// IssueManagedAccessToken creates a normal managed access token and records its
+// revocable identity in the selected control backend before returning it.
+// Callers must already have authorized issuance.
+func IssueManagedAccessToken(ctx context.Context, secret string, identities store.IdentityStore, subject string, scopes []string, ttl time.Duration) (string, *store.AccessToken, error) {
+	if secret == "" || identities == nil || ttl <= 0 || ttl > 72*time.Hour {
+		return "", nil, fmt.Errorf("managed token issuance is unavailable")
+	}
+	record, err := NewManagedAccessTokenRecord(subject, scopes, ttl, time.Now())
+	if err != nil {
+		return "", nil, err
+	}
+	token, err := SignManagedAccessToken(secret, record)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := identities.RecordAccessToken(ctx, record); err != nil {
+		return "", nil, err
+	}
+	return token, record, nil
+}
+
+// NewManagedAccessTokenRecord prepares the non-secret durable state for a
+// managed access token. The caller chooses when to make it durable and when to
+// publish its signed bearer.
+func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Duration, issuedAt time.Time) (*store.AccessToken, error) {
+	if ttl <= 0 || ttl > 72*time.Hour || issuedAt.IsZero() {
+		return nil, fmt.Errorf("managed token issuance is unavailable")
+	}
+	normalized, err := normalizeAccessTokenScopes(scopes)
+	if err != nil {
+		return nil, err
+	}
+	issuedAt = issuedAt.UTC()
+	return &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl)}, nil
+}
+
+// SignManagedAccessToken recreates the opaque bearer for a durable managed
+// token record. The record deliberately contains no bearer material: its
+// stable identity, issuance time, expiry and normalized scopes are enough to
+// produce the same signed JWT after a crash between durable acceptance and
+// local secret-file publication.
+//
+// Callers that create new credentials must make the record durable before
+// publishing the returned token. This function does not write identity state.
+func SignManagedAccessToken(secret string, record *store.AccessToken) (string, error) {
+	if secret == "" || record == nil || record.JTI == "" || record.ExpiresAt.IsZero() || record.IssuedAt.IsZero() || record.RevokedAt != nil || record.RotatedFrom != "" {
+		return "", fmt.Errorf("managed token signing is unavailable")
+	}
+	normalized, err := normalizeAccessTokenScopes(record.Scopes)
+	if err != nil {
+		return "", err
+	}
+	if record.ExpiresAt.Before(record.IssuedAt) || record.ExpiresAt.Equal(record.IssuedAt) {
+		return "", fmt.Errorf("managed token expiry must follow issuance")
+	}
+	claims := tokenClaims{Sub: record.Subject, Iss: "norn", Aud: "norn-control", Use: "access", Managed: true, Iat: record.IssuedAt.Unix(), Exp: record.ExpiresAt.Unix(), Jti: record.JTI, Scopes: normalized}
+	return signToken(secret, claims)
+}
+
 func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireControlScope(w, r, ScopeAdmin); !ok {
 		return
@@ -256,44 +329,39 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
-	now := time.Now().UTC()
-	claims := tokenClaims{
-		Sub:     req.Note,
-		Iss:     "norn",
-		Aud:     "norn-control",
-		Use:     "access",
-		Managed: true,
-		Iat:     now.Unix(),
-		Exp:     now.Add(ttl).Unix(),
-		Jti:     "norn_" + uuid.NewString(),
-		Scopes:  scopes,
-	}
-	token, err := signToken(h.cfg.APIToken, claims)
+	token, record, err := IssueManagedAccessToken(r.Context(), h.cfg.APIToken, h.db, req.Note, scopes, ttl)
 	if err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to create token")
-		return
-	}
-	if err := h.db.RecordAccessToken(r.Context(), &store.AccessToken{
-		JTI: claims.Jti, Subject: claims.Sub, Scopes: scopes,
-		IssuedAt: now, ExpiresAt: now.Add(ttl),
-	}); err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to record token")
 		return
 	}
 	preventSensitiveResponseCaching(w)
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"token":     token,
-		"expiresAt": now.Add(ttl).Format(time.RFC3339),
+		"expiresAt": record.ExpiresAt.Format(time.RFC3339),
 		"note":      req.Note,
 		"scopes":    scopes,
 	})
 }
 
 func (h *Handler) VerifyAccessToken(token string) (*AccessPrincipal, bool) {
-	if h.cfg.APIToken == "" {
+	if h.cfg == nil {
 		return nil, false
 	}
-	claims, err := verifyToken(h.cfg.APIToken, token, h.cfg.LegacyTokenSigningUntil)
+	var identities store.IdentityStore
+	if h.db != nil {
+		identities = h.db
+	}
+	return VerifyAccessTokenWithIdentityStore(h.cfg.APIToken, token, h.cfg.LegacyTokenSigningUntil, identities)
+}
+
+// VerifyAccessTokenWithIdentityStore applies the same managed-token and legacy
+// rules as Handler.VerifyAccessToken against a backend-neutral identity store.
+// A managed token never authenticates when its durable registry is absent.
+func VerifyAccessTokenWithIdentityStore(secret, token string, legacySigningUntil time.Time, identities store.IdentityStore) (*AccessPrincipal, bool) {
+	if secret == "" {
+		return nil, false
+	}
+	claims, err := verifyToken(secret, token, legacySigningUntil)
 	if err != nil {
 		return nil, false
 	}
@@ -301,13 +369,13 @@ func (h *Handler) VerifyAccessToken(token string) (*AccessPrincipal, bool) {
 	if modern && (claims.Iss != "norn" || claims.Aud != "norn-control" || claims.Use != "access" || !claims.Managed) {
 		return nil, false
 	}
-	if claims.Managed && h.db == nil {
+	if claims.Managed && identities == nil {
 		return nil, false
 	}
-	if h.db != nil && claims.Jti != "" {
+	if identities != nil && claims.Jti != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		active, lookupErr := h.db.AccessTokenActive(ctx, claims.Jti)
+		active, lookupErr := identities.AccessTokenActive(ctx, claims.Jti)
 		if lookupErr == nil && !active {
 			return nil, false
 		}
@@ -318,12 +386,18 @@ func (h *Handler) VerifyAccessToken(token string) (*AccessPrincipal, bool) {
 			return nil, false
 		}
 		if lookupErr == nil && claims.Did != "" {
-			_ = h.db.TouchAccessDevice(ctx, claims.Did)
+			_ = identities.TouchAccessDevice(ctx, claims.Did)
 		}
 	}
 	return &AccessPrincipal{
 		Subject: claims.Sub, TokenID: claims.Jti, DeviceID: claims.Did, Scopes: claims.Scopes,
 		ExpiresAt: time.Unix(claims.Exp, 0).UTC(), Legacy: !modern && len(claims.Scopes) == 0,
 		App: claims.App, Environment: claims.Environment, CI: claims.CI,
+		Source: func() AccessPrincipalSource {
+			if claims.Managed {
+				return AccessPrincipalSourceManagedToken
+			}
+			return AccessPrincipalSourceUnmanagedLegacy
+		}(),
 	}, true
 }

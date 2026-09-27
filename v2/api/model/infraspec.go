@@ -19,6 +19,8 @@ type FunctionSpec struct {
 }
 
 type InfraSpec struct {
+	// SchemaVersion is omitted for v1 specs; AppSchemaV2 enables Databases.
+	SchemaVersion  string             `yaml:"schemaVersion,omitempty" json:"schemaVersion,omitempty"`
 	App            string             `yaml:"name" json:"name"`
 	Repo           *RepoSpec          `yaml:"repo,omitempty" json:"repo,omitempty"`
 	Build          *BuildSpec         `yaml:"build,omitempty" json:"build,omitempty"`
@@ -28,9 +30,13 @@ type InfraSpec struct {
 	Migrations     string             `yaml:"migrations,omitempty" json:"migrations,omitempty"`
 	Env            map[string]string  `yaml:"env,omitempty" json:"-"`
 	Infrastructure *Infrastructure    `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
-	Endpoints      []Endpoint         `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
-	Volumes        []VolumeSpec       `yaml:"volumes,omitempty" json:"volumes,omitempty"`
-	Snapshots      *SnapshotPolicy    `yaml:"snapshots,omitempty" json:"snapshots,omitempty"`
+	// Databases and MigrationDatabase are AppSchemaV2 only; see
+	// database_requirements.go for validation.
+	Databases         []DatabaseRequirement `yaml:"databases,omitempty" json:"databases,omitempty"`
+	MigrationDatabase string                `yaml:"migrationDatabase,omitempty" json:"migrationDatabase,omitempty"`
+	Endpoints         []Endpoint            `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	Volumes           []VolumeSpec          `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+	Snapshots         *SnapshotPolicy       `yaml:"snapshots,omitempty" json:"snapshots,omitempty"`
 	// Deploy is intentionally explicit in serialized specs. Its zero value is
 	// false, so a newly-created service cannot enter recovery or deployment
 	// workflows until an operator enables it.
@@ -39,6 +45,10 @@ type InfraSpec struct {
 	PrimaryRegion string                  `yaml:"primaryRegion,omitempty" json:"primaryRegion,omitempty"`
 	DeployPolicy  *DeployPolicy           `yaml:"deployPolicy,omitempty" json:"deployPolicy,omitempty"`
 	Placement     *PlacementSpec          `yaml:"placement,omitempty" json:"placement,omitempty"`
+	// StartupAdapter selects a narrowly qualified container startup adapter.
+	// It is explicit because adapters can change an image's entrypoint and
+	// should never be inferred from its database variables alone.
+	StartupAdapter string `yaml:"startupAdapter,omitempty" json:"startupAdapter,omitempty"`
 }
 
 // NomadVariableFiles is deliberately narrow: the translator derives the
@@ -99,6 +109,7 @@ type Process struct {
 	Health    *HealthSpec       `yaml:"health,omitempty" json:"health,omitempty"`
 	Metrics   *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Scaling   *Scaling          `yaml:"scaling,omitempty" json:"scaling,omitempty"`
+	Placement *ProcessPlacement `yaml:"placement,omitempty" json:"placement,omitempty"`
 	Drain     *Drain            `yaml:"drain,omitempty" json:"drain,omitempty"`
 	Resources *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
 	Tuning    *TuningPolicy     `yaml:"tuning,omitempty" json:"tuning,omitempty"`
@@ -109,6 +120,12 @@ type Process struct {
 	NomadVariables *NomadVariableFiles `yaml:"nomadVariables,omitempty" json:"nomadVariables,omitempty"`
 	Regions        []string            `yaml:"regions,omitempty" json:"regions,omitempty"`
 	Singleton      bool                `yaml:"singleton,omitempty" json:"singleton,omitempty"`
+}
+
+// ProcessPlacement controls scheduler behavior within the app's selected
+// logical node pool. It does not select a second pool or change job identity.
+type ProcessPlacement struct {
+	DistinctHosts bool `yaml:"distinctHosts,omitempty" json:"distinctHosts,omitempty"`
 }
 
 // EffectiveNodePool returns the application-level logical pool. An empty
@@ -157,6 +174,21 @@ type Scaling struct {
 	Max       int        `yaml:"max,omitempty" json:"max,omitempty"`
 	PerRegion int        `yaml:"per_region,omitempty" json:"perRegion,omitempty"`
 	Auto      *AutoScale `yaml:"auto,omitempty" json:"auto,omitempty"`
+}
+
+// DeclaredReplicaCount is the count a service process receives before an
+// acknowledged durable scale override is applied.
+func (p Process) DeclaredReplicaCount() int {
+	if p.Scaling == nil {
+		return 1
+	}
+	if p.Scaling.PerRegion > 0 {
+		return p.Scaling.PerRegion
+	}
+	if p.Scaling.Min > 0 {
+		return p.Scaling.Min
+	}
+	return 1
 }
 
 type AutoScale struct {
@@ -282,6 +314,11 @@ func ParseInfraSpec(data []byte) (*InfraSpec, error) {
 	var spec InfraSpec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, err
+	}
+	// v1 discovery stays lenient for compatibility; a versioned v2 document
+	// is always decoded strictly, so misspelled database fields never vanish.
+	if spec.SchemaVersion == AppSchemaV2 {
+		return ParseInfraSpecDocument(data)
 	}
 	applyDefaults(&spec)
 	return &spec, nil

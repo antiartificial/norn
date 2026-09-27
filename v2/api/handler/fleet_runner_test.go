@@ -321,6 +321,21 @@ func TestFleetRunnerMutationRequiresBoundCurrentGitHubRun(t *testing.T) {
 	if !fleetRunnerCanReadAttempt(bound, attempt) {
 		t.Fatal("bound Fleet runner could not read its own attempt")
 	}
+	stableCI := *ci
+	stableCI.RepositoryOwnerID = "1"
+	stableCI.RepositoryID = "2"
+	stableAttempt := &model.FleetRunnerAttempt{
+		RunnerAttemptID: canonicalFleetRunnerAttemptID(&stableCI), WorkflowURL: canonicalFleetWorkflowURL(&stableCI),
+		PrincipalSubject: "1:2:93:1",
+	}
+	stablePrincipal := AccessPrincipal{Subject: "runner-93", Scopes: []string{ScopeFleetOperate}, CI: &stableCI}
+	if !fleetRunnerPrincipalOwnsAttempt(stablePrincipal, stableAttempt) {
+		t.Fatal("signed acceptance actor could not own its persisted runner attempt")
+	}
+	stableAttempt.PrincipalSubject = "1:2:94:1"
+	if fleetRunnerPrincipalOwnsAttempt(stablePrincipal, stableAttempt) {
+		t.Fatal("different signed acceptance actor owned runner attempt")
+	}
 	otherCI := *ci
 	otherCI.RunID = "94"
 	other := AccessPrincipal{Subject: "runner-94", Scopes: []string{ScopeFleetOperate}, CI: &otherCI}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -20,6 +21,9 @@ import (
 	"norn/v2/api/auth"
 	"norn/v2/api/config"
 	"norn/v2/api/handler"
+	"norn/v2/api/model"
+	"norn/v2/api/startup"
+	"norn/v2/api/store"
 )
 
 func TestFileServerServesRootAndIndexFallback(t *testing.T) {
@@ -266,7 +270,7 @@ func TestControlSecurityConfiguration(t *testing.T) {
 		{name: "production rejects unverified database TLS", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=require", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects weak previous audit key", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditPreviousSigningKeys: []string{"short"}, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects short audit retention", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 30, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
-		{name: "production hardened", config: &config.Config{Profile: "production", Environment: "staging", EnvironmentExplicit: true, BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", ArtifactSigningPublicKey: "/etc/norn/cosign.pub", ArtifactDenySeverities: []string{"HIGH", "CRITICAL"}, CosignPath: "/usr/bin/cosign", TrivyPath: "/usr/bin/trivy", LegacyTokenSigningUntil: time.Now().Add(-time.Hour), QualificationSigningKey: base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("q", 32))), GitHubActionsOIDCAudience: "norn", GitHubActionsReleaseBindings: []string{"demo=acme/demo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"acme/release/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedEnvironments: []string{"staging"}, GitHubActionsDefaultBranch: "main"}},
+		{name: "production hardened", config: &config.Config{Profile: "production", Environment: "staging", EnvironmentExplicit: true, BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", ArtifactSigningPublicKey: "/etc/norn/cosign.pub", ArtifactDenySeverities: []string{"HIGH", "CRITICAL"}, CosignPath: "/usr/bin/cosign", TrivyPath: "/usr/bin/trivy", LegacyTokenSigningUntil: time.Now().Add(-time.Hour), QualificationSigningKey: base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("q", 32))), GitHubActionsOIDCAudience: "norn", GitHubActionsReleaseBindings: []string{"demo=acme/demo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"acme/release/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedEnvironments: []string{"staging"}, GitHubActionsDefaultBranch: "main", GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsAllowedRepositories: []string{"acme/demo@1@2"}, GitHubActionsAllowedApps: []string{"demo"}, ReleaseAdmissionMode: "keyless", ReleaseAttestationIssuer: "https://token.actions.githubusercontent.com", ReleaseAttestationRepositories: []string{"acme/demo"}, ReleaseAttestationWorkflowRefs: []string{"acme/release/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, ReleaseRequireSBOM: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateControlSecurity(tt.config); (err != nil) != tt.wantErr {
@@ -642,7 +646,7 @@ func TestNornSignedPrivateSignerAuthorityIsStagingOnly(t *testing.T) {
 			ReleaseAdmissionMode: "attested", ReleaseAttestationTrustMode: "norn-signed-private", ReleaseAttestationIssuer: "https://token.actions.githubusercontent.com",
 			ReleaseAttestationRepositories: []string{"personal-owner/private-app"}, ReleaseAttestationWorkflowRefs: []string{"personal-owner/norn/.github/workflows/norn-app-release.yml@" + strings.Repeat("a", 40)}, ReleaseRequireSBOM: true,
 			ReleaseRegistryNodePullReady: true, ReleaseAttestationRegistryAuthFile: registryFile, ReleasePrivateTrustedSigningKeys: []string{base64.RawStdEncoding.EncodeToString(public)},
-			GitHubActionsOIDCAudience: "norn-" + environment, GitHubActionsReleaseBindings: []string{"private-app=personal-owner/private-app@101@202"}, GitHubActionsAllowedWorkflowRefs: []string{"personal-owner/norn/.github/workflows/norn-app-release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedEnvironments: []string{environment}, GitHubActionsDefaultBranch: "main",
+			GitHubActionsOIDCAudience: "norn-" + environment, GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsReleaseBindings: []string{"private-app=personal-owner/private-app@101@202"}, GitHubActionsAllowedRepositories: []string{"personal-owner/private-app@101@202"}, GitHubActionsAllowedWorkflowRefs: []string{"personal-owner/norn/.github/workflows/norn-app-release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedApps: []string{"private-app"}, GitHubActionsAllowedEnvironments: []string{environment}, GitHubActionsDefaultBranch: "main",
 		}
 	}
 	staging := base("staging")
@@ -1189,4 +1193,127 @@ func legacyScopedToken(t *testing.T, secret string, scopes []string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(unsigned))
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+type privateInvocationStartupStore struct {
+	store.OperationStore
+	keyIDs []string
+}
+
+func (s privateInvocationStartupStore) AcceptPrivateInvocation(context.Context, store.OperationAcceptance, store.PrivateInvocationInput, *store.PrivateInvocationKeyRing) (store.AcceptedOperation, error) {
+	panic("unexpected private invocation acceptance during startup preflight")
+}
+
+func (s privateInvocationStartupStore) OpenPrivateInvocation(context.Context, model.Operation, *store.PrivateInvocationKeyRing) (store.PrivateInvocationInput, error) {
+	panic("unexpected private invocation open during startup preflight")
+}
+
+func (s privateInvocationStartupStore) RequiredPrivateInvocationKeys(context.Context) ([]string, error) {
+	return s.keyIDs, nil
+}
+
+func testEd25519Private(ch byte) string {
+	return base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{ch}, ed25519.SeedSize))
+}
+
+func testEd25519Public(ch byte) string {
+	return base64.RawStdEncoding.EncodeToString(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{ch}, ed25519.SeedSize)).Public().(ed25519.PublicKey))
+}
+
+func TestFunctionV3PreviewRequiresPrivatePostgresCapability(t *testing.T) {
+	if err := validateControlSecurityForBackend(&config.Config{FunctionV3PreviewEnabled: true}, startup.ControlBackendConfig{Backend: startup.BackendPostgres}); err == nil || !strings.Contains(err.Error(), "NORN_FUNCTION_V3_PREVIEW_ENABLED") {
+		t.Fatalf("missing private capability err=%v", err)
+	}
+	if err := validateControlSecurityForBackend(&config.Config{FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, startup.ControlBackendConfig{Backend: startup.BackendEtcd}); err == nil || !strings.Contains(err.Error(), "NORN_FUNCTION_V3_PREVIEW_ENABLED") {
+		t.Fatalf("unsupported backend err=%v", err)
+	}
+	if admission, claimed, err := configureFunctionV3(&config.Config{}, nil, nil, nil, nil, nil); err != nil || admission != nil || claimed != nil {
+		t.Fatalf("disabled function preview admission=%v worker=%v err=%v", admission, claimed, err)
+	}
+	if _, _, err := configureFunctionV3(&config.Config{Profile: "production", FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "requires private acceptance") || strings.Contains(err.Error(), "non-production") {
+		t.Fatalf("production function-v3 capability err=%v", err)
+	}
+}
+
+func TestFunctionInvocationRouteFailsClosedWithoutSignedRuntime(t *testing.T) {
+	invoked := false
+	configured := functionInvocationRoute(func(w http.ResponseWriter, _ *http.Request) {
+		invoked = true
+		w.WriteHeader(http.StatusAccepted)
+	})
+	configuredRec := httptest.NewRecorder()
+	configured(configuredRec, httptest.NewRequest(http.MethodPost, "/api/apps/demo/invoke", strings.NewReader(`{"process":"resize"}`)))
+	if !invoked || configuredRec.Code != http.StatusAccepted {
+		t.Fatalf("configured function route invoked=%v status=%d", invoked, configuredRec.Code)
+	}
+
+	// The disabled route deliberately has no Handler or Nomad client input.
+	// A request therefore cannot reach the legacy HTTP submission path.
+	disabledRec := httptest.NewRecorder()
+	functionInvocationRoute(nil)(disabledRec, httptest.NewRequest(http.MethodPost, "/api/apps/demo/invoke", strings.NewReader(`{"process":"resize"}`)))
+	if disabledRec.Code != http.StatusServiceUnavailable || !strings.Contains(disabledRec.Body.String(), "function_invocation_unavailable") {
+		t.Fatalf("disabled function route status=%d body=%s", disabledRec.Code, disabledRec.Body.String())
+	}
+}
+
+func TestInvalidOperationReplayTTLStopsStartupValidation(t *testing.T) {
+	for _, value := range []string{"malformed", "-1h"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("NORN_OPERATION_REPLAY_TTL", value)
+			err := validateControlSecurity(config.Load())
+			if err == nil || !strings.Contains(err.Error(), "NORN_OPERATION_REPLAY_TTL") {
+				t.Fatalf("startup validation error = %v, want explicit replay TTL rejection", err)
+			}
+		})
+	}
+}
+
+func TestPrivateInvocationStartupPreflightIsCapabilityGated(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, 32))
+	keys := `{"current":"` + key + `","retired":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)) + `"}`
+	storeWithRetiredKey := privateInvocationStartupStore{keyIDs: []string{"retired", "current"}}
+
+	disabled := &config.Config{PrivateInvocationKeys: "not-json"}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), disabled, storeWithRetiredKey); err != nil {
+		t.Fatalf("disabled private invocation capability preflight = %v", err)
+	}
+
+	enabled := &config.Config{PrivateInvocationEnabled: true, PrivateInvocationCurrentKeyID: "current", PrivateInvocationKeys: keys}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), enabled, storeWithRetiredKey); err != nil {
+		t.Fatalf("enabled private invocation preflight = %v", err)
+	}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), enabled, privateInvocationStartupStore{keyIDs: []string{"missing-retired"}}); err == nil || !strings.Contains(err.Error(), `"missing-retired"`) {
+		t.Fatalf("missing retained key preflight = %v", err)
+	}
+}
+
+func TestPrivateInvocationRuntimeConfigurationStopsStartupValidation(t *testing.T) {
+	const canary = "private-invocation-runtime-canary"
+	cfg := &config.Config{PrivateInvocationEnabled: true, PrivateInvocationCurrentKeyID: "current", PrivateInvocationKeys: `{"current":"` + canary + `"}`}
+	err := validateControlSecurity(cfg)
+	if err == nil || strings.Contains(err.Error(), canary) {
+		t.Fatalf("startup validation error = %v", err)
+	}
+}
+
+func TestEtcdProductionSecurityDoesNotRequirePostgreSQLDSN(t *testing.T) {
+	cfg := &config.Config{Profile: "production", Environment: "production", EnvironmentExplicit: true, BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://poisoned.invalid:1/never-open", RegistryURL: "registry.example.test/norn", ArtifactDenySeverities: []string{"HIGH"}, CosignPath: "/usr/bin/cosign", TrivyPath: "/usr/bin/trivy", LegacyTokenSigningUntil: time.Now().Add(-time.Hour), TrustedQualificationSigningKeys: []string{testEd25519Public('q')}, ReleaseAdmissionMode: "keyless", ReleaseAttestationIssuer: "https://token.actions.githubusercontent.com", ReleaseAttestationRepositories: []string{"owner/repo"}, ReleaseAttestationWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, ReleaseRequireSBOM: true, GitHubActionsOIDCAudience: "norn", GitHubActionsReleaseBindings: []string{"demo=owner/repo@1@2"}, GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsAllowedRepositories: []string{"owner/repo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/tags/v*"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedApps: []string{"demo"}, GitHubActionsAllowedEnvironments: []string{"production"}, GitHubActionsDefaultBranch: "main"}
+	etcdBackend := startup.ControlBackendConfig{Backend: startup.BackendEtcd, EtcdEndpoints: []string{"https://etcd.example.test:2379"}, EtcdCAFile: "/no/such/ca.pem", EtcdCertFile: "/no/such/cert.pem", EtcdKeyFile: "/no/such/key.pem", EtcdUsername: "norn", EtcdPassword: "secret"}
+	if err := validateControlSecurityForBackend(cfg, etcdBackend); err == nil || !strings.Contains(err.Error(), startup.EtcdCAFileEnv) || strings.Contains(err.Error(), "PostgreSQL") {
+		t.Fatalf("production etcd validation should reach its transport check before PostgreSQL: %v", err)
+	}
+	if err := validateControlSecurityForBackend(cfg, startup.ControlBackendConfig{Backend: startup.BackendPostgres}); err == nil || !strings.Contains(err.Error(), "PostgreSQL") {
+		t.Fatalf("postgres security error = %v, want PostgreSQL DSN rejection", err)
+	}
+}
+
+func TestQualificationKeysStaySeparateFromRetainedAuditKeys(t *testing.T) {
+	formerAuditKey := strings.Repeat("p", 32)
+	cfg := &config.Config{AuditSigningKey: strings.Repeat("a", 32), AuditPreviousSigningKeys: []string{formerAuditKey}}
+	if !qualificationKeyOverlapsAuditKeys(cfg, formerAuditKey) {
+		t.Fatal("retained previous audit key was accepted as qualification key material")
+	}
+	if qualificationKeyOverlapsAuditKeys(cfg, strings.Repeat("q", 32)) {
+		t.Fatal("purpose-separated qualification key was rejected")
+	}
 }

@@ -214,6 +214,62 @@ func (c *Client) PutObject(ctx context.Context, bucket, key, filePath string) er
 	return nil
 }
 
+// PutObjectIfAbsent publishes a snapshot object without replacing an existing
+// key. For multipart uploads the precondition belongs on completion, where
+// the object becomes visible; the pinned high-level SDK drops that header.
+func (c *Client) PutObjectIfAbsent(ctx context.Context, bucket, key, filePath string) (runErr error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", filePath, err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat snapshot object source: %w", err)
+	}
+	if !stat.Mode().IsRegular() || stat.Size() <= 0 {
+		return fmt.Errorf("snapshot object source must be a non-empty regular file")
+	}
+	const partBytes int64 = 8 << 20
+	options := minio.PutObjectOptions{ContentType: "application/octet-stream"}
+	options.SetMatchETagExcept("*")
+	if stat.Size() <= partBytes {
+		_, err = c.mc.PutObject(ctx, bucket, key, file, stat.Size(), options)
+		return err
+	}
+	core := minio.Core{Client: c.mc}
+	uploadID, err := core.NewMultipartUpload(ctx, bucket, key, options)
+	if err != nil {
+		return fmt.Errorf("start snapshot object upload: %w", err)
+	}
+	defer func() {
+		if runErr != nil {
+			abortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = core.AbortMultipartUpload(abortCtx, bucket, key, uploadID)
+		}
+	}()
+	parts := make([]minio.CompletePart, 0, (stat.Size()+partBytes-1)/partBytes)
+	for offset, number := int64(0), 1; offset < stat.Size(); offset, number = offset+partBytes, number+1 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		length := min(partBytes, stat.Size()-offset)
+		part, err := core.PutObjectPart(ctx, bucket, key, uploadID, number, io.NewSectionReader(file, offset, length), length, minio.PutObjectPartOptions{})
+		if err != nil {
+			return fmt.Errorf("upload snapshot object part %d: %w", number, err)
+		}
+		parts = append(parts, minio.CompletePart{ETag: part.ETag, PartNumber: number})
+	}
+	completeOptions := minio.PutObjectOptions{}
+	completeOptions.SetMatchETagExcept("*")
+	_, err = core.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts, completeOptions)
+	if err != nil {
+		return fmt.Errorf("complete snapshot object upload: %w", err)
+	}
+	return nil
+}
+
 // GetObject downloads an object from a bucket to a local file.
 func (c *Client) GetObject(ctx context.Context, bucket, key, destPath string) error {
 	obj, err := c.mc.GetObject(ctx, bucket, key, minio.GetObjectOptions{})

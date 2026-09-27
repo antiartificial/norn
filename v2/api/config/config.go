@@ -52,11 +52,20 @@ type Config struct {
 	APIToken                 string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
-	RequireExplicitAuth             bool
-	StrictSecrets                   bool
-	AuditSigningKey                 string
-	AuditPreviousSigningKeys        []string
-	AuditRetentionDays              int
+	RequireExplicitAuth      bool
+	StrictSecrets            bool
+	AuditSigningKey          string
+	AuditPreviousSigningKeys []string
+	AuditRetentionDays       int
+	// ControlAuthority optionally pins this process to the durable database authority UUID.
+	ControlAuthority string
+	// Zero OperationReplayTTL retains indefinite request-identity replay.
+	OperationReplayTTL time.Duration
+	// Private invocation is opt-in and uses a key ring separate from audit keys.
+	PrivateInvocationEnabled        bool
+	FunctionV3PreviewEnabled        bool
+	PrivateInvocationCurrentKeyID   string
+	PrivateInvocationKeys           string
 	QualificationSigningKey         string
 	TrustedQualificationSigningKeys []string
 	GitHubActionsOIDCAudience       string
@@ -192,6 +201,71 @@ type Config struct {
 	CloudflareZoneID       string // NORN_CLOUDFLARE_ZONE_ID
 	CloudflareLogpushToken string // NORN_CLOUDFLARE_LOGPUSH_TOKEN
 	CloudflareAPIBaseURL   string // NORN_CLOUDFLARE_API_BASE_URL
+
+	// BuildTestExecution selects how build.test commands run: "legacy-unfenced"
+	// (default, v2 behaviour: direct exec, no effect fencing) or "supervised"
+	// (fenced effect executor with a cgroup-v2 runner). Supervised mode has no
+	// fallback; incomplete configuration fails startup.
+	BuildTestExecution   string        // NORN_BUILD_TEST_EXECUTION
+	BuildTestTimeout     time.Duration // NORN_BUILD_TEST_TIMEOUT
+	BuildTestPath        string        // NORN_BUILD_TEST_PATH (command PATH; nothing else is inherited)
+	EffectSupervisorDir  string        // NORN_EFFECT_SUPERVISOR_ROOT
+	EffectSigningKey     string        // NORN_EFFECT_SIGNING_KEY
+	EffectRunnerBinary   string        // NORN_EFFECT_RUNNER_BINARY (default: norn-effect-runner beside the API binary)
+	EffectRunnerSHA256   string        // NORN_EFFECT_RUNNER_SHA256 (optional pin)
+	EffectCgroupRoot     string        // NORN_EFFECT_CGROUP_ROOT (delegated cgroup-v2 directory)
+	SnapshotExecution    string        // NORN_SNAPSHOT_EXECUTION: supervised
+	SnapshotPGDumpPath   string        // NORN_SNAPSHOT_PGDUMP_PATH
+	SnapshotPGDumpSHA256 string        // NORN_SNAPSHOT_PGDUMP_SHA256
+	SnapshotTimeout      time.Duration // NORN_SNAPSHOT_TIMEOUT
+	// SnapshotArtifactBudgetBytes bounds all private supervised snapshot dumps.
+	// It must accommodate at least one hard-capped artifact in supervised mode.
+	SnapshotArtifactBudgetBytes int64 // NORN_SNAPSHOT_ARTIFACT_BUDGET_BYTES
+
+	// DatabaseProfile selects a deployment profile in the durable database
+	// catalog. It is independent of Profile (security hardening). Unset keeps
+	// v2 database routing (ambient libpq by database name).
+	DatabaseProfile   string // NORN_DATABASE_PROFILE
+	DatabaseSecretDir string // NORN_DATABASE_SECRET_DIR (owner-only; resolves secret: references)
+	// WPColdStartGate opts the qualified WordPress startup
+	// path into the private MySQL writer launch fence. It deliberately defaults
+	// off: ordinary app.deploy retains its rolling-deploy behavior.
+	WPColdStartGate bool // NORN_WORDPRESS_VERIFIED_TLS_COLD_START_GATE
+
+	// Evidence archive (ADR 0001). Unset directory disables archiving; the
+	// default mode is shadow (archive and verify, never delete).
+	EvidenceArchiveDir      string // NORN_EVIDENCE_ARCHIVE_DIR (absolute, owner-only)
+	EvidenceArchiveMode     string // NORN_EVIDENCE_ARCHIVE_MODE: shadow | prune
+	EvidenceArchiveMaxBytes int64  // NORN_EVIDENCE_ARCHIVE_MAX_BYTES (hard capacity)
+	EvidenceMinAge          string // NORN_EVIDENCE_MIN_AGE (retention floor before pruning, e.g. 720h)
+	// EvidenceArchiveBackend selects the archive explicitly: "local" (the
+	// consolidated local/Mini profile: NORN_EVIDENCE_ARCHIVE_DIR) or
+	// "object" (the Fleet profile: an S3-compatible bucket with credentials
+	// dedicated to the archive, read from owner-only files).
+	EvidenceArchiveBackend       string // NORN_EVIDENCE_ARCHIVE_BACKEND
+	EvidenceArchiveEndpoint      string // NORN_EVIDENCE_ARCHIVE_S3_ENDPOINT (host[:port])
+	EvidenceArchiveBucket        string // NORN_EVIDENCE_ARCHIVE_S3_BUCKET
+	EvidenceArchivePrefix        string // NORN_EVIDENCE_ARCHIVE_S3_PREFIX
+	EvidenceArchiveRegion        string // NORN_EVIDENCE_ARCHIVE_S3_REGION
+	EvidenceArchiveAccessKeyFile string // NORN_EVIDENCE_ARCHIVE_S3_ACCESS_KEY_FILE
+	EvidenceArchiveSecretKeyFile string // NORN_EVIDENCE_ARCHIVE_S3_SECRET_KEY_FILE
+	EvidenceArchiveCAFile        string // NORN_EVIDENCE_ARCHIVE_S3_CA_FILE (optional PEM bundle)
+	// Evidence reserve admission: with an archive configured the durable
+	// policy is enforced unless NORN_EVIDENCE_RESERVE=disabled is set
+	// explicitly (removing archive configuration never disables it).
+	EvidenceReserve              string        // NORN_EVIDENCE_RESERVE: enforce | disabled
+	EvidenceReserveMaxPending    int           // NORN_EVIDENCE_RESERVE_MAX_PENDING
+	EvidenceReserveMaxPendingAge time.Duration // NORN_EVIDENCE_RESERVE_MAX_PENDING_AGE
+	EvidenceReserveSignedBytes   int64         // NORN_EVIDENCE_RESERVE_MAX_SIGNED_ACCEPTANCE_BYTES (0 disables this narrow gate)
+	EvidenceReserveMinFreeBytes  int64         // NORN_EVIDENCE_RESERVE_MIN_FREE_BYTES (local archive headroom)
+	// Diagnostic log collection (separate from evidence): unset directory
+	// disables it. Limits bound the spool; the oldest output is dropped and
+	// counted first.
+	LogSpoolDir            string        // NORN_LOG_SPOOL_DIR (absolute, owner-only)
+	LogSpoolMaxBytes       int64         // NORN_LOG_SPOOL_MAX_BYTES
+	LogSpoolStreamMaxBytes int64         // NORN_LOG_SPOOL_STREAM_MAX_BYTES
+	LogSpoolSegmentBytes   int64         // NORN_LOG_SPOOL_SEGMENT_BYTES
+	LogCollectInterval     time.Duration // NORN_LOG_COLLECT_INTERVAL
 }
 
 func Load() *Config {
@@ -231,6 +305,12 @@ func Load() *Config {
 		AuditSigningKey:                       os.Getenv("NORN_AUDIT_SIGNING_KEY"),
 		AuditPreviousSigningKeys:              splitNonEmpty(os.Getenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS")),
 		AuditRetentionDays:                    envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),
+		ControlAuthority:                      strings.TrimSpace(os.Getenv("NORN_CONTROL_AUTHORITY")),
+		OperationReplayTTL:                    envOptionalDuration("NORN_OPERATION_REPLAY_TTL"),
+		PrivateInvocationEnabled:              envBoolOr("NORN_PRIVATE_INVOCATION_ENABLED", false),
+		FunctionV3PreviewEnabled:              envBoolOr("NORN_FUNCTION_V3_PREVIEW_ENABLED", false),
+		PrivateInvocationCurrentKeyID:         strings.TrimSpace(os.Getenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID")),
+		PrivateInvocationKeys:                 os.Getenv("NORN_PRIVATE_INVOCATION_KEYS"),
 		QualificationSigningKey:               os.Getenv("NORN_QUALIFICATION_SIGNING_KEY"),
 		TrustedQualificationSigningKeys:       splitNonEmpty(os.Getenv("NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")),
 		GitHubActionsOIDCAudience:             strings.TrimSpace(os.Getenv("NORN_GITHUB_ACTIONS_OIDC_AUDIENCE")),
@@ -334,6 +414,51 @@ func Load() *Config {
 		CloudflareZoneID:       firstEnv("NORN_CLOUDFLARE_ZONE_ID", "CLOUDFLARE_ZONE_ID"),
 		CloudflareLogpushToken: os.Getenv("NORN_CLOUDFLARE_LOGPUSH_TOKEN"),
 		CloudflareAPIBaseURL:   envOr("NORN_CLOUDFLARE_API_BASE_URL", "https://api.cloudflare.com/client/v4"),
+
+		BuildTestExecution:           strings.ToLower(strings.TrimSpace(envOr("NORN_BUILD_TEST_EXECUTION", "legacy-unfenced"))),
+		BuildTestTimeout:             envDurationOr("NORN_BUILD_TEST_TIMEOUT", 30*time.Minute),
+		BuildTestPath:                envOr("NORN_BUILD_TEST_PATH", "/usr/local/bin:/usr/bin:/bin"),
+		EffectSupervisorDir:          strings.TrimSpace(os.Getenv("NORN_EFFECT_SUPERVISOR_ROOT")),
+		EffectSigningKey:             os.Getenv("NORN_EFFECT_SIGNING_KEY"),
+		EffectRunnerBinary:           strings.TrimSpace(os.Getenv("NORN_EFFECT_RUNNER_BINARY")),
+		EffectRunnerSHA256:           strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EFFECT_RUNNER_SHA256"))),
+		EffectCgroupRoot:             strings.TrimSpace(os.Getenv("NORN_EFFECT_CGROUP_ROOT")),
+		SnapshotExecution:            strings.ToLower(strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_EXECUTION"))),
+		SnapshotPGDumpPath:           strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_PGDUMP_PATH")),
+		SnapshotPGDumpSHA256:         strings.ToLower(strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_PGDUMP_SHA256"))),
+		SnapshotTimeout:              envDurationOr("NORN_SNAPSHOT_TIMEOUT", time.Hour),
+		SnapshotArtifactBudgetBytes:  envInt64Or("NORN_SNAPSHOT_ARTIFACT_BUDGET_BYTES", 0),
+		DatabaseProfile:              strings.TrimSpace(os.Getenv("NORN_DATABASE_PROFILE")),
+		DatabaseSecretDir:            strings.TrimSpace(os.Getenv("NORN_DATABASE_SECRET_DIR")),
+		WPColdStartGate:              envBoolOr("NORN_WORDPRESS_VERIFIED_TLS_COLD_START_GATE", false),
+		EvidenceArchiveDir:           strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_DIR")),
+		EvidenceArchiveMode:          strings.ToLower(envOr("NORN_EVIDENCE_ARCHIVE_MODE", "shadow")),
+		EvidenceMinAge:               envOr("NORN_EVIDENCE_MIN_AGE", "720h"),
+		EvidenceArchiveBackend:       strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_BACKEND"))),
+		EvidenceArchiveEndpoint:      strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_S3_ENDPOINT")),
+		EvidenceArchiveBucket:        strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_S3_BUCKET")),
+		EvidenceArchivePrefix:        strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_S3_PREFIX")),
+		EvidenceArchiveRegion:        strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_S3_REGION")),
+		EvidenceArchiveAccessKeyFile: strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_S3_ACCESS_KEY_FILE")),
+		EvidenceArchiveSecretKeyFile: strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_S3_SECRET_KEY_FILE")),
+		EvidenceArchiveCAFile:        strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_S3_CA_FILE")),
+		EvidenceReserve:              strings.ToLower(envOr("NORN_EVIDENCE_RESERVE", "enforce")),
+		EvidenceReserveMaxPending:    envIntOr("NORN_EVIDENCE_RESERVE_MAX_PENDING", 10000),
+		EvidenceReserveMaxPendingAge: envDurationOr("NORN_EVIDENCE_RESERVE_MAX_PENDING_AGE", 24*time.Hour),
+		EvidenceReserveSignedBytes:   envInt64Or("NORN_EVIDENCE_RESERVE_MAX_SIGNED_ACCEPTANCE_BYTES", 0),
+		EvidenceReserveMinFreeBytes:  envInt64Or("NORN_EVIDENCE_RESERVE_MIN_FREE_BYTES", 1<<30),
+		LogSpoolDir:                  strings.TrimSpace(os.Getenv("NORN_LOG_SPOOL_DIR")),
+		LogSpoolMaxBytes:             envInt64Or("NORN_LOG_SPOOL_MAX_BYTES", 1<<30),
+		LogSpoolStreamMaxBytes:       envInt64Or("NORN_LOG_SPOOL_STREAM_MAX_BYTES", 64<<20),
+		LogSpoolSegmentBytes:         envInt64Or("NORN_LOG_SPOOL_SEGMENT_BYTES", 4<<20),
+		LogCollectInterval:           envDurationOr("NORN_LOG_COLLECT_INTERVAL", 30*time.Second),
+		EvidenceArchiveMaxBytes: func() int64 {
+			value, err := strconv.ParseInt(envOr("NORN_EVIDENCE_ARCHIVE_MAX_BYTES", "10737418240"), 10, 64)
+			if err != nil {
+				return 0
+			}
+			return value
+		}(),
 	}
 }
 
@@ -354,6 +479,13 @@ func (c *Config) EnvironmentID() string {
 		return "development"
 	}
 	return strings.ToLower(strings.TrimSpace(c.Environment))
+}
+
+func (c *Config) ProfileID() string {
+	if c == nil || strings.TrimSpace(c.Profile) == "" {
+		return "development"
+	}
+	return strings.ToLower(strings.TrimSpace(c.Profile))
 }
 
 func uiDir() string {
@@ -471,6 +603,21 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 	parsed, err := time.ParseDuration(raw)
 	if err != nil || parsed <= 0 {
 		return fallback
+	}
+	return parsed
+}
+
+// envOptionalDuration distinguishes an absent or explicit zero opt-in from an
+// invalid configured value. Callers reject the negative sentinel and fail
+// closed instead of silently disabling a requested policy.
+func envOptionalDuration(key string) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed < 0 {
+		return -1
 	}
 	return parsed
 }

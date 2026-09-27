@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Check a Mini legacy-baseline backup proof without connecting to its source."""
+
+import datetime
+import hashlib
+import hmac
+import json
+import os
+import re
+import stat
+import sys
+
+
+def fail(message):
+    raise SystemExit(message)
+
+
+def secure_file(path, label):
+    if not os.path.isabs(path):
+        fail(f"{label} must be an absolute path")
+    # Bind validation and reading to one descriptor. O_NOFOLLOW rejects a
+    # symlink substituted between a path check and the later read.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode):
+        os.close(fd)
+        fail(f"{label} must be a regular non-symlink file")
+    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+        os.close(fd)
+        fail(f"{label} must be invoking-user owned with mode 0600")
+    if metadata.st_size <= 0:
+        os.close(fd)
+        fail(f"{label} must not be empty")
+    return os.fdopen(fd, "rb"), metadata.st_size
+
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail("duplicate backup proof field")
+        result[key] = value
+    return result
+
+
+def main():
+    if len(sys.argv) != 4:
+        fail("usage: mini-verify-protected-backup <proof> <artifact> <legacy-release-sha>")
+    proof_path, artifact_path, release_sha = sys.argv[1:]
+    if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
+        fail("legacy release SHA must be full lowercase hex")
+    proof_file, _ = secure_file(proof_path, "backup proof")
+    artifact_file, artifact_size = secure_file(artifact_path, "backup artifact")
+    with proof_file:
+        proof = json.load(proof_file, object_pairs_hook=strict_object)
+    fields = {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "backupBytes", "createdAt"}
+    if type(proof) is not dict or set(proof) != fields:
+        fail("backup proof fields are not exact")
+    if proof["schema"] != "norn.legacy-control-backup/v1":
+        fail("backup proof schema is unsupported")
+    if proof["sourceReleaseSHA"] != release_sha:
+        fail("backup proof source release does not match")
+    expected_sha = proof["backupSHA256"]
+    if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+        fail("backup digest is invalid")
+    if type(proof["backupBytes"]) is not int or proof["backupBytes"] != artifact_size:
+        fail("backup size does not match")
+    try:
+        created = datetime.datetime.fromisoformat(proof["createdAt"].replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        fail("backup proof timestamp is invalid")
+    if created.tzinfo is None:
+        fail("backup proof timestamp needs an offset")
+    max_age = os.environ.get("NORN_LEGACY_BACKUP_MAX_AGE_SECONDS", "3600")
+    if not re.fullmatch(r"[1-9][0-9]*", max_age):
+        fail("NORN_LEGACY_BACKUP_MAX_AGE_SECONDS must be positive")
+    age = (datetime.datetime.now(datetime.timezone.utc) - created.astimezone(datetime.timezone.utc)).total_seconds()
+    if age < -300 or age > int(max_age):
+        fail("backup proof is outside the permitted age")
+    database_url = os.environ.get("NORN_DATABASE_URL", "")
+    signing_key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "")
+    if not database_url or len(signing_key) < 32:
+        fail("NORN_DATABASE_URL and a 32-byte NORN_AUDIT_SIGNING_KEY are required")
+    identity = "hmac-sha256:" + hmac.new(
+        signing_key.encode(), b"norn.database-identity/v1\0" + database_url.encode(), hashlib.sha256
+    ).hexdigest()
+    if not isinstance(proof["databaseIdentity"], str) or not hmac.compare_digest(proof["databaseIdentity"], identity):
+        fail("backup proof database identity does not match")
+    digest = hashlib.sha256()
+    with artifact_file:
+        for chunk in iter(lambda: artifact_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if not hmac.compare_digest(expected_sha, digest.hexdigest()):
+        fail("backup digest does not match")
+    print(f"{expected_sha} {artifact_size}")
+
+
+if __name__ == "__main__":
+    main()

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -13,9 +14,13 @@ import (
 
 func init() {
 	snapshotsCmd.Flags().BoolVar(&snapshotRestoreYes, "yes", false, "Confirm snapshot restore")
-	snapshotsCmd.Flags().BoolVar(&snapshotPreRestore, "pre-restore", false, "Create a fresh snapshot before restoring")
+	snapshotsCmd.Flags().BoolVar(&snapshotPreRestore, "pre-restore", false, "Compatibility flag; restores always create a safety snapshot")
 	snapshotsCmd.Flags().IntVar(&snapshotRetentionKeep, "keep", 3, "Number of newest snapshots to keep in retention preview")
 	snapshotsCmd.Flags().BoolVar(&snapshotRetentionExecute, "execute", false, "Apply snapshot retention pruning")
+	snapshotsCmd.Flags().StringVar(&snapshotDatabase, "database", "", "Named database to restore or prune")
+	snapshotsCmd.Flags().StringVar(&snapshotIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
+	snapshotsCmd.Flags().BoolVar(&snapshotWait, "wait", true, "Wait for a queued restore or pruning operation")
+	snapshotsCmd.Flags().DurationVar(&snapshotTimeout, "timeout", 2*time.Hour, "Maximum time to wait for an operation")
 	rootCmd.AddCommand(snapshotsCmd)
 }
 
@@ -23,6 +28,10 @@ var snapshotRestoreYes bool
 var snapshotPreRestore bool
 var snapshotRetentionKeep int
 var snapshotRetentionExecute bool
+var snapshotIdempotencyKey string
+var snapshotWait bool
+var snapshotTimeout time.Duration
+var snapshotDatabase string
 
 var snapshotsCmd = &cobra.Command{
 	Use:   "snapshots <app> [restore <timestamp>|retention]",
@@ -36,33 +45,35 @@ var snapshotsCmd = &cobra.Command{
 			if !snapshotRestoreYes {
 				return fmt.Errorf("restore is destructive; rerun with --yes to confirm")
 			}
-			fmt.Printf("%s restoring snapshot %s for %s...\n", style.DotWarning, ts, appID)
-			receipt, err := client.RestoreSnapshot(appID, ts, true, snapshotPreRestore)
+			key, err := requestIdempotencyKey(cmd, snapshotIdempotencyKey, "norn-snapshot-restore")
 			if err != nil {
-				return fmt.Errorf("restore failed: %w", err)
+				return err
 			}
-			fmt.Println(style.SuccessBox.Render("snapshot restored"))
-			if receipt != nil {
-				fmt.Printf("  %s %s\n", style.Key.Render("database"), receipt.Database)
-				fmt.Printf("  %s %s\n", style.Key.Render("snapshot"), receipt.Snapshot.Filename)
-				if receipt.Snapshot.CommitSHA != "" {
-					fmt.Printf("  %s %s\n", style.Key.Render("commit"), receipt.Snapshot.CommitSHA)
-				}
-				if receipt.PreRestoreSnapshot != nil {
-					fmt.Printf("  %s %s\n", style.Key.Render("pre-restore"), receipt.PreRestoreSnapshot.Filename)
-				}
-				fmt.Printf("  %s %s\n", style.Key.Render("restored"), receipt.RestoredAt)
+			op, err := client.QueueSnapshotRestore(appID, ts, key, snapshotDatabase)
+			if err != nil {
+				return fmt.Errorf("queue restore: %w", err)
 			}
-			return nil
+			return handleSnapshotOperation(cmd, op)
 		}
 
 		if len(args) >= 2 && args[1] == "retention" {
 			if snapshotRetentionExecute && !snapshotRestoreYes {
 				return fmt.Errorf("retention execution deletes old snapshots; rerun with --execute --yes to confirm")
 			}
-			receipt, err := client.ApplySnapshotRetention(appID, snapshotRetentionKeep, snapshotRetentionExecute)
+			if snapshotRetentionExecute {
+				key, err := requestIdempotencyKey(cmd, snapshotIdempotencyKey, "norn-snapshot-prune")
+				if err != nil {
+					return err
+				}
+				op, err := client.QueueSnapshotPrune(appID, snapshotRetentionKeep, key, snapshotDatabase)
+				if err != nil {
+					return fmt.Errorf("queue snapshot pruning: %w", err)
+				}
+				return handleSnapshotOperation(cmd, op)
+			}
+			receipt, err := client.ApplySnapshotRetention(appID, snapshotRetentionKeep, false, snapshotDatabase)
 			if err != nil {
-				return fmt.Errorf("snapshot retention failed: %w", err)
+				return fmt.Errorf("snapshot retention preview failed: %w", err)
 			}
 			printSnapshotRetentionReceipt(receipt)
 			return nil
@@ -99,6 +110,40 @@ var snapshotsCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func handleSnapshotOperation(cmd *cobra.Command, op *api.Operation) error {
+	if op == nil || op.ID == "" {
+		return fmt.Errorf("snapshot operation acceptance returned no operation id")
+	}
+	fmt.Printf("%s %s (%s)\n", style.Healthy.Render(op.Status), op.ID, op.Kind)
+	if !snapshotWait {
+		fmt.Printf("Check status with: norn operations %s\n", op.ID)
+		return nil
+	}
+	deadline := time.Now().Add(snapshotTimeout)
+	for {
+		switch op.Status {
+		case "succeeded":
+			fmt.Println(style.SuccessBox.Render(op.Message))
+			return nil
+		case "failed", "canceled":
+			return fmt.Errorf("%s: %s (operation %s)", op.Status, op.Message, op.ID)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for snapshot operation %s", op.ID)
+		}
+		select {
+		case <-cmd.Context().Done():
+			return cmd.Context().Err()
+		case <-time.After(2 * time.Second):
+		}
+		updated, err := client.GetOperation(op.ID)
+		if err != nil {
+			return fmt.Errorf("operation %s continues; status lookup failed: %w", op.ID, err)
+		}
+		op = updated
+	}
 }
 
 func formatBytes(b int64) string {

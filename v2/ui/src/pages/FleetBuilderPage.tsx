@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Background, Controls, MiniMap, Panel, ReactFlow, useNodesState,
   type Edge, type NodeMouseHandler,
@@ -79,6 +79,30 @@ export function FleetBuilderPage() {
   const onNodeDragStop = useCallback((_: unknown, node: { id: string; position: { x: number; y: number } }) => {
     setDraft(d => ({ ...d, positions: { ...d.positions, [node.id]: node.position } }))
   }, [])
+
+  const draftJson = useMemo(() => JSON.stringify(draft, null, 2), [draft])
+  const fileRef = useRef<HTMLInputElement>(null)
+  const exportFleetJson = () => {
+    const url = URL.createObjectURL(new Blob([draftJson], { type: 'application/json' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${draft.name || 'fleet'}.fleet.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  const onImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!isFleetDraft(parsed)) throw new Error('File is not a supported Fleet draft')
+      mutate(() => parsed)
+      setSelectedId(null)
+    } catch (error) {
+      window.alert(`Import failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 
   const downloadYaml = () => {
     // One valid file per document (a cluster.yaml per region + an optional fleet-extras.yaml).
@@ -211,6 +235,12 @@ export function FleetBuilderPage() {
           <div className="fleet-builder-actions">
             <CopyButton value={yaml} label="Copy fleet YAML" />
             <Button variant="secondary" icon="fa-download" onClick={downloadYaml}>Export fleet YAML</Button>
+          </div>
+          <div className="fleet-builder-actions">
+            <CopyButton value={draftJson} label="Copy fleet JSON" />
+            <Button variant="ghost" icon="fa-file-export" onClick={exportFleetJson}>Share fleet JSON</Button>
+            <Button variant="ghost" icon="fa-file-import" onClick={() => fileRef.current?.click()}>Import fleet JSON</Button>
+            <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={onImportFile} />
           </div>
           <p className="fleet-builder-foot">{totalApps(draft)} app nodes · design-time preview · applying is done through the GitOps path</p>
         </aside>
@@ -467,3 +497,36 @@ function inspectorTitle(kind: string): string {
 }
 
 export default FleetBuilderPage
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isFleetDraft(value: unknown): value is FleetDraft {
+  if (!isRecord(value)) return false
+  const db = value.db
+  const sizes = value.sizes
+  const positions = value.positions
+  const service = (item: unknown) => isRecord(item) && typeof item.id === 'string'
+    && ['cache', 'queue'].includes(item.kind as string) && typeof item.engine === 'string'
+    && typeof item.size === 'string' && Number.isInteger(item.count)
+    && typeof item.x === 'number' && typeof item.y === 'number'
+  const extra = (item: unknown) => isRecord(item) && typeof item.id === 'string'
+    && ['self', 'managed'].includes(item.mode as string) && ['pg', 'mysql'].includes(item.engine as string)
+    && typeof item.size === 'string' && typeof item.x === 'number' && typeof item.y === 'number'
+  const valkey = (item: unknown) => isRecord(item) && ['id', 'application', 'name', 'size', 'region'].every((key) => typeof item[key] === 'string')
+    && typeof item.x === 'number' && typeof item.y === 'number'
+  return typeof value.name === 'string' && typeof value.region === 'string'
+    && typeof value.secondRegion === 'string' && [1, 2].includes(value.regions as number)
+    && ['none', 'cloudflare'].includes(value.edge as string)
+    && ['controlA', 'controlB', 'appA', 'appB'].every((key) => Number.isInteger(value[key]) && (value[key] as number) >= 0)
+    && isRecord(db) && ['self', 'managed'].includes(db.mode as string)
+    && ['pg', 'mysql'].includes(db.engine as string) && typeof db.replica === 'boolean'
+    && ['same', 'b'].includes(db.replicaRegion as string)
+    && typeof db.managedSize === 'string' && typeof db.selfSize === 'string'
+    && isRecord(sizes) && typeof sizes.control === 'string' && typeof sizes.app === 'string'
+    && Array.isArray(value.services) && value.services.every(service)
+    && Array.isArray(value.extras) && value.extras.every(extra)
+    && Array.isArray(value.managedValkey) && value.managedValkey.every(valkey)
+    && isRecord(positions) && Object.values(positions).every((point) => isRecord(point) && typeof point.x === 'number' && typeof point.y === 'number')
+}

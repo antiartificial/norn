@@ -21,7 +21,27 @@ export interface DeployProgressState {
   steps: DeployStep[]
   status: string
   sagaId?: string
+  operationId?: string
+  replayed?: boolean
+  retryMode?: 'same-intent' | 'new-intent'
+  pollError?: string
   error?: string
+}
+
+export interface DurableOperationSnapshot {
+  id?: string
+  status?: string
+  message?: string
+  lastError?: string
+}
+
+export function applyDurableOperationSnapshot(state: DeployProgressState | null, operation: DurableOperationSnapshot): DeployProgressState | null {
+  if (!state || !state.operationId || operation.id !== state.operationId) return state
+  if (operation.status === 'succeeded') return { ...state, status: state.operation === 'deploy' ? 'deployed' : 'passed', retryMode: 'new-intent', pollError: undefined }
+  if (operation.status === 'failed' || operation.status === 'canceled') {
+    return { ...state, status: 'failed', retryMode: 'new-intent', error: operation.lastError ?? operation.message ?? `Operation ${operation.status}`, pollError: undefined }
+  }
+  return { ...state, pollError: undefined }
 }
 
 export function upsertStep(steps: DeployStep[], incoming: DeployStep): DeployStep[] {
@@ -43,10 +63,18 @@ export function appendStepEvent(steps: DeployStep[], stepName: string, event: St
 }
 
 export function deployProgressReducer(state: DeployProgressState | null, event: HubEvent, now = Date.now()): DeployProgressState | null {
+  if (state?.appId && event.appId && state.appId !== event.appId) return state
+  const eventPayload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {}
+  const eventSagaId = typeof eventPayload.sagaId === 'string' ? eventPayload.sagaId : undefined
+  const isRunEvent = event.type.startsWith('deploy.') || event.type.startsWith('preflight.')
+  if (state?.sagaId && isRunEvent && eventSagaId !== state.sagaId) return state
+  if (state && ['deployed', 'passed', 'failed'].includes(state.status)) return state
   if (event.type === 'deploy.step' || event.type === 'preflight.step') {
     const operation = event.type.startsWith('preflight') ? 'preflight' : 'deploy'
     const payload = event.payload as { step: string; status: string; sagaId?: string }
+    if (state?.sagaId && payload.sagaId && state.sagaId !== payload.sagaId) return state
     return {
+      ...state,
       appId: event.appId ?? state?.appId ?? '',
       operation,
       steps: upsertStep(state?.steps ?? [], {
@@ -62,7 +90,7 @@ export function deployProgressReducer(state: DeployProgressState | null, event: 
   if (event.type === 'preflight.completed') return state ? { ...state, status: 'passed' } : null
   if (event.type === 'deploy.failed' || event.type === 'preflight.failed') {
     const payload = event.payload as { error?: string; message?: string }
-    return state ? { ...state, status: 'failed', error: payload.error ?? payload.message } : null
+    return state ? { ...state, status: 'failed', retryMode: 'new-intent', error: payload.error ?? payload.message } : null
   }
 
   if (event.type === 'deploy.progress' || event.type === 'preflight.progress') {

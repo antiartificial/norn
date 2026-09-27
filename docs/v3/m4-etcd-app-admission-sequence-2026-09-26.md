@@ -1,0 +1,172 @@
+# Etcd app deployment admission sequence — 2026-09-26
+
+Status: implementation contract for M4. App deployment on the normal etcd
+Fleet router is still unsupported. The first app-index slice was verified
+against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
+
+## Current boundary
+
+The public `V3OperationStore.Accept` still rejects any deployment/region
+aggregate before a write. A private preparation path now atomically persists
+the signed operation, deployment, resolved regions, and app gate for real-etcd
+contract tests; it is not exposed to the API or worker. A private terminal
+transaction now writes deployment and region results with a live claim and app
+lock, and releases the app gate only with the terminal operation. Generic
+operation completion refuses accepted deployments. A signed-identity lookup
+reconstructs queued and terminal deployment views from etcd, and replay
+rejects missing or changed terminal region results. The store indexes
+queued app operations, enforces exclusive app admission in the acceptance
+transaction, and releases the index in claim-fenced terminal
+transactions. Private invocation acceptance and completion participate, and
+the canary preview requests exclusive admission. A terminal operation with
+manual or external-effect recovery pending retains the index. The normal etcd
+router has no ordinary app deployment route and responds with
+`backend_route_unsupported`.
+
+The PG acceptance transaction already persists a signed intent, operation,
+deployment, and regions together after checking that no queued/running
+operation exists for that app. The etcd adapter now shares the domain
+normalizer, atomic deployment persistence, and a private terminal projection;
+intermediate deployment stages, Nomad launch/reconciliation, and the normal
+router remain unwired. The index initializes once per app only after a snapshot scan finds
+no pre-index active or unresolved operations. Mixed-version
+API writers must be stopped before enabling the adapter; an upgrade retaining
+active pre-index work must first drain or reconcile it.
+
+## Required implementation order
+
+1. Complete and harden the app-scoped active-operation index covering **every** queued/running
+   app mutation admitted through etcd, including the canary preview. Its
+   condition must be checked in the same etcd transaction that creates the
+   signed acceptance, operation, deployment and region records. A completed
+   operation may release or replace the active pointer only with a revision
+   check against its terminal operation record. An unresolved external effect
+   must retain the gate. Bound index growth and reject missing/corrupt links.
+   Two-client exclusive acceptance and pre-index active-operation rejection
+   are now covered by real-etcd tests; mixed-version writes remain outside
+   the supported transition.
+2. Persist deployment and region rows atomically with acceptance. The private
+   preparation path and signature-verified replay now pass a real-etcd test;
+   the public path remains disabled until execution is available. On
+   ambiguous transaction responses, resolve by the same request identity and
+   verify the signed intent plus the exact immutable deployment/region fields.
+   A partial or changed domain record is a signature/integrity failure, not a
+   replay success. Preserve the idempotency conflict and expiry policy; do
+   not make a mutable deploy identity expire while its effect or result is
+   unresolved.
+3. Implement claim-fenced deployment steps, region observations and terminal
+   result writes. The private terminal transaction now writes all results and
+   the app-gate release in one ordering; stale claim and lost app-lock tests
+   pass against real etcd. Intermediate checkpoints, effect verification, and
+   worker recovery remain open. Candidate startup must be unable to submit a
+   newer deployment while an older Nomad effect is unresolved.
+   A private deploy effect reservation now binds the signed deployment,
+   accepted region, pinned image, spec digest, and job digest to the shared
+   etcd app effect gate. Its lifecycle passes a real-etcd test, but a Nomad
+   supervisor has not yet proven the submitted job or recovery observation.
+   A Nomad create/update registration primitive now uses an expected job
+   modify index, validates the app and execution markers before sending, and
+   classifies ambiguous responses as indeterminate. Its create-only and stale
+   index behavior passed against disposable Nomad 2.0.7; the private worker
+   calls it, while normal claim dispatch does not.
+   Readback distinguishes a 404 from the current Nomad job revision carrying
+   the expected app, deployment, operation, execution, and digest markers.
+   An experimental hash of Nomad's rendered job failed because the server
+   populated defaults and runtime fields absent from the submitted shape.
+   That experiment was removed. A marker-only or source-spec digest would
+   miss mutable workload fields. The replacement
+   registration hashes the submitted JSON before writing, excluding only the
+   digest's own marker and its digest-derived execution marker, then saves
+   the full source in Nomad's versioned submission record. Both excluded
+   markers are checked separately against the reserved execution. Readback checks
+   the source digest and markers, asks Nomad to plan that source against the
+   current job with no diff, then rereads the revision. A deliberately changed
+   workload with matching markers and submission source was rejected by the
+   plan against disposable Nomad 2.0.7. This covers the tested raw-exec and
+   translated service shapes, not every app dialect. Allocation health is available to the private worker;
+   signed region checkpoint and deployment-result writes remain separate work.
+   Nomad calls the submitted source reference data, retains only the latest
+   six job source files, and does not schedule from it. Missing source must
+   leave recovery indeterminate; the separate no-diff plan is required.
+   Since the source can include task environment and templates, use the same
+   restricted Nomad job-data boundary as the live job and never copy it to
+   Norn logs or release evidence. The worker also needs Nomad `plan-job` or
+   `submit-job` permission for recovery; check that capability before
+   enabling admission. See the [Nomad Jobs API](https://developer.hashicorp.com/nomad/api-docs/jobs).
+   The etcd deployment effect store now has a separate claim-fenced,
+   create-once submit-attempt marker. Two callers cannot both receive write
+   authorization, and a lost operation lease cannot mark an attempt; both
+   passed disposable real-etcd tests. A marked attempt followed by Nomad 404
+   remains unresolved and must never auto-resubmit. The marker is not wired
+   into a supervisor yet. Manual resolution still needs a durable revocation
+   or a Nomad revision barrier that defeats a paused old submitter before the
+   app gate can be released.
+   A private worker step now binds a translated service job and pinned image
+   to that reservation, marks the one allowed submit attempt, calls Nomad CAS,
+   and reconciles via the versioned readback. Replay and recovery never
+   resubmit; an attempted 404 stays unresolved. The step passes worker tests,
+   while its etcd store dependencies pass disposable real-etcd tests. It is
+   not connected to normal claim dispatch, deployment stage checkpoints,
+   or terminal result writes. Periodic jobs and other
+   deployment shapes remain outside this one service-job step.
+   A separate read-only health observation now requires the exact versioned
+   job readback, a pinned image, every declared group's desired count of
+   running healthy allocations, matching allocation job snapshots, and a
+   stable final job revision. Old terminal allocation history is ignored;
+   live work from a removed group or changed provenance fails closed.
+   A disposable Nomad 2.0.7 Docker service reached `ready` with one exact
+   allocation, and the test job was purged. A private worker completion step
+   now consumes `ready` only for the original launched effect, recorded submit
+   attempt, and exact job revision; pending, unavailable, or changed revision
+   keeps the effect gate. The completion evidence binds the reserved input,
+   execution, job digest, version and healthy allocation IDs. This worker
+   path has unit coverage and passed a disposable Nomad 2.0.7 Docker worker
+   sequence from guarded submit through exact health completion. A second
+   disposable test now passes the same sequence with signed private etcd
+   admission, a live claim and durable effect record, real Nomad 2.0.7, and
+   a healthy Docker allocation. It verifies replay keeps the same effect,
+   completion releases its gate, and the deployment operation remains active.
+   This caught and corrected a circular job digest/execution-ID dependency.
+   The same private test now carries the completed effect through the
+   claim- and lock-fenced terminal transaction, verifies signed-identity
+   replay and the region projection, and checks that terminalization releases
+   app admission. The terminal writer now refuses success or ordinary failure
+   while the app effect gate is unresolved, with a no-gate check in its etcd
+   compare transaction; success cannot use a recovery-pending flag to bypass
+   that fence. The test constructs the terminal region result after health;
+   a production worker still needs to derive and persist that result from
+   verified evidence. The translator emits `norn.traffic-weight` as a Consul
+   service tag, while the PostgreSQL pipeline writes desired weight after
+   Nomad readiness; neither observes effective ingress weight. Identify the
+   responsible ingress or traffic controller, then observe its effective
+   configuration and endpoint behavior before writing nonzero `ActiveWeight`.
+   Normal dispatch remains disabled.
+   Canary jobs still require their separate promotion proof.
+4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
+   domain interfaces, then wire the normal etcd router and worker. Admission
+   must reject an unavailable build, database binding, secret delivery,
+   archive, or Nomad effect capability before accepting a request it cannot
+   execute. Advertise the route only after the complete path works without a
+   usable control PostgreSQL connection.
+
+## Acceptance tests for the slice
+
+- Two APIs race to accept different mutable operations for one app: exactly
+  one wins; replay of the winner returns its original signed operation and
+  deployment IDs.
+- A lost response after commit replays the complete original aggregate. A
+  changed request key/fingerprint, missing region, altered deployment field,
+  or corrupted index fails closed without a second Nomad submission.
+- A worker dies before launch, after ambiguous launch, and after verified
+  Nomad success but before terminal persistence. Recovery preserves the
+  original identity and never launches an unresolved effect twice.
+- The app gate remains while work is queued/running or its external effect is
+  unresolved. Terminal success/failure and a separately verified resolution
+  release it without admitting an overlapping stale claim.
+- A normal production-mode etcd API with a poisoned control-PG URL accepts,
+  executes and reads one disposable app deployment through Nomad; archive,
+  auth, database binding and route capability are checked through that path.
+
+These tests are prerequisites to M4 source qualification. Protected
+separate-host Fleet bootstrap, placement, drain, and M7 migration remain
+separate release gates.

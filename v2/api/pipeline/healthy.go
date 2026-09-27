@@ -24,7 +24,13 @@ func (p *Pipeline) healthy(ctx context.Context, st *state, sg *saga.Saga) error 
 		// reconciler and remains zero for failed/pending regions.
 		_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusHealthy, st.regionEvals[region.Name], "", region.TrafficWeight)
 	}
-	return nil
+	// Every region is ready: only now does the staged database delivery
+	// become current for readers outside this job version. With canaries,
+	// readiness is the canary promotion instead.
+	if hasCanaryConfig(st.spec) {
+		return nil
+	}
+	return p.promoteDatabases(ctx, st, sg)
 }
 
 func (p *Pipeline) waitHealthyRegion(ctx context.Context, st *state, sg *saga.Saga, region model.ResolvedRegion) error {

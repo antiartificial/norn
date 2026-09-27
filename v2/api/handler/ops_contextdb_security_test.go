@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"norn/v2/api/model"
@@ -22,6 +24,15 @@ func TestFirstPrivateServiceInstanceURLRejectsPublicTargets(t *testing.T) {
 	service.Instances = []model.ServiceInstance{{Address: "203.0.113.10", Port: 7701}}
 	if got := firstPrivateServiceInstanceURL(service); got != "" {
 		t.Fatalf("public target must be rejected, got %q", got)
+	}
+}
+
+func TestContextDBRollbackFailsClosedBeforeServiceDiscovery(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/ops/contextdb/feedback/event-123/rollback", nil)
+	record := httptest.NewRecorder()
+	(&Handler{}).ContextDBRollbackFeedback(record, request)
+	if record.Code != http.StatusNotImplemented {
+		t.Fatalf("rollback status = %d, want fail-closed 501", record.Code)
 	}
 }
 

@@ -87,6 +87,9 @@ func TestFleetAuthorityDeviceLifecycleIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if method == http.MethodPost && path == "/api/v1/fleet/node-pools/control/plan" {
+			req.Header.Set("Idempotency-Key", "authority-device-lifecycle-plan")
+		}
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}

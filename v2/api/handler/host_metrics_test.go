@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -106,6 +107,9 @@ func TestParseTopCPUUtilization(t *testing.T) {
 func TestSampleDarwinHostMetrics(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS host sampler")
+	}
+	if os.Getenv("NORN_TEST_HOST_METRICS_LIVE") != "1" {
+		t.Skip("set NORN_TEST_HOST_METRICS_LIVE=1 for the host-dependent sampler")
 	}
 	got, err := sampleDarwinHostMetrics(context.Background())
 	if err != nil {

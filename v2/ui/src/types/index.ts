@@ -29,6 +29,7 @@ export interface Process {
     max?: number
     perRegion?: number
   }
+  placement?: { distinctHosts?: boolean }
   resources?: {
     cpu?: number
     memory?: number
@@ -111,6 +112,20 @@ export interface AllocationSummary {
   total: number
   byProcess?: Record<string, ProcessAllocationCount>
   byStatus?: Record<string, number>
+}
+
+export interface ProcessScaleStatus {
+  region: string
+  nomadRegion: string
+  process: string
+  declared: number
+  desired: number
+  intentSource: 'declared' | 'accepted-scale'
+  nomadPresent: boolean
+  nomadDesired?: number
+  placed?: number
+  running?: number
+  healthy?: number
 }
 
 export interface AppStatus {

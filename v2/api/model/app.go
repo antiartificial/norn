@@ -42,3 +42,19 @@ type ProcessAllocationCount struct {
 	Retained int `json:"retained"`
 	Total    int `json:"total"`
 }
+
+// ProcessScaleStatus separates declared source intent, accepted control-plane
+// intent, and Nomad's observed scale projection for one process and region.
+type ProcessScaleStatus struct {
+	Region       string `json:"region"`
+	NomadRegion  string `json:"nomadRegion"`
+	Process      string `json:"process"`
+	Declared     int    `json:"declared"`
+	Desired      int    `json:"desired"`
+	IntentSource string `json:"intentSource"`
+	NomadPresent bool   `json:"nomadPresent"`
+	NomadDesired *int   `json:"nomadDesired,omitempty"`
+	Placed       *int   `json:"placed,omitempty"`
+	Running      *int   `json:"running,omitempty"`
+	Healthy      *int   `json:"healthy,omitempty"`
+}

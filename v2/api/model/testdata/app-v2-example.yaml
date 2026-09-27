@@ -1,0 +1,22 @@
+schemaVersion: norn.app/v2
+name: shop
+deploy: true
+processes:
+  web:
+    port: 3000
+    command: node server.js
+    health:
+      path: /healthz
+  worker:
+    command: node worker.js
+  nightly:
+    command: node report.js
+    schedule: "0 3 * * *"
+databases:
+  - name: primary
+    purpose: application
+    capabilities: [runtime, migration, snapshot, restore, health]
+    runtime:
+      env: DATABASE_URL
+      fileEnv: DATABASE_URL_FILE
+migrations: npm run migrate

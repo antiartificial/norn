@@ -1,0 +1,158 @@
+// Package controlrecovery provides offline, read-only inspection of Norn's
+// PostgreSQL control schema. Inspection output is deliberately redacted and is
+// not a recovery artifact.
+package controlrecovery
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Column classifies one physical control-table column. Columns absent from the
+// registry fail inspection. Included columns are emitted; excluded columns are
+// intentionally omitted rather than passed through a generic redactor.
+type Column struct {
+	Name    string
+	Include bool
+}
+
+// Table classifies one physical control table and its deterministic row order.
+type Table struct {
+	Name    string
+	OrderBy []string
+	Columns []Column
+}
+
+func include(names ...string) []Column {
+	columns := make([]Column, 0, len(names))
+	for _, name := range names {
+		columns = append(columns, Column{Name: name, Include: true})
+	}
+	return columns
+}
+
+func classified(included []Column, excluded ...string) []Column {
+	columns := append([]Column(nil), included...)
+	for _, name := range excluded {
+		columns = append(columns, Column{Name: name})
+	}
+	return columns
+}
+
+// InspectionRegistry returns a fresh copy of the classified control schema.
+// Every new migration must be classified here before inspection can proceed.
+func InspectionRegistry() []Table {
+	tables := []Table{
+		{Name: "norn_schema_migrations", OrderBy: []string{"version"}, Columns: include("version", "name", "checksum", "minimum_reader_version", "minimum_writer_version", "applied_at")},
+		{Name: "norn_schema_compatibility", OrderBy: []string{"singleton"}, Columns: include("singleton", "format_version", "current_migration_version", "minimum_reader_version", "minimum_writer_version", "updated_at")},
+		{Name: "saga_events", OrderBy: []string{"id"}, Columns: classified(include("id", "saga_id", "timestamp", "source", "app", "category", "action"), "message", "metadata")},
+		{Name: "control_events", OrderBy: []string{"id"}, Columns: classified(include("id", "timestamp", "type", "app_id"), "payload")},
+		{Name: "deployments", OrderBy: []string{"id"}, Columns: classified(include("id", "app", "commit_sha", "image_tag", "spec_digest", "environment", "saga_id", "status", "source_kind", "source_ref", "source_dirty", "started_at", "finished_at"), "source_changes")},
+		{Name: "deployment_regions", OrderBy: []string{"deployment_id", "region"}, Columns: classified(include("deployment_id", "region", "nomad_region", "status", "desired_weight", "active_weight", "eval_id", "updated_at", "datacenters"), "last_error")},
+		{Name: "deployment_steps", OrderBy: []string{"deployment_id", "step"}, Columns: classified(include("deployment_id", "app", "saga_id", "step", "kind", "status", "attempt", "started_at", "finished_at", "duration_ms"), "message", "metadata")},
+		{Name: "cron_states", OrderBy: []string{"app", "process"}, Columns: include("app", "process", "paused", "schedule", "updated_at")},
+		{Name: "func_executions", OrderBy: []string{"id"}, Columns: include("id", "app", "process", "status", "exit_code", "started_at", "finished_at", "duration_ms")},
+		{Name: "beacon_events", OrderBy: []string{"id"}, Columns: classified(include("id", "source", "app", "environment", "type", "severity", "dedupe_key", "occurred_at", "acknowledged_at", "acknowledged_by", "snoozed_until"), "title", "body", "acknowledgement_note", "metadata")},
+		{Name: "operations", OrderBy: []string{"id"}, Columns: classified(include("id", "kind", "app", "saga_id", "ref", "status", "risk", "source", "attempts", "max_attempts", "locked_by", "lock_generation", "locked_until", "next_attempt_at", "started_at", "updated_at", "finished_at", "acceptance_required"), "message", "payload", "metadata", "last_error")},
+		{Name: "fleet_runner_attempts", OrderBy: []string{"id"}, Columns: classified(include("id", "plan_id", "attempt", "runner_attempt_id", "commit_sha", "plan_sha256", "status", "current_phase", "root_attempt_id", "retry_of", "heartbeat_sequence", "heartbeat_timeout_seconds", "revision", "heartbeat_at", "heartbeat_expires_at", "started_at", "updated_at", "finished_at"), "workflow_url", "message")},
+		{Name: "fleet_github_dispatches", OrderBy: []string{"plan_id"}, Columns: classified(include("plan_id", "plan_run_id", "plan_sha256", "approved_head_sha", "fleet_environment", "allow_destructive", "dispatch_nonce_sha256", "run_id", "created_at", "updated_at"), "dispatch_nonce", "workflow_url")},
+		{Name: "webhook_deliveries", OrderBy: []string{"id"}, Columns: classified(include("id", "provider", "event", "delivery_id", "repository", "ref", "branch", "app", "saga_id", "status", "received_at", "updated_at"), "reason", "remote_addr", "user_agent", "payload", "metadata")},
+		{Name: "notification_channels", OrderBy: []string{"id"}, Columns: classified(include("id", "provider", "name", "severities", "created_at"), "url", "token", "user_key")},
+		{Name: "access_grants", OrderBy: []string{"id"}, Columns: classified(include("id", "created_by", "created_at", "expires_at"), "ip", "note")},
+		{Name: "access_devices", OrderBy: []string{"id"}, Columns: include("id", "name", "platform", "model", "app_version", "public_key", "created_at", "last_seen_at", "revoked_at")},
+		{Name: "access_tokens", OrderBy: []string{"jti"}, Columns: include("jti", "device_id", "subject", "scopes", "issued_at", "expires_at", "revoked_at", "rotated_from")},
+		{Name: "github_actions_assertion_uses", OrderBy: []string{"issuer", "jti"}, Columns: include("issuer", "jti", "expires_at", "used_at")},
+		{Name: "access_enrollments", OrderBy: []string{"id"}, Columns: classified(include("id", "requested_scopes", "approved_scopes", "verifier_attempts", "status", "device_id", "created_at", "expires_at", "approved_at", "exchanged_at"), "code_hash", "verifier_hash", "device_name", "platform", "model", "app_version", "public_key", "source_hash")},
+		{Name: "step_up_challenges", OrderBy: []string{"id"}, Columns: classified(include("id", "device_id", "purpose", "status", "created_at", "expires_at", "verified_at", "consumed_at"), "token_jti", "resource", "nonce_hash")},
+		{Name: "exec_sessions", OrderBy: []string{"id"}, Columns: classified(include("id", "device_id", "token_jti", "challenge_id", "app_id", "allocation_id", "task", "command_digest", "terminal", "columns", "rows", "status", "created_at", "expires_at", "connected_at", "finished_at", "exit_code", "error_code", "owner_id", "owner_lease_until"), "command", "remote_addr", "user_agent", "owner_token")},
+		{Name: "mutation_audit_events", OrderBy: []string{"id"}, Columns: classified(include("id", "request_id", "principal_subject", "token_id", "device_id", "scopes", "method", "path", "status", "outcome", "started_at", "finished_at", "duration_ms", "record_digest", "key_id"), "client_ip", "user_agent")},
+		{Name: "mutation_audit_incidents", OrderBy: []string{"id"}, Columns: classified(include("id", "audit_event_id", "reason_code", "acknowledged_by", "acknowledged_at", "key_id", "record_digest"), "explanation")},
+		{Name: "recovery_drills", OrderBy: []string{"id"}, Columns: classified(include("id", "kind", "target", "status", "initiated_by", "started_at", "finished_at"), "evidence")},
+		{Name: "access_observation_buckets", OrderBy: []string{"app", "process", "endpoint", "source", "bucket_start"}, Columns: include("app", "process", "endpoint", "source", "bucket_start", "requests", "successes", "client_errors", "server_errors", "first_seen", "last_seen")},
+		{Name: "control_plane_identity", OrderBy: []string{"singleton"}, Columns: include("singleton", "authority", "created_at")},
+		{Name: "operation_request_identities", OrderBy: []string{"id"}, Columns: classified(include("id", "authority", "actor_issuer", "actor_subject", "kind", "resource", "fingerprint_version", "fingerprint_digest", "operation_id", "created_at", "replay_contract_version", "replay_expires_at", "replay_expired_at"), "request_key")},
+		{Name: "operation_acceptance_intents", OrderBy: []string{"id"}, Columns: classified(include("id", "schema_version", "request_identity_id", "operation_id", "deployment_id", "accepted_at", "request_receipt_id", "request_id", "credential_id", "device_id", "source", "scopes", "fingerprint_version", "fingerprint_digest", "canonical_digest", "signing_algorithm", "signing_key_id"), "request_canonical_bytes", "canonical_bytes", "signature")},
+		{Name: "signed_acceptance_byte_reservations", OrderBy: []string{"operation_id"}, Columns: include("operation_id", "acceptance_intent_id", "reserved_bytes", "created_at")},
+		{Name: "retired_operation_acceptances", OrderBy: []string{"operation_id"}, Columns: include("operation_id", "request_identity_id", "request_receipt_id", "archive_intent_id", "retired_at")},
+		{Name: "operation_effects", OrderBy: []string{"id"}, Columns: classified(include("id", "generation", "authority", "resource", "operation_id", "stage", "supervisor", "lifecycle", "outcome", "exit_code", "resolution_decision", "created_at", "launched_at", "completed_at", "resolved_at", "updated_at"), "claim_owner", "claim_generation", "input_digest", "launch_payload", "supervisor_execution_id", "runtime_instance_id", "result_digest", "result_reference", "evidence_source", "evidence_reference", "evidence_observed_at")},
+		{Name: "restart_effect_sources", OrderBy: []string{"operation_id", "allocation_id"}, Columns: include("operation_id", "allocation_id", "job_id", "namespace", "task_group", "create_index", "attempted_at", "acknowledged_at", "updated_at")},
+		{Name: "function_invocation_effect_attempts", OrderBy: []string{"operation_id", "stage"}, Columns: include("operation_id", "stage", "target", "input_digest", "claim_generation", "state", "created_at", "attempted_at", "updated_at")},
+		{Name: "snapshot_publication_intents", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "origin_claim_generation", "effect_id", "catalog_revision", "sha256", "size", "state", "created_at", "published_at"), "input_digest", "supervisor_root_id", "supervisor_execution_id", "target", "namespace", "filename")},
+		// Checkpoint outputs name source paths, changed files and image
+		// references; inspection keeps only identity and the integrity digest.
+		{Name: "operation_checkpoints", OrderBy: []string{"operation_id", "stage"}, Columns: classified(include("operation_id", "stage", "claim_generation", "outputs_digest", "created_at"), "outputs")},
+		{Name: "app_desired_replicas", OrderBy: []string{"app", "process", "region"}, Columns: include("app", "process", "region", "desired_count", "revision", "operation_id", "updated_at")},
+		// Catalog documents carry credential/TLS references and provider
+		// topology; inspection keeps only revision lineage and digests.
+		{Name: "database_catalog_revisions", OrderBy: []string{"revision"}, Columns: classified(include("revision", "previous_revision", "catalog_digest", "activated_by", "activated_at"), "catalog")},
+		{Name: "database_catalog_retirements", OrderBy: []string{"kind", "id"}, Columns: include("kind", "id", "retired_revision")},
+		{Name: "evidence_archive_intents", OrderBy: []string{"id"}, Columns: include("id", "subject_kind", "subject_id", "app", "operation_id", "sequence", "state", "event_ids", "event_count", "cutoff_timestamp",
+			"object_key", "object_sha256", "object_bytes", "attempts", "last_error", "pruned_events", "created_at", "updated_at", "verified_at", "pruned_at")},
+		{Name: "evidence_reserve", OrderBy: []string{"singleton"}, Columns: include("singleton", "enabled", "max_pending", "max_pending_age_seconds", "max_signed_acceptance_bytes", "archive_exhausted", "archive_detail",
+			"archive_observed_at", "updated_at")},
+		{Name: "function_invocation_cleanup_intents", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "state", "claimed_at", "lease_until", "completed_at", "created_at", "updated_at"), "variable_path", "owner_marker", "claim_token")},
+		{Name: "mysql_restore_intents", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "acceptance_intent_id", "catalog_revision", "state", "prepared_at", "started_at", "completed_at"), "profile_id", "logical_id", "target_key", "target", "artifact", "artifact_path")},
+		{Name: "mysql_restore_maintenance_fences", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "catalog_revision", "created_at", "source_artifact_operation_id", "source_artifact_receipt_sha256", "runtime_fence_epoch", "runtime_fence_claim_generation", "runtime_fence_transferred_at", "recovery_released_at", "recovery_operation_id"), "source_quiescence", "runtime_fence_claim_owner")},
+		{Name: "mysql_restore_recovery_intents", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "restore_operation_id", "acceptance_intent_id", "catalog_revision", "runtime_fence_epoch", "claim_generation", "state", "prepared_at", "target_unlock_intended_at", "target_unlock_proved_at", "runtime_released_at"), "runtime_fence_owner", "claim_owner")},
+		{Name: "mysql_restore_runtime_locks", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "acceptance_intent_id", "catalog_revision", "claim_generation", "state", "intended_at", "verified_at"), "target", "claim_owner")},
+		{Name: "mysql_runtime_launch_reservations", OrderBy: []string{"reservation_id", "target_key"}, Columns: classified(include("reservation_id", "state", "created_at", "updated_at"), "target_key", "target", "runtime_instance_id", "stop_proof", "resolution_proof")},
+		{Name: "mysql_source_snapshot_intents", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "acceptance_intent_id", "catalog_revision", "dump_tool_sha256", "state", "created_at", "stop_intended_at", "stop_proved_at", "runtime_fence_epoch", "lock_intended_at", "lock_proved_at", "stage_intended_at", "stage_proved_at", "artifact_receipt_sha256", "artifact_receipt_signing_algorithm", "artifact_receipt_signing_key_id", "artifact_publish_intended_at", "artifact_retained_proved_at", "retention_receipt_sha256", "retention_receipt_signing_algorithm", "retention_receipt_signing_key_id"), "profile_id", "logical_id", "source_key", "source", "maintenance", "job_identity", "runtime_fence_owner", "artifact_path", "artifact", "artifact_receipt_canonical", "artifact_receipt_signature", "retained_artifact", "retention_receipt_canonical", "retention_receipt_signature")},
+		{Name: "mysql_source_snapshot_reconciliations", OrderBy: []string{"prior_operation_id"}, Columns: classified(include("prior_operation_id", "successor_operation_id", "proof_sha256", "proof_signing_algorithm", "proof_signing_key_id", "transferred_at"), "prior_intent", "checkpoint", "proof_canonical", "proof_signature")},
+		{Name: "private_invocation_material", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "key_id", "ciphertext_digest", "created_at"), "envelope")},
+		{Name: "runtime_mutation_fence", OrderBy: []string{"singleton"}, Columns: classified(include("singleton", "epoch", "active", "held_at", "released_at"), "owner", "reason")},
+		{Name: "snapshot_export_intents", OrderBy: []string{"operation_id", "object_key"}, Columns: classified(include("operation_id", "dump_sha256", "dump_size", "manifest_sha256", "origin_claim_generation", "state", "created_at", "published_at"), "object_key", "bucket")},
+		{Name: "control_event_retention", OrderBy: []string{"id"}, Columns: include("id", "pruned_through_cursor", "updated_at")},
+	}
+
+	result := make([]Table, len(tables))
+	for index, table := range tables {
+		result[index] = Table{
+			Name:    table.Name,
+			OrderBy: append([]string(nil), table.OrderBy...),
+			Columns: append([]Column(nil), table.Columns...),
+		}
+	}
+	return result
+}
+
+var miniExtensionTables = []Table{
+	{Name: "external_deployment_nonces", OrderBy: []string{"id"}, Columns: classified(include("id", "app", "environment", "ci_repository", "ci_run_id", "ci_run_attempt", "issuer_subject", "state", "admission_id", "revision", "registration_generation", "issued_at", "expires_at", "registered_at", "claimed_at", "consumed_at", "superseded_at"), "nonce_sha256", "issuer_token_id", "registration_ref", "registration_metadata")},
+	{Name: "external_deployment_admissions", OrderBy: []string{"id"}, Columns: classified(include("id", "app", "environment", "ci_repository", "request_digest", "state", "nonce_id", "nonce_generation", "operation_id", "service_snapshot_id", "service_snapshot_sha256", "service_receipt_sha256", "service_proof_sha256", "service_claim_revision", "service_commit_revision", "service_cleanup_revision", "cleanup_intent_sha256", "absence_proof_sha256", "failure_code", "created_at", "updated_at", "completed_at"), "idempotency_key", "claimed_receipt", "registration_ref", "service_snapshot_ref", "service_retry_lineage")},
+	{Name: "external_deployment_admission_checkpoints", OrderBy: []string{"admission_id", "phase"}, Columns: classified(include("admission_id", "phase", "attempt_id", "checkpoint_id", "evidence_sha256", "created_at"), "evidence_ref")},
+	{Name: "fleet_runner_checkpoint_refs", OrderBy: []string{"admission_id", "phase"}, Columns: classified(include("admission_id", "phase", "attempt_id", "checkpoint_id", "evidence_sha256", "created_at"), "evidence_ref")},
+}
+
+func registryWithMiniExtension(ctx context.Context, tx pgx.Tx, schema string, base []Table) ([]Table, error) {
+	names := []string{"external_deployment_nonces", "external_deployment_admissions", "external_deployment_admission_checkpoints", "fleet_runner_checkpoint_refs"}
+	var present int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind IN ('r','p') AND c.relname=ANY($2)`, schema, names).Scan(&present); err != nil {
+		return nil, err
+	}
+	if present == 0 {
+		return base, nil
+	}
+	if present != len(names) {
+		return base, nil // classification reports the present subset as unknown
+	}
+	registry := append([]Table(nil), base...)
+	for index := range registry {
+		switch registry[index].Name {
+		case "fleet_runner_attempts":
+			registry[index].Columns = classified(registry[index].Columns, "last_error", "metadata")
+			registry[index].Columns = append(registry[index].Columns, include("phase_started_at", "pilot_run_id", "principal_subject", "recovery", "source_dispatch_run_id")...)
+		case "fleet_github_dispatches":
+			// Migration 44 removes the raw dispatch nonce; only its hash remains.
+			columns := registry[index].Columns[:0]
+			for _, column := range registry[index].Columns {
+				if column.Name != "dispatch_nonce" {
+					columns = append(columns, column)
+				}
+			}
+			registry[index].Columns = columns
+			registry[index].Columns = append(registry[index].Columns, include("approval_envelope_sha256", "dispatch_state", "pilot_run_id", "rerun_started_at", "run_attempt", "submission_started_at")...)
+		}
+	}
+	registry = append(registry, miniExtensionTables...)
+	return registry, nil
+}

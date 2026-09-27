@@ -21,7 +21,9 @@ var (
 	fleetSize                   string
 	fleetStrategy               string
 	fleetReason                 string
+	fleetIdempotencyKey         string
 	fleetAllowDestructive       bool
+	fleetGitHubReconcileKind    string
 	fleetDispatchNonceFile      string
 	fleetApprovalEnvelopeSHA256 string
 	fleetConfirmLostNonce       bool
@@ -30,7 +32,9 @@ var (
 func init() {
 	rootCmd.AddCommand(fleetCmd)
 	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd, fleetAttemptsCmd, fleetGitHubCmd)
-	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd, fleetGitHubPrepareCmd, fleetGitHubPrepareResetCmd, fleetGitHubExecuteCmd, fleetGitHubRerunCmd)
+	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd, fleetGitHubPrepareCmd, fleetGitHubPrepareResetCmd, fleetGitHubExecuteCmd, fleetGitHubRerunCmd, fleetGitHubReconcileCmd)
+	fleetGitHubReconcileCmd.Flags().StringVar(&fleetGitHubReconcileKind, "kind", "", "Reservation kind: pull-request or apply-dispatch")
+	_ = fleetGitHubReconcileCmd.MarkFlagRequired("kind")
 	fleetGitHubApplyCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
 	fleetGitHubPrepareCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
 	fleetGitHubPrepareCmd.Flags().StringVar(&fleetDispatchNonceFile, "nonce-file", "", "New absolute 0600 file for the one-time external-Mac nonce")
@@ -46,6 +50,7 @@ func init() {
 		command.Flags().StringVar(&fleetSize, "size", "", "Proposed immutable provider VM size")
 		command.Flags().StringVar(&fleetStrategy, "strategy", "", "Replacement strategy: blueGreen or rolling")
 		command.Flags().StringVar(&fleetReason, "reason", "", "Operator reason recorded with the durable plan")
+		command.Flags().StringVar(&fleetIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 	}
 	if err := fleetReplaceCmd.MarkFlagRequired("size"); err != nil {
 		panic(err)
@@ -216,6 +221,15 @@ var fleetGitHubApplyCmd = &cobra.Command{
 	},
 }
 
+var fleetGitHubReconcileCmd = &cobra.Command{Use: "reconcile <plan-id>", Short: "Verify and seal an indefinitely queued GitHub reservation", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	result, err := client.ReconcileFleetGitHub(args[0], fleetGitHubReconcileKind)
+	if err != nil {
+		return fmt.Errorf("fleet GitHub reconcile: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s  %s\n", result.Outcome, result.Operation.ID)
+	return nil
+}}
+
 var fleetPoolsCmd = &cobra.Command{
 	Use: "pools", Short: "List desired node pools from the checked-out norn-fleet document", Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -337,7 +351,11 @@ func fleetPlanCommand(use, short, forcedStrategy string) *cobra.Command {
 		if forcedStrategy != "" {
 			strategy = forcedStrategy
 		}
-		op, err := client.PlanFleetCapacity(args[0], desired, fleetSize, strategy, fleetReason)
+		key, err := requestIdempotencyKey(cmd, fleetIdempotencyKey, "norn-fleet-plan")
+		if err != nil {
+			return err
+		}
+		op, err := client.PlanFleetCapacity(args[0], desired, fleetSize, strategy, fleetReason, key)
 		if err != nil {
 			return fmt.Errorf("fleet plan: %w", err)
 		}

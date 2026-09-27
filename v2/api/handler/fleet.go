@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,10 +19,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"norn/v2/api/fleet"
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
@@ -152,7 +153,7 @@ func (h *Handler) loadFleetInventory() (*fleet.Inventory, error) {
 }
 
 func (h *Handler) PlanFleetCapacity(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireControlScope(w, r, ScopeAPIWrite)
+	_, ok := requireControlScope(w, r, ScopeAPIWrite)
 	if !ok {
 		return
 	}
@@ -184,30 +185,24 @@ func (h *Handler) PlanFleetCapacity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	request.Reason = strings.TrimSpace(request.Reason)
-	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if len(idempotencyKey) > 200 {
-		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must not exceed 200 characters")
-		return
-	}
 	poolName := chi.URLParam(r, "pool")
 	if !validAppIDRe.MatchString(poolName) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_request", "node pool name is invalid")
 		return
 	}
-	idempotencyKey, requestDigest := fleetPlanIdempotency(principal, poolName, idempotencyKey, request)
-	if idempotencyKey != "" {
-		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil {
-			if !matchesFleetPlanRequest(existing, requestDigest) {
-				WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different fleet capacity plan")
-				return
-			}
-			existing.AttachReceipt()
-			writeJSON(w, existing)
-			return
-		} else if lookupErr != pgx.ErrNoRows {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "operation_lookup_failed", "failed to resolve idempotent fleet plan")
-			return
-		}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{
+		"action": "fleet.capacity-plan", "pool": poolName, "request": request,
+	})
+	if !ok {
+		return
+	}
+	if replayed, found, resolveErr := h.resolveFleetCapacityPlanReplay(r.Context(), enqueue, poolName); resolveErr != nil {
+		writeOperationAcceptanceError(w, r, resolveErr)
+		return
+	} else if found {
+		replayed.AttachReceipt()
+		writeJSON(w, replayed)
+		return
 	}
 	inventory, err := h.loadFleetInventory()
 	if err != nil {
@@ -241,29 +236,42 @@ func (h *Handler) PlanFleetCapacity(w http.ResponseWriter, r *http.Request) {
 	payloadBytes, _ := json.Marshal(plan)
 	var payload map[string]interface{}
 	_ = json.Unmarshal(payloadBytes, &payload)
-	op := &model.Operation{ID: plan.ID, Kind: "fleet.capacity-plan", Status: model.OperationSucceeded, Risk: "read-only infrastructure capacity plan; Git review and protected apply remain required", Source: "control-api", Message: "capacity plan recorded; no provider mutation performed", Payload: payload, Metadata: map[string]interface{}{"planId": plan.ID, "planDigest": plan.Digest, "signature": plan.Signature}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
-	if idempotencyKey != "" {
-		op.Metadata["idempotencyKey"] = idempotencyKey
-		op.Metadata["requestDigest"] = requestDigest
-	}
-	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
-		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" && idempotencyKey != "" {
-			if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil {
-				if !matchesFleetPlanRequest(existing, requestDigest) {
-					WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different fleet capacity plan")
-					return
-				}
-				existing.AttachReceipt()
-				writeJSON(w, existing)
-				return
-			}
+	op := model.Operation{ID: plan.ID, Kind: "fleet.capacity-plan", Ref: poolName, Status: model.OperationSucceeded, Risk: "read-only infrastructure capacity plan; Git review and protected apply remain required", Source: "control-api", Message: "capacity plan recorded; no provider mutation performed", Payload: payload, Metadata: map[string]interface{}{"planId": plan.ID, "planDigest": plan.Digest, "signature": plan.Signature}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		if replayed, found, _ := h.resolveFleetCapacityPlanReplay(r.Context(), enqueue, poolName); found {
+			replayed.AttachReceipt()
+			writeJSON(w, replayed)
+			return
 		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_plan_store_failed", "failed to durably store capacity plan")
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	op.AttachReceipt()
-	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
-	writeJSONStatus(w, http.StatusCreated, op)
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, accepted.Operation)
+}
+
+func (h *Handler) resolveFleetCapacityPlanReplay(ctx context.Context, request pipeline.EnqueueRequest, poolName string) (model.Operation, bool, error) {
+	accepted, err := h.pipeline.ResolveEnqueue(ctx, request, "fleet.capacity-plan", poolName)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return model.Operation{}, false, nil
+	}
+	if err != nil {
+		return model.Operation{}, false, err
+	}
+	if !acceptedRequestMatches(accepted, request) || accepted.Operation.Kind != "fleet.capacity-plan" || accepted.Operation.Ref != poolName {
+		return model.Operation{}, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "fleet.capacity-plan", Resource: poolName}}
+	}
+	plan, planErr := typedCapacityPlan(&accepted.Operation)
+	if planErr != nil || plan.Pool != poolName || !h.verifyCapacityPlan(plan) {
+		return model.Operation{}, false, &store.AcceptanceSignatureError{Err: fmt.Errorf("accepted fleet capacity plan failed portable integrity verification")}
+	}
+	return accepted.Operation, true, nil
 }
 
 func (h *Handler) ListFleetPlans(w http.ResponseWriter, r *http.Request) {
@@ -290,9 +298,8 @@ func (h *Handler) ListFleetPlans(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Request) {
-	principal, authenticated := AccessPrincipalFromRequest(r)
-	if !authenticated {
-		WriteControlProblem(w, r, http.StatusUnauthorized, "authenticated_principal_required", "an explicitly authenticated control principal is required")
+	principal, ok := requireFleetReadScope(w, r)
+	if !ok {
 		return
 	}
 	if h.db == nil {
@@ -311,6 +318,10 @@ func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Reques
 	}
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_plan_read_failed", "failed to read fleet capacity plan")
+		return
+	}
+	if !h.fleetPlanReadable(r, plan) {
+		WriteControlProblem(w, r, http.StatusForbidden, "fleet_plan_read_forbidden", "workload token may read only its own approved fleet plan")
 		return
 	}
 	attemptID := strings.TrimSpace(r.URL.Query().Get("attemptId"))
@@ -391,6 +402,15 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_plan_read_failed", "failed to read fleet capacity plan")
 		return
 	}
+	if principal.CI != nil && !h.fleetPlanReadable(r, plan) {
+		WriteControlProblem(w, r, http.StatusForbidden, "fleet_plan_read_forbidden", "fleet workload token is not bound to this approved plan")
+		return
+	}
+	typedPlan, planErr := typedCapacityPlan(plan)
+	if planErr != nil || !h.verifyCapacityPlan(typedPlan) {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "fleet capacity plan failed portable integrity verification")
+		return
+	}
 	var request fleet.ReconciliationRequest
 	if err := decodeControlJSON(w, r, &request); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_reconciliation", err.Error())
@@ -406,7 +426,10 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must not exceed 200 characters")
 		return
 	}
-	idempotencyKey, requestDigest := fleetReconciliationIdempotency(principal, planID, idempotencyHeader, request)
+	generatedKey, _ := fleetReconciliationIdempotency(principal, planID, idempotencyHeader, request)
+	if idempotencyHeader == "" {
+		idempotencyHeader = generatedKey
+	}
 	var boundAttempt *model.FleetRunnerAttempt
 	if request.AttemptID != "" {
 		attempt, lookupErr := h.db.GetFleetRunnerAttempt(r.Context(), request.AttemptID)
@@ -428,32 +451,33 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		}
 		boundAttempt = attempt
 	}
-	if replay, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil {
-		if !matchesFleetReconciliationRequest(replay, requestDigest) {
-			WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for different reconciliation evidence")
-			return
-		}
-		replay.AttachReceipt()
-		writeJSON(w, replay)
+	if h.pipeline == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "operation_acceptance_unavailable", "durable signed operation acceptance is unavailable")
 		return
-	} else if lookupErr != pgx.ErrNoRows {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_lookup_failed", "failed to resolve idempotent reconciliation checkpoint")
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, idempotencyHeader, map[string]interface{}{
+		"action": "fleet.reconciliation", "planId": planID, "request": request,
+	})
+	if !ok {
+		return
+	}
+	enqueue.FleetReconciliation = &store.FleetReconciliationAdmission{
+		PlanID: planID, AttemptID: request.AttemptID, RequireActiveAttempt: true,
+		RunnerAttemptID: canonicalRunnerAttemptID(principal.CI),
+		WorkflowURL:     canonicalWorkflowRunURL(principal.CI.Repository, principal.CI.RunID),
+	}
+	if replayed, found, resolveErr := h.resolveFleetReconciliationReplay(r.Context(), enqueue, planID); resolveErr != nil {
+		writeOperationAcceptanceError(w, r, resolveErr)
+		return
+	} else if found {
+		replayed.AttachReceipt()
+		writeJSON(w, replayed)
 		return
 	}
 	if boundAttempt != nil && (boundAttempt.CurrentPhase != request.Phase || (boundAttempt.Status != model.FleetRunnerAttemptQueued && boundAttempt.Status != model.FleetRunnerAttemptRunning)) {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "checkpoint does not match a live attempt's plan or phase")
 		return
 	}
-	existing, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: "fleet.reconciliation", Ref: planID, Limit: 100})
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_read_failed", "failed to read reconciliation checkpoints")
-		return
-	}
-	if err := validateFleetReconciliationTransition(plan, existing, request); err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_reconciliation_out_of_order", err.Error())
-		return
-	}
-
 	now := time.Now().UTC()
 	finished := now
 	payloadBytes, _ := json.Marshal(request)
@@ -463,34 +487,60 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 	if request.Status == "failed" {
 		status = model.OperationFailed
 	}
-	op := &model.Operation{
+	op := model.Operation{
 		ID: uuid.NewString(), Kind: "fleet.reconciliation", Ref: planID, Status: status,
 		Risk: "append-only infrastructure reconciliation evidence", Source: "fleet-runner",
 		Message: request.Message, Payload: payload,
-		Metadata:  map[string]interface{}{"idempotencyKey": idempotencyKey, "requestDigest": requestDigest},
+		Metadata:  map[string]interface{}{},
 		StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1,
 	}
 	if op.Message == "" {
 		op.Message = request.Phase + " " + request.Status
 	}
-	if err := h.db.InsertFleetReconciliation(r.Context(), op, request.AttemptID); err != nil {
-		if errors.Is(err, store.ErrFleetRunnerAttemptConflict) {
-			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "runner attempt changed before checkpoint evidence could be committed")
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		if replayed, found, _ := h.resolveFleetReconciliationReplay(r.Context(), enqueue, planID); found {
+			replayed.AttachReceipt()
+			writeJSON(w, replayed)
 			return
 		}
-		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
-			if replay, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil && matchesFleetReconciliationRequest(replay, requestDigest) {
-				replay.AttachReceipt()
-				writeJSON(w, replay)
-				return
-			}
-		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_store_failed", "failed to store reconciliation checkpoint")
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	op.AttachReceipt()
-	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
-	writeJSONStatus(w, http.StatusCreated, op)
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, accepted.Operation)
+}
+
+func (h *Handler) resolveFleetReconciliationReplay(ctx context.Context, request pipeline.EnqueueRequest, planID string) (model.Operation, bool, error) {
+	accepted, err := h.pipeline.ResolveEnqueue(ctx, request, "fleet.reconciliation", planID)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return model.Operation{}, false, nil
+	}
+	if err != nil {
+		return model.Operation{}, false, err
+	}
+	if !acceptedRequestMatches(accepted, request) || accepted.Operation.Kind != "fleet.reconciliation" || accepted.Operation.Ref != planID {
+		return model.Operation{}, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "fleet.reconciliation", Resource: planID}}
+	}
+	return accepted.Operation, true, nil
+}
+
+func validateActiveFleetAttemptEvidence(attempt fleet.RunnerAttempt, request fleet.ReconciliationRequest, now time.Time) error {
+	if attempt.Status != "queued" && attempt.Status != "running" {
+		return fmt.Errorf("runner attempt is %s and cannot record reconciliation evidence", attempt.Status)
+	}
+	if !attempt.HeartbeatExpiresAt.After(now) {
+		return fmt.Errorf("runner attempt heartbeat lease has expired")
+	}
+	if request.Phase != attempt.CurrentPhase {
+		return fmt.Errorf("reconciliation phase %s does not match current runner phase %s", request.Phase, attempt.CurrentPhase)
+	}
+	return nil
 }
 
 func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) error {
@@ -530,6 +580,11 @@ func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) err
 	}
 	if len(request.Message) > 1000 {
 		return fmt.Errorf("message must not exceed 1000 characters")
+	}
+	if request.AttemptID != "" {
+		if _, err := uuid.Parse(request.AttemptID); err != nil {
+			return fmt.Errorf("attemptId must be a UUID")
+		}
 	}
 	return nil
 }
@@ -687,29 +742,4 @@ func canonicalCapacityPlan(plan *fleet.CapacityPlan) ([]byte, error) {
 	canonical.Findings = append([]fleet.Finding(nil), plan.Findings...)
 	sort.SliceStable(canonical.Findings, func(i, j int) bool { return canonical.Findings[i].Code < canonical.Findings[j].Code })
 	return json.Marshal(canonical)
-}
-
-func fleetPlanIdempotency(principal AccessPrincipal, pool, key string, request fleet.PlanRequest) (string, string) {
-	if key == "" {
-		return "", ""
-	}
-	requestBytes, _ := json.Marshal(struct {
-		Pool    string            `json:"pool"`
-		Request fleet.PlanRequest `json:"request"`
-	}{Pool: pool, Request: request})
-	requestSum := sha256.Sum256(requestBytes)
-	identity := principal.TokenID
-	if identity == "" {
-		identity = principal.Subject
-	}
-	keySum := sha256.Sum256([]byte("fleet.capacity-plan\x00" + identity + "\x00" + key))
-	return "fleet.capacity-plan:" + hex.EncodeToString(keySum[:]), "sha256:" + hex.EncodeToString(requestSum[:])
-}
-
-func matchesFleetPlanRequest(op *model.Operation, requestDigest string) bool {
-	if op == nil || op.Kind != "fleet.capacity-plan" {
-		return false
-	}
-	stored, _ := op.Metadata["requestDigest"].(string)
-	return stored == requestDigest
 }

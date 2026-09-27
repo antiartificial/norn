@@ -89,16 +89,54 @@ func (p *Pipeline) verifyReleaseArtifactAdmission(ctx context.Context, st *state
 	if !model.IsContentAddressedImage(st.imageTag) {
 		return fmt.Errorf("production artifact admission blocked: image must be pinned by sha256 OCI digest")
 	}
+	if st.artifactBound && st.spec != nil {
+		expected := authorizedArtifactRepository(p.RegistryURL, st.spec)
+		actual := contentAddressedRepository(st.imageTag)
+		if expected == "" || actual != expected {
+			return fmt.Errorf("production artifact admission blocked: bound artifact repository %q does not match authorized repository %q", actual, expected)
+		}
+	}
 	if err := p.verifyRegistryArtifact(ctx, st.imageTag); err != nil {
 		return fmt.Errorf("production artifact admission blocked: registry digest verification failed: %w", err)
 	}
-	if err := p.verifyArtifactSignature(ctx, st); err != nil {
-		return fmt.Errorf("production artifact admission blocked: publisher signature verification failed: %w", err)
+	// The exact qualified WordPress image is a code-reviewed upstream prebuilt:
+	// it cannot truthfully carry this app repository's norn.git.sha annotation.
+	// Bound release artifacts and every other prebuilt keep the normal signature
+	// gate. Registry digest and vulnerability checks still apply below.
+	if !(st.spec != nil && !st.artifactBound && model.IsQualifiedWordPressVerifiedTLSPrebuilt(st.spec, st.imageTag)) {
+		if err := p.verifyArtifactSignature(ctx, st); err != nil {
+			return fmt.Errorf("production artifact admission blocked: publisher signature verification failed: %w", err)
+		}
 	}
 	if err := p.scanArtifactVulnerabilities(ctx, st.imageTag); err != nil {
 		return fmt.Errorf("production artifact admission blocked: vulnerability policy failed: %w", err)
 	}
 	return nil
+}
+
+func authorizedArtifactRepository(registryURL string, spec *model.InfraSpec) string {
+	if spec == nil {
+		return ""
+	}
+	if spec.Build != nil {
+		if repository := contentAddressedRepository(strings.TrimSpace(spec.Build.Image)); repository != "" {
+			return repository
+		}
+	}
+	registryURL = strings.TrimRight(strings.TrimSpace(registryURL), "/")
+	if registryURL == "" || strings.TrimSpace(spec.App) == "" {
+		return ""
+	}
+	return registryURL + "/" + strings.TrimSpace(spec.App)
+}
+
+func contentAddressedRepository(ref string) string {
+	const marker = "@sha256:"
+	ref = strings.TrimSpace(ref)
+	if !model.IsContentAddressedImage(ref) {
+		return ""
+	}
+	return ref[:strings.LastIndex(ref, marker)]
 }
 
 func (p *Pipeline) verifyRegistryArtifact(ctx context.Context, imageRef string) error {
@@ -159,6 +197,17 @@ func (p *Pipeline) verifyArtifactSignature(ctx context.Context, st *state) error
 	}
 	args = append(args, st.imageTag)
 	return runArtifactPolicyCommand(ctx, command, args...)
+}
+
+func artifactPolicyError(err error, output []byte) error {
+	message := strings.TrimSpace(string(output))
+	if len(message) > 4096 {
+		message = message[:4096]
+	}
+	if message == "" {
+		message = err.Error()
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func (p *Pipeline) scanArtifactVulnerabilities(ctx context.Context, imageRef string) error {

@@ -53,6 +53,25 @@ processes:
 	}
 }
 
+func TestDiscoverAppsIgnoresRetainedSourceWithExplicitMarker(t *testing.T) {
+	root := t.TempDir()
+	writeDiscoverySpec(t, root, "watchtower", "name: watchtower\ndeploy: true\n")
+	writeDiscoverySpec(t, root, "watchtower.pre-git", "name: watchtower\ndeploy: true\n")
+	marker := filepath.Join(root, "watchtower.pre-git", DiscoveryIgnoreFile)
+	if err := os.WriteFile(marker, []byte("retained pre-git source; current watchtower checkout owns the app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, discover := range []func(string) ([]*InfraSpec, error){DiscoverApps, DiscoverAllApps} {
+		specs, err := discover(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(specs) != 1 || specs[0].App != "watchtower" {
+			t.Fatalf("discovery = %#v, want current checkout only", specs)
+		}
+	}
+}
+
 func writeDiscoverySpec(t *testing.T, root, directory, contents string) {
 	t.Helper()
 	dir := filepath.Join(root, directory)

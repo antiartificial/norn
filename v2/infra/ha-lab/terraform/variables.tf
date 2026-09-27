@@ -118,6 +118,42 @@ variable "db_version" {
   default     = "16"
 }
 
+variable "use_managed_mysql" {
+  description = "Provision a DigitalOcean managed MySQL cluster (for apps that need MySQL/MariaDB, e.g. feedmap-trinity)."
+  type        = bool
+  default     = false
+}
+
+variable "mysql_size" {
+  description = "Managed MySQL node size slug. Only used when use_managed_mysql = true."
+  type        = string
+  default     = "db-s-1vcpu-1gb"
+}
+
+variable "mysql_version" {
+  description = "Managed MySQL version. Only used when use_managed_mysql = true. DO currently offers 8.4."
+  type        = string
+  default     = "8.4"
+}
+
+variable "use_managed_redis" {
+  description = "Provision a DigitalOcean managed Valkey cluster (Redis-protocol compatible cache/queue backend)."
+  type        = bool
+  default     = false
+}
+
+variable "redis_size" {
+  description = "Managed Valkey node size slug. Only used when use_managed_redis = true."
+  type        = string
+  default     = "db-s-1vcpu-1gb"
+}
+
+variable "redis_version" {
+  description = "Managed Valkey major version. Only used when use_managed_redis = true. DO currently offers 8."
+  type        = string
+  default     = "8"
+}
+
 variable "tailscale_authkey" {
   description = "Reusable, pre-authorized Tailscale auth key (tagged tag:norn-pilot-node). When set, every node joins the tailnet at boot so NornUI/CLI can reach :8810 privately. Leave empty to skip Tailscale (VPC/SSH-tunnel access only)."
   type        = string
