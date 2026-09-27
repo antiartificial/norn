@@ -2,11 +2,15 @@
 
 This is the current entry point for the next session. Read the detailed [M0–M3 handoff](m0-m3-handoff-2026-09-25.md) and [execution milestones](execution-milestones.md) for the contract and qualification history. Recheck Git, CI, Mini, Fleet, and provider state before acting; the observations below are a dated snapshot.
 
+The later [release gate status](release-gate-status-2026-09-26.md) records the
+current 0/10 signed-gate fraction, review heads, and critical path. The branch
+heads and checks in the snapshot below are historical.
+
 ## Objective and release boundary
 
 Make v3 work pragmatically through focused, reviewable Norn and Fleet changes. Prefer pure contracts, deterministic tests, isolated PostgreSQL/MySQL/Nomad/Consul/etcd fixtures, and private Mini copies before provisioning or mutating live resources. Keep source intent, signed proof, runtime state, and release qualification distinct. No v3 deployment, protected-master merge, provider cutover, or milestone sign-off is authorized by a green PR alone.
 
-M0–M3 are the current grouped integration scope. M4–M9 remain the app-capacity, upgrade, migration, release, and adoption path. Do not report an overall milestone percentage as verified: the gates in the detailed handoff remain open, and implementation/test counts are not a release-completion denominator.
+M0–M3 are the current grouped integration scope. M4–M9 remain the app-capacity, upgrade, migration, release, and adoption path. The signed-gate fraction is currently 0/10; do not treat it as an implementation-completion percentage or release forecast.
 
 ## Verified Git and CI snapshot
 
