@@ -152,6 +152,9 @@ target and verifies it against signed request semantics under a target-revision
 CAS. Its writer remains private; route intent and prior-route authority are
 still absent. The claimed route-source resolver carries that verified target's
 Fleet cluster, environment and generation for a future route-intent transaction.
+The unique HTTPS endpoint/process resolver now lives in the shared model
+package, so that transaction can rederive source values from the pinned
+InfraSpec rather than trust worker-supplied endpoint fields.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

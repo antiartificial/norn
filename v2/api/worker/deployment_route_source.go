@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"slices"
 
 	"norn/v2/api/model"
@@ -77,30 +76,12 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 		target.Cluster == "" || target.FleetEnvironment == "" || target.Generation == 0 || target.NomadRegion != acceptedRegion.NomadRegion || !slices.Equal(target.Datacenters, acceptedRegion.Datacenters) {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route source lacks a matching signed Fleet target")
 	}
-	var selected *model.Endpoint
-	for i := range spec.Endpoints {
-		ep := &spec.Endpoints[i]
-		if ep.Region != region {
-			continue
-		}
-		if selected != nil {
-			return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route endpoint is ambiguous")
-		}
-		selected = ep
-	}
-	if selected == nil || selected.Process == "" {
-		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route endpoint or process binding is missing")
-	}
-	process, ok := spec.Processes[selected.Process]
-	if !ok || process.Port <= 0 || process.Schedule != "" || process.Function != nil {
-		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route process is not a service with a port")
-	}
-	u, err := url.Parse(selected.URL)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || u.RawPath != "" {
-		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route endpoint must be an HTTPS origin")
+	endpoint, err := model.ResolveFleetRouteEndpoint(spec, region)
+	if err != nil {
+		return VerifiedFleetRouteSource{}, err
 	}
 	return VerifiedFleetRouteSource{App: spec.App, ControlEnvironment: accepted.Deployment.Environment, FleetCluster: target.Cluster, FleetEnvironment: target.FleetEnvironment, TargetGeneration: target.Generation, OperationID: claimed.ID, DeploymentID: accepted.Deployment.ID,
 		AcceptanceID: accepted.Intent.ID, AcceptanceDigest: accepted.Intent.CanonicalDigest,
 		Region: region, NomadRegion: acceptedRegion.NomadRegion, DesiredWeight: acceptedRegion.TrafficWeight,
-		Endpoint: selected.URL, Process: selected.Process, Port: process.Port, SpecDigest: accepted.Deployment.SpecDigest}, nil
+		Endpoint: endpoint.Origin, Process: endpoint.Process, Port: endpoint.Port, SpecDigest: accepted.Deployment.SpecDigest}, nil
 }
