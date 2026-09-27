@@ -252,9 +252,19 @@ Remaining M2 retention requirements (not complete):
   not blocked. Platform rollback to a pre-archive binary relies on the
   startup-contract probe. Rollback after pruning is not qualified end to
   end.
-- **Admission scope.** The reserve gates HTTP audited mutations.
-  Operations created by internal schedulers (cron) are not gated. There is
-  no alerting integration beyond the health endpoint.
+- **Admission scope.** The HTTP middleware gates audited mutations, and the
+  signed PostgreSQL acceptance transaction independently checks the durable
+  reserve before inserting its operation and acceptance intent. Direct
+  operation writers still bypass that transaction: `InsertOperation`,
+  `InsertDeploymentOperation`, `InsertRollbackOperation`, and
+  `InsertCompletedOperation` in `store/operations.go`, the external-deployment
+  admission in `store/external_deployments.go`, and Fleet runner checkpoints in
+  `store/fleet_runner_attempts.go`. These need a writer-by-writer admission and
+  retention policy; applying the signed-acceptance byte reservation to their
+  unsigned records would claim evidence that does not exist. The local engine
+  cron scheduler dispatches a container directly and likewise does not create
+  a signed acceptance. There is no alerting integration beyond the health
+  endpoint.
 - **Emulator-only object store.** The Fleet object adapter is untested
   against Garage, MinIO or any Fleet object service. There is no
   object-lock or retention-mode integration. The object store has no
