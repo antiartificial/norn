@@ -36,7 +36,7 @@ func NewNomadScaleEffects(db *store.DB, client *nomad.Client) (*NomadScaleEffect
 	if err != nil {
 		return nil, err
 	}
-	supervisor := &nomadScaleSupervisor{client: client}
+	supervisor := &nomadScaleSupervisor{client: client, store: effectStore}
 	return &NomadScaleEffects{store: effectStore, executor: &effect.Executor{
 		Store: effectStore, Supervisor: supervisor, Verifier: nomadScaleVerifier{},
 	}}, nil
@@ -159,11 +159,34 @@ func scaleExecutionID(r effect.Reservation) string {
 	return "nomad-scale-" + hex.EncodeToString(sum[:16])
 }
 
-type nomadScaleSupervisor struct{ client *nomad.Client }
+type nomadScaleSupervisor struct {
+	client *nomad.Client
+	store  *store.PGEffectStore
+}
 
-func (s *nomadScaleSupervisor) Prepare(_ context.Context, r effect.Reservation) error {
-	_, err := scaleRequestFromReservation(r)
-	return err
+func (s *nomadScaleSupervisor) Prepare(ctx context.Context, r effect.Reservation) error {
+	request, err := scaleRequestFromReservation(r)
+	if err != nil {
+		return err
+	}
+	// Prepare precedes reservation. An existing uncertain launch must be
+	// reconciled even if a deployment is now active; a new launch must wait
+	// until Nomad will accept scaling, without occupying the app effect gate.
+	if s.store != nil {
+		if _, found, err := s.store.UnresolvedForResource(ctx, r.Authority, r.Resource); err != nil {
+			return err
+		} else if found {
+			return nil
+		}
+	}
+	deployment, err := s.client.LatestDeploymentRegion(request.App, request.NomadRegion)
+	if err != nil {
+		return err
+	}
+	if deployment != nil && (deployment.Status == "running" || deployment.Status == "pending") {
+		return fmt.Errorf("Nomad deployment %s is %s; scale must wait", deployment.ID, deployment.Status)
+	}
+	return nil
 }
 func (s *nomadScaleSupervisor) Launch(ctx context.Context, r effect.Reservation, _ effect.LaunchMaterial) (effect.ExecutionIdentity, error) {
 	if err := ctx.Err(); err != nil {

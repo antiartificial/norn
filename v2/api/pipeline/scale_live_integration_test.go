@@ -44,17 +44,6 @@ func TestClaimedScaleAgainstDisposablePostgresAndNomad(t *testing.T) {
 			t.Errorf("purge disposable Nomad job: %v", err)
 		}
 	})
-	deploymentDeadline := time.Now().Add(20 * time.Second)
-	for {
-		deployment, err := client.LatestDeploymentRegion(jobID, "global")
-		if err == nil && deployment != nil && deployment.Status == "successful" {
-			break
-		}
-		if time.Now().After(deploymentDeadline) {
-			t.Fatalf("initial Nomad deployment did not settle: deployment=%+v err=%v", deployment, err)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
 	p.ScaleEffects, err = NewNomadScaleEffects(db, client)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +60,35 @@ func TestClaimedScaleAgainstDisposablePostgresAndNomad(t *testing.T) {
 	claimed, claim, err := db.ClaimNextOperation(ctx, "disposable-scale-worker", time.Minute, []string{"app.scale"})
 	if err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
 		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+	authority, err := p.ScaleEffects.store.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := scaleResource(scaleRequest{App: jobID, Group: "web", Region: "local"})
+	deployment, err := client.LatestDeploymentRegion(jobID, "global")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deployment == nil || (deployment.Status != "running" && deployment.Status != "pending") {
+		t.Fatalf("initial deployment must be active to prove preflight: %+v", deployment)
+	}
+	if result, err := p.ExecuteOperation(ctx, claimed, claim); result != nil || err == nil {
+		t.Fatalf("scale during initial deployment = %+v, %v", result, err)
+	}
+	if record, found, err := p.ScaleEffects.store.UnresolvedForResource(ctx, authority, resource); err != nil || found {
+		t.Fatalf("early scale reserved an effect: found=%t record=%+v err=%v", found, record, err)
+	}
+	deploymentDeadline := time.Now().Add(20 * time.Second)
+	for {
+		deployment, err := client.LatestDeploymentRegion(jobID, "global")
+		if err == nil && deployment != nil && deployment.Status == "successful" {
+			break
+		}
+		if time.Now().After(deploymentDeadline) {
+			t.Fatalf("initial Nomad deployment did not settle: deployment=%+v err=%v", deployment, err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
