@@ -24,6 +24,7 @@ BINARIES = (
     "host-runtime",
     "norn",
     "norn-api",
+    "norn-effect-runner",
     "norn-host-agent",
     "platform-release-artifact",
     "platform-release-fetch-github",
