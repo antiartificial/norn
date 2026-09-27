@@ -2,18 +2,18 @@
 
 Status: implementation boundary, 2026-09-27. This is not M1 sign-off.
 
-The first code slices define an authenticated, secret-free migration intent
-descriptor and a private helper that discards command output while retaining
-only signed status. The generic `build.test` supervisor explicitly refuses the
-descriptor. The database adapter now derives the target digest from its full
-accepted `TargetIdentity`, including service and binding generations. No
-production path reserves or launches it yet. The helper now copies supported
-connection files into its own owner-only directory, rejects API-owned file
-paths in file environment variables, and scrubs those files before terminal
-status. A dead-helper cleanup routine preserves the signed running state after
-scrubbing, but a backend must first prove the execution cgroup is empty before
-calling it. Backend handoff, manager recovery, a migration verifier and the
-database postcondition remain required before activation.
+The implementation now has an authenticated, secret-free migration intent,
+durable supervisor preparation and launch, a Linux private-pipe/cgroup
+backend, and signed command status observation. The helper discards command
+output, owns supported connection files and scrubs them before terminal
+status. A dead-helper cleanup preserves the signed running state and runs only
+after the backend proves the cgroup empty. The generic `build.test` launcher,
+query and verifier reject migration evidence. The database adapter derives the
+target digest from the full accepted `TargetIdentity`, including service and
+binding generations. No production pipeline path reserves or launches this
+effect yet. Private material production from a resolved session, an
+original-target database postcondition verifier, and protected runtime
+qualification remain required before activation.
 
 ## Current behavior and risk
 

@@ -55,6 +55,26 @@ func TestManagerMigrationLaunchIsDurableAndPrivate(t *testing.T) {
 	if err != nil || identity.RuntimeInstanceID == "" || backend.starts != 0 {
 		t.Fatalf("ambiguous retry relaunched migration: identity=%+v starts=%d err=%v", identity, backend.starts, err)
 	}
+	if _, err := manager.Query(context.Background(), reservation, identity); err == nil {
+		t.Fatal("generic query accepted migration evidence")
+	}
+	if _, err := manager.Revoke(context.Background(), reservation, identity); err == nil {
+		t.Fatal("generic revoke accepted migration descriptor")
+	}
+	exitCode := 0
+	backend.states[reservation.SupervisorExecutionID] = BackendState{Phase: effect.SupervisorSucceeded,
+		ExitCode: &exitCode, ContainmentProven: true, EvidenceReference: "contained/" + identity.RuntimeInstanceID}
+	observation, err := manager.ObserveMigration(context.Background(), reservation, identity)
+	if err != nil || observation.Phase != effect.SupervisorSucceeded {
+		t.Fatalf("migration observation=%+v err=%v", observation, err)
+	}
+	verifier, err := NewVerifier(manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.Verify(context.Background(), effect.Record{Reservation: reservation, Execution: identity}, observation); err == nil {
+		t.Fatal("generic verifier approved migration command exit without database postcondition")
+	}
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil || entry.IsDir() {
 			return walkErr

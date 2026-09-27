@@ -808,6 +808,39 @@ func (m *Manager) ObserveSnapshot(ctx context.Context, reservation effect.Reserv
 	return observation, err
 }
 
+// ObserveMigration authenticates process containment with a migration-specific
+// protocol. The generic verifier rejects this evidence; a database
+// postcondition verifier must inspect the original accepted target separately.
+func (m *Manager) ObserveMigration(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
+	descriptor, err := m.verifyMigrationDescriptor(reservation.LaunchPayload)
+	if err != nil {
+		return effect.Observation{}, err
+	}
+	backend, ok := m.backend.(MigrationBackend)
+	if !ok {
+		return effect.Observation{}, fmt.Errorf("migration supervisor backend is unavailable")
+	}
+	var observation effect.Observation
+	err = m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID == "" {
+			observation, err = m.observationForProtocol(record, BackendState{Phase: effect.SupervisorNotFound,
+				ContainmentProven: true, EvidenceReference: "registered-not-launched/" + reservation.SupervisorExecutionID}, MigrationProtocolV1)
+			return err
+		}
+		state, err := backend.ObserveMigration(ctx, backendExecution(record, directory), descriptor)
+		if err != nil {
+			return err
+		}
+		observation, err = m.observationForProtocol(record, state, MigrationProtocolV1)
+		return err
+	})
+	return observation, err
+}
+
 // RetrieveSnapshotResult returns the authenticated terminal output preserved
 // before completion. It never re-observes a completed snapshot execution.
 func (m *Manager) RetrieveSnapshotResult(_ context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, reference string) ([]byte, error) {
@@ -877,10 +910,23 @@ func (m *Manager) CopySnapshotArtifact(ctx context.Context, reservation effect.R
 }
 
 func (m *Manager) Query(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
+	if _, err := m.verifyDescriptor(reservation.LaunchPayload, nil); err != nil {
+		return effect.Observation{}, err
+	}
 	return m.observe(ctx, reservation, identity)
 }
 
 func (m *Manager) Revoke(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
+	var header struct{ Protocol string }
+	if err := json.Unmarshal(reservation.LaunchPayload, &header); err != nil {
+		return effect.Observation{}, err
+	}
+	if header.Protocol == MigrationProtocolV1 {
+		return effect.Observation{}, fmt.Errorf("migration revocation requires migration-specific evidence")
+	}
+	if _, err := m.verifyAnyDescriptor(reservation.LaunchPayload); err != nil {
+		return effect.Observation{}, err
+	}
 	var observation effect.Observation
 	err := m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
 		record, err := m.readBoundJournal(directory, reservation, identity)
@@ -945,12 +991,16 @@ func (m *Manager) observe(ctx context.Context, reservation effect.Reservation, i
 }
 
 func (m *Manager) observation(record journal, state BackendState) (effect.Observation, error) {
+	return m.observationForProtocol(record, state, ProtocolV1)
+}
+
+func (m *Manager) observationForProtocol(record journal, state BackendState, protocol string) (effect.Observation, error) {
 	phase := state.Phase
 	if isTerminal(phase) && !state.ContainmentProven {
 		phase = effect.SupervisorUnknown
 	}
 	resultDigest, resultReference := "", ""
-	if phase == effect.SupervisorSucceeded || phase == effect.SupervisorFailed {
+	if protocol == ProtocolV1 && (phase == effect.SupervisorSucceeded || phase == effect.SupervisorFailed) {
 		resultDigest = effect.DigestInput(state.Output)
 		resultReference = "result/" + record.SupervisorExecutionID
 	}
@@ -959,7 +1009,7 @@ func (m *Manager) observation(record journal, state BackendState) (effect.Observ
 		runtimeInstanceID = ""
 	}
 	assertion := evidenceAssertion{
-		Protocol: ProtocolV1, InputDigest: record.InputDigest, SupervisorExecutionID: record.SupervisorExecutionID,
+		Protocol: protocol, InputDigest: record.InputDigest, SupervisorExecutionID: record.SupervisorExecutionID,
 		RuntimeInstanceID: runtimeInstanceID, Phase: phase, ExitCode: state.ExitCode,
 		ResultDigest: resultDigest, ResultReference: resultReference, ContainmentProven: state.ContainmentProven,
 		TimedOut: state.TimedOut, OutputDiscarded: state.OutputDiscarded,
