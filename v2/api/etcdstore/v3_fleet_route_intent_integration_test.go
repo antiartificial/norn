@@ -322,6 +322,52 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if current, err := adapter.observeClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, observe); err != nil || current.RouteSHA256 != first.RenderedRoute.SHA256 {
 		t.Fatalf("claimed route readback=%+v err=%v", current, err)
 	}
+	traffic := &FleetIngressTrafficObservation{Route: *observedRoute, ProbePath: "/ready", EndpointBodySHA256: strings.Repeat("d", 64), PublicMatched: true}
+	for _, node := range first.Inventory.Nodes {
+		traffic.NodeEndpoints = append(traffic.NodeEndpoints, ingress.NodeEndpointProbe{NodeID: node.ID, BodySHA256: traffic.EndpointBodySHA256})
+	}
+	observeTraffic := func(_ context.Context, intent *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
+		if intent.ID != first.ID {
+			t.Fatal("traffic proof used a different intent")
+		}
+		return traffic, nil
+	}
+	withoutPublic := *traffic
+	withoutPublic.PublicMatched = false
+	if _, err := adapter.recordClaimedInitialFleetTrafficProof(ctx, claim, lock, spec, healthToken, 18082, func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
+		return &withoutPublic, nil
+	}); err == nil {
+		t.Fatal("missing public-path observation produced durable traffic proof")
+	}
+	proof, err := adapter.recordClaimedInitialFleetTrafficProof(ctx, claim, lock, spec, healthToken, 18082, observeTraffic)
+	if err != nil || proof.IntentID != first.ID || !proof.Observation.PublicMatched {
+		t.Fatalf("durable traffic observation=%+v err=%v", proof, err)
+	}
+	if replay, err := adapter.recordClaimedInitialFleetTrafficProof(ctx, claim, lock, spec, healthToken, 18082, observeTraffic); err != nil || !replay.ObservedAt.Equal(proof.ObservedAt) {
+		t.Fatalf("traffic proof retry=%+v err=%v", replay, err)
+	}
+	storedProof, err := client.Get(ctx, adapter.initialFleetTrafficProofKey(first.ID))
+	if err != nil || len(storedProof.Kvs) != 1 {
+		t.Fatalf("traffic proof was not stored: entries=%d err=%v", len(storedProof.Kvs), err)
+	}
+	terminal := *accepted.Deployment
+	terminal.Status = model.StatusDeployed
+	terminalRegions := []model.DeploymentRegion{{DeploymentID: terminal.ID, Region: first.Region, NomadRegion: first.NomadRegion,
+		Status: model.StatusDeployed, DesiredWeight: 100, ActiveWeight: 100}}
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil); err == nil || !strings.Contains(err.Error(), "deployment-bound ingress proof") {
+		t.Fatalf("observation receipt bypassed terminal traffic fence: %v", err)
+	}
+	changedTraffic := *traffic
+	changedTraffic.NodeEndpoints = append([]ingress.NodeEndpointProbe(nil), traffic.NodeEndpoints...)
+	changedTraffic.EndpointBodySHA256 = strings.Repeat("e", 64)
+	for i := range changedTraffic.NodeEndpoints {
+		changedTraffic.NodeEndpoints[i].BodySHA256 = changedTraffic.EndpointBodySHA256
+	}
+	if _, err := adapter.recordClaimedInitialFleetTrafficProof(ctx, claim, lock, spec, healthToken, 18082, func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
+		return &changedTraffic, nil
+	}); err == nil {
+		t.Fatal("conflicting traffic observation replaced the immutable proof")
+	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "unknown-node"); err == nil {
 		t.Fatal("unlisted ingress node received route publication")
 	}
