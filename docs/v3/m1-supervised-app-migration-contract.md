@@ -50,10 +50,15 @@ signed migration status remains running and the execution cgroup is populated.
 If the helper is gone, it kills the dedicated command child cgroup. The later
 empty-cgroup observation scrubs private connection material and stays unknown
 for manual review; it never converts the interrupted command into success or
-repeat-safe failure. A second opt-in real Linux cgroup test killed the helper
-while its command was sleeping and proved that orphan containment and private
-material cleanup completed. A protected-runtime crash and database-write
-reconciliation rehearsal is still required for M1 qualification.
+repeat-safe failure. The opt-in real Linux cgroup test now uses disposable
+PostgreSQL 16: it commits row 1, kills the helper while the command sleeps,
+then proves the cgroup emptied, private material was scrubbed, the later row 2
+write never ran, and even a satisfied postcondition cannot approve the unknown
+execution. `v2/scripts/test-snapshot-cgroup-linux.sh` runs this alongside the
+snapshot and descendant-timeout tests with host-compiled binaries and tmpfs
+PostgreSQL; it passed on 2026-09-27 without installing packages in Docker.
+The protected-runtime crash and database-write reconciliation rehearsal is
+still required for M1 qualification.
 
 ## Current behavior and risk
 

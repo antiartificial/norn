@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -170,6 +171,19 @@ func TestLinuxCgroupMigrationHelperDeath(t *testing.T) {
 	}
 	marker := filepath.Join(t.TempDir(), "started")
 	command := "printf begun > " + shellQuote(marker) + "; sleep 30"
+	psql := os.Getenv("NORN_TEST_PSQL")
+	if psql != "" {
+		requireExecutable(t, "NORN_TEST_PSQL")
+		setup := exec.Command(psql, "-X", "-v", "ON_ERROR_STOP=1", "-h", "/tmp/norn-snapshot-pg", "-p", "55432", "-U", "postgres", "-d", "postgres", "-c", "CREATE TABLE IF NOT EXISTS norn_migration_crash_probe (id integer PRIMARY KEY); TRUNCATE norn_migration_crash_probe")
+		if output, err := setup.CombinedOutput(); err != nil {
+			t.Fatalf("prepare disposable migration database: %v: %s", err, output)
+		}
+		command = shellQuote(psql) + " -X -v ON_ERROR_STOP=1 -h /tmp/norn-snapshot-pg -p 55432 -U postgres -d postgres -c " +
+			shellQuote("INSERT INTO norn_migration_crash_probe (id) VALUES (1)") +
+			" >/dev/null && printf begun > " + shellQuote(marker) + " && sleep 30 && " + shellQuote(psql) +
+			" -X -v ON_ERROR_STOP=1 -h /tmp/norn-snapshot-pg -p 55432 -U postgres -d postgres -c " +
+			shellQuote("INSERT INTO norn_migration_crash_probe (id) VALUES (2)") + " >/dev/null"
+	}
 	commandSHA := sha256.Sum256([]byte(command))
 	intent := testMigrationIntent()
 	intent.CommandSHA256 = hex.EncodeToString(commandSHA[:])
@@ -238,6 +252,26 @@ func TestLinuxCgroupMigrationHelperDeath(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	assertCgroupEmpty(t, cgroup)
+	if psql != "" {
+		query := exec.Command(psql, "-X", "-At", "-h", "/tmp/norn-snapshot-pg", "-p", "55432", "-U", "postgres", "-d", "postgres", "-c", "SELECT string_agg(id::text, ',' ORDER BY id) FROM norn_migration_crash_probe")
+		output, err := query.CombinedOutput()
+		if err != nil || strings.TrimSpace(string(output)) != "1" {
+			t.Fatalf("committed write was lost or later write survived: rows=%q err=%v", output, err)
+		}
+	}
+	checker := &migrationCheckerFake{result: MigrationPostconditionResult{TargetSHA256: intent.TargetSHA256,
+		PostconditionSHA256: intent.PostconditionSHA256, Satisfied: true}}
+	verifier, err := NewMigrationVerifier(manager, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := manager.ObserveMigration(context.Background(), reservation, identity)
+	if err != nil || observation.Phase != effect.SupervisorUnknown {
+		t.Fatalf("contained interrupted migration observation=%+v err=%v", observation, err)
+	}
+	if _, err := verifier.Verify(context.Background(), effect.Record{Reservation: reservation, Execution: identity}, observation); err == nil || checker.checks != 0 {
+		t.Fatalf("interrupted migration reached postcondition checker: checks=%d err=%v", checker.checks, err)
+	}
 	privateDirs, err := filepath.Glob(filepath.Join(manager.root, sha256DirectoryName(reservation.SupervisorExecutionID), ".migration-*"))
 	if err != nil || len(privateDirs) != 0 {
 		t.Fatalf("orphan migration private files remain: %v, %v", privateDirs, err)
