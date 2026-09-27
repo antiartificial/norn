@@ -16,3 +16,13 @@ not exposed by these runtime checks. A successful Like Trove capture and a
 successful browser-session GraphQL bookmark read do not prove a numeric credit
 balance or guarantee the next scheduled run. This check leaves M0 ownership,
 backup, and upgrade gates open.
+
+## X API billing console check — 2026-09-27 04:41 UTC
+
+A read-only check of the signed-in X Developer Console account that lists the
+`trovely` app showed **$10.00 remaining X API credit**, **$6.15 current spend**
+for the **Sep 19–Oct 19, 2026** billing cycle, and a billing-cycle cap shown as
+**Unlimited**. Auto Recharge was **Off**. This establishes that the account's
+prepaid X API balance was not exhausted at that instant; it does not attribute
+the spend to a particular app, guarantee the next capture, or change billing
+settings. The bookmark-session validity observation above remains separate.
