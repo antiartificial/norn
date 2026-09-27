@@ -151,7 +151,11 @@ active pre-index work must first drain or reconcile it.
    Traefik weighted service. The load balancer's target pool is ingress nodes,
    not app deployment revisions. Thus Nomad health, Consul tags, and the
    load-balancer health check cannot establish an effective app traffic
-   percentage. The next implementation slice must name one traffic authority,
+   percentage. Traefik's documented Consul Catalog
+   [`loadbalancer.server.weight`](https://doc.traefik.io/traefik/master/reference/routing-configuration/other-providers/consul-catalog/)
+   changes a server's weight within a service; adding that tag to every
+   allocation in one region would not by itself implement Norn's desired
+   deployment/region percentage. The next implementation slice must name one traffic authority,
    apply the accepted deployment's desired weight there with a durable
    revision, read back the resulting route on **each** ingress node, and
    probe the intended app endpoint through those nodes and the public ingress.

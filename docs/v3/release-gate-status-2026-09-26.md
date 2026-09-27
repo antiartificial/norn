@@ -64,6 +64,14 @@ rerun. The hosted `contract` job at this head still has no assigned runner
 and no executed steps, so the required hosted check remains failed. Local
 checks do not replace that check or protected separate-host Fleet evidence.
 
+An exact-head rerun on 2026-09-27 (run `36285145209`, attempt 3) again
+terminated before runner assignment with zero steps. Its fresh GitHub check
+annotation cites failed account payments or an Actions spending limit. The
+Norn repository is public, while Fleet and Like Trove are private; Norn's
+passing hosted runs therefore do not establish runner availability for those
+two companion repositories. The account owner must clear the private-repo
+Actions billing condition, then rerun the exact Fleet and Like Trove heads.
+
 ## Protected-master integration audit — 2026-09-27 04:49 UTC
 
 PR #76 targets `feature/norn-v3-planning-handoff`, not protected `master`.
