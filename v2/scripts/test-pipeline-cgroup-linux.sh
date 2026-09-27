@@ -23,9 +23,12 @@ trap cleanup EXIT
   GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 go build -buildvcs=false -o "$scratch/norn-effect-runner" ./cmd/norn-effect-runner
 )
 
-docker run --rm --privileged --cgroupns=private \
-  --mount "type=bind,src=$repo_root,dst=/src,readonly" \
-  --mount "type=bind,src=$scratch/pipeline.test,dst=/pipeline.test,readonly" \
-  --mount "type=bind,src=$scratch/norn-effect-runner,dst=/runner,readonly" \
-  --tmpfs /tmp:rw,exec,size=256m \
-  postgres:16 bash /src/v2/scripts/pipeline-cgroup-linux-container.sh
+for test_name in TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots TestDeployMigrationRecoversAfterLiteralProcessExit; do
+  docker run --rm --privileged --cgroupns=private \
+    --env "NORN_PIPELINE_TEST_RUN=$test_name" \
+    --mount "type=bind,src=$repo_root,dst=/src,readonly" \
+    --mount "type=bind,src=$scratch/pipeline.test,dst=/pipeline.test,readonly" \
+    --mount "type=bind,src=$scratch/norn-effect-runner,dst=/runner,readonly" \
+    --tmpfs /tmp:rw,exec,size=256m \
+    postgres:16 bash /src/v2/scripts/pipeline-cgroup-linux-container.sh
+done

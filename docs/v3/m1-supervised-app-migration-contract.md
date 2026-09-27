@@ -93,10 +93,16 @@ servers outside the test process as `postgres`, then run the pipeline/API crash
 case as root against those disposable servers and the real cgroup backend.
 That fixture is now available through
 `v2/scripts/test-pipeline-cgroup-linux.sh`: it starts three socket-only
-PostgreSQL servers as `postgres` in container tmpfs, then runs the existing
-joined replay test as root. The Linux run passed. This verifies the fixture
-boundary and original snapshot replay only; the test still seeds its migration
-effect, so actual command-exit reconciliation remains to be implemented.
+PostgreSQL servers as `postgres` in container tmpfs, then runs the pipeline
+tests as root. The joined replay test still seeds its migration effect. A
+second test now executes the accepted deployment through real source/build
+checkpoints, named snapshots, a PostgreSQL migration command and the real
+cgroup backend. The command commits one row and remains in its command cgroup
+when the first API test process exits. An expired claim is requeued; the
+successor observes the same runtime instance, records one completed effect,
+finds exactly one row, and sees the command cgroup empty. Both Linux tests
+passed on 2026-09-27. Other crash windows, MySQL and protected-runtime
+qualification remain open; this local test does not sign M1.
 
 ## Current behavior and risk
 

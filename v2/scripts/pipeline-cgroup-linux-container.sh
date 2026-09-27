@@ -26,4 +26,4 @@ NORN_TEST_DATABASE_URL="postgres://postgres@/norn_pipeline?host=$root/control&po
 NORN_PIPELINE_EXTERNAL_PG_ROOT="$root" \
 NORN_REAL_CGROUP_TEST=1 \
 NORN_EFFECT_RUNNER_BINARY=/runner \
-/pipeline.test -test.run '^TestRecoveredDeploymentMigrationReusesAcceptedPreMigrationSnapshots$' -test.v
+/pipeline.test -test.run "^${NORN_PIPELINE_TEST_RUN}$" -test.v

@@ -138,11 +138,15 @@ databases:
 		t.Fatal(err)
 	}
 	service := func(id string, engine database.Engine, endpoint database.DatabaseEndpoint) database.DatabaseService {
+		capabilities := []database.Capability{database.CapabilityRuntime, database.CapabilitySnapshot, database.CapabilityRestore, database.CapabilityHealth}
+		if engine == database.EnginePostgreSQL {
+			capabilities = append(capabilities, database.CapabilityMigration)
+		}
 		return database.DatabaseService{APIVersion: database.APIVersion, ID: id, Generation: 1, Purpose: database.PurposeApplication, Engine: engine,
 			EngineVersion: "16", ProviderRef: "local:" + id, Endpoint: endpoint,
 			Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
 			TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled},
-			Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilityRuntime, database.CapabilitySnapshot, database.CapabilityRestore, database.CapabilityHealth}}}
+			Recovery: database.RecoveryPolicy{Capabilities: capabilities}}
 	}
 	binding := func(id, serviceID string) database.DatabaseBinding {
 		return database.DatabaseBinding{APIVersion: database.APIVersion, ID: id, ServiceID: serviceID, Database: "shop", Role: "shop_app", Generation: 1, CredentialRef: "secret:shop", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}}

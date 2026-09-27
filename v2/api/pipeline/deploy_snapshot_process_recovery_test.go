@@ -77,12 +77,16 @@ func deploySnapshotProcessPipeline(t *testing.T, crash bool) (*Pipeline, *store.
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Pipeline{DB: db, CheckpointStore: db, OperationStore: operations,
+	p := &Pipeline{DB: db, CheckpointStore: db, OperationStore: operations,
 		SagaStore: saga.NewPostgresStore(pool), AppsDir: os.Getenv("NORN_DEPLOY_CRASH_APPS"),
 		DatabaseTargets: &DatabaseTargets{ProfileID: "mini", Catalog: db.ActiveDatabaseCatalog,
 			Secrets: secrets, SnapshotRoot: os.Getenv("NORN_DEPLOY_CRASH_SNAPSHOTS")},
 		SnapshotEffects: effects, SnapshotObjects: processCrashSnapshotObjects{
-			root: os.Getenv("NORN_DEPLOY_CRASH_OBJECTS"), exitAfterDump: crash}, WS: hub.New(nil)}, db
+			root: os.Getenv("NORN_DEPLOY_CRASH_OBJECTS"), exitAfterDump: crash}, WS: hub.New(nil)}
+	if os.Getenv("NORN_DEPLOY_MIGRATION_CGROUP") != "" {
+		configureProcessCrashMigrationEffects(t, p)
+	}
+	return p, db
 }
 
 func TestDeploySnapshotRecoversAfterLiteralProcessExit(t *testing.T) {
