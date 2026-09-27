@@ -28,8 +28,8 @@ func (s *V3CanaryEffectReservations) loadToken(ctx context.Context, token effect
 		return effect.Record{}, "", 0, effect.ErrStaleToken
 	}
 	key := string(index.Kvs[0].Value)
-	if !strings.HasPrefix(key, s.operations.prefix+"/v3/effects/canary/") {
-		return effect.Record{}, "", 0, fmt.Errorf("canary effect token index names a foreign namespace")
+	if !strings.HasPrefix(key, s.operations.prefix+"/v3/effects/"+s.effectNamespace()+"/") {
+		return effect.Record{}, "", 0, fmt.Errorf("app effect token index names a foreign namespace")
 	}
 	result, err := s.operations.kv.Get(ctx, key)
 	if err != nil {
@@ -181,8 +181,8 @@ func (s *V3CanaryEffectReservations) UnresolvedForResource(ctx context.Context, 
 		return effect.Record{}, false, nil
 	}
 	key := string(gate.Kvs[0].Value)
-	if !strings.HasPrefix(key, s.operations.prefix+"/v3/effects/canary/") {
-		return effect.Record{}, false, fmt.Errorf("canary app gate names an unsupported effect")
+	if !strings.HasPrefix(key, s.operations.prefix+"/v3/effects/"+s.effectNamespace()+"/") {
+		return effect.Record{}, false, fmt.Errorf("app gate names an effect in another namespace")
 	}
 	value, err := s.operations.kv.Get(ctx, key)
 	if err != nil {

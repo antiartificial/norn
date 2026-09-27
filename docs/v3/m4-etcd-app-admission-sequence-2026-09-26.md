@@ -60,6 +60,10 @@ active pre-index work must first drain or reconcile it.
    pass against real etcd. Intermediate checkpoints, effect verification, and
    worker recovery remain open. Candidate startup must be unable to submit a
    newer deployment while an older Nomad effect is unresolved.
+   A private deploy effect reservation now binds the signed deployment,
+   accepted region, pinned image, spec digest, and job digest to the shared
+   etcd app effect gate. Its lifecycle passes a real-etcd test, but a Nomad
+   supervisor has not yet proven the submitted job or recovery observation.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

@@ -19,13 +19,16 @@ import (
 // V3CanaryEffectReservations establishes the etcd side of the canary effect
 // boundary. The normal etcd runtime must still provide an app execution worker
 // and lease-expiry reconciliation before it may expose promotion admission.
-type V3CanaryEffectReservations struct{ operations *V3OperationStore }
+type V3CanaryEffectReservations struct {
+	operations *V3OperationStore
+	namespace  string
+}
 
 func NewV3CanaryEffectReservations(operations *V3OperationStore) (*V3CanaryEffectReservations, error) {
 	if operations == nil || operations.kv == nil || operations.lease == nil || operations.authority == "" {
 		return nil, fmt.Errorf("etcd canary effect reservations require a v3 operation store")
 	}
-	return &V3CanaryEffectReservations{operations: operations}, nil
+	return &V3CanaryEffectReservations{operations: operations, namespace: "canary"}, nil
 }
 
 func (s *V3CanaryEffectReservations) Authority(ctx context.Context) (string, error) {
@@ -39,7 +42,14 @@ func (s *V3CanaryEffectReservations) effectKey(r effect.Reservation) string {
 func (s *V3CanaryEffectReservations) effectPrefix(r effect.Reservation) string {
 	material := r.OperationClaim.OperationID + "\x00" + r.Stage + "\x00" + r.InputDigest
 	sum := sha256.Sum256([]byte(material))
-	return s.operations.prefix + "/v3/effects/canary/" + hex.EncodeToString(sum[:]) + "/"
+	return s.operations.prefix + "/v3/effects/" + s.effectNamespace() + "/" + hex.EncodeToString(sum[:]) + "/"
+}
+
+func (s *V3CanaryEffectReservations) effectNamespace() string {
+	if s.namespace == "deploy" {
+		return "deploy"
+	}
+	return "canary"
 }
 
 func (s *V3CanaryEffectReservations) gateKey(app string) string {
@@ -99,7 +109,12 @@ func (s *V3CanaryEffectReservations) Reserve(ctx context.Context, r effect.Reser
 	if err != nil {
 		return effect.ReservationResult{}, store.ErrOperationOwnershipLost
 	}
-	app, err := validateCanaryEffectReservation(r, op.Operation, s.operations.authority)
+	var app string
+	if s.effectNamespace() == "deploy" {
+		app, err = s.validateDeploymentEffectReservation(ctx, r, op.Operation)
+	} else {
+		app, err = validateCanaryEffectReservation(r, op.Operation, s.operations.authority)
+	}
 	if err != nil {
 		return effect.ReservationResult{}, err
 	}
