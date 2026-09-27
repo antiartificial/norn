@@ -334,13 +334,20 @@ func TestExpiredOperationRecoveryPreservesLiveAndClassifiesSafeWork(t *testing.T
 
 	safeDeployment, safeOp := insertDeploymentOperationFixture(t, stores[0], 3)
 	unsafeDeployment, unsafeOp := insertDeploymentOperationFixture(t, stores[0], 3)
+	migrationDeployment, migrationOp := insertDeploymentOperationFixture(t, stores[0], 3)
 	if _, _, err := stores[0].ClaimNextOperation(ctx, "safe-owner", 100*time.Millisecond, []string{"app.deploy"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := stores[0].ClaimNextOperation(ctx, "unsafe-owner", 100*time.Millisecond, []string{"app.deploy"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := stores[0].ClaimNextOperation(ctx, "migration-owner", 100*time.Millisecond, []string{"app.deploy"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := stores[0].Pool.Exec(ctx, `INSERT INTO deployment_steps(deployment_id,app,saga_id,step,kind,status,attempt) VALUES($1,$2,$3,'submit','mutation','running',1)`, unsafeDeployment.ID, unsafeDeployment.App, unsafeDeployment.SagaID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].Pool.Exec(ctx, `INSERT INTO deployment_steps(deployment_id,app,saga_id,step,kind,status,attempt) VALUES($1,$2,$3,'migrate','mutable','running',1)`, migrationDeployment.ID, migrationDeployment.App, migrationDeployment.SagaID); err != nil {
 		t.Fatal(err)
 	}
 	unsafeData := insertOperationFixture(t, stores[0], "app.migrate", 5, map[string]interface{}{})
@@ -364,6 +371,10 @@ func TestExpiredOperationRecoveryPreservesLiveAndClassifiesSafeWork(t *testing.T
 	}
 	assertOperationDeploymentStatus(t, stores[1], safeOp.ID, safeDeployment.ID, model.OperationQueued, model.StatusQueued)
 	assertOperationDeploymentStatus(t, stores[1], unsafeOp.ID, unsafeDeployment.ID, model.OperationFailed, model.StatusFailed)
+	assertOperationDeploymentStatus(t, stores[1], migrationOp.ID, migrationDeployment.ID, model.OperationFailed, model.StatusFailed)
+	if got, err := stores[1].GetOperation(ctx, migrationOp.ID); err != nil || got.Metadata["manualRecoveryRequired"] != true {
+		t.Fatalf("interrupted deployment migration must require manual recovery: %+v err=%v", got, err)
+	}
 	for _, id := range []string{unsafeData.ID, unsafeImport.ID, unsafeExport.ID, maintenance.ID} {
 		got, err := stores[1].GetOperation(ctx, id)
 		if err != nil || got.Status != model.OperationFailed || got.Metadata["manualRecoveryRequired"] != true {
