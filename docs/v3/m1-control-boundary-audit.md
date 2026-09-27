@@ -2,6 +2,26 @@
 
 Audit point: `integration/v3-m1-control-audit` at `07ea7d4` on 2026-09-23.
 
+## Current-route recheck — 2026-09-26
+
+The P0 table below is the **historical finding at that audit point**, not a
+list of routes still performing those effects inline. On the current v3
+integration branch, restart/scale and canary promotion accept signed durable
+operations; cron trigger/pause/resume/schedule use accepted operations or
+fail closed; forge queues the host ingress mutation; snapshot restore queues
+the destructive operation; and wake queues one durable capacity intent.
+ContextDB feedback rollback is unavailable with an explicit 501 rather than
+performing an inline POST.
+
+The old `handler.InvokeFunction` still contains an inline Nomad submission,
+but `main.go` routes `/invoke` through the claimed private invocation path
+and returns 503 if that complete runtime is unavailable. The
+[function handoff](m1-function-invocation-handoff.md) describes the current
+private acceptance, worker/effect recovery, and remaining etcd parity and
+release-runtime gates. Do not re-enable the legacy handler to satisfy a
+compatibility test. M1 still requires complete external-effect reconciliation,
+cross-backend parity, and runtime qualification; this recheck does not sign it.
+
 This is a source inventory, not milestone qualification. It identifies control
 consumers that still require PostgreSQL's concrete `*store.DB` and mutation
 paths that launch an external effect without first crossing the canonical
