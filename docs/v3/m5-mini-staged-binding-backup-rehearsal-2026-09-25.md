@@ -127,3 +127,21 @@ job, route, endpoint and database map. The live Mini checkout still lacks the
 new protected-backup helper; use the exact reviewed candidate tooling in the
 protected procedure. The staged binding remains inactive, and M5 remains
 open.
+
+### Deploy-enabled workloads without a healthy allocation
+
+At 2026-09-27 20:24 UTC, authenticated, app-filtered deployment history
+showed the following most recent records. These are historical deployment
+results, not proof that the workload is running now.
+
+| App | Latest deployment | Current runtime | Rehearsal disposition |
+| --- | --- | --- | --- |
+| `ad-asset-verifier` | Deployed 2026-05-19 | No Nomad allocation | Unclassified absence; owner must confirm whether suspension is intended. |
+| `ft-trove` | Deployed 2026-07-10 after earlier same-day failures | No Nomad allocation | Unclassified absence; owner must confirm whether suspension is intended. |
+| `hello-norn` | Deployed 2026-02-13 | No Nomad allocation | Unclassified absence; owner must confirm whether suspension is intended. |
+| `its-alive-api` | Failed deployment begun 2026-09-04; failed region with zero active weight | Nomad job `dead`, no allocation | Existing failed state with open restart, auto-rollback, and critical-health incidents; investigate or explicitly exclude before the rehearsal. |
+
+The first three have a successful latest deployment, but that does not prove
+an intentional stop or continuing health. Keep all four out of an
+"unchanged healthy workload" assertion until their owners record the intended
+state and expected post-upgrade behavior.
