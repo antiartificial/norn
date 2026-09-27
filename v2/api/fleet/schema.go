@@ -142,7 +142,8 @@ type ReconciliationRequest struct {
 	StateSerial    int64  `json:"stateSerial,omitempty"`
 	EvidenceDigest string `json:"evidenceDigest"`
 	// IngressInventoryDigest binds a private Fleet hook snapshot to the
-	// successful nodes_configured checkpoint. The snapshot bytes stay private.
+	// successful nodes_configured checkpoint. Its host list is stored in the
+	// protected reconciliation payload for later route observation.
 	IngressInventoryDigest string          `json:"ingressInventoryDigest,omitempty"`
 	IngressInventory       json.RawMessage `json:"ingressInventory,omitempty"`
 	Message                string          `json:"message,omitempty"`

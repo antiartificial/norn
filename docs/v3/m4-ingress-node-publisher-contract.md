@@ -38,8 +38,11 @@ configured node source and includes both the snapshot and
 `ingressInventoryDigest` in a successful, attempt-bound `nodes_configured`
 checkpoint. The control API checks their canonical digest and node membership.
 Older checkpoints without these fields remain valid history but cannot supply
-M4 ingress inventory proof. The control worker must read the snapshot from the
-current authorized Fleet attempt and compare its revision,
+M4 ingress inventory proof. `CurrentFleetIngressInventory` now resolves only
+the latest successful Fleet attempt with matching configuration and completion
+checkpoints; a newer pending attempt fails closed. The control worker must bind
+that Fleet plan and attempt to its accepted deployment, compare the inventory
+revision again at completion,
 and reject host replacement between observation and deployment completion.
 
 ## Authority and host boundary
