@@ -223,9 +223,11 @@ active pre-index work must first drain or reconcile it.
    `databaseTargets` acceptance payload before reserving the effect. The
    private Nomad Variable delivery can now CAS-add exactly the planned
    process secret file keys to that revision job without overwriting staged
-   database material; a different value at the same job ID is refused. The
-   normal etcd dispatch still must resolve the accepted targets, obtain and
-   stage their database material and process secrets, and invoke the
+   database material; a different value at the same job ID is refused. A
+   private source adapter selects only those keys from the app secret map and
+   refuses missing values before any write. The normal etcd dispatch still
+   must resolve the accepted targets, obtain and stage their database material
+   and process secrets, and invoke the
    constructor; no normal managed
    job path is enabled by the private verifier alone.
 

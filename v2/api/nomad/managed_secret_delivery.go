@@ -8,6 +8,39 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 )
 
+type ManagedJobSecretSource interface {
+	EnvMap(app string) (map[string]string, error)
+}
+
+// StageManagedJobSecretsFromSource loads the app's private secret map, selects
+// only file keys named by this job, and refuses a missing key before Nomad IO.
+func (c *Client) StageManagedJobSecretsFromSource(app, region string, plan ManagedJobInputRequirements, source ManagedJobSecretSource) error {
+	if app == "" || source == nil {
+		return fmt.Errorf("managed job secret source is unavailable")
+	}
+	required := map[string]bool{}
+	for _, key := range plan.RequiredKeys {
+		if !strings.HasPrefix(key, "norn_") {
+			required[key] = true
+		}
+	}
+	if len(required) == 0 {
+		return c.StageManagedJobSecretInputs(region, plan, nil)
+	}
+	all, err := source.EnvMap(app)
+	if err != nil {
+		return fmt.Errorf("managed job secret source failed for %s", app)
+	}
+	selected := make(map[string]string, len(required))
+	for key := range required {
+		if all[key] == "" {
+			return fmt.Errorf("managed job secret %s is unavailable", key)
+		}
+		selected[key] = all[key]
+	}
+	return c.StageManagedJobSecretInputs(region, plan, selected)
+}
+
 // StageManagedJobSecretInputs adds only the file keys required by a managed
 // revision job. It is idempotent under Nomad CAS and never changes an existing
 // value at that job path; a rotated value needs a new deployment revision.
