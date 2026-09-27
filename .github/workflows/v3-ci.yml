@@ -163,7 +163,7 @@ jobs:
         with:
           go-version: '1.26.6'
       - name: Validate GitHub Actions syntax
-        run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+        run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Require immutable third-party action references
         run: |
           set -euo pipefail

@@ -195,13 +195,14 @@ func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string, fixture etcdF
 		"NORN_PROFILE="+profile, "NORN_ENVIRONMENT="+environmentID, "NORN_API_TOKEN="+secret, "NORN_AUDIT_SIGNING_KEY=fleet-runtime-process-audit-key-000", "NORN_AUDIT_RETENTION_DAYS=365", "NORN_REQUIRE_EXPLICIT_AUTH=true",
 		"NORN_NOMAD_ADDR=https://nomad.example.test:4646", "NORN_CONSUL_ADDR=https://consul.example.test:8501", "CONSUL_HTTP_SSL_VERIFY=true", "NORN_REGISTRY_URL=registry.example.test/norn",
 		"NORN_RELEASE_ADMISSION_MODE=keyless", "NORN_RELEASE_ATTESTATION_ISSUER=https://token.actions.githubusercontent.com", "NORN_RELEASE_ATTESTATION_ALLOWED_REPOSITORIES=example/norn", "NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS=example/norn/.github/workflows/release.yml@"+strings.Repeat("a", 40), "NORN_RELEASE_REQUIRE_SBOM=true",
-		"NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS="+testEd25519Public('q'), "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE=norn", "NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES=example/norn@1@2", "NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS=example/norn/.github/workflows/release.yml@"+strings.Repeat("a", 40), "NORN_GITHUB_ACTIONS_ALLOWED_REFS=refs/tags/v*", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS=push", "NORN_GITHUB_ACTIONS_ALLOWED_APPS=demo", "NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS=production", "NORN_GITHUB_ACTIONS_DEFAULT_BRANCH=main", "NORN_LEGACY_TOKEN_SIGNING_UNTIL=2020-01-01T00:00:00Z",
+		"NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS="+testEd25519Public('q'), "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE=norn", "NORN_GITHUB_ACTIONS_RELEASE_BINDINGS=demo=example/norn@1@2", "NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES=example/norn@1@2", "NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS=example/norn/.github/workflows/release.yml@"+strings.Repeat("a", 40), "NORN_GITHUB_ACTIONS_ALLOWED_REFS=refs/tags/v*", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS=push", "NORN_GITHUB_ACTIONS_ALLOWED_APPS=demo", "NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS=production", "NORN_GITHUB_ACTIONS_DEFAULT_BRANCH=main", "NORN_LEGACY_TOKEN_SIGNING_UNTIL=2020-01-01T00:00:00Z",
 		"NORN_BIND_ADDR=127.0.0.1", fmt.Sprintf("NORN_PORT=%d", port), "NORN_FLEET_CONFIG="+configPath, "NORN_UI_DIR=",
 	)
 	if fixture.production {
 		command.Env = append(command.Env,
 			"NORN_ETCD_CA_FILE="+fixture.backend.EtcdCAFile, "NORN_ETCD_CERT_FILE="+fixture.backend.EtcdCertFile, "NORN_ETCD_KEY_FILE="+fixture.backend.EtcdKeyFile,
 			"NORN_ETCD_USERNAME="+fixture.backend.EtcdUsername, "NORN_ETCD_PASSWORD="+fixture.backend.EtcdPassword,
+			"NORN_COSIGN_PATH=/usr/bin/false", "NORN_TRIVY_PATH=/usr/bin/false",
 		)
 	}
 	if databaseURL != "" {
