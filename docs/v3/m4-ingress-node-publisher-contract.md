@@ -17,6 +17,11 @@ client with the wrong URI. The candidate build and exact release manifest now
 include the binary; no signed release has been published. It has not been
 installed on Fleet hosts or connected to the control worker. It cannot
 publish or authorize a route, and supplies no public-path or inventory proof.
+The control-side `ObservePublishedRenderedRoute` now joins the expected local
+file generation/digest with Traefik rawdata on every supplied node and rejects
+a generation change during readback. Its node list is caller supplied; durable
+Fleet inventory, authenticated client configuration, endpoint probes and
+public-path proof are still required before any terminal traffic result.
 
 ## Authority and host boundary
 

@@ -23,6 +23,7 @@ type IngressNode struct {
 type NodeObservation struct {
 	NodeID                    string
 	MatchedDesiredRouteSHA256 string
+	PublishedGeneration       uint64
 }
 
 type rawRoute struct {
