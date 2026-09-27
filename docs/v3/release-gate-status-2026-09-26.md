@@ -179,17 +179,19 @@ probes the public app endpoint. The fixture therefore cannot qualify traffic
 activation or M4 completion; the required ingress authority and observation
 are specified in the [M4 admission sequence](m4-etcd-app-admission-sequence-2026-09-26.md).
 
-At 2026-09-27, the current draft PR #77 head
-`1722ba427b9bcf08df317d29f5caae4ab0cdabbb` passed all 15 reported
-checks. [Norn CI run 36304890397](https://github.com/antiartificial/norn/actions/runs/36304890397)
-ran the complete API suite on Linux with disposable PostgreSQL 16 and etcd
-together, plus the production etcd TLS/RBAC, Mini schema, web, CLI, workflow,
-and release-bundle checks. [Repository CI run 36304890452](https://github.com/antiartificial/norn/actions/runs/36304890452)
-passed the protected-master legacy contexts. A PostgreSQL timestamp assertion
-was corrected to compare against the database-persisted precision before
-this exact-head run. GitHub reports the draft PR mergeable; no protected merge,
-production signing, Mini upgrade, or Fleet launch has occurred. This is the
-integration candidate's CI baseline, not M0–M9 sign-off.
+At 2026-09-27 18:19:59 UTC, draft PR #77 head
+`455adab031eaf7a3132cdde4b17448bdaa5ba6eb` passed all 16 reported
+checks. [Norn CI run 36340070691](https://github.com/antiartificial/norn/actions/runs/36340070691)
+ran the API suite on Linux with disposable PostgreSQL 16 and etcd together,
+plus the production etcd TLS/RBAC, Mini schema, web, CLI, workflow, and
+release-bundle checks. [Repository CI run 36340070835](https://github.com/antiartificial/norn/actions/runs/36340070835)
+passed the protected-master legacy contexts. The Fleet draft PR #177
+`contract` job at `9919af7e4e3c9fa705ed86bb313af47f4276f7b9` has no
+steps: [run 36336261798](https://github.com/antiartificial/norn-fleet/actions/runs/36336261798)
+was rejected before starting because of GitHub account payments or spending
+limit, according to its check annotation. This is independent of X API credit.
+No protected merge, production signing, Mini upgrade, or Fleet launch has
+occurred. These are candidate CI observations, not M0–M9 sign-off.
 
 ## Shortest release path from here
 
