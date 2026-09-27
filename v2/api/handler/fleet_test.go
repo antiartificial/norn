@@ -236,11 +236,17 @@ nodePools:
 }
 
 func TestFleetIngressInventoryDigestOnlyBindsSuccessfulConfiguration(t *testing.T) {
+	snapshot := json.RawMessage(`{"cluster":"norn-staging","environment":"staging/nyc3","ingressNodes":[{"name":"ingress-01","privateIP":"10.43.0.21"},{"name":"ingress-02","privateIP":"10.43.0.22"}],"nodesFileSHA256":"` + strings.Repeat("a", 64) + `","schemaVersion":"norn.fleet-ingress-inventory/v1"}`)
+	canonical, err := fleet.CanonicalIngressInventory(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(canonical)
 	request := fleet.ReconciliationRequest{
 		SchemaVersion: fleet.ReconciliationSchemaVersion, AttemptID: uuid.NewString(),
 		Phase: "nodes_configured", Status: "succeeded", CommitSHA: strings.Repeat("a", 40),
 		PlanSHA256: strings.Repeat("b", 64), EvidenceDigest: "sha256:" + strings.Repeat("c", 64),
-		IngressInventoryDigest: "sha256:" + strings.Repeat("d", 64),
+		IngressInventoryDigest: "sha256:" + hex.EncodeToString(sum[:]), IngressInventory: snapshot,
 	}
 	if err := validateFleetReconciliationRequest(request); err != nil {
 		t.Fatal(err)
@@ -251,6 +257,12 @@ func TestFleetIngressInventoryDigestOnlyBindsSuccessfulConfiguration(t *testing.
 		func() fleet.ReconciliationRequest {
 			copy := request
 			copy.IngressInventoryDigest = "sha256:" + strings.Repeat("D", 64)
+			return copy
+		}(),
+		func() fleet.ReconciliationRequest { copy := request; copy.IngressInventory = nil; return copy }(),
+		func() fleet.ReconciliationRequest {
+			copy := request
+			copy.IngressInventory = json.RawMessage(strings.Replace(string(snapshot), "10.43.0.22", "10.43.0.23", 1))
 			return copy
 		}(),
 	} {

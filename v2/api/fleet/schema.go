@@ -3,9 +3,13 @@
 package fleet
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"time"
+
+	"norn/v2/api/ingress"
 )
 
 const (
@@ -139,20 +143,54 @@ type ReconciliationRequest struct {
 	EvidenceDigest string `json:"evidenceDigest"`
 	// IngressInventoryDigest binds a private Fleet hook snapshot to the
 	// successful nodes_configured checkpoint. The snapshot bytes stay private.
-	IngressInventoryDigest string `json:"ingressInventoryDigest,omitempty"`
-	Message                string `json:"message,omitempty"`
+	IngressInventoryDigest string          `json:"ingressInventoryDigest,omitempty"`
+	IngressInventory       json.RawMessage `json:"ingressInventory,omitempty"`
+	Message                string          `json:"message,omitempty"`
 }
 
 func ValidIngressInventoryCheckpoint(request ReconciliationRequest) bool {
-	if request.IngressInventoryDigest == "" {
+	if request.IngressInventoryDigest == "" && len(request.IngressInventory) == 0 {
 		return true
 	}
-	if request.Phase != "nodes_configured" || request.Status != "succeeded" || !strings.HasPrefix(request.IngressInventoryDigest, "sha256:") || len(request.IngressInventoryDigest) != len("sha256:")+64 {
+	if request.Phase != "nodes_configured" || request.Status != "succeeded" || len(request.IngressInventory) == 0 || len(request.IngressInventory) > 64<<10 || !strings.HasPrefix(request.IngressInventoryDigest, "sha256:") || len(request.IngressInventoryDigest) != len("sha256:")+64 {
 		return false
 	}
 	value := strings.TrimPrefix(request.IngressInventoryDigest, "sha256:")
 	decoded, err := hex.DecodeString(value)
-	return err == nil && hex.EncodeToString(decoded) == value
+	if err != nil || hex.EncodeToString(decoded) != value {
+		return false
+	}
+	var snapshot struct {
+		Cluster     string `json:"cluster"`
+		Environment string `json:"environment"`
+	}
+	if err := json.Unmarshal(request.IngressInventory, &snapshot); err != nil {
+		return false
+	}
+	canonical, err := CanonicalIngressInventory(request.IngressInventory)
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(canonical)
+	if request.IngressInventoryDigest != "sha256:"+hex.EncodeToString(sum[:]) {
+		return false
+	}
+	_, err = ingress.ParseFleetIngressInventory(canonical, request.IngressInventoryDigest, snapshot.Cluster, snapshot.Environment, 18082)
+	return err == nil
+}
+
+// CanonicalIngressInventory reproduces the Fleet hook's sorted compact JSON
+// plus newline, independent of HTTP field formatting.
+func CanonicalIngressInventory(raw json.RawMessage) ([]byte, error) {
+	var document any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, err
+	}
+	return append(encoded, '\n'), nil
 }
 
 const RunnerAttemptSchemaVersion = "norn.fleet-runner-attempt/v1"

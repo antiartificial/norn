@@ -34,11 +34,12 @@ snapshot with a digest in its hook evidence. Norn's
 environment, canonical schema and private host membership; the
 `ObserveFleetIngressInventory` helper uses every derived host for mutual-TLS
 file/Traefik readback. The Fleet runner now checks the snapshot against its
-configured node source and includes `ingressInventoryDigest` in a successful,
-attempt-bound `nodes_configured` checkpoint. Older checkpoints without this
-field remain valid history but cannot supply M4 ingress inventory proof. The
-control worker must read that digest from the current authorized Fleet attempt,
-persist and compare its revision,
+configured node source and includes both the snapshot and
+`ingressInventoryDigest` in a successful, attempt-bound `nodes_configured`
+checkpoint. The control API checks their canonical digest and node membership.
+Older checkpoints without these fields remain valid history but cannot supply
+M4 ingress inventory proof. The control worker must read the snapshot from the
+current authorized Fleet attempt and compare its revision,
 and reject host replacement between observation and deployment completion.
 
 ## Authority and host boundary
