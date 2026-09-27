@@ -56,6 +56,15 @@ against a disposable real etcd instance; its listener was stopped afterward.
 This verifies those bounded cases, not all production GitHub claim policies
 or Fleet runner recovery.
 
+The focused Fleet runner ownership test passed locally: a token needs the
+exact `fleet:operate` scope, runner attempt ID, and canonical workflow URL
+for its signed GitHub run attempt; the test rejects another run and a
+compatibility `api:write` token. The release manifest and artifact helper
+suites also passed locally (9 and 8 tests). The workflow diff adds the
+effect runner to the bundle without changing the protected release trigger
+or permissions. These checks do not replace exact-head protected CI or a
+review of the full Fleet dispatch/recovery path.
+
 ## Immediate blocking decisions
 
 1. Choose Mini control-store RPO, off-host destination, and retention in the
