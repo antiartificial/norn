@@ -133,8 +133,24 @@ General cross-backend conversion, local single-member etcd, Fleet-PG qualificati
 
 ## Execution status
 
-Paused 2026-09-22. [Resume handoff](RESUME.md) is the consolidated current
-milestone/checkpoint disposition and next-work queue; the paragraph below is
-historical and predates the later independently verified M1/M2 batches.
+As of 2026-09-27, **0 of 10 M0–M9 gates are signed (0%)**. This is the release
+gate completion ratio, not an estimate of code completed. The integration is
+under review in draft PR #77; passing local tests and CI do not sign a gate.
 
-All M0–M9 implementation gates remain pending. Bounded exec-session ownership, operation fencing/recovery, versioned schema and passive-startup slices are locally implemented and verified with PostgreSQL and the race detector; see [implementation status](implementation-status.md) for exact evidence and exclusions. These local units do not establish full domain-store semantics, downstream effect fencing, HA or a qualified live upgrade. Current work is implemented directly by Claude in reviewable batches, each accepted only after independent root review and PostgreSQL race verification: batch one (M2 database resolver contract and M1 control-recovery verifier/CLI) is accepted as a local checkpoint; batch two (supervised build.test effect recovery) awaits review. Neither closes an M1 or M2 gate, and M0 baseline/decision closure remains outstanding. Runtime mutations require their own named execution scope.
+| Gate | Current disposition | Evidence and next qualification boundary |
+| --- | --- | --- |
+| M0 | Open | Mini baseline and private restore rehearsals exist; off-host backup RPO, destination, retention and owner decisions remain unresolved. |
+| M1 | Open | Control ownership, acceptance, effect and recovery slices have local tests; complete cross-process and downstream-effect qualification remains. |
+| M2 | Open | Profile, database binding, MySQL and archive slices have local evidence; unchanged imported Mini behavior and complete retention/recovery gate remain. |
+| M3 | Open | [Three-member TLS/RBAC etcd catalog rehearsal](m3-etcd-catalog-three-member-qualification-2026-09-27.md) passed locally, including quorum loss and full restore. Host-supervised Fleet bootstrap/repair, multi-host faults, alarms, rotation, upgrades and soak remain. |
+| M4 | Open | [Private app admission](m4-etcd-app-admission-sequence-2026-09-26.md) and a [local weighted ingress fixture](m4-local-traefik-weighted-route-fixture-2026-09-27.md) exist. Normal etcd app execution, protected ingress publication/readback, placement, scaling and drain under load remain. |
+| M5 | Open | [Private Mini copy/rehearsal](m5-mini-private-upgrade-boundary-rehearsal-2026-09-25.md) exists; representative current-state upgrade and rollback with signed target candidate remain. |
+| M6 | Open | Running upgrade and application database cutover/recovery gate remains. |
+| M7 | Open | First complete Mini-to-Fleet application mobility rehearsal remains. |
+| M8 | Open | Candidate qualification, version matrix, soak/fault evidence and runbooks remain. |
+| M9 | Open | Mini upgrade, clean Fleet deployment and selected app migrations require separate controlled adoption. |
+
+[Implementation status](implementation-status.md) and [resume handoff](RESUME.md)
+retain the earlier bounded implementation checkpoints. This table governs only
+the formal milestone percentage; each gate needs its own full-scope evidence
+and owner sign-off before its disposition changes.
