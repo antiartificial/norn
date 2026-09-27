@@ -164,6 +164,27 @@ active pre-index work must first drain or reconcile it.
    Multi-region or canary percentages also need explicit weighted routing
    semantics and rollback evidence rather than interpreting service tags as
    routing policy.
+
+   A 2026-09-27 follow-up checked Fleet PR #176 head `6267655052b209b22dc8b3421cb9339f797af9bc`
+   `ansible/templates/traefik.yml.j2`: the file provider already watches
+   `/etc/traefik/dynamic`, beside Consul Catalog. Traefik's
+   [file provider](https://doc.traefik.io/traefik/reference/routing-configuration/other-providers/file/)
+   can define a weighted service, and its
+   [provider namespaces](https://doc.traefik.io/traefik/reference/install-configuration/providers/overview/)
+   allow an explicit reference to a Consul Catalog service. This is a
+   candidate authority, not an applied Norn route. The current translator
+   registers each process under the stable Consul service name `app-process`
+   and emits a hostname router from its tags. It does not separate old and
+   new deployment revisions into independently addressable services. Before
+   rendering a weighted file route, give each revision a stable distinct
+   backend identity and remove competing hostname routers for that managed
+   endpoint. Keep the legacy route path until a guarded v3 transition has
+   readback and rollback. A file write alone cannot count as propagation:
+   the controller must atomically publish one versioned route on every
+   ingress node, verify Traefik's effective router/service on each node,
+   and probe the endpoint through each node and the public path. A partial
+   rollout or a backend whose revision identity cannot be read back keeps
+   `ActiveWeight` at zero.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
