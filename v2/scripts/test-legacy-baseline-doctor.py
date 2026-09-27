@@ -53,8 +53,8 @@ class DoctorFixtureTest(unittest.TestCase):
         repo = self.root / "repo"
         repo.mkdir()
         subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
-        for setting in ("user.name", "user.email"):
-            configured = subprocess.check_output(["git", "config", "--get", setting], text=True).strip()
+        for setting, field in (("user.name", "%an"), ("user.email", "%ae")):
+            configured = subprocess.check_output(["git", "-C", str(SCRIPT.parent), "log", "-1", f"--format={field}"], text=True).strip()
             subprocess.run(["git", "-C", str(repo), "config", setting, configured], check=True)
         source_script = repo / "v2/scripts/platform-upgrade"
         source_script.parent.mkdir(parents=True)
@@ -113,8 +113,8 @@ class DoctorFixtureTest(unittest.TestCase):
         source.write_text("#!/bin/sh\n[ \"${NORN_FIXTURE_SIGNATURE_VALID:-yes}\" = yes ]\n", encoding="utf-8")
         source.chmod(0o755)
         subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
-        for setting in ("user.name", "user.email"):
-            configured = subprocess.check_output(["git", "config", "--get", setting], text=True).strip()
+        for setting, field in (("user.name", "%an"), ("user.email", "%ae")):
+            configured = subprocess.check_output(["git", "-C", str(SCRIPT.parent), "log", "-1", f"--format={field}"], text=True).strip()
             subprocess.run(["git", "-C", str(repo), "config", setting, configured], check=True)
         subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
