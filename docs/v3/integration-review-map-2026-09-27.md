@@ -77,6 +77,20 @@ head's reported GitHub checks all passed, including release bundle rehearsal.
 This closes the workflow-delta review only; it does not sign the candidate or
 prove the full admission/rollback chain.
 
+The later M4 ingress-observer slice adds one more binary build line to
+`platform-release.yml` and its exact manifest set. A local secretless bundle
+rehearsal built and imported the candidate with an ephemeral test signature;
+the manifest and artifact helper suites passed. The bundle test now builds
+UI dependencies in a temporary copy so a worktree's `node_modules` symlink
+cannot mutate another checkout. Re-review this expanded workflow diff against
+protected `master` at the final candidate head before signing. The observer
+has no Fleet installation or traffic-publication authority yet.
+The older `platform_upgrade_integration_test.py` synthetic API fixture remains
+red at its existing `NORN_SKIP_CANDIDATE_API=true` setting because current
+schema-safe preflight requires a passive candidate API and active schema
+identity. Its fixture must be modernized before it can support an M5 claim;
+the passing bundle rehearsal does not cover that upgrade lane.
+
 The production rollback entrypoint also lacked the durable-dependency guard
 used by the shared release queue. An authorized request could reach a nil
 store or pipeline during a degraded startup. It now returns 503 before

@@ -967,6 +967,7 @@ build_release_into() {
   local agent_ldflags="-buildid="
   (cd "$worktree/v2/api" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$api_ldflags" -o "$target/bin/norn-api" .)
   (cd "$worktree/v2/api" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$agent_ldflags" -o "$target/bin/norn-host-agent" ./cmd/norn-host-agent)
+  (cd "$worktree/v2/api" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$agent_ldflags" -o "$target/bin/norn-ingress-observer" ./cmd/norn-ingress-observer)
   (cd "$worktree/v2/api" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$agent_ldflags" -o "$target/bin/norn-effect-runner" ./cmd/norn-effect-runner)
   (cd "$worktree/v2/cli" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$cli_ldflags" -o "$target/bin/norn" .)
   install -m 0755 "$worktree/v2/scripts/platform-upgrade" "$target/bin/platform-upgrade"

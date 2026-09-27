@@ -67,6 +67,14 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "package main\n\nfunc main() {}\n",
         )
         self.write(
+            "v2/api/cmd/norn-ingress-observer/main.go",
+            "package main\n\nfunc main() {}\n",
+        )
+        self.write(
+            "v2/api/cmd/norn-effect-runner/main.go",
+            "package main\n\nfunc main() {}\n",
+        )
+        self.write(
             "v2/cli/go.mod",
             "module norn/v2/cli\n\ngo 1.26\n",
         )

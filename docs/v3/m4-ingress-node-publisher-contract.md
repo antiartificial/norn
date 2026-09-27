@@ -13,8 +13,9 @@ non-loopback Traefik origins, redirects, oversized or invalid JSON, and
 unverified clients in local tests. A local binary smoke test reached the
 revision endpoint with a trusted client, rejected a missing client
 certificate at the TLS handshake, and returned 401 for a validly signed
-client with the wrong URI. It has not been added to a signed release,
-installed on Fleet hosts, or connected to the control worker. It cannot
+client with the wrong URI. The candidate build and exact release manifest now
+include the binary; no signed release has been published. It has not been
+installed on Fleet hosts or connected to the control worker. It cannot
 publish or authorize a route, and supplies no public-path or inventory proof.
 
 ## Authority and host boundary

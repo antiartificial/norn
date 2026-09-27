@@ -31,7 +31,7 @@ func TestPlatformReleaseLaneIncludesSignedV3Bundle(t *testing.T) {
 	}
 	for _, required := range []string{
 		"refs/heads/master", "git merge-base --is-ancestor", "platform-release",
-		"norn-effect-runner", "platform-release-fetch-github", "platform-release-verify-github",
+		"norn-effect-runner", "norn-ingress-observer", "platform-release-fetch-github", "platform-release-verify-github",
 	} {
 		if !strings.Contains(string(workflow), required) {
 			t.Errorf("signed release workflow is missing %q", required)
@@ -443,7 +443,7 @@ trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `
 	writeTestScript(t, filepath.Join(target, "bin", "norn-api"), apiScript)
-	for _, name := range []string{"norn", "norn-host-agent", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "host-runtime"} {
+	for _, name := range []string{"norn", "norn-host-agent", "norn-ingress-observer", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "host-runtime"} {
 		writeTestScript(t, filepath.Join(target, "bin", name), "#!/usr/bin/env bash\nexit 0\n")
 	}
 	writeTestScript(t, filepath.Join(previous, "bin", "norn-api"), strings.ReplaceAll(apiScript, "v2.21.0-platform", "v2.19.0-platform"))

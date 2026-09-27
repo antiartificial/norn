@@ -19,7 +19,7 @@ fi
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/norn-release-bundle-test.XXXXXX")"
 cleanup() {
   chmod -R u+w "$scratch" 2>/dev/null || true
-  rm -rf "$scratch"
+  rm -r "$scratch"
 }
 trap cleanup EXIT
 release="$scratch/release"
@@ -36,14 +36,18 @@ build_go() {
   )
 }
 
+mkdir -p "$scratch/ui-source"
+tar -C "$repo/v2/ui" --exclude=node_modules --exclude=dist -cf - . |
+  tar -C "$scratch/ui-source" -xf -
 (
-  cd "$repo/v2/ui"
+  cd "$scratch/ui-source"
   SOURCE_DATE_EPOCH="$source_epoch" pnpm install --frozen-lockfile
   SOURCE_DATE_EPOCH="$source_epoch" pnpm build
 )
-cp -R "$repo/v2/ui/dist/." "$release/ui/"
+cp -R "$scratch/ui-source/dist/." "$release/ui/"
 build_go v2/api "$release/bin/norn-api" . "-buildid= -X main.Version=$version"
 build_go v2/api "$release/bin/norn-host-agent" ./cmd/norn-host-agent "-buildid="
+build_go v2/api "$release/bin/norn-ingress-observer" ./cmd/norn-ingress-observer "-buildid="
 build_go v2/api "$release/bin/norn-effect-runner" ./cmd/norn-effect-runner "-buildid="
 build_go v2/cli "$release/bin/norn" . "-buildid= -X norn/v2/cli/cmd.Version=$version"
 for helper in host-runtime platform-release-artifact platform-release-fetch-github platform-release-manifest platform-release-verify-github platform-upgrade; do
@@ -75,8 +79,12 @@ SOURCE_DATE_EPOCH="$source_epoch" python3 "$repo/v2/scripts/platform-release-art
   --release-dir "$release" --output-dir "$bundle" --commit "$sha" \
   --os "$(go env GOOS)" --arch "$(go env GOARCH)" \
   --repository antiartificial/norn --source-date-epoch "$source_epoch"
-openssl genpkey -algorithm ED25519 -out "$scratch/test-private.pem"
-openssl pkey -in "$scratch/test-private.pem" -pubout -out "$scratch/test-public.pem"
+openssl_bin="$(command -v openssl)"
+if [[ -x /opt/homebrew/opt/openssl@3/bin/openssl ]]; then
+  openssl_bin=/opt/homebrew/opt/openssl@3/bin/openssl
+fi
+"$openssl_bin" genpkey -algorithm ED25519 -out "$scratch/test-private.pem"
+"$openssl_bin" pkey -in "$scratch/test-private.pem" -pubout -out "$scratch/test-public.pem"
 NORN_RELEASE_SIGNING_KEY_FILE="$scratch/test-private.pem" \
   python3 "$repo/v2/scripts/platform-release-artifact" sign --bundle-dir "$bundle"
 python3 "$repo/v2/scripts/platform-release-artifact" verify --bundle-dir "$bundle" --public-key "$scratch/test-public.pem" --quiet

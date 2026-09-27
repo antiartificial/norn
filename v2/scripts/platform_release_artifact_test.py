@@ -26,6 +26,7 @@ BINARIES = (
     "norn-api",
     "norn-effect-runner",
     "norn-host-agent",
+    "norn-ingress-observer",
     "platform-release-artifact",
     "platform-release-fetch-github",
     "platform-release-manifest",
