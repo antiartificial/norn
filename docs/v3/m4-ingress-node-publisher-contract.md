@@ -118,7 +118,9 @@ The Fleet pilot spec binds its endpoint to `web`. Existing Mini specs may omit
 the field, but Fleet route qualification must reject an absent binding rather
 than guess a process. The claimed Fleet route-source resolver now verifies the
 signed deployment's spec digest, accepted region, unique regional endpoint,
-service process, and HTTPS origin before returning route inputs. A durable
+service process, and HTTPS origin before returning route inputs. Its result
+also carries the matched operation, deployment, signed acceptance ID and
+canonical digest required for the route-intent record. A durable
 route-intent path does not consume this result yet.
 
 The current `Deployment` and `ResolvedRegion` records identify the app,

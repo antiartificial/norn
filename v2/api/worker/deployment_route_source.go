@@ -12,12 +12,16 @@ import (
 // claimed deployment. It is only a source identity; route intent and traffic
 // proof still need durable publication and readback.
 type VerifiedFleetRouteSource struct {
-	App        string
-	Region     string
-	Endpoint   string
-	Process    string
-	Port       int
-	SpecDigest string
+	App              string
+	OperationID      string
+	DeploymentID     string
+	AcceptanceID     string
+	AcceptanceDigest string
+	Region           string
+	Endpoint         string
+	Process          string
+	Port             int
+	SpecDigest       string
 }
 
 // VerifyClaimedFleetRouteSource never accepts a caller-selected endpoint or
@@ -26,6 +30,12 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 	verified, err := VerifyClaimedManagedDeployment(ctx, verifier, claimed, spec)
 	if err != nil {
 		return VerifiedFleetRouteSource{}, err
+	}
+	accepted := verified.Accepted
+	if accepted.Deployment.ID == "" || accepted.Intent.ID == "" || accepted.Intent.CanonicalDigest == "" ||
+		accepted.Intent.OperationID != claimed.ID || accepted.Intent.DeploymentID != accepted.Deployment.ID ||
+		accepted.Operation.Payload["deploymentId"] != accepted.Deployment.ID {
+		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route source lacks a matching signed deployment intent")
 	}
 	if region == "" {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route region is missing")
@@ -62,5 +72,7 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || u.RawPath != "" {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route endpoint must be an HTTPS origin")
 	}
-	return VerifiedFleetRouteSource{App: spec.App, Region: region, Endpoint: selected.URL, Process: selected.Process, Port: process.Port, SpecDigest: verified.Accepted.Deployment.SpecDigest}, nil
+	return VerifiedFleetRouteSource{App: spec.App, OperationID: claimed.ID, DeploymentID: accepted.Deployment.ID,
+		AcceptanceID: accepted.Intent.ID, AcceptanceDigest: accepted.Intent.CanonicalDigest,
+		Region: region, Endpoint: selected.URL, Process: selected.Process, Port: process.Port, SpecDigest: accepted.Deployment.SpecDigest}, nil
 }
