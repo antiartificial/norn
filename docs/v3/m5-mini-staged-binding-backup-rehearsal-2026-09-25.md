@@ -69,3 +69,26 @@ configuration. M5 still needs a reviewed runtime binding, a fresh retained
 off-host backup and restore under that binding, an operator-owned workload map,
 and the scheduled service-fence/promotion/rollback rehearsal before Mini can
 be upgraded.
+
+## Read-only binding preflight — 2026-09-27 UTC
+
+The active and staged SOPS ciphertext digests still match the values above.
+Both files are owner-owned mode `0600`; launchd still runs
+`/Users/0xadb/bin/norn-api-sops-launcher`. Decrypting both files only inside
+Mini showed that the staged candidate adds the explicit loopback `norn_v2`
+PostgreSQL URL and a 64-character audit key, while all other decrypted fields
+match the active file. The active file still has neither explicit value. No
+plaintext URL, key, or token was emitted or copied. The staged file remained
+inactive, and no service was restarted.
+
+At installed source `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`, the
+audit key also signs future mutation receipts and Fleet capacity plans and is
+used to verify signed audit incidents and plans. A read-only query through the
+staged URL reached database `norn_v2` as role `norn`; it found 58,556 mutation
+audit rows, zero with a digest or key ID, zero mutation audit incidents, and
+zero stored `fleet.capacity-plan` operations. This closes the historical
+signature inventory for those installed V2 consumers at this instant. Retain
+the staged key as a protected recovery input, and repeat the inventory before
+activation in case new rows appear. Re-run the binding doctor after activation
+and before producing the production-key backup. This remains an M5 preflight,
+not approval to switch the launcher or promote V3.
