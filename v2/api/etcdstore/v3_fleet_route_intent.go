@@ -136,6 +136,10 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 		if err != nil || !sameFleetIngressInventory(&intent.Inventory, currentInventory) {
 			return nil, fmt.Errorf("active Fleet ingress inventory changed after route intent")
 		}
+		inventoryCompares, err := s.fleetIngressInventoryCompares(*currentInventory)
+		if err != nil {
+			return nil, err
+		}
 		reservationAfter, err := s.kv.Get(ctx, reservationKey)
 		if err != nil || len(reservationAfter.Kvs) != 1 || reservationAfter.Kvs[0].ModRevision != reservation.Kvs[0].ModRevision {
 			return nil, fmt.Errorf("Fleet route reservation changed during revalidation")
@@ -151,7 +155,7 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 		// Inventory readback can take long enough for the operation lease or
 		// app lock to change. Recheck all local authority in one etcd snapshot
 		// before returning an intent as currently publishable.
-		stillCurrent, err := s.kv.Txn(ctx).If(
+		comparisons := []clientv3.Cmp{
 			clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", operationRevision),
 			clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
@@ -160,7 +164,9 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 			clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservation.Kvs[0].ModRevision),
 			clientv3.Compare(clientv3.ModRevision(intentKey), "=", intentRevision),
 			clientv3.Compare(clientv3.CreateRevision(activeRouteKey), "=", 0),
-		).Then(clientv3.OpGet(s.ownerKey(claim.OperationID()))).Commit()
+		}
+		comparisons = append(comparisons, inventoryCompares...)
+		stillCurrent, err := s.kv.Txn(ctx).If(comparisons...).Then(clientv3.OpGet(s.ownerKey(claim.OperationID()))).Commit()
 		if err != nil || !stillCurrent.Succeeded || len(stillCurrent.Responses) != 1 || len(stillCurrent.Responses[0].GetResponseRange().Kvs) != 1 || stillCurrent.Responses[0].GetResponseRange().Kvs[0].Lease == 0 {
 			return nil, store.ErrOperationOwnershipLost
 		}
