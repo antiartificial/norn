@@ -203,6 +203,19 @@ active pre-index work must first drain or reconcile it.
    Package tests cover both-revision routing and unsafe or incomplete plans.
    The renderer is not connected to a privileged file publisher, Traefik
    readback, or endpoint probes, so it supplies no effective-weight evidence.
+
+   `ingress.ObserveRenderedRoute` now reads Traefik's `/api/rawdata` on every
+   explicitly named node and compares the enabled `@file` router, TLS mode,
+   weighted service, and enabled `@consulcatalog` backends against the rendered
+   route. It rejects partial propagation, another enabled router claiming the
+   same public host, configuration errors, changed weights, and API redirects.
+   This is a read-only config observer with local HTTP fixtures; Fleet's
+   checked Traefik template has `api.dashboard: false` and no management
+   router exposing `api@internal`, so no live node has been observed through
+   this path. A protected local or authenticated private API access path must
+   be added and qualified before use. Even a matching `/api/rawdata` response
+   must be paired with per-node and public endpoint probes before recording
+   positive `ActiveWeight`.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
