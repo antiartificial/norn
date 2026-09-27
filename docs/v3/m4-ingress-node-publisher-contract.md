@@ -101,6 +101,23 @@ fail-closed terminal proof and reconciliation of every node. Qualification
 must exercise that race and show that traffic is never marked active from a
 stale response.
 
+Publishing a public Traefik route can serve real requests before etcd records
+terminal `ActiveWeight`. Zero in the control record is not a network traffic
+fence. The accepted deployment must already be ready, and any source-writer
+fence required for a cutover must precede publication. A partial publish
+requires explicit node repair or withdrawal under the retained app gate;
+terminal proof cannot retroactively prevent requests routed during that gap.
+The first-route rehearsal must observe this interval and prove the chosen
+recovery behavior before M4 sign-off.
+
+The remaining implementation order is: enable a normal etcd deploy worker
+that holds the claim, app lock and pinned source; start its private authority
+listener; fan out one reserved generation to every current ingress member;
+repeat file, Traefik, endpoint and public-path readback; persist a durable
+proof and compare it in terminal completion; then rehearse partial publish,
+claim loss, replacement and loaded 2→3→2 Fleet operation. The draft host
+publisher service remains disabled until that worker and recovery path exist.
+
 - Fleet must install one narrowly scoped publisher on every ingress host. It
   writes only `norn-route-<32 lowercase hex>.yaml` below
   `/etc/traefik/dynamic`; the existing TLS and readback files are outside its
