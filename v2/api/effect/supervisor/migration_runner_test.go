@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,6 +162,33 @@ func TestMigrationHelperRefusesAPIManagedConnectionFilePath(t *testing.T) {
 				t.Fatalf("migration ran with an API-owned connection file: %v", err)
 			}
 		})
+	}
+}
+
+func TestMigrationPrivateURLTemplateUsesRunnerTLSPath(t *testing.T) {
+	directory := t.TempDir()
+	environment, cleanup, err := prepareMigrationPrivateFiles(directory,
+		[]migrationPrivateFile{{Name: "sslrootcert.pem", Contents: []byte("private-ca")},
+			{Name: "connection.url", Contents: []byte("postgresql://db/app?sslrootcert={{private-file-url:sslrootcert.pem}}"), Template: true}},
+		[]string{"DATABASE_URL=postgresql://db/app?sslrootcert={{private-file-url:sslrootcert.pem}}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if len(environment) != 1 || strings.Contains(environment[0], "{{private-file") ||
+		strings.Contains(environment[0], "api-session") {
+		t.Fatalf("URL template was not remapped: %q", environment)
+	}
+	parsed, err := url.Parse(strings.TrimPrefix(environment[0], "DATABASE_URL="))
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := parsed.Query().Get("sslrootcert")
+	if !strings.HasPrefix(caPath, directory+string(os.PathSeparator)) {
+		t.Fatalf("TLS path escaped runner directory: %q", caPath)
+	}
+	if data, err := os.ReadFile(caPath); err != nil || string(data) != "private-ca" {
+		t.Fatalf("runner TLS file=%q err=%v", data, err)
 	}
 }
 

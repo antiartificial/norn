@@ -10,9 +10,11 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -175,6 +177,95 @@ type SnapshotLaunchOptions struct {
 	PGDumpSHA256 string
 	Subject      string
 	Timeout      time.Duration
+}
+
+var migrationEnvName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// WithMigrationLaunchMaterial gives a supervised migration one private copy
+// of the accepted PostgreSQL target. The runner substitutes its own file paths
+// after receiving this material over its pipe, so Session.Close cannot remove
+// files still needed by a running command.
+func (s *Session) WithMigrationLaunchMaterial(command, directory, valueEnv, fileEnv string, launch func(supervisor.MigrationLaunchMaterial) error) error {
+	if s == nil || s.directory == "" || s.target.Engine != EnginePostgreSQL || launch == nil ||
+		!filepath.IsAbs(directory) || strings.TrimSpace(command) == "" ||
+		(valueEnv == "" && fileEnv == "") || valueEnv != "" && !migrationEnvName.MatchString(valueEnv) ||
+		fileEnv != "" && !migrationEnvName.MatchString(fileEnv) || valueEnv != "" && valueEnv == fileEnv {
+		return fmt.Errorf("migration launch material is unavailable")
+	}
+	reserved := map[string]bool{"PGSERVICEFILE": true, "PGSERVICE": true, "PGPASSFILE": true,
+		"PATH": true, "HOME": true, "LANG": true, "LC_ALL": true, "TMPDIR": true}
+	if reserved[valueEnv] || reserved[fileEnv] || strings.HasPrefix(valueEnv, "NORN_") ||
+		strings.HasPrefix(fileEnv, "NORN_") || strings.HasPrefix(valueEnv, "NOMAD_") || strings.HasPrefix(fileEnv, "NOMAD_") {
+		return fmt.Errorf("migration connection environment name is reserved")
+	}
+	parsed, err := url.Parse(s.url)
+	if err != nil {
+		return fmt.Errorf("migration connection URL is invalid")
+	}
+	mode := parsed.Query().Get("sslmode")
+	if mode != "disable" && mode != string(TLSVerifyCA) && mode != string(TLSVerifyFull) {
+		return fmt.Errorf("migration TLS mode is unsupported")
+	}
+	settings := map[string]string{
+		"host": s.endpoint.Host, "port": strconv.Itoa(s.endpoint.Port),
+		"dbname": s.target.Database, "user": s.target.Role,
+		"sslmode": mode, "passfile": "{{private-file:passfile}}",
+	}
+	files := []supervisor.MigrationPrivateFile{{Name: "passfile", Contents: migrationPassfile(s.password)}}
+	if mode != "disable" {
+		for _, key := range []string{"sslrootcert", "sslcert", "sslkey"} {
+			name := key + ".pem"
+			path := filepath.Join(s.directory, name)
+			if parsed.Query().Get(key) == "" {
+				if key == "sslrootcert" {
+					return fmt.Errorf("migration TLS root certificate is missing")
+				}
+				continue
+			}
+			if parsed.Query().Get(key) != path {
+				return fmt.Errorf("migration TLS material differs from accepted session")
+			}
+			pem, err := readPrivateServiceFile(path)
+			if err != nil {
+				return fmt.Errorf("migration TLS material is unavailable: %w", err)
+			}
+			files = append(files, supervisor.MigrationPrivateFile{Name: name, Contents: pem})
+			settings[key] = "{{private-file:" + name + "}}"
+		}
+	}
+	files = append(files, supervisor.MigrationPrivateFile{Name: "pg_service.conf", Contents: []byte(serviceFile(settings)), Template: true})
+	urlTemplate := connectionURL(s.endpoint, s.target, s.password, settings, true)
+	for _, key := range []string{"sslrootcert", "sslcert", "sslkey"} {
+		name := key + ".pem"
+		marker := "{{private-file:" + name + "}}"
+		if settings[key] != "" {
+			urlTemplate = strings.ReplaceAll(urlTemplate, percentEncode(marker), "{{private-file-url:"+name+"}}")
+		}
+	}
+	files = append(files, supervisor.MigrationPrivateFile{Name: "connection.url", Contents: []byte(urlTemplate), Template: true})
+	environment := []string{"PGSERVICEFILE={{private-file:pg_service.conf}}", "PGSERVICE=" + ServiceName,
+		"PGPASSFILE={{private-file:passfile}}"}
+	for _, name := range []string{"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"} {
+		if value, ok := os.LookupEnv(name); ok && !containsLineBreak(value) {
+			environment = append(environment, name+"="+value)
+		}
+	}
+	if valueEnv != "" {
+		environment = append(environment, valueEnv+"="+urlTemplate)
+	}
+	if fileEnv != "" {
+		environment = append(environment, fileEnv+"={{private-file:connection.url}}")
+	}
+	return launch(supervisor.MigrationLaunchMaterial{Command: command, Directory: directory,
+		Environment: environment, PrivateFiles: files})
+}
+
+func migrationPassfile(password string) []byte {
+	if password == "" {
+		return nil
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `:`, `\:`).Replace(password)
+	return []byte("*:*:*:*:" + escaped + "\n")
 }
 
 // OpenSession builds private material for an application target. Only

@@ -11,9 +11,10 @@ after the backend proves the cgroup empty. The generic `build.test` launcher,
 query and verifier reject migration evidence. The database adapter derives the
 target digest from the full accepted `TargetIdentity`, including service and
 binding generations. No production pipeline path reserves or launches this
-effect yet. Private material production from a resolved session, an
-original-target database postcondition verifier, and protected runtime
-qualification remain required before activation.
+effect yet. A resolved PostgreSQL session now produces runner-owned service,
+passfile, URL and TLS file material for private launch, including URL path
+remapping. An original-target database postcondition verifier and protected
+runtime qualification remain required before activation.
 
 ## Current behavior and risk
 

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,7 +198,7 @@ func prepareMigrationPrivateFiles(directory string, files []migrationPrivateFile
 		if file.Template {
 			contents = []byte(replaceMigrationPrivatePaths(string(contents), paths))
 		}
-		if strings.Contains(string(contents), "{{private-file:") || writePrivateFile(paths[file.Name], contents) != nil {
+		if containsMigrationPrivateMarker(string(contents)) || writePrivateFile(paths[file.Name], contents) != nil {
 			return fail()
 		}
 	}
@@ -208,7 +209,7 @@ func prepareMigrationPrivateFiles(directory string, files []migrationPrivateFile
 			return fail()
 		}
 		value = replaceMigrationPrivatePaths(value, paths)
-		if strings.Contains(value, "{{private-file:") || migrationFileEnv(name) && !migrationPrivatePath(value, paths) {
+		if containsMigrationPrivateMarker(value) || migrationFileEnv(name) && !migrationPrivatePath(value, paths) {
 			return fail()
 		}
 		result = append(result, name+"="+value)
@@ -228,8 +229,13 @@ func migrationPrivatePath(value string, paths map[string]string) bool {
 func replaceMigrationPrivatePaths(value string, paths map[string]string) string {
 	for name, path := range paths {
 		value = strings.ReplaceAll(value, "{{private-file:"+name+"}}", path)
+		value = strings.ReplaceAll(value, "{{private-file-url:"+name+"}}", url.QueryEscape(path))
 	}
 	return value
+}
+
+func containsMigrationPrivateMarker(value string) bool {
+	return strings.Contains(value, "{{private-file:") || strings.Contains(value, "{{private-file-url:")
 }
 
 func migrationFileEnv(name string) bool {

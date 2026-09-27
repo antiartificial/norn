@@ -4,13 +4,89 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"norn/v2/api/effect"
 	"norn/v2/api/effect/supervisor"
+	"norn/v2/api/internal/pgtest"
 )
+
+func TestMigrationLaunchMaterialOwnsConnectionAfterSessionClose(t *testing.T) {
+	session, err := OpenSession(context.Background(), reviewMaterialBinding(), reviewMaterialSource(`{"password":"private:migration\\canary"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiDirectory := session.directory
+	var material supervisor.MigrationLaunchMaterial
+	err = session.WithMigrationLaunchMaterial("true", t.TempDir(), "DATABASE_URL", "DATABASE_URL_FILE", func(value supervisor.MigrationLaunchMaterial) error {
+		material = value
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(apiDirectory); !os.IsNotExist(err) {
+		t.Fatalf("API session directory remains: %v", err)
+	}
+	files := map[string]supervisor.MigrationPrivateFile{}
+	for _, file := range material.PrivateFiles {
+		files[file.Name] = file
+		if strings.Contains(string(file.Contents), apiDirectory) {
+			t.Fatalf("runner file %s references API session directory", file.Name)
+		}
+	}
+	if !strings.Contains(string(files["passfile"].Contents), `private\:migration\\canary`) ||
+		!strings.Contains(string(files["connection.url"].Contents), "private%3Amigration%5Ccanary") {
+		t.Fatalf("runner password encodings are incomplete: passfile=%q url=%q", files["passfile"].Contents, files["connection.url"].Contents)
+	}
+	if !files["pg_service.conf"].Template || !strings.Contains(string(files["pg_service.conf"].Contents), "{{private-file:passfile}}") {
+		t.Fatal("runner service file does not own its passfile")
+	}
+	for _, entry := range material.Environment {
+		if strings.Contains(entry, apiDirectory) {
+			t.Fatal("runner environment retains an API session path")
+		}
+	}
+	if len(material.PrivateFiles) != 3 || material.Command != "true" {
+		t.Fatal("migration launch material is incomplete")
+	}
+}
+
+func TestMigrationLaunchMaterialRemapsTLSFiles(t *testing.T) {
+	session, err := OpenSession(context.Background(), reviewMaterialBinding(), reviewMaterialSource(`{"password":"review-only"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	caPath := filepath.Join(session.directory, "sslrootcert.pem")
+	if err := writePrivate(caPath, pgtest.OtherCAPEM(t)); err != nil {
+		t.Fatal(err)
+	}
+	session.url = connectionURL(session.endpoint, session.target, session.password,
+		map[string]string{"sslmode": string(TLSVerifyCA), "sslrootcert": caPath}, true)
+	var material supervisor.MigrationLaunchMaterial
+	if err := session.WithMigrationLaunchMaterial("true", t.TempDir(), "DATABASE_URL", "", func(value supervisor.MigrationLaunchMaterial) error {
+		material = value
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(material.PrivateFiles[len(material.PrivateFiles)-1].Contents), "{{private-file-url:sslrootcert.pem}}") {
+		t.Fatal("migration URL did not remap the TLS CA path")
+	}
+	for _, file := range material.PrivateFiles {
+		if strings.Contains(string(file.Contents), session.directory) {
+			t.Fatal("migration private file retained the API TLS path")
+		}
+	}
+}
 
 type reviewMaterialSource string
 
