@@ -56,7 +56,7 @@ func TestObserveRenderedRouteRequiresEveryIngressNode(t *testing.T) {
 	second := testRawDataServer(t, observedRawData(t, desired))
 	nodes := []IngressNode{{ID: "ingress-a", APIURL: first.URL}, {ID: "ingress-b", APIURL: second.URL}}
 	observed, err := ObserveRenderedRoute(context.Background(), first.Client(), nodes, desired)
-	if err != nil || len(observed) != 2 || observed[0].RouteSHA256 != desired.SHA256 || observed[1].NodeID != "ingress-b" {
+	if err != nil || len(observed) != 2 || observed[0].MatchedDesiredRouteSHA256 != desired.SHA256 || observed[1].NodeID != "ingress-b" {
 		t.Fatalf("two-node route observation=%+v err=%v", observed, err)
 	}
 	stale := observedRawData(t, desired)

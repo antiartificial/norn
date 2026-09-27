@@ -216,6 +216,10 @@ active pre-index work must first drain or reconcile it.
    be added and qualified before use. Even a matching `/api/rawdata` response
    must be paired with per-node and public endpoint probes before recording
    positive `ActiveWeight`.
+   A [disposable Traefik/Consul runtime fixture](m4-local-traefik-weighted-route-fixture-2026-09-27.md)
+   subsequently loaded the rendered route, passed actual `/api/rawdata`
+   observation, and returned 70 old / 30 new responses over 100 local
+   requests. That validates this local composition, not Fleet propagation.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,

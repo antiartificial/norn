@@ -21,8 +21,8 @@ type IngressNode struct {
 }
 
 type NodeObservation struct {
-	NodeID      string
-	RouteSHA256 string
+	NodeID                    string
+	MatchedDesiredRouteSHA256 string
 }
 
 type rawRoute struct {
@@ -94,7 +94,7 @@ func ObserveRenderedRoute(ctx context.Context, client *http.Client, nodes []Ingr
 		if err := verifyRawData(body, desired, document); err != nil {
 			return nil, fmt.Errorf("ingress node %s: %w", node.ID, err)
 		}
-		observations = append(observations, NodeObservation{NodeID: node.ID, RouteSHA256: desired.SHA256})
+		observations = append(observations, NodeObservation{NodeID: node.ID, MatchedDesiredRouteSHA256: desired.SHA256})
 	}
 	return observations, nil
 }
