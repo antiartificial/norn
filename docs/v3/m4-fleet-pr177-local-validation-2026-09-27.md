@@ -22,7 +22,23 @@ repository variable for the documented temporary Linux X64 self-hosted CI
 fallback is absent, and no runner with that fallback label is registered.
 No hosted contract receipt exists for this head.
 
-These local checks do not cover the workflow's schema-tool installation,
-OpenTofu validation matrix, action lint, or deployment on protected Fleet
-nodes. M4 remains open pending hosted or equivalently controlled validation,
-protected-node publication, public traffic proof, scaling, and drain.
+Additional local checks passed against the same Fleet head:
+
+- `scripts/sanity.py` and `check-jsonschema==0.33.3` with `PyYAML==6.0.2`
+  accepted all four cluster documents. Production emitted the existing
+  repository-placeholder warning.
+- `actionlint` v1.7.7 accepted the GitHub workflow files, and
+  `tofu fmt -check -recursive` passed.
+- The workflow's four ordinary OpenTofu roots passed `init -backend=false
+  -lockfile=readonly -input=false` and `validate` with the pinned OpenTofu
+  1.10.6 binary. Both disposable roots passed the same commands with the
+  pinned OpenTofu 1.12.6 binary. The 1.10.6 archive checksum matched its
+  published SHA256SUMS file. The external-Mac disposable root warned that
+  provider selections differed from its read-only lockfile, but validation
+  succeeded.
+
+These checks ran on local Darwin arm64, while the hosted workflow uses Linux.
+The local Ansible syntax check used core 2.21.3 rather than the workflow's
+pinned 2.18.3. There is still no hosted contract receipt or protected-node
+deployment. M4 remains open pending protected-node publication, public traffic
+proof, scaling, and drain.
