@@ -32,6 +32,8 @@ func TestParseFleetIngressInventoryRejectsAmbiguousOrNonPrivateMembership(t *tes
 		"duplicate field":   strings.Replace(base, `"cluster":"norn-staging",`, `"cluster":"other","cluster":"norn-staging",`, 1),
 		"duplicate address": strings.Replace(base, "10.43.0.22", "10.43.0.21", 1),
 		"public address":    strings.Replace(base, "10.43.0.22", "203.0.113.10", 1),
+		"loopback address":  strings.Replace(base, "10.43.0.22", "127.0.0.1", 1),
+		"IPv6 address":      strings.Replace(base, "10.43.0.22", "fd00::22", 1),
 		"wrong order":       strings.Replace(base, "ingress-02", "ingress-00", 1),
 		"unknown field":     strings.Replace(base, `"schemaVersion":`, `"extra":true,"schemaVersion":`, 1),
 		"noncanonical":      strings.Replace(base, `,"environment":`, `, "environment":`, 1),

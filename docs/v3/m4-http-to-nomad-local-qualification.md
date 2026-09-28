@@ -97,3 +97,12 @@ leaves both node files at generation one with the expected route digest.
 This closes the isolated client-to-publisher transport rehearsal. It does not
 join the accepted HTTP operation, completed Fleet inventory, Nomad effect,
 Traefik readback or public endpoint into one normal executor run.
+
+The joined fixture needs two distinct private IPv4 addresses: the production
+Fleet inventory parser rejects loopback, IPv6, duplicate IPs and public IPs.
+The current macOS runner has only one locally bindable private IPv4 address;
+its two loopback TLS listeners therefore cannot be substituted for a completed
+Fleet inventory. Use an isolated Linux private network with two addressable
+ingress nodes for the next normal-executor rehearsal, keeping the same
+inventory validator and exact-node identity checks. This is a fixture
+requirement, not permission to provision or change a protected Fleet.
