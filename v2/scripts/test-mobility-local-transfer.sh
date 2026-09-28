@@ -15,9 +15,11 @@ scratch_base=${TMPDIR:-/tmp}
 scratch=$(mktemp -d "$scratch_base/norn-mobility-transfer.XXXXXX")
 chmod 700 "$scratch"
 server_pid=
+runtime_pid=
 pg_started=false
 cleanup() {
   if [[ -n $server_pid ]]; then kill "$server_pid" >/dev/null 2>&1 || true; wait "$server_pid" >/dev/null 2>&1 || true; fi
+  if [[ -n $runtime_pid ]]; then kill "$runtime_pid" >/dev/null 2>&1 || true; wait "$runtime_pid" >/dev/null 2>&1 || true; fi
   if [[ $pg_started == true ]]; then "$postgres_bin/pg_ctl" -D "$scratch/postgres" -m immediate stop >/dev/null 2>&1 || true; fi
   SCRATCH=$scratch SCRATCH_BASE=$scratch_base python3 - <<'PY'
 import os, shutil
@@ -50,10 +52,15 @@ PY
 source_url="postgresql://mobility@/source?host=$socket_query&port=$pg_port&sslmode=disable"
 target_url="postgresql://mobility@/target?host=$socket_query&port=$pg_port&sslmode=disable"
 source_runtime_url="postgresql://source_runtime@/source?host=$socket_query&port=$pg_port&sslmode=disable"
+fence_url="postgresql://source_fence@/source?host=$socket_query&port=$pg_port&sslmode=disable"
 (cd "$fixture_root" && CGO_ENABLED=0 go build -buildvcs=false -o "$scratch/mobility-fixture" .)
 DATABASE_URL=$source_url "$scratch/mobility-fixture" migrate
 "$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -d "$source_url" >/dev/null <<'SQL'
 CREATE ROLE source_runtime LOGIN;
+CREATE ROLE source_fence LOGIN CREATEROLE;
+GRANT source_runtime TO source_fence WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+GRANT pg_signal_backend TO source_fence;
+GRANT pg_read_all_stats TO source_fence;
 GRANT CONNECT ON DATABASE source TO source_runtime;
 GRANT USAGE ON SCHEMA public TO source_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO source_runtime;
@@ -109,14 +116,24 @@ curl -fsS --max-time 5 "$http_url/state" > "$scratch/source.json"
 stop_server
 
 # Fence the exact source runtime role, terminate any remaining pooled sessions,
-# and read back both properties before the final transfer. Maintenance uses a
-# separate principal so the source remains available for a read-only dump.
-"$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -d "$source_url" >/dev/null <<'SQL'
+# and read back both properties before the final transfer. An active runtime
+# session makes termination part of this rehearsal rather than a no-op.
+"$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -d "$source_runtime_url" -c 'SELECT pg_sleep(30)' >"$scratch/runtime-session.log" 2>&1 &
+runtime_pid=$!
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  active_sessions=$("$postgres_bin/psql" -X -At -d "$fence_url" -c "SELECT count(*) FROM pg_stat_activity WHERE usename='source_runtime'")
+  [[ $active_sessions -ge 1 ]] && break
+  sleep 1
+done
+[[ $active_sessions -ge 1 ]] || { echo 'runtime session did not become active' >&2; exit 1; }
+"$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -d "$fence_url" >/dev/null <<'SQL'
 ALTER ROLE source_runtime NOLOGIN;
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity
   WHERE usename = 'source_runtime' AND pid <> pg_backend_pid();
 SQL
-fence_readback=$("$postgres_bin/psql" -X -At -d "$source_url" -c "SELECT rolcanlogin, (SELECT count(*) FROM pg_stat_activity WHERE usename='source_runtime') FROM pg_roles WHERE rolname='source_runtime'")
+if wait "$runtime_pid"; then echo 'active runtime session survived fence' >&2; exit 1; fi
+runtime_pid=
+fence_readback=$("$postgres_bin/psql" -X -At -d "$fence_url" -c "SELECT rolcanlogin, (SELECT count(*) FROM pg_stat_activity WHERE usename='source_runtime') FROM pg_roles WHERE rolname='source_runtime'")
 [[ $fence_readback == 'f|0' ]] || { printf 'source role fence readback=%s\n' "$fence_readback" >&2; exit 1; }
 if "$postgres_bin/psql" -X -At -d "$source_runtime_url" -c 'SELECT 1' >/dev/null 2>&1; then
   echo 'fenced source runtime role could still connect' >&2; exit 1

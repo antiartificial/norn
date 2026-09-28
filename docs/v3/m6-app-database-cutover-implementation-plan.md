@@ -212,9 +212,10 @@ switching DNS is not rollback.
    now passes a baseline PostgreSQL dump/restore, a later final full
    replacement, file copy and exact quiesced row/job/tick/file reconciliation
    across separate databases on one socket-only server. Its dedicated source
-   runtime login is disabled, remaining sessions terminated, and role/session
-   readback verified before final transfer. This local fence uses a superuser;
-   it does not qualify the delegated provider fence account. The transfer is
+   runtime login is disabled by a separate delegated maintenance role, an
+   active session terminated, and role/session readback verified before final
+   transfer. This local role is not catalog-bound and does not qualify the
+   selected provider's fence account. The transfer is
    an engine-local rehearsal, not a provider adapter, incremental transfer or
    durable cutover effect. Provider pairing, checkpointed retries and crash
    recovery remain open.
