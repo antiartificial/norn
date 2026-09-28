@@ -4,12 +4,19 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+type publisherRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f publisherRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestPublishRouteIntentToNodesReportsPartialPublication(t *testing.T) {
 	const intentID = "intent-1"
@@ -56,6 +63,17 @@ func TestIngressPublisherNodesUseSeparatePortAndExactInventoryIPs(t *testing.T) 
 	publishers, err := ingressPublisherNodes(observers, 18083)
 	if err != nil || len(publishers) != 2 || publishers[0].APIURL != "https://10.43.0.21:18083" || publishers[1].APIURL != "https://10.43.0.22:18083" || observers[0].APIURL != "https://10.43.0.21:18082" {
 		t.Fatalf("publisher targets=%+v observers=%+v err=%v", publishers, observers, err)
+	}
+	var reached []string
+	digest := strings.Repeat("a", 64)
+	client := &http.Client{Transport: publisherRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		reached = append(reached, request.URL.String())
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"generation":1,"routeSHA256":"` + digest + `"}`)), Request: request}, nil
+	})}
+	receipts, err := publishRouteIntentToNodes(context.Background(), client, publishers, "intent-1", 1, digest)
+	if err != nil || len(receipts) != 2 || len(reached) != 2 || reached[0] != "https://10.43.0.21:18083/v1/routes/publish" || reached[1] != "https://10.43.0.22:18083/v1/routes/publish" {
+		t.Fatalf("publication reached=%v receipts=%+v err=%v", reached, receipts, err)
 	}
 	for _, invalid := range []IngressNode{{ID: "public", APIURL: "https://203.0.113.10:18082"}, {ID: "name", APIURL: "https://ingress.example.test:18082"}, {ID: "path", APIURL: "https://10.43.0.21:18082/other"}} {
 		if _, err := ingressPublisherNodes([]IngressNode{observers[0], invalid}, 18083); err == nil {
