@@ -47,6 +47,15 @@ switching DNS is not rollback.
    transitions, app lock and operation-claim fencing, immutable source/target
    identities, and one active consumer generation. Preserve the existing
    `app.deploy` target-change refusal.
+
+   `v2/api/cutover/journal.go` now defines the shared v1 intent and ordered
+   phase transition contract. Its local tests reject same-target and
+   mixed-engine intents, missing receipts, stale revisions and skipped
+   activation. It is **not a durable journal**: no PG or etcd store adapter,
+   accepted-operation claim, application lock or consumer-generation switch
+   calls it yet. The store must atomically compare the immutable intent and
+   revision on every write; callers must verify each external receipt before
+   asking to advance. The ordinary deployment guard remains in force.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.
