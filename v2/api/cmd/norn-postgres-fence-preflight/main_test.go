@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func TestReadOnlyFencePreflightUsesPinnedCatalogAndExactTarget(t *testing.T) {
 	profile, logical := "mini", "app-db"
 	catalog := database.Catalog{APIVersion: database.APIVersion,
 		Services: []database.DatabaseService{{APIVersion: database.APIVersion, ID: "source", Generation: 1,
-			Purpose: database.PurposeApplication, Engine: database.EnginePostgreSQL, EngineVersion: "16",
+			Purpose: database.PurposeApplication, Engine: database.EnginePostgreSQL, EngineVersion: strconv.Itoa(version / 10000),
 			ProviderRef: "local:fixture", Endpoint: database.DatabaseEndpoint{Host: server.SocketDir, Port: server.Port},
 			Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
 			TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled},
@@ -101,19 +102,36 @@ func TestReadOnlyFencePreflightUsesPinnedCatalogAndExactTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	var observed struct {
-		CatalogSHA256 string                  `json:"catalogSha256"`
-		Target        database.TargetIdentity `json:"target"`
-		CanLogin      bool                    `json:"canLogin"`
-		Sessions      int                     `json:"sessions"`
+		CatalogSHA256   string                  `json:"catalogSha256"`
+		Target          database.TargetIdentity `json:"target"`
+		DeclaredVersion string                  `json:"declaredVersion"`
+		CanLogin        bool                    `json:"canLogin"`
+		Sessions        int                     `json:"sessions"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &observed); err != nil || observed.CatalogSHA256 != hex.EncodeToString(digest[:]) ||
-		observed.Target != target || !observed.CanLogin || observed.Sessions < 1 || strings.Contains(output.String(), "fixture-runtime-password") {
+		observed.Target != target || observed.DeclaredVersion != catalog.Services[0].EngineVersion || !observed.CanLogin || observed.Sessions < 1 || strings.Contains(output.String(), "fixture-runtime-password") {
 		t.Fatalf("redacted preflight=%s err=%v", output.String(), err)
 	}
 	wrongPin := append([]string(nil), args...)
 	wrongPin[3] = strings.Repeat("0", 64)
 	if err := run(ctx, wrongPin, &bytes.Buffer{}); err == nil {
 		t.Fatal("changed catalog digest passed read-only preflight")
+	}
+	changed := catalog
+	changed.Services = append([]database.DatabaseService(nil), catalog.Services...)
+	changed.Services[0].EngineVersion = strconv.Itoa(version/10000 + 1)
+	changedBytes, _ := json.Marshal(changed)
+	if err := os.WriteFile(catalogPath, changedBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedDigest := sha256.Sum256(changedBytes)
+	wrongVersion := append([]string(nil), args...)
+	wrongVersion[3] = hex.EncodeToString(changedDigest[:])
+	if err := run(ctx, wrongVersion, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "provider PostgreSQL major differs") {
+		t.Fatalf("mismatched provider version passed read-only preflight: %v", err)
+	}
+	if err := os.WriteFile(catalogPath, catalogBytes, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	stale := target
 	stale.BindingGeneration++

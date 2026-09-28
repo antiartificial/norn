@@ -114,9 +114,10 @@ switching DNS is not rollback.
    ```
 
    The JSON result reports the catalog digest, exact target, fence generation,
-   server version, login state and exact-role sessions. The command refuses
-   changed snapshots, stale targets, ambiguous JSON, symlinks and non-private
-   input files. It does not establish that the supplied snapshot is still the
+   declared catalog engine version, observed server version, login state and
+   exact-role sessions. It refuses a different server major, changed
+   snapshots, stale targets, ambiguous JSON, symlinks and non-private input
+   files. It does not establish that the supplied snapshot is still the
    **active** control catalog; compare its revision and target to a fresh
    control-store readback before treating the result as provider evidence.
    It does not alter roles, terminate sessions, or qualify the later provider

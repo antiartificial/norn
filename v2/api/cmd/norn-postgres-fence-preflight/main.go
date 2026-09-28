@@ -15,6 +15,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"norn/v2/api/database"
@@ -71,6 +73,17 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	if err != nil || resolved.Target != expected || resolved.Target.Engine != database.EnginePostgreSQL {
 		return errors.New("selected application PostgreSQL target differs from the exact expected identity")
 	}
+	declaredVersion := ""
+	for _, service := range catalog.Services {
+		if service.ID == expected.ServiceID {
+			declaredVersion = service.EngineVersion
+			break
+		}
+	}
+	declaredMajor, err := strconv.Atoi(strings.SplitN(declaredVersion, ".", 2)[0])
+	if err != nil || declaredMajor < 16 {
+		return errors.New("selected catalog PostgreSQL version is unsupported")
+	}
 	secrets, err := database.NewDirectorySecretSource(*secretDir)
 	if err != nil {
 		return errors.New("database secret directory is unavailable")
@@ -80,14 +93,18 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if preflight.ServerVersion/10000 != declaredMajor {
+		return errors.New("provider PostgreSQL major differs from the selected catalog service")
+	}
 	return json.NewEncoder(output).Encode(struct {
 		CatalogSHA256   string                  `json:"catalogSha256"`
 		Target          database.TargetIdentity `json:"target"`
 		FenceGeneration uint64                  `json:"fenceGeneration"`
+		DeclaredVersion string                  `json:"declaredVersion"`
 		ServerVersion   int                     `json:"serverVersion"`
 		CanLogin        bool                    `json:"canLogin"`
 		Sessions        int                     `json:"sessions"`
-	}{hex.EncodeToString(digest[:]), preflight.Target, preflight.FenceGeneration,
+	}{hex.EncodeToString(digest[:]), preflight.Target, preflight.FenceGeneration, declaredVersion,
 		preflight.ServerVersion, preflight.CanLogin, preflight.Sessions})
 }
 
