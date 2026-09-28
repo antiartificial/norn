@@ -24,6 +24,14 @@ func TestParseFleetIngressInventoryBindsExactPrivateHostSet(t *testing.T) {
 	if _, err := ParseFleetIngressInventory(body, fleetInventoryDigest(body), "another-cluster", "staging/nyc3", 18082); err == nil {
 		t.Fatal("inventory from another cluster accepted")
 	}
+	third := []byte(strings.Replace(string(body), `{"name":"ingress-02","privateIP":"10.43.0.22"}`, `{"name":"ingress-02","privateIP":"10.43.0.22"},{"name":"ingress-03","privateIP":"10.43.0.23"}`, 1))
+	threeNodes, err := ParseFleetIngressInventory(third, fleetInventoryDigest(third), "norn-staging", "staging/nyc3", 18082)
+	if err != nil || len(threeNodes) != 3 || threeNodes[2] != (IngressNode{ID: "ingress-03", APIURL: "https://10.43.0.23:18082"}) {
+		t.Fatalf("third ingress inventory = %+v, %v", threeNodes, err)
+	}
+	if _, err := ParseFleetIngressInventory(third, fleetInventoryDigest(body), "norn-staging", "staging/nyc3", 18082); err == nil {
+		t.Fatal("third ingress node accepted under the earlier two-node digest")
+	}
 }
 
 func TestParseFleetIngressInventoryRejectsAmbiguousOrNonPrivateMembership(t *testing.T) {
