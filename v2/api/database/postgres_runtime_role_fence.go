@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -52,7 +53,15 @@ func FencePostgresRuntimeRoleForCutover(ctx context.Context, resolved ResolvedBi
 		}
 		for _, pid := range pids {
 			var terminated bool
-			if err := connection.QueryRow(ctx, `SELECT pg_terminate_backend($1)`, pid).Scan(&terminated); err != nil || !terminated {
+			err := connection.QueryRow(ctx, `
+				SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+				WHERE pid = $1 AND usename = $2`, pid, resolved.Target.Role).Scan(&terminated)
+			if errors.Is(err, pgx.ErrNoRows) {
+				// The session left between inventory and termination. The
+				// final readback still has to prove that no runtime sessions remain.
+				continue
+			}
+			if err != nil || !terminated {
 				return fmt.Errorf("PostgreSQL runtime session termination failed")
 			}
 		}

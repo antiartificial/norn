@@ -30,6 +30,8 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	}
 	for _, statement := range []string{
 		`CREATE ROLE cutover_fence LOGIN CREATEROLE`,
+		`CREATE ROLE unrelated_app LOGIN`,
+		`CREATE ROLE underprivileged_fence LOGIN`,
 		`GRANT cutover_runtime TO cutover_fence WITH ADMIN TRUE, INHERIT FALSE, SET FALSE`,
 		`GRANT pg_signal_backend TO cutover_fence`,
 		`GRANT pg_read_all_stats TO cutover_fence`,
@@ -48,6 +50,16 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close(context.Background())
+	unrelatedConfig, err := pgx.ParseConfig(server.URL("cutover_source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelatedConfig.User = "unrelated_app"
+	unrelated, err := pgx.ConnectConfig(ctx, unrelatedConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unrelated.Close(context.Background())
 	resolved := ResolvedBinding{
 		Target: TargetIdentity{ServiceID: "source", ServiceGeneration: 1, BindingID: "source-app", BindingGeneration: 1,
 			Engine: EnginePostgreSQL, Database: "cutover_source", Role: "cutover_runtime"},
@@ -58,6 +70,15 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	secrets := literalSecrets{
 		"secret:runtime": `{"password":"disposable-runtime-password"}`,
 		"secret:fence":   `{"password":""}`,
+	}
+	underprivileged := resolved
+	underprivileged.PostgresFence = &PostgresFenceCredentials{Generation: 1, Role: "underprivileged_fence", CredentialRef: "secret:fence"}
+	if err := FencePostgresRuntimeRoleForCutover(ctx, underprivileged, underprivileged.Target, secrets); err == nil {
+		t.Fatal("fence role without delegated authority was accepted")
+	}
+	var one int
+	if err := runtime.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil {
+		t.Fatalf("rejected fence changed the runtime session: %v", err)
 	}
 	if err := InspectPostgresRuntimeRoleFenceForCutover(ctx, resolved, resolved.Target, secrets); err == nil {
 		t.Fatal("unfenced runtime role passed inspection")
@@ -73,9 +94,11 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	if err := InspectPostgresRuntimeRoleFenceForCutover(ctx, resolved, resolved.Target, secrets); err != nil {
 		t.Fatal(err)
 	}
-	var one int
 	if err := runtime.QueryRow(ctx, "SELECT 1").Scan(&one); err == nil {
 		t.Fatal("preexisting runtime session survived fence")
+	}
+	if err := unrelated.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatalf("fence terminated an unrelated role's session: %v", err)
 	}
 	if _, err := pgx.ConnectConfig(ctx, config); err == nil {
 		t.Fatal("runtime role reconnected after fence")
