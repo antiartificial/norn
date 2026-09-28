@@ -120,3 +120,44 @@ func TestJournalReadbackRejectsForgedPhaseOrMissingHistory(t *testing.T) {
 		t.Fatal("extra receipt passed readback")
 	}
 }
+
+func TestPhaseEvidenceReferenceBindsIntentRevisionPhaseAndPriorReceipt(t *testing.T) {
+	j, err := New(testIntent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := NewPhaseEvidenceReference(j, PhaseQuiesce, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(*PhaseEvidenceReference){
+		"intent":   func(r *PhaseEvidenceReference) { r.IntentSHA256 = strings.Repeat("b", 64) },
+		"revision": func(r *PhaseEvidenceReference) { r.FromRevision++ },
+		"phase":    func(r *PhaseEvidenceReference) { r.NextPhase = PhaseActivate },
+		"evidence": func(r *PhaseEvidenceReference) { r.EvidenceSHA256 = "missing" },
+		"prior":    func(r *PhaseEvidenceReference) { r.PriorReceiptSHA256 = strings.Repeat("c", 64) },
+	} {
+		changed := ref
+		change(&changed)
+		if _, err := j.AdvanceWithEvidence(changed); !errors.Is(err, ErrTransition) {
+			t.Fatalf("%s evidence drift accepted: %v", name, err)
+		}
+	}
+	j, err = j.AdvanceWithEvidence(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Phase != PhaseQuiesce || j.Receipts[PhaseQuiesce] == ref.EvidenceSHA256 {
+		t.Fatal("reference was not hashed into receipt")
+	}
+	next, err := NewPhaseEvidenceReference(j, PhaseFinalSync, strings.Repeat("d", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.PriorReceiptSHA256 != j.Receipts[PhaseQuiesce] {
+		t.Fatal("prior receipt missing from chain")
+	}
+	if _, err := j.AdvanceWithEvidence(next); err != nil {
+		t.Fatal(err)
+	}
+}

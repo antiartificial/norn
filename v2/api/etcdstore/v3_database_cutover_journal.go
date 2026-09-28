@@ -246,7 +246,7 @@ func (s *V3OperationStore) advanceDatabaseCutoverJournal(ctx context.Context, op
 
 // AdvanceClaimedDatabaseCutoverJournal binds each private etcd phase write to
 // the same signed intent, live operation owner and app lock as preparation.
-func (s *V3OperationStore) AdvanceClaimedDatabaseCutoverJournal(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, expectedRevision uint64, next cutover.Phase, receiptSHA256 string) (cutover.Journal, error) {
+func (s *V3OperationStore) AdvanceClaimedDatabaseCutoverJournal(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, expectedRevision uint64, evidence cutover.PhaseEvidenceReference) (cutover.Journal, error) {
 	current, _, err := s.loadDatabaseCutoverJournal(ctx, claim.OperationID())
 	if err != nil {
 		return cutover.Journal{}, err
@@ -255,7 +255,7 @@ func (s *V3OperationStore) AdvanceClaimedDatabaseCutoverJournal(ctx context.Cont
 	if err != nil {
 		return cutover.Journal{}, err
 	}
-	if next == cutover.PhaseQuiesce || next == cutover.PhaseFinalSync {
+	if evidence.NextPhase == cutover.PhaseQuiesce || evidence.NextPhase == cutover.PhaseFinalSync {
 		catalogFences, err := s.cutoverCatalogComparisons(ctx, current.Intent)
 		if err != nil {
 			return cutover.Journal{}, err
@@ -266,10 +266,18 @@ func (s *V3OperationStore) AdvanceClaimedDatabaseCutoverJournal(ctx context.Cont
 	if err != nil {
 		return cutover.Journal{}, err
 	}
-	return s.advanceDatabaseCutoverJournalFenced(ctx, claim.OperationID(), expectedRevision, next, receiptSHA256, fences, digest)
+	return s.advanceDatabaseCutoverJournalFencedWithEvidence(ctx, claim.OperationID(), expectedRevision, evidence, fences, digest)
+}
+
+func (s *V3OperationStore) advanceDatabaseCutoverJournalFencedWithEvidence(ctx context.Context, operationID string, expectedRevision uint64, evidence cutover.PhaseEvidenceReference, fences []clientv3.Cmp, expectedIntentDigest string) (cutover.Journal, error) {
+	return s.advanceDatabaseCutoverJournalTransaction(ctx, operationID, expectedRevision, evidence.NextPhase, "", &evidence, fences, expectedIntentDigest)
 }
 
 func (s *V3OperationStore) advanceDatabaseCutoverJournalFenced(ctx context.Context, operationID string, expectedRevision uint64, next cutover.Phase, receiptSHA256 string, fences []clientv3.Cmp, expectedIntentDigest string) (cutover.Journal, error) {
+	return s.advanceDatabaseCutoverJournalTransaction(ctx, operationID, expectedRevision, next, receiptSHA256, nil, fences, expectedIntentDigest)
+}
+
+func (s *V3OperationStore) advanceDatabaseCutoverJournalTransaction(ctx context.Context, operationID string, expectedRevision uint64, next cutover.Phase, receiptSHA256 string, evidence *cutover.PhaseEvidenceReference, fences []clientv3.Cmp, expectedIntentDigest string) (cutover.Journal, error) {
 	current, modRevision, err := s.loadDatabaseCutoverJournal(ctx, operationID)
 	if err != nil {
 		return cutover.Journal{}, err
@@ -280,7 +288,15 @@ func (s *V3OperationStore) advanceDatabaseCutoverJournalFenced(ctx context.Conte
 			return cutover.Journal{}, errEtcdCutoverJournalConflict
 		}
 	}
-	nextJournal, err := current.Advance(expectedRevision, next, receiptSHA256)
+	var nextJournal cutover.Journal
+	if evidence != nil {
+		if evidence.FromRevision != expectedRevision {
+			return cutover.Journal{}, errEtcdCutoverJournalConflict
+		}
+		nextJournal, err = current.AdvanceWithEvidence(*evidence)
+	} else {
+		nextJournal, err = current.Advance(expectedRevision, next, receiptSHA256)
+	}
 	if err != nil {
 		return cutover.Journal{}, fmt.Errorf("%w: %v", errEtcdCutoverJournalConflict, err)
 	}

@@ -77,25 +77,40 @@ func TestEtcdClaimedCutoverJournalBindsSignedIntentClaimAndAppLock(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, stale, lock, 1, cutover.PhaseQuiesce, strings.Repeat("b", 64)); !errors.Is(err, store.ErrOperationOwnershipLost) {
+	quiesceEvidence, err := cutover.NewPhaseEvidenceReference(j, cutover.PhaseQuiesce, strings.Repeat("b", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateEvidence := quiesceEvidence
+	activateEvidence.NextPhase = cutover.PhaseActivate
+	wrongEvidence := quiesceEvidence
+	wrongEvidence.IntentSHA256 = strings.Repeat("0", 64)
+	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 1, wrongEvidence); !errors.Is(err, errEtcdCutoverJournalConflict) {
+		t.Fatal("evidence for a different intent advanced journal")
+	}
+	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, stale, lock, 1, quiesceEvidence); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatal("stale claim advanced journal")
 	}
 	wrongLock := store.NewFencedAppOperationLock(ctx, "not-the-held-app-lock", nil)
 	defer wrongLock.Release()
-	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, wrongLock, 1, cutover.PhaseQuiesce, strings.Repeat("b", 64)); !errors.Is(err, errEtcdCutoverJournalConflict) {
+	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, wrongLock, 1, quiesceEvidence); !errors.Is(err, errEtcdCutoverJournalConflict) {
 		t.Fatal("unowned app lock advanced journal")
 	}
-	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 1, cutover.PhaseActivate, strings.Repeat("b", 64)); !errors.Is(err, errEtcdCutoverJournalConflict) {
+	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 1, activateEvidence); !errors.Is(err, errEtcdCutoverJournalConflict) {
 		t.Fatal("skipped activation accepted")
 	}
-	advanced, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 1, cutover.PhaseQuiesce, strings.Repeat("b", 64))
+	advanced, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 1, quiesceEvidence)
 	if err != nil || advanced.Phase != cutover.PhaseQuiesce || advanced.Revision != 2 {
 		t.Fatalf("advance %+v: %v", advanced, err)
 	}
 	if _, err := adapter.ActivatePostgresDatabaseCatalog(ctx, activeCatalog.Revision, catalog, "operator"); err != nil {
 		t.Fatalf("activate newer catalog: %v", err)
 	}
-	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 2, cutover.PhaseFinalSync, strings.Repeat("c", 64)); err == nil {
+	finalEvidence, err := cutover.NewPhaseEvidenceReference(advanced, cutover.PhaseFinalSync, strings.Repeat("c", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 2, finalEvidence); err == nil {
 		t.Fatal("catalog drift advanced final sync")
 	}
 	if err := adapter.FinishClaimedOperationWithAppLock(ctx, claim, lock, model.OperationSucceeded, "done", nil); err == nil {

@@ -52,6 +52,32 @@ type Journal struct {
 	Receipts map[Phase]string `json:"receipts"`
 }
 
+// PhaseEvidenceReference binds a retained external-evidence digest to one
+// journal edge. It is a reference contract, not verification of the effect.
+type PhaseEvidenceReference struct {
+	SchemaVersion      string `json:"schemaVersion"`
+	IntentSHA256       string `json:"intentSha256"`
+	FromRevision       uint64 `json:"fromRevision"`
+	NextPhase          Phase  `json:"nextPhase"`
+	EvidenceSHA256     string `json:"evidenceSha256"`
+	PriorReceiptSHA256 string `json:"priorReceiptSha256,omitempty"`
+}
+
+func NewPhaseEvidenceReference(j Journal, next Phase, evidenceSHA256 string) (PhaseEvidenceReference, error) {
+	if err := j.Validate(); err != nil || !validDigest(evidenceSHA256) {
+		return PhaseEvidenceReference{}, fmt.Errorf("%w: invalid journal or evidence digest", ErrTransition)
+	}
+	intentDigest, err := IntentSHA256(j.Intent)
+	if err != nil {
+		return PhaseEvidenceReference{}, err
+	}
+	return PhaseEvidenceReference{
+		SchemaVersion: "norn.database-cutover-phase-evidence/v1", IntentSHA256: intentDigest,
+		FromRevision: j.Revision, NextPhase: next, EvidenceSHA256: evidenceSHA256,
+		PriorReceiptSHA256: j.Receipts[j.Phase],
+	}, nil
+}
+
 var ErrTransition = errors.New("database cutover transition rejected")
 
 // IntentSHA256 is the canonical binding stored in a signed cutover operation.
@@ -134,6 +160,26 @@ func (j Journal) Advance(expectedRevision uint64, next Phase, evidenceSHA256 str
 	}
 	out.Receipts[next] = evidenceSHA256
 	return out, nil
+}
+
+// AdvanceWithEvidence hashes the complete reference into the receipt chain.
+// Callers must separately verify and retain the referenced effect evidence.
+func (j Journal) AdvanceWithEvidence(ref PhaseEvidenceReference) (Journal, error) {
+	intentDigest, err := IntentSHA256(j.Intent)
+	if err != nil {
+		return Journal{}, err
+	}
+	if ref.SchemaVersion != "norn.database-cutover-phase-evidence/v1" ||
+		ref.IntentSHA256 != intentDigest || ref.FromRevision != j.Revision ||
+		!validDigest(ref.EvidenceSHA256) || ref.PriorReceiptSHA256 != j.Receipts[j.Phase] {
+		return Journal{}, fmt.Errorf("%w: phase evidence reference differs from journal", ErrTransition)
+	}
+	encoded, err := json.Marshal(ref)
+	if err != nil {
+		return Journal{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	return j.Advance(ref.FromRevision, ref.NextPhase, hex.EncodeToString(digest[:]))
 }
 
 // Validate reconstructs the complete receipt chain from the immutable intent.

@@ -74,20 +74,35 @@ func TestClaimedDatabaseCutoverJournalRequiresSignedIntentAndLiveClaim(t *testin
 	if _, err := db.PrepareClaimedDatabaseCutoverJournal(ctx, acceptance, stale, intent); !errors.Is(err, ErrOperationOwnershipLost) {
 		t.Fatal("stale claim accepted")
 	}
-	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, stale, 1, cutover.PhaseQuiesce, strings.Repeat("b", 64)); !errors.Is(err, ErrOperationOwnershipLost) {
+	quiesceEvidence, err := cutover.NewPhaseEvidenceReference(j, cutover.PhaseQuiesce, strings.Repeat("b", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateEvidence := quiesceEvidence
+	activateEvidence.NextPhase = cutover.PhaseActivate
+	wrongEvidence := quiesceEvidence
+	wrongEvidence.IntentSHA256 = strings.Repeat("0", 64)
+	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 1, wrongEvidence); !errors.Is(err, errDatabaseCutoverJournalConflict) {
+		t.Fatal("evidence for a different intent advanced journal")
+	}
+	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, stale, 1, quiesceEvidence); !errors.Is(err, ErrOperationOwnershipLost) {
 		t.Fatal("stale claim advanced journal")
 	}
-	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 1, cutover.PhaseActivate, strings.Repeat("b", 64)); !errors.Is(err, errDatabaseCutoverJournalConflict) {
+	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 1, activateEvidence); !errors.Is(err, errDatabaseCutoverJournalConflict) {
 		t.Fatal("claimed operation skipped quiescence and final sync")
 	}
-	advanced, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 1, cutover.PhaseQuiesce, strings.Repeat("b", 64))
+	advanced, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 1, quiesceEvidence)
 	if err != nil || advanced.Phase != cutover.PhaseQuiesce || advanced.Revision != 2 {
 		t.Fatalf("claimed advance %+v: %v", advanced, err)
 	}
 	if _, err := db.ActivateDatabaseCatalog(ctx, activeCatalog.Revision, catalog, "operator"); err != nil {
 		t.Fatalf("activate newer catalog: %v", err)
 	}
-	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 2, cutover.PhaseFinalSync, strings.Repeat("c", 64)); !errors.Is(err, cutover.ErrTransition) {
+	finalEvidence, err := cutover.NewPhaseEvidenceReference(advanced, cutover.PhaseFinalSync, strings.Repeat("c", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 2, finalEvidence); !errors.Is(err, cutover.ErrTransition) {
 		t.Fatalf("catalog drift advanced final sync: %v", err)
 	}
 	if err := db.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "cutover done", nil); err == nil {

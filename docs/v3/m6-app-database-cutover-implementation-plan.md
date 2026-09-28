@@ -89,6 +89,17 @@ switching DNS is not rollback.
    still needs a separate verified consumer-switch contract and later phases
    need external-effect gates; this does not imply a cross-control-plane
    migration or a working data transfer.
+
+   Claimed phase advancement in both PostgreSQL and etcd now accepts a
+   versioned phase-evidence reference rather than a free-form receipt digest.
+   The reference binds the signed intent hash, expected journal revision,
+   next phase, external-evidence digest and prior receipt. Its canonical hash
+   becomes the durable journal receipt. Disposable PostgreSQL and etcd claimed
+   journal tests passed; unit tests reject intent, revision, phase, evidence
+   and receipt-chain drift. The reference and its external evidence still need
+   immutable retention and independent verification before any phase can
+   authorize a consumer switch. A syntactically valid digest alone remains
+   insufficient proof of the named effect.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

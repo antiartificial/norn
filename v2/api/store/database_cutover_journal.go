@@ -168,7 +168,7 @@ func (db *DB) advanceDatabaseCutoverJournal(ctx context.Context, operationID str
 // signed operation and its current claim still identify this exact journal.
 // External receipts remain unverified until a coordinator supplies a proof
 // verifier; the method grants no cutover or consumer authority.
-func (db *DB) AdvanceClaimedDatabaseCutoverJournal(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, expectedRevision uint64, next cutover.Phase, receiptSHA256 string) (cutover.Journal, error) {
+func (db *DB) AdvanceClaimedDatabaseCutoverJournal(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, expectedRevision uint64, evidence cutover.PhaseEvidenceReference) (cutover.Journal, error) {
 	if db == nil || acceptance == nil || acceptance.db != db || validateOperationClaim(claim) != nil {
 		return cutover.Journal{}, errDatabaseCutoverJournalConflict
 	}
@@ -180,7 +180,7 @@ func (db *DB) AdvanceClaimedDatabaseCutoverJournal(ctx context.Context, acceptan
 	if accepted.Operation.Kind != DatabaseCutoverOperationKind || accepted.Operation.ID != claim.OperationID() || accepted.Operation.App == "" || accepted.Operation.Ref == "" || accepted.Operation.MaxAttempts != 1 || accepted.Deployment != nil || accepted.Intent.OperationID != claim.OperationID() || len(digest) != 64 {
 		return cutover.Journal{}, errDatabaseCutoverJournalConflict
 	}
-	return db.advanceDatabaseCutoverJournalGuarded(ctx, claim.OperationID(), expectedRevision, next, receiptSHA256, digest, func(tx pgx.Tx) error {
+	return db.advanceDatabaseCutoverJournalGuardedWithEvidence(ctx, claim.OperationID(), expectedRevision, evidence, digest, func(tx pgx.Tx) error {
 		var held bool
 		err := tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND app=$3 AND ref=$4
 			AND payload->>'cutoverIntentSha256'=$5 AND acceptance_required=true AND status='running'
@@ -196,7 +196,15 @@ func (db *DB) AdvanceClaimedDatabaseCutoverJournal(ctx context.Context, acceptan
 	})
 }
 
+func (db *DB) advanceDatabaseCutoverJournalGuardedWithEvidence(ctx context.Context, operationID string, expectedRevision uint64, evidence cutover.PhaseEvidenceReference, expectedIntentDigest string, fence func(pgx.Tx) error) (cutover.Journal, error) {
+	return db.advanceDatabaseCutoverJournalTransaction(ctx, operationID, expectedRevision, evidence.NextPhase, "", &evidence, expectedIntentDigest, fence)
+}
+
 func (db *DB) advanceDatabaseCutoverJournalGuarded(ctx context.Context, operationID string, expectedRevision uint64, next cutover.Phase, receiptSHA256, expectedIntentDigest string, fence func(pgx.Tx) error) (cutover.Journal, error) {
+	return db.advanceDatabaseCutoverJournalTransaction(ctx, operationID, expectedRevision, next, receiptSHA256, nil, expectedIntentDigest, fence)
+}
+
+func (db *DB) advanceDatabaseCutoverJournalTransaction(ctx context.Context, operationID string, expectedRevision uint64, next cutover.Phase, receiptSHA256 string, evidence *cutover.PhaseEvidenceReference, expectedIntentDigest string, fence func(pgx.Tx) error) (cutover.Journal, error) {
 	if db == nil || db.Pool == nil || expectedRevision == 0 || expectedRevision >= 1<<63 {
 		return cutover.Journal{}, errDatabaseCutoverJournalConflict
 	}
@@ -249,7 +257,15 @@ func (db *DB) advanceDatabaseCutoverJournalGuarded(ctx context.Context, operatio
 			return cutover.Journal{}, err
 		}
 	}
-	nextJournal, err := current.Advance(expectedRevision, next, receiptSHA256)
+	var nextJournal cutover.Journal
+	if evidence != nil {
+		if evidence.FromRevision != expectedRevision {
+			return cutover.Journal{}, errDatabaseCutoverJournalConflict
+		}
+		nextJournal, err = current.AdvanceWithEvidence(*evidence)
+	} else {
+		nextJournal, err = current.Advance(expectedRevision, next, receiptSHA256)
+	}
 	if err != nil {
 		return cutover.Journal{}, fmt.Errorf("%w: %v", errDatabaseCutoverJournalConflict, err)
 	}
