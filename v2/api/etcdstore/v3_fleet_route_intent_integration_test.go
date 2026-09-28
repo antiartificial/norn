@@ -156,14 +156,18 @@ func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
 }
 
 func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
-	runInitialFleetRouteIntentEtcd(t, false)
+	runInitialFleetRouteIntentEtcd(t, false, false)
 }
 
 func TestInitialFleetRouteProofTerminalizesSyntheticDeploymentEtcd(t *testing.T) {
-	runInitialFleetRouteIntentEtcd(t, true)
+	runInitialFleetRouteIntentEtcd(t, true, false)
 }
 
-func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
+func TestPartialFleetRoutePublicationAllowsFencedSuccessorEtcd(t *testing.T) {
+	runInitialFleetRouteIntentEtcd(t, true, true)
+}
+
+func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool) {
 	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	activeFleetIngressForRouteIntent(t, adapter)
@@ -530,6 +534,38 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		}
 		if stored, err := client.Get(ctx, proofKey); err != nil || len(stored.Kvs) != 0 {
 			t.Fatalf("partial publication stored a traffic proof: entries=%d err=%v", len(stored.Kvs), err)
+		}
+		if successor {
+			if err := adapter.DeferClaimedOperationWithAppLock(ctx, claim, lock, "partial ingress publication", time.Now(), nil); err != nil {
+				t.Fatalf("defer partial publication: %v", err)
+			}
+			lock.Release()
+			reclaimed, nextClaim, err := adapter.ClaimNextOperation(ctx, "route-successor", time.Minute, []string{"app.deploy"})
+			if err != nil || reclaimed == nil || reclaimed.ID != claim.OperationID() || nextClaim.Generation() <= claim.Generation() {
+				t.Fatalf("successor claim=%+v generation=%d err=%v", reclaimed, nextClaim.Generation(), err)
+			}
+			nextLock, acquired, err := adapter.AcquireAppOperationLock(ctx, "demo")
+			if err != nil || !acquired {
+				t.Fatalf("successor app lock acquired=%v err=%v", acquired, err)
+			}
+			defer nextLock.Release()
+			if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, nextLock, spec, 18082, healthToken, first.ID, "ingress-01"); err == nil {
+				t.Fatal("old claim retained publisher authority after defer")
+			}
+			replayed, err := adapter.IntendInitialFleetRoute(ctx, nextClaim, nextLock, spec, 18082)
+			if err != nil || replayed.ID != first.ID || replayed.Generation != first.Generation {
+				t.Fatalf("successor route intent=%+v err=%v", replayed, err)
+			}
+			if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, nextClaim, nextLock, spec, 18082, healthToken, first.ID, "ingress-02"); err != nil {
+				t.Fatalf("successor could not reuse completed health evidence: %v", err)
+			}
+			if stored, err := client.Get(ctx, adapter.initialFleetTrafficProofKey(first.ID, nextClaim.Generation())); err != nil || len(stored.Kvs) != 0 {
+				t.Fatalf("successor inherited traffic proof: entries=%d err=%v", len(stored.Kvs), err)
+			}
+			if active, err := client.Get(ctx, activeKey); err != nil || len(active.Kvs) != 0 {
+				t.Fatalf("partial publication activated traffic: entries=%d err=%v", len(active.Kvs), err)
+			}
+			return
 		}
 		if published, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish,
 			func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {

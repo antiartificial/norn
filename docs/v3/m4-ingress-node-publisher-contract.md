@@ -176,6 +176,11 @@ failure after fanout returns a deferred result with partial receipts so the
 app admission hold can preserve recovery authority. A disposable-etcd test
 covers partial publication and successful synthetic proof. The opt-in normal
 worker now owns the private mTLS authority listener and composes these steps.
+The disposable-etcd successor-claim rehearsal defers after a partial publish,
+then confirms the previous claim loses node authority while a new claim can
+reuse the exact durable route intent and completed Nomad health effect. The
+new claim has no inherited traffic proof or active route; it must publish and
+observe again. This is claim recovery evidence, not protected host repair.
 Its disposable HTTP-to-Nomad rehearsal rejects a release without completed
 active ingress inventory before opening that listener, then directly
 demonstrates a healthy Nomad allocation while remaining nonterminal without
