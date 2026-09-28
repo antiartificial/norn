@@ -53,6 +53,18 @@ switching DNS is not rollback.
 3. Implement provider-specific source write fencing and its independent
    readback. A stopped application process is not proof that a database user
    or external integration cannot still write.
+
+   A disposable PostgreSQL rehearsal in
+   `v2/api/database/postgres_writer_fence_rehearsal_test.go` passed on
+   2026-09-27. It proves that `ALTER ROLE ... NOLOGIN` rejects fresh runtime
+   authentication but leaves an existing runtime session usable until its
+   backend is terminated. The first PG fence must therefore disable login,
+   terminate every session for the exact dedicated runtime role, and read back
+   both `rolcanlogin = false` and zero sessions before final sync. This
+   rehearsal uses a test superuser; it does not qualify a narrowly privileged
+   production fence account or prove that other roles, pools, and integrations
+   cannot write. Those identities belong in the writer inventory and must
+   block promotion until each is fenced and verified.
 4. Add initial restore, final transfer and integrity adapters for one exact
    engine/provider pair. Checkpoint each external effect before retrying it.
 5. Switch generation-bound runtime secrets and consumers only after the final
