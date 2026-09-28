@@ -84,15 +84,13 @@ func probeActiveFleetInventoryPublishers(t *testing.T, nodes []ingress.IngressNo
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet || r.URL.Path != "/v1/health" || r.TLS == nil || len(r.TLS.VerifiedChains) == 0 ||
-				len(r.TLS.VerifiedChains[0]) == 0 || len(r.TLS.VerifiedChains[0][0].URIs) != 1 || r.TLS.VerifiedChains[0][0].URIs[0].String() != clientURI.String() {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"nodeId":"%s"}`+"\n", node.ID)
-		})
+		handler, err := ingress.NewNodePublisherHandler(t.TempDir(), clientURI.String(), node.ID,
+			func(context.Context, string, string) (*ingress.AuthorizedRoutePublication, error) {
+				return nil, fmt.Errorf("no route publication is authorized by inventory alone")
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
 		server := &http.Server{Handler: handler, ReadHeaderTimeout: 3 * time.Second}
 		server.TLSConfig = &tls.Config{Certificates: []tls.Certificate{identity}, ClientAuth: tls.RequireAndVerifyClientCert,
 			ClientCAs: roots, MinVersion: tls.VersionTLS12}
