@@ -144,6 +144,10 @@ repeat file, Traefik, endpoint and public-path readback; persist a durable
 proof and use the private terminal completion fence; then rehearse partial publish,
 claim loss, replacement and loaded 2→3→2 Fleet operation. The draft host
 publisher service remains disabled until that worker and recovery path exist.
+The worker's source-loading helper now selects one enabled local InfraSpec and
+checks its digest, region, endpoint and Fleet target against the signed claimed
+deployment. It rejects duplicate app documents and changed or disabled source;
+normal worker execution is still absent.
 
 - Fleet must install one narrowly scoped publisher on every ingress host. It
   writes only `norn-route-<32 lowercase hex>.yaml` below
