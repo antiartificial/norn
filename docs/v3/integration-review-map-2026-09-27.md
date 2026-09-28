@@ -205,9 +205,11 @@ protected ingress and public-path gate.
    permits an on-host backup for the dev Mini upgrade. Verify a fresh local
    backup and private restore before that transition; production recovery is
    a separate future qualification.
-2. Resolve GitHub account billing/spending status so Fleet PR #177's hosted
-   contract job can start. Its 1,415 local Python tests and static workflow,
-   schema, and OpenTofu checks do not substitute for the required hosted lane.
+2. Fleet PRs #176 and #177 passed their exact-head GitHub `contract` checks on
+   the documented ephemeral Linux x64 fallback. The temporary runners and
+   routing variable were removed. Resolve GitHub account billing/spending
+   status to restore normal GitHub-hosted execution; local tests alone were
+   not used to satisfy the protected merge check.
 3. Name the protected Fleet rehearsal target and owner-approved budget before
    provisioning. Qualify PR #176 before its stacked readback change, then
    exercise exact candidate pins across separate hosts.
