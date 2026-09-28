@@ -100,6 +100,14 @@ owner, the 9,223 `messages` rows and probe write remained, the replacement
 role lost copied-database access and the copied control database remained
 unchanged. This is not a protected live role rollback.
 
+During a further private-copy run, the opt-in `TestReadinessWithDatabase` from
+signal-sideband draft PR #1 connected as `signal_app` while that role held the
+copied application objects and passed in 0.01 seconds. The same run completed
+the role split and rollback checks. This proves the proposed `/ready` handler
+can reach the isolated copied database with the distinct app role; it does
+not prove the live Nomad task has switched credentials or that the protected
+database remains available through a cutover.
+
 The live Nomad `signal-sideband` web task currently declares `DB_USER=norn`
 and a `DATABASE_URL` whose parsed username is also `norn` and database is
 `signal_sideband`; the URL password and other secret values were not printed.
