@@ -565,6 +565,26 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool) {
 			if active, err := client.Get(ctx, activeKey); err != nil || len(active.Kvs) != 0 {
 				t.Fatalf("partial publication activated traffic: entries=%d err=%v", len(active.Kvs), err)
 			}
+			// Reconcile both nodes under the new claim. The synthetic publisher
+			// models exact file receipts; observeTraffic supplies fresh traffic
+			// evidence for this claim generation.
+			publishForSuccessor := func(_ context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
+				if intentID != first.ID || generation != first.Generation || routeSHA != first.RenderedRoute.SHA256 {
+					return nil, fmt.Errorf("successor publication changed the reserved route")
+				}
+				receipts := make([]ingress.NodePublicationReceipt, 0, len(nodes))
+				for _, node := range nodes {
+					receipts = append(receipts, ingress.NodePublicationReceipt{NodeID: node.ID, Generation: generation, RouteSHA256: routeSHA})
+				}
+				return receipts, nil
+			}
+			completed, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, nextClaim, nextLock, spec, healthToken, 18082, publishForSuccessor, observeTraffic)
+			if err != nil || completed == nil || completed.Proof == nil || completed.Proof.ClaimGeneration != nextClaim.Generation() {
+				t.Fatalf("successor route completion=%+v err=%v", completed, err)
+			}
+			if active, err := client.Get(ctx, activeKey); err != nil || len(active.Kvs) != 1 {
+				t.Fatalf("successor did not activate proved route: entries=%d err=%v", len(active.Kvs), err)
+			}
 			return
 		}
 		if published, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish,

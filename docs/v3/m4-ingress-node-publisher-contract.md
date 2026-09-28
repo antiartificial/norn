@@ -180,7 +180,9 @@ The disposable-etcd successor-claim rehearsal defers after a partial publish,
 then confirms the previous claim loses node authority while a new claim can
 reuse the exact durable route intent and completed Nomad health effect. The
 new claim has no inherited traffic proof or active route; it must publish and
-observe again. This is claim recovery evidence, not protected host repair.
+observe again. The fixture then supplies exact synthetic node receipts and a
+fresh traffic observation for the successor, which completes the deployment
+under that claim. This is claim recovery evidence, not protected host repair.
 Its disposable HTTP-to-Nomad rehearsal rejects a release without completed
 active ingress inventory before opening that listener, then directly
 demonstrates a healthy Nomad allocation while remaining nonterminal without
