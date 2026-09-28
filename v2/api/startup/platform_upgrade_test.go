@@ -81,6 +81,7 @@ printf '%s\n' '{"name":"norn.startup/v2","schemaModes":["auto","check","migrate-
 
 func TestPlatformUpgradeRejectsUnverifiedStartupContract(t *testing.T) {
 	binary := writeExecutable(t, `#!/usr/bin/env bash
+# norn.startup/v2 marker is present, but the response is not a valid contract.
 printf '%s\n' '{"name":"legacy"}'
 `)
 	cmd := exec.Command(platformUpgradePath(t), "startup-contract", binary)
@@ -391,6 +392,7 @@ exit 7
 
 func TestPlatformUpgradeBoundsContractProbeThatIgnoresTerm(t *testing.T) {
 	binary := writeExecutable(t, `#!/usr/bin/env bash
+# norn.startup/v2 marker is present, but this process never responds.
 trap '' TERM
 while :; do sleep 1; done
 `)
