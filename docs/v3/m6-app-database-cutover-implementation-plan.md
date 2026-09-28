@@ -83,10 +83,12 @@ switching DNS is not rollback.
    source and target bindings in separate profiles. Source must advertise
    runtime/snapshot and target runtime/restore. PG holds the catalog activation
    advisory lock through journal commit; etcd compares the active pointer and
-   immutable revision in that transaction. This is a preparation gate for the
-   first single-control-catalog path. Later phase advancement still needs
-   catalog drift and external-effect gates; it does not imply a cross-control-
-   plane migration or a working data transfer.
+   immutable revision in that transaction. Claimed quiesce and final-sync
+   writes now also refuse a changed active catalog revision or binding. This
+   covers the early phases of the first single-control-catalog path. Activation
+   still needs a separate verified consumer-switch contract and later phases
+   need external-effect gates; this does not imply a cross-control-plane
+   migration or a working data transfer.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

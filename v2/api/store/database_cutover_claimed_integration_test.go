@@ -84,6 +84,12 @@ func TestClaimedDatabaseCutoverJournalRequiresSignedIntentAndLiveClaim(t *testin
 	if err != nil || advanced.Phase != cutover.PhaseQuiesce || advanced.Revision != 2 {
 		t.Fatalf("claimed advance %+v: %v", advanced, err)
 	}
+	if _, err := db.ActivateDatabaseCatalog(ctx, activeCatalog.Revision, catalog, "operator"); err != nil {
+		t.Fatalf("activate newer catalog: %v", err)
+	}
+	if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 2, cutover.PhaseFinalSync, strings.Repeat("c", 64)); !errors.Is(err, cutover.ErrTransition) {
+		t.Fatalf("catalog drift advanced final sync: %v", err)
+	}
 	if err := db.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "cutover done", nil); err == nil {
 		t.Fatal("generic success bypassed cutover gate")
 	}

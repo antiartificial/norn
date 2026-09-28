@@ -255,6 +255,13 @@ func (s *V3OperationStore) AdvanceClaimedDatabaseCutoverJournal(ctx context.Cont
 	if err != nil {
 		return cutover.Journal{}, err
 	}
+	if next == cutover.PhaseQuiesce || next == cutover.PhaseFinalSync {
+		catalogFences, err := s.cutoverCatalogComparisons(ctx, current.Intent)
+		if err != nil {
+			return cutover.Journal{}, err
+		}
+		fences = append(fences, catalogFences...)
+	}
 	digest, err := cutover.IntentSHA256(current.Intent)
 	if err != nil {
 		return cutover.Journal{}, err

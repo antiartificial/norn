@@ -205,6 +205,17 @@ func (db *DB) advanceDatabaseCutoverJournalGuarded(ctx context.Context, operatio
 		return cutover.Journal{}, err
 	}
 	defer tx.Rollback(context.Background())
+	var activeCatalog DatabaseCatalogRevision
+	if expectedIntentDigest != "" && (next == cutover.PhaseQuiesce || next == cutover.PhaseFinalSync) {
+		// Keep catalog activation ahead of operation/journal row locks.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('norn:database-catalog', 0))`); err != nil {
+			return cutover.Journal{}, err
+		}
+		activeCatalog, err = loadActiveDatabaseCatalog(ctx, tx)
+		if err != nil {
+			return cutover.Journal{}, errDatabaseCutoverJournalConflict
+		}
+	}
 	if fence != nil {
 		if err := fence(tx); err != nil {
 			return cutover.Journal{}, err
@@ -232,6 +243,11 @@ func (db *DB) advanceDatabaseCutoverJournalGuarded(ctx context.Context, operatio
 	current.Phase, current.Revision = cutover.Phase(phase), uint64(revision)
 	if current.Validate() != nil {
 		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	if activeCatalog.Revision != 0 {
+		if err := cutover.VerifyCatalog(current.Intent, activeCatalog.Revision, activeCatalog.Digest, activeCatalog.Catalog); err != nil {
+			return cutover.Journal{}, err
+		}
 	}
 	nextJournal, err := current.Advance(expectedRevision, next, receiptSHA256)
 	if err != nil {

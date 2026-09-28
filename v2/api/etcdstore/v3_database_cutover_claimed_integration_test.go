@@ -92,6 +92,12 @@ func TestEtcdClaimedCutoverJournalBindsSignedIntentClaimAndAppLock(t *testing.T)
 	if err != nil || advanced.Phase != cutover.PhaseQuiesce || advanced.Revision != 2 {
 		t.Fatalf("advance %+v: %v", advanced, err)
 	}
+	if _, err := adapter.ActivatePostgresDatabaseCatalog(ctx, activeCatalog.Revision, catalog, "operator"); err != nil {
+		t.Fatalf("activate newer catalog: %v", err)
+	}
+	if _, err := adapter.AdvanceClaimedDatabaseCutoverJournal(ctx, claim, lock, 2, cutover.PhaseFinalSync, strings.Repeat("c", 64)); err == nil {
+		t.Fatal("catalog drift advanced final sync")
+	}
 	if err := adapter.FinishClaimedOperationWithAppLock(ctx, claim, lock, model.OperationSucceeded, "done", nil); err == nil {
 		t.Fatal("generic success bypassed cutover gate")
 	}
