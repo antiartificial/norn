@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -76,7 +78,7 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(appsDir, app), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	spec := "schemaVersion: norn.app/v2\nname: " + app + "\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nbuild:\n  image: " + image + "\nprocesses:\n  web:\n    command: sleep 60\n    port: 8080\nendpoints:\n  - url: https://" + app + ".example.test\n    region: local\n    process: web\n    trafficProbe:\n      path: /ready\n      bodySHA256: " + strings.Repeat("d", 64) + "\n"
+	spec := "schemaVersion: norn.app/v2\nname: " + app + "\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nbuild:\n  image: " + image + "\nprocesses:\n  web:\n    command: mkdir -p /www; printf ready > /www/ready; exec httpd -f -p 8080 -h /www\n    port: 8080\nendpoints:\n  - url: https://" + app + ".example.test\n    region: local\n    process: web\n    trafficProbe:\n      path: /ready\n      bodySHA256: b24d6d33736ecd5604a4b17bc9c6481039fac362bb7df044ef1c10a2bfd21db6\n"
 	if err := os.WriteFile(filepath.Join(appsDir, app, "infraspec.yaml"), []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -202,6 +204,37 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	}
 	if health.EffectID == "" || health.Generation == 0 {
 		t.Fatalf("healthy Nomad effect token=%+v", health)
+	}
+	api, err := nomadapi.NewClient(&nomadapi.Config{Address: address})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocations, _, err := api.Jobs().Allocations(plan.Input.JobID, false, &nomadapi.QueryOptions{Region: plan.Input.NomadRegion})
+	if err != nil || len(allocations) != 1 || allocations[0].ClientStatus != "running" {
+		t.Fatalf("healthy app allocation missing: allocations=%+v err=%v", allocations, err)
+	}
+	allocation, _, err := api.Allocations().Info(allocations[0].ID, nil)
+	if err != nil || allocation == nil || allocation.AllocatedResources == nil {
+		t.Fatalf("allocated app resources missing: allocation=%+v err=%v", allocation, err)
+	}
+	port := 0
+	for _, mapping := range allocation.AllocatedResources.Shared.Ports {
+		if mapping.Label == "web-http" {
+			port = mapping.Value
+		}
+	}
+	if port < 1 {
+		t.Fatalf("allocated web-http port missing: %+v", allocation.AllocatedResources.Shared.Ports)
+	}
+	probeClient := &http.Client{Timeout: 3 * time.Second}
+	probe, err := probeClient.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/ready")
+	if err != nil {
+		t.Fatalf("allocated app endpoint unavailable: %v", err)
+	}
+	responseBody, readErr := io.ReadAll(io.LimitReader(probe.Body, 16))
+	_ = probe.Body.Close()
+	if readErr != nil || probe.StatusCode != http.StatusOK || string(responseBody) != "ready" {
+		t.Fatalf("allocated app endpoint status=%d body=%q err=%v", probe.StatusCode, responseBody, readErr)
 	}
 	operation, err := operations.GetOperation(ctx, accepted.ID)
 	if err != nil || operation.Status.Terminal() {

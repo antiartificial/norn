@@ -18,7 +18,7 @@ def port():
 repo = pathlib.Path(__file__).resolve().parents[3]
 image = os.environ.get(
     "NORN_TEST_DEPLOYMENT_IMAGE",
-    "docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
+    "docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662",
 )
 if subprocess.run(["docker", "image", "inspect", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
     raise SystemExit(f"pull the exact image into Docker before qualification: {image}")

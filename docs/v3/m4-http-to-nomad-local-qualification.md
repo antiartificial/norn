@@ -5,13 +5,15 @@ The opt-in `TestEtcdFleetStagingReleaseHTTPToDisposableNomad` passed locally on
 It accepted a staging release through the normal HTTP handler, claimed its
 signed `app.deploy` operation, staged managed job inputs, observed a healthy
 real Docker allocation, and confirmed that the operation remained nonterminal
-without ingress proof. The artifact verifier in this test is synthetic.
+without ingress proof. The allocation served the InfraSpec's `/ready` response
+through its assigned local host port; the test checked HTTP 200 and the exact
+`ready` body. The artifact verifier in this test is synthetic.
 
 Run from the Norn repository root on a Docker-capable Mac with `etcd`,
 `consul`, `nomad`, `docker`, `go`, and Python 3 available:
 
 ```sh
-docker pull docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+docker pull docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
 python3 v2/api/scripts/qualify-v3-http-nomad.py
 ```
 
@@ -23,16 +25,16 @@ Desktop may delay release of a root-owned Nomad allocation log directory; if
 the script prints a disposable-state cleanup path, remove only that path after
 the script exits.
 
-This result qualifies the normal local admission-to-Nomad path. It does not
-verify a real signed artifact, publish to ingress nodes, probe the public
-endpoint, prove weighted traffic, or qualify protected Fleet hosts. Those
-remain M4 release gates.
+This result qualifies the normal local admission-to-Nomad path and a direct
+app endpoint response. It does not verify a real signed artifact, publish to
+ingress nodes, probe the public endpoint, prove weighted traffic, or qualify
+protected Fleet hosts. Those remain M4 release gates.
 
 First Fleet release admission now requires an exact traffic probe in the
 checked-out InfraSpec. This prevents an accepted release from reaching the
 worker without the signed path and response digest needed for terminal
-traffic proof. The local Nomad fixture carries that probe declaration but
-does not serve or verify its response.
+traffic proof. The local Nomad fixture carries that probe declaration and
+checks the direct allocation response; it does not probe through ingress.
 The claimed worker also rechecks this requirement before preparing Nomad
 inputs, including for operations accepted before the admission rule changed.
 The normal executor now requires a completed active Fleet ingress inventory
