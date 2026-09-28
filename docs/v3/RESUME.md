@@ -15,14 +15,14 @@ M0–M9. M8 is release qualification; M9 is separately scoped adoption. No v3
 Mini/Fleet deployment, protected-master merge, provider cutover or milestone
 sign-off has occurred. The signed gate count remains **0/10**.
 
-## Current branches and live checks
+## Branches and latest checked state
 
 - Norn draft [PR #76](https://github.com/antiartificial/norn/pull/76):
-  `codex/v3-m0-m3-release-integration` at
-  `7a0c98960cfd690a9eb073f9f9ae9cfb1173ea4c`, targeting
-  `feature/norn-v3-planning-handoff`. All nine reported checks passed at this
-  head on 2026-09-27. The worktree was clean before this M0 checkpoint and
-  handoff cleanup; the current edits are not yet included in that PR head.
+  `codex/v3-m0-m3-release-integration` targets
+  `feature/norn-v3-planning-handoff`. At the pre-edit check, head
+  `7a0c98960cfd690a9eb073f9f9ae9cfb1173ea4c` had nine passing checks;
+  the worktree was clean. The Mini checkpoint and handoff cleanup were pushed
+  later. Recheck their exact head and checks before using CI as evidence.
 - Fleet draft [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
   `codex/fleet-m3-host-etcd` at
   `6267655052b209b22dc8b3421cb9339f797af9bc`, targeting `main`.
