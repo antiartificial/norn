@@ -16,7 +16,7 @@ type TrafficProbeSpec struct {
 }
 
 func ValidateTrafficProbe(probe *TrafficProbeSpec) error {
-	if probe == nil || len(probe.Path) < 2 || len(probe.Path) > 512 || !strings.HasPrefix(probe.Path, "/") || strings.HasPrefix(probe.Path, "//") || strings.ContainsAny(probe.Path, "?#") || len(probe.BodySHA256) != 64 {
+	if probe == nil || len(probe.Path) < 1 || len(probe.Path) > 512 || !strings.HasPrefix(probe.Path, "/") || strings.HasPrefix(probe.Path, "//") || strings.ContainsAny(probe.Path, "?#") || len(probe.BodySHA256) != 64 {
 		return fmt.Errorf("traffic probe path or body digest is incomplete")
 	}
 	parsed, err := url.Parse(probe.Path)
