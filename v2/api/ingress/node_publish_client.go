@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // NodePublicationReceipt records a host's immediate file readback. It is not
@@ -23,13 +24,42 @@ type NodePublicationReceipt struct {
 // PublishRouteIntentToNodesWithTLS sends only the reserved intent ID to each
 // private ingress publisher. Partial receipts are returned on failure so the
 // caller can reconcile hosts that may already be serving the route.
-func PublishRouteIntentToNodesWithTLS(ctx context.Context, caPEM, certPEM, keyPEM []byte, nodes []IngressNode, intentID string, generation uint64, routeSHA256 string) ([]NodePublicationReceipt, error) {
+func PublishRouteIntentToNodesWithTLS(ctx context.Context, caPEM, certPEM, keyPEM []byte, nodes []IngressNode, publisherPort int, intentID string, generation uint64, routeSHA256 string) ([]NodePublicationReceipt, error) {
+	publishers, err := ingressPublisherNodes(nodes, publisherPort)
+	if err != nil {
+		return nil, err
+	}
 	client, err := NewMutualTLSNodeClient(caPEM, certPEM, keyPEM)
 	if err != nil {
 		return nil, err
 	}
 	defer client.CloseIdleConnections()
-	return publishRouteIntentToNodes(ctx, client, nodes, intentID, generation, routeSHA256)
+	return publishRouteIntentToNodes(ctx, client, publishers, intentID, generation, routeSHA256)
+}
+
+// Inventory URLs point at the read-only observer. Publication uses the same
+// exact private node identities on a separate, explicitly configured port.
+func ingressPublisherNodes(nodes []IngressNode, publisherPort int) ([]IngressNode, error) {
+	if publisherPort < 1024 || publisherPort > 65535 {
+		return nil, fmt.Errorf("ingress publisher port is invalid")
+	}
+	publishers := make([]IngressNode, 0, len(nodes))
+	for _, node := range nodes {
+		origin, err := validIngressNodeOrigin(node)
+		if err != nil {
+			return nil, err
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Scheme != "https" || parsed.Port() == "" {
+			return nil, fmt.Errorf("ingress publisher requires a private HTTPS inventory origin")
+		}
+		ip := net.ParseIP(parsed.Hostname())
+		if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) {
+			return nil, fmt.Errorf("ingress publisher requires a private inventory IP")
+		}
+		publishers = append(publishers, IngressNode{ID: node.ID, APIURL: "https://" + net.JoinHostPort(ip.String(), strconv.Itoa(publisherPort))})
+	}
+	return publishers, nil
 }
 
 func publishRouteIntentToNodes(ctx context.Context, client *http.Client, nodes []IngressNode, intentID string, generation uint64, routeSHA256 string) ([]NodePublicationReceipt, error) {

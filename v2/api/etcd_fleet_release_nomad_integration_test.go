@@ -164,7 +164,7 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 		Store: operations, Nomad: nomadClient, AppsDir: appsDir, Authority: authority,
 		Route: fleetdeploy.ClaimedFleetRouteTransport{
 			Listen:       func() (net.Listener, error) { listenerCalled = true; return nil, fmt.Errorf("unexpected listener") },
-			ObserverPort: 18082, EndpointPort: 443,
+			ObserverPort: 18082, PublisherPort: 18083, EndpointPort: 443,
 		},
 	}
 	if _, err := executor.ExecuteOperationWithAppLock(ctx, claimed, claim, lock); err == nil || !strings.Contains(err.Error(), "ingress inventory is unavailable") {

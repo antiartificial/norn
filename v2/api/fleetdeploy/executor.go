@@ -36,6 +36,7 @@ type ClaimedFleetRouteTransport struct {
 	ObserverKeyPEM   []byte
 	PublicRoots      *x509.CertPool
 	ObserverPort     int
+	PublisherPort    int
 	EndpointPort     int
 }
 
@@ -67,7 +68,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if err != nil {
 		return nil, err
 	}
-	if e.Route.ObserverPort < 1024 || e.Route.ObserverPort > 65535 || e.Route.EndpointPort < 1 || e.Route.EndpointPort > 65535 {
+	if e.Route.ObserverPort < 1024 || e.Route.ObserverPort > 65535 || e.Route.PublisherPort < 1024 || e.Route.PublisherPort > 65535 || e.Route.PublisherPort == e.Route.ObserverPort || e.Route.EndpointPort < 1 || e.Route.EndpointPort > 65535 {
 		return nil, fmt.Errorf("claimed Fleet route transport is incomplete")
 	}
 	// A completed Fleet inventory and matching private node identities must
@@ -128,7 +129,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 			e.Route.AuthorityCertPEM, e.Route.AuthorityKeyPEM, e.Route.NodeCAPEM)
 	}()
 	publication, publishErr := e.Store.PublishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, source.Spec, healthEffect,
-		e.Route.ObserverPort, e.Route.EndpointPort, e.Route.PublisherCAPEM, e.Route.PublisherCertPEM, e.Route.PublisherKeyPEM,
+		e.Route.ObserverPort, e.Route.PublisherPort, e.Route.EndpointPort, e.Route.PublisherCAPEM, e.Route.PublisherCertPEM, e.Route.PublisherKeyPEM,
 		e.Route.ObserverCAPEM, e.Route.ObserverCertPEM, e.Route.ObserverKeyPEM, e.Route.PublicRoots)
 	stopServing()
 	_ = listener.Close()

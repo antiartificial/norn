@@ -45,7 +45,9 @@ func TestEtcdFleetDeployWorkerRejectsInvalidPrivateConfigBeforeStoreAccess(t *te
 	}{
 		{"trailing JSON", `{} {}`, "trailing content"},
 		{"public bind", `{"bind":"0.0.0.0:18082","nodeUris":{"spiffe://test/ingress/one":"one"},"observerPort":18083,"endpointPort":8080}`, "private IP"},
-		{"invalid node identity", `{"bind":"127.0.0.1:18082","nodeUris":{"bad-uri":"one"},"observerPort":18083,"endpointPort":8080}`, "node identity"},
+		{"invalid node identity", `{"bind":"127.0.0.1:18082","nodeUris":{"bad-uri":"one"},"observerPort":18083,"publisherPort":18084,"endpointPort":8080}`, "node identity"},
+		{"missing publisher port", `{"bind":"127.0.0.1:18084","nodeUris":{"spiffe://test/ingress/one":"one"},"observerPort":18082,"endpointPort":8080}`, "transport is incomplete"},
+		{"shared publisher port", `{"bind":"127.0.0.1:18084","nodeUris":{"spiffe://test/ingress/one":"one"},"observerPort":18082,"publisherPort":18082,"endpointPort":8080}`, "transport is incomplete"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "worker.json")

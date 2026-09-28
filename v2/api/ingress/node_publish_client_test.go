@@ -50,3 +50,19 @@ func TestPublishRouteIntentToNodesReportsPartialPublication(t *testing.T) {
 		t.Fatal("duplicate publisher origin caused publication")
 	}
 }
+
+func TestIngressPublisherNodesUseSeparatePortAndExactInventoryIPs(t *testing.T) {
+	observers := []IngressNode{{ID: "one", APIURL: "https://10.43.0.21:18082"}, {ID: "two", APIURL: "https://10.43.0.22:18082"}}
+	publishers, err := ingressPublisherNodes(observers, 18083)
+	if err != nil || len(publishers) != 2 || publishers[0].APIURL != "https://10.43.0.21:18083" || publishers[1].APIURL != "https://10.43.0.22:18083" || observers[0].APIURL != "https://10.43.0.21:18082" {
+		t.Fatalf("publisher targets=%+v observers=%+v err=%v", publishers, observers, err)
+	}
+	for _, invalid := range []IngressNode{{ID: "public", APIURL: "https://203.0.113.10:18082"}, {ID: "name", APIURL: "https://ingress.example.test:18082"}, {ID: "path", APIURL: "https://10.43.0.21:18082/other"}} {
+		if _, err := ingressPublisherNodes([]IngressNode{observers[0], invalid}, 18083); err == nil {
+			t.Fatalf("invalid publisher inventory accepted: %+v", invalid)
+		}
+	}
+	if _, err := ingressPublisherNodes(observers, 0); err == nil {
+		t.Fatal("missing publisher port accepted")
+	}
+}

@@ -38,6 +38,7 @@ type etcdFleetDeployWorkerConfig struct {
 	ObserverKeyFile   string            `json:"observerKeyFile"`
 	PublicCAFile      string            `json:"publicCaFile,omitempty"`
 	ObserverPort      int               `json:"observerPort"`
+	PublisherPort     int               `json:"publisherPort"`
 	EndpointPort      int               `json:"endpointPort"`
 }
 
@@ -74,7 +75,7 @@ func newEtcdFleetDeployRuntime(ctx context.Context, cfg *config.Config, operatio
 	if err != nil || address.IP == nil || address.IP.IsUnspecified() || (!address.IP.IsPrivate() && !address.IP.IsLoopback()) || address.Port < 1 {
 		return nil, fmt.Errorf("etcd Fleet deploy authority bind must name a private IP and port")
 	}
-	if document.ObserverPort < 1024 || document.ObserverPort > 65535 || document.EndpointPort < 1 || document.EndpointPort > 65535 || len(document.NodeURIs) == 0 {
+	if document.ObserverPort < 1024 || document.ObserverPort > 65535 || document.PublisherPort < 1024 || document.PublisherPort > 65535 || document.PublisherPort == document.ObserverPort || document.EndpointPort < 1 || document.EndpointPort > 65535 || len(document.NodeURIs) == 0 {
 		return nil, fmt.Errorf("etcd Fleet deploy route transport is incomplete")
 	}
 	if _, err := ingress.NewControlRouteAuthorityHandler(document.NodeURIs, func(context.Context, string, string) (*ingress.AuthorizedRoutePublication, error) {
@@ -82,7 +83,7 @@ func newEtcdFleetDeployRuntime(ctx context.Context, cfg *config.Config, operatio
 	}); err != nil {
 		return nil, err
 	}
-	transport := fleetdeploy.ClaimedFleetRouteTransport{NodeURIs: document.NodeURIs, ObserverPort: document.ObserverPort, EndpointPort: document.EndpointPort,
+	transport := fleetdeploy.ClaimedFleetRouteTransport{NodeURIs: document.NodeURIs, ObserverPort: document.ObserverPort, PublisherPort: document.PublisherPort, EndpointPort: document.EndpointPort,
 		Listen: func() (net.Listener, error) { return net.ListenTCP("tcp", address) }}
 	files := []struct {
 		path   string

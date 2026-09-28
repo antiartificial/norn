@@ -25,11 +25,11 @@ type initialFleetTrafficObserver func(context.Context, *InitialFleetRouteIntent)
 // Node publishers receive only the reserved intent ID; actual file, Traefik,
 // endpoint and public readback is independent of their immediate receipts.
 func (s *V3OperationStore) PublishProveCompleteClaimedInitialFleetRoute(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock,
-	spec *model.InfraSpec, healthEffect effect.Token, observerPort, endpointPort int,
+	spec *model.InfraSpec, healthEffect effect.Token, observerPort, publisherPort, endpointPort int,
 	publisherCAPEM, publisherCertPEM, publisherKeyPEM, observerCAPEM, observerCertPEM, observerKeyPEM []byte,
 	publicRoots *x509.CertPool) (*InitialFleetRoutePublication, error) {
 	publish := func(ctx context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
-		return ingress.PublishRouteIntentToNodesWithTLS(ctx, publisherCAPEM, publisherCertPEM, publisherKeyPEM, nodes, intentID, generation, routeSHA)
+		return ingress.PublishRouteIntentToNodesWithTLS(ctx, publisherCAPEM, publisherCertPEM, publisherKeyPEM, nodes, publisherPort, intentID, generation, routeSHA)
 	}
 	observe := func(ctx context.Context, intent *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
 		return s.ObserveCurrentFleetIngressTraffic(ctx, intent.FleetTarget.Cluster, intent.FleetTarget.FleetEnvironment, observerPort, endpointPort,

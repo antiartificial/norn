@@ -23,6 +23,11 @@ already confirmed; the current or failed host may still have published and
 must be reconciled by readback. The opt-in executor invokes this client after
 Nomad health. Its receipts alone do not establish effective Traefik or public
 traffic.
+The active Fleet inventory's node URLs address the read-only observer. The
+normal executor now requires a distinct `publisherPort` and derives publisher
+origins from those exact private inventory IPs; it keeps the observer URLs for
+readback. Without this separation, fanout would send `/v1/routes/publish` to
+the observer port and could not complete the route transaction.
 This contract connects the canonical route renderer and local
 generation-fenced file publisher to Fleet's loopback Traefik readback. The
 normal etcd app deployment route remains opt-in pending qualification.
@@ -342,7 +347,8 @@ commit. Each must refuse positive weight and preserve recovery authority.
 The normal etcd runtime starts a dedicated `app.deploy` worker only when
 `NORN_ETCD_FLEET_DEPLOY_WORKER_CONFIG` names an absolute, owner-only JSON file.
 The file declares `bind` (a private literal IP and fixed port), `nodeUris`
-(mTLS URI SAN to ingress node ID), `observerPort`, `endpointPort`, and absolute
+(mTLS URI SAN to ingress node ID), separate `observerPort` and `publisherPort`,
+`endpointPort`, and absolute
 owner-only PEM paths: `authorityCertFile`, `authorityKeyFile`, `nodeCaFile`,
 `publisherCaFile`, `publisherCertFile`, `publisherKeyFile`, `observerCaFile`,
 `observerCertFile`, and `observerKeyFile`. `publicCaFile` is optional; without
