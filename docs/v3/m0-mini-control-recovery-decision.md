@@ -31,6 +31,17 @@ destination configured, and `tmutil latestbackup` could not mount a backup
 destination. This does not exclude an unrelated external backup system, but
 neither proposed control RPO has an evidenced current off-host mechanism.
 
+On 2026-09-28, a fresh read-only check of Mini's owner
+`~/.config/norn/backups` directory found only older control dumps dated
+2026-09-10 and unrelated backup entries. The inspected owner LaunchAgents and
+system LaunchDaemons had no scheduled Norn control-backup job; the listed Norn
+agents were the API, cloudflared, Consul, host agent, host assurance,
+supervisor and Nomad. The separate [same-day control baseline](m0-mini-baseline-refresh-2026-09-28.md)
+still found `archive_mode=off`, `archive_timeout=0`, and zero archived WAL
+files. These are bounded local observations, not an inventory of every remote
+backup service or storage destination. No protected off-host restore receipt
+has been presented for either RPO option.
+
 ## Decision options
 
 | Option | User-visible data-loss bound after a host/storage loss | Implementation to qualify | Practical trade-off |
