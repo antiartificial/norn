@@ -90,12 +90,24 @@ and an exact match between its node IDs and configured private certificate
 identities before database resolution, Nomad input staging, or job submission.
 The route intent still rechecks inventory after Nomad health. This preflight
 has unit coverage for missing, extra, repeated, and wrong node identities.
-The HTTP-to-Nomad fixture now also passes its claimed HTTP-accepted operation
-into the normal executor with no completed inventory: it refuses the release
-before opening the route listener. The fixture then directly exercises the
-Nomad effect to keep the allocation-health gate qualified. A completed
-inventory and protected ingress nodes have not been exercised through this
-normal executor path.
+The HTTP-to-Nomad fixture passes its claimed HTTP-accepted operation into the
+normal executor with no completed inventory: it refuses the release before
+opening the route listener. A 2026-09-28 extension then creates a completed
+Fleet inventory through the signed plan, dispatch, runner-attempt and
+reconciliation checkpoints. The same executor resolves the accepted release
+against that inventory and refuses missing publisher mTLS material before
+staging or submitting a Nomad job; a Nomad job-list readback confirms the
+accepted job ID is absent at that point. The target Fleet environment was
+corrected
+to `staging/nyc3`, the environment admitted by the protected dispatch
+contract; the earlier `staging/local` fixture could never reach this path.
+The fixture then directly exercises the Nomad effect to keep the allocation
+health and lost-response recovery gates qualified. Both opt-in HTTP/Nomad
+tests passed against disposable etcd, Consul, Nomad and Docker; the Nomad
+test took 31.87 seconds without Traefik and 50.20 seconds with two pinned
+local Traefik processes. The latter run left no disposable scratch directory.
+Protected publisher nodes, normal executor route publication and public
+traffic proof remain unqualified.
 
 `TestTwoNodePublisherTransportPartialRetry` exercises the exported publisher
 preflight and publication clients over real mutual TLS listeners on two

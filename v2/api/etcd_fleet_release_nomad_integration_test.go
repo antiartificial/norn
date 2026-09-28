@@ -99,7 +99,7 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := store.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: app, ControlEnvironment: "staging",
-		Cluster: "norn-staging", FleetEnvironment: "staging/local", Region: "local", NomadRegion: "global",
+		Cluster: "norn-staging", FleetEnvironment: "staging/nyc3", Region: "local", NomadRegion: "global",
 		Datacenters: []string{"dc1"}, Generation: 1}
 	if _, err := operations.ConfigureFleetAppTarget(ctx, target, 0); err != nil {
 		t.Fatal(err)
@@ -164,6 +164,7 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 		Store: operations, Nomad: nomadClient, AppsDir: appsDir, Authority: authority,
 		Route: fleetdeploy.ClaimedFleetRouteTransport{
 			Listen:       func() (net.Listener, error) { listenerCalled = true; return nil, fmt.Errorf("unexpected listener") },
+			NodeURIs:     map[string]string{"spiffe://norn.test/ingress/01": "ingress-01", "spiffe://norn.test/ingress/02": "ingress-02"},
 			ObserverPort: 18082, PublisherPort: 18083, EndpointPort: 443,
 		},
 	}
@@ -173,9 +174,32 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	if listenerCalled {
 		t.Fatal("normal executor opened route listener before ingress inventory preflight")
 	}
+	seedFleetReleaseIngressInventory(t, operations, authority)
+	if _, err := operations.CurrentActiveFleetIngressInventory(ctx, "norn-staging", "staging/nyc3", 18082); err != nil {
+		t.Fatalf("signed Fleet ingress inventory is unavailable: %v", err)
+	}
+	if _, err := executor.ExecuteOperationWithAppLock(ctx, claimed, claim, lock); err == nil || !strings.Contains(err.Error(), "publisher preflight failed") {
+		t.Fatalf("normal executor passed missing publisher transport before Nomad: %v", err)
+	}
+	if listenerCalled {
+		t.Fatal("normal executor opened route listener before publisher preflight")
+	}
 	plan, err := worker.PrepareClaimedFleetDeploymentJob(ctx, source, claim, authority, nomadClient, nil, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	beforePreflight, err := nomadapi.NewClient(&nomadapi.Config{Address: address})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, _, err := beforePreflight.Jobs().List(&nomadapi.QueryOptions{Region: plan.Input.NomadRegion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.ID == plan.Input.JobID {
+			t.Fatal("publisher preflight submitted the Nomad job")
+		}
 	}
 	t.Cleanup(func() {
 		api, err := nomadapi.NewClient(&nomadapi.Config{Address: address})
