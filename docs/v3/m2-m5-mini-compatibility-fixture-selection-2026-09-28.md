@@ -125,6 +125,16 @@ live job or credential change, retain the exact running image and job
 definition for rollback and establish a reviewed, reproducible app release
 from an identified source tree. A Git SHA prefix alone is insufficient
 provenance for this allocation; no image or job was changed in this review.
+The exact running image was exported by its current tag to an owner-only
+local task artifact at
+`/Users/arti/Documents/Codex/2026-09-26/i-d/work/signal-sideband-running-image-tagged.tar.gz`
+(58,932,706 bytes; SHA-256
+`d221d26bab9699a99116787f5a1637a848d10e31c36a8d6df44759625fe06727`).
+The archive passed gzip and manifest checks, retained the current tag, and
+loaded in a separate local Docker daemon as the same image ID shown above,
+with the same six root-filesystem layer digests. The test-loaded image was
+removed afterward. This is a local rollback input, not a published signed
+release, source provenance proof or substitute for a verified job rollback.
 
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
