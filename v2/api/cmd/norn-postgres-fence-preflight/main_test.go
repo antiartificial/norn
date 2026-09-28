@@ -102,14 +102,16 @@ func TestReadOnlyFencePreflightUsesPinnedCatalogAndExactTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	var observed struct {
-		CatalogSHA256   string                  `json:"catalogSha256"`
-		Target          database.TargetIdentity `json:"target"`
-		DeclaredVersion string                  `json:"declaredVersion"`
-		CanLogin        bool                    `json:"canLogin"`
-		Sessions        int                     `json:"sessions"`
+		CatalogSHA256          string                                `json:"catalogSha256"`
+		Target                 database.TargetIdentity               `json:"target"`
+		DeclaredVersion        string                                `json:"declaredVersion"`
+		CanLogin               bool                                  `json:"canLogin"`
+		Sessions               int                                   `json:"sessions"`
+		DatabaseClientSessions []database.PostgresClientRoleSessions `json:"databaseClientSessions"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &observed); err != nil || observed.CatalogSHA256 != hex.EncodeToString(digest[:]) ||
-		observed.Target != target || observed.DeclaredVersion != catalog.Services[0].EngineVersion || !observed.CanLogin || observed.Sessions < 1 || strings.Contains(output.String(), "fixture-runtime-password") {
+		observed.Target != target || observed.DeclaredVersion != catalog.Services[0].EngineVersion || !observed.CanLogin || observed.Sessions < 1 ||
+		roleSessions(observed.DatabaseClientSessions, "runtime_app") < 1 || roleSessions(observed.DatabaseClientSessions, "fence_app") < 1 || strings.Contains(output.String(), "fixture-runtime-password") {
 		t.Fatalf("redacted preflight=%s err=%v", output.String(), err)
 	}
 	wrongPin := append([]string(nil), args...)
@@ -146,6 +148,15 @@ func TestReadOnlyFencePreflightUsesPinnedCatalogAndExactTarget(t *testing.T) {
 	if err := admin.QueryRow(ctx, `SELECT rolcanlogin FROM pg_roles WHERE rolname = 'runtime_app'`).Scan(&canLogin); err != nil || !canLogin {
 		t.Fatalf("read-only command changed runtime login state: login=%v err=%v", canLogin, err)
 	}
+}
+
+func roleSessions(items []database.PostgresClientRoleSessions, role string) int {
+	for _, item := range items {
+		if item.Role == role {
+			return item.Sessions
+		}
+	}
+	return 0
 }
 
 func TestPrivatePreflightInputRejectsAmbiguity(t *testing.T) {

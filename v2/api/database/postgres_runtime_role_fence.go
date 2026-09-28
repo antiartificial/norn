@@ -102,11 +102,19 @@ func InspectPostgresRuntimeRoleFenceForCutover(ctx context.Context, resolved Res
 // catalog-bound source role. It does not prove that an external writer uses no
 // other role or that the provider will allow a later ALTER/termination effect.
 type PostgresRuntimeFencePreflight struct {
-	Target          TargetIdentity
-	FenceGeneration uint64
-	ServerVersion   int
-	CanLogin        bool
-	Sessions        int
+	Target                 TargetIdentity
+	FenceGeneration        uint64
+	ServerVersion          int
+	CanLogin               bool
+	Sessions               int
+	DatabaseClientSessions []PostgresClientRoleSessions
+}
+
+// PostgresClientRoleSessions counts current client backends for one database.
+// It is not a privilege inventory and cannot find dormant credentials.
+type PostgresClientRoleSessions struct {
+	Role     string `json:"role"`
+	Sessions int    `json:"sessions"`
 }
 
 // PreflightPostgresRuntimeRoleFenceForCutover checks the selected maintenance
@@ -135,6 +143,26 @@ func PreflightPostgresRuntimeRoleFenceForCutover(ctx context.Context, resolved R
 		&result.ServerVersion, &result.CanLogin, &result.Sessions)
 	if err != nil || result.ServerVersion < 160000 || result.Sessions < 0 {
 		return nil, fmt.Errorf("PostgreSQL runtime fence preflight readback failed")
+	}
+	rows, err := connection.Query(ctx, `
+		SELECT COALESCE(usename, '<unknown>'), count(*)::int
+		FROM pg_stat_activity
+		WHERE datname = current_database() AND backend_type = 'client backend'
+		GROUP BY COALESCE(usename, '<unknown>')
+		ORDER BY COALESCE(usename, '<unknown>')`)
+	if err != nil {
+		return nil, fmt.Errorf("PostgreSQL database client session inventory failed")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item PostgresClientRoleSessions
+		if rows.Scan(&item.Role, &item.Sessions) != nil || item.Role == "" || item.Sessions < 1 {
+			return nil, fmt.Errorf("PostgreSQL database client session inventory failed")
+		}
+		result.DatabaseClientSessions = append(result.DatabaseClientSessions, item)
+	}
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("PostgreSQL database client session inventory failed")
 	}
 	return result, nil
 }

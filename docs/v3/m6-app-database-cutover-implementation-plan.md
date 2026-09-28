@@ -183,8 +183,13 @@ switching DNS is not rollback.
    ```
 
    The JSON result reports the catalog digest, exact target, fence generation,
-   declared catalog engine version, observed server version, login state and
-   exact-role sessions. It refuses a different server major, changed
+   declared catalog engine version, observed server version, login state,
+   exact runtime-role sessions across the cluster, and current client-session
+   counts by role in the selected database. Disposable PostgreSQL tests show
+   that another connected role remains visible before and after fencing the
+   runtime role. This is a read-only snapshot of active connections; dormant
+   credentials, disconnected writers, role privileges and provider filtering
+   still need separate review. It refuses a different server major, changed
    snapshots, stale targets, ambiguous JSON, symlinks and non-private input
    files. It does not establish that the supplied snapshot is still the
    **active** control catalog; compare its revision and target to a fresh

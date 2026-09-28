@@ -80,6 +80,9 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	if err != nil || preflight.Target != resolved.Target || preflight.FenceGeneration != 1 || preflight.ServerVersion < 160000 || !preflight.CanLogin || preflight.Sessions < 1 {
 		t.Fatalf("read-only source fence preflight=%+v err=%v", preflight, err)
 	}
+	if postgresRoleSessionCount(preflight.DatabaseClientSessions, "cutover_runtime") < 1 || postgresRoleSessionCount(preflight.DatabaseClientSessions, "unrelated_app") < 1 || postgresRoleSessionCount(preflight.DatabaseClientSessions, "cutover_fence") < 1 {
+		t.Fatalf("other client principals omitted: %+v", preflight.DatabaseClientSessions)
+	}
 	if err := FencePostgresRuntimeRoleForCutover(ctx, underprivileged, underprivileged.Target, secrets); err == nil {
 		t.Fatal("fence role without delegated authority was accepted")
 	}
@@ -108,6 +111,9 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	if err != nil || preflight.CanLogin || preflight.Sessions != 0 {
 		t.Fatalf("fenced source role preflight=%+v err=%v", preflight, err)
 	}
+	if postgresRoleSessionCount(preflight.DatabaseClientSessions, "cutover_runtime") != 0 || postgresRoleSessionCount(preflight.DatabaseClientSessions, "unrelated_app") < 1 {
+		t.Fatalf("fenced and unrelated roles indistinguishable: %+v", preflight.DatabaseClientSessions)
+	}
 	if err := runtime.QueryRow(ctx, "SELECT 1").Scan(&one); err == nil {
 		t.Fatal("preexisting runtime session survived fence")
 	}
@@ -120,6 +126,15 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	if err := FencePostgresRuntimeRoleForCutover(ctx, resolved, resolved.Target, secrets); err != nil {
 		t.Fatalf("retry after lost fence response was not idempotent: %v", err)
 	}
+}
+
+func postgresRoleSessionCount(items []PostgresClientRoleSessions, role string) int {
+	for _, item := range items {
+		if item.Role == role {
+			return item.Sessions
+		}
+	}
+	return 0
 }
 
 func TestPostgresRuntimeFencePreservesVerifyFullTLS(t *testing.T) {

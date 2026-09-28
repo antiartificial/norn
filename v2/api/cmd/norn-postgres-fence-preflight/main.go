@@ -97,15 +97,16 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 		return errors.New("provider PostgreSQL major differs from the selected catalog service")
 	}
 	return json.NewEncoder(output).Encode(struct {
-		CatalogSHA256   string                  `json:"catalogSha256"`
-		Target          database.TargetIdentity `json:"target"`
-		FenceGeneration uint64                  `json:"fenceGeneration"`
-		DeclaredVersion string                  `json:"declaredVersion"`
-		ServerVersion   int                     `json:"serverVersion"`
-		CanLogin        bool                    `json:"canLogin"`
-		Sessions        int                     `json:"sessions"`
+		CatalogSHA256          string                                `json:"catalogSha256"`
+		Target                 database.TargetIdentity               `json:"target"`
+		FenceGeneration        uint64                                `json:"fenceGeneration"`
+		DeclaredVersion        string                                `json:"declaredVersion"`
+		ServerVersion          int                                   `json:"serverVersion"`
+		CanLogin               bool                                  `json:"canLogin"`
+		Sessions               int                                   `json:"sessions"`
+		DatabaseClientSessions []database.PostgresClientRoleSessions `json:"databaseClientSessions"`
 	}{hex.EncodeToString(digest[:]), preflight.Target, preflight.FenceGeneration, declaredVersion,
-		preflight.ServerVersion, preflight.CanLogin, preflight.Sessions})
+		preflight.ServerVersion, preflight.CanLogin, preflight.Sessions, preflight.DatabaseClientSessions})
 }
 
 func readPrivateInput(path string) ([]byte, error) {
