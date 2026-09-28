@@ -1,3 +1,4 @@
+import hashlib
 import os
 import pathlib
 import shutil
@@ -18,8 +19,18 @@ def port():
 repo = pathlib.Path(__file__).resolve().parents[3]
 traefik_requested = os.environ.get("NORN_TEST_TRAEFIK_BINARY", "")
 traefik_binary = pathlib.Path(traefik_requested)
-if traefik_requested and not traefik_binary.is_file():
-    raise SystemExit(f"Traefik rehearsal binary is missing: {traefik_binary}")
+if traefik_requested:
+    expected_traefik_sha256 = os.environ.get("NORN_TEST_TRAEFIK_SHA256", "")
+    if not traefik_binary.is_file() or len(expected_traefik_sha256) != 64:
+        raise SystemExit("Traefik rehearsal requires an existing binary and its SHA-256 pin")
+    try:
+        bytes.fromhex(expected_traefik_sha256)
+    except ValueError as error:
+        raise SystemExit("Traefik rehearsal SHA-256 pin is invalid") from error
+    with traefik_binary.open("rb") as binary_file:
+        actual_traefik_sha256 = hashlib.file_digest(binary_file, "sha256").hexdigest()
+    if actual_traefik_sha256 != expected_traefik_sha256:
+        raise SystemExit("Traefik rehearsal binary differs from its SHA-256 pin")
 image = os.environ.get(
     "NORN_TEST_DEPLOYMENT_IMAGE",
     "docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662",

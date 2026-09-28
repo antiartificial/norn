@@ -17,10 +17,15 @@ docker pull docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c
 python3 v2/api/scripts/qualify-v3-http-nomad.py
 ```
 
-For the two-ingress extension, provide a locally verified Traefik binary:
+For the two-ingress extension, provide a Traefik binary and its exact SHA-256
+pin. The 2026-09-27 run used Traefik 3.7.13 Darwin/arm64 extracted from an
+archive that matched the published release checksum; the extracted binary had
+the following digest:
 
 ```sh
-NORN_TEST_TRAEFIK_BINARY=/absolute/path/to/traefik python3 v2/api/scripts/qualify-v3-http-nomad.py
+NORN_TEST_TRAEFIK_BINARY=/absolute/path/to/traefik \
+NORN_TEST_TRAEFIK_SHA256=97511eb5f2b4edd7a7bd78d4401d8e988e41628be5aac1e0a73c15ae9722160d \
+python3 v2/api/scripts/qualify-v3-http-nomad.py
 ```
 
 The script checks that the exact image is cached, starts the three local
