@@ -57,6 +57,18 @@ of which role those jobs would use. The private inventory must inspect their
 configured connection references and database privileges; the table alone
 does not authorize role changes.
 
+For the proposed first fixture, a read-only `mailindexer` ownership query
+found eight ordinary tables, four sequences and 31 indexes owned by `norn`.
+The database itself is also owned by `norn`; the `public` schema uses
+`pg_database_owner`. No `norn`-owned application functions or extensions were
+observed. This makes a password-only swap insufficient: a replacement app
+role must be rehearsed with its database, table, sequence and migration DDL
+privileges, then verified from the actual app job and its migration command.
+Do not use a broad `REASSIGN OWNED BY norn` against the live server as a
+shortcut: the role also owns control database `norn_v2`. The private
+rehearsal must scope ownership changes to the selected application database
+and verify that `norn_v2` ownership and control sessions are unchanged.
+
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
 reported one healthy allocation. It is a smaller compatibility case than an
