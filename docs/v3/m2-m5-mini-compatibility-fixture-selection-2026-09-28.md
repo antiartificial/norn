@@ -114,6 +114,18 @@ transition needs an independent database-backed read/write probe and
 confirmation that the deployed job uses the new URL identity; changing only
 `DB_USER` or `DB_PASSWORD` is insufficient.
 
+Read-only Nomad and Docker inspection tied running allocation
+`a8878127-ae14-c6c0-cb9d-b9266a727747` to image tag
+`signal-sideband:31701b217777-dirty` and exact local image ID
+`sha256:d8f6678a3d79ad7c1e0b44363484607dccd291161d738221f74d2d0233c2d660`.
+The Mini checkout is at commit `31701b21777798c2b1e42881a643ec7ed09485af`
+with uncommitted InfraSpec and encrypted-secret edits. The dirty image tag
+does not identify the source diff used to build that running image. Before a
+live job or credential change, retain the exact running image and job
+definition for rollback and establish a reviewed, reproducible app release
+from an identified source tree. A Git SHA prefix alone is insufficient
+provenance for this allocation; no image or job was changed in this review.
+
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
 reported one healthy allocation. It is a smaller compatibility case than an
