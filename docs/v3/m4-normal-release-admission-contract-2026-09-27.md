@@ -14,6 +14,15 @@ failed verifier. It is not called by an HTTP route yet; authenticated
 principal binding, exact replay handling, verifier startup wiring, and the
 restricted store acceptance call remain open.
 
+`handler.BindFleetStagingReleaseCandidate` now provides the narrow CI identity
+binding for that route. It requires a managed `release:stage` token scoped to
+the app and staging environment, the protected default-branch push lane, and
+an exact source SHA. It derives every identity field from the verified token
+and carries only attestation evidence fields from the request. Focused tests
+reject wrong app, environment, intent, source, unprotected ref, non-managed
+credential, and missing scope. The route still has to call this helper and
+the configured artifact verifier before accepting a deployment.
+
 ## Entry and trust boundary
 
 Use the existing authenticated release-deployment route shape. A verified CI
