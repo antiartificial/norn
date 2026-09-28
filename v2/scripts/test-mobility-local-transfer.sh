@@ -49,8 +49,15 @@ PY
 )
 source_url="postgresql://mobility@/source?host=$socket_query&port=$pg_port&sslmode=disable"
 target_url="postgresql://mobility@/target?host=$socket_query&port=$pg_port&sslmode=disable"
+source_runtime_url="postgresql://source_runtime@/source?host=$socket_query&port=$pg_port&sslmode=disable"
 (cd "$fixture_root" && CGO_ENABLED=0 go build -buildvcs=false -o "$scratch/mobility-fixture" .)
 DATABASE_URL=$source_url "$scratch/mobility-fixture" migrate
+"$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -d "$source_url" >/dev/null <<'SQL'
+CREATE ROLE source_runtime LOGIN;
+GRANT CONNECT ON DATABASE source TO source_runtime;
+GRANT USAGE ON SCHEMA public TO source_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO source_runtime;
+SQL
 
 http_port=$(python3 - <<'PY'
 import socket
@@ -81,25 +88,39 @@ create_item() {
   [[ $status == 201 ]] || { printf 'item write status=%s\n' "$status" >&2; exit 1; }
 }
 
-start_server "$source_url" "$scratch/source-files" true
+start_server "$source_runtime_url" "$scratch/source-files" true
 create_item baseline-item
-DATABASE_URL=$source_url WRITE_ENABLED=true "$scratch/mobility-fixture" worker
-DATABASE_URL=$source_url WRITE_ENABLED=true "$scratch/mobility-fixture" tick
+DATABASE_URL=$source_runtime_url WRITE_ENABLED=true "$scratch/mobility-fixture" worker
+DATABASE_URL=$source_runtime_url WRITE_ENABLED=true "$scratch/mobility-fixture" tick
 PGOPTIONS='-c default_transaction_read_only=on' "$postgres_bin/pg_dump" -Fc --no-owner --no-privileges -d "$source_url" -f "$scratch/baseline.dump"
 "$postgres_bin/pg_restore" --exit-on-error --no-owner --no-privileges -d "$target_url" "$scratch/baseline.dump"
 [[ $("$postgres_bin/psql" -X -At -d "$target_url" -c 'SELECT count(*) FROM mobility_items') == 1 ]] || { echo 'baseline target row count differs' >&2; exit 1; }
 cp -R "$scratch/source-files/." "$scratch/target-files/"
 
 create_item final-item
-DATABASE_URL=$source_url WRITE_ENABLED=true "$scratch/mobility-fixture" worker
+DATABASE_URL=$source_runtime_url WRITE_ENABLED=true "$scratch/mobility-fixture" worker
 stop_server
-start_server "$source_url" "$scratch/source-files" false
+start_server "$source_runtime_url" "$scratch/source-files" false
 fenced_status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -X POST --data-binary fenced "$http_url/items")
 [[ $fenced_status == 423 ]] || { printf 'source process fence status=%s\n' "$fenced_status" >&2; exit 1; }
-if DATABASE_URL=$source_url WRITE_ENABLED=false "$scratch/mobility-fixture" worker >/dev/null 2>&1; then echo 'worker write gate failed' >&2; exit 1; fi
-if DATABASE_URL=$source_url WRITE_ENABLED=false "$scratch/mobility-fixture" tick >/dev/null 2>&1; then echo 'schedule write gate failed' >&2; exit 1; fi
+if DATABASE_URL=$source_runtime_url WRITE_ENABLED=false "$scratch/mobility-fixture" worker >/dev/null 2>&1; then echo 'worker write gate failed' >&2; exit 1; fi
+if DATABASE_URL=$source_runtime_url WRITE_ENABLED=false "$scratch/mobility-fixture" tick >/dev/null 2>&1; then echo 'schedule write gate failed' >&2; exit 1; fi
 curl -fsS --max-time 5 "$http_url/state" > "$scratch/source.json"
 stop_server
+
+# Fence the exact source runtime role, terminate any remaining pooled sessions,
+# and read back both properties before the final transfer. Maintenance uses a
+# separate principal so the source remains available for a read-only dump.
+"$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -d "$source_url" >/dev/null <<'SQL'
+ALTER ROLE source_runtime NOLOGIN;
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+  WHERE usename = 'source_runtime' AND pid <> pg_backend_pid();
+SQL
+fence_readback=$("$postgres_bin/psql" -X -At -d "$source_url" -c "SELECT rolcanlogin, (SELECT count(*) FROM pg_stat_activity WHERE usename='source_runtime') FROM pg_roles WHERE rolname='source_runtime'")
+[[ $fence_readback == 'f|0' ]] || { printf 'source role fence readback=%s\n' "$fence_readback" >&2; exit 1; }
+if "$postgres_bin/psql" -X -At -d "$source_runtime_url" -c 'SELECT 1' >/dev/null 2>&1; then
+  echo 'fenced source runtime role could still connect' >&2; exit 1
+fi
 
 PGOPTIONS='-c default_transaction_read_only=on' "$postgres_bin/pg_dump" -Fc --no-owner --no-privileges -d "$source_url" -f "$scratch/final.dump"
 "$postgres_bin/dropdb" -h "$scratch/socket" -p "$pg_port" -U mobility target
@@ -111,4 +132,4 @@ start_server "$target_url" "$scratch/target-files" false
 curl -fsS --max-time 5 "$http_url/state" > "$scratch/target.json"
 stop_server
 python3 "$fixture_root/compare_state.py" "$scratch/source.json" "$scratch/target.json"
-printf 'baseline_restored=true final_transfer_replaced_target=true source_process_gate=passed target_writer_disabled=true\n'
+printf 'baseline_restored=true final_transfer_replaced_target=true source_process_gate=passed source_role_fence=passed target_writer_disabled=true\n'
