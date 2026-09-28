@@ -230,8 +230,9 @@ and creates the fixture's durable traffic proof only after publication. Partial
 publication and a failed public probe leave no proof or terminal deployment.
 The traffic observation is synthetic; this does not qualify effective Traefik state,
 the public load balancer, or a protected Fleet deployment.
-Fleet PR #177 has a [local validation record](m4-fleet-pr177-local-validation-2026-09-27.md)
-for 1,415 Python tests and Ansible syntax. It targets Fleet PR #176's
+Fleet PR #177 has an [earlier local validation record](m4-fleet-pr177-local-validation-2026-09-27.md)
+for 1,413 Python tests and Ansible syntax; its [later Fleet readiness review](https://github.com/antiartificial/norn-fleet/blob/codex/fleet-ingress-readback/docs/runbooks/staging-v3-protected-rehearsal-readiness-2026-09-28.md)
+reports 1,415 tests at Fleet code head `5234aaf`. PR #177 targets PR #176's
 `codex/fleet-m3-host-etcd` branch, while PR #176 targets `main`; review and
 integrate the host-etcd base before the stacked ingress work. Fleet `main`
 requires the hosted `contract` check, and both PRs' contract jobs failed
