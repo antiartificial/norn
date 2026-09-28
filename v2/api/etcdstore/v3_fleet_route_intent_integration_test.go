@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -403,7 +404,33 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		t.Fatal(err)
 	}
 	if complete {
-		if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err != nil {
+		publish := func(_ context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
+			if intentID != first.ID || generation != first.Generation || routeSHA != first.RenderedRoute.SHA256 {
+				t.Fatal("publisher received a route outside the reserved intent")
+			}
+			receipts := make([]ingress.NodePublicationReceipt, 0, len(nodes))
+			for _, node := range nodes {
+				receipts = append(receipts, ingress.NodePublicationReceipt{NodeID: node.ID, Generation: generation, RouteSHA256: routeSHA})
+			}
+			return receipts, nil
+		}
+		partial := func(ctx context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
+			receipts, err := publish(ctx, nodes, intentID, generation, routeSHA)
+			return receipts[:1], err
+		}
+		if _, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, partial, observeTraffic); !effect.IsDeferred(err) {
+			t.Fatalf("partial node publication did not retain recovery authority: %v", err)
+		}
+		if op, err := adapter.GetOperation(ctx, accepted.Operation.ID); err != nil || op.Status != model.OperationRunning {
+			t.Fatalf("partial publication terminalized deployment: operation=%+v err=%v", op, err)
+		}
+		if published, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish,
+			func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
+				return nil, errors.New("public probe failed")
+			}); !effect.IsDeferred(err) || published == nil || len(published.Receipts) != len(first.Inventory.Nodes) {
+			t.Fatalf("failed public probe did not preserve publication receipts: result=%+v err=%v", published, err)
+		}
+		if _, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish, observeTraffic); err != nil {
 			t.Fatalf("proof-bound terminal deployment: %v", err)
 		}
 		active, err := client.Get(ctx, activeKey)

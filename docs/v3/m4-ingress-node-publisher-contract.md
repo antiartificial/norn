@@ -158,7 +158,14 @@ wall-clock deploy marker and sorts task groups; retries reconstruct the same
 job digest and effect identity. The private Nomad step now carries the effect
 token through submit readback and healthy allocation evidence; pending health
 defers without resubmitting, and a successor claim can reuse a completed
-health effect. Normal worker execution remains disabled.
+health effect. A claimed route step now reserves the signed first-route intent,
+fans its ID to every current ingress node, records fresh file, Traefik,
+endpoint and public-path proof, then invokes the proof-gated completion. Any
+failure after fanout returns a deferred result with partial receipts so the
+app admission hold can preserve recovery authority. A disposable-etcd test
+covers partial publication and successful synthetic proof. The private mTLS
+authority listener still needs to be owned by the normal worker, and normal
+worker execution remains disabled.
 
 - Fleet must install one narrowly scoped publisher on every ingress host. It
   writes only `norn-route-<32 lowercase hex>.yaml` below
