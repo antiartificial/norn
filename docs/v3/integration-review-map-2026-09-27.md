@@ -4,9 +4,8 @@ This map is for reviewing draft Norn [PR #77](https://github.com/antiartificial/
 against protected `master`, then qualifying an exact candidate. It is not a
 milestone sign-off or permission to merge or deploy.
 
-At head `d3fe52c6`, GitHub reports 1,073 changed files, 159,085 additions,
-3,225 deletions, and a draft blocked from merge. The branch is 1,006 commits
-ahead of `origin/master`. The diff includes older
+At head `7139fed8`, GitHub reports 1,073 changed files, 159,209 additions,
+3,225 deletions. The PR remains draft with no recorded review decision. The diff includes older
 v2 work, multiple merged v3 implementation branches, and the protected-master
 integration. A green suite is necessary but cannot replace path-by-path
 review of this surface. Recheck these counts and the exact head before a
@@ -173,6 +172,16 @@ checks remain synthetic. The fixture writes local route files directly; it
 does not exercise the authenticated publisher, protected Fleet inventory,
 public load balancer, or a durable positive-weight terminal result. Those
 are the current lane-5 stop conditions before protected traffic activation.
+At exact head `7139fed8`, the opt-in disposable HTTP-to-Nomad rehearsal also
+submits the managed job, discards its successful Nomad response, hands the
+operation to a successor claim, and observes health without a second job
+registration. The local run passed with a real public-registry digest lookup;
+signature and vulnerability decisions remained synthetic. Repository CI and
+Norn CI both passed at this head (runs
+[36375312089](https://github.com/antiartificial/norn/actions/runs/36375312089)
+and [36375312105](https://github.com/antiartificial/norn/actions/runs/36375312105)).
+This covers the simulated lost-response path, not a process crash or the
+protected ingress and public-path gate.
 
 ## Immediate blocking decisions
 
