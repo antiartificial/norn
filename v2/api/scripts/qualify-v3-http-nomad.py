@@ -182,13 +182,23 @@ finally:
                  "chown", "-R", f"{os.getuid()}:{os.getgid()}", "/state"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
             )
-        for attempt in range(10):
+        for attempt in range(30):
+            if cached.returncode == 0:
+                # Docker Desktop may recreate a log directory while its
+                # allocation container is stopping. Retry removal inside
+                # this exact disposable mount before each host attempt.
+                subprocess.run(
+                    ["docker", "run", "--rm", "-v", f"{root}:/state", helper,
+                     "sh", "-c", "rm -rf /state/nomad/alloc"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                )
             try:
                 shutil.rmtree(root)
                 break
             except OSError as error:
-                if attempt == 9:
+                if attempt == 29:
                     print(f"Disposable state needs cleanup at {root}: {error}", file=sys.stderr)
+                    exit_code = 1
                 else:
                     time.sleep(0.5)
 sys.exit(exit_code)
