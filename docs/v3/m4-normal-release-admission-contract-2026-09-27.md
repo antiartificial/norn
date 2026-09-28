@@ -31,8 +31,12 @@ restricted operation status to the originating CI run, and rejected a
 different artifact under the same idempotency key without repeating artifact
 verification. The test injects a successful artifact verifier and does not
 prove registry, signature, scan, Nomad, ingress, or public traffic behavior.
-The same test now claims the normal accepted operation, reloads its signed
-source and constructs the claimed Nomad job plan without submitting it.
+The same test now starts with a named PostgreSQL runtime and refuses release
+admission while no catalog is active. After activating a catalog, it confirms
+that the signed operation carries the exact binding identity and revision
+without the credential reference. It claims the accepted operation, reloads
+its signed source and constructs a Nomad job plan carrying the same database
+revision and identity, without staging secrets or submitting the job.
 Fleet target configuration refuses a change while any indexed app operation
 is active; its transaction compares the app admission fence so a concurrent
 acceptance cannot slip between the active-work read and target write.

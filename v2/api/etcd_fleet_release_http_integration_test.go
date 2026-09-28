@@ -16,6 +16,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/config"
+	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/handler"
 	"norn/v2/api/pipeline"
@@ -49,7 +50,7 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 	if err := os.Mkdir(filepath.Join(appsDir, "demo"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	spec := "name: demo\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nprocesses:\n  web:\n    command: sleep 1\n    port: 8080\nendpoints:\n  - url: https://demo.example.test\n    region: local\n    process: web\n"
+	spec := "schemaVersion: norn.app/v2\nname: demo\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nprocesses:\n  web:\n    command: sleep 1\n    port: 8080\nendpoints:\n  - url: https://demo.example.test\n    region: local\n    process: web\ndatabases:\n  - name: primary\n    purpose: application\n    capabilities: [runtime]\n    runtime:\n      env: DATABASE_URL\n"
 	if err := os.WriteFile(filepath.Join(appsDir, "demo", "infraspec.yaml"), []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 			WorkflowRef: "acme/demo/.github/workflows/release.yml@refs/heads/main", WorkflowSHA: workflowSHA,
 			JobWorkflowRef: "acme/norn/.github/workflows/norn-app-release.yml@" + signerSHA, JobWorkflowSHA: signerSHA,
 			Ref: "refs/heads/main", RefProtected: true, EventName: "push", Environment: "staging", Intent: "stage", SHA: sha}}
-	cfg := &config.Config{Environment: "staging", EnvironmentExplicit: true, AppsDir: appsDir, RegistryURL: "ghcr.io/acme",
+	cfg := &config.Config{Environment: "staging", EnvironmentExplicit: true, AppsDir: appsDir, RegistryURL: "ghcr.io/acme", DatabaseProfile: "local",
 		GitHubActionsDefaultBranch: "main", ReleaseAttestationTrustMode: "github-public"}
 	verified := 0
 	verifier := &pipeline.Pipeline{RegistryURL: cfg.RegistryURL, ReleaseAdmissionMode: "keyed", ReleaseAttestationTrustMode: "github-public",
@@ -88,6 +89,21 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 		router.ServeHTTP(response, req)
 		return response
 	}
+	if response := post(principal, "release-once", requestBody); response.Code != http.StatusConflict || verified != 0 {
+		t.Fatalf("missing database catalog admitted release: %d %s", response.Code, response.Body.String())
+	}
+	catalog := database.Catalog{APIVersion: database.APIVersion,
+		Services: []database.DatabaseService{{APIVersion: database.APIVersion, ID: "pg", Generation: 1, Purpose: database.PurposeApplication,
+			Engine: database.EnginePostgreSQL, EngineVersion: "16", ProviderRef: "local:pg", Endpoint: database.DatabaseEndpoint{Host: "127.0.0.1", Port: 5432},
+			Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
+			TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled}, Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilityRuntime}}}},
+		Bindings: []database.DatabaseBinding{{APIVersion: database.APIVersion, ID: "primary", ServiceID: "pg", Database: "demo", Role: "app", Generation: 1,
+			CredentialRef: "secret:private/demo-primary", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}}},
+		Profiles: []database.DeploymentProfile{{APIVersion: database.APIVersion, ID: "local", Topology: database.DeploymentTopologyLocal,
+			AvailabilityClass: database.AvailabilitySingleHost, DatabaseBindings: map[string]string{"primary": "primary"}}}}
+	if _, err := operations.ActivatePostgresDatabaseCatalog(ctx, 0, catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
 	first := post(principal, "release-once", requestBody)
 	if first.Code != http.StatusAccepted || verified != 1 {
 		t.Fatalf("first release status=%d verified=%d body=%s", first.Code, verified, first.Body.String())
@@ -97,6 +113,13 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 	}
 	if err := json.Unmarshal(first.Body.Bytes(), &accepted); err != nil || accepted.ID == "" {
 		t.Fatalf("accepted operation=%+v err=%v", accepted, err)
+	}
+	signed, err := operations.GetOperation(ctx, accepted.ID)
+	if err != nil || signed.Payload["databaseTargets"] == nil {
+		t.Fatalf("accepted operation omitted signed database identities: %+v err=%v", signed, err)
+	}
+	if encoded, _ := signed.Payload["databaseTargets"].(string); !strings.Contains(encoded, `"bindingId":"primary"`) || strings.Contains(encoded, "secret:private") {
+		t.Fatalf("signed database identities are missing or leaked credentials: %s", encoded)
 	}
 	read := func(p handler.AccessPrincipal) *httptest.ResponseRecorder {
 		t.Helper()
@@ -144,7 +167,9 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 		t.Fatalf("claimed signed release source=%+v err=%v", bound, err)
 	}
 	plan, err := worker.BuildClaimedFleetDeploymentJobPlan(bound, claim, authority)
-	if err != nil || plan.Job == nil || plan.Input.DeploymentID != bound.Managed.Accepted.Deployment.ID {
+	if err != nil || plan.Job == nil || plan.Input.DeploymentID != bound.Managed.Accepted.Deployment.ID ||
+		plan.Input.ManagedInputs == nil || plan.Input.ManagedInputs.DatabaseRevision != 1 ||
+		plan.Input.ExpectedDatabaseTargets["primary"] == "" || strings.Contains(plan.Input.ExpectedDatabaseTargets["primary"], "secret:private") {
 		t.Fatalf("claimed Fleet job plan=%+v err=%v", plan, err)
 	}
 }
