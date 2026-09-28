@@ -100,6 +100,20 @@ owner, the 9,223 `messages` rows and probe write remained, the replacement
 role lost copied-database access and the copied control database remained
 unchanged. This is not a protected live role rollback.
 
+The live Nomad `signal-sideband` web task currently declares `DB_USER=norn`
+and a `DATABASE_URL` whose parsed username is also `norn` and database is
+`signal_sideband`; the URL password and other secret values were not printed.
+The app's checked-out `main.go` gives `DATABASE_URL` precedence over the
+individual `DB_*` values. That checkout has uncommitted `infraspec.yaml` and
+`secrets.enc.yaml` edits, so it must be preserved and compared to the exact
+deployed source before any app change. Its startup code logs a database
+connection failure and continues in memory-only mode, while `/health`
+unconditionally returns 200. Therefore a green allocation or `/health`
+response cannot prove a successful live credential switch. A protected
+transition needs an independent database-backed read/write probe and
+confirmation that the deployed job uses the new URL identity; changing only
+`DB_USER` or `DB_PASSWORD` is insufficient.
+
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
 reported one healthy allocation. It is a smaller compatibility case than an
