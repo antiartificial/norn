@@ -135,6 +135,9 @@ func ValidateCatalog(catalog Catalog) error {
 		if err := validateMySQLMaintenance(binding, service, label); err != nil {
 			return err
 		}
+		if err := validatePostgresFence(binding, service, label); err != nil {
+			return err
+		}
 		if binding.ConsistencyGroup != "" && !identifierPattern.MatchString(binding.ConsistencyGroup) {
 			return invalid("consistencyGroup", label, "consistency group is invalid")
 		}
@@ -234,6 +237,23 @@ func validateMySQLMaintenance(binding DatabaseBinding, service DatabaseService, 
 	if maintenance.RestoreCredentialRef == binding.CredentialRef || maintenance.FenceCredentialRef == binding.CredentialRef || maintenance.RestoreCredentialRef == maintenance.FenceCredentialRef ||
 		(hasSnapshot && (maintenance.SnapshotCredentialRef == binding.CredentialRef || maintenance.SnapshotCredentialRef == maintenance.RestoreCredentialRef || maintenance.SnapshotCredentialRef == maintenance.FenceCredentialRef)) {
 		return invalid("mysqlMaintenance", label, "MySQL snapshot, restore, and fence credential references must be distinct from the runtime credential and each other")
+	}
+	return nil
+}
+
+func validatePostgresFence(binding DatabaseBinding, service DatabaseService, label string) error {
+	fence := binding.PostgresFence
+	if fence == nil {
+		return nil
+	}
+	if service.Engine != EnginePostgreSQL || service.Purpose != PurposeApplication {
+		return invalid("postgresFence", label, "PostgreSQL fence credentials require an application PostgreSQL binding")
+	}
+	if fence.Generation == 0 || !postgresRolePattern.MatchString(fence.Role) || !referencePattern.MatchString(fence.CredentialRef) {
+		return invalid("postgresFence", label, "PostgreSQL fence identity is incomplete or invalid")
+	}
+	if fence.Role == binding.Role || fence.CredentialRef == binding.CredentialRef {
+		return invalid("postgresFence", label, "PostgreSQL fence identity must be separate from runtime")
 	}
 	return nil
 }
@@ -544,7 +564,7 @@ func (r *Resolver) resolveNamed(profile DeploymentProfile, logical string) (Reso
 	}
 	binding := r.bindings[bindingID]
 	service := r.services[binding.ServiceID]
-	return r.resolved(profile, service, logical, binding.ID, binding.Generation, binding.Database, binding.Role, binding.CredentialRef, binding.MySQLMaintenance, binding.TLS, false), nil
+	return r.resolved(profile, service, logical, binding.ID, binding.Generation, binding.Database, binding.Role, binding.CredentialRef, binding.MySQLMaintenance, binding.PostgresFence, binding.TLS, false), nil
 }
 
 func (r *Resolver) resolveLegacy(profile DeploymentProfile, databaseName string) (ResolvedBinding, error) {
@@ -569,10 +589,10 @@ func (r *Resolver) resolveLegacy(profile DeploymentProfile, databaseName string)
 			return ResolvedBinding{}, &ResolverError{Code: CodePurposeMismatch, Field: "legacyPostgres.database", Resource: profileLabel, Reason: "legacy application declaration names a control database"}
 		}
 	}
-	return r.resolved(profile, service, "", legacy.MappingID, legacy.Generation, databaseName, legacy.Role, legacy.CredentialRef, nil, legacy.TLS, true), nil
+	return r.resolved(profile, service, "", legacy.MappingID, legacy.Generation, databaseName, legacy.Role, legacy.CredentialRef, nil, nil, legacy.TLS, true), nil
 }
 
-func (r *Resolver) resolved(profile DeploymentProfile, service DatabaseService, logical, bindingID string, bindingGeneration uint64, databaseName, role, credentialRef string, maintenance *MySQLMaintenanceCredentials, tls DatabaseTLS, legacy bool) ResolvedBinding {
+func (r *Resolver) resolved(profile DeploymentProfile, service DatabaseService, logical, bindingID string, bindingGeneration uint64, databaseName, role, credentialRef string, maintenance *MySQLMaintenanceCredentials, pgFence *PostgresFenceCredentials, tls DatabaseTLS, legacy bool) ResolvedBinding {
 	result := ResolvedBinding{
 		Target: TargetIdentity{
 			ServiceID: service.ID, ServiceGeneration: service.Generation, BindingID: bindingID, BindingGeneration: bindingGeneration,
@@ -585,6 +605,10 @@ func (r *Resolver) resolved(profile DeploymentProfile, service DatabaseService, 
 	if maintenance != nil {
 		copy := *maintenance
 		result.MySQLMaintenance = &copy
+	}
+	if pgFence != nil {
+		copy := *pgFence
+		result.PostgresFence = &copy
 	}
 	return result
 }
@@ -703,7 +727,8 @@ func ValidateTransition(previous, next Catalog) error {
 		if err := checkTargetGeneration(label, before.Generation, after.Generation,
 			before.ServiceID == after.ServiceID && before.Database == after.Database && before.Role == after.Role &&
 				before.ConsistencyGroup == after.ConsistencyGroup && sameTLSTarget(before.TLS, after.TLS) &&
-				sameMySQLMaintenanceIdentity(before.MySQLMaintenance, after.MySQLMaintenance)); err != nil {
+				sameMySQLMaintenanceIdentity(before.MySQLMaintenance, after.MySQLMaintenance) &&
+				samePostgresFenceIdentity(before.PostgresFence, after.PostgresFence)); err != nil {
 			return err
 		}
 	}
@@ -723,6 +748,13 @@ func ValidateTransition(previous, next Catalog) error {
 }
 
 func sameMySQLMaintenanceIdentity(left, right *MySQLMaintenanceCredentials) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func samePostgresFenceIdentity(left, right *PostgresFenceCredentials) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
@@ -855,6 +887,10 @@ func cloneCatalog(catalog Catalog) Catalog {
 		if binding.MySQLMaintenance != nil {
 			maintenance := *binding.MySQLMaintenance
 			binding.MySQLMaintenance = &maintenance
+		}
+		if binding.PostgresFence != nil {
+			fence := *binding.PostgresFence
+			binding.PostgresFence = &fence
 		}
 		out.Bindings = append(out.Bindings, binding)
 	}

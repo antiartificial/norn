@@ -70,6 +70,13 @@ switching DNS is not rollback.
    account identity, and revocation/readback still need implementation.
    Other roles, pools, and integrations may still write; they belong in the
    writer inventory and must block promotion until each is fenced and verified.
+
+   The application PostgreSQL binding now accepts an optional, private
+   `postgresFence` identity with its own generation, role and credential
+   reference. Catalog validation requires a distinct runtime role and
+   credential; changing the fence identity requires a binding generation
+   bump. Resolution copies the identity, while public binding inspection
+   omits it. No cutover coordinator consumes this identity yet.
 4. Add initial restore, final transfer and integrity adapters for one exact
    engine/provider pair. Checkpoint each external effect before retrying it.
 5. Switch generation-bound runtime secrets and consumers only after the final

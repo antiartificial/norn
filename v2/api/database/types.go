@@ -127,6 +127,17 @@ type DatabaseBinding struct {
 	// binding. It is optional so ordinary application bindings do not acquire
 	// maintenance credentials or capabilities.
 	MySQLMaintenance *MySQLMaintenanceCredentials `json:"mysqlMaintenance,omitempty"`
+	// PostgresFence is private authority for a future application cutover.
+	// Its credential is never delivered to the application runtime.
+	PostgresFence *PostgresFenceCredentials `json:"postgresFence,omitempty"`
+}
+
+// PostgresFenceCredentials binds a separately provisioned fence principal to
+// one runtime target. It does not grant cutover authority by itself.
+type PostgresFenceCredentials struct {
+	Generation    uint64 `json:"generation"`
+	Role          string `json:"role"`
+	CredentialRef string `json:"credentialRef"`
 }
 
 // MySQLMaintenanceCredentials names the separately provisioned identities a
@@ -232,6 +243,7 @@ type ResolvedBinding struct {
 	Capabilities      []Capability
 	CredentialRef     string
 	MySQLMaintenance  *MySQLMaintenanceCredentials
+	PostgresFence     *PostgresFenceCredentials
 	TLSPolicy         DatabaseTLSPolicy
 	TLS               DatabaseTLS
 	Legacy            bool
