@@ -98,6 +98,30 @@ switching DNS is not rollback.
    underprivileged principal and wrong CA. Provider support for the later
    fence effect remains unqualified.
 
+   The private `norn-postgres-fence-preflight` command now makes this check
+   runnable against a reviewed provider target. It requires an owner-only
+   catalog JSON snapshot, its exact raw-byte SHA-256, an owner-only expected
+   `TargetIdentity` JSON document, the profile and logical database ID, and
+   the owner-only secret directory. For example, from `v2/api`:
+
+   ```sh
+   go run ./cmd/norn-postgres-fence-preflight \
+     --catalog-file /absolute/private/catalog.json \
+     --catalog-sha256 <reviewed-64-character-sha256> \
+     --expected-target-file /absolute/private/target.json \
+     --profile <profile-id> --logical-resource <logical-id> \
+     --secrets-dir /absolute/private/database-secrets
+   ```
+
+   The JSON result reports the catalog digest, exact target, fence generation,
+   server version, login state and exact-role sessions. The command refuses
+   changed snapshots, stale targets, ambiguous JSON, symlinks and non-private
+   input files. It does not establish that the supplied snapshot is still the
+   **active** control catalog; compare its revision and target to a fresh
+   control-store readback before treating the result as provider evidence.
+   It does not alter roles, terminate sessions, or qualify the later provider
+   write effect. No selected-provider run has been performed yet.
+
    Provider qualification is still required for the first source cluster.
    [DigitalOcean's managed PostgreSQL documentation](https://docs.digitalocean.com/products/databases/postgresql/how-to/modify-user-privileges/)
    states that managed clusters do not grant superuser access and documents
