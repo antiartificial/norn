@@ -71,9 +71,13 @@ switching DNS is not rollback.
    `database.cutover` success, and claim acquisition treats the kind as mutable
    work under the runtime mutation fence. A disposable PG 16 test passed
    exact replay, stale-claim refusal, signed-intent retarget refusal, ordered
-   advancement and generic-success refusal. The etcd journal remains private
-   storage without accepted-claim integration. Neither path grants runtime
-   authority, and the ordinary deployment guard remains in force.
+   advancement and generic-success refusal. The etcd journal now has the
+   matching private claimed path: each create/advance transaction compares
+   the signed accepted operation, live leased owner, fenced app lock and
+   journal revision. A disposable single-member etcd test passed signed
+   preparation, exact replay, retarget/stale-claim/wrong-lock refusal,
+   ordered advancement and generic-success refusal. Neither path grants
+   runtime authority, and the ordinary deployment guard remains in force.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

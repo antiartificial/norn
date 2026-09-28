@@ -881,6 +881,9 @@ func (s *V3OperationStore) mutateClaimWithComparisons(ctx context.Context, c sto
 		v.Operation.Metadata = map[string]interface{}{}
 	}
 	f(&v.Operation)
+	if v.Operation.Kind == store.DatabaseCutoverOperationKind && v.Operation.Status == model.OperationSucceeded {
+		return fmt.Errorf("database cutover success requires a verified terminal transaction")
+	}
 	if v.Operation.Status.Terminal() && (v.Operation.Kind == "app.deploy" || v.Operation.Kind == "app.rollback") {
 		index, err := s.kv.Get(ctx, s.operationAcceptanceIndexKey(v.Operation.ID))
 		if err != nil {
