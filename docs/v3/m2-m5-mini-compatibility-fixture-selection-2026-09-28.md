@@ -107,6 +107,14 @@ worktree based on current GitHub master. It is not merged or deployed. Its
 hosted Go CI job was blocked before runner steps by GitHub's account
 billing/spending-limit annotation, so it has no hosted test receipt.
 
+A subsequent [private `mailindexer` shared-consumer role-copy rehearsal](m2-mailindexer-private-shared-role-copy-2026-09-28.md)
+passed on Mini: 101,529 copied messages survived a 12-object ownership split
+and rollback, and the draft `mail-mcp` code ran startup schema initialization
+and wrote one interaction as the new role against the copied database. This
+does not prove the exact dirty deployed image or either live Nomad job's
+credential transition; `mail-indexer` and `mail-mcp` must still be handled
+together during a protected cutover.
+
 For the proposed first fixture, a read-only `mailindexer` ownership query
 found eight ordinary tables, four sequences and 31 indexes owned by `norn`.
 The database itself is also owned by `norn`; the `public` schema uses

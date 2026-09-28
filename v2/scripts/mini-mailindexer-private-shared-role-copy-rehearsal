@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+[[ $# == 1 && -f "$1/internal/store/private_role_test.go" ]] || {
+  printf 'usage: %s <isolated-mail-mcp-worktree>\n' "$0" >&2
+  exit 2
+}
+mail_mcp_worktree=$1
+postgres_bin=/Applications/Postgres.app/Contents/Versions/latest/bin
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/norn-mail-role-copy.XXXXXXXX")
+cleanup() {
+  "$postgres_bin/pg_ctl" -D "$scratch/data" -m immediate stop >/dev/null 2>&1 || true
+  python3 -c 'import pathlib, shutil, sys; p=pathlib.Path(sys.argv[1]); assert p.name.startswith("norn-mail-role-copy."); shutil.rmtree(p)' "$scratch"
+}
+trap cleanup EXIT
+mkdir "$scratch/socket"
+available_kb=$(df -Pk "$scratch" | awk 'END {print $4}')
+(( available_kb >= 6 * 1024 * 1024 )) || { printf 'insufficient private scratch space\n' >&2; exit 2; }
+
+source_local=$("$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -At -d mailindexer -c 'SELECT inet_server_addr() IS NULL')
+[[ $source_local == t ]] || { printf 'source PostgreSQL is not on a local socket\n' >&2; exit 2; }
+PGOPTIONS='-c default_transaction_read_only=on' \
+  "$postgres_bin/pg_dump" --format=custom --no-acl --file="$scratch/mail.dump" -d mailindexer
+"$postgres_bin/pg_restore" --list "$scratch/mail.dump" >/dev/null
+
+"$postgres_bin/initdb" -D "$scratch/data" --auth-local=trust --auth-host=reject >/dev/null
+"$postgres_bin/pg_ctl" -D "$scratch/data" \
+  -o "-k $scratch/socket -p 56435 -c listen_addresses=''" \
+  -l "$scratch/postgres.log" start >/dev/null
+sql() { "$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -At -h "$scratch/socket" -p 56435 "$@"; }
+admin=$(id -un)
+sql -U "$admin" -d postgres -c 'CREATE ROLE norn LOGIN' >/dev/null
+sql -U "$admin" -d postgres -c 'CREATE ROLE mail_app LOGIN' >/dev/null
+sql -U "$admin" -d postgres -c 'CREATE DATABASE norn_v2_copy OWNER norn' >/dev/null
+sql -U "$admin" -d postgres -c 'CREATE DATABASE mail_copy' >/dev/null
+"$postgres_bin/pg_restore" -h "$scratch/socket" -p 56435 -U "$admin" \
+  -d mail_copy --no-owner --no-acl --exit-on-error "$scratch/mail.dump"
+
+change_owners() {
+  local new_owner=$1
+  sql -U "$admin" -d mail_copy -c \
+    "SELECT format('ALTER TABLE %I.%I OWNER TO %I;', n.nspname, c.relname, '$new_owner') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') ORDER BY c.relname" \
+    >"$scratch/owners.sql"
+  sql -U "$admin" -d mail_copy -c \
+    "SELECT format('ALTER SEQUENCE %I.%I OWNER TO %I;', n.nspname, c.relname, '$new_owner') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S' ORDER BY c.relname" \
+    >>"$scratch/owners.sql"
+  sql -U "$admin" -d mail_copy -f "$scratch/owners.sql" >/dev/null
+}
+change_owners norn
+messages_before=$(sql -U "$admin" -d mail_copy -c 'SELECT count(*) FROM public.messages')
+interactions_before=$(sql -U "$admin" -d mail_copy -c 'SELECT count(*) FROM public.message_interactions')
+(( messages_before > 0 )) || { printf 'restored messages table is empty\n' >&2; exit 1; }
+
+change_owners mail_app
+sql -U "$admin" -d postgres -c 'REVOKE ALL ON DATABASE mail_copy FROM PUBLIC' >/dev/null
+sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE mail_copy TO mail_app' >/dev/null
+sql -U "$admin" -d mail_copy -c 'GRANT USAGE, CREATE ON SCHEMA public TO mail_app' >/dev/null
+[[ $(sql -U mail_app -d mail_copy -c 'SELECT count(*) FROM public.messages') == "$messages_before" ]] || {
+  printf 'message count changed across role split\n' >&2; exit 1;
+}
+owner_counts=$(sql -U "$admin" -d mail_copy -F '|' -c "SELECT count(*), count(*) FILTER (WHERE relowner='mail_app'::regrole) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','S')")
+[[ $owner_counts == '12|12' ]] || { printf 'not all copied application tables and sequences have the new owner\n' >&2; exit 1; }
+if sql -U norn -d mail_copy -c 'SELECT 1' >/dev/null 2>&1; then
+  printf 'old role can still connect to private app copy\n' >&2; exit 1
+fi
+[[ $(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='norn_v2_copy'") == norn ]] || {
+  printf 'control copy ownership changed\n' >&2; exit 1;
+}
+
+(
+  cd "$mail_mcp_worktree"
+  MAIL_MCP_TEST_DATABASE_URL="postgres://mail_app@localhost/mail_copy?host=$scratch/socket&port=56435&sslmode=disable" \
+    /opt/homebrew/bin/go test ./internal/store -run '^TestPrivateCopiedDatabaseRole$' -count=1 -v
+)
+[[ $(sql -U mail_app -d mail_copy -c 'SELECT count(*) FROM public.message_interactions') == "$(( interactions_before + 1 ))" ]] || {
+  printf 'mail-mcp copied interaction write was not preserved\n' >&2; exit 1;
+}
+
+change_owners norn
+sql -U "$admin" -d mail_copy -c 'REVOKE USAGE, CREATE ON SCHEMA public FROM mail_app' >/dev/null
+sql -U "$admin" -d postgres -c 'REVOKE ALL ON DATABASE mail_copy FROM mail_app' >/dev/null
+sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE mail_copy TO norn' >/dev/null
+[[ $(sql -U norn -d mail_copy -c 'SELECT count(*) FROM public.messages') == "$messages_before" ]] || {
+  printf 'messages changed across copied-role rollback\n' >&2; exit 1;
+}
+[[ $(sql -U norn -d mail_copy -c 'SELECT count(*) FROM public.message_interactions') == "$(( interactions_before + 1 ))" ]] || {
+  printf 'mail-mcp copied write was lost during rollback\n' >&2; exit 1;
+}
+owner_counts=$(sql -U "$admin" -d mail_copy -F '|' -c "SELECT count(*), count(*) FILTER (WHERE relowner='norn'::regrole) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','S')")
+[[ $owner_counts == '12|12' ]] || { printf 'copied tables and sequences did not return to the old owner\n' >&2; exit 1; }
+if sql -U mail_app -d mail_copy -c 'SELECT 1' >/dev/null 2>&1; then
+  printf 'replacement role can still connect after copied-role rollback\n' >&2; exit 1
+fi
+sql -U norn -d norn_v2_copy -c 'SELECT 1' >/dev/null
+printf 'PASS: private mailindexer copy preserved %s messages and one mail-mcp interaction write through role split and rollback; control copy unchanged\n' "$messages_before"
