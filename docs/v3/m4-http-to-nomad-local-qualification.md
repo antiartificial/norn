@@ -87,3 +87,13 @@ before opening the route listener. The fixture then directly exercises the
 Nomad effect to keep the allocation-health gate qualified. A completed
 inventory and protected ingress nodes have not been exercised through this
 normal executor path.
+
+`TestTwoNodePublisherTransportPartialRetry` exercises the exported publisher
+preflight and publication clients over real mutual TLS listeners on two
+loopback node addresses. A client with another verified identity fails
+preflight. When the second node refuses authority, the first returns a file
+receipt and the second retains no route; after authority is restored, a retry
+leaves both node files at generation one with the expected route digest.
+This closes the isolated client-to-publisher transport rehearsal. It does not
+join the accepted HTTP operation, completed Fleet inventory, Nomad effect,
+Traefik readback or public endpoint into one normal executor run.
