@@ -147,7 +147,10 @@ switching DNS is not rollback.
    The loopback-only `norn-cutover-writer-inventory` command now reads the
    app's stored InfraSpec from the local Norn API, observes every declared
    Nomad region, then rereads the spec to refuse source drift. Its JSON output
-   always marks external writers unverified and promotion unready. It rejects
+   includes a SHA-256 of the exact sorted regional Nomad observation, separate
+   from the stored-spec digest. This binds only the observed Nomad bytes; it
+   is not the intent's complete `writerInventorySha256`. The output always
+   marks external writers unverified and promotion unready. It rejects
    an app without a stored database declaration, even if a Nomad task happens
    to carry an ad hoc database URL. This command is an observation aid; it
    does not create the signed complete inventory or fence any writer.

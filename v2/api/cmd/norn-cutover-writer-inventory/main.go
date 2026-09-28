@@ -75,13 +75,19 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	if err != nil || before != after {
 		return errors.New("stored app spec changed during observation")
 	}
+	observationBytes, err := json.Marshal(observed)
+	if err != nil {
+		return errors.New("Nomad writer observation cannot be encoded")
+	}
+	observationDigest := sha256.Sum256(observationBytes)
 	return json.NewEncoder(output).Encode(struct {
 		App                       string                         `json:"app"`
 		StoredSpecSHA256          string                         `json:"storedSpecSha256"`
+		NomadObservationSHA256    string                         `json:"nomadObservationSha256"`
 		Regions                   []nomad.CutoverWriterInventory `json:"regions"`
 		ExternalWritersUnverified bool                           `json:"externalWritersUnverified"`
 		PromotionReady            bool                           `json:"promotionReady"`
-	}{*app, before, observed, true, false})
+	}{*app, before, hex.EncodeToString(observationDigest[:]), observed, true, false})
 }
 
 func loopbackURL(raw string) bool {

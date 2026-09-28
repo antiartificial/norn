@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,9 +24,10 @@ func TestRunObservesStoredSpecAndNeverClaimsPromotion(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result struct {
-		App              string `json:"app"`
-		StoredSpecSHA256 string `json:"storedSpecSha256"`
-		Regions          []struct {
+		App                    string `json:"app"`
+		StoredSpecSHA256       string `json:"storedSpecSha256"`
+		NomadObservationSHA256 string `json:"nomadObservationSha256"`
+		Regions                []struct {
 			Jobs []struct {
 				ID string `json:"id"`
 			} `json:"jobs"`
@@ -37,6 +40,16 @@ func TestRunObservesStoredSpecAndNeverClaimsPromotion(t *testing.T) {
 	}
 	if result.App != "fixture" || len(result.StoredSpecSHA256) != 64 || len(result.Regions) != 1 || len(result.Regions[0].Jobs) != 1 || result.Regions[0].Jobs[0].ID != "fixture" || !result.ExternalWritersUnverified || result.PromotionReady {
 		t.Fatalf("output=%s", output.String())
+	}
+	var raw struct {
+		Regions json.RawMessage `json:"regions"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(raw.Regions)
+	if result.NomadObservationSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("Nomad observation digest does not bind output: %s", output.String())
 	}
 }
 
