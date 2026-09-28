@@ -8,8 +8,8 @@ import (
 
 func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T) {
 	registry := InspectionRegistry()
-	if len(registry) != 54 {
-		t.Fatalf("registry has %d tables, want 54", len(registry))
+	if len(registry) != 55 {
+		t.Fatalf("registry has %d tables, want 55", len(registry))
 	}
 	if err := validateRegistry(registry); err != nil {
 		t.Fatalf("registry validation: %v", err)
@@ -28,6 +28,7 @@ func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T)
 		"recovery_drills":                       {"evidence"},
 		"operation_checkpoints":                 {"outputs"},
 		"database_catalog_revisions":            {"catalog"},
+		"database_cutover_journals":             {"intent", "receipts"},
 		"operation_effects":                     {"claim_owner", "claim_generation", "input_digest", "launch_payload", "supervisor_execution_id", "runtime_instance_id", "result_digest", "result_reference", "evidence_source", "evidence_reference", "evidence_observed_at"},
 		"restart_effect_sources":                {},
 		"function_invocation_effect_attempts":   {},

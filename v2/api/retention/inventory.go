@@ -52,6 +52,7 @@ var PayloadInventory = []PayloadRetention{
 	{"mysql_source_snapshot_reconciliations", ClassHotEvidence, nil, "source snapshot reconciliation history proves ambiguous attempts before retry or release"},
 	{"mysql_source_snapshot_intents", ClassHotEvidence, nil, "source snapshot and quiescence intent remain until durable artifact and unlock proof"},
 	{"mysql_restore_intents", ClassHotEvidence, nil, "restore intent and target identity remain through copy, unlock, and recovery"},
+	{"database_cutover_journals", ClassHotEvidence, []string{"intent", "receipts"}, "source and target identity, phase and receipts remain through cutover recovery and source-retirement proof"},
 	{"mysql_restore_maintenance_fences", ClassHotEvidence, nil, "maintenance fence ownership and release proof remain while restore may be retried"},
 	{"mysql_restore_runtime_locks", ClassHotEvidence, nil, "runtime lock state remains until restore releases all protected writers"},
 	{"operation_checkpoints", ClassHotEvidence, []string{"outputs"}, "retry-safety checkpoints of unresolved operations"},

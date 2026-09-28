@@ -34,8 +34,8 @@ func TestReleaseAttestationByteMigrationBackfillsExistingEvidence(t *testing.T) 
 		t.Fatal(err)
 	}
 	status, err := current.Migrate(ctx)
-	if err != nil || status.CurrentMigrationVersion != 45 {
-		t.Fatalf("migration 45 status=%+v err=%v", status, err)
+	if err != nil || status.CurrentMigrationVersion != 46 {
+		t.Fatalf("migration through 46 status=%+v err=%v", status, err)
 	}
 	var reserved, actual int64
 	if err := pool.QueryRow(ctx, `SELECT r.reserved_bytes, octet_length(o.payload::text)+octet_length(o.metadata::text)
@@ -48,8 +48,8 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 45 || migrations[16].Version != 17 {
-		t.Fatalf("control migration catalog has %d migrations, want immutable baseline through 17 and appended migrations through 45", len(migrations))
+	if len(migrations) != 46 || migrations[16].Version != 17 {
+		t.Fatalf("control migration catalog has %d migrations, want immutable baseline through 17 and appended migrations through 46", len(migrations))
 	}
 	for index, migration := range migrations {
 		if migration.Version != int64(index+1) {
@@ -91,7 +91,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 45 || len(status.AppliedVersions) != 45 || status.AppliedVersions[44] != 45 || status.MinimumReaderVersion != MySQLRetainedArtifactReaderVersion || status.MinimumWriterVersion != SnapshotExportIntentWriterVersion {
+	if status.CurrentMigrationVersion != 46 || len(status.AppliedVersions) != 46 || status.AppliedVersions[45] != 46 || status.MinimumReaderVersion != MySQLRetainedArtifactReaderVersion || status.MinimumWriterVersion != SnapshotExportIntentWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 

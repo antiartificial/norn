@@ -79,6 +79,7 @@ var inspectionCatalog = []knownMigration{
 	{version: 43, name: "mysql-source-snapshot-publish-successor", checksum: "28a1fa48c7bb25f3ce6dde4a05682f679c9cdeafefe842c0b6365e15b9dccb75", minimumReader: 5, minimumWriter: 31},
 	{version: 44, name: "master-protected-pilot-reconciliation", checksum: "ec81c702e6d469938b895407e76cd055bcdabd87bb21c72d454d9e050205055f", minimumReader: 5, minimumWriter: 31},
 	{version: 45, name: "release-attestation-byte-reserve", checksum: "431039613471382276b79337a4dca8207964a877cf9e72603cad724aeb26fe20", minimumReader: 5, minimumWriter: 31},
+	{version: 46, name: "database-cutover-journal", checksum: "8ccd3c793766370b44f75223311215ba8cd83e32236bfa1898443d08e2a871ae", minimumReader: 5, minimumWriter: 31},
 }
 
 // Inspection is a redacted, non-restorable view of one repeatable-read control

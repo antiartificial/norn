@@ -88,6 +88,7 @@ func InspectionRegistry() []Table {
 		// topology; inspection keeps only revision lineage and digests.
 		{Name: "database_catalog_revisions", OrderBy: []string{"revision"}, Columns: classified(include("revision", "previous_revision", "catalog_digest", "activated_by", "activated_at"), "catalog")},
 		{Name: "database_catalog_retirements", OrderBy: []string{"kind", "id"}, Columns: include("kind", "id", "retired_revision")},
+		{Name: "database_cutover_journals", OrderBy: []string{"operation_id"}, Columns: classified(include("operation_id", "app", "logical_database", "intent_sha256", "phase", "revision", "created_at", "updated_at", "retired_at"), "intent", "receipts")},
 		{Name: "evidence_archive_intents", OrderBy: []string{"id"}, Columns: include("id", "subject_kind", "subject_id", "app", "operation_id", "sequence", "state", "event_ids", "event_count", "cutoff_timestamp",
 			"object_key", "object_sha256", "object_bytes", "attempts", "last_error", "pruned_events", "created_at", "updated_at", "verified_at", "pruned_at")},
 		{Name: "evidence_reserve", OrderBy: []string{"singleton"}, Columns: include("singleton", "enabled", "max_pending", "max_pending_age_seconds", "max_signed_acceptance_bytes", "max_release_attestation_bytes", "archive_exhausted", "archive_detail",

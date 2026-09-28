@@ -48,14 +48,19 @@ switching DNS is not rollback.
    identities, and one active consumer generation. Preserve the existing
    `app.deploy` target-change refusal.
 
-   `v2/api/cutover/journal.go` now defines the shared v1 intent and ordered
-   phase transition contract. Its local tests reject same-target and
-   mixed-engine intents, missing receipts, stale revisions and skipped
-   activation. It is **not a durable journal**: no PG or etcd store adapter,
-   accepted-operation claim, application lock or consumer-generation switch
-   calls it yet. The store must atomically compare the immutable intent and
-   revision on every write; callers must verify each external receipt before
-   asking to advance. The ordinary deployment guard remains in force.
+   `v2/api/cutover/journal.go` defines the shared v1 intent and ordered phase
+   transition contract. Its tests reject same-target and mixed-engine intents,
+   missing receipts, stale revisions and skipped activation. Control schema
+   migration 46 now reserves a private PostgreSQL journal table, classifies
+   its identity and digest fields for recovery inspection, and keeps its
+   complete record in the hot retention inventory. Private PG methods create,
+   read and advance that record by row lock and revision CAS. A disposable PG
+   16 test passed legacy/Mini schema migration, exact replay, retarget refusal,
+   one-active-resource uniqueness and two concurrent advancement attempts.
+   This is **storage only**: no accepted-operation claim, app lock, verified
+   external receipt, etcd adapter or consumer-generation switch calls it yet.
+   The private methods grant no runtime authority, and the ordinary deployment
+   guard remains in force.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.
