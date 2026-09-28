@@ -12,6 +12,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/handler"
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -75,6 +76,33 @@ func etcdFleetAppTargetConfigure(cfg *config.Config, operations *etcdstore.V3Ope
 		}
 		datacenters := append([]string(nil), request.Datacenters...)
 		slices.Sort(datacenters)
+		specs, err := model.DiscoverApps(cfg.AppsDir)
+		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "app_catalog_unavailable", "deployable app catalog is unavailable")
+			return
+		}
+		matching := 0
+		for _, spec := range specs {
+			if spec.App != app {
+				continue
+			}
+			matching++
+			regions := spec.ResolvedRegions()
+			if len(regions) != 1 {
+				handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_app_placement_mismatch", "first Fleet target requires one app region")
+				return
+			}
+			sourceDatacenters := append([]string(nil), regions[0].Datacenters...)
+			slices.Sort(sourceDatacenters)
+			if regions[0].Name != request.Region || regions[0].NomadRegion != request.NomadRegion || regions[0].TrafficWeight != 100 || !slices.Equal(sourceDatacenters, datacenters) {
+				handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_app_placement_mismatch", "target placement differs from the enabled app source")
+				return
+			}
+		}
+		if matching != 1 {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_app_source_unavailable", "exactly one enabled app source is required")
+			return
+		}
 		target := store.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: app,
 			ControlEnvironment: cfg.EnvironmentID(), Cluster: inventory.Document.Cluster.Name,
 			FleetEnvironment: strings.Join([]string{inventory.Document.Metadata.Environment, inventory.Document.Cluster.Region}, "/"),

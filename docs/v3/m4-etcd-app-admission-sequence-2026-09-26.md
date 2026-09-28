@@ -8,8 +8,10 @@ against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
 admission producer can create its signed deployment aggregate. A non-CI
 platform operator can now create or replace the Fleet app target through the
 normal router with an expected etcd revision. Its cluster and environment
-come from the validated checked-out Fleet document; create/read/stale-replace
-passed disposable-etcd tests. The target's validated reader supplies a
+come from the validated checked-out Fleet document, while its sole 100% region,
+Nomad region and datacenters must match one enabled checked-out InfraSpec.
+Create/read/stale-replace and mismatched placement refusal passed
+disposable-etcd tests. The target's validated reader supplies a
 future server-side admission builder with the revision that the existing
 admission transaction compares. A release path must derive the deployment
 and accepted region from verified release evidence and that target. Database

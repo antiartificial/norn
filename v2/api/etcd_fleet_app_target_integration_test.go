@@ -47,7 +47,15 @@ func TestEtcdFleetAppTargetOperatorConfiguration(t *testing.T) {
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Environment: "staging", EnvironmentExplicit: true, FleetConfig: path}
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, "pilot")
+	if err := os.Mkdir(appDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte("name: pilot\ndeploy: true\nregions:\n  west:\n    nomadRegion: global\n    datacenters: [dc1, dc2]\nprocesses:\n  web:\n    command: sleep 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Environment: "staging", EnvironmentExplicit: true, FleetConfig: path, AppsDir: appsDir}
 	router := chi.NewRouter()
 	router.Get("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetRead(cfg, operations))
 	router.Put("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetConfigure(cfg, operations))
@@ -69,6 +77,9 @@ func TestEtcdFleetAppTargetOperatorConfiguration(t *testing.T) {
 	}
 	if response := put(body, &handler.AccessPrincipal{TokenID: "ci-token", Scopes: []string{handler.ScopePlatformOperate}, CI: &handler.CIIdentity{}}); response.Code != http.StatusForbidden {
 		t.Fatalf("CI configure status=%d", response.Code)
+	}
+	if response := put(`{"expectedRevision":0,"region":"west","nomadRegion":"global","datacenters":["dc3"]}`, operator); response.Code != http.StatusConflict {
+		t.Fatalf("mismatched app placement status=%d body=%s", response.Code, response.Body.String())
 	}
 	created := put(body, operator)
 	if created.Code != http.StatusCreated {
