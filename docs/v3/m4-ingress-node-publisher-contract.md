@@ -96,8 +96,12 @@ claim, app-lock, acceptance, effect, route-intent, target and Fleet inventory
 revision fences. An identical fresh observation can replay an uncertain write;
 a conflicting observation cannot overwrite the receipt. The Fleet pilot's
 readiness-gated `/route-proof` response is pinned by its InfraSpec digest.
-Terminal completion still refuses positive active weight; this record is not
-yet release qualification.
+The private terminal path now reloads this record, its signed route intent,
+completed Nomad health effect, current Fleet target and inventory, and
+compares their revisions in the same transaction as positive active weight.
+A disposable-etcd fixture proves the control path with a synthetic traffic
+observation. Protected ingress and public load-balancer behavior remain to be
+qualified.
 
 ## Authority and host boundary
 
@@ -136,7 +140,7 @@ The remaining implementation order is: enable a normal etcd deploy worker
 that holds the claim, app lock and pinned source; start its private authority
 listener; fan out one reserved generation to every current ingress member;
 repeat file, Traefik, endpoint and public-path readback; persist a durable
-proof and compare it in terminal completion; then rehearse partial publish,
+proof and use the private terminal completion fence; then rehearse partial publish,
 claim loss, replacement and loaded 2→3→2 Fleet operation. The draft host
 publisher service remains disabled until that worker and recovery path exist.
 
@@ -192,11 +196,15 @@ publisher service remains disabled until that worker and recovery path exist.
 
 ## Accepted route binding and completion fence
 
-The private etcd `finishClaimedDeployment` path now rejects every positive
-`ActiveWeight` until a deployment-bound ingress proof is durably compared in
-its terminal transaction. Zero-traffic completion still exercises the claim,
-app-lock and admission transaction in disposable etcd tests. This is a safety
-fence, not the missing proof implementation or normal app execution.
+The private etcd `finishClaimedDeployment` path rejects positive
+`ActiveWeight` unless its caller supplies the pinned InfraSpec and observer
+port and a durable deployment-bound ingress proof passes live validation. The
+terminal transaction compares the claim, app lock, acceptance, intent, proof,
+completed health effect, Fleet target, active inventory and absent prior active
+route before writing the active route pointer and region result together.
+Disposable-etcd tests cover synthetic success, missing or corrupt proof, and
+inventory replacement. Normal app execution and protected traffic proof are
+still outstanding.
 
 The InfraSpec endpoint now has an optional `process` binding, validated against
 a declared service process with a port and included in the pinned spec digest.

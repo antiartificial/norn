@@ -89,11 +89,10 @@ func (s *V3OperationStore) verifyTerminalDeploymentProjection(ctx context.Contex
 }
 
 // finishClaimedDeployment is private until the etcd deploy worker verifies
-// every external effect and a durable ingress proof can authorize positive
-// traffic. It terminalizes the
+// every external effect. It terminalizes the
 // operation, deployment, region observations, and app admission in one claim-
 // and app-lock-fenced transaction.
-func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, result model.Deployment, regions []model.DeploymentRegion, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, result model.Deployment, regions []model.DeploymentRegion, status model.OperationStatus, message string, metadata map[string]interface{}, routeSource ...initialFleetCompletionSource) error {
 	if lock == nil || lock.Fence() == "" || lock.Context().Err() != nil || (status != model.OperationSucceeded && status != model.OperationFailed) {
 		return store.ErrOperationOwnershipLost
 	}
@@ -183,6 +182,7 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 		clientv3.OpDelete(s.runningKey(op.ID)),
 	}
 	byName := make(map[string]model.DeploymentRegion, len(regions))
+	positiveTraffic := false
 	for _, region := range regions {
 		if region.Region == "" || byName[region.Region].Region != "" || region.DeploymentID != result.ID {
 			return fmt.Errorf("deployment region result identity is invalid")
@@ -195,10 +195,7 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 			return fmt.Errorf("deployment region result differs from accepted placement")
 		}
 		if region.ActiveWeight > 0 {
-			// Nomad health and caller-supplied weights cannot establish observed
-			// traffic. Keep the private completion path closed until a durable,
-			// deployment-bound ingress proof is compared in this transaction.
-			return fmt.Errorf("positive active traffic requires deployment-bound ingress proof")
+			positiveTraffic = true
 		}
 		if !validDeploymentStatus(region.Status) {
 			return fmt.Errorf("deployment region result status is invalid")
@@ -217,6 +214,17 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 		key := s.deploymentRegionResultKey(result.ID, region.Region)
 		comparisons = append(comparisons, clientv3.Compare(clientv3.CreateRevision(key), "=", 0))
 		ops = append(ops, clientv3.OpPut(key, string(encoded)))
+	}
+	if positiveTraffic {
+		if len(routeSource) != 1 || status != model.OperationSucceeded {
+			return fmt.Errorf("positive active traffic requires deployment-bound ingress proof")
+		}
+		routeCompares, routeOps, err := s.initialFleetCompletionFences(ctx, claim, lock, accepted, routeSource[0])
+		if err != nil {
+			return err
+		}
+		comparisons = append(comparisons, routeCompares...)
+		ops = append(ops, routeOps...)
 	}
 	admissionCompares, admissionOps, err := s.releaseAppAdmission(ctx, op)
 	if err != nil {

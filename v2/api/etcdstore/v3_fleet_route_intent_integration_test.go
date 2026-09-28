@@ -139,6 +139,14 @@ func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
 }
 
 func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
+	runInitialFleetRouteIntentEtcd(t, false)
+}
+
+func TestInitialFleetRouteProofTerminalizesSyntheticDeploymentEtcd(t *testing.T) {
+	runInitialFleetRouteIntentEtcd(t, true)
+}
+
+func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	activeFleetIngressForRouteIntent(t, adapter)
@@ -357,6 +365,39 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil); err == nil || !strings.Contains(err.Error(), "deployment-bound ingress proof") {
 		t.Fatalf("observation receipt bypassed terminal traffic fence: %v", err)
 	}
+	corrupt := *proof
+	corrupt.Observation.PublicMatched = false
+	corruptBytes, err := json.Marshal(corrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID), string(corruptBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err == nil {
+		t.Fatal("invalid stored public proof authorized terminal active traffic")
+	}
+	proofBytes, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID), string(proofBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if complete {
+		if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err != nil {
+			t.Fatalf("proof-bound terminal deployment: %v", err)
+		}
+		active, err := client.Get(ctx, activeKey)
+		if err != nil || len(active.Kvs) != 1 {
+			t.Fatalf("terminal result omitted active route: entries=%d err=%v", len(active.Kvs), err)
+		}
+		result, err := adapter.GetDeployment(ctx, terminal.ID)
+		if err != nil || result.Status != model.StatusDeployed || len(result.Regions) != 1 || result.Regions[0].ActiveWeight != 100 {
+			t.Fatalf("proof-bound deployment=%+v err=%v", result, err)
+		}
+		return
+	}
 	changedTraffic := *traffic
 	changedTraffic.NodeEndpoints = append([]ingress.NodeEndpointProbe(nil), traffic.NodeEndpoints...)
 	changedTraffic.EndpointBodySHA256 = strings.Repeat("e", 64)
@@ -384,6 +425,9 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	}
 	if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("stale Fleet inventory remained publishable after host replacement")
+	}
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err == nil {
+		t.Fatal("replaced Fleet inventory authorized terminal active traffic")
 	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "ingress-01"); err == nil {
 		t.Fatal("replaced Fleet inventory still authorized node publication")
