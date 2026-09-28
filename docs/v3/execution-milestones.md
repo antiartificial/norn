@@ -174,6 +174,10 @@ The [2026-09-28 read-only Mini refresh](m0-mini-baseline-refresh-2026-09-28.md)
 still identifies release `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`,
 an empty active operation queue at collection time, and PostgreSQL WAL
 archiving off. It does not alter the M0 or M5 estimates or sign either gate.
+The [exact-head private Mini copy](m5-mini-private-copy-current-head-2026-09-28.md)
+passed schema 45 and passive startup against 28 original tables and 260,831
+rows, with unchanged live job and route-config fingerprints. Protected backup,
+off-host restore and the maintenance transition remain M5 work.
 
 The opt-in normal HTTP-to-Nomad local rehearsal has a
 [repeatable disposable runner](m4-http-to-nomad-local-qualification.md).
