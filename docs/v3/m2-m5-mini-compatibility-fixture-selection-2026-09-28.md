@@ -10,6 +10,10 @@ allocations: `field-harbor`, `mail-indexer`, `signal-sideband`, and
 `turnkey-offer-intake`. The other three (`gitea`, `hello-norn`, and
 `motifgarden`) had no current allocation. This is a point-in-time inventory,
 not a health guarantee or proof of application database contents.
+An independent read-only query of Mini's local Postgres.app `pg_database`
+listed both proposed fixture database names, `mailindexer` and
+`turnkey_offer_intake`. Existence alone does not prove that the current jobs
+connect to those databases or that the data can be restored.
 
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
