@@ -20,7 +20,7 @@ artifacts.
 | PostgreSQL archive mode and timeout | `off`, `0` |
 | PostgreSQL archived and failed WAL counts | `0`, `0` |
 
-The source release for the [private-copy M5 rehearsal](m5-mini-private-copy-schema45-2026-09-27.md)
+The source release for the [private-copy M5 rehearsal](m5-mini-private-copy-schema47-2026-09-28.md)
 has not moved. This readback does not revalidate the private copy against the
 latest v3 candidate, prove a production-key backup, or establish an off-host
 restore. It confirms that the [M0 recovery decision](m0-mini-control-recovery-decision.md)
@@ -28,3 +28,15 @@ remains a release prerequisite. The inactive/dead job and duplicate-app
 exceptions in the [earlier detailed baseline](m0-mini-baseline-refresh-2026-09-26.md)
 also remain visible; their ownership still needs review before selecting the
 representative upgrade fixture.
+
+A second authenticated read-only inventory at 10:19 UTC reported the same
+27 app records, 44 manifest entries, zero active operations, 13 open
+incidents, no configured Fleet/node pools, `ok` host status, and blocked v2
+production readiness. One open host incident is
+`service.capacity.below_minimum` for three processes, last observed on
+2026-09-16; its open state alone does not prove current undercapacity. Review
+the affected process identities and a fresh capacity observation before
+using them in the representative upgrade fixture. The production-readiness
+endpoint evaluates the current single-host development deployment, including
+one-member Nomad/Consul and local PostgreSQL. It is not evidence that the
+separately proposed three-control-node Fleet is deployed or qualified.
