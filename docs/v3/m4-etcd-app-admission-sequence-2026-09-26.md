@@ -25,7 +25,12 @@ legacy ambient PostgreSQL and declared migration/snapshot/restore work
 because this first-route executor does not perform those lifecycle steps.
 The binder is not yet called by a normal release admission producer; that
 producer must verify artifact provenance and accept the aggregate only while
-the catalog revision and Fleet target remain current.
+the catalog revision and Fleet target remain current. The private deployment
+acceptance transaction now compares the active catalog pointer when a signed
+`databaseTargets` set is present. A disposable-etcd test accepted the current
+set, rejected a distinct stale request, and proved a changed pointer defeats
+the captured transaction comparison. Replay of an existing identity still
+returns its original signed receipt.
 
 ## Current boundary
 

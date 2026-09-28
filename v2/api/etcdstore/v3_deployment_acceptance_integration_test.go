@@ -9,9 +9,63 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/database"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
+
+func TestV3DeploymentAcceptancePinsActiveDatabaseCatalogEtcd(t *testing.T) {
+	adapter, client, _ := deploymentEtcdStore(t)
+	ctx := context.Background()
+	active, err := adapter.ActivatePostgresDatabaseCatalog(ctx, 0, postgresCatalogFixture(), "operator")
+	if err != nil || active.Revision != 1 {
+		t.Fatalf("catalog activation=%+v err=%v", active, err)
+	}
+	resolver, err := database.NewResolver(active.Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "local", Purpose: database.PurposeApplication,
+		LogicalResourceID: "primary", RequiredCapabilities: []database.Capability{database.CapabilityRuntime}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := deploymentAdmissionRequest(t, adapter.authority)
+	set, err := json.Marshal(map[string]interface{}{"schema": "norn.database-targets/v1", "profileId": "local", "catalogRevision": 1,
+		"targets": []map[string]interface{}{{"name": "primary", "target": resolved.Target}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Operation.Payload["databaseTargets"] = string(set)
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.acceptDeploymentAggregate(ctx, request); err != nil {
+		t.Fatalf("current catalog acceptance: %v", err)
+	}
+	comparison, err := adapter.deploymentDatabaseCatalogCompare(ctx, request.Operation)
+	if err != nil || comparison == nil {
+		t.Fatalf("catalog comparison=%v err=%v", comparison, err)
+	}
+	if _, err := client.Put(ctx, adapter.databaseCatalogActiveKey(), "2"); err != nil {
+		t.Fatal(err)
+	}
+	txn, err := client.Txn(ctx).If(*comparison).Then(clientv3.OpPut(adapter.prefix+"/catalog-fence-test", "unsafe")).Commit()
+	if err != nil || txn.Succeeded {
+		t.Fatalf("changed catalog passed acceptance comparison: %+v err=%v", txn, err)
+	}
+	stale := deploymentAdmissionRequest(t, adapter.authority)
+	stale.Identity.Key = "stale-catalog"
+	stale.Operation.Payload["databaseTargets"] = string(set)
+	stale.Fingerprint, err = store.CanonicalOperationRequestFingerprint(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.acceptDeploymentAggregate(ctx, stale); err == nil {
+		t.Fatal("stale catalog target set was accepted")
+	}
+}
 
 func deploymentAdmissionRequest(t *testing.T, authority string) store.OperationAcceptance {
 	t.Helper()

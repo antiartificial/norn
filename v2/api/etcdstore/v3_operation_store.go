@@ -310,6 +310,13 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 		}
 		fleetTarget, fleetTargetCompare = &selected, compare
 	}
+	var catalogCompare *clientv3.Cmp
+	if allowDeployment && a.Deployment != nil {
+		catalogCompare, err = s.deploymentDatabaseCatalogCompare(ctx, a.Operation)
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+	}
 	admission, err := s.prepareAppAdmission(ctx, a)
 	if err != nil {
 		return store.AcceptedOperation{}, err
@@ -362,6 +369,9 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 	if fleetTarget != nil {
 		comparisons = append(comparisons, fleetTargetCompare)
 	}
+	if catalogCompare != nil {
+		comparisons = append(comparisons, *catalogCompare)
+	}
 	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(puts...).Commit()
 	if err != nil {
 		// A timed-out transaction can commit after the client loses its answer.
@@ -384,6 +394,11 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 		}
 		existing, err := s.loadAcceptance(ctx, key)
 		if errors.Is(err, ErrNotFound) {
+			if catalogCompare != nil {
+				if _, catalogErr := s.deploymentDatabaseCatalogCompare(ctx, a.Operation); catalogErr != nil {
+					return store.AcceptedOperation{}, catalogErr
+				}
+			}
 			if _, admissionErr := s.prepareAppAdmission(ctx, a); admissionErr != nil {
 				return store.AcceptedOperation{}, admissionErr
 			}
