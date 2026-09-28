@@ -307,6 +307,12 @@ last_startup_contract=''
 probe_startup_contract() {
   local binary="$1"
   [[ -x "$binary" ]] || fail "startup contract probe target is not executable: $binary"
+  # Older binaries ignore this flag and may enter active startup. Reject a
+  # missing contract marker before executing them; the bounded probe below
+  # still has to validate the exact response for marker-bearing binaries.
+  if ! grep -aFq "$startup_contract_name" "$binary"; then
+    fail "release binary lacks the ${startup_contract_name} marker; refusing to execute a legacy startup path"
+  fi
   local probe_dir probe_out probe_err probe_pid probe_result="" probe_done=false probe_status=0
   probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/norn-startup-probe.XXXXXX")"
   probe_out="$probe_dir/stdout"

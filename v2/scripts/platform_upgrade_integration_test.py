@@ -188,6 +188,17 @@ func main() {
         environment.update(extra_environment or {})
         return environment
 
+    def test_legacy_startup_probe_refuses_before_executing_binary(self) -> None:
+        marker = self.root / "legacy-executed"
+        legacy = self.root / "legacy-api"
+        legacy.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\n", encoding="utf-8")
+        legacy.chmod(0o755)
+
+        result = self.platform("startup-contract", str(legacy), expect_success=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing to execute a legacy startup path", result.stderr)
+        self.assertFalse(marker.exists())
+
     def test_shell_pnpm_launcher_uses_pinned_node(self) -> None:
         actual_pnpm = shutil.which("pnpm")
         self.assertIsNotNone(actual_pnpm)
