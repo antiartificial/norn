@@ -115,6 +115,11 @@ compares their revisions in the same transaction as positive active weight.
 A disposable-etcd fixture proves the control path with a synthetic traffic
 observation. Protected ingress and public load-balancer behavior remain to be
 qualified.
+The fixture also passes with a three-member active Fleet ingress inventory:
+the claimed route intent binds all three, synthetic publication returns all
+three receipts, and fresh traffic proof gates terminal completion. This is
+control-path coverage for the staged 2→3 shape, not a three-host network or
+loaded scale rehearsal.
 
 ## Authority and host boundary
 

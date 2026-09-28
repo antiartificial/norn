@@ -59,20 +59,27 @@ func routeAuthorityTestIdentity(t *testing.T, parent *x509.Certificate, signer *
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: private}), cert, key
 }
 
-func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
+func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore, ingressCount int) {
 	t.Helper()
 	ctx := context.Background()
 	addresses := []string{"10.43.0.21", "10.43.0.22"}
+	if ingressCount == 3 {
+		addresses = append(addresses, "10.43.0.23")
+	} else if ingressCount != 2 {
+		t.Fatal("route rehearsal supports two or three ingress nodes")
+	}
 	if supplied := os.Getenv("NORN_TEST_INGRESS_PRIVATE_IPS"); supplied != "" {
 		addresses = strings.Split(supplied, ",")
-		if len(addresses) != 2 || addresses[0] == addresses[1] {
-			t.Fatal("route rehearsal requires two distinct private ingress addresses")
+		if len(addresses) != ingressCount {
+			t.Fatal("route rehearsal requires one private address per ingress node")
 		}
+		seen := map[string]bool{}
 		for _, address := range addresses {
 			ip := net.ParseIP(address)
-			if ip == nil || ip.To4() == nil || !ip.IsPrivate() || ip.IsLoopback() {
+			if seen[address] || ip == nil || ip.To4() == nil || !ip.IsPrivate() || ip.IsLoopback() {
 				t.Fatal("route rehearsal requires private IPv4 ingress addresses")
 			}
+			seen[address] = true
 		}
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -115,7 +122,11 @@ func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
 		t.Fatal(err)
 	}
 	attempt := *acceptedRunner.FleetRunnerAttempt
-	snapshot := json.RawMessage(fmt.Sprintf(`{"cluster":"norn-staging","environment":"staging/nyc3","ingressNodes":[{"name":"ingress-01","privateIP":"%s"},{"name":"ingress-02","privateIP":"%s"}],"nodesFileSHA256":"%s","schemaVersion":"norn.fleet-ingress-inventory/v1"}`, addresses[0], addresses[1], strings.Repeat("c", 64)))
+	members := make([]string, 0, len(addresses))
+	for index, address := range addresses {
+		members = append(members, fmt.Sprintf(`{"name":"ingress-%02d","privateIP":"%s"}`, index+1, address))
+	}
+	snapshot := json.RawMessage(fmt.Sprintf(`{"cluster":"norn-staging","environment":"staging/nyc3","ingressNodes":[%s],"nodesFileSHA256":"%s","schemaVersion":"norn.fleet-ingress-inventory/v1"}`, strings.Join(members, ","), strings.Repeat("c", 64)))
 	canonical, err := fleet.CanonicalIngressInventory(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -156,21 +167,28 @@ func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
 }
 
 func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
-	runInitialFleetRouteIntentEtcd(t, false, false)
+	runInitialFleetRouteIntentEtcd(t, false, false, 2)
 }
 
 func TestInitialFleetRouteProofTerminalizesSyntheticDeploymentEtcd(t *testing.T) {
-	runInitialFleetRouteIntentEtcd(t, true, false)
+	runInitialFleetRouteIntentEtcd(t, true, false, 2)
 }
 
 func TestPartialFleetRoutePublicationAllowsFencedSuccessorEtcd(t *testing.T) {
-	runInitialFleetRouteIntentEtcd(t, true, true)
+	runInitialFleetRouteIntentEtcd(t, true, true, 2)
 }
 
-func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool) {
+func TestThreeIngressFleetRouteProofTerminalizesSyntheticDeploymentEtcd(t *testing.T) {
+	if os.Getenv("NORN_TEST_INGRESS_PRIVATE_IPS") != "" {
+		t.Skip("private publisher fixture currently uses two host identities")
+	}
+	runInitialFleetRouteIntentEtcd(t, true, false, 3)
+}
+
+func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingressCount int) {
 	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
-	activeFleetIngressForRouteIntent(t, adapter)
+	activeFleetIngressForRouteIntent(t, adapter, ingressCount)
 	spec := &model.InfraSpec{App: "demo", Regions: map[string]model.RegionTarget{"west": {NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}}}, Processes: map[string]model.Process{"web": {Port: 8080}}, Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "west", Process: "web", TrafficProbe: &model.TrafficProbeSpec{Path: "/ready", BodySHA256: strings.Repeat("d", 64)}}}}
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	var err error
