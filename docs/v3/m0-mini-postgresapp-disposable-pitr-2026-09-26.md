@@ -46,3 +46,8 @@ the 15-minute path, configure protected WAL archiving, base backups, lag and
 failure alerts, and a timed clean-host restore from the remote repository.
 Keep the existing one-hour legacy-upgrade proof separate from that recurring
 disaster-recovery catalog.
+
+This next step was superseded by the 2026-09-28
+[dev Mini decision](m0-mini-control-recovery-decision.md): an on-host upgrade
+backup is sufficient for the development machine. Production disaster recovery
+still needs its own off-host qualification.

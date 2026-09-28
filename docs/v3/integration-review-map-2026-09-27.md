@@ -201,9 +201,10 @@ protected ingress and public-path gate.
 
 ## Immediate blocking decisions
 
-1. Choose Mini control-store RPO, off-host destination, and retention in the
-   [M0 recovery decision](m0-mini-control-recovery-decision.md), then measure a
-   protected clean-host restore.
+1. Superseded on 2026-09-28: the [M0 recovery decision](m0-mini-control-recovery-decision.md)
+   permits an on-host backup for the dev Mini upgrade. Verify a fresh local
+   backup and private restore before that transition; production recovery is
+   a separate future qualification.
 2. Resolve GitHub account billing/spending status so Fleet PR #177's hosted
    contract job can start. Its 1,415 local Python tests and static workflow,
    schema, and OpenTofu checks do not substitute for the required hosted lane.
