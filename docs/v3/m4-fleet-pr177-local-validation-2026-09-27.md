@@ -42,3 +42,19 @@ The local Ansible syntax check used core 2.21.3 rather than the workflow's
 pinned 2.18.3. There is still no hosted contract receipt or protected-node
 deployment. M4 remains open pending protected-node publication, public traffic
 proof, scaling, and drain.
+
+## Publisher bootstrap follow-up — 2026-09-28
+
+Fleet head `691c82b5c0a2ab2adc5658f9d21d075de3b00ec3` now requires the
+controller to prove the private publisher's mTLS `/v1/health` response and
+exact inventory node ID during enabled bootstrap. The controller's client
+certificate, key, and publisher server CA must be owner-only files. This is a
+bootstrap identity check, not an app-route publication or traffic proof.
+
+At this exact head, `ansible-playbook -i ansible/inventory.example.yml
+ansible/site.yml --syntax-check` and 45 focused Fleet hook/reconciliation
+Python tests passed locally. The hosted `contract` check on [run
+36380615809](https://github.com/antiartificial/norn-fleet/actions/runs/36380615809)
+failed with zero job steps, so it supplies no hosted test evidence. The full
+1,413-test local receipt above applies to its earlier pinned head, not this
+follow-up commit.
