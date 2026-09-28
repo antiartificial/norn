@@ -1,8 +1,8 @@
 # Norn v3 planning package
 
 **Current release work:** start with the [2026-09-28 release handoff](session-resume-2026-09-28.md)
-for the latest checked-in state, open gates, and next sequence. Git history
-retains earlier session handoffs.
+for the latest checked-in state, open gates, and next sequence. It is the only
+current session handoff in this tree; Git history retains earlier session notes.
 
 The architecture below began as a proposal on 2026-09-22. Use the current
 handoff and execution milestones to distinguish later implementation from
@@ -23,11 +23,11 @@ An Architecture Decision Record (ADR) captures a consequential choice, its alter
 9. [Execution milestones](execution-milestones.md): delivery sequence, parallel work, exit gates and release evidence.
 10. [Implementation status](implementation-status.md): branch-specific local progress and qualification boundary.
 11. [Foundation review](foundation-review.md): source-backed safety findings, bounded implementation slices and review acceptance tests.
-12. [Atomic acceptance handoff](atomic-acceptance-handoff.md): next M1 transaction, replay identity, signed evidence and integration test requirements.
-13. [Retention implementation handoff](retention-implementation-handoff.md): M2 source-derived retention holds, archive/log separation and implementation gates.
-14. [Control recovery handoff](control-recovery-handoff.md): M1 consistent inspection/export and same-PG recovery requirements.
-15. [External-effect recovery handoff](effect-recovery-handoff.md): M1 resource-level execution ownership, supervisor proof and safe retry requirements.
-16. [Database binding handoff](database-binding-handoff.md): M2 shared resolver, legacy routing and recovery-target identity requirements.
+
+The older topic-specific `*handoff.md` files are dated implementation designs
+referenced by the status and review records. They are not resume instructions
+or evidence that their proposed work is qualified. Use the current release
+handoff above for next actions.
 
 ## Recommended decisions for review
 
