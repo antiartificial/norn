@@ -107,8 +107,15 @@ Fleet inventory. The repeatable
 cross-compiles the ingress test and uses two disposable Docker bridge networks
 with distinct private IPv4 addresses. The opt-in test passes those addresses
 through the production Fleet inventory parser, then uses the exported mTLS
-preflight and publication clients. It passed on 2026-09-27 and cleaned up its
-container and networks. This qualifies inventory shape through private node
-publication, including partial retry, but does not seed durable completed Fleet
-attempt evidence or run the normal release executor. A joined normal-executor
-rehearsal remains necessary. No protected Fleet was provisioned or changed.
+preflight and publication clients. The joined private-network run passed on
+2026-09-28 and cleaned up its
+container and networks. The runner also starts disposable etcd, records a
+completed Fleet runner attempt and reconciliation checkpoints, and selects the
+active inventory through the server-owned pointer. That exact returned node
+list then passes the production mTLS publisher preflight against listeners on
+both private addresses. A second test exercises authenticated publication and
+partial retry on those addresses. This qualifies durable inventory selection
+through private preflight, plus the adjacent publication transport; it does
+not yet carry an accepted app release through the normal executor, Nomad,
+Traefik and public proof in one claimed operation. No protected Fleet was
+provisioned or changed.
