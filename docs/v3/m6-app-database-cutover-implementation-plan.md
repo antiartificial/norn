@@ -85,6 +85,15 @@ switching DNS is not rollback.
    idempotent retry. The coordinator does not consume this effect yet; the
    catalog cannot prove external or uncataloged users of the role, so an
    operator-reviewed writer inventory remains a promotion prerequisite.
+
+   Provider qualification is still required for the first source cluster.
+   [DigitalOcean's managed PostgreSQL documentation](https://docs.digitalocean.com/products/databases/postgresql/how-to/modify-user-privileges/)
+   states that managed clusters do not grant superuser access and documents
+   delegated `pg_read_all_stats`. It does not establish that the exact
+   `CREATEROLE`, runtime-role admin option and `pg_signal_backend` shape used
+   by this fixture is available on the selected cluster. Run the read-only
+   principal check and a disposable writer-fence rehearsal against that
+   provider/version before accepting it as a supported cutover source.
 4. Add initial restore, final transfer and integrity adapters for one exact
    engine/provider pair. Checkpoint each external effect before retrying it.
 5. Switch generation-bound runtime secrets and consumers only after the final
