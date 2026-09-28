@@ -107,12 +107,18 @@ The app's checked-out `main.go` gives `DATABASE_URL` precedence over the
 individual `DB_*` values. That checkout has uncommitted `infraspec.yaml` and
 `secrets.enc.yaml` edits, so it must be preserved and compared to the exact
 deployed source before any app change. Its startup code logs a database
-connection failure and continues in memory-only mode, while `/health`
-unconditionally returns 200. Therefore a green allocation or `/health`
-response cannot prove a successful live credential switch. A protected
-transition needs an independent database-backed read/write probe and
-confirmation that the deployed job uses the new URL identity; changing only
-`DB_USER` or `DB_PASSWORD` is insufficient.
+store-construction failure and continues in memory-only mode; in that case
+it does not start the HTTP server. For a parseable but unreachable URL,
+`pgxpool.NewWithConfig` creates a pool without a synchronous `Ping`, so the
+server can start and its `/health` route returns 200 while database work
+fails. Therefore a green allocation or `/health` response cannot prove a
+successful live credential switch. Draft app
+[PR #1](https://github.com/antiartificial/signal-sideband/pull/1) adds a
+bounded database-backed `/ready` endpoint in an isolated worktree; it is
+neither merged nor wired into the deployed InfraSpec. A protected transition
+needs that readiness path plus an independent database-backed read/write
+probe and confirmation that the deployed job uses the new URL identity;
+changing only `DB_USER` or `DB_PASSWORD` is insufficient.
 
 Read-only Nomad and Docker inspection tied running allocation
 `a8878127-ae14-c6c0-cb9d-b9266a727747` to image tag
