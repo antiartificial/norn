@@ -164,3 +164,21 @@ before that warning, so host status `ok` alone cannot clear it. Three of the
 absent deploy-enabled web processes declare a minimum replica count of one;
 the owner must review current capacity and decide whether the warning remains
 applicable. No incident was acknowledged or changed by this read-only pass.
+
+## Read-only staged-binding refresh — 2026-09-28
+
+The active and inactive staged SOPS ciphertext hashes still match the pinned
+values above. Both files remain owner-owned mode `0600`. In-process decryption
+on Mini confirmed that the staged file adds only `NORN_DATABASE_URL` and
+`NORN_AUDIT_SIGNING_KEY`; all existing fields match the active file. The new
+URL identifies the owner-local `norn_v2` control database, and the audit key
+meets the length requirement. No URL, key, or other credential value was
+printed or copied.
+
+A fresh read-only query found 60,363 completed mutation audit rows. Zero have
+a nonempty `record_digest` or `key_id`; there are zero mutation audit incidents
+and zero stored `fleet.capacity-plan` operations. This refresh supports the
+first-key transition for those installed-v2 consumers at this instant. The
+active SOPS file, launcher, API, database, and workloads were not changed.
+Repeat this inventory immediately before any activation, then run the binding
+doctor before producing a production-key backup.
