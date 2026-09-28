@@ -68,6 +68,14 @@ Do not use a broad `REASSIGN OWNED BY norn` against the live server as a
 shortcut: the role also owns control database `norn_v2`. The private
 rehearsal must scope ownership changes to the selected application database
 and verify that `norn_v2` ownership and control sessions are unchanged.
+The opt-in [disposable role-split fixture](../../v2/scripts/test-mini-role-split-disposable.sh)
+passed locally with Homebrew PostgreSQL 16.15. It created synthetic control
+and app databases owned by `norn`, transferred only the app database, table
+and sequence to a separate role, preserved two data rows and migration DDL,
+blocked the old role from connecting to the app database, and kept control
+ownership/access intact. It is a procedure-shape check only: it does not
+cover `mailindexer`'s actual schema, grants, secrets, running job, connection
+drain, rollback or production-key backup.
 
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
