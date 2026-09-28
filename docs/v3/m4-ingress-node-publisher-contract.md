@@ -350,9 +350,12 @@ There is still no normal producer for signed `app.deploy` aggregates:
 `V3OperationStore.Accept` refuses deployment admission and the specialized
 aggregate acceptance is private to etcdstore. The opt-in worker therefore
 cannot deploy an app in a fresh normal runtime yet. A reviewed admission path
-must derive the deployment, regions, database targets, Fleet target and
-release provenance from server-verified sources, then atomically accept them
-under the app gate. It must not expose a raw acceptance object as an HTTP body.
+must derive the deployment, regions, database targets, control-owned Fleet
+target and release provenance from server-verified sources, then atomically
+accept them under the app gate. The control-owned target can now be configured
+separately by a non-CI platform operator with an expected revision and a
+validated Fleet document. Admission must not expose a raw acceptance object
+as an HTTP body.
 
 After a lost response, reread durable intent and each node's file/effective
 route before retrying the same generation. Never issue a newer generation or

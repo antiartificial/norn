@@ -5,14 +5,16 @@ Fleet router is still unsupported. The first app-index slice was verified
 against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
 
 2026-09-27 update: an opt-in normal `app.deploy` worker exists, but no normal
-admission producer can create its signed deployment aggregate. The required
-Fleet app target also has only a private test writer. Its validated reader is
-available to a future server-side admission builder, with an etcd revision
-that the existing admission transaction compares. A reviewed operator path
-must first create or replace the target, then a release path must derive the
-deployment and accepted region from verified release evidence and that target.
-The target, database identity, source spec, and provenance cannot be copied
-from an arbitrary request body.
+admission producer can create its signed deployment aggregate. A non-CI
+platform operator can now create or replace the Fleet app target through the
+normal router with an expected etcd revision. Its cluster and environment
+come from the validated checked-out Fleet document; create/read/stale-replace
+passed disposable-etcd tests. The target's validated reader supplies a
+future server-side admission builder with the revision that the existing
+admission transaction compares. A release path must derive the deployment
+and accepted region from verified release evidence and that target. Database
+identity, source spec, and provenance cannot be copied from an arbitrary
+request body.
 
 ## Current boundary
 

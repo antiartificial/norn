@@ -75,9 +75,16 @@ func (s *V3OperationStore) CurrentFleetAppTarget(ctx context.Context, app, envir
 	return s.loadFleetAppTarget(ctx, app, environment)
 }
 
-// putFleetAppTarget is private until an authenticated operator configuration
-// path can supply its expected revision. Generation and etcd CAS both advance
-// on replacement, so an old acceptance cannot be silently retargeted.
+// ConfigureFleetAppTarget is for the authenticated operator configuration
+// path. Generation and etcd CAS both advance on replacement, so an old
+// acceptance cannot be silently retargeted.
+func (s *V3OperationStore) ConfigureFleetAppTarget(ctx context.Context, target FleetAppTarget, expectedRevision int64) (int64, error) {
+	if s == nil || s.kv == nil {
+		return 0, fmt.Errorf("Fleet app target writer is unavailable")
+	}
+	return s.putFleetAppTarget(ctx, target, expectedRevision)
+}
+
 func (s *V3OperationStore) putFleetAppTarget(ctx context.Context, target FleetAppTarget, expectedRevision int64) (int64, error) {
 	if err := validateFleetAppTarget(target); err != nil {
 		return 0, err
