@@ -101,6 +101,15 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		go canary.worker.Run(workerCtx)
 		log.Printf("etcd canary operation worker enabled; HTTP preview=%t", canaryHTTPEnabled)
 	}
+	if deployConfig := strings.TrimSpace(os.Getenv(etcdFleetDeployWorkerConfigEnv)); deployConfig != "" {
+		deploy, err := newEtcdFleetDeployRuntime(workerCtx, cfg, operations, deployConfig)
+		if err != nil {
+			return fmt.Errorf("configure etcd Fleet deploy worker: %w", err)
+		}
+		defer deploy.secrets.Close()
+		go deploy.worker.Run(workerCtx)
+		log.Print("etcd Fleet app.deploy worker enabled for signed claimed operations")
+	}
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer)

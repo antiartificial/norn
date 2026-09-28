@@ -334,6 +334,21 @@ commit. Each must refuse positive weight and preserve recovery authority.
 
 ## Recovery and qualification
 
+The normal etcd runtime starts a dedicated `app.deploy` worker only when
+`NORN_ETCD_FLEET_DEPLOY_WORKER_CONFIG` names an absolute, owner-only JSON file.
+The file declares `bind` (a private literal IP and fixed port), `nodeUris`
+(mTLS URI SAN to ingress node ID), `observerPort`, `endpointPort`, and absolute
+owner-only PEM paths: `authorityCertFile`, `authorityKeyFile`, `nodeCaFile`,
+`publisherCaFile`, `publisherCertFile`, `publisherKeyFile`, `observerCaFile`,
+`observerCertFile`, and `observerKeyFile`. `publicCaFile` is optional; without
+it public HTTPS probing uses system roots. Startup also requires the active
+`NORN_DATABASE_PROFILE`, private `NORN_DATABASE_SECRET_DIR`, app catalog,
+control authority, and Nomad address. It validates the bind and all mTLS
+material before the worker claims an operation. Each claim binds and owns its
+own authority listener, and preflights it again before the Nomad effect.
+There is still no public etcd `app.deploy` request route; signed accepted work
+must be supplied through the private control path until that route is reviewed.
+
 After a lost response, reread durable intent and each node's file/effective
 route before retrying the same generation. Never issue a newer generation or
 release the app gate while an older publish may still be active. If nodes

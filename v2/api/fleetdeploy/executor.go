@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 
 	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
@@ -48,6 +49,7 @@ type ClaimedFleetDeploymentExecutor struct {
 	JobSecrets      nomad.ManagedJobSecretSource
 	AppsDir         string
 	Authority       string
+	DatabaseProfile string
 	Route           ClaimedFleetRouteTransport
 }
 
@@ -64,6 +66,18 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	source, err := worker.LoadClaimedFleetDeploymentSource(ctx, e.Store, *op, e.AppsDir)
 	if err != nil {
 		return nil, err
+	}
+	if len(source.Managed.RuntimeTargets) > 0 {
+		if e.DatabaseProfile == "" || source.Managed.ProfileID != e.DatabaseProfile || e.JobSecrets == nil {
+			return nil, fmt.Errorf("claimed Fleet database profile differs from this worker")
+		}
+		secretEnv, err := e.JobSecrets.EnvMap(source.Spec.App)
+		if err != nil {
+			return nil, fmt.Errorf("claimed Fleet app secrets are unavailable")
+		}
+		if conflicts := source.Spec.DatabaseEnvConflicts(secretEnv); len(conflicts) > 0 {
+			return nil, fmt.Errorf("claimed Fleet database env conflicts with app secrets: %s", strings.Join(conflicts, ", "))
+		}
 	}
 	databaseItems, err := worker.ResolveClaimedFleetRuntimeDatabaseItems(ctx, source, e.Store, e.DatabaseSecrets)
 	if err != nil {
