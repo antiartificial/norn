@@ -18,6 +18,15 @@ and accepted region from verified release evidence and that target. Database
 identity, source spec, and provenance cannot be copied from an arbitrary
 request body.
 
+The first-deployment admission binder now resolves named database identities
+from the active catalog without reading credential material and emits the
+signed `databaseTargets` payload consumed by the claimed worker. It refuses
+legacy ambient PostgreSQL and declared migration/snapshot/restore work
+because this first-route executor does not perform those lifecycle steps.
+The binder is not yet called by a normal release admission producer; that
+producer must verify artifact provenance and accept the aggregate only while
+the catalog revision and Fleet target remain current.
+
 ## Current boundary
 
 The public `V3OperationStore.Accept` still rejects any deployment/region

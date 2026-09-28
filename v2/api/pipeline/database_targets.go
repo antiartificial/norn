@@ -93,6 +93,12 @@ func requireQualifiedMySQLRuntime(spec *model.InfraSpec, requirement model.Datab
 	return nil
 }
 
+// RequireQualifiedMySQLRuntime applies the same client-side TLS qualification
+// to first Fleet deployment admission as the PostgreSQL release path.
+func RequireQualifiedMySQLRuntime(spec *model.InfraSpec, requirement model.DatabaseRequirement, resolved database.ResolvedBinding) error {
+	return requireQualifiedMySQLRuntime(spec, requirement, resolved)
+}
+
 func containsDatabaseCapability(capabilities []string, want string) bool {
 	for _, capability := range capabilities {
 		if capability == want {
