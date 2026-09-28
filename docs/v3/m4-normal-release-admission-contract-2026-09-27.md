@@ -4,6 +4,16 @@ Status: implementation boundary for M4. No normal `app.deploy` producer is
 enabled on the etcd router. The opt-in worker and private acceptance tests do
 not qualify a public release route.
 
+The normal etcd runtime now has a private
+`buildEtcdFleetReleaseAcceptance` function for the first staging deployment.
+It requires an artifact verifier callback, an enabled server-owned spec,
+matching control-owned target placement, and a bound database target set. Its
+unit test covers successful construction and refusal before verification for
+missing verifier, disabled spec, wrong placement, wrong repository, and a
+failed verifier. It is not called by an HTTP route yet; authenticated
+principal binding, exact replay handling, verifier startup wiring, and the
+restricted store acceptance call remain open.
+
 ## Entry and trust boundary
 
 Use the existing authenticated release-deployment route shape. A verified CI
