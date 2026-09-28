@@ -19,6 +19,7 @@ type ClaimedDeploymentVerifier interface {
 type VerifiedManagedDeployment struct {
 	Accepted        store.AcceptedOperation
 	CatalogRevision int64
+	ProfileID       string
 	RuntimeTargets  map[string]database.TargetIdentity
 }
 
@@ -67,7 +68,7 @@ func VerifyClaimedManagedDeployment(ctx context.Context, verifier ClaimedDeploym
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var trailing json.RawMessage
-	if decoder.Decode(&signed) != nil || decoder.Decode(&trailing) != io.EOF || signed.Schema != "norn.database-targets/v1" || signed.CatalogRevision < 1 {
+	if decoder.Decode(&signed) != nil || decoder.Decode(&trailing) != io.EOF || signed.Schema != "norn.database-targets/v1" || signed.CatalogRevision < 1 || signed.ProfileID == "" {
 		return VerifiedManagedDeployment{}, fmt.Errorf("managed deployment signed database set is invalid")
 	}
 	seen := map[string]bool{}
@@ -84,5 +85,6 @@ func VerifyClaimedManagedDeployment(ctx context.Context, verifier ClaimedDeploym
 		return VerifiedManagedDeployment{}, fmt.Errorf("managed deployment signed runtime targets are incomplete")
 	}
 	result.CatalogRevision = signed.CatalogRevision
+	result.ProfileID = signed.ProfileID
 	return result, nil
 }
