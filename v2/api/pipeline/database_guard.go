@@ -140,6 +140,73 @@ func deployWriterFree(op *model.Operation) bool {
 	return (op.Status == model.OperationFailed || op.Status == model.OperationCanceled) && writerFreeSteps[step]
 }
 
+// Legacy writer history uses the single target recorded by profiled legacy
+// operations. Pre-profile v2 deploys have no target and need an operator
+// baseline; a catalog mapping by itself cannot attest their live connection.
+func (p *Pipeline) requireRunningLegacyTargetUnchanged(ctx context.Context, app, excludeOperationID string, next database.TargetIdentity) error {
+	if p.DB == nil {
+		return fmt.Errorf("deployment history is unavailable")
+	}
+	operations, err := p.DB.ListOperations(ctx, store.OperationFilter{App: app, ExcludeID: excludeOperationID, Limit: writerHistoryLimit})
+	if err != nil {
+		return fmt.Errorf("read deployment history: %w", err)
+	}
+	var known []database.TargetIdentity
+	var ambiguous error
+	for index := range operations {
+		op := &operations[index]
+		if op.Kind != "app.deploy" && op.Kind != DatabaseBaselineKind {
+			continue
+		}
+		if op.Kind == DatabaseBaselineKind && op.Status != model.OperationSucceeded {
+			continue
+		}
+		if op.Kind == "app.deploy" && (op.Status == model.OperationQueued || deployWriterFree(op)) {
+			continue
+		}
+		recorded, readErr := recordedTargetFromPayload(op.Payload)
+		if readErr != nil || recorded == nil || !recorded.Legacy {
+			if ambiguous == nil {
+				ambiguous = ambiguousWriters("operation %s has no readable legacy target", op.ID)
+			}
+		} else {
+			known = append(known, recorded.Target)
+		}
+		if op.Status == model.OperationSucceeded {
+			break
+		}
+	}
+	// A changed binding ID alone can stage an explicit map at the old physical
+	// target. Service generation, engine, database and role must remain equal.
+	for _, old := range known {
+		if !sameLegacyWriterTarget(old, next) {
+			return &DatabaseTargetError{Reason: fmt.Sprintf("running app %s may still write legacy database %s as role %s on %s/%d; ordinary deploy cannot change it to role %s on %s/%d", app, old.Database, old.Role, old.ServiceID, old.ServiceGeneration, next.Role, next.ServiceID, next.ServiceGeneration)}
+		}
+	}
+	if ambiguous != nil {
+		return ambiguous
+	}
+	if len(known) > 0 {
+		return nil
+	}
+	if len(operations) >= writerHistoryLimit {
+		return ambiguousWriters("no legacy baseline within the latest %d operations", writerHistoryLimit)
+	}
+	registered, err := p.appJobsRegistered(app)
+	if err != nil {
+		return ambiguousWriters("runtime registration could not be checked (%v)", err)
+	}
+	if registered != "" {
+		return ambiguousWriters("Nomad job %s is registered but no baseline records its legacy target", registered)
+	}
+	return nil
+}
+
+func sameLegacyWriterTarget(left, right database.TargetIdentity) bool {
+	return left.ServiceID == right.ServiceID && left.ServiceGeneration == right.ServiceGeneration &&
+		left.Engine == right.Engine && left.Database == right.Database && left.Role == right.Role
+}
+
 // appJobsRegistered returns the first of the app's Nomad job IDs that is
 // registered in any region, or "".
 func (p *Pipeline) appJobsRegistered(app string) (string, error) {
@@ -262,8 +329,14 @@ func (p *Pipeline) runningTargets(ctx context.Context, app string) (map[string]d
 // guardDeployTargets applies the target-change guard to an executing deploy
 // using the targets it actually opened.
 func (p *Pipeline) guardDeployTargets(ctx context.Context, st *state) error {
-	if !st.spec.NamedDatabases() || st.database == nil {
+	if st.database == nil {
 		return nil
+	}
+	if !st.spec.NamedDatabases() {
+		if st.database.legacy == nil {
+			return nil
+		}
+		return p.requireRunningLegacyTargetUnchanged(ctx, st.spec.App, st.claim.OperationID(), st.database.legacy.resolved.Target)
 	}
 	next := make([]recordedNamedTarget, 0, len(st.database.named))
 	for name, bound := range st.database.named {
@@ -348,7 +421,20 @@ func deliveryItemName(name string) string {
 // recorded targets that appeared since acceptance.
 func (p *Pipeline) executeDatabaseBaseline(ctx context.Context, op *model.Operation, claim store.OperationClaim, spec *model.InfraSpec) (*OperationResult, error) {
 	if !spec.NamedDatabases() {
-		return nil, &DatabaseTargetError{Reason: "a database baseline applies to named databases only"}
+		set, err := p.openDatabaseTargets(ctx, op.Payload, spec)
+		if err != nil {
+			return nil, err
+		}
+		defer set.Close()
+		if set.legacy == nil {
+			return nil, &DatabaseTargetError{Reason: "app declares no legacy database to baseline"}
+		}
+		var targetErr *DatabaseTargetError
+		if err := p.requireRunningLegacyTargetUnchanged(ctx, spec.App, op.ID, set.legacy.resolved.Target); err != nil && !(errors.As(err, &targetErr) && targetErr.Ambiguous) {
+			return nil, err
+		}
+		return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: "legacy database baseline recorded for " + spec.App,
+			Metadata: map[string]interface{}{"binding": set.legacy.resolved.Target.BindingID, "probed": true}}, nil
 	}
 	set, err := p.openDatabaseTargets(ctx, op.Payload, spec)
 	if err != nil {

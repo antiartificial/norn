@@ -207,6 +207,17 @@ func (p *Pipeline) bindDatabaseTarget(ctx context.Context, operation model.Opera
 	if err != nil {
 		return operation, err
 	}
+	switch operation.Kind {
+	case "app.deploy":
+		if err := p.requireRunningLegacyTargetUnchanged(ctx, spec.App, "", resolved.Target); err != nil {
+			return operation, err
+		}
+	case DatabaseBaselineKind:
+		var targetErr *DatabaseTargetError
+		if err := p.requireRunningLegacyTargetUnchanged(ctx, spec.App, "", resolved.Target); err != nil && !(errors.As(err, &targetErr) && targetErr.Ambiguous) {
+			return operation, err
+		}
+	}
 	recorded := recordedTarget{Schema: recordedTargetSchema, ProfileID: p.DatabaseTargets.ProfileID, CatalogRevision: revision, Target: resolved.Target, Legacy: resolved.Legacy}
 	encoded, err := json.Marshal(recorded)
 	if err != nil {

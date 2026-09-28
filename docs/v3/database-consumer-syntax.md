@@ -249,16 +249,17 @@ switching an imported app's connection. A later role or target change needs
 the normal binding-generation bump and the separate live consumer transition;
 the catalog check does not prove that the deployed job changed credentials.
 
-**Open deploy guard:** the current writer-target comparison in
-`pipeline/database_guard.go` applies to named-database deploys. Legacy
-`postgres.database` deploys record a resolved target, but their deploy path
-does not compare that target with possible live legacy writers. Therefore a
-generation-bumped role change in an existing mapped binding must not be
-treated as an authorized live transition. Before Mini catalog activation or
-legacy app redeploy, add a legacy writer baseline/readback and an
-acceptance-and-execution guard (or move the app through a separately qualified
-cutover). Qualify a same-target redeploy, a changed-role refusal, ambiguous
-v2 history, and a partial rollout with old allocations still writing.
+The legacy deploy path now compares its resolved physical target with known
+possible writers both at acceptance and during execution. A changed service
+generation, database or role is refused; an explicit binding ID can replace
+the default ID at the same physical target. An old v2 deploy with no recorded
+target remains ambiguous. An operator may submit the audited
+`app.database-baseline` operation, which pins and probes the current legacy
+target before recording writer evidence. A partial rollout's known target
+conflict cannot be erased by that baseline. Disposable PostgreSQL tests cover
+the baseline probe, same-target redeploy, changed-role refusal, ambiguous v2
+history and a known partial rollout. This is local evidence; a protected Mini
+job/credential readback, old-allocation drain and live cutover remain open.
 
 `secret:<path>` resolves under `NORN_DATABASE_SECRET_DIR`. The file is strict
 JSON `{"password": "…"}` and may carry nothing else. Host, port, database and

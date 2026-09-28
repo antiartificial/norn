@@ -86,10 +86,9 @@ func (h *Handler) ActivateDatabaseCatalog(w http.ResponseWriter, r *http.Request
 }
 
 // RecordDatabaseBaseline accepts an operator attestation that the app's
-// running writers already use its current named targets (a legacy-to-named
-// transition). It is a durable, idempotent, audited operation; execution
-// probes every writer database's identity. It cannot contradict recorded
-// targets and is not a cutover.
+// running writers already use the app's declared database target. It is a
+// durable, idempotent, audited operation; execution probes the target's
+// identity. It cannot contradict recorded targets and is not a cutover.
 func (h *Handler) RecordDatabaseBaseline(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireControlScope(w, r, ScopePlatformOperate); !ok {
 		return
@@ -105,8 +104,8 @@ func (h *Handler) RecordDatabaseBaseline(w http.ResponseWriter, r *http.Request)
 	}
 	appID := chi.URLParam(r, "id")
 	spec := h.findSpec(appID)
-	if spec == nil || !spec.NamedDatabases() {
-		WriteControlProblem(w, r, http.StatusNotFound, "named_databases_not_declared", "app was not found or declares no named databases")
+	if spec == nil || (!spec.NamedDatabases() && (spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil)) {
+		WriteControlProblem(w, r, http.StatusNotFound, "database_not_declared", "app was not found or declares no database")
 		return
 	}
 	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"action": pipeline.DatabaseBaselineKind, "app": appID})

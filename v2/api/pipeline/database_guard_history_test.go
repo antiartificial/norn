@@ -43,6 +43,60 @@ func namedPayload(t *testing.T, targets map[string]database.TargetIdentity) map[
 	return map[string]interface{}{databaseTargetsPayloadKey: string(encoded)}
 }
 
+func legacyPayload(t *testing.T, target database.TargetIdentity) map[string]interface{} {
+	t.Helper()
+	encoded, err := json.Marshal(recordedTarget{Schema: recordedTargetSchema, ProfileID: "mini", CatalogRevision: 1, Target: target, Legacy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]interface{}{databaseTargetPayloadKey: string(encoded)}
+}
+
+func TestLegacyWriterGuardKeepsKnownTargetsAndRequiresBaseline(t *testing.T) {
+	p, _, _ := acceptancePipelineFixture(t)
+	history := func() *guardHistory {
+		return &guardHistory{t: t, p: p, app: "legacy-guard-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8], next: time.Now().Add(-time.Hour)}
+	}
+	old := guardTarget("mini-pg", "legacy-default")
+	staged := old
+	staged.BindingID = "explicit-shop"
+	changed := staged
+	changed.Role = "new_app_role"
+	check := func(app string, target database.TargetIdentity) error {
+		return p.requireRunningLegacyTargetUnchanged(context.Background(), app, "", target)
+	}
+	refused := func(err error, ambiguous bool) {
+		t.Helper()
+		var targetErr *DatabaseTargetError
+		if !errors.As(err, &targetErr) || targetErr.Ambiguous != ambiguous {
+			t.Fatalf("guard = %v, want ambiguous=%v", err, ambiguous)
+		}
+	}
+
+	h := history()
+	h.add("app.deploy", model.OperationSucceeded, legacyPayload(t, old), nil)
+	if err := check(h.app, staged); err != nil {
+		t.Fatalf("same physical target with explicit binding = %v", err)
+	}
+	refused(check(h.app, changed), false)
+
+	partial := history()
+	partial.add("app.deploy", model.OperationSucceeded, legacyPayload(t, old), nil)
+	partial.add("app.deploy", model.OperationFailed, legacyPayload(t, changed), map[string]interface{}{"step": "healthy"})
+	refused(check(partial.app, old), false)
+	partial.add("app.deploy", model.OperationFailed, map[string]interface{}{}, nil)
+	refused(check(partial.app, old), false) // known conflict survives unknown newer work
+
+	unknown := history()
+	unknown.add("app.deploy", model.OperationSucceeded, map[string]interface{}{"app": unknown.app}, nil)
+	refused(check(unknown.app, old), true)
+	unknown.add(DatabaseBaselineKind, model.OperationSucceeded, legacyPayload(t, old), nil)
+	if err := check(unknown.app, staged); err != nil {
+		t.Fatalf("legacy baseline did not resolve v2 history: %v", err)
+	}
+	refused(check(unknown.app, changed), false)
+}
+
 func (h *guardHistory) add(kind string, status model.OperationStatus, payload, metadata map[string]interface{}) string {
 	h.t.Helper()
 	h.next = h.next.Add(time.Second)

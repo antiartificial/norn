@@ -713,6 +713,54 @@ func TestDatabaseTargetsBindAcceptanceAndDriveSnapshotRestoreMigration(t *testin
 	}
 }
 
+func TestLegacyDatabaseBaselineProbesCopiedTargetBeforeRedeploy(t *testing.T) {
+	f := newTargetFixture(t)
+	ctx := context.Background()
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	old := &model.Operation{ID: uuid.NewString(), App: f.app, Kind: "app.deploy", Status: model.OperationSucceeded,
+		SagaID: uuid.NewString(), Payload: map[string]interface{}{"app": f.app}, MaxAttempts: 1}
+	if err := f.db.InsertCompletedOperation(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := f.p.findSpec(f.app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploy := model.Operation{Kind: "app.deploy", App: f.app, Payload: map[string]interface{}{}}
+	var targetErr *DatabaseTargetError
+	if _, err := f.p.bindDatabaseTarget(ctx, deploy); !errors.As(err, &targetErr) || !targetErr.Ambiguous {
+		t.Fatalf("legacy deploy over unrecorded v2 history = %v", err)
+	}
+	baseline, err := f.queue(t, DatabaseBaselineKind, map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.execute(t, baseline.ID)
+	if err != nil || result.Status != model.OperationSucceeded || result.Metadata["probed"] != true {
+		t.Fatalf("legacy baseline probe = %+v, %v", result, err)
+	}
+	if err := f.db.FinishClaimedOperation(ctx, result.Claim, result.Status, result.Message, result.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	target, _, err := f.p.DatabaseTargets.resolve(ctx, spec, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.p.requireRunningLegacyTargetUnchanged(ctx, f.app, "", target.Target); err != nil {
+		t.Fatalf("probed legacy baseline did not enable unchanged target: %v", err)
+	}
+	if _, err := f.p.bindDatabaseTarget(ctx, deploy); err != nil {
+		t.Fatalf("same-target legacy deploy after baseline = %v", err)
+	}
+	changed := target.Target
+	changed.Role = "different_app_role"
+	if err := f.p.guardDeployTargets(ctx, &state{spec: spec, database: &boundDatabases{legacy: &boundDatabase{resolved: database.ResolvedBinding{Target: changed}}}}); !errors.As(err, &targetErr) || targetErr.Ambiguous {
+		t.Fatalf("executing legacy deploy changed role = %v", err)
+	}
+}
+
 func TestDatabaseTargetsRejectStaleGenerationAndUnboundWork(t *testing.T) {
 	f := newTargetFixture(t)
 	ctx := context.Background()
