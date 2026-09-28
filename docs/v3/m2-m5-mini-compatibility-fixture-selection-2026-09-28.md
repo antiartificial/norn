@@ -73,9 +73,12 @@ passed locally with Homebrew PostgreSQL 16.15. It created synthetic control
 and app databases owned by `norn`, transferred only the app database, table
 and sequence to a separate role, preserved two data rows and migration DDL,
 blocked the old role from connecting to the app database, and kept control
-ownership/access intact. It is a procedure-shape check only: it does not
-cover `mailindexer`'s actual schema, grants, secrets, running job, connection
-drain, rollback or production-key backup.
+ownership/access intact. A follow-up run returned the synthetic database,
+tables and sequence to the prior role after the new role had written, kept all
+three rows, removed the replacement role's connection access and again
+preserved `norn_v2` ownership. It is a procedure-shape check only: it does
+not cover `mailindexer`'s actual schema, grants, secrets, running job,
+connection drain, operational rollback or production-key backup.
 
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory

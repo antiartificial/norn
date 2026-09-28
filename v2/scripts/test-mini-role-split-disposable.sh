@@ -55,4 +55,30 @@ if sql -U norn -d mailindexer -c 'SELECT 1' >/dev/null 2>&1; then
   printf 'old control role can still connect to the application database\n' >&2; exit 1
 fi
 sql -U norn -d norn_v2 -c 'SELECT 1' >/dev/null
-printf 'PASS: synthetic app role owns and uses its database; control ownership and access remain intact\n'
+
+# Rehearse a deliberate pre-adoption rollback after the new role has written.
+# Both application rows and the migration-created table must remain available.
+sql -U "$admin" -d postgres -c 'ALTER DATABASE mailindexer OWNER TO norn' >/dev/null
+sql -U "$admin" -d mailindexer -c 'ALTER TABLE public.events OWNER TO norn' >/dev/null
+sql -U "$admin" -d mailindexer -c 'ALTER SEQUENCE public.events_id_seq OWNER TO norn' >/dev/null
+sql -U "$admin" -d mailindexer -c 'ALTER TABLE public.migration_probe OWNER TO norn' >/dev/null
+sql -U "$admin" -d postgres -c 'REVOKE ALL ON DATABASE mailindexer FROM mailindexer_app' >/dev/null
+sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE mailindexer TO norn' >/dev/null
+sql -U norn -d mailindexer -c "INSERT INTO public.events (note) VALUES ('rollback')" >/dev/null
+[[ $(sql -U norn -d mailindexer -c 'SELECT count(*) FROM public.events') == 3 ]] || {
+  printf 'application data did not survive role rollback\n' >&2; exit 1;
+}
+if sql -U mailindexer_app -d mailindexer -c 'SELECT 1' >/dev/null 2>&1; then
+  printf 'replacement role can still connect after rollback\n' >&2; exit 1
+fi
+owners=$(sql -U "$admin" -d postgres -F '|' -c \
+  "SELECT datname, pg_get_userbyid(datdba) FROM pg_database WHERE datname IN ('norn_v2','mailindexer') ORDER BY datname")
+[[ $owners == $'mailindexer|norn\nnorn_v2|norn' ]] || {
+  printf 'database ownership did not return to the initial state\n' >&2; exit 1;
+}
+objects=$(sql -U "$admin" -d mailindexer -F '|' -c \
+  "SELECT relname, pg_get_userbyid(relowner) FROM pg_class WHERE oid IN ('public.events'::regclass, 'public.events_id_seq'::regclass, 'public.migration_probe'::regclass) ORDER BY relname")
+[[ $objects == $'events|norn\nevents_id_seq|norn\nmigration_probe|norn' ]] || {
+  printf 'application object ownership did not return to the initial state\n' >&2; exit 1;
+}
+printf 'PASS: synthetic app role split and rollback preserve data and control ownership\n'
