@@ -82,7 +82,7 @@ connection drain, operational rollback or production-key backup.
 
 The [private `signal_sideband` copy rehearsal](../../v2/scripts/mini-signal-sideband-private-role-copy-rehearsal)
 then passed on Mini with Postgres.app 17.7 (script SHA-256
-`8004a8bea0d679700f5d2ee12f14d4ba10f6139467d288a3a938c636b43c49f1`).
+`4094790fad9ad968c5fbf4bbed6807d5b1fb25f365c95c104900e15f172de31d`).
 It made a read-only dump over Mini's local socket, restored it into a
 disposable socket-only cluster, and kept all data on Mini. The restored copy
 had 9,223 `messages` rows; all 11 application tables were transferred from
@@ -94,7 +94,11 @@ owned by and accessible to `norn`. The app database retained its actual
 read-only follow-up confirmed live `norn_v2` and `signal_sideband` database
 owners unchanged. This is stronger than the synthetic fixture, but it still
 does not exercise the live Nomad job, secret rotation, source connection
-drain, all application behavior, or a protected role rollback.
+drain, or all application behavior. A second private-copy run rehearsed
+rollback after a new-role write: all 12 copied tables returned to the old
+owner, the 9,223 `messages` rows and probe write remained, the replacement
+role lost copied-database access and the copied control database remained
+unchanged. This is not a protected live role rollback.
 
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory

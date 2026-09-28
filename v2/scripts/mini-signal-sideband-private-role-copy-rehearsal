@@ -63,4 +63,21 @@ control_owner=$(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) F
 app_owner=$(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='signal_copy'")
 [[ $app_owner == "$admin" ]] || { printf 'application database owner changed\n' >&2; exit 1; }
 sql -U norn -d norn_v2_copy -c 'SELECT 1' >/dev/null
-printf 'PASS: private signal_sideband copy preserved %s messages; app role reads and migrates; old role denied; control copy unchanged\n' "$rows_after"
+sql -U signal_app -d signal_copy -c 'INSERT INTO public.role_probe (id) VALUES (1)' >/dev/null
+change_owners norn
+sql -U "$admin" -d signal_copy -c 'REVOKE USAGE, CREATE ON SCHEMA public FROM signal_app' >/dev/null
+sql -U "$admin" -d postgres -c 'REVOKE ALL ON DATABASE signal_copy FROM signal_app' >/dev/null
+sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE signal_copy TO norn' >/dev/null
+[[ $(sql -U norn -d signal_copy -c 'SELECT count(*) FROM public.messages') == "$rows_before" ]] || {
+  printf 'message count changed across copied-role rollback\n' >&2; exit 1;
+}
+[[ $(sql -U norn -d signal_copy -c 'SELECT count(*) FROM public.role_probe WHERE id=1') == 1 ]] || {
+  printf 'new-role write was lost during copied-role rollback\n' >&2; exit 1;
+}
+table_owners=$(sql -U "$admin" -d signal_copy -F '|' -c "SELECT count(*), count(*) FILTER (WHERE relowner='norn'::regrole) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r'")
+[[ $table_owners == '12|12' ]] || { printf 'copied table ownership did not return to the old role\n' >&2; exit 1; }
+if sql -U signal_app -d signal_copy -c 'SELECT 1' >/dev/null 2>&1; then
+  printf 'replacement role can still connect after copied-role rollback\n' >&2; exit 1
+fi
+sql -U norn -d norn_v2_copy -c 'SELECT 1' >/dev/null
+printf 'PASS: private signal_sideband copy preserved %s messages and a new-role write through role split and rollback; control copy unchanged\n' "$rows_after"
