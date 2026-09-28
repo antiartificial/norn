@@ -105,7 +105,13 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = command.Process.Signal(os.Interrupt); _ = command.Wait() })
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			_ = command.Process.Signal(os.Interrupt)
+			_ = command.Wait()
+		}
+	})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	waitForSourceHealth(t, base, &output)
 	capabilities := processJSONRequest(t, http.MethodGet, base+"/api/v1/capabilities", "", "", nil)
@@ -189,6 +195,23 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	advance := fleet.RunnerAttemptAdvanceRequest{SchemaVersion: fleet.RunnerAttemptSchemaVersion, ExpectedPhase: attempt.CurrentPhase, Revision: attempt.Revision}
 	if response := processJSONRequest(t, http.MethodPost, path+"/attempts/"+attempt.ID+"/advance", runnerToken, "", advance); response.StatusCode != http.StatusOK {
 		t.Fatalf("advance=%d body=%s", response.StatusCode, response.Body)
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- command.Wait() }()
+	select {
+	case err := <-stopped:
+		waited = true
+		if err != nil {
+			t.Fatalf("etcd runtime did not exit cleanly after SIGINT: %v logs=%s", err, output.String())
+		}
+	case <-time.After(10 * time.Second):
+		_ = command.Process.Kill()
+		<-stopped
+		waited = true
+		t.Fatalf("etcd runtime did not join workers after SIGINT: %s", output.String())
 	}
 }
 

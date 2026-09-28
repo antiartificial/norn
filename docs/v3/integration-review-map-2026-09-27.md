@@ -128,8 +128,11 @@ cancels and joins all selected workers before closing that secret source and
 the etcd client; signal shutdown cancels worker claims before draining the API.
 SIGINT/SIGTERM registration now precedes worker launch, so a termination in
 that startup interval reaches the orderly shutdown path.
-The main API package tests passed locally. A protected interruption rehearsal
-is still needed to validate in-flight external effects and successor recovery.
+The main API package tests passed locally. The real-binary PostgreSQL-free
+etcd router test now sends SIGINT and requires a clean process exit; both its
+absent and poisoned PostgreSQL DSN variants passed against disposable etcd.
+A protected interruption rehearsal is still needed to validate in-flight
+external effects and successor recovery.
 
 ## Lane 1 Mini-preservation checkpoint
 
