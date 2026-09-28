@@ -151,6 +151,16 @@ func ValidateCatalog(catalog Catalog) error {
 		targets[target] = binding.ID
 		bindings[binding.ID] = binding
 	}
+	for _, binding := range catalog.Bindings {
+		if binding.PostgresFence == nil {
+			continue
+		}
+		for _, other := range catalog.Bindings {
+			if other.ID != binding.ID && other.ServiceID == binding.ServiceID && other.Role == binding.Role {
+				return invalid("postgresFence", "bindings/"+binding.ID, "runtime role is shared by another catalog binding on this service")
+			}
+		}
+	}
 	profiles := make(map[string]bool, len(catalog.Profiles))
 	legacy := map[string]LegacyPostgresDefault{}
 	for index, profile := range catalog.Profiles {

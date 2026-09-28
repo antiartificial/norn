@@ -76,7 +76,15 @@ switching DNS is not rollback.
    reference. Catalog validation requires a distinct runtime role and
    credential; changing the fence identity requires a binding generation
    bump. Resolution copies the identity, while public binding inspection
-   omits it. No cutover coordinator consumes this identity yet.
+   omits it. A catalog sharing that runtime role with another binding on the
+   same service is rejected. A private `FencePostgresRuntimeRoleForCutover`
+   effect now uses the bound maintenance credential and target TLS policy,
+   verifies a delegated non-superuser principal, disables login, terminates
+   runtime sessions, and reads back the role and session state. Its disposable
+   PG 16 test covers an existing writer, fresh authentication and an
+   idempotent retry. The coordinator does not consume this effect yet; the
+   catalog cannot prove external or uncataloged users of the role, so an
+   operator-reviewed writer inventory remains a promotion prerequisite.
 4. Add initial restore, final transfer and integrity adapters for one exact
    engine/provider pair. Checkpoint each external effect before retrying it.
 5. Switch generation-bound runtime secrets and consumers only after the final

@@ -49,6 +49,13 @@ func TestPostgresFenceCredentialsAreCatalogBound(t *testing.T) {
 			c.Bindings[4].PostgresFence = c.Bindings[0].PostgresFence
 			c.Bindings[0].PostgresFence = nil
 		},
+		"shared runtime role": func(c *Catalog) {
+			other := c.Bindings[0]
+			other.ID = "shop-second"
+			other.Database = "shop_second"
+			other.PostgresFence = nil
+			c.Bindings = append(c.Bindings, other)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := cloneCatalog(base)
