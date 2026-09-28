@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
 
@@ -43,7 +44,7 @@ endpoints:
 		t.Fatal(err)
 	}
 	claimed := model.Operation{ID: "operation-one", Kind: "app.deploy", App: "pilot", Payload: map[string]interface{}{"deploymentId": "deploy-one"}}
-	accepted := store.AcceptedOperation{Operation: claimed, Deployment: &model.Deployment{ID: "deploy-one", App: "pilot", Environment: "staging", SpecDigest: digest},
+	accepted := store.AcceptedOperation{Operation: claimed, Deployment: &model.Deployment{ID: "deploy-one", App: "pilot", Environment: "staging", SpecDigest: digest, ImageTag: "registry.example.test/pilot@sha256:" + strings.Repeat("a", 64)},
 		Regions: spec.ResolvedRegions(), Intent: store.SignedAcceptanceIntent{ID: "accept-one", OperationID: claimed.ID, DeploymentID: "deploy-one", CanonicalDigest: "signed-digest"}}
 	accepted.FleetAppTarget = &store.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: "pilot", ControlEnvironment: "staging", Cluster: "norn-staging", FleetEnvironment: "staging/west", Region: "west", NomadRegion: accepted.Regions[0].NomadRegion, Datacenters: accepted.Regions[0].Datacenters, Generation: 1}
 	load := func() (ClaimedFleetDeploymentSource, error) {
@@ -52,6 +53,33 @@ endpoints:
 	bound, err := load()
 	if err != nil || bound.Route.DeploymentID != "deploy-one" || bound.Route.Endpoint != "https://pilot.example.test" || bound.Managed.Accepted.Deployment.SpecDigest != digest {
 		t.Fatalf("bound source=%+v err=%v", bound, err)
+	}
+	claim, err := store.NewOperationClaim(claimed.ID, "worker-one", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildClaimedFleetDeploymentJobPlan(bound, claim, "test-authority")
+	if err != nil || plan.Job == nil || plan.Input.DeploymentID != "deploy-one" || plan.Job.Meta[nomad.DeploymentJobDigestMeta] != plan.Input.JobDigest ||
+		plan.Job.Meta[nomad.DeploymentExecutionIDMeta] != plan.Reservation.SupervisorExecutionID || plan.Reservation.OperationClaim.Generation != claim.Generation() {
+		t.Fatalf("claimed job plan=%+v err=%v", plan, err)
+	}
+	effects := &deploymentStepEffects{created: true}
+	remote := &deploymentStepRemote{state: nomad.DeploymentJobFound}
+	if decision, err := EnsureDeploymentJobEffect(t.Context(), effects, remote, plan.Reservation, plan.Job); err != nil || decision.State != DeploymentJobEffectObserved || remote.submits != 1 {
+		t.Fatalf("planned job was refused by effect boundary: decision=%+v err=%v submits=%d", decision, err, remote.submits)
+	}
+	badRoute := bound
+	badRoute.Route.Region = "other"
+	if _, err := BuildClaimedFleetDeploymentJobPlan(badRoute, claim, "test-authority"); err == nil {
+		t.Fatal("job plan accepted a different route region")
+	}
+	badSpec := bound
+	copySpec := *bound.Spec
+	copySpec.Endpoints = append([]model.Endpoint(nil), bound.Spec.Endpoints...)
+	copySpec.Endpoints[0].URL = "https://other.example.test"
+	badSpec.Spec = &copySpec
+	if _, err := BuildClaimedFleetDeploymentJobPlan(badSpec, claim, "test-authority"); err == nil {
+		t.Fatal("job plan accepted a changed source endpoint")
 	}
 	if err := os.WriteFile(path, []byte(source+"# changed source\n"), 0600); err != nil {
 		t.Fatal(err)

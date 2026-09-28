@@ -15,6 +15,12 @@ const (
 	nomadNoDatabaseBindingSchema = "norn.database-targets/none/v1"
 )
 
+// BindDeploymentJobProvenance stamps the signed database target set and
+// deployment identity for both PostgreSQL and etcd deployment executors.
+func BindDeploymentJobProvenance(job *nomadapi.Job, deploymentID, specDigest string, payload map[string]interface{}) error {
+	return bindDeploymentJobProvenance(job, deploymentID, specDigest, payload)
+}
+
 // bindDeploymentJobProvenance stamps the control-plane identities that a
 // later destructive maintenance operation must match to this exact Nomad job
 // revision. The database digest covers the exact string retained in the signed

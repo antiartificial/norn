@@ -35,8 +35,7 @@ func NewV3DeploymentEffectReservations(operations *V3OperationStore) (*V3Deploym
 type deploymentEffectInput = nomad.DeploymentJobEffectInput
 
 func deploymentEffectExecutionID(operationID, region, jobDigest string) string {
-	sum := sha256.Sum256([]byte(operationID + "\x00" + region + "\x00" + jobDigest))
-	return "nomad-deployment-" + hex.EncodeToString(sum[:16])
+	return nomad.DeploymentEffectExecutionID(operationID, region, jobDigest)
 }
 
 func (s *V3CanaryEffectReservations) validateDeploymentEffectReservation(ctx context.Context, r effect.Reservation, op model.Operation) (string, error) {

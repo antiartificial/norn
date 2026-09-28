@@ -147,7 +147,11 @@ publisher service remains disabled until that worker and recovery path exist.
 The worker's source-loading helper now selects one enabled local InfraSpec and
 checks its digest, region, endpoint and Fleet target against the signed claimed
 deployment. It rejects duplicate app documents and changed or disabled source;
-normal worker execution is still absent.
+normal worker execution is still absent. A pure job-plan step now translates
+that source into the managed Nomad revision, stamps signed database target
+provenance and a deterministic submission-effect identity, and passes the
+existing effect boundary's exact-job validation. It does not stage Nomad
+variables, submit the job, or publish ingress.
 
 - Fleet must install one narrowly scoped publisher on every ingress host. It
   writes only `norn-route-<32 lowercase hex>.yaml` below

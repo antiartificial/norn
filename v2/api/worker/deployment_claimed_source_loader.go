@@ -46,7 +46,8 @@ func LoadClaimedFleetDeploymentSource(ctx context.Context, verifier ClaimedDeplo
 		return ClaimedFleetDeploymentSource{}, fmt.Errorf("claimed first Fleet route requires one signed 100-percent region")
 	}
 	route, err := VerifyClaimedFleetRouteSource(ctx, verifier, claimed, spec, managed.Accepted.Regions[0].Name)
-	if err != nil || route.OperationID != managed.Accepted.Operation.ID || route.DeploymentID != managed.Accepted.Deployment.ID || route.AcceptanceID != managed.Accepted.Intent.ID || route.AcceptanceDigest != managed.Accepted.Intent.CanonicalDigest || route.SpecDigest != managed.Accepted.Deployment.SpecDigest {
+	if err != nil || route.OperationID != managed.Accepted.Operation.ID || route.DeploymentID != managed.Accepted.Deployment.ID || route.AcceptanceID != managed.Accepted.Intent.ID || route.AcceptanceDigest != managed.Accepted.Intent.CanonicalDigest || route.SpecDigest != managed.Accepted.Deployment.SpecDigest ||
+		route.FleetCluster != managed.Accepted.FleetAppTarget.Cluster || route.FleetEnvironment != managed.Accepted.FleetAppTarget.FleetEnvironment || route.TargetGeneration != managed.Accepted.FleetAppTarget.Generation {
 		return ClaimedFleetDeploymentSource{}, fmt.Errorf("claimed Fleet route source changed during verification: %v", err)
 	}
 	return ClaimedFleetDeploymentSource{Spec: spec, Managed: managed, Route: route}, nil
