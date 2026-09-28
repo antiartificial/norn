@@ -7,7 +7,7 @@ signed `app.deploy` operation, staged managed job inputs, observed a healthy
 real Docker allocation, and confirmed that the operation remained nonterminal
 without ingress proof. The allocation served the InfraSpec's `/ready` response
 through its assigned local host port; the test checked HTTP 200 and the exact
-`ready` body. The artifact verifier in this test is synthetic.
+`ready` body. By default, artifact verification in this test is synthetic.
 
 Run from the Norn repository root on a Docker-capable Mac with `etcd`,
 `consul`, `nomad`, `docker`, `go`, and Python 3 available:
@@ -27,6 +27,12 @@ NORN_TEST_TRAEFIK_BINARY=/absolute/path/to/traefik \
 NORN_TEST_TRAEFIK_SHA256=97511eb5f2b4edd7a7bd78d4401d8e988e41628be5aac1e0a73c15ae9722160d \
 python3 v2/api/scripts/qualify-v3-http-nomad.py
 ```
+
+Set `NORN_TEST_VERIFY_REGISTRY=1` on that command to use Norn's actual
+`docker buildx imagetools inspect` digest check for the public BusyBox image.
+The combined registry, Nomad, and two-ingress rehearsal passed locally on
+2026-09-27. Signature and vulnerability checks remain synthetic in this
+fixture, so this is not signed release-artifact qualification.
 
 The script checks that the exact image is cached, starts the three local
 agents on free loopback ports, runs the named-database HTTP admission test and

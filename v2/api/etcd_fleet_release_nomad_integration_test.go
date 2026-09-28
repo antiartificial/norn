@@ -100,11 +100,16 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 			Ref: "refs/heads/main", RefProtected: true, EventName: "push", Environment: "staging", Intent: "stage", SHA: sha}}
 	cfg := &config.Config{Environment: "staging", EnvironmentExplicit: true, AppsDir: appsDir, RegistryURL: "docker.io/library",
 		GitHubActionsDefaultBranch: "main", ReleaseAttestationTrustMode: "github-public"}
-	// The synthetic verifier exercises the release binding and claim path;
-	// production artifact trust remains a separate qualification gate.
+	// The optional registry mode uses the release verifier's real OCI digest
+	// lookup. Signature and vulnerability policy remain synthetic here;
+	// production artifact trust is a separate qualification gate.
 	verified := 0
+	var verifyArtifact func(context.Context, string) error
+	if os.Getenv("NORN_TEST_VERIFY_REGISTRY") != "1" {
+		verifyArtifact = func(context.Context, string) error { verified++; return nil }
+	}
 	verifier := &pipeline.Pipeline{RegistryURL: cfg.RegistryURL, ReleaseAdmissionMode: "keyed", ReleaseAttestationTrustMode: "github-public",
-		VerifyArtifact: func(context.Context, string) error { verified++; return nil }, VerifySignature: func(context.Context, string) error { return nil },
+		VerifyArtifact: verifyArtifact, VerifySignature: func(context.Context, string) error { return nil },
 		ScanArtifact: func(context.Context, string) error { return nil }}
 	router := chi.NewRouter()
 	router.Post("/api/v1/apps/{id}/releases/deployments", etcdFleetReleaseDeployment(cfg, operations, verifier))
@@ -113,7 +118,11 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	request.Header.Set("Idempotency-Key", "release-once")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, handler.WithAccessPrincipal(request, &principal))
-	if response.Code != http.StatusAccepted || verified != 1 {
+	expectedSyntheticVerifications := 1
+	if verifyArtifact == nil {
+		expectedSyntheticVerifications = 0
+	}
+	if response.Code != http.StatusAccepted || verified != expectedSyntheticVerifications {
 		t.Fatalf("release acceptance status=%d verified=%d body=%s", response.Code, verified, response.Body.String())
 	}
 	var accepted model.Operation
