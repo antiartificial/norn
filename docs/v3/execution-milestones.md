@@ -177,6 +177,9 @@ probe needed to complete its traffic proof.
 The claimed executor checks active ingress inventory and its exact node
 identity map before resolving databases or changing Nomad; the durable route
 intent revalidates that inventory after job health.
+Fleet PR #177 has a [local validation record](m4-fleet-pr177-local-validation-2026-09-27.md)
+for 1,413 Python tests and Ansible syntax; GitHub's contract job remains
+unstarted because of account billing or a spending limit.
 
 [Implementation status](implementation-status.md) and [resume handoff](RESUME.md)
 retain the earlier bounded implementation checkpoints. This table governs only
