@@ -200,6 +200,9 @@ publisher service remains disabled until that worker and recovery path exist.
 The private etcd `finishClaimedDeployment` path rejects positive
 `ActiveWeight` unless its caller supplies the pinned InfraSpec and observer
 port and a durable deployment-bound ingress proof passes live validation. The
+exported `CompleteClaimedInitialFleetDeployment` entry point derives the
+deployed result and 100-percent regional weight from signed acceptance, so a
+worker cannot choose a different active weight. The
 terminal transaction compares the claim, app lock, acceptance, intent, proof,
 completed health effect, Fleet target, active inventory and absent prior active
 route before writing the active route pointer and region result together.

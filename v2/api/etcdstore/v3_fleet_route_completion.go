@@ -26,6 +26,34 @@ type activeFleetRoute struct {
 	RouteSHA256  string `json:"routeSha256"`
 }
 
+// CompleteClaimedInitialFleetDeployment is the only positive-traffic
+// completion entry point for a first Fleet route. The worker supplies its
+// pinned source, while signed acceptance determines the deployment and
+// active weight. The terminal transaction rechecks the stored traffic proof.
+func (s *V3OperationStore) CompleteClaimedInitialFleetDeployment(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, observerPort int) error {
+	if s == nil || spec == nil || observerPort < 1024 || observerPort > 65535 {
+		return fmt.Errorf("initial Fleet deployment completion source is unavailable")
+	}
+	record, _, err := s.load(ctx, claim.OperationID())
+	if err != nil || record.Operation.Status != model.OperationRunning || record.Operation.LockedBy != claim.OwnerID() || record.Generation != claim.Generation() {
+		return store.ErrOperationOwnershipLost
+	}
+	accepted, err := s.VerifyClaimedDeployment(ctx, record.Operation)
+	if err != nil {
+		return err
+	}
+	if accepted.Deployment == nil || accepted.FleetAppTarget == nil || len(accepted.Regions) != 1 || accepted.Regions[0].TrafficWeight != 100 {
+		return fmt.Errorf("initial Fleet deployment requires one signed 100-percent region")
+	}
+	result := *accepted.Deployment
+	result.Status = model.StatusDeployed
+	region := accepted.Regions[0]
+	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: region.Name, NomadRegion: region.NomadRegion,
+		Status: model.StatusDeployed, DesiredWeight: region.TrafficWeight, ActiveWeight: region.TrafficWeight}}
+	return s.finishClaimedDeployment(ctx, claim, lock, result, regions, model.OperationSucceeded, "Fleet deployment verified", nil,
+		initialFleetCompletionSource{Spec: spec, ObserverPort: observerPort})
+}
+
 func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, accepted store.AcceptedOperation, source initialFleetCompletionSource) ([]clientv3.Cmp, []clientv3.Op, error) {
 	if source.Spec == nil || accepted.Deployment == nil || accepted.FleetAppTarget == nil || len(accepted.Regions) != 1 || accepted.Regions[0].TrafficWeight != 100 {
 		return nil, nil, fmt.Errorf("positive active traffic requires a single signed Fleet route")

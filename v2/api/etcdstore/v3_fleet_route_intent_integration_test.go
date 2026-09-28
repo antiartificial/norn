@@ -377,7 +377,7 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()), string(corruptBytes)); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err == nil {
+	if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("invalid stored public proof authorized terminal active traffic")
 	}
 	proofBytes, err := json.Marshal(proof)
@@ -396,14 +396,14 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()), string(corruptBytes)); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err == nil {
+	if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("earlier claim generation proof authorized terminal active traffic")
 	}
 	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()), string(proofBytes)); err != nil {
 		t.Fatal(err)
 	}
 	if complete {
-		if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err != nil {
+		if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err != nil {
 			t.Fatalf("proof-bound terminal deployment: %v", err)
 		}
 		active, err := client.Get(ctx, activeKey)
@@ -444,7 +444,7 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 	if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("stale Fleet inventory remained publishable after host replacement")
 	}
-	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err == nil {
+	if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("replaced Fleet inventory authorized terminal active traffic")
 	}
 	if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, healthToken, first.ID, "ingress-01"); err == nil {
