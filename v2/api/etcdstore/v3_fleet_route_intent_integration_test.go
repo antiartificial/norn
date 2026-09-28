@@ -425,6 +425,10 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		t.Fatal(err)
 	}
 	if complete {
+		proofKey := adapter.initialFleetTrafficProofKey(first.ID, claim.Generation())
+		if _, err := client.Delete(ctx, proofKey); err != nil {
+			t.Fatal(err)
+		}
 		privateRouteDirs := map[string]string{}
 		publish := func(_ context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
 			if intentID != first.ID || generation != first.Generation || routeSHA != first.RenderedRoute.SHA256 {
@@ -524,13 +528,31 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		if op, err := adapter.GetOperation(ctx, accepted.Operation.ID); err != nil || op.Status != model.OperationRunning {
 			t.Fatalf("partial publication terminalized deployment: operation=%+v err=%v", op, err)
 		}
+		if stored, err := client.Get(ctx, proofKey); err != nil || len(stored.Kvs) != 0 {
+			t.Fatalf("partial publication stored a traffic proof: entries=%d err=%v", len(stored.Kvs), err)
+		}
 		if published, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish,
 			func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
 				return nil, errors.New("public probe failed")
 			}); !effect.IsDeferred(err) || published == nil || len(published.Receipts) != len(first.Inventory.Nodes) {
 			t.Fatalf("failed public probe did not preserve publication receipts: result=%+v err=%v", published, err)
 		}
-		if _, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish, observeTraffic); err != nil {
+		if stored, err := client.Get(ctx, proofKey); err != nil || len(stored.Kvs) != 0 {
+			t.Fatalf("failed public probe stored a traffic proof: entries=%d err=%v", len(stored.Kvs), err)
+		}
+		observePublished := observeTraffic
+		if len(privateRouteDirs) != 0 {
+			observePublished = func(ctx context.Context, intent *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
+				for nodeID, directory := range privateRouteDirs {
+					revision, err := ingress.ReadPublishedRouteRevision(directory, intent.RenderedRoute.RouterName)
+					if err != nil || !revision.Present || revision.Generation != intent.Generation || revision.RouteSHA256 != intent.RenderedRoute.SHA256 {
+						return nil, fmt.Errorf("private route is not published on %s: %v", nodeID, err)
+					}
+				}
+				return observeTraffic(ctx, intent)
+			}
+		}
+		if _, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish, observePublished); err != nil {
 			t.Fatalf("proof-bound terminal deployment: %v", err)
 		}
 		for nodeID, directory := range privateRouteDirs {
