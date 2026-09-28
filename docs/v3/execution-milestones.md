@@ -177,6 +177,13 @@ probe needed to complete its traffic proof.
 The claimed executor checks active ingress inventory and its exact node
 identity map before resolving databases or changing Nomad; the durable route
 intent revalidates that inventory after job health.
+An opt-in 2026-09-28 disposable Linux rehearsal now carries a signed-source
+first-route intent from etcd through the real mTLS authority and two private
+publisher handlers. It observes one route file after a refused second node,
+retains the running operation, retries both nodes, reads back both route files,
+and terminalizes only with the fixture's durable traffic proof. The traffic
+observation is synthetic; this does not qualify effective Traefik state,
+the public load balancer, or a protected Fleet deployment.
 Fleet PR #177 has a [local validation record](m4-fleet-pr177-local-validation-2026-09-27.md)
 for 1,413 Python tests and Ansible syntax; GitHub's contract job remains
 unstarted because of account billing or a spending limit.

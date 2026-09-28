@@ -83,6 +83,11 @@ def main():
             )
             run(
                 "docker", "exec", "-e", "NORN_TEST_INGRESS_PRIVATE_IPS=" + ",".join(addresses),
+                "-e", "NORN_TEST_ETCD_ENDPOINTS=http://" + etcd_container + ":2379",
+                container, "/work/etcdstore.test", "-test.run", "^TestInitialFleetRouteProofTerminalizesSyntheticDeploymentEtcd$", "-test.v",
+            )
+            run(
+                "docker", "exec", "-e", "NORN_TEST_INGRESS_PRIVATE_IPS=" + ",".join(addresses),
                 container, "/work/ingress.test", "-test.run", "^TestPrivateFleetInventoryPublisherTransport$", "-test.v",
             )
         finally:

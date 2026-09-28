@@ -13,13 +13,16 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,6 +62,19 @@ func routeAuthorityTestIdentity(t *testing.T, parent *x509.Certificate, signer *
 func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
 	t.Helper()
 	ctx := context.Background()
+	addresses := []string{"10.43.0.21", "10.43.0.22"}
+	if supplied := os.Getenv("NORN_TEST_INGRESS_PRIVATE_IPS"); supplied != "" {
+		addresses = strings.Split(supplied, ",")
+		if len(addresses) != 2 || addresses[0] == addresses[1] {
+			t.Fatal("route rehearsal requires two distinct private ingress addresses")
+		}
+		for _, address := range addresses {
+			ip := net.ParseIP(address)
+			if ip == nil || ip.To4() == nil || !ip.IsPrivate() || ip.IsLoopback() {
+				t.Fatal("route rehearsal requires private IPv4 ingress addresses")
+			}
+		}
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	plan := model.Operation{ID: uuid.NewString(), Kind: "fleet.capacity-plan", Ref: "app", Status: model.OperationSucceeded, Source: "test", Risk: "plan", StartedAt: now, FinishedAt: &now, MaxAttempts: 1,
 		Payload: map[string]interface{}{"cluster": "norn-staging", "digest": "route-plan", "action": "scale", "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 3}}}
@@ -99,7 +115,7 @@ func activeFleetIngressForRouteIntent(t *testing.T, adapter *V3OperationStore) {
 		t.Fatal(err)
 	}
 	attempt := *acceptedRunner.FleetRunnerAttempt
-	snapshot := json.RawMessage(`{"cluster":"norn-staging","environment":"staging/nyc3","ingressNodes":[{"name":"ingress-01","privateIP":"10.43.0.21"},{"name":"ingress-02","privateIP":"10.43.0.22"}],"nodesFileSHA256":"` + strings.Repeat("c", 64) + `","schemaVersion":"norn.fleet-ingress-inventory/v1"}`)
+	snapshot := json.RawMessage(fmt.Sprintf(`{"cluster":"norn-staging","environment":"staging/nyc3","ingressNodes":[{"name":"ingress-01","privateIP":"%s"},{"name":"ingress-02","privateIP":"%s"}],"nodesFileSHA256":"%s","schemaVersion":"norn.fleet-ingress-inventory/v1"}`, addresses[0], addresses[1], strings.Repeat("c", 64)))
 	canonical, err := fleet.CanonicalIngressInventory(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -258,6 +274,7 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		t.Fatalf("authorized first-route readback=%+v err=%v", revision, err)
 	}
 	const nodeURI = "spiffe://norn.test/fleet/ingress-01"
+	const secondNodeURI = "spiffe://norn.test/fleet/ingress-02"
 	authority, err := adapter.NewClaimedInitialFleetRouteAuthorityHandler(claim, lock, spec, 18082, healthToken, map[string]string{nodeURI: "ingress-01"})
 	if err != nil {
 		t.Fatal(err)
@@ -289,9 +306,13 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		t.Fatal(err)
 	}
 	workerCtx, stopAuthority := context.WithCancel(ctx)
+	nodeURIs := map[string]string{nodeURI: "ingress-01"}
+	if os.Getenv("NORN_TEST_INGRESS_PRIVATE_IPS") != "" {
+		nodeURIs[secondNodeURI] = "ingress-02"
+	}
 	served := make(chan error, 1)
 	go func() {
-		served <- adapter.ServeClaimedInitialFleetRouteAuthority(workerCtx, claim, lock, spec, 18082, healthToken, map[string]string{nodeURI: "ingress-01"}, privateListener, serverPEM, serverKey, caPEM)
+		served <- adapter.ServeClaimedInitialFleetRouteAuthority(workerCtx, claim, lock, spec, 18082, healthToken, nodeURIs, privateListener, serverPEM, serverKey, caPEM)
 	}()
 	t.Cleanup(func() {
 		stopAuthority()
@@ -404,6 +425,7 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		t.Fatal(err)
 	}
 	if complete {
+		privateRouteDirs := map[string]string{}
 		publish := func(_ context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
 			if intentID != first.ID || generation != first.Generation || routeSHA != first.RenderedRoute.SHA256 {
 				t.Fatal("publisher received a route outside the reserved intent")
@@ -418,8 +440,86 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 			receipts, err := publish(ctx, nodes, intentID, generation, routeSHA)
 			return receipts[:1], err
 		}
+		if supplied := os.Getenv("NORN_TEST_INGRESS_PRIVATE_IPS"); supplied != "" {
+			addresses := strings.Split(supplied, ",")
+			publisherURI, err := url.Parse("spiffe://norn.test/control/ingress-publisher")
+			if err != nil {
+				t.Fatal(err)
+			}
+			publisherClientTemplate := x509.Certificate{SerialNumber: big.NewInt(44), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+				URIs: []*url.URL{publisherURI}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+			publisherClientPEM, publisherClientKey, _, _ := routeAuthorityTestIdentity(t, ca, caKey, &publisherClientTemplate)
+			publisherServerTemplate := x509.Certificate{SerialNumber: big.NewInt(45), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+				IPAddresses: []net.IP{net.ParseIP(addresses[0]), net.ParseIP(addresses[1])}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+			publisherServerPEM, publisherServerKey, _, _ := routeAuthorityTestIdentity(t, ca, caKey, &publisherServerTemplate)
+			publisherIdentity, err := tls.X509KeyPair(publisherServerPEM, publisherServerKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			roots := x509.NewCertPool()
+			if !roots.AppendCertsFromPEM(caPEM) {
+				t.Fatal("private publisher CA is invalid")
+			}
+			var allowSecond atomic.Bool
+			for index, node := range first.Inventory.Nodes {
+				nodeIdentityPEM, nodeIdentityKey := clientPEM, clientKey
+				if index == 1 {
+					secondURL, _ := url.Parse(secondNodeURI)
+					secondTemplate := clientTemplate
+					secondTemplate.SerialNumber = big.NewInt(46)
+					secondTemplate.URIs = []*url.URL{secondURL}
+					nodeIdentityPEM, nodeIdentityKey, _, _ = routeAuthorityTestIdentity(t, ca, caKey, &secondTemplate)
+				}
+				resolve, err := ingress.NewRemoteRoutePublicationAuthority("https://"+privateListener.Addr().String(), controlURI, caPEM, nodeIdentityPEM, nodeIdentityKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				nodeID := node.ID
+				privateRouteDirs[nodeID] = t.TempDir()
+				handler, err := ingress.NewNodePublisherHandler(privateRouteDirs[nodeID], publisherURI.String(), nodeID,
+					func(ctx context.Context, intentID, requestedNode string) (*ingress.AuthorizedRoutePublication, error) {
+						if requestedNode == "ingress-02" && !allowSecond.Load() {
+							return nil, errors.New("second node temporarily unavailable")
+						}
+						return resolve(ctx, intentID, requestedNode)
+					})
+				if err != nil {
+					t.Fatal(err)
+				}
+				listener, err := net.Listen("tcp", net.JoinHostPort(addresses[index], "18083"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := &http.Server{Handler: handler, ReadHeaderTimeout: 3 * time.Second,
+					TLSConfig: &tls.Config{Certificates: []tls.Certificate{publisherIdentity}, ClientAuth: tls.RequireAndVerifyClientCert,
+						ClientCAs: roots, MinVersion: tls.VersionTLS12}}
+				go func() { _ = server.Serve(tls.NewListener(listener, server.TLSConfig)) }()
+				t.Cleanup(func() { _ = server.Close() })
+			}
+			publish = func(ctx context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
+				return ingress.PublishRouteIntentToNodesWithTLS(ctx, caPEM, publisherClientPEM, publisherClientKey, nodes, 18083, intentID, generation, routeSHA)
+			}
+			partial = func(ctx context.Context, nodes []ingress.IngressNode, intentID string, generation uint64, routeSHA string) ([]ingress.NodePublicationReceipt, error) {
+				receipts, err := publish(ctx, nodes, intentID, generation, routeSHA)
+				if len(receipts) != 1 || err == nil {
+					t.Fatalf("private publisher did not stop after one node: receipts=%+v err=%v", receipts, err)
+				}
+				allowSecond.Store(true)
+				return receipts, err
+			}
+		}
 		if _, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, partial, observeTraffic); !effect.IsDeferred(err) {
 			t.Fatalf("partial node publication did not retain recovery authority: %v", err)
+		}
+		if len(privateRouteDirs) != 0 {
+			firstRevision, err := ingress.ReadPublishedRouteRevision(privateRouteDirs["ingress-01"], first.RenderedRoute.RouterName)
+			if err != nil || !firstRevision.Present || firstRevision.RouteSHA256 != first.RenderedRoute.SHA256 {
+				t.Fatalf("first private publisher file=%+v err=%v", firstRevision, err)
+			}
+			secondRevision, err := ingress.ReadPublishedRouteRevision(privateRouteDirs["ingress-02"], first.RenderedRoute.RouterName)
+			if err != nil || secondRevision.Present {
+				t.Fatalf("refusing private publisher wrote a route: %+v err=%v", secondRevision, err)
+			}
 		}
 		if op, err := adapter.GetOperation(ctx, accepted.Operation.ID); err != nil || op.Status != model.OperationRunning {
 			t.Fatalf("partial publication terminalized deployment: operation=%+v err=%v", op, err)
@@ -432,6 +532,12 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 		}
 		if _, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, spec, healthToken, 18082, publish, observeTraffic); err != nil {
 			t.Fatalf("proof-bound terminal deployment: %v", err)
+		}
+		for nodeID, directory := range privateRouteDirs {
+			revision, err := ingress.ReadPublishedRouteRevision(directory, first.RenderedRoute.RouterName)
+			if err != nil || !revision.Present || revision.Generation != first.Generation || revision.RouteSHA256 != first.RenderedRoute.SHA256 {
+				t.Fatalf("private publisher %s file=%+v err=%v", nodeID, revision, err)
+			}
 		}
 		active, err := client.Get(ctx, activeKey)
 		if err != nil || len(active.Kvs) != 1 {
