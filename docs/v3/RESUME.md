@@ -48,6 +48,15 @@ uploads the verified pair to private personal DigitalOcean Space
 reads the full remote dump back to verify SHA-256 and length, and publishes
 the manifest last. The Space has a seven-day expiration rule for `control/`.
 The broader key used only to create the Space was revoked.
+The Mini uploader and health probe use an owner-local Python venv with the
+versions pinned in `v2/scripts/mini-control-checkpoint-requirements.txt`.
+`com.norn.control-checkpoint-health` runs every 300 seconds and checks the
+newest completed Space manifest's creation and publication age against 900
+seconds, plus the dump size/digest metadata. It writes owner-only
+`space-health.json` beside the local checkpoints and exits nonzero if stale
+or unavailable. A normal check passed; forced stale and missing-credential
+checks failed as intended. This is a local health signal, not an operator
+notification or sustained RPO proof.
 
 The first scheduled remote run exited 0. Its exact object was downloaded on a
 second Mac, verified against the remote manifest, and restored into an
@@ -87,12 +96,13 @@ The disposable container, image, credential copy and downloaded bytes were
 removed. This is an M5 backup/restore checkpoint, not an upgrade rehearsal.
 The temporary Space's seven-day expiration is not a durable release policy.
 
-Next: observe multiple scheduled intervals, alert on a missed/failed remote
-checkpoint, rehearse recovery after source-host loss with identity/auth and
-history checks, and measure the complete operator recovery time. Keep M0 and
+Next: observe multiple scheduled intervals, connect failed health to an
+actionable operator alert, rehearse recovery after source-host loss with
+identity/auth and history checks, and measure the complete operator recovery
+time. Keep M0 and
 M5 open until their distinct proof requirements are met. When this temporary
-setup is no longer needed, unload and remove the
-LaunchAgent, remove its scoped credential from the Mini, revoke the key named
+setup is no longer needed, unload and remove both checkpoint LaunchAgents,
+remove the scoped credential from the Mini, revoke the key named
 `norn-mini-control-temp-20260928`, empty and delete the named Space, then
 remove its local checkpoints only after verifying no retained recovery need.
 

@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Check the age and remote metadata of the newest completed Mini checkpoint."""
+
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+
+import boto3
+
+
+NAME = re.compile(r"control-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\Z")
+
+
+def write_status(path, status):
+    if path is None:
+        return
+    if not path.is_absolute() or path.parent.is_symlink():
+        raise ValueError("status path must have a real absolute parent")
+    parent = path.parent.stat()
+    if parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) != 0o700:
+        raise ValueError("status directory must be owner-only")
+    fd, scratch = tempfile.mkstemp(prefix=".checkpoint-health-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as output:
+            json.dump(status, output, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(scratch, 0o600)
+        os.replace(scratch, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(scratch):
+            os.unlink(scratch)
+
+
+def latest_checkpoint(client, bucket):
+    newest = None
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="control/control-"):
+        for item in page.get("Contents", []):
+            key = item["Key"]
+            if not key.endswith(".json"):
+                continue
+            name = key.removeprefix("control/")[:-5]
+            if NAME.fullmatch(name) and (newest is None or name > newest):
+                newest = name
+    if newest is None:
+        raise ValueError("no completed remote checkpoint")
+    return newest
+
+
+def probe(client, bucket, max_age):
+    name = latest_checkpoint(client, bucket)
+    key = "control/" + name
+    remote_manifest = client.get_object(Bucket=bucket, Key=key + ".json")
+    manifest = json.loads(remote_manifest["Body"].read())
+    if (manifest.get("schema") != "norn.mini-local-control-checkpoint/v1"
+            or manifest.get("archive") != name + ".dump"
+            or type(manifest.get("bytes")) is not int or manifest["bytes"] <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("sha256", "")))):
+        raise ValueError("remote checkpoint manifest is invalid")
+    created = dt.datetime.fromisoformat(manifest["createdAt"])
+    if created.tzinfo is None:
+        raise ValueError("remote checkpoint timestamp has no timezone")
+    now = dt.datetime.now(dt.timezone.utc)
+    created_age = (now - created).total_seconds()
+    published_age = (now - remote_manifest["LastModified"]).total_seconds()
+    archive = client.head_object(Bucket=bucket, Key=key + ".dump")
+    if (archive["ContentLength"] != manifest["bytes"]
+            or archive.get("Metadata", {}).get("sha256") != manifest["sha256"]):
+        raise ValueError("remote checkpoint metadata differs from manifest")
+    if min(created_age, published_age) < -60:
+        raise ValueError("remote checkpoint timestamp is in the future")
+    return {"schema": "norn.mini-control-space-health/v1", "healthy": created_age <= max_age and published_age <= max_age,
+            "checkpoint": name, "createdAgeSeconds": round(created_age),
+            "publishedAgeSeconds": round(published_age), "maxAgeSeconds": max_age,
+            "checkedAt": now.isoformat()}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--credentials", type=Path, required=True)
+    parser.add_argument("--bucket", required=True)
+    parser.add_argument("--region", default="nyc3")
+    parser.add_argument("--max-age-seconds", type=int, default=900)
+    parser.add_argument("--status-file", type=Path)
+    args = parser.parse_args()
+    if args.max_age_seconds <= 0 or args.region != "nyc3" or not args.bucket.startswith("norn-mini-control-temp-"):
+        parser.error("invalid Mini Space health configuration")
+    try:
+        info = args.credentials.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError("credentials must be owner-only")
+        credentials = json.loads(args.credentials.read_text())
+        if not credentials.get("access_key") or not credentials.get("secret_key"):
+            raise ValueError("credentials are incomplete")
+        client = boto3.client("s3", endpoint_url=f"https://{args.region}.digitaloceanspaces.com",
+                              region_name=args.region, aws_access_key_id=credentials["access_key"],
+                              aws_secret_access_key=credentials["secret_key"])
+        status = probe(client, args.bucket, args.max_age_seconds)
+    except Exception as exc:
+        status = {"schema": "norn.mini-control-space-health/v1", "healthy": False,
+                  "errorType": type(exc).__name__, "checkedAt": dt.datetime.now(dt.timezone.utc).isoformat()}
+    write_status(args.status_file, status)
+    print(json.dumps(status, separators=(",", ":")))
+    return 0 if status["healthy"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
