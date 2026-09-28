@@ -183,7 +183,10 @@ tests alone cannot sign this gate.
 The same-day read-only Mini job inventory found additional direct
 `DATABASE_URL` consumers outside the seven legacy InfraSpec declarations.
 `mail-mcp` shares `mailindexer` with `mail-indexer`; both jobs must be included
-in its role/credential transition and old-writer drain. `like-trove` and
+in its role/credential transition and old-writer drain. Its inspected source
+performs startup schema initialization and interaction writes, while its
+deployed image has a `-dirty` tag that prevents exact source attribution.
+`like-trove` and
 `vigil-gateway` declare `norn`-role URLs for their own databases. See the
 [fixture selection and consumer inventory](m2-m5-mini-compatibility-fixture-selection-2026-09-28.md).
 

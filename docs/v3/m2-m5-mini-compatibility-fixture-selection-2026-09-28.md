@@ -83,6 +83,19 @@ prove the currently running process uses each value. Before activating a
 catalog or fencing an old role, join the exact allocations, process connection
 sources and all writers, including jobs outside the legacy InfraSpec syntax.
 
+The current `mail-mcp` checkout was inspected read-only. Its configuration
+loads `DATABASE_URL`; `NewStore` constructs a PostgreSQL pool, startup calls
+`InitSchema` (a `CREATE TABLE IF NOT EXISTS` statement), and the MCP tool path
+records a message interaction with an `INSERT`. The store also contains a
+voice-feedback upsert. This is a write-capable code path, not merely a
+read-only lookup client. The registered Nomad job is running with image tag
+`mail-mcp:7a5dd2bb8c77-dirty`; the local checkout is dirty too, so the
+source cannot establish the exact deployed image contents. Treat `mail-mcp`
+as a possible live writer and startup DDL consumer until exact-image/runtime
+readback proves otherwise. A `mailindexer` role split must include its
+connection update, startup behavior, in-flight request drain, and old-role
+session/access checks; the single-job private fixture does not cover these.
+
 For the proposed first fixture, a read-only `mailindexer` ownership query
 found eight ordinary tables, four sequences and 31 indexes owned by `norn`.
 The database itself is also owned by `norn`; the `public` schema uses
