@@ -94,12 +94,18 @@ switching DNS is not rollback.
    versioned phase-evidence reference rather than a free-form receipt digest.
    The reference binds the signed intent hash, expected journal revision,
    next phase, external-evidence digest and prior receipt. Its canonical hash
-   becomes the durable journal receipt. Disposable PostgreSQL and etcd claimed
-   journal tests passed; unit tests reject intent, revision, phase, evidence
-   and receipt-chain drift. The reference and its external evidence still need
-   immutable retention and independent verification before any phase can
-   authorize a consumer switch. A syntactically valid digest alone remains
-   insufficient proof of the named effect.
+   becomes the durable journal receipt. Migration 47 adds a private
+   `evidence_references` column; PostgreSQL updates it with the receipt in the
+   same transaction, while etcd retains it in the same compare-and-swap value.
+   Readback validates the reference against the receipt chain and rejects a
+   digest-only continuation of a referenced journal. The general evidence
+   archive processes terminal operations and cannot retain an active cutover
+   phase's external proof before activation. Disposable
+   PostgreSQL and etcd claimed-journal tests passed, as did a synthetic
+   Mini-style upgrade through schema 47. The underlying external evidence
+   still needs immutable retention and independent verification before any
+   phase can authorize a consumer switch. A syntactically valid digest alone
+   remains insufficient proof of the named effect.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

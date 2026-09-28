@@ -95,6 +95,10 @@ func TestClaimedDatabaseCutoverJournalRequiresSignedIntentAndLiveClaim(t *testin
 	if err != nil || advanced.Phase != cutover.PhaseQuiesce || advanced.Revision != 2 {
 		t.Fatalf("claimed advance %+v: %v", advanced, err)
 	}
+	readback, _, err := db.loadDatabaseCutoverJournal(ctx, intent.OperationID)
+	if err != nil || readback.EvidenceReferences[cutover.PhaseQuiesce] != quiesceEvidence {
+		t.Fatalf("claimed evidence reference was not retained: %+v err=%v", readback.EvidenceReferences, err)
+	}
 	if _, err := db.ActivateDatabaseCatalog(ctx, activeCatalog.Revision, catalog, "operator"); err != nil {
 		t.Fatalf("activate newer catalog: %v", err)
 	}

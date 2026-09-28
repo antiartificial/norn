@@ -150,6 +150,20 @@ func TestPhaseEvidenceReferenceBindsIntentRevisionPhaseAndPriorReceipt(t *testin
 	if j.Phase != PhaseQuiesce || j.Receipts[PhaseQuiesce] == ref.EvidenceSHA256 {
 		t.Fatal("reference was not hashed into receipt")
 	}
+	if j.EvidenceReferences[PhaseQuiesce] != ref || j.Validate() != nil {
+		t.Fatal("phase evidence reference was not retained and validated")
+	}
+	corrupt := j
+	corrupt.EvidenceReferences = map[Phase]PhaseEvidenceReference{PhaseQuiesce: ref}
+	changed := ref
+	changed.EvidenceSHA256 = strings.Repeat("e", 64)
+	corrupt.EvidenceReferences[PhaseQuiesce] = changed
+	if !errors.Is(corrupt.Validate(), ErrTransition) {
+		t.Fatal("changed retained evidence reference passed readback")
+	}
+	if _, err := j.Advance(j.Revision, PhaseFinalSync, strings.Repeat("f", 64)); !errors.Is(err, ErrTransition) {
+		t.Fatal("digest-only writer extended a referenced journal")
+	}
 	next, err := NewPhaseEvidenceReference(j, PhaseFinalSync, strings.Repeat("d", 64))
 	if err != nil {
 		t.Fatal(err)

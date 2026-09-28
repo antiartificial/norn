@@ -148,8 +148,8 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status, err = migrator.Migrate(ctx); err != nil || status.CurrentMigrationVersion != 46 || len(status.AppliedVersions) != 2 {
-		t.Fatalf("additive migrations 45-46 status=%+v err=%v", status, err)
+	if status, err = migrator.Migrate(ctx); err != nil || status.CurrentMigrationVersion != 47 || len(status.AppliedVersions) != 3 {
+		t.Fatalf("additive migrations 45-47 status=%+v err=%v", status, err)
 	}
 	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); err != nil {
 		t.Fatalf("additive attestation reserve blocked previous writer: %v", err)

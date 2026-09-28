@@ -103,6 +103,10 @@ func TestEtcdClaimedCutoverJournalBindsSignedIntentClaimAndAppLock(t *testing.T)
 	if err != nil || advanced.Phase != cutover.PhaseQuiesce || advanced.Revision != 2 {
 		t.Fatalf("advance %+v: %v", advanced, err)
 	}
+	readback, _, err := adapter.loadDatabaseCutoverJournal(ctx, intent.OperationID)
+	if err != nil || readback.EvidenceReferences[cutover.PhaseQuiesce] != quiesceEvidence {
+		t.Fatalf("claimed evidence reference was not retained: %+v err=%v", readback.EvidenceReferences, err)
+	}
 	if _, err := adapter.ActivatePostgresDatabaseCatalog(ctx, activeCatalog.Revision, catalog, "operator"); err != nil {
 		t.Fatalf("activate newer catalog: %v", err)
 	}

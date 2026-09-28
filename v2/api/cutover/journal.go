@@ -46,10 +46,11 @@ type Intent struct {
 // receipt is an immutable digest of separately retained evidence, not a claim
 // that this package observed the corresponding external effect.
 type Journal struct {
-	Intent   Intent           `json:"intent"`
-	Phase    Phase            `json:"phase"`
-	Revision uint64           `json:"revision"`
-	Receipts map[Phase]string `json:"receipts"`
+	Intent             Intent                           `json:"intent"`
+	Phase              Phase                            `json:"phase"`
+	Revision           uint64                           `json:"revision"`
+	Receipts           map[Phase]string                 `json:"receipts"`
+	EvidenceReferences map[Phase]PhaseEvidenceReference `json:"evidenceReferences"`
 }
 
 // PhaseEvidenceReference binds a retained external-evidence digest to one
@@ -98,7 +99,7 @@ func New(intent Intent) (Journal, error) {
 	if intent.SchemaVersion != "norn.database-cutover/v2" || !validName(intent.OperationID) || !validName(intent.App) || !validName(intent.LogicalDatabase) || !validName(intent.CandidateRelease) || intent.CatalogRevision <= 0 || !validCatalogDigest(intent.CatalogDigest) || !validName(intent.SourceProfileID) || !validName(intent.TargetProfileID) || intent.SourceProfileID == intent.TargetProfileID || intent.AuthorityGeneration == 0 || !validDigest(intent.WriterInventorySHA256) || !validTarget(intent.Source) || !validTarget(intent.Target) || intent.Source == intent.Target || intent.Source.Engine != intent.Target.Engine {
 		return Journal{}, fmt.Errorf("%w: invalid immutable intent", ErrTransition)
 	}
-	return Journal{Intent: intent, Phase: PhasePrepare, Revision: 1, Receipts: map[Phase]string{}}, nil
+	return Journal{Intent: intent, Phase: PhasePrepare, Revision: 1, Receipts: map[Phase]string{}, EvidenceReferences: map[Phase]PhaseEvidenceReference{}}, nil
 }
 
 // VerifyCatalog requires the current control catalog to resolve the same
@@ -135,6 +136,13 @@ func VerifyCatalog(intent Intent, revision int64, digest string, catalog databas
 // atomically compare expectedRevision and the immutable intent in its store.
 // A lost response can be reconciled by reading back the stored phase/receipt.
 func (j Journal) Advance(expectedRevision uint64, next Phase, evidenceSHA256 string) (Journal, error) {
+	return j.advance(expectedRevision, next, evidenceSHA256, false)
+}
+
+func (j Journal) advance(expectedRevision uint64, next Phase, evidenceSHA256 string, referenced bool) (Journal, error) {
+	if !referenced && len(j.EvidenceReferences) > 0 {
+		return Journal{}, fmt.Errorf("%w: referenced journal requires a phase reference", ErrTransition)
+	}
 	if expectedRevision == 0 || j.Revision != expectedRevision || !validDigest(evidenceSHA256) || !validPhase(j.Phase) || !validPhase(next) || j.Revision == ^uint64(0) {
 		return Journal{}, fmt.Errorf("%w: stale revision or invalid evidence", ErrTransition)
 	}
@@ -159,12 +167,19 @@ func (j Journal) Advance(expectedRevision uint64, next Phase, evidenceSHA256 str
 		out.Receipts[phase] = digest
 	}
 	out.Receipts[next] = evidenceSHA256
+	out.EvidenceReferences = make(map[Phase]PhaseEvidenceReference, len(j.EvidenceReferences))
+	for phase, ref := range j.EvidenceReferences {
+		out.EvidenceReferences[phase] = ref
+	}
 	return out, nil
 }
 
 // AdvanceWithEvidence hashes the complete reference into the receipt chain.
 // Callers must separately verify and retain the referenced effect evidence.
 func (j Journal) AdvanceWithEvidence(ref PhaseEvidenceReference) (Journal, error) {
+	if len(j.EvidenceReferences) != len(j.Receipts) {
+		return Journal{}, fmt.Errorf("%w: phase reference chain is incomplete", ErrTransition)
+	}
 	intentDigest, err := IntentSHA256(j.Intent)
 	if err != nil {
 		return Journal{}, err
@@ -179,12 +194,23 @@ func (j Journal) AdvanceWithEvidence(ref PhaseEvidenceReference) (Journal, error
 		return Journal{}, err
 	}
 	digest := sha256.Sum256(encoded)
-	return j.Advance(ref.FromRevision, ref.NextPhase, hex.EncodeToString(digest[:]))
+	out, err := j.advance(ref.FromRevision, ref.NextPhase, hex.EncodeToString(digest[:]), true)
+	if err != nil {
+		return Journal{}, err
+	}
+	out.EvidenceReferences[ref.NextPhase] = ref
+	return out, nil
 }
 
 // Validate reconstructs the complete receipt chain from the immutable intent.
 // Store readers call it before returning a persisted journal or advancing it.
 func (j Journal) Validate() error {
+	// A claimed journal cannot be extended by an older digest-only writer.
+	// Raw receipts remain supported only for the private storage fixtures that
+	// never began a referenced chain.
+	if len(j.EvidenceReferences) > 0 && len(j.EvidenceReferences) != len(j.Receipts) {
+		return fmt.Errorf("%w: referenced receipt chain is incomplete", ErrTransition)
+	}
 	current, err := New(j.Intent)
 	if err != nil {
 		return err
@@ -194,17 +220,26 @@ func (j Journal) Validate() error {
 		if current.Phase == j.Phase {
 			break
 		}
-		current, err = current.Advance(current.Revision, next, j.Receipts[next])
+		if ref, ok := j.EvidenceReferences[next]; ok {
+			current, err = current.AdvanceWithEvidence(ref)
+		} else {
+			current, err = current.Advance(current.Revision, next, j.Receipts[next])
+		}
 		if err != nil {
 			return err
 		}
 	}
-	if current.Phase != j.Phase || current.Revision != j.Revision || len(current.Receipts) != len(j.Receipts) {
+	if current.Phase != j.Phase || current.Revision != j.Revision || len(current.Receipts) != len(j.Receipts) || len(current.EvidenceReferences) != len(j.EvidenceReferences) {
 		return fmt.Errorf("%w: stored phase, revision or receipts differ", ErrTransition)
 	}
 	for phase, digest := range j.Receipts {
 		if current.Receipts[phase] != digest {
 			return fmt.Errorf("%w: stored receipt differs", ErrTransition)
+		}
+	}
+	for phase, ref := range j.EvidenceReferences {
+		if current.EvidenceReferences[phase] != ref {
+			return fmt.Errorf("%w: stored evidence reference differs", ErrTransition)
 		}
 	}
 	return nil
