@@ -13,18 +13,19 @@ effect. An accepted route intent alone cannot authorize publication. The
 `norn-ingress-publisher` host binary uses
 separate inbound control and outbound node mTLS identities, rejects a
 non-private listen address, and is required in candidate release manifests.
-No runtime control listener or Fleet host service invokes this path yet, so
-it is not an operational publication path.
+An opt-in etcd deployment worker now opens this listener for a claimed release
+and drives the publisher path. The Fleet host service is staged disabled in
+draft PR #177; there is no protected operational publication yet.
 The control-side private mTLS client now sends only the reserved intent ID to
 every prevalidated private publisher origin and requires each host's immediate
 file-revision receipt. On a failed or uncertain request it returns the receipts
 already confirmed; the current or failed host may still have published and
-must be reconciled by readback. This client is not connected to normal app
-execution and its receipts do not establish effective Traefik or public traffic.
+must be reconciled by readback. The opt-in executor invokes this client after
+Nomad health. Its receipts alone do not establish effective Traefik or public
+traffic.
 This contract connects the canonical route renderer and local
 generation-fenced file publisher to Fleet's loopback Traefik readback. The
-normal etcd app deployment route stays disabled until the complete path is
-qualified.
+normal etcd app deployment route remains opt-in pending qualification.
 
 The source tree now includes `norn-ingress-observer`, a read-only mTLS server
 that pins one verified control-client URI SAN and exposes the local managed
@@ -137,17 +138,16 @@ terminal proof cannot retroactively prevent requests routed during that gap.
 The first-route rehearsal must observe this interval and prove the chosen
 recovery behavior before M4 sign-off.
 
-The remaining implementation order is: enable a normal etcd deploy worker
-that holds the claim, app lock and pinned source; start its private authority
-listener; fan out one reserved generation to every current ingress member;
-repeat file, Traefik, endpoint and public-path readback; persist a durable
-proof and use the private terminal completion fence; then rehearse partial publish,
-claim loss, replacement and loaded 2→3→2 Fleet operation. The draft host
-publisher service remains disabled until that worker and recovery path exist.
+The remaining qualification order is: supply a completed active Fleet ingress
+inventory and narrowly scoped host credentials; exercise the opt-in normal
+worker from accepted release through private publication, every-node and
+public-path readback, durable proof, and terminal completion; then rehearse
+partial publish, claim loss, replacement, and loaded 2→3→2 Fleet operation.
+The draft host publisher service remains disabled pending that qualification.
 The worker's source-loading helper now selects one enabled local InfraSpec and
 checks its digest, region, endpoint and Fleet target against the signed claimed
-deployment. It rejects duplicate app documents and changed or disabled source;
-normal worker execution is still absent. A pure job-plan step now translates
+deployment. It rejects duplicate app documents and changed or disabled source.
+A pure job-plan step translates
 that source into the managed Nomad revision, stamps signed database target
 provenance and a deterministic submission-effect identity, and passes the
 existing effect boundary's exact-job validation. It does not stage Nomad
@@ -163,9 +163,14 @@ fans its ID to every current ingress node, records fresh file, Traefik,
 endpoint and public-path proof, then invokes the proof-gated completion. Any
 failure after fanout returns a deferred result with partial receipts so the
 app admission hold can preserve recovery authority. A disposable-etcd test
-covers partial publication and successful synthetic proof. The private mTLS
-authority listener still needs to be owned by the normal worker, and normal
-worker execution remains disabled.
+covers partial publication and successful synthetic proof. The opt-in normal
+worker now owns the private mTLS authority listener and composes these steps.
+Its disposable HTTP-to-Nomad rehearsal rejects a release without completed
+active ingress inventory before opening that listener, then directly
+demonstrates a healthy Nomad allocation while remaining nonterminal without
+ingress proof. Protected Fleet publication, real artifact verification,
+public traffic, partial-publish repair, scaling, and drain under load remain
+unqualified.
 
 - Fleet must install one narrowly scoped publisher on every ingress host. It
   writes only `norn-route-<32 lowercase hex>.yaml` below
