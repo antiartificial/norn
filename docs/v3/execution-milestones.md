@@ -170,6 +170,9 @@ milestones may require disproportionate time.
 | M8 | Open | Candidate qualification, version matrix, soak/fault evidence and runbooks remain. |
 | M9 | Open | Mini upgrade, clean Fleet deployment and selected app migrations require separate controlled adoption. |
 
+The opt-in normal HTTP-to-Nomad local rehearsal has a
+[repeatable disposable runner](m4-http-to-nomad-local-qualification.md).
+
 [Implementation status](implementation-status.md) and [resume handoff](RESUME.md)
 retain the earlier bounded implementation checkpoints. This table governs only
 the formal milestone percentage; each gate needs its own full-scope evidence
