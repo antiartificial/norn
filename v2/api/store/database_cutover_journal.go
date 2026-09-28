@@ -76,6 +76,9 @@ func (db *DB) loadDatabaseCutoverJournal(ctx context.Context, operationID string
 		return cutover.Journal{}, "", errDatabaseCutoverJournalConflict
 	}
 	j.Phase, j.Revision = cutover.Phase(phase), uint64(revision)
+	if j.Validate() != nil {
+		return cutover.Journal{}, "", errDatabaseCutoverJournalConflict
+	}
 	return j, digest, nil
 }
 
@@ -111,6 +114,9 @@ func (db *DB) advanceDatabaseCutoverJournal(ctx context.Context, operationID str
 		return cutover.Journal{}, errDatabaseCutoverJournalConflict
 	}
 	current.Phase, current.Revision = cutover.Phase(phase), uint64(revision)
+	if current.Validate() != nil {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
 	nextJournal, err := current.Advance(expectedRevision, next, receiptSHA256)
 	if err != nil {
 		return cutover.Journal{}, fmt.Errorf("%w: %v", errDatabaseCutoverJournalConflict, err)

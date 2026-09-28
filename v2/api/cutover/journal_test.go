@@ -65,3 +65,21 @@ func TestJournalRejectsIdentityAndEvidenceDrift(t *testing.T) {
 		t.Fatal("missing prior receipt accepted")
 	}
 }
+
+func TestJournalReadbackRejectsForgedPhaseOrMissingHistory(t *testing.T) {
+	j, _ := New(testIntent())
+	if err := j.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	j.Phase = PhaseActivate
+	j.Revision = 4
+	if err := j.Validate(); !errors.Is(err, ErrTransition) {
+		t.Fatal("activation without source fence or final sync receipts passed readback")
+	}
+	j, _ = New(testIntent())
+	j, _ = j.Advance(1, PhaseQuiesce, strings.Repeat("d", 64))
+	j.Receipts[PhasePrepare] = strings.Repeat("e", 64)
+	if err := j.Validate(); !errors.Is(err, ErrTransition) {
+		t.Fatal("extra receipt passed readback")
+	}
+}

@@ -85,6 +85,34 @@ func (j Journal) Advance(expectedRevision uint64, next Phase, evidenceSHA256 str
 	return out, nil
 }
 
+// Validate reconstructs the complete receipt chain from the immutable intent.
+// Store readers call it before returning a persisted journal or advancing it.
+func (j Journal) Validate() error {
+	current, err := New(j.Intent)
+	if err != nil {
+		return err
+	}
+	order := []Phase{PhasePrepare, PhaseQuiesce, PhaseFinalSync, PhaseActivate, PhaseVerify, PhaseAccept}
+	for _, next := range order[1:] {
+		if current.Phase == j.Phase {
+			break
+		}
+		current, err = current.Advance(current.Revision, next, j.Receipts[next])
+		if err != nil {
+			return err
+		}
+	}
+	if current.Phase != j.Phase || current.Revision != j.Revision || len(current.Receipts) != len(j.Receipts) {
+		return fmt.Errorf("%w: stored phase, revision or receipts differ", ErrTransition)
+	}
+	for phase, digest := range j.Receipts {
+		if current.Receipts[phase] != digest {
+			return fmt.Errorf("%w: stored receipt differs", ErrTransition)
+		}
+	}
+	return nil
+}
+
 func validPhase(p Phase) bool {
 	return p == PhasePrepare || p == PhaseQuiesce || p == PhaseFinalSync || p == PhaseActivate || p == PhaseVerify || p == PhaseAccept
 }

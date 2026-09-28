@@ -57,10 +57,16 @@ switching DNS is not rollback.
    read and advance that record by row lock and revision CAS. A disposable PG
    16 test passed legacy/Mini schema migration, exact replay, retarget refusal,
    one-active-resource uniqueness and two concurrent advancement attempts.
-   This is **storage only**: no accepted-operation claim, app lock, verified
-   external receipt, etcd adapter or consumer-generation switch calls it yet.
-   The private methods grant no runtime authority, and the ordinary deployment
-   guard remains in force.
+   A private etcd adapter now uses one transaction to reserve both a hashed
+   operation key and a hashed active-resource key. It compares the journal
+   modification revision and resource owner when advancing. A disposable
+   single-member etcd test passed exact replay, retarget refusal, concurrent
+   advancement and active-resource loss. Both store readers reconstruct the
+   complete ordered receipt chain before returning a journal. This is
+   **storage only**: no accepted-operation claim, app lock, catalog binding,
+   verified external receipt or consumer-generation switch calls either
+   adapter yet. The private methods grant no runtime authority, and the
+   ordinary deployment guard remains in force.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.
