@@ -85,6 +85,10 @@ switching DNS is not rollback.
    idempotent retry. The coordinator does not consume this effect yet; the
    catalog cannot prove external or uncataloged users of the role, so an
    operator-reviewed writer inventory remains a promotion prerequisite.
+   A separate disposable PG 16 TLS fixture verifies the maintenance path
+   against the target's exact server name and CA. A wrong CA refuses the
+   fence before changing the runtime role; a valid verify-full connection
+   fences and reads back an existing TLS runtime session.
 
    Provider qualification is still required for the first source cluster.
    [DigitalOcean's managed PostgreSQL documentation](https://docs.digitalocean.com/products/databases/postgresql/how-to/modify-user-privileges/)

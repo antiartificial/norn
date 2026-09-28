@@ -107,3 +107,75 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 		t.Fatalf("retry after lost fence response was not idempotent: %v", err)
 	}
 }
+
+func TestPostgresRuntimeFencePreservesVerifyFullTLS(t *testing.T) {
+	server := pgtest.StartTLS(t)
+	server.CreateDatabase(t, "cutover_tls")
+	server.CreatePasswordRole(t, "runtime_tls", "runtime-tls-password", "cutover_tls")
+	server.CreatePasswordRole(t, "fence_tls", "fence-tls-password", "postgres")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	admin, err := pgx.Connect(ctx, server.URL("postgres"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	var version int
+	if err := admin.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version < 160000 {
+		t.Skip("delegated fence rehearsal requires PostgreSQL 16 or later")
+	}
+	for _, statement := range []string{
+		`ALTER ROLE fence_tls CREATEROLE`,
+		`GRANT runtime_tls TO fence_tls WITH ADMIN TRUE, INHERIT FALSE, SET FALSE`,
+		`GRANT pg_signal_backend TO fence_tls`,
+		`GRANT pg_read_all_stats TO fence_tls`,
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved := ResolvedBinding{
+		Target: TargetIdentity{ServiceID: "source-tls", ServiceGeneration: 1, BindingID: "source-tls-app", BindingGeneration: 1,
+			Engine: EnginePostgreSQL, Database: "cutover_tls", Role: "runtime_tls"},
+		Purpose: PurposeApplication, Endpoint: DatabaseEndpoint{Host: "localhost", Port: server.Port},
+		CredentialRef: "secret:runtime", TLS: DatabaseTLS{Mode: TLSVerifyFull, ServerName: "localhost", CARef: "secret:ca"},
+		PostgresFence: &PostgresFenceCredentials{Generation: 1, Role: "fence_tls", CredentialRef: "secret:fence"},
+	}
+	secrets := literalSecrets{
+		"secret:runtime":  `{"password":"runtime-tls-password"}`,
+		"secret:fence":    `{"password":"fence-tls-password"}`,
+		"secret:ca":       string(server.CAPEM),
+		"secret:wrong-ca": string(pgtest.OtherCAPEM(t)),
+	}
+	runtimeSession, err := OpenSession(ctx, resolved, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeSession.Close()
+	runtime, err := pgx.ConnectConfig(ctx, runtimeSession.config.Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close(context.Background())
+	wrong := resolved
+	wrong.TLS.CARef = "secret:wrong-ca"
+	if err := FencePostgresRuntimeRoleForCutover(ctx, wrong, wrong.Target, secrets); err == nil {
+		t.Fatal("wrong CA was accepted for the fence connection")
+	}
+	var one int
+	if err := runtime.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatalf("failed TLS admission changed the runtime session: %v", err)
+	}
+	if err := FencePostgresRuntimeRoleForCutover(ctx, resolved, resolved.Target, secrets); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectPostgresRuntimeRoleFenceForCutover(ctx, resolved, resolved.Target, secrets); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.QueryRow(ctx, "SELECT 1").Scan(&one); err == nil {
+		t.Fatal("runtime TLS session survived the fence")
+	}
+}
