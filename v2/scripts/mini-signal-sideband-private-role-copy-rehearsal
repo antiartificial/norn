@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+postgres_bin=/Applications/Postgres.app/Contents/Versions/latest/bin
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/norn-signal-role-copy.XXXXXXXX")
+cleanup() {
+  "$postgres_bin/pg_ctl" -D "$scratch/data" -m immediate stop >/dev/null 2>&1 || true
+  rm -rf -- "$scratch"
+}
+trap cleanup EXIT
+mkdir "$scratch/socket"
+available_kb=$(df -Pk "$scratch" | awk 'END {print $4}')
+(( available_kb >= 6 * 1024 * 1024 )) || { printf 'insufficient private scratch space\n' >&2; exit 2; }
+
+source_local=$("$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -At -d signal_sideband -c 'SELECT inet_server_addr() IS NULL')
+[[ $source_local == t ]] || { printf 'source PostgreSQL is not on a local socket\n' >&2; exit 2; }
+PGOPTIONS='-c default_transaction_read_only=on' \
+  "$postgres_bin/pg_dump" --format=custom --no-acl --file="$scratch/signal.dump" -d signal_sideband
+"$postgres_bin/pg_restore" --list "$scratch/signal.dump" >/dev/null
+
+"$postgres_bin/initdb" -D "$scratch/data" --auth-local=trust --auth-host=reject >/dev/null
+"$postgres_bin/pg_ctl" -D "$scratch/data" \
+  -o "-k $scratch/socket -p 56434 -c listen_addresses=''" \
+  -l "$scratch/postgres.log" start >/dev/null
+sql() { "$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -At -h "$scratch/socket" -p 56434 "$@"; }
+admin=$(id -un)
+sql -U "$admin" -d postgres -c 'CREATE ROLE norn LOGIN' >/dev/null
+sql -U "$admin" -d postgres -c 'CREATE ROLE signal_app LOGIN' >/dev/null
+sql -U "$admin" -d postgres -c 'CREATE DATABASE norn_v2_copy OWNER norn' >/dev/null
+sql -U "$admin" -d postgres -c 'CREATE DATABASE signal_copy' >/dev/null
+"$postgres_bin/pg_restore" -h "$scratch/socket" -p 56434 -U "$admin" \
+  -d signal_copy --no-owner --no-acl --exit-on-error "$scratch/signal.dump"
+
+change_owners() {
+  local new_owner=$1
+  sql -U "$admin" -d signal_copy -c \
+    "SELECT format('ALTER TABLE %I.%I OWNER TO %I;', n.nspname, c.relname, '$new_owner') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m') ORDER BY c.relname" \
+    >"$scratch/owners.sql"
+  sql -U "$admin" -d signal_copy -c \
+    "SELECT format('ALTER SEQUENCE %I.%I OWNER TO %I;', n.nspname, c.relname, '$new_owner') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S' ORDER BY c.relname" \
+    >>"$scratch/owners.sql"
+  sql -U "$admin" -d signal_copy -f "$scratch/owners.sql" >/dev/null
+}
+change_owners norn
+rows_before=$(sql -U "$admin" -d signal_copy -c 'SELECT count(*) FROM public.messages')
+(( rows_before > 0 )) || { printf 'restored messages table is empty\n' >&2; exit 1; }
+
+change_owners signal_app
+sql -U "$admin" -d postgres -c 'REVOKE ALL ON DATABASE signal_copy FROM PUBLIC' >/dev/null
+sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE signal_copy TO signal_app' >/dev/null
+sql -U "$admin" -d signal_copy -c 'GRANT USAGE, CREATE ON SCHEMA public TO signal_app' >/dev/null
+rows_after=$(sql -U signal_app -d signal_copy -c 'SELECT count(*) FROM public.messages')
+[[ $rows_before == "$rows_after" ]] || { printf 'message count changed across role split\n' >&2; exit 1; }
+table_owners=$(sql -U "$admin" -d signal_copy -F '|' -c "SELECT count(*), count(*) FILTER (WHERE relowner='signal_app'::regrole) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r'")
+[[ $table_owners == '11|11' ]] || { printf 'not every copied application table has the new owner\n' >&2; exit 1; }
+sql -U signal_app -d signal_copy -c 'CREATE TABLE public.role_probe (id integer)' >/dev/null
+if sql -U norn -d signal_copy -c 'SELECT 1' >/dev/null 2>&1; then
+  printf 'old role can still connect to private app copy\n' >&2; exit 1
+fi
+control_owner=$(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='norn_v2_copy'")
+[[ $control_owner == norn ]] || { printf 'control copy owner changed\n' >&2; exit 1; }
+app_owner=$(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='signal_copy'")
+[[ $app_owner == "$admin" ]] || { printf 'application database owner changed\n' >&2; exit 1; }
+sql -U norn -d norn_v2_copy -c 'SELECT 1' >/dev/null
+printf 'PASS: private signal_sideband copy preserved %s messages; app role reads and migrates; old role denied; control copy unchanged\n' "$rows_after"

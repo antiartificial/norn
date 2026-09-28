@@ -80,6 +80,22 @@ preserved `norn_v2` ownership. It is a procedure-shape check only: it does
 not cover `mailindexer`'s actual schema, grants, secrets, running job,
 connection drain, operational rollback or production-key backup.
 
+The [private `signal_sideband` copy rehearsal](../../v2/scripts/mini-signal-sideband-private-role-copy-rehearsal)
+then passed on Mini with Postgres.app 17.7 (script SHA-256
+`8004a8bea0d679700f5d2ee12f14d4ba10f6139467d288a3a938c636b43c49f1`).
+It made a read-only dump over Mini's local socket, restored it into a
+disposable socket-only cluster, and kept all data on Mini. The restored copy
+had 9,223 `messages` rows; all 11 application tables were transferred from
+the copied `norn` owner to a separate `signal_app` role. That role read the
+rows and created a migration-probe table. The old role could no longer
+connect to the copied app database, while the copied control database stayed
+owned by and accessible to `norn`. The app database retained its actual
+`0xadb` owner shape. Scratch and the transferred script were removed; a
+read-only follow-up confirmed live `norn_v2` and `signal_sideband` database
+owners unchanged. This is stronger than the synthetic fixture, but it still
+does not exercise the live Nomad job, secret rotation, source connection
+drain, all application behavior, or a protected role rollback.
+
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
 reported one healthy allocation. It is a smaller compatibility case than an
