@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -302,6 +303,56 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 		if results, err := ingress.ProbeRenderedRouteNodes(ctx, probeNodes, route, "/ready",
 			"b24d6d33736ecd5604a4b17bc9c6481039fac362bb7df044ef1c10a2bfd21db6", roots); err != nil || len(results) != len(nodes) {
 			t.Fatalf("two-ingress deployment endpoint proof=%+v err=%v", results, err)
+		}
+		withdraw := func(directory string) {
+			prior, err := ingress.ReadPublishedRouteRevision(directory, route.RouterName)
+			if err != nil || !prior.Present {
+				t.Fatalf("published route unavailable for withdrawal: %+v err=%v", prior, err)
+			}
+			if err := ingress.WithdrawPublishedRoute(directory, route.RouterName, prior, 2); err != nil {
+				t.Fatal(err)
+			}
+		}
+		observeWithdrawn := func(targets []ingress.IngressNode) error {
+			return ingress.ObserveWithdrawnRoute(ctx, &http.Client{Timeout: 3 * time.Second}, targets, route)
+		}
+		waitWithdrawn := func(targets []ingress.IngressNode) {
+			var observedErr error
+			for attempt := 0; attempt < 40; attempt++ {
+				if observedErr = observeWithdrawn(targets); observedErr == nil {
+					return
+				}
+				time.Sleep(250 * time.Millisecond)
+			}
+			t.Fatalf("Traefik retained the deployment route after withdrawal: %v", observedErr)
+		}
+		withdraw(directories[0])
+		waitWithdrawn(nodes[:1])
+		if err := observeWithdrawn(nodes); err == nil {
+			t.Fatal("partial ingress withdrawal appeared complete")
+		}
+		withdraw(directories[1])
+		waitWithdrawn(nodes)
+		for _, node := range probeNodes {
+			address := node.DialAddress
+			transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, address)
+				}}
+			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+app+".example.test/ready", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatalf("withdrawn ingress %s probe failed: %v", node.ID, err)
+			}
+			_ = response.Body.Close()
+			transport.CloseIdleConnections()
+			if response.StatusCode != http.StatusNotFound {
+				t.Fatalf("withdrawn ingress %s returned HTTP %d, want 404", node.ID, response.StatusCode)
+			}
 		}
 	}
 	operation, err := operations.GetOperation(ctx, accepted.ID)

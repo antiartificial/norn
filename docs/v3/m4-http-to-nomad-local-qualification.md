@@ -37,12 +37,16 @@ disposable TLS certificate trusted by the test. The accepted deployment's
 Nomad service supplies the revision-specific backend through local Consul.
 Publishing the generation-one route on only the first ingress must fail the
 two-node observation; after publishing the same route on the second, both
-Traefik readbacks and both HTTPS `/ready` probes must pass. The disposable
+Traefik readbacks and both HTTPS `/ready` probes must pass. Withdrawing
+generation two on only the first ingress must fail the two-node withdrawal
+observation; after withdrawing on the second, both readbacks pass and the
+public host returns HTTPS 404 through each local ingress. The disposable
 etcd, Consul, Nomad, Docker, and two-Traefik run passed on 2026-09-27.
 
 This result qualifies the normal local admission-to-Nomad path and a direct
 app endpoint response. The optional extension also qualifies a local
-two-ingress route from that real allocation and rejects partial propagation.
+two-ingress route from that real allocation and rejects partial publication
+and withdrawal.
 It does not verify a real signed artifact, use the authenticated host publisher
 or durable route authority, probe a public load balancer, prove weighted
 traffic, or qualify protected Fleet hosts. Those remain M4 release gates.
