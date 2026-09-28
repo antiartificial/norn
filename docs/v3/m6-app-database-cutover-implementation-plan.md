@@ -118,10 +118,13 @@ switching DNS is not rollback.
    journal revision and phase, verifies the stored object identity, and reads
    the exact bytes back before producing a phase reference. A local archive
    test covers exact replay, conflicting replacement, skipped-phase refusal
-   before publication and the 1 MiB bound. The helper is not wired into the
-   claimed adapters or a cutover coordinator; arbitrary reference hashes can
-   still be recorded in the early phases. Retained bytes also need a typed,
-   secret-safe schema and independent source/target effect verification.
+   before publication and the 1 MiB bound. Recovery readback now resolves an
+   earlier phase's retained bytes from a later, validated journal revision
+   and refuses a reference not committed to that journal. The helper is not
+   wired into the claimed adapters or a cutover coordinator; arbitrary
+   reference hashes can still be recorded in the early phases. Retained bytes
+   also need a typed, secret-safe schema and independent source/target effect
+   verification.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

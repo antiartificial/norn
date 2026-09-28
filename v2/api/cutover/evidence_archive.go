@@ -61,19 +61,20 @@ func RetainPhaseEvidence(ctx context.Context, store archive.Store, j Journal, ne
 	return ref, nil
 }
 
-// ReadPhaseEvidence retrieves exactly the bytes named by a journal reference.
-// It proves retention and integrity, not the truth of an external effect.
+// ReadPhaseEvidence retrieves exactly the bytes named by a reference already
+// committed to the journal. It proves retention and integrity, not the truth
+// of an external effect.
 func ReadPhaseEvidence(ctx context.Context, reader archive.Reader, j Journal, ref PhaseEvidenceReference) ([]byte, error) {
 	if reader == nil {
 		return nil, fmt.Errorf("%w: missing archive reader", ErrTransition)
 	}
-	key, err := PhaseEvidenceKey(j, ref.NextPhase)
-	if err != nil {
+	if err := j.Validate(); err != nil {
 		return nil, err
 	}
-	if _, err := j.AdvanceWithEvidence(ref); err != nil {
-		return nil, err
+	if retained, ok := j.EvidenceReferences[ref.NextPhase]; !ok || retained != ref {
+		return nil, fmt.Errorf("%w: phase reference is not retained by journal", ErrTransition)
 	}
+	key := fmt.Sprintf("database-cutover/v1/%s/%d/%s", ref.IntentSHA256, ref.FromRevision, ref.NextPhase)
 	data, info, err := reader.Get(ctx, key, maxPhaseEvidenceBytes)
 	if err != nil {
 		return nil, err

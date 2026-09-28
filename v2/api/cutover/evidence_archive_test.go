@@ -30,9 +30,32 @@ func TestPhaseEvidenceArchiveRetainsExactEdgeAndRefusesReplacement(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	readback, err := ReadPhaseEvidence(ctx, store, j, ref)
+	advanced, err := j.AdvanceWithEvidence(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readback, err := ReadPhaseEvidence(ctx, store, advanced, ref)
 	if err != nil || !bytes.Equal(readback, data) {
 		t.Fatalf("readback differs: %q, %v", readback, err)
+	}
+	if _, err := ReadPhaseEvidence(ctx, store, j, ref); !errors.Is(err, ErrTransition) {
+		t.Fatalf("uncommitted reference was readable as a journal receipt: %v", err)
+	}
+	changed := ref
+	changed.EvidenceSHA256 = ref.IntentSHA256
+	if _, err := ReadPhaseEvidence(ctx, store, advanced, changed); !errors.Is(err, ErrTransition) {
+		t.Fatalf("changed reference was readable: %v", err)
+	}
+	finalRef, err := RetainPhaseEvidence(ctx, store, advanced, PhaseFinalSync, []byte(`{"schemaVersion":"fixture/v1","observed":"target-restored"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalJournal, err := advanced.AdvanceWithEvidence(finalRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if earlier, err := ReadPhaseEvidence(ctx, store, finalJournal, ref); err != nil || !bytes.Equal(earlier, data) {
+		t.Fatalf("earlier evidence unavailable from later journal: %q, %v", earlier, err)
 	}
 	if same, err := RetainPhaseEvidence(ctx, store, j, PhaseQuiesce, data); err != nil || same != ref {
 		t.Fatalf("exact replay differs: %+v, %v", same, err)
