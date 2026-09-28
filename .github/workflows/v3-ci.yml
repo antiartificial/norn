@@ -83,6 +83,24 @@ jobs:
       - name: Build deploy-disabled fixture image
         run: docker build --progress=plain --tag norn/mobility-fixture:ci v2/infra/mobility-fixture
 
+  mobility-local-transfer:
+    name: M6 local mobility transfer and fence
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/infra/mobility-fixture/go.mod
+          cache-dependency-path: v2/infra/mobility-fixture/go.sum
+      - name: Install disposable PostgreSQL 16 tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Rehearse source fence and final transfer
+        env:
+          NORN_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+        run: bash v2/scripts/test-mobility-local-transfer.sh
+
   api-production-etcd:
     name: api production etcd TLS RBAC
     runs-on: ubuntu-24.04
