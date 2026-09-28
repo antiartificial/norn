@@ -174,6 +174,26 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	firstAttempt, err := worker.EnsureDeploymentJobEffect(ctx, effects, nomadClient, plan.Reservation, plan.Job)
+	if err != nil || !firstAttempt.Attempted || firstAttempt.EffectID == "" {
+		t.Fatalf("initial Nomad submission attempt=%+v err=%v", firstAttempt, err)
+	}
+	if err := operations.DeferClaimedOperation(ctx, claim, "worker stopped after Nomad submit", time.Now().Add(-time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
+	successor, nextClaim, err := operations.ClaimNextOperation(ctx, "successor-fleet-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || successor == nil || successor.ID != accepted.ID || nextClaim.Generation() <= claim.Generation() {
+		t.Fatalf("successor claim=%+v generation=%d err=%v", successor, nextClaim.Generation(), err)
+	}
+	source, err = worker.LoadClaimedFleetDeploymentSource(ctx, operations, *successor, appsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextPlan, err := worker.PrepareClaimedFleetDeploymentJob(ctx, source, nextClaim, authority, nomadClient, nil, nil)
+	if err != nil || nextPlan.Input.JobDigest != plan.Input.JobDigest || nextPlan.Reservation.SupervisorExecutionID != plan.Reservation.SupervisorExecutionID {
+		t.Fatalf("successor reconstructed a different Nomad effect: err=%v", err)
+	}
+	plan, claim = nextPlan, nextClaim
 	var health effect.Token
 	var lastPending error
 	for {
@@ -220,6 +240,10 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	api, err := nomadapi.NewClient(&nomadapi.Config{Address: address})
 	if err != nil {
 		t.Fatal(err)
+	}
+	registeredJob, _, err := api.Jobs().Info(plan.Input.JobID, &nomadapi.QueryOptions{Region: plan.Input.NomadRegion})
+	if err != nil || registeredJob == nil || registeredJob.Version == nil || *registeredJob.Version != 0 {
+		t.Fatalf("successor resubmitted the Nomad job: version=%v err=%v", registeredJob, err)
 	}
 	allocations, _, err := api.Jobs().Allocations(plan.Input.JobID, false, &nomadapi.QueryOptions{Region: plan.Input.NomadRegion})
 	if err != nil || len(allocations) != 1 || allocations[0].ClientStatus != "running" {
