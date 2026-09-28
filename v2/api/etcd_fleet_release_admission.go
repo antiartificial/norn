@@ -68,6 +68,9 @@ func buildEtcdFleetReleaseAcceptance(ctx context.Context, input fleetReleaseAdmi
 	if err != nil {
 		return store.OperationAcceptance{}, fmt.Errorf("first Fleet route source: %w", err)
 	}
+	if endpoint.ProbePath == "" || endpoint.ProbeBodySHA256 == "" {
+		return store.OperationAcceptance{}, fmt.Errorf("first Fleet release requires a signed traffic probe")
+	}
 	deploymentID := uuid.NewString()
 	job, err := nomad.TranslateManagedDeploymentForRegionAt(input.Spec, input.Artifact, nil, regions[0], deploymentID, input.DatabaseCatalog.Revision)
 	if err != nil {

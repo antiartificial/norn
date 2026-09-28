@@ -81,7 +81,7 @@ try:
         )
         print(f"Local etcd={etcd_port} Nomad={nomad_port}", flush=True)
         result = subprocess.run(
-            ["go", "test", ".", "-run", "^TestEtcdFleetStagingReleaseHTTPToDisposableNomad$", "-count=1", "-v", "-timeout=120s"],
+            ["go", "test", ".", "-run", "^TestEtcdFleetStagingReleaseHTTP(AcceptsAndReplaysVerifiedSource|ToDisposableNomad)$", "-count=1", "-v", "-timeout=120s"],
             cwd=repo / "v2/api", env=env, timeout=135,
         )
         exit_code = result.returncode

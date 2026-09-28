@@ -20,7 +20,8 @@ func TestBuildEtcdFleetReleaseAcceptanceUsesServerPlacementAndVerifier(t *testin
 		Audit: store.AcceptanceAuditContext{Source: "test"},
 		Spec: &model.InfraSpec{App: "demo", Deploy: true, Repo: &model.RepoSpec{URL: "https://github.com/acme/demo"},
 			Processes: map[string]model.Process{"web": {Command: "sleep 1", Port: 8080}},
-			Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "local", Process: "web"}}},
+			Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "local", Process: "web",
+				TrafficProbe: &model.TrafficProbeSpec{Path: "/ready", BodySHA256: strings.Repeat("d", 64)}}}},
 		Target: etcdstore.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: "demo", ControlEnvironment: "staging",
 			Cluster: "staging-cluster", FleetEnvironment: "staging/local", Region: "local", NomadRegion: "global",
 			Datacenters: []string{"dc1"}, Generation: 1},
@@ -60,6 +61,10 @@ func TestBuildEtcdFleetReleaseAcceptanceUsesServerPlacementAndVerifier(t *testin
 		t.Fatal("missing first-route endpoint reached artifact verifier or admission")
 	}
 	input.Spec.Endpoints = []model.Endpoint{{URL: "https://demo.example.test", Region: "local", Process: "web"}}
+	if _, err := buildEtcdFleetReleaseAcceptance(context.Background(), input, verify); err == nil || verified != 1 {
+		t.Fatal("missing signed traffic probe reached artifact verifier or admission")
+	}
+	input.Spec.Endpoints[0].TrafficProbe = &model.TrafficProbeSpec{Path: "/ready", BodySHA256: strings.Repeat("d", 64)}
 	input.Target.Region = "other"
 	if _, err := buildEtcdFleetReleaseAcceptance(context.Background(), input, verify); err == nil || verified != 1 {
 		t.Fatal("mismatched placement reached artifact verifier or admission")

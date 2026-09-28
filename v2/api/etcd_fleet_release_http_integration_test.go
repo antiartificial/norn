@@ -50,7 +50,7 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 	if err := os.Mkdir(filepath.Join(appsDir, "demo"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	spec := "schemaVersion: norn.app/v2\nname: demo\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nprocesses:\n  web:\n    command: sleep 1\n    port: 8080\nendpoints:\n  - url: https://demo.example.test\n    region: local\n    process: web\ndatabases:\n  - name: primary\n    purpose: application\n    capabilities: [runtime]\n    runtime:\n      env: DATABASE_URL\n"
+	spec := "schemaVersion: norn.app/v2\nname: demo\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nprocesses:\n  web:\n    command: sleep 1\n    port: 8080\nendpoints:\n  - url: https://demo.example.test\n    region: local\n    process: web\n    trafficProbe:\n      path: /ready\n      bodySHA256: " + strings.Repeat("d", 64) + "\ndatabases:\n  - name: primary\n    purpose: application\n    capabilities: [runtime]\n    runtime:\n      env: DATABASE_URL\n"
 	if err := os.WriteFile(filepath.Join(appsDir, "demo", "infraspec.yaml"), []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}

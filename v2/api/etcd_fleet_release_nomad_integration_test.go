@@ -75,7 +75,7 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(appsDir, app), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	spec := "schemaVersion: norn.app/v2\nname: " + app + "\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nbuild:\n  image: " + image + "\nprocesses:\n  web:\n    command: sleep 60\n    port: 8080\nendpoints:\n  - url: https://" + app + ".example.test\n    region: local\n    process: web\n"
+	spec := "schemaVersion: norn.app/v2\nname: " + app + "\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nbuild:\n  image: " + image + "\nprocesses:\n  web:\n    command: sleep 60\n    port: 8080\nendpoints:\n  - url: https://" + app + ".example.test\n    region: local\n    process: web\n    trafficProbe:\n      path: /ready\n      bodySHA256: " + strings.Repeat("d", 64) + "\n"
 	if err := os.WriteFile(filepath.Join(appsDir, app, "infraspec.yaml"), []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}

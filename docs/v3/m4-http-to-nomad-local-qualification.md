@@ -16,8 +16,9 @@ python3 v2/api/scripts/qualify-v3-http-nomad.py
 ```
 
 The script checks that the exact image is cached, starts the three local
-agents on free loopback ports, runs only the opt-in test, and stops the agents.
-The test uses a unique app and etcd prefix, then purges its Nomad job. Docker
+agents on free loopback ports, runs the named-database HTTP admission test and
+the opt-in Nomad test, and stops the agents.
+The Nomad test uses a unique app and etcd prefix, then purges its job. Docker
 Desktop may delay release of a root-owned Nomad allocation log directory; if
 the script prints a disposable-state cleanup path, remove only that path after
 the script exits.
@@ -26,3 +27,9 @@ This result qualifies the normal local admission-to-Nomad path. It does not
 verify a real signed artifact, publish to ingress nodes, probe the public
 endpoint, prove weighted traffic, or qualify protected Fleet hosts. Those
 remain M4 release gates.
+
+First Fleet release admission now requires an exact traffic probe in the
+checked-out InfraSpec. This prevents an accepted release from reaching the
+worker without the signed path and response digest needed for terminal
+traffic proof. The local Nomad fixture carries that probe declaration but
+does not serve or verify its response.
