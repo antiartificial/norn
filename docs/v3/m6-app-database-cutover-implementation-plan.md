@@ -120,7 +120,10 @@ switching DNS is not rollback.
    test covers exact replay, conflicting replacement, skipped-phase refusal
    before publication and the 1 MiB bound. Recovery readback now resolves an
    earlier phase's retained bytes from a later, validated journal revision
-   and refuses a reference not committed to that journal. The helper is not
+   and refuses a reference not committed to that journal.
+   A journal-wide verifier checks every referenced object and fails when an
+   object is missing; this verifies retention and integrity, not external
+   effect semantics. The helper is not
    wired into the claimed adapters or a cutover coordinator; arbitrary
    reference hashes can still be recorded in the early phases. Retained bytes
    also need a typed, secret-safe schema and independent source/target effect

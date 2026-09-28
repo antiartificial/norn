@@ -88,3 +88,25 @@ func ReadPhaseEvidence(ctx context.Context, reader archive.Reader, j Journal, re
 	}
 	return data, nil
 }
+
+// VerifyJournalEvidence checks that every referenced phase remains readable
+// from the archive. It verifies the byte chain only; effect-specific proof
+// still belongs to an independent coordinator.
+func VerifyJournalEvidence(ctx context.Context, reader archive.Reader, j Journal) error {
+	if err := j.Validate(); err != nil {
+		return err
+	}
+	if len(j.Receipts) == 0 || len(j.EvidenceReferences) != len(j.Receipts) {
+		return fmt.Errorf("%w: journal has no complete phase evidence chain", ErrTransition)
+	}
+	for _, phase := range []Phase{PhaseQuiesce, PhaseFinalSync, PhaseActivate, PhaseVerify, PhaseAccept} {
+		ref, ok := j.EvidenceReferences[phase]
+		if !ok {
+			continue
+		}
+		if _, err := ReadPhaseEvidence(ctx, reader, j, ref); err != nil {
+			return fmt.Errorf("verify %s evidence: %w", phase, err)
+		}
+	}
+	return nil
+}

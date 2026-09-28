@@ -54,6 +54,21 @@ func TestPhaseEvidenceArchiveRetainsExactEdgeAndRefusesReplacement(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := VerifyJournalEvidence(ctx, store, finalJournal); err != nil {
+		t.Fatalf("retained chain did not verify: %v", err)
+	}
+	emptyRoot := t.TempDir()
+	if err := os.Chmod(emptyRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := archive.OpenLocal(emptyRoot, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { empty.Close() })
+	if err := VerifyJournalEvidence(ctx, empty, finalJournal); !errors.Is(err, archive.ErrObjectNotFound) {
+		t.Fatalf("missing retained evidence passed chain verification: %v", err)
+	}
 	if earlier, err := ReadPhaseEvidence(ctx, store, finalJournal, ref); err != nil || !bytes.Equal(earlier, data) {
 		t.Fatalf("earlier evidence unavailable from later journal: %q, %v", earlier, err)
 	}
