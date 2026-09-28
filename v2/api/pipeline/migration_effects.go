@@ -129,7 +129,8 @@ func (p *Pipeline) runSupervisedMigration(ctx context.Context, st *state, bound 
 				return database.ResolvedBinding{}, 0, err
 			}
 			request := database.ResolveRequest{DeploymentProfileID: p.DatabaseTargets.ProfileID,
-				Purpose: database.PurposeApplication, Expected: &bound.resolved.Target}
+				Purpose: database.PurposeApplication, Expected: &bound.resolved.Target,
+				RequiredCapabilities: []database.Capability{database.CapabilityMigration}}
 			if bound.name != "" {
 				request.LogicalResourceID = bound.name
 			} else if st.spec.Infrastructure != nil && st.spec.Infrastructure.Postgres != nil {
