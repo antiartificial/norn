@@ -46,6 +46,14 @@ func TestV3DeploymentWorkerEffectThroughEtcdAndDisposableNomad(t *testing.T) {
 	request.Deployment.App = id
 	request.Deployment.ImageTag = image
 	request.Deployment.SpecDigest = "sha256:" + strings.Repeat("a", 64)
+	target := FleetAppTarget{SchemaVersion: fleetAppTargetSchema, App: id, ControlEnvironment: "staging",
+		Cluster: "norn-staging", FleetEnvironment: "staging/nyc3", Region: "west", NomadRegion: "global",
+		Datacenters: []string{"dc1"}, Generation: 1}
+	if _, err := adapter.putFleetAppTarget(context.Background(), target, 0); err != nil {
+		t.Fatal(err)
+	}
+	request.Semantics["fleetAppTarget"] = target
+	request.Regions[0].Datacenters = []string{"dc1"}
 	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
 	if err != nil {
 		t.Fatal(err)
