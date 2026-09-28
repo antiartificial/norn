@@ -73,6 +73,13 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	}
 	underprivileged := resolved
 	underprivileged.PostgresFence = &PostgresFenceCredentials{Generation: 1, Role: "underprivileged_fence", CredentialRef: "secret:fence"}
+	if _, err := PreflightPostgresRuntimeRoleFenceForCutover(ctx, underprivileged, underprivileged.Target, secrets); err == nil {
+		t.Fatal("underprivileged principal passed read-only fence preflight")
+	}
+	preflight, err := PreflightPostgresRuntimeRoleFenceForCutover(ctx, resolved, resolved.Target, secrets)
+	if err != nil || preflight.Target != resolved.Target || preflight.FenceGeneration != 1 || preflight.ServerVersion < 160000 || !preflight.CanLogin || preflight.Sessions < 1 {
+		t.Fatalf("read-only source fence preflight=%+v err=%v", preflight, err)
+	}
 	if err := FencePostgresRuntimeRoleForCutover(ctx, underprivileged, underprivileged.Target, secrets); err == nil {
 		t.Fatal("fence role without delegated authority was accepted")
 	}
@@ -85,6 +92,9 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	}
 	stale := resolved.Target
 	stale.BindingGeneration++
+	if _, err := PreflightPostgresRuntimeRoleFenceForCutover(ctx, resolved, stale, secrets); err == nil {
+		t.Fatal("stale target passed read-only fence preflight")
+	}
 	if err := FencePostgresRuntimeRoleForCutover(ctx, resolved, stale, secrets); err == nil {
 		t.Fatal("stale target identity was accepted")
 	}
@@ -93,6 +103,10 @@ func TestCatalogBoundPostgresRuntimeRoleFence(t *testing.T) {
 	}
 	if err := InspectPostgresRuntimeRoleFenceForCutover(ctx, resolved, resolved.Target, secrets); err != nil {
 		t.Fatal(err)
+	}
+	preflight, err = PreflightPostgresRuntimeRoleFenceForCutover(ctx, resolved, resolved.Target, secrets)
+	if err != nil || preflight.CanLogin || preflight.Sessions != 0 {
+		t.Fatalf("fenced source role preflight=%+v err=%v", preflight, err)
 	}
 	if err := runtime.QueryRow(ctx, "SELECT 1").Scan(&one); err == nil {
 		t.Fatal("preexisting runtime session survived fence")
@@ -162,6 +176,13 @@ func TestPostgresRuntimeFencePreservesVerifyFullTLS(t *testing.T) {
 	defer runtime.Close(context.Background())
 	wrong := resolved
 	wrong.TLS.CARef = "secret:wrong-ca"
+	if _, err := PreflightPostgresRuntimeRoleFenceForCutover(ctx, wrong, wrong.Target, secrets); err == nil {
+		t.Fatal("wrong CA passed read-only fence preflight")
+	}
+	preflight, err := PreflightPostgresRuntimeRoleFenceForCutover(ctx, resolved, resolved.Target, secrets)
+	if err != nil || !preflight.CanLogin || preflight.Sessions < 1 {
+		t.Fatalf("verify-full fence preflight=%+v err=%v", preflight, err)
+	}
 	if err := FencePostgresRuntimeRoleForCutover(ctx, wrong, wrong.Target, secrets); err == nil {
 		t.Fatal("wrong CA was accepted for the fence connection")
 	}

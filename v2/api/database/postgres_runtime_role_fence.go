@@ -98,6 +98,47 @@ func InspectPostgresRuntimeRoleFenceForCutover(ctx context.Context, resolved Res
 	return inspectPostgresRuntimeFence(ctx, connection, resolved.Target.Role)
 }
 
+// PostgresRuntimeFencePreflight is read-only evidence about the exact
+// catalog-bound source role. It does not prove that an external writer uses no
+// other role or that the provider will allow a later ALTER/termination effect.
+type PostgresRuntimeFencePreflight struct {
+	Target          TargetIdentity
+	FenceGeneration uint64
+	ServerVersion   int
+	CanLogin        bool
+	Sessions        int
+}
+
+// PreflightPostgresRuntimeRoleFenceForCutover checks the selected maintenance
+// principal and observes the source runtime role without changing either one.
+// A coordinator must retain this alongside its writer inventory, then repeat
+// authority checks under a durable claim immediately before the fence effect.
+func PreflightPostgresRuntimeRoleFenceForCutover(ctx context.Context, resolved ResolvedBinding, expected TargetIdentity, secrets SecretSource) (*PostgresRuntimeFencePreflight, error) {
+	if err := validatePostgresRuntimeFenceRequest(resolved, expected, secrets); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	connection, closeSession, err := openPostgresFenceConnection(ctx, resolved, secrets)
+	if err != nil {
+		return nil, err
+	}
+	defer closeSession()
+	if err := verifyPostgresFencePrincipal(ctx, connection, resolved); err != nil {
+		return nil, err
+	}
+	result := &PostgresRuntimeFencePreflight{Target: resolved.Target, FenceGeneration: resolved.PostgresFence.Generation}
+	err = connection.QueryRow(ctx, `
+		SELECT current_setting('server_version_num')::int, runtime.rolcanlogin,
+			(SELECT count(*) FROM pg_stat_activity WHERE usename = $1)
+		FROM pg_roles runtime WHERE runtime.rolname = $1`, resolved.Target.Role).Scan(
+		&result.ServerVersion, &result.CanLogin, &result.Sessions)
+	if err != nil || result.ServerVersion < 160000 || result.Sessions < 0 {
+		return nil, fmt.Errorf("PostgreSQL runtime fence preflight readback failed")
+	}
+	return result, nil
+}
+
 func validatePostgresRuntimeFenceRequest(resolved ResolvedBinding, expected TargetIdentity, secrets SecretSource) error {
 	fence := resolved.PostgresFence
 	if secrets == nil || resolved.Target != expected || resolved.Purpose != PurposeApplication ||

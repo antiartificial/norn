@@ -60,7 +60,7 @@ switching DNS is not rollback.
    authentication but leaves an existing runtime session usable until its
    backend is terminated. The first PG fence must therefore disable login,
    terminate every session for the exact dedicated runtime role, and read back
-   both `rolcanlogin = false` and zero sessions before final sync. This
+   both `rolcanlogin = false` and zero sessions before final sync.
    On disposable PostgreSQL 16, the same sequence passed through a dedicated
    non-superuser account with `CREATEROLE`, admin authority for the exact
    runtime role without `INHERIT` or `SET`, `pg_signal_backend`, and
@@ -89,6 +89,14 @@ switching DNS is not rollback.
    against the target's exact server name and CA. A wrong CA refuses the
    fence before changing the runtime role; a valid verify-full connection
    fences and reads back an existing TLS runtime session.
+
+   A separate read-only `PreflightPostgresRuntimeRoleFenceForCutover` checks
+   the catalog-bound target and delegated principal over the same TLS path.
+   It reports the server version, runtime login state and exact-role session
+   count without changing either role or terminating sessions. Disposable
+   PostgreSQL 16 tests cover active and already-fenced states, stale target,
+   underprivileged principal and wrong CA. Provider support for the later
+   fence effect remains unqualified.
 
    Provider qualification is still required for the first source cluster.
    [DigitalOcean's managed PostgreSQL documentation](https://docs.digitalocean.com/products/databases/postgresql/how-to/modify-user-privileges/)
