@@ -106,6 +106,14 @@ switching DNS is not rollback.
    still needs immutable retention and independent verification before any
    phase can authorize a consumer switch. A syntactically valid digest alone
    remains insufficient proof of the named effect.
+   Both claimed store adapters now explicitly refuse `activate`, `verify`,
+   and `accept` after validating an otherwise well-formed phase reference.
+   A disposable PostgreSQL 16 and etcd rehearsal advanced through the
+   early reference chain, then confirmed an attempted `activate` returned
+   `ErrExternalProofRequired` without changing the final-sync journal.
+   Storage-only fixtures retain the complete state machine; the claimed
+   consumer phases stay closed until an external-effect verifier and
+   generation-bound switch are implemented.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

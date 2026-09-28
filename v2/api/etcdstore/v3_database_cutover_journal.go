@@ -300,6 +300,11 @@ func (s *V3OperationStore) advanceDatabaseCutoverJournalTransaction(ctx context.
 	if err != nil {
 		return cutover.Journal{}, fmt.Errorf("%w: %v", errEtcdCutoverJournalConflict, err)
 	}
+	if evidence != nil && expectedIntentDigest != "" {
+		if err := cutover.RequireVerifiedConsumerPhase(nextJournal.Phase); err != nil {
+			return cutover.Journal{}, err
+		}
+	}
 	encoded, err := encodeEtcdCutoverJournal(nextJournal)
 	if err != nil {
 		return cutover.Journal{}, err

@@ -269,6 +269,11 @@ func (db *DB) advanceDatabaseCutoverJournalTransaction(ctx context.Context, oper
 	if err != nil {
 		return cutover.Journal{}, fmt.Errorf("%w: %v", errDatabaseCutoverJournalConflict, err)
 	}
+	if evidence != nil && expectedIntentDigest != "" {
+		if err := cutover.RequireVerifiedConsumerPhase(nextJournal.Phase); err != nil {
+			return cutover.Journal{}, err
+		}
+	}
 	receipts, err := json.Marshal(nextJournal.Receipts)
 	if err != nil {
 		return cutover.Journal{}, err

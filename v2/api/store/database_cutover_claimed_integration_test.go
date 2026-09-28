@@ -13,6 +13,14 @@ import (
 )
 
 func TestClaimedDatabaseCutoverJournalRequiresSignedIntentAndLiveClaim(t *testing.T) {
+	runClaimedDatabaseCutoverJournal(t, false)
+}
+
+func TestClaimedDatabaseCutoverRefusesUnverifiedActivation(t *testing.T) {
+	runClaimedDatabaseCutoverJournal(t, true)
+}
+
+func runClaimedDatabaseCutoverJournal(t *testing.T, testActivation bool) {
 	stores, dbs := acceptanceIntegrationStores(t, 1)
 	ctx := context.Background()
 	acceptance, db := stores[0], dbs[0]
@@ -98,6 +106,28 @@ func TestClaimedDatabaseCutoverJournalRequiresSignedIntentAndLiveClaim(t *testin
 	readback, _, err := db.loadDatabaseCutoverJournal(ctx, intent.OperationID)
 	if err != nil || readback.EvidenceReferences[cutover.PhaseQuiesce] != quiesceEvidence {
 		t.Fatalf("claimed evidence reference was not retained: %+v err=%v", readback.EvidenceReferences, err)
+	}
+	if testActivation {
+		finalEvidence, err := cutover.NewPhaseEvidenceReference(advanced, cutover.PhaseFinalSync, strings.Repeat("c", 64))
+		if err != nil {
+			t.Fatal(err)
+		}
+		final, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 2, finalEvidence)
+		if err != nil || final.Phase != cutover.PhaseFinalSync {
+			t.Fatalf("final sync reference=%+v err=%v", final, err)
+		}
+		activateEvidence, err := cutover.NewPhaseEvidenceReference(final, cutover.PhaseActivate, strings.Repeat("d", 64))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.AdvanceClaimedDatabaseCutoverJournal(ctx, acceptance, claim, 3, activateEvidence); !errors.Is(err, cutover.ErrExternalProofRequired) {
+			t.Fatalf("unverified activation was not refused: %v", err)
+		}
+		readback, _, err := db.loadDatabaseCutoverJournal(ctx, intent.OperationID)
+		if err != nil || readback.Phase != cutover.PhaseFinalSync || readback.Revision != 3 {
+			t.Fatalf("refused activation changed journal: %+v err=%v", readback, err)
+		}
+		return
 	}
 	if _, err := db.ActivateDatabaseCatalog(ctx, activeCatalog.Revision, catalog, "operator"); err != nil {
 		t.Fatalf("activate newer catalog: %v", err)

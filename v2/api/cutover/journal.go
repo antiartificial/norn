@@ -81,6 +81,21 @@ func NewPhaseEvidenceReference(j Journal, next Phase, evidenceSHA256 string) (Ph
 
 var ErrTransition = errors.New("database cutover transition rejected")
 
+// ErrExternalProofRequired prevents claimed consumer phases from being
+// recorded until a coordinator verifies retained external effects and owns
+// the generation-bound consumer switch. A reference hash alone is not proof.
+var ErrExternalProofRequired = errors.New("database cutover external proof and consumer switch required")
+
+// RequireVerifiedConsumerPhase is called by claimed store adapters after
+// validating the journal edge but before persisting it. Storage-only fixtures
+// may still exercise the full state machine without granting runtime authority.
+func RequireVerifiedConsumerPhase(next Phase) error {
+	if next == PhaseActivate || next == PhaseVerify || next == PhaseAccept {
+		return ErrExternalProofRequired
+	}
+	return nil
+}
+
 // IntentSHA256 is the canonical binding stored in a signed cutover operation.
 // It covers every immutable source, target, release and writer-inventory field.
 func IntentSHA256(intent Intent) (string, error) {
