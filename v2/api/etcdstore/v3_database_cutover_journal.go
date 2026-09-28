@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
@@ -80,7 +81,48 @@ func (s *V3OperationStore) PrepareClaimedDatabaseCutoverJournal(ctx context.Cont
 	if err != nil {
 		return cutover.Journal{}, err
 	}
+	catalogFences, err := s.cutoverCatalogComparisons(ctx, intent)
+	if err != nil {
+		return cutover.Journal{}, err
+	}
+	fences = append(fences, catalogFences...)
 	return s.prepareDatabaseCutoverJournalFenced(ctx, intent, fences)
+}
+
+// Read the active pointer and immutable revision, then pin both values in
+// the same transaction that creates the journal. A concurrent catalog switch
+// fails the transaction instead of journaling an obsolete binding.
+func (s *V3OperationStore) cutoverCatalogComparisons(ctx context.Context, intent cutover.Intent) ([]clientv3.Cmp, error) {
+	active, err := s.kv.Get(ctx, s.databaseCatalogActiveKey())
+	if err != nil {
+		return nil, err
+	}
+	if len(active.Kvs) != 1 {
+		return nil, errEtcdCutoverJournalConflict
+	}
+	revision, err := strconv.ParseInt(string(active.Kvs[0].Value), 10, 64)
+	if err != nil || revision != intent.CatalogRevision {
+		return nil, errEtcdCutoverJournalConflict
+	}
+	revisionKey := s.databaseCatalogRevisionKey(revision)
+	record, err := s.kv.Get(ctx, revisionKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(record.Kvs) != 1 {
+		return nil, errEtcdCutoverJournalConflict
+	}
+	catalog, err := decodeV3DatabaseCatalog(record.Kvs[0].Value, revision)
+	if err != nil {
+		return nil, errEtcdCutoverJournalConflict
+	}
+	if err := cutover.VerifyCatalog(intent, catalog.Revision, catalog.Digest, catalog.Catalog); err != nil {
+		return nil, err
+	}
+	return []clientv3.Cmp{
+		clientv3.Compare(clientv3.ModRevision(s.databaseCatalogActiveKey()), "=", active.Kvs[0].ModRevision),
+		clientv3.Compare(clientv3.ModRevision(revisionKey), "=", record.Kvs[0].ModRevision),
+	}, nil
 }
 
 func (s *V3OperationStore) prepareDatabaseCutoverJournalFenced(ctx context.Context, intent cutover.Intent, fences []clientv3.Cmp) (cutover.Journal, error) {

@@ -32,6 +32,10 @@ type Intent struct {
 	App                   string                  `json:"app"`
 	LogicalDatabase       string                  `json:"logicalDatabase"`
 	CandidateRelease      string                  `json:"candidateRelease"`
+	CatalogRevision       int64                   `json:"catalogRevision"`
+	CatalogDigest         string                  `json:"catalogDigest"`
+	SourceProfileID       string                  `json:"sourceProfileId"`
+	TargetProfileID       string                  `json:"targetProfileId"`
 	Source                database.TargetIdentity `json:"source"`
 	Target                database.TargetIdentity `json:"target"`
 	AuthorityGeneration   uint64                  `json:"authorityGeneration"`
@@ -65,10 +69,40 @@ func IntentSHA256(intent Intent) (string, error) {
 }
 
 func New(intent Intent) (Journal, error) {
-	if intent.SchemaVersion != "norn.database-cutover/v1" || !validName(intent.OperationID) || !validName(intent.App) || !validName(intent.LogicalDatabase) || !validName(intent.CandidateRelease) || intent.AuthorityGeneration == 0 || !validDigest(intent.WriterInventorySHA256) || !validTarget(intent.Source) || !validTarget(intent.Target) || intent.Source == intent.Target || intent.Source.Engine != intent.Target.Engine {
+	if intent.SchemaVersion != "norn.database-cutover/v2" || !validName(intent.OperationID) || !validName(intent.App) || !validName(intent.LogicalDatabase) || !validName(intent.CandidateRelease) || intent.CatalogRevision <= 0 || !validCatalogDigest(intent.CatalogDigest) || !validName(intent.SourceProfileID) || !validName(intent.TargetProfileID) || intent.SourceProfileID == intent.TargetProfileID || intent.AuthorityGeneration == 0 || !validDigest(intent.WriterInventorySHA256) || !validTarget(intent.Source) || !validTarget(intent.Target) || intent.Source == intent.Target || intent.Source.Engine != intent.Target.Engine {
 		return Journal{}, fmt.Errorf("%w: invalid immutable intent", ErrTransition)
 	}
 	return Journal{Intent: intent, Phase: PhasePrepare, Revision: 1, Receipts: map[Phase]string{}}, nil
+}
+
+// VerifyCatalog requires the current control catalog to resolve the same
+// logical database in distinct source and passive target profiles. It does
+// not verify provider connectivity, writer inventory or transfer receipts.
+func VerifyCatalog(intent Intent, revision int64, digest string, catalog database.Catalog) error {
+	if _, err := New(intent); err != nil {
+		return err
+	}
+	if revision != intent.CatalogRevision || digest != intent.CatalogDigest {
+		return fmt.Errorf("%w: active catalog revision or digest changed", ErrTransition)
+	}
+	resolver, err := database.NewResolver(catalog)
+	if err != nil {
+		return fmt.Errorf("%w: invalid active catalog", ErrTransition)
+	}
+	for _, item := range []struct {
+		profile      string
+		target       database.TargetIdentity
+		capabilities []database.Capability
+	}{
+		{intent.SourceProfileID, intent.Source, []database.Capability{database.CapabilityRuntime, database.CapabilitySnapshot}},
+		{intent.TargetProfileID, intent.Target, []database.Capability{database.CapabilityRuntime, database.CapabilityRestore}},
+	} {
+		resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: item.profile, Purpose: database.PurposeApplication, LogicalResourceID: intent.LogicalDatabase, Expected: &item.target, RequiredCapabilities: item.capabilities})
+		if err != nil || resolved.Target != item.target {
+			return fmt.Errorf("%w: source or target profile no longer resolves the signed database", ErrTransition)
+		}
+	}
+	return nil
 }
 
 // Advance validates one phase edge and returns a fresh value. The caller must
@@ -148,6 +182,9 @@ func validDigest(s string) bool {
 		}
 	}
 	return true
+}
+func validCatalogDigest(s string) bool {
+	return validDigest(s) || (strings.HasPrefix(s, "sha256:") && validDigest(strings.TrimPrefix(s, "sha256:")))
 }
 func validTarget(t database.TargetIdentity) bool {
 	return validName(t.ServiceID) && validName(t.BindingID) && validName(t.Database) && validName(t.Role) && t.ServiceGeneration > 0 && t.BindingGeneration > 0 && (t.Engine == database.EnginePostgreSQL || t.Engine == database.EngineMySQL)

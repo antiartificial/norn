@@ -9,9 +9,46 @@ import (
 )
 
 func testIntent() Intent {
-	return Intent{SchemaVersion: "norn.database-cutover/v1", OperationID: "op-1", App: "fixture", LogicalDatabase: "appdb", CandidateRelease: "sha256:release", AuthorityGeneration: 7, WriterInventorySHA256: strings.Repeat("a", 64),
+	return Intent{SchemaVersion: "norn.database-cutover/v2", OperationID: "op-1", App: "fixture", LogicalDatabase: "appdb", CandidateRelease: "sha256:release", CatalogRevision: 1, CatalogDigest: strings.Repeat("f", 64), SourceProfileID: "mini", TargetProfileID: "fleet", AuthorityGeneration: 7, WriterInventorySHA256: strings.Repeat("a", 64),
 		Source: database.TargetIdentity{ServiceID: "mini", ServiceGeneration: 1, BindingID: "old", BindingGeneration: 2, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"},
 		Target: database.TargetIdentity{ServiceID: "fleet", ServiceGeneration: 1, BindingID: "new", BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"}}
+}
+
+func TestVerifyCatalogRequiresExactLogicalBindingsAndRevision(t *testing.T) {
+	intent := testIntent()
+	service := func(id string, capabilities []database.Capability) database.DatabaseService {
+		return database.DatabaseService{APIVersion: database.APIVersion, ID: id, Generation: 1, Purpose: database.PurposeApplication, Engine: database.EnginePostgreSQL, EngineVersion: "16", ProviderRef: "local:" + id,
+			Endpoint: database.DatabaseEndpoint{Host: "127.0.0.1", Port: 5432}, Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
+			TLS: database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled}, Recovery: database.RecoveryPolicy{Capabilities: capabilities}}
+	}
+	catalog := database.Catalog{APIVersion: database.APIVersion,
+		Services: []database.DatabaseService{service("mini", []database.Capability{database.CapabilityRuntime, database.CapabilitySnapshot}), service("fleet", []database.Capability{database.CapabilityRuntime, database.CapabilityRestore})},
+		Bindings: []database.DatabaseBinding{
+			{APIVersion: database.APIVersion, ID: "old", ServiceID: "mini", Database: "appdb", Role: "runtime", Generation: 2, CredentialRef: "secret:old", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+			{APIVersion: database.APIVersion, ID: "new", ServiceID: "fleet", Database: "appdb", Role: "runtime", Generation: 1, CredentialRef: "secret:new", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+		},
+		Profiles: []database.DeploymentProfile{
+			{APIVersion: database.APIVersion, ID: "mini", Topology: database.DeploymentTopologyLocal, AvailabilityClass: database.AvailabilitySingleHost, DatabaseBindings: map[string]string{"appdb": "old"}},
+			{APIVersion: database.APIVersion, ID: "fleet", Topology: database.DeploymentTopologyLocal, AvailabilityClass: database.AvailabilitySingleHost, DatabaseBindings: map[string]string{"appdb": "new"}},
+		},
+	}
+	check := func(i Intent, revision int64, c database.Catalog, want bool) {
+		t.Helper()
+		err := VerifyCatalog(i, revision, intent.CatalogDigest, c)
+		if (err == nil) != want {
+			t.Fatalf("VerifyCatalog success=%v want=%v err=%v", err == nil, want, err)
+		}
+	}
+	check(intent, 1, catalog, true)
+	check(intent, 2, catalog, false)
+	retargeted := catalog
+	retargeted.Profiles = append([]database.DeploymentProfile(nil), catalog.Profiles...)
+	retargeted.Profiles[1].DatabaseBindings = map[string]string{"appdb": "old"}
+	check(intent, 1, retargeted, false)
+	missingRestore := catalog
+	missingRestore.Services = append([]database.DatabaseService(nil), catalog.Services...)
+	missingRestore.Services[1].Recovery.Capabilities = []database.Capability{database.CapabilityRuntime}
+	check(intent, 1, missingRestore, false)
 }
 
 func TestJournalRejectsStaleAndOutOfOrderPromotion(t *testing.T) {

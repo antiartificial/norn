@@ -44,6 +44,18 @@ func (db *DB) PrepareClaimedDatabaseCutoverJournal(ctx context.Context, acceptan
 		return cutover.Journal{}, err
 	}
 	defer tx.Rollback(context.Background())
+	// Match catalog activation's lock order and hold the catalog fixed until
+	// the claimed journal row is committed.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('norn:database-catalog', 0))`); err != nil {
+		return cutover.Journal{}, err
+	}
+	activeCatalog, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	if err := cutover.VerifyCatalog(intent, activeCatalog.Revision, activeCatalog.Digest, activeCatalog.Catalog); err != nil {
+		return cutover.Journal{}, err
+	}
 	var held bool
 	err = tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND app=$3 AND ref=$4
 		AND payload->>'cutoverIntentSha256'=$5 AND acceptance_required=true AND status='running'

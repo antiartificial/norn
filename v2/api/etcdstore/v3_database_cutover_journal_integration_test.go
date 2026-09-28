@@ -14,7 +14,7 @@ import (
 )
 
 func etcdTestCutoverIntent() cutover.Intent {
-	return cutover.Intent{SchemaVersion: "norn.database-cutover/v1", OperationID: uuid.NewString(), App: "fixture", LogicalDatabase: "appdb", CandidateRelease: "release-1", AuthorityGeneration: 3, WriterInventorySHA256: strings.Repeat("a", 64),
+	return cutover.Intent{SchemaVersion: "norn.database-cutover/v2", OperationID: uuid.NewString(), App: "fixture", LogicalDatabase: "appdb", CandidateRelease: "release-1", CatalogRevision: 1, CatalogDigest: strings.Repeat("f", 64), SourceProfileID: "mini", TargetProfileID: "fleet", AuthorityGeneration: 3, WriterInventorySHA256: strings.Repeat("a", 64),
 		Source: database.TargetIdentity{ServiceID: "mini", ServiceGeneration: 1, BindingID: "old", BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"},
 		Target: database.TargetIdentity{ServiceID: "fleet", ServiceGeneration: 1, BindingID: "new", BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"}}
 }

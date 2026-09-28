@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"norn/v2/api/cutover"
+	"norn/v2/api/database"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -16,6 +17,24 @@ func TestEtcdClaimedCutoverJournalBindsSignedIntentClaimAndAppLock(t *testing.T)
 	adapter, _, _ := privateInvocationEtcdStore(t)
 	ctx := context.Background()
 	intent := etcdTestCutoverIntent()
+	catalog := postgresCatalogFixture()
+	catalog.Services[0].ID = "mini"
+	catalog.Services[0].Recovery.Capabilities = []database.Capability{database.CapabilityRuntime, database.CapabilitySnapshot, database.CapabilityRestore}
+	targetService := catalog.Services[0]
+	targetService.ID, targetService.ProviderRef = "fleet", "local:fleet"
+	catalog.Services = append(catalog.Services, targetService)
+	catalog.Bindings[0].ID, catalog.Bindings[0].ServiceID, catalog.Bindings[0].Database, catalog.Bindings[0].Role = "old", "mini", "appdb", "runtime"
+	targetBinding := catalog.Bindings[0]
+	targetBinding.ID, targetBinding.ServiceID, targetBinding.CredentialRef = "new", "fleet", "secret:target"
+	catalog.Bindings = append(catalog.Bindings, targetBinding)
+	catalog.Profiles[0].ID = "mini"
+	catalog.Profiles[0].DatabaseBindings = map[string]string{"appdb": "old"}
+	catalog.Profiles = append(catalog.Profiles, database.DeploymentProfile{APIVersion: database.APIVersion, ID: "fleet", Topology: database.DeploymentTopologyLocal, AvailabilityClass: database.AvailabilitySingleHost, DatabaseBindings: map[string]string{"appdb": "new"}})
+	activeCatalog, err := adapter.ActivatePostgresDatabaseCatalog(ctx, 0, catalog, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.CatalogRevision, intent.CatalogDigest = activeCatalog.Revision, activeCatalog.Digest
 	digest, err := cutover.IntentSHA256(intent)
 	if err != nil {
 		t.Fatal(err)

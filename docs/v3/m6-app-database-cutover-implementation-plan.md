@@ -48,7 +48,7 @@ switching DNS is not rollback.
    identities, and one active consumer generation. Preserve the existing
    `app.deploy` target-change refusal.
 
-   `v2/api/cutover/journal.go` defines the shared v1 intent and ordered phase
+   `v2/api/cutover/journal.go` defines the shared v2 intent and ordered phase
    transition contract. Its tests reject same-target and mixed-engine intents,
    missing receipts, stale revisions and skipped activation. Control schema
    migration 46 now reserves a private PostgreSQL journal table, classifies
@@ -63,8 +63,8 @@ switching DNS is not rollback.
    single-member etcd test passed exact replay, retarget refusal, concurrent
    advancement and active-resource loss. Both store readers reconstruct the
    complete ordered receipt chain before returning a journal. This is
-   **storage only**: no app lock, catalog binding, verified external receipt or
-   consumer-generation switch calls either adapter yet. A private PG entrypoint
+   **storage only**: no verified external receipt or consumer-generation switch
+   calls either adapter yet. A private PG entrypoint
    now checks the signed `database.cutover` operation's exact intent SHA-256,
    candidate release and current operation claim in the same transaction that
    creates or advances its journal. The generic operation finisher refuses
@@ -78,6 +78,15 @@ switching DNS is not rollback.
    preparation, exact replay, retarget/stale-claim/wrong-lock refusal,
    ordered advancement and generic-success refusal. Neither path grants
    runtime authority, and the ordinary deployment guard remains in force.
+   Claimed preparation now pins the active catalog revision and digest in the
+   signed intent and requires the same logical database to resolve to exact
+   source and target bindings in separate profiles. Source must advertise
+   runtime/snapshot and target runtime/restore. PG holds the catalog activation
+   advisory lock through journal commit; etcd compares the active pointer and
+   immutable revision in that transaction. This is a preparation gate for the
+   first single-control-catalog path. Later phase advancement still needs
+   catalog drift and external-effect gates; it does not imply a cross-control-
+   plane migration or a working data transfer.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

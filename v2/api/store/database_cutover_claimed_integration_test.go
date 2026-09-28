@@ -16,10 +16,26 @@ func TestClaimedDatabaseCutoverJournalRequiresSignedIntentAndLiveClaim(t *testin
 	stores, dbs := acceptanceIntegrationStores(t, 1)
 	ctx := context.Background()
 	acceptance, db := stores[0], dbs[0]
+	catalog := storeTestCatalog()
+	catalog.Services[0].ID, catalog.Services[1].ID = "mini", "fleet"
+	for i := range catalog.Services {
+		catalog.Services[i].Recovery.Capabilities = []database.Capability{database.CapabilityRuntime, database.CapabilitySnapshot, database.CapabilityRestore}
+	}
+	catalog.Bindings = []database.DatabaseBinding{
+		{APIVersion: database.APIVersion, ID: "old", ServiceID: "mini", Database: "appdb", Role: "runtime", Generation: 1, CredentialRef: "secret:old", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+		{APIVersion: database.APIVersion, ID: "new", ServiceID: "fleet", Database: "appdb", Role: "runtime", Generation: 1, CredentialRef: "secret:new", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+	}
+	catalog.Profiles[0].DatabaseBindings = map[string]string{"appdb": "old"}
+	catalog.Profiles[0].LegacyPostgres = nil
+	catalog.Profiles = append(catalog.Profiles, database.DeploymentProfile{APIVersion: database.APIVersion, ID: "fleet", Topology: database.DeploymentTopologyLocal, AvailabilityClass: database.AvailabilitySingleHost, DatabaseBindings: map[string]string{"appdb": "new"}})
+	activeCatalog, err := db.ActivateDatabaseCatalog(ctx, 0, catalog, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := newAcceptance(t, acceptance, "cutover-once", "operator", "fixture", false)
 	a.Identity.Kind, a.Identity.Resource = DatabaseCutoverOperationKind, "app/fixture/database/appdb"
 	a.Operation.Kind, a.Operation.Ref, a.Operation.MaxAttempts, a.Operation.Risk = DatabaseCutoverOperationKind, "release-1", 1, "write"
-	intent := cutover.Intent{SchemaVersion: "norn.database-cutover/v1", OperationID: a.Operation.ID, App: "fixture", LogicalDatabase: "appdb", CandidateRelease: a.Operation.Ref, AuthorityGeneration: 3, WriterInventorySHA256: strings.Repeat("a", 64),
+	intent := cutover.Intent{SchemaVersion: "norn.database-cutover/v2", OperationID: a.Operation.ID, App: "fixture", LogicalDatabase: "appdb", CandidateRelease: a.Operation.Ref, CatalogRevision: activeCatalog.Revision, CatalogDigest: activeCatalog.Digest, SourceProfileID: "mini", TargetProfileID: "fleet", AuthorityGeneration: 3, WriterInventorySHA256: strings.Repeat("a", 64),
 		Source: database.TargetIdentity{ServiceID: "mini", ServiceGeneration: 1, BindingID: "old", BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"},
 		Target: database.TargetIdentity{ServiceID: "fleet", ServiceGeneration: 1, BindingID: "new", BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"}}
 	digest, err := cutover.IntentSHA256(intent)

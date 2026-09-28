@@ -28,7 +28,7 @@ func TestDatabaseCutoverJournalPersistsCASAndRejectsResourceCollision(t *testing
 	if _, err := pool.Exec(ctx, `INSERT INTO operations(id,kind,app) VALUES ($1,'database.cutover','fixture')`, id); err != nil {
 		t.Fatal(err)
 	}
-	intent := cutover.Intent{SchemaVersion: "norn.database-cutover/v1", OperationID: id, App: "fixture", LogicalDatabase: "appdb", CandidateRelease: "release-1", AuthorityGeneration: 3, WriterInventorySHA256: strings.Repeat("a", 64),
+	intent := cutover.Intent{SchemaVersion: "norn.database-cutover/v2", OperationID: id, App: "fixture", LogicalDatabase: "appdb", CandidateRelease: "release-1", CatalogRevision: 1, CatalogDigest: strings.Repeat("f", 64), SourceProfileID: "mini", TargetProfileID: "fleet", AuthorityGeneration: 3, WriterInventorySHA256: strings.Repeat("a", 64),
 		Source: database.TargetIdentity{ServiceID: "mini", ServiceGeneration: 1, BindingID: "old", BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"},
 		Target: database.TargetIdentity{ServiceID: "fleet", ServiceGeneration: 1, BindingID: "new", BindingGeneration: 1, Engine: database.EnginePostgreSQL, Database: "appdb", Role: "runtime"}}
 	j, err := db.prepareDatabaseCutoverJournal(ctx, intent)
