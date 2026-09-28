@@ -1,15 +1,45 @@
 package worker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	nomadapi "github.com/hashicorp/nomad/api"
+
+	"norn/v2/api/database"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
+
+type claimedInputStagerFake struct {
+	calls  int
+	tamper bool
+}
+
+func (f *claimedInputStagerFake) PrepareManagedDeploymentJob(_ context.Context, deployment *model.Deployment, spec *model.InfraSpec,
+	region model.ResolvedRegion, revision int64, targets map[string]database.TargetIdentity, _ map[string]string,
+	_ nomad.ManagedJobSecretSource) (*nomadapi.Job, nomad.DeploymentJobEffectInput, error) {
+	f.calls++
+	input, err := nomad.BuildManagedDeploymentJobEffectInput(deployment, spec, region, revision, targets)
+	if err != nil {
+		return nil, input, err
+	}
+	job, err := nomad.TranslateManagedDeploymentForRegionAt(spec, deployment.ImageTag, nil, region, deployment.ID, revision)
+	if err != nil {
+		return nil, input, err
+	}
+	if f.tamper {
+		if job.Meta == nil {
+			job.Meta = map[string]string{}
+		}
+		job.Meta["unexpected"] = "different revision"
+	}
+	return job, input, nil
+}
 
 func TestLoadClaimedFleetDeploymentSourcePinsDeployableSpec(t *testing.T) {
 	root := t.TempDir()
@@ -67,6 +97,15 @@ endpoints:
 	remote := &deploymentStepRemote{state: nomad.DeploymentJobFound}
 	if decision, err := EnsureDeploymentJobEffect(t.Context(), effects, remote, plan.Reservation, plan.Job); err != nil || decision.State != DeploymentJobEffectObserved || remote.submits != 1 {
 		t.Fatalf("planned job was refused by effect boundary: decision=%+v err=%v submits=%d", decision, err, remote.submits)
+	}
+	stager := &claimedInputStagerFake{}
+	staged, err := PrepareClaimedFleetDeploymentJob(t.Context(), bound, claim, "test-authority", stager, nil, nil)
+	if err != nil || stager.calls != 1 || staged.Input.JobDigest != plan.Input.JobDigest || staged.Reservation.InputDigest != plan.Reservation.InputDigest {
+		t.Fatalf("staged job differs from signed plan: calls=%d err=%v jobDigest=%q want=%q inputDigest=%q want=%q", stager.calls, err, staged.Input.JobDigest, plan.Input.JobDigest, staged.Reservation.InputDigest, plan.Reservation.InputDigest)
+	}
+	stager.tamper = true
+	if _, err := PrepareClaimedFleetDeploymentJob(t.Context(), bound, claim, "test-authority", stager, nil, nil); err == nil {
+		t.Fatal("staged Nomad revision differed from the signed plan")
 	}
 	badRoute := bound
 	badRoute.Route.Region = "other"

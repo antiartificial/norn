@@ -4,9 +4,39 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"norn/v2/api/model"
 )
+
+func TestManagedDeploymentJobDigestIsStableAcrossReconstruction(t *testing.T) {
+	spec := &model.InfraSpec{App: "orders", Processes: map[string]model.Process{
+		"web": {Port: 8080}, "admin": {Port: 9090}, "worker": {Command: "run-worker"},
+	}}
+	region := spec.ResolvedRegions()[0]
+	var want string
+	for i := 0; i < 10; i++ {
+		job, err := TranslateForManagedDeployment(spec, "orders:test", nil, region, "deployment-one")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := job.Meta["deploy_ts"]; exists {
+			t.Fatal("managed revision retained a wall-clock deploy marker")
+		}
+		if len(job.TaskGroups) != 3 || *job.TaskGroups[0].Name != "admin" || *job.TaskGroups[1].Name != "web" || *job.TaskGroups[2].Name != "worker" {
+			t.Fatalf("managed task group order is unstable: %+v", job.TaskGroups)
+		}
+		digest, err := DigestDeploymentJob(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i > 0 && digest != want {
+			t.Fatalf("reconstructed managed job digest changed: %s != %s", digest, want)
+		}
+		want = digest
+		time.Sleep(2 * time.Millisecond)
+	}
+}
 
 func TestManagedDeploymentBackendsAreRevisionSpecificAndDoNotClaimPublicHost(t *testing.T) {
 	spec := &model.InfraSpec{

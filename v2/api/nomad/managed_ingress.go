@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"sort"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 
@@ -53,6 +54,12 @@ func TranslateManagedDeploymentForRegionAt(spec *model.InfraSpec, imageTag strin
 		return nil, err
 	}
 	job := translateForRegionAtWithJobID(spec, imageTag, env, region, databaseRevision, inputs.JobID)
+	// This job ID is unique to the accepted deployment. A wall-clock deploy
+	// marker would change the effect digest across a retry or successor claim.
+	delete(job.Meta, "deploy_ts")
+	// Service processes originate in a map; the effect digest and Nomad CAS
+	// readback require the same task-group sequence on every reconstruction.
+	sort.Slice(job.TaskGroups, func(i, j int) bool { return *job.TaskGroups[i].Name < *job.TaskGroups[j].Name })
 	for process, definition := range spec.Processes {
 		if definition.Port <= 0 || !spec.ProcessRunsInRegion(definition, region.Name) {
 			continue
