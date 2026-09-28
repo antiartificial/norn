@@ -126,6 +126,8 @@ The same review found that the deployment secret source's deferred close ran
 before the worker context's deferred cancellation. Runtime shutdown now
 cancels and joins all selected workers before closing that secret source and
 the etcd client; signal shutdown cancels worker claims before draining the API.
+SIGINT/SIGTERM registration now precedes worker launch, so a termination in
+that startup interval reaches the orderly shutdown path.
 The main API package tests passed locally. A protected interruption rehearsal
 is still needed to validate in-flight external effects and successor recovery.
 

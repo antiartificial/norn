@@ -200,6 +200,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return fmt.Errorf("etcd Fleet runtime listen: %w", err)
 	}
 	defer listener.Close()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
 	// Complete selected runtime and listener preflights before any worker can
 	// claim queued work. Invalid release policy or a failed bind must not leave
 	// a short window for a deployment effect.
@@ -226,8 +229,6 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 			errCh <- e
 		}
 	}()
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case e := <-errCh:
 		return e
