@@ -113,6 +113,16 @@ Focused tests reject a staging-scoped promotion token on production before
 request processing. Existing legacy/admin and API-write compatibility paths
 remain separate; the change narrows scoped release tokens only.
 
+An exact source review of the opt-in etcd Fleet release startup found that
+catalog, canary, and deployment workers were launched before the release
+verifier policy was constructed. An invalid verifier configuration could then
+terminate startup after a worker had briefly claimed queued work. Worker
+launch now follows all selected canary, deployment transport, and release
+verifier preflights, router construction, and a successful API listener bind.
+Focused preflight tests and the main API package tests passed locally. This
+removes the identified startup window for configuration and bind failures; it does not
+qualify protected effects or sign a release gate.
+
 ## Lane 1 Mini-preservation checkpoint
 
 At exact head `7e21e324a410f40c72682ec7ed696660cb2240ad`, the hosted V3

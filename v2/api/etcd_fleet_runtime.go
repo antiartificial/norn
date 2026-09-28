@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -87,7 +88,6 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
-	go catalogWorker.Run(workerCtx)
 	workerEnabled, canaryHTTPEnabled, err := etcdCanaryPreviewFlags(os.Getenv)
 	if err != nil {
 		return err
@@ -98,18 +98,15 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		if err != nil {
 			return fmt.Errorf("configure etcd canary worker: %w", err)
 		}
-		go canary.worker.Run(workerCtx)
-		log.Printf("etcd canary operation worker enabled; HTTP preview=%t", canaryHTTPEnabled)
 	}
 	deployConfig := strings.TrimSpace(os.Getenv(etcdFleetDeployWorkerConfigEnv))
+	var deploy *etcdFleetDeployRuntime
 	if deployConfig != "" {
-		deploy, err := newEtcdFleetDeployRuntime(workerCtx, cfg, operations, deployConfig)
+		deploy, err = newEtcdFleetDeployRuntime(workerCtx, cfg, operations, deployConfig)
 		if err != nil {
 			return fmt.Errorf("configure etcd Fleet deploy worker: %w", err)
 		}
 		defer deploy.secrets.Close()
-		go deploy.worker.Run(workerCtx)
-		log.Print("etcd Fleet app.deploy worker enabled for signed claimed operations")
 	}
 	releaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetReleaseHTTPEnv)), "true")
 	var releaseVerifier *pipeline.Pipeline
@@ -122,7 +119,6 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 			return fmt.Errorf("configure etcd Fleet release admission: %w", err)
 		}
 	}
-
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer)
 	router.Get("/api/health", sourceValidationHealthHandler(client, backend.EtcdPrefix))
@@ -192,10 +188,27 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		http.NotFound(w, r)
 	})
 	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: router, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("etcd Fleet runtime listen: %w", err)
+	}
+	defer listener.Close()
+	// Complete selected runtime and listener preflights before any worker can
+	// claim queued work. Invalid release policy or a failed bind must not leave
+	// a short window for a deployment effect.
+	go catalogWorker.Run(workerCtx)
+	if canary != nil {
+		go canary.worker.Run(workerCtx)
+		log.Printf("etcd canary operation worker enabled; HTTP preview=%t", canaryHTTPEnabled)
+	}
+	if deploy != nil {
+		go deploy.worker.Run(workerCtx)
+		log.Print("etcd Fleet app.deploy worker enabled for signed claimed operations")
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("norn %s etcd Fleet runtime listening on %s", Version, srv.Addr)
-		if e := srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {
+		if e := srv.Serve(listener); e != nil && e != http.ErrServerClosed {
 			errCh <- e
 		}
 	}()
