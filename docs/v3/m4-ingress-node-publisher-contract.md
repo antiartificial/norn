@@ -155,7 +155,10 @@ variables, submit the job, or publish ingress. The next private step stages
 and reads back managed Nomad inputs, then rejects a prepared job that differs
 from that signed plan. Managed revision translation now omits the legacy
 wall-clock deploy marker and sorts task groups; retries reconstruct the same
-job digest and effect identity. Normal worker execution remains disabled.
+job digest and effect identity. The private Nomad step now carries the effect
+token through submit readback and healthy allocation evidence; pending health
+defers without resubmitting, and a successor claim can reuse a completed
+health effect. Normal worker execution remains disabled.
 
 - Fleet must install one narrowly scoped publisher on every ingress host. It
   writes only `norn-route-<32 lowercase hex>.yaml` below

@@ -39,7 +39,9 @@ const (
 type DeploymentJobEffectDecision struct {
 	State       DeploymentJobEffectState
 	EffectID    string
+	Token       effect.Token
 	Attempted   bool
+	Healthy     bool
 	Observation nomad.DeploymentJobObservation
 }
 
@@ -74,6 +76,17 @@ func EnsureDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffectS
 		reserved.Record.Reservation.OperationClaim.OperationID != reservation.OperationClaim.OperationID {
 		return DeploymentJobEffectDecision{}, fmt.Errorf("deployment effect store returned different work")
 	}
+	if reserved.Record.Lifecycle == effect.LifecycleCompleted {
+		completion := reserved.Record.Completion
+		attempted, err := effects.SubmitAttempted(ctx, reserved.Record.Token)
+		if err != nil || !attempted || completion == nil || completion.Outcome != effect.OutcomeSucceeded ||
+			completion.Verification.Decision != effect.VerificationSucceeded || completion.Verification.InputDigest != reservation.InputDigest ||
+			completion.Verification.EvidenceSource != "nomad-job-health" {
+			return DeploymentJobEffectDecision{}, fmt.Errorf("completed deployment effect lacks a verified Nomad health result")
+		}
+		return DeploymentJobEffectDecision{State: DeploymentJobEffectObserved, EffectID: reserved.Record.Token.EffectID,
+			Token: reserved.Record.Token, Attempted: true, Healthy: true}, nil
+	}
 	if reserved.Created {
 		allowed, err := effects.MarkSubmitAttempt(ctx, reserved.Record.Token)
 		if err != nil {
@@ -104,7 +117,7 @@ func ObserveDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffect
 	if err != nil {
 		return DeploymentJobEffectDecision{}, err
 	}
-	decision := DeploymentJobEffectDecision{State: DeploymentJobEffectUnresolved, EffectID: record.Token.EffectID, Attempted: attempted}
+	decision := DeploymentJobEffectDecision{State: DeploymentJobEffectUnresolved, EffectID: record.Token.EffectID, Token: record.Token, Attempted: attempted}
 	if !attempted {
 		return decision, nil
 	}
@@ -141,7 +154,7 @@ func CompleteDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffec
 	if err != nil {
 		return DeploymentJobEffectDecision{}, err
 	}
-	decision := DeploymentJobEffectDecision{State: DeploymentJobEffectUnresolved, EffectID: record.Token.EffectID, Attempted: attempted}
+	decision := DeploymentJobEffectDecision{State: DeploymentJobEffectUnresolved, EffectID: record.Token.EffectID, Token: record.Token, Attempted: attempted}
 	if !attempted {
 		return decision, nil
 	}
@@ -177,6 +190,7 @@ func CompleteDeploymentJobEffect(ctx context.Context, effects DeploymentJobEffec
 		return decision, err
 	}
 	decision.State = DeploymentJobEffectObserved
+	decision.Healthy = true
 	decision.Observation = nomad.DeploymentJobObservation{State: nomad.DeploymentJobFound, Version: health.JobVersion, JobModifyIndex: health.JobModifyIndex}
 	return decision, nil
 }

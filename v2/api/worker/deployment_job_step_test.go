@@ -16,6 +16,7 @@ import (
 )
 
 var _ DeploymentJobEffectStore = (*etcdstore.V3DeploymentEffectReservations)(nil)
+var _ ClaimedDeploymentEffectStore = (*etcdstore.V3DeploymentEffectReservations)(nil)
 
 type deploymentStepEffects struct {
 	record     effect.Record
@@ -57,7 +58,17 @@ func (f *deploymentStepEffects) MarkLaunched(_ context.Context, _ effect.Token, 
 func (f *deploymentStepEffects) Complete(_ context.Context, _ effect.Token, completion effect.Completion) error {
 	f.completed++
 	f.completion = completion
+	f.record.Lifecycle = effect.LifecycleCompleted
+	f.record.Completion = &completion
 	return nil
+}
+
+func (f *deploymentStepEffects) UnresolvedForResource(_ context.Context, authority, resource string) (effect.Record, bool, error) {
+	if f.record.Reservation.Authority == authority && f.record.Reservation.Resource == resource &&
+		(f.record.Lifecycle == effect.LifecycleReserved || f.record.Lifecycle == effect.LifecycleLaunched) {
+		return f.record, true, nil
+	}
+	return effect.Record{}, false, nil
 }
 
 type deploymentStepRemote struct {
@@ -138,6 +149,48 @@ func TestEnsureDeploymentJobEffectSubmitsOnceThenObserves(t *testing.T) {
 	decision, err = EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job)
 	if err != nil || decision.State != DeploymentJobEffectObserved || remote.submits != 1 || effects.marks != 1 || effects.launched != 1 {
 		t.Fatalf("replay=%+v submits=%d marks=%d launched=%d err=%v", decision, remote.submits, effects.marks, effects.launched, err)
+	}
+}
+
+func TestEnsureDeploymentJobEffectReusesCompletedHealthWithoutResubmission(t *testing.T) {
+	r, job := deploymentStepFixture(t)
+	token := effect.Token{EffectID: "completed-effect", Generation: 1}
+	effects := &deploymentStepEffects{attempted: true, record: effect.Record{Token: token, Reservation: r, Lifecycle: effect.LifecycleCompleted,
+		Completion: &effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: effect.Verification{
+			Decision: effect.VerificationSucceeded, InputDigest: r.InputDigest, EvidenceSource: "nomad-job-health"}}}}
+	remote := &deploymentStepRemote{}
+	decision, err := EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job)
+	if err != nil || !decision.Healthy || decision.Token != token || !decision.Attempted || remote.submits != 0 || remote.lookups != 0 || effects.marks != 0 {
+		t.Fatalf("completed effect replay=%+v err=%v submits=%d lookups=%d marks=%d", decision, err, remote.submits, remote.lookups, effects.marks)
+	}
+	r.OperationClaim.OwnerID, r.OperationClaim.Generation = "successor-worker", 2
+	decision, err = EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job)
+	if err != nil || !decision.Healthy || decision.Token != token || remote.submits != 0 {
+		t.Fatalf("successor claim replay=%+v err=%v submits=%d", decision, err, remote.submits)
+	}
+	effects.record.Completion.Verification.EvidenceSource = "untrusted-health"
+	if _, err := EnsureDeploymentJobEffect(context.Background(), effects, remote, r, job); err == nil {
+		t.Fatal("completed effect without Nomad health evidence was reused")
+	}
+}
+
+func TestAdvanceClaimedFleetDeploymentJobDefersHealthAndReusesSubmit(t *testing.T) {
+	r, job := deploymentStepFixture(t)
+	plan := ClaimedFleetDeploymentJobPlan{Job: job, Reservation: r}
+	effects := &deploymentStepEffects{created: true}
+	remote := &deploymentStepRemote{state: nomad.DeploymentJobFound}
+	if _, err := AdvanceClaimedFleetDeploymentJob(context.Background(), effects, remote, plan); !effect.IsDeferred(err) || remote.submits != 1 || effects.completed != 0 {
+		t.Fatalf("unhealthy job was completed or retried: err=%v submits=%d completions=%d", err, remote.submits, effects.completed)
+	}
+	remote.health = nomad.DeploymentJobHealthObservation{State: nomad.DeploymentJobHealthReady, JobVersion: 1, JobModifyIndex: 12, AllocationIDs: []string{"alloc-1"}}
+	token, err := AdvanceClaimedFleetDeploymentJob(context.Background(), effects, remote, plan)
+	if err != nil || token != effects.record.Token || effects.completed != 1 || remote.submits != 1 {
+		t.Fatalf("healthy job reconciliation token=%+v err=%v completions=%d submits=%d", token, err, effects.completed, remote.submits)
+	}
+	before := remote.lookups
+	replayed, err := AdvanceClaimedFleetDeploymentJob(context.Background(), effects, remote, plan)
+	if err != nil || replayed != token || remote.lookups != before || remote.submits != 1 || effects.completed != 1 {
+		t.Fatalf("completed effect replay token=%+v err=%v lookups=%d submits=%d completions=%d", replayed, err, remote.lookups, remote.submits, effects.completed)
 	}
 }
 
