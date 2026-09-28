@@ -36,6 +36,11 @@ source and constructs the claimed Nomad job plan without submitting it.
 Fleet target configuration refuses a change while any indexed app operation
 is active; its transaction compares the app admission fence so a concurrent
 acceptance cannot slip between the active-work read and target write.
+The first-route builder now requires an unambiguous HTTPS endpoint backed by
+a translated Nomad service group before artifact verification or acceptance.
+The database binder also refuses legacy migrations even when the app has no
+named database. These checks keep known unsupported work out of the durable
+queue; they do not replace a claimed worker and traffic rehearsal.
 Before enabling the flag, the verifier policy, scoped GitHub OIDC exchange,
 worker credentials, supported app shapes, and protected traffic rollback
 still require review and rehearsals.

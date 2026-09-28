@@ -12,6 +12,7 @@ import (
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleetdeploy"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
 
@@ -59,19 +60,38 @@ func buildEtcdFleetReleaseAcceptance(ctx context.Context, input fleetReleaseAdmi
 	if err := model.ValidateReleaseSpecBinding(input.Spec, input.Candidate, input.Artifact, input.RegistryURL); err != nil {
 		return store.OperationAcceptance{}, err
 	}
-	if err := verify(ctx, input.Spec, input.SourceSHA, input.Artifact, input.Candidate); err != nil {
-		return store.OperationAcceptance{}, fmt.Errorf("verify Fleet release artifact: %w", err)
-	}
 	databaseTargets, err := fleetdeploy.BindFirstFleetDeploymentDatabases(input.Spec, input.DatabaseProfile, input.DatabaseCatalog)
 	if err != nil {
 		return store.OperationAcceptance{}, fmt.Errorf("bind first Fleet deployment databases: %w", err)
+	}
+	endpoint, err := model.ResolveFleetRouteEndpoint(input.Spec, regions[0].Name)
+	if err != nil {
+		return store.OperationAcceptance{}, fmt.Errorf("first Fleet route source: %w", err)
+	}
+	deploymentID := uuid.NewString()
+	job, err := nomad.TranslateManagedDeploymentForRegionAt(input.Spec, input.Artifact, nil, regions[0], deploymentID, input.DatabaseCatalog.Revision)
+	if err != nil {
+		return store.OperationAcceptance{}, fmt.Errorf("first Fleet Nomad service shape: %w", err)
+	}
+	if job == nil {
+		return store.OperationAcceptance{}, fmt.Errorf("first Fleet Nomad service shape is unavailable")
+	}
+	serviceFound := false
+	for _, group := range job.TaskGroups {
+		serviceFound = serviceFound || (group != nil && group.Name != nil && *group.Name == endpoint.Process && len(group.Tasks) > 0 && len(group.Services) > 0)
+	}
+	if !serviceFound {
+		return store.OperationAcceptance{}, fmt.Errorf("first Fleet endpoint has no translated Nomad service group")
+	}
+	if err := verify(ctx, input.Spec, input.SourceSHA, input.Artifact, input.Candidate); err != nil {
+		return store.OperationAcceptance{}, fmt.Errorf("verify Fleet release artifact: %w", err)
 	}
 	specDigest, err := model.InfraSpecDigest(input.Spec)
 	if err != nil {
 		return store.OperationAcceptance{}, err
 	}
 	now := time.Now().UTC()
-	deploymentID, sagaID := uuid.NewString(), uuid.NewString()
+	sagaID := uuid.NewString()
 	deployment := &model.Deployment{ID: deploymentID, App: input.Spec.App, CommitSHA: input.SourceSHA, ImageTag: input.Artifact,
 		SpecDigest: specDigest, Environment: "staging", SagaID: sagaID, Status: model.StatusQueued,
 		SourceKind: "release", SourceRef: input.SourceSHA, StartedAt: now}

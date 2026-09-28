@@ -18,7 +18,9 @@ func TestBuildEtcdFleetReleaseAcceptanceUsesServerPlacementAndVerifier(t *testin
 	input := fleetReleaseAdmissionInputs{
 		Authority: "control", Actor: store.OperationActor{Issuer: "github-actions", Subject: "run-1"}, IdempotencyKey: "release-1",
 		Audit: store.AcceptanceAuditContext{Source: "test"},
-		Spec:  &model.InfraSpec{App: "demo", Deploy: true, Repo: &model.RepoSpec{URL: "https://github.com/acme/demo"}},
+		Spec: &model.InfraSpec{App: "demo", Deploy: true, Repo: &model.RepoSpec{URL: "https://github.com/acme/demo"},
+			Processes: map[string]model.Process{"web": {Command: "sleep 1", Port: 8080}},
+			Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "local", Process: "web"}}},
 		Target: etcdstore.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: "demo", ControlEnvironment: "staging",
 			Cluster: "staging-cluster", FleetEnvironment: "staging/local", Region: "local", NomadRegion: "global",
 			Datacenters: []string{"dc1"}, Generation: 1},
@@ -53,6 +55,11 @@ func TestBuildEtcdFleetReleaseAcceptanceUsesServerPlacementAndVerifier(t *testin
 		t.Fatal("disabled app reached artifact verifier or admission")
 	}
 	input.Spec.Deploy = true
+	input.Spec.Endpoints = nil
+	if _, err := buildEtcdFleetReleaseAcceptance(context.Background(), input, verify); err == nil || verified != 1 {
+		t.Fatal("missing first-route endpoint reached artifact verifier or admission")
+	}
+	input.Spec.Endpoints = []model.Endpoint{{URL: "https://demo.example.test", Region: "local", Process: "web"}}
 	input.Target.Region = "other"
 	if _, err := buildEtcdFleetReleaseAcceptance(context.Background(), input, verify); err == nil || verified != 1 {
 		t.Fatal("mismatched placement reached artifact verifier or admission")

@@ -173,11 +173,11 @@ func TestV3PrivateDeploymentRejectsUnboundFleetTargetEtcd(t *testing.T) {
 	}
 	target.Generation++
 	target.Cluster = "replacement"
-	if _, err := adapter.putFleetAppTarget(ctx, target, revision); err != nil {
-		t.Fatal(err)
+	if _, err := adapter.putFleetAppTarget(ctx, target, revision); err == nil {
+		t.Fatal("Fleet target changed beside active deployment")
 	}
 	if replayed, err := adapter.ResolveIdentity(ctx, request.Identity); err != nil || !replayed.Replayed || replayed.Intent.ID != accepted.Intent.ID {
-		t.Fatalf("target replacement changed signed replay: %+v err=%v", replayed, err)
+		t.Fatalf("blocked target replacement changed signed replay: %+v err=%v", replayed, err)
 	}
 	acceptanceKey := adapter.acceptanceKey(request.Identity)
 	stored, err := client.Get(ctx, acceptanceKey)

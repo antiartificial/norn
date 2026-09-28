@@ -54,4 +54,8 @@ func TestBindFirstFleetDeploymentDatabasesUsesCatalogIdentitiesOnly(t *testing.T
 	if _, err := BindFirstFleetDeploymentDatabases(legacy, "local", active); err == nil {
 		t.Fatal("first-route binder admitted ambient legacy PostgreSQL")
 	}
+	noDatabaseMigration := &model.InfraSpec{App: "pilot", Migrations: "./migrate"}
+	if _, err := BindFirstFleetDeploymentDatabases(noDatabaseMigration, "local", active); err == nil {
+		t.Fatal("first-route binder admitted a legacy migration with no named database")
+	}
 }

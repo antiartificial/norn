@@ -21,14 +21,14 @@ func BindFirstFleetDeploymentDatabases(spec *model.InfraSpec, profile string,
 	if spec == nil {
 		return "", fmt.Errorf("first Fleet database source is unavailable")
 	}
+	if spec.Migrations != "" || spec.MigrationDatabase != "" || spec.MigrationPostcondition != nil {
+		return "", fmt.Errorf("first Fleet deployment cannot skip declared database migration")
+	}
 	if !spec.NamedDatabases() {
 		if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
 			return "", fmt.Errorf("first Fleet deployment cannot use an ambient legacy PostgreSQL target")
 		}
 		return "", nil
-	}
-	if spec.MigrationDatabase != "" || spec.MigrationPostcondition != nil {
-		return "", fmt.Errorf("first Fleet deployment cannot skip declared database migration")
 	}
 	if profile == "" || active.Revision < 1 {
 		return "", fmt.Errorf("first Fleet database profile or catalog is unavailable")
