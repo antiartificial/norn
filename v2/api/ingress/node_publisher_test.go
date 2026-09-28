@@ -43,6 +43,20 @@ func TestNodePublisherUsesLiveAuthorityAndRejectsCallerRoute(t *testing.T) {
 	if response.Code != http.StatusUnauthorized || calls != 0 {
 		t.Fatalf("unverified publish status=%d authority calls=%d", response.Code, calls)
 	}
+	health := verifiedReadbackRequest(t, "/v1/health", identity)
+	health.Method = http.MethodGet
+	unverifiedHealth := health.Clone(context.Background())
+	unverifiedHealth.TLS = nil
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, unverifiedHealth)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unverified publisher health status=%d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, health)
+	if response.Code != http.StatusOK || response.Body.String() != `{"nodeId":"ingress-1"}`+"\n" || calls != 0 {
+		t.Fatalf("private publisher health status=%d body=%q authority calls=%d", response.Code, response.Body.String(), calls)
+	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request(`{"intentId":"reserved-intent","route":"forged"}`))
 	if response.Code != http.StatusBadRequest || calls != 0 {

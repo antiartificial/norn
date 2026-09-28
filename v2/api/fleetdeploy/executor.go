@@ -81,6 +81,9 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if err := requireClaimedFleetNodeIdentities(inventory.Nodes, e.Route.NodeURIs); err != nil {
 		return nil, err
 	}
+	if err := ingress.ProbePublisherNodesWithTLS(ctx, e.Route.PublisherCAPEM, e.Route.PublisherCertPEM, e.Route.PublisherKeyPEM, inventory.Nodes, e.Route.PublisherPort); err != nil {
+		return nil, fmt.Errorf("claimed Fleet publisher preflight failed: %w", err)
+	}
 	if len(source.Managed.RuntimeTargets) > 0 {
 		if e.DatabaseProfile == "" || source.Managed.ProfileID != e.DatabaseProfile || e.JobSecrets == nil {
 			return nil, fmt.Errorf("claimed Fleet database profile differs from this worker")

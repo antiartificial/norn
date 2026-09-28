@@ -28,6 +28,12 @@ normal executor now requires a distinct `publisherPort` and derives publisher
 origins from those exact private inventory IPs; it keeps the observer URLs for
 readback. Without this separation, fanout would send `/v1/routes/publish` to
 the observer port and could not complete the route transaction.
+Before staging managed inputs or submitting a Nomad job, the executor now
+requires an authenticated `GET /v1/health` response carrying the exact node ID
+from every active inventory publisher. The health route requires the pinned
+control mTLS identity and does not call route authority or mutate a file. It
+proves the private service can be reached at preflight time, not that later
+publication or public traffic will succeed.
 This contract connects the canonical route renderer and local
 generation-fenced file publisher to Fleet's loopback Traefik readback. The
 normal etcd app deployment route remains opt-in pending qualification.

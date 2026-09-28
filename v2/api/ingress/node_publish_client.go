@@ -21,6 +21,70 @@ type NodePublicationReceipt struct {
 	RouteSHA256 string
 }
 
+// ProbePublisherNodesWithTLS checks every active inventory member before a
+// deployment job is submitted. This proves reachability and the pinned mTLS
+// node identity, not authority for any route or effective traffic.
+func ProbePublisherNodesWithTLS(ctx context.Context, caPEM, certPEM, keyPEM []byte, nodes []IngressNode, publisherPort int) error {
+	publishers, err := ingressPublisherNodes(nodes, publisherPort)
+	if err != nil {
+		return err
+	}
+	client, err := NewMutualTLSNodeClient(caPEM, certPEM, keyPEM)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+	return probePublisherNodes(ctx, client, publishers)
+}
+
+func probePublisherNodes(ctx context.Context, client *http.Client, nodes []IngressNode) error {
+	if ctx == nil || client == nil || len(nodes) < 2 {
+		return fmt.Errorf("ingress publisher preflight is incomplete")
+	}
+	origins := make([]string, len(nodes))
+	seenID, seenOrigin := make(map[string]bool, len(nodes)), make(map[string]bool, len(nodes))
+	for i, node := range nodes {
+		origin, err := validIngressNodeOrigin(node)
+		if err != nil {
+			return err
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Scheme != "https" || seenID[node.ID] || seenOrigin[origin] {
+			return fmt.Errorf("ingress publisher preflight node is invalid or repeated")
+		}
+		ip := net.ParseIP(parsed.Hostname())
+		if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) {
+			return fmt.Errorf("ingress publisher preflight requires private IPs")
+		}
+		seenID[node.ID], seenOrigin[origin] = true, true
+		origins[i] = origin
+	}
+	for i, node := range nodes {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, origins[i]+"/v1/health", nil)
+		if err != nil {
+			return err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			return fmt.Errorf("ingress publisher %s is unavailable: %w", node.ID, err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 257))
+		closeErr := response.Body.Close()
+		if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "application/json" || readErr != nil || closeErr != nil || len(body) > 256 || response.Request == nil || response.Request.URL.Scheme+"://"+response.Request.URL.Host != origins[i] {
+			return fmt.Errorf("ingress publisher %s failed private preflight", node.ID)
+		}
+		var health struct {
+			NodeID string `json:"nodeId"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&health) != nil || decoder.Decode(new(any)) != io.EOF || health.NodeID != node.ID {
+			return fmt.Errorf("ingress publisher %s returned another node identity", node.ID)
+		}
+	}
+	return nil
+}
+
 // PublishRouteIntentToNodesWithTLS sends only the reserved intent ID to each
 // private ingress publisher. Partial receipts are returned on failure so the
 // caller can reconcile hosts that may already be serving the route.

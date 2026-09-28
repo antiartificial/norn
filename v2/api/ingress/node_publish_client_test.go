@@ -84,3 +84,33 @@ func TestIngressPublisherNodesUseSeparatePortAndExactInventoryIPs(t *testing.T) 
 		t.Fatal("missing publisher port accepted")
 	}
 }
+
+func TestPublisherPreflightRequiresEveryExactNodeBeforeSubmission(t *testing.T) {
+	observers := []IngressNode{{ID: "one", APIURL: "https://10.43.0.21:18082"}, {ID: "two", APIURL: "https://10.43.0.22:18082"}}
+	publishers, err := ingressPublisherNodes(observers, 18083)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reached []string
+	secondIdentity := "two"
+	client := &http.Client{Transport: publisherRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		reached = append(reached, request.URL.String())
+		identity := "one"
+		if request.URL.Hostname() == "10.43.0.22" {
+			identity = secondIdentity
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"nodeId":"` + identity + `"}`)), Request: request}, nil
+	})}
+	if err := probePublisherNodes(context.Background(), client, publishers); err != nil || len(reached) != 2 || reached[0] != "https://10.43.0.21:18083/v1/health" || reached[1] != "https://10.43.0.22:18083/v1/health" {
+		t.Fatalf("publisher preflight reached=%v err=%v", reached, err)
+	}
+	secondIdentity = "wrong"
+	if err := probePublisherNodes(context.Background(), client, publishers); err == nil {
+		t.Fatal("another publisher node identity passed preflight")
+	}
+	reached = nil
+	if err := probePublisherNodes(context.Background(), client, []IngressNode{publishers[0], publishers[0]}); err == nil || len(reached) != 0 {
+		t.Fatalf("repeated inventory reached a publisher: reached=%v err=%v", reached, err)
+	}
+}

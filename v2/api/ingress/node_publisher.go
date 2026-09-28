@@ -37,6 +37,13 @@ func NewNodePublisherHandler(routeDirectory, clientURI, nodeID string, resolve R
 			http.Error(w, "client identity required", http.StatusUnauthorized)
 			return
 		}
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/health" && r.URL.RawQuery == "" && r.URL.Fragment == "" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(struct {
+				NodeID string `json:"nodeId"`
+			}{nodeID})
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/routes/publish" || r.URL.RawQuery != "" || r.URL.Fragment != "" || r.Header.Get("Content-Type") != "application/json" {
 			http.Error(w, "publication request is invalid", http.StatusBadRequest)
 			return
