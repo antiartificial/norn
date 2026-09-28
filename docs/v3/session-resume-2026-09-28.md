@@ -37,6 +37,21 @@ percentage or sign M0/M5.
 
 ## Mini evidence and limits
 
+- On 2026-09-28 the reviewed inactive Mini SOPS candidate was installed as
+  the active API environment after confirming it added only the exact control
+  database URL and first audit-signing key. The prior ciphertext is retained
+  owner-only for rollback. The installed v2 API restarted healthy with no
+  active operations. A fresh `norn.legacy-control-backup/v1` artifact and
+  proof under that active URL/key passed the read-only doctor; its remaining
+  blocks were the reviewed script and exact signed v3 candidate release.
+  The protected pair was copied to a temporary personal DigitalOcean Space,
+  downloaded on a separate Mac, and restored into isolated PostgreSQL 17:
+  28 public tables, 61,125 audit rows, 483 operations and 483 deployments.
+  The Space retains `control/` for seven days, so this copy is not a durable
+  release retention policy. The current Mini backup and health jobs also
+  completed consecutive scheduled remote runs; their 15-minute freshness
+  threshold is a development monitor, not an accepted release RPO. The five
+  scripts now in PR #77 match the running Mini copies by SHA-256.
 - The latest [control private-copy receipt](m5-mini-private-copy-d71359e8-2026-09-28.md) used a read-only Mini `pg_dump` and a socket-only disposable Postgres.app 17 cluster. Candidate code head `d71359e8` preserved 28 original tables and 262,660 rows through schema 47, passed second migration and passive startup, and matched before/after Nomad base-job and cloudflared fingerprints. This is not an off-host protected restore or live upgrade.
 - The [mailindexer private-copy rehearsal](m2-mailindexer-private-shared-role-copy-2026-09-28.md) ran **locally on Mini**, not DO. It preserved 101,534 messages and both consumers' interaction writes through a copied role split and reversal. The [protected cutover plan](m2-mini-mailindexer-protected-role-cutover-plan-2026-09-28.md) remains a proposal. Running dirty image IDs and executable hashes were inventoried, but neither binary embeds a VCS revision; exact source-to-image reconciliation, recoverable local image/backup custody, complete writer inventory and both job credential changes remain.
 - The installed Mini release `a5da8ef15d12e9eca7561e90b90d96f6dc652a21` lacks the v3 startup/schema contract. A direct flag probe on 2026-09-28 briefly entered its normal startup path and logged a worker start before port 8800 prevented a second listener. Follow-up found no operation or mutation-audit rows in that window and the inspected Nomad job versions unchanged; external effects cannot be excluded by those checks. The [rollback-boundary record](m5-mini-installed-legacy-rollback-boundary-2026-09-28.md) preserves the incident and the new early marker guard. Use the reviewed legacy-baseline fence, not an assumed old-binary restart after migration.
@@ -44,7 +59,7 @@ percentage or sign M0/M5.
 ## Critical decisions and next sequence
 
 1. **Fleet deployment priority:** restore hosted `contract` execution, then review the exact account, complete cost ceiling, management authority, runner, state, secrets and protected plan in the [Fleet readiness review](https://github.com/antiartificial/norn-fleet/blob/codex/fleet-ingress-readback/docs/runbooks/staging-v3-protected-rehearsal-readiness-2026-09-28.md). Integrate PR #176 before stacked #177. Rehearse three separate Linux hosts, etcd restore/faults and ingress/2→3→2 load behavior before M3/M4 sign-off. No DO Fleet resource was provisioned by this work.
-2. **Mini upgrade backup:** the [revised decision](m0-mini-control-recovery-decision.md) permits an on-host directory backup for this development machine. Qualify fresh backup retrieval and private restore of actual control data, audit key/database URL, exact signed candidate, operation drain, legacy binary fence, maintenance transition and rollback decision before M5 sign-off or M9 Mini adoption. Off-host Mini backup, disaster-recovery RPO and RTO are not v3 gates. The live Mini remains on v2 at the last read-only observation; recheck it.
+2. **Mini upgrade backup:** the [revised decision](m0-mini-control-recovery-decision.md) permits an on-host directory backup for this development machine. The active URL/key binding and one protected remote restore are now observed. Recreate a fresh proof for the exact maintenance window, then qualify the signed candidate, operation drain, legacy binary fence, maintenance transition and rollback decision before M5 sign-off or M9 Mini adoption. Off-host Mini backup, disaster-recovery RPO and RTO are not v3 gates. The live Mini remains on v2 at the last read-only observation; recheck it.
 3. **App role transition:** reconcile dirty deployed `mail-indexer` and `mail-mcp` images with source; review both app PRs and exact Nomad specs; inventory every database writer; establish fresh, privately restored local app backup and recoverable rollback artifacts. Only then schedule the [two-consumer role cutover](m2-mini-mailindexer-protected-role-cutover-plan-2026-09-28.md) and activate a catalog that matches observed live identities.
 4. **Production recovery:** assign a separate production RPO/RTO and off-host restore qualification when that environment is defined. The former ≤15-minute backup-only RPO and ≤30-minute RTO remain draft targets, not Mini or Fleet guarantees.
 5. **Later release path:** implement and qualify the M6 provider-backed app database cutover and rolling upgrade, then the M7 representative app/data/work/traffic move. M8 needs a signed candidate, version matrix, client parity, soak/fault and operator evidence. M9 empty Fleet, Mini and selected-app adoptions remain separate operator changes.
