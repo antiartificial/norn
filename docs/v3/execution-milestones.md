@@ -246,9 +246,12 @@ for 1,413 Python tests and Ansible syntax; its [later Fleet readiness review](ht
 reports 1,415 tests at Fleet code head `5234aaf`. PR #177 targets PR #176's
 `codex/fleet-m3-host-etcd` branch, while PR #176 targets `main`; review and
 integrate the host-etcd base before the stacked ingress work. Fleet `main`
-requires the hosted `contract` check, and both PRs' contract jobs failed
-before runner steps because GitHub reported account billing or a spending
-limit. Local validation cannot satisfy that protected merge gate.
+requires `contract`. Both PRs have exact-head passing checks on the documented
+repository-scoped ephemeral Linux x64 fallback ([#176 run](https://github.com/antiartificial/norn-fleet/actions/runs/36285145209),
+[#177 run](https://github.com/antiartificial/norn-fleet/actions/runs/36477152422)).
+Normal GitHub-hosted runner assignment remains blocked by the account billing
+or spending limit. These checks validate source; they do not prove a protected
+provider plan, host bootstrap or release gate.
 
 [Implementation status](implementation-status.md) and [current release handoff](session-resume-2026-09-28.md)
 record implementation detail and the latest release state. This table governs only
