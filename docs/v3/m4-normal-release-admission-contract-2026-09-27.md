@@ -49,6 +49,13 @@ Before enabling the flag, the verifier policy, scoped GitHub OIDC exchange,
 worker credentials, supported app shapes, and protected traffic rollback
 still require review and rehearsals.
 
+The opt-in route's startup preflight now checks the staging CI lane, immutable
+artifact policy, scanner commands and deny severities, nonexpiring deployment
+replay identity, matching keyed/keyless trust mode, and private registry pull
+readiness where applicable. It does not require a qualification signing key:
+this route does not yet issue staging qualifications. Production promotion
+remains a separate closed gate.
+
 ## Entry and trust boundary
 
 Use the existing authenticated release-deployment route shape. A verified CI
