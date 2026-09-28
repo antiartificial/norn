@@ -24,6 +24,10 @@ sign-off has occurred. The signed gate count remains **0/10**.
   the worktree was clean. The Mini checkpoint and handoff cleanup reached
   `e9ca9620b6fe358ef116f2c4d2440105a833e0de`; its Repository CI run
   `36450512637` passed all seven jobs. Recheck later heads before using CI.
+  A later integration slice imported the master Fleet pilot and restored all
+  six protected-master CI context names while retaining v3 checks. At
+  `94cf2c38516a22e1ea6daa95bd85d9fb8d1d21fe`, run `36452946563`
+  passed all 11 jobs, including macOS API/CLI, Fleet pilot and OpenAPI.
 - Fleet draft [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
   `codex/fleet-m3-host-etcd` at
   `6267655052b209b22dc8b3421cb9339f797af9bc`, targeting `main`.
@@ -57,6 +61,9 @@ seconds, plus the dump size/digest metadata. It writes owner-only
 or unavailable. A normal check passed; forced stale and missing-credential
 checks failed as intended. This is a local health signal, not an operator
 notification or sustained RPO proof.
+After the active binding, scheduled remote checkpoints at 16:31 and 16:41 UTC
+both completed; the next five-minute health run at 16:42 UTC passed against
+the latter object. This is a short observation window, not a full-cycle RPO.
 
 The first scheduled remote run exited 0. Its exact object was downloaded on a
 second Mac, verified against the remote manifest, and restored into an
@@ -118,11 +125,15 @@ remove its local checkpoints only after verifying no retained recovery need.
 | M6–M7 | Running v3 upgrade, supported app DB cutover, and one representative Mini-to-Fleet app move with rollback. |
 | M8–M9 | Signed qualified release, client/fault/soak evidence, then separately approved adoption. |
 
-The direct PR-to-`master` path is not reviewable: the 2026-09-27 read-only
-merge simulation found 126 conflicts and different required CI contexts.
-Integrate in dependency-ordered slices against current protected `master`,
-preserving its macOS and pilot checks as well as v3 tests. Only a reviewed
-exact commit merged to protected `master` can enter the signed production
+The direct PR-to-`master` path is still not reviewable. A refreshed read-only
+merge simulation against `origin/master` at `0c21b661` found 126 conflicted
+paths: 65 under `v2/api`, 19 under `v2/infra`, 18 under `v2/ui`, and smaller
+workflow, script and documentation groups. The master-only Fleet pilot and
+its six required CI contexts now pass on the draft v3 branch; code and
+workflow conflicts with the 39 master-only commits remain. Integrate those
+in dependency-ordered slices while preserving current master behavior and v3
+tests. Only a reviewed exact commit merged to protected `master` can enter the
+signed production
 release lane. The release integration audit remains available with
 `git show 7a0c9896:docs/v3/release-gate-status-2026-09-26.md`.
 
