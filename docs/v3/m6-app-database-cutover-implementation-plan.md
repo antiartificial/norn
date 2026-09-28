@@ -63,10 +63,17 @@ switching DNS is not rollback.
    single-member etcd test passed exact replay, retarget refusal, concurrent
    advancement and active-resource loss. Both store readers reconstruct the
    complete ordered receipt chain before returning a journal. This is
-   **storage only**: no accepted-operation claim, app lock, catalog binding,
-   verified external receipt or consumer-generation switch calls either
-   adapter yet. The private methods grant no runtime authority, and the
-   ordinary deployment guard remains in force.
+   **storage only**: no app lock, catalog binding, verified external receipt or
+   consumer-generation switch calls either adapter yet. A private PG entrypoint
+   now checks the signed `database.cutover` operation's exact intent SHA-256,
+   candidate release and current operation claim in the same transaction that
+   creates or advances its journal. The generic operation finisher refuses
+   `database.cutover` success, and claim acquisition treats the kind as mutable
+   work under the runtime mutation fence. A disposable PG 16 test passed
+   exact replay, stale-claim refusal, signed-intent retarget refusal, ordered
+   advancement and generic-success refusal. The etcd journal remains private
+   storage without accepted-claim integration. Neither path grants runtime
+   authority, and the ordinary deployment guard remains in force.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.

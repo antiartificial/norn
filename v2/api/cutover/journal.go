@@ -4,6 +4,9 @@
 package cutover
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -46,6 +49,20 @@ type Journal struct {
 }
 
 var ErrTransition = errors.New("database cutover transition rejected")
+
+// IntentSHA256 is the canonical binding stored in a signed cutover operation.
+// It covers every immutable source, target, release and writer-inventory field.
+func IntentSHA256(intent Intent) (string, error) {
+	if _, err := New(intent); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(intent)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
 
 func New(intent Intent) (Journal, error) {
 	if intent.SchemaVersion != "norn.database-cutover/v1" || !validName(intent.OperationID) || !validName(intent.App) || !validName(intent.LogicalDatabase) || !validName(intent.CandidateRelease) || intent.AuthorityGeneration == 0 || !validDigest(intent.WriterInventorySHA256) || !validTarget(intent.Source) || !validTarget(intent.Target) || intent.Source == intent.Target || intent.Source.Engine != intent.Target.Engine {

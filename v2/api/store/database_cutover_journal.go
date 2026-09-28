@@ -15,6 +15,69 @@ import (
 
 var errDatabaseCutoverJournalConflict = errors.New("database cutover journal revision or identity conflict")
 
+const DatabaseCutoverOperationKind = "database.cutover"
+
+// PrepareClaimedDatabaseCutoverJournal binds the first private PG journal row
+// to a verified signed operation and a currently held claim. It records no
+// source fence, target restore or consumer authority.
+func (db *DB) PrepareClaimedDatabaseCutoverJournal(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, intent cutover.Intent) (cutover.Journal, error) {
+	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || validateOperationClaim(claim) != nil || intent.OperationID != claim.OperationID() {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	digest, err := cutover.IntentSHA256(intent)
+	if err != nil {
+		return cutover.Journal{}, err
+	}
+	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
+	if err != nil {
+		return cutover.Journal{}, err
+	}
+	if accepted.Operation.Kind != DatabaseCutoverOperationKind || accepted.Operation.ID != intent.OperationID || accepted.Operation.App != intent.App || accepted.Operation.Ref != intent.CandidateRelease || accepted.Operation.MaxAttempts != 1 || accepted.Deployment != nil || accepted.Intent.OperationID != intent.OperationID || accepted.Operation.Payload["cutoverIntentSha256"] != digest {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	encoded, err := json.Marshal(intent)
+	if err != nil {
+		return cutover.Journal{}, err
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return cutover.Journal{}, err
+	}
+	defer tx.Rollback(context.Background())
+	var held bool
+	err = tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND app=$3 AND ref=$4
+		AND payload->>'cutoverIntentSha256'=$5 AND acceptance_required=true AND status='running'
+		AND locked_by=$6 AND lock_generation=$7 AND locked_until>clock_timestamp() FOR UPDATE`,
+		claim.OperationID(), DatabaseCutoverOperationKind, intent.App, intent.CandidateRelease, digest, claim.OwnerID(), claim.Generation()).Scan(&held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cutover.Journal{}, ownershipLost(claim)
+	}
+	if err != nil || !held {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO database_cutover_journals
+		(operation_id,app,logical_database,intent,intent_sha256)
+		VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+		intent.OperationID, intent.App, intent.LogicalDatabase, encoded, digest); err != nil {
+		return cutover.Journal{}, err
+	}
+	var savedIntent, receipts []byte
+	var savedDigest, phase string
+	var revision int64
+	if err := tx.QueryRow(ctx, `SELECT intent,intent_sha256,phase,revision,receipts FROM database_cutover_journals
+		WHERE operation_id=$1 FOR UPDATE`, intent.OperationID).Scan(&savedIntent, &savedDigest, &phase, &revision, &receipts); err != nil {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	var stored cutover.Intent
+	if json.Unmarshal(savedIntent, &stored) != nil || stored != intent || savedDigest != digest || phase != string(cutover.PhasePrepare) || revision != 1 || string(receipts) != "{}" {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return cutover.Journal{}, err
+	}
+	return cutover.New(intent)
+}
+
 // prepareDatabaseCutoverJournal is deliberately private until accepted
 // operation, app-lock and source-writer fencing are joined to this storage
 // path. It does no external effect and grants no consumer authority.
@@ -86,6 +149,42 @@ func (db *DB) loadDatabaseCutoverJournal(ctx context.Context, operationID string
 // digest must be verified by a future coordinator against retained evidence;
 // merely recording a digest cannot prove the source fence or target restore.
 func (db *DB) advanceDatabaseCutoverJournal(ctx context.Context, operationID string, expectedRevision uint64, next cutover.Phase, receiptSHA256 string) (cutover.Journal, error) {
+	return db.advanceDatabaseCutoverJournalGuarded(ctx, operationID, expectedRevision, next, receiptSHA256, "", nil)
+}
+
+// AdvanceClaimedDatabaseCutoverJournal records one phase only while the
+// signed operation and its current claim still identify this exact journal.
+// External receipts remain unverified until a coordinator supplies a proof
+// verifier; the method grants no cutover or consumer authority.
+func (db *DB) AdvanceClaimedDatabaseCutoverJournal(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, expectedRevision uint64, next cutover.Phase, receiptSHA256 string) (cutover.Journal, error) {
+	if db == nil || acceptance == nil || acceptance.db != db || validateOperationClaim(claim) != nil {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
+	if err != nil {
+		return cutover.Journal{}, err
+	}
+	digest, _ := accepted.Operation.Payload["cutoverIntentSha256"].(string)
+	if accepted.Operation.Kind != DatabaseCutoverOperationKind || accepted.Operation.ID != claim.OperationID() || accepted.Operation.App == "" || accepted.Operation.Ref == "" || accepted.Operation.MaxAttempts != 1 || accepted.Deployment != nil || accepted.Intent.OperationID != claim.OperationID() || len(digest) != 64 {
+		return cutover.Journal{}, errDatabaseCutoverJournalConflict
+	}
+	return db.advanceDatabaseCutoverJournalGuarded(ctx, claim.OperationID(), expectedRevision, next, receiptSHA256, digest, func(tx pgx.Tx) error {
+		var held bool
+		err := tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND app=$3 AND ref=$4
+			AND payload->>'cutoverIntentSha256'=$5 AND acceptance_required=true AND status='running'
+			AND locked_by=$6 AND lock_generation=$7 AND locked_until>clock_timestamp() FOR UPDATE`,
+			claim.OperationID(), DatabaseCutoverOperationKind, accepted.Operation.App, accepted.Operation.Ref, digest, claim.OwnerID(), claim.Generation()).Scan(&held)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ownershipLost(claim)
+		}
+		if err != nil || !held {
+			return errDatabaseCutoverJournalConflict
+		}
+		return nil
+	})
+}
+
+func (db *DB) advanceDatabaseCutoverJournalGuarded(ctx context.Context, operationID string, expectedRevision uint64, next cutover.Phase, receiptSHA256, expectedIntentDigest string, fence func(pgx.Tx) error) (cutover.Journal, error) {
 	if db == nil || db.Pool == nil || expectedRevision == 0 || expectedRevision >= 1<<63 {
 		return cutover.Journal{}, errDatabaseCutoverJournalConflict
 	}
@@ -94,6 +193,11 @@ func (db *DB) advanceDatabaseCutoverJournal(ctx context.Context, operationID str
 		return cutover.Journal{}, err
 	}
 	defer tx.Rollback(context.Background())
+	if fence != nil {
+		if err := fence(tx); err != nil {
+			return cutover.Journal{}, err
+		}
+	}
 	var intentJSON, receiptsJSON []byte
 	var digest, phase string
 	var revision int64
@@ -110,7 +214,7 @@ func (db *DB) advanceDatabaseCutoverJournal(ctx context.Context, operationID str
 		return cutover.Journal{}, err
 	}
 	actual := sha256.Sum256(canonical)
-	if hex.EncodeToString(actual[:]) != digest {
+	if hex.EncodeToString(actual[:]) != digest || (expectedIntentDigest != "" && digest != expectedIntentDigest) {
 		return cutover.Journal{}, errDatabaseCutoverJournalConflict
 	}
 	current.Phase, current.Revision = cutover.Phase(phase), uint64(revision)
