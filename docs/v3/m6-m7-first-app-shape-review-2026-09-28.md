@@ -31,3 +31,21 @@ back every regional service job, periodic parent and child, function job,
 allocation, queue consumer, integration, connection pool and database role.
 Unknown writers must block quiescence and promotion. A Nomad task list is
 supporting evidence, not an exhaustive fence.
+
+## Stored-spec and regional Nomad readback
+
+The local Mini Norn API returned a stored legacy PostgreSQL declaration for
+`turnkey-offer-intake` with `web` and `worker` processes. Its stored spec SHA-256
+was `13e92693629c7ed40afb7ffe93d02abefec43ed0e15b508b7a9c0ff95915b193`.
+An exact local build of `norn-cutover-writer-inventory` (binary SHA-256
+`d141693679a30f303389aaf7730f00a7267fa37575c366dbcf95f25e6d8e06b1`)
+queried the Mini loopback Norn and Nomad APIs read-only. It found one `global`
+job, two live allocations, and no missing or unexpected app-prefixed jobs in
+that regional observation. It returned `externalWritersUnverified=true` and
+`promotionReady=false`. The same command refused `contextdb`: its stored spec
+has no database declaration, despite the Nomad task's `CONTEXTDB_DSN` key.
+The transferred binary was removed after the run.
+
+This does not identify database sessions, external integrations, queue state,
+credential holders, or uncataloged writers. It neither selects
+`turnkey-offer-intake` nor permits a cutover.

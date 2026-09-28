@@ -104,6 +104,21 @@ switching DNS is not rollback.
    region, app-specific jobs outside the name prefix, queue consumers,
    connection pools, external integrations and database sessions, plus a
    stable evidence digest bound to the accepted cutover operation.
+
+   The loopback-only `norn-cutover-writer-inventory` command now reads the
+   app's stored InfraSpec from the local Norn API, observes every declared
+   Nomad region, then rereads the spec to refuse source drift. Its JSON output
+   always marks external writers unverified and promotion unready. It rejects
+   an app without a stored database declaration, even if a Nomad task happens
+   to carry an ad hoc database URL. This command is an observation aid; it
+   does not create the signed complete inventory or fence any writer.
+   On a host with both APIs on numeric loopback, from `v2/api`:
+
+   ```sh
+   go run ./cmd/norn-cutover-writer-inventory \
+     --app <stored-app-id> --api-url http://127.0.0.1:8800 \
+     --nomad-url http://127.0.0.1:4646
+   ```
 3. Implement provider-specific source write fencing and its independent
    readback. A stopped application process is not proof that a database user
    or external integration cannot still write.
