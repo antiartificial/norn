@@ -170,6 +170,14 @@ milestones may require disproportionate time.
 | M8 | Open | Candidate qualification, version matrix, soak/fault evidence and runbooks remain. |
 | M9 | Open | Mini upgrade, clean Fleet deployment and selected app migrations require separate controlled adoption. |
 
+M2's per-database legacy binding map now guards the first catalog override
+against an implicit role or credential switch. The consuming legacy deploy
+path still lacks the named-database path's comparison against possible live
+writers; see the [consumer contract](database-consumer-syntax.md). Qualify
+that guard and an operator-verified baseline for ambiguous v2 history before
+using a generation-bumped mapped role for a running Mini app. Catalog tests
+alone cannot sign this gate.
+
 The [2026-09-28 read-only Mini refresh](m0-mini-baseline-refresh-2026-09-28.md)
 still identifies release `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`,
 an empty active operation queue at collection time, and PostgreSQL WAL
