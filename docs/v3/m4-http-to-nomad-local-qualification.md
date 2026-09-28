@@ -40,6 +40,15 @@ The combined registry, Nomad, and two-ingress rehearsal passed locally on
 2026-09-27. Signature and vulnerability checks remain synthetic in this
 fixture, so this is not signed release-artifact qualification.
 
+An exact-head refresh on 2026-09-28 passed at Norn SHA
+`b260c25fae04249fff00ffdfac127d9ab0c0b34a` using the pinned
+Traefik 3.7.13 Darwin/arm64 binary. Both named Go tests passed against
+disposable etcd, Consul, Nomad, Docker, and two independent Traefik
+processes. The Nomad test completed in 48.08 seconds. The runner left no
+`norn-v3-http-nomad-*` scratch directory. The registry digest option was not
+enabled in this refresh; the artifact signature and vulnerability hooks were
+synthetic.
+
 The script checks that the exact image is cached, starts the three local
 agents on free loopback ports, runs the named-database HTTP admission test and
 the opt-in Nomad test, and stops the agents.
@@ -115,7 +124,11 @@ active inventory through the server-owned pointer. That exact returned node
 list then passes the production mTLS publisher preflight against listeners on
 both private addresses. A second test exercises authenticated publication and
 partial retry on those addresses. This qualifies durable inventory selection
-through private preflight, plus the adjacent publication transport; it does
-not yet carry an accepted app release through the normal executor, Nomad,
-Traefik and public proof in one claimed operation. No protected Fleet was
-provisioned or changed.
+through private preflight, plus the adjacent publication transport. A later
+opt-in disposable-etcd test also takes a signed-source first-route intent
+through the real private authority and two publisher handlers, refuses the
+second node, verifies only the first file exists, then retries and creates a
+durable synthetic traffic proof after both files exist. These local fixtures
+still do not carry one accepted app release through the normal executor,
+Nomad, authenticated publishers, Traefik and public proof in one claimed
+operation. No protected Fleet was provisioned or changed.
