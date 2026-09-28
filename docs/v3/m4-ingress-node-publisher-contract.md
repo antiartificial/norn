@@ -346,8 +346,13 @@ it public HTTPS probing uses system roots. Startup also requires the active
 control authority, and Nomad address. It validates the bind and all mTLS
 material before the worker claims an operation. Each claim binds and owns its
 own authority listener, and preflights it again before the Nomad effect.
-There is still no public etcd `app.deploy` request route; signed accepted work
-must be supplied through the private control path until that route is reviewed.
+There is still no normal producer for signed `app.deploy` aggregates:
+`V3OperationStore.Accept` refuses deployment admission and the specialized
+aggregate acceptance is private to etcdstore. The opt-in worker therefore
+cannot deploy an app in a fresh normal runtime yet. A reviewed admission path
+must derive the deployment, regions, database targets, Fleet target and
+release provenance from server-verified sources, then atomically accept them
+under the app gate. It must not expose a raw acceptance object as an HTTP body.
 
 After a lost response, reread durable intent and each node's file/effective
 route before retrying the same generation. Never issue a newer generation or
