@@ -93,7 +93,8 @@ proof before positive active weight.
 path/response digest from the live signed InfraSpec intent, performs those
 probes, and stores an immutable observation with
 claim, app-lock, acceptance, effect, route-intent, target and Fleet inventory
-revision fences. An identical fresh observation can replay an uncertain write;
+revision fences. The proof is keyed by claim generation, so a successor claim
+must observe traffic again. An identical fresh observation can replay an uncertain write;
 a conflicting observation cannot overwrite the receipt. The Fleet pilot's
 readiness-gated `/route-proof` response is pinned by its InfraSpec digest.
 The private terminal path now reloads this record, its signed route intent,

@@ -37,13 +37,13 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 	if intent.OperationID != claim.OperationID() || intent.DeploymentID != accepted.Deployment.ID || intent.AcceptanceID != accepted.Intent.ID || intent.AcceptanceDigest != accepted.Intent.CanonicalDigest || intent.SpecDigest != accepted.Deployment.SpecDigest || intent.Generation != 1 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
 		return nil, nil, fmt.Errorf("deployment-bound ingress intent differs from acceptance")
 	}
-	proofKey := s.initialFleetTrafficProofKey(intent.ID)
+	proofKey := s.initialFleetTrafficProofKey(intent.ID, claim.Generation())
 	storedProof, err := s.kv.Get(ctx, proofKey)
 	if err != nil || len(storedProof.Kvs) != 1 {
 		return nil, nil, fmt.Errorf("deployment-bound ingress proof is unavailable: %v", err)
 	}
 	var proof InitialFleetTrafficProof
-	if decodeV3Record(storedProof.Kvs[0].Value, &proof) != nil || proof.SchemaVersion != initialFleetTrafficProofSchema || proof.IntentID != intent.ID || proof.OperationID != claim.OperationID() || proof.DeploymentID != accepted.Deployment.ID || proof.AcceptanceDigest != accepted.Intent.CanonicalDigest || proof.SpecDigest != accepted.Deployment.SpecDigest || proof.ObservedAt.IsZero() || !trafficObservationMatchesIntent(intent, &proof.Observation) {
+	if decodeV3Record(storedProof.Kvs[0].Value, &proof) != nil || proof.SchemaVersion != initialFleetTrafficProofSchema || proof.IntentID != intent.ID || proof.OperationID != claim.OperationID() || proof.ClaimGeneration != claim.Generation() || proof.DeploymentID != accepted.Deployment.ID || proof.AcceptanceDigest != accepted.Intent.CanonicalDigest || proof.SpecDigest != accepted.Deployment.SpecDigest || proof.ObservedAt.IsZero() || !trafficObservationMatchesIntent(intent, &proof.Observation) {
 		return nil, nil, fmt.Errorf("deployment-bound ingress proof differs from signed route")
 	}
 	if err := s.requireHealthyDeploymentEffect(ctx, claim, intent, proof.HealthEffect); err != nil {

@@ -354,9 +354,12 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 	if replay, err := adapter.recordClaimedInitialFleetTrafficProof(ctx, claim, lock, spec, healthToken, 18082, observeTraffic); err != nil || !replay.ObservedAt.Equal(proof.ObservedAt) {
 		t.Fatalf("traffic proof retry=%+v err=%v", replay, err)
 	}
-	storedProof, err := client.Get(ctx, adapter.initialFleetTrafficProofKey(first.ID))
+	storedProof, err := client.Get(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()))
 	if err != nil || len(storedProof.Kvs) != 1 {
 		t.Fatalf("traffic proof was not stored: entries=%d err=%v", len(storedProof.Kvs), err)
+	}
+	if adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()) == adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()+1) {
+		t.Fatal("successor claim would reuse an earlier traffic proof")
 	}
 	terminal := *accepted.Deployment
 	terminal.Status = model.StatusDeployed
@@ -371,7 +374,7 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID), string(corruptBytes)); err != nil {
+	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()), string(corruptBytes)); err != nil {
 		t.Fatal(err)
 	}
 	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err == nil {
@@ -381,7 +384,22 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID), string(proofBytes)); err != nil {
+	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()), string(proofBytes)); err != nil {
+		t.Fatal(err)
+	}
+	corrupt = *proof
+	corrupt.ClaimGeneration--
+	corruptBytes, err = json.Marshal(corrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()), string(corruptBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, terminal, terminalRegions, model.OperationSucceeded, "deployed", nil, initialFleetCompletionSource{Spec: spec, ObserverPort: 18082}); err == nil {
+		t.Fatal("earlier claim generation proof authorized terminal active traffic")
+	}
+	if _, err := client.Put(ctx, adapter.initialFleetTrafficProofKey(first.ID, claim.Generation()), string(proofBytes)); err != nil {
 		t.Fatal(err)
 	}
 	if complete {

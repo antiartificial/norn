@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 	"norn/v2/api/store"
 )
 
-const initialFleetTrafficProofSchema = "norn.fleet-initial-traffic-proof/v1"
+const initialFleetTrafficProofSchema = "norn.fleet-initial-traffic-proof/v2"
 
 // InitialFleetTrafficProof is an immutable observation receipt, not terminal
 // deployment authority. Completion must reload it and compare the source
@@ -26,6 +27,7 @@ type InitialFleetTrafficProof struct {
 	SchemaVersion    string                         `json:"schemaVersion"`
 	IntentID         string                         `json:"intentId"`
 	OperationID      string                         `json:"operationId"`
+	ClaimGeneration  int64                          `json:"claimGeneration"`
 	DeploymentID     string                         `json:"deploymentId"`
 	AcceptanceDigest string                         `json:"acceptanceDigest"`
 	SpecDigest       string                         `json:"specDigest"`
@@ -34,8 +36,8 @@ type InitialFleetTrafficProof struct {
 	ObservedAt       time.Time                      `json:"observedAt"`
 }
 
-func (s *V3OperationStore) initialFleetTrafficProofKey(intentID string) string {
-	return s.prefix + "/v3/fleet-initial-traffic-proofs/" + intentID
+func (s *V3OperationStore) initialFleetTrafficProofKey(intentID string, claimGeneration int64) string {
+	return s.prefix + "/v3/fleet-initial-traffic-proofs/" + intentID + "/" + strconv.FormatInt(claimGeneration, 10)
 }
 
 // RecordClaimedInitialFleetTrafficProof probes the route selected by live
@@ -71,7 +73,7 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 	if err := s.requireHealthyDeploymentEffect(ctx, claim, intent, healthEffect); err != nil {
 		return nil, err
 	}
-	proof := &InitialFleetTrafficProof{SchemaVersion: initialFleetTrafficProofSchema, IntentID: intent.ID, OperationID: intent.OperationID,
+	proof := &InitialFleetTrafficProof{SchemaVersion: initialFleetTrafficProofSchema, IntentID: intent.ID, OperationID: intent.OperationID, ClaimGeneration: claim.Generation(),
 		DeploymentID: intent.DeploymentID, AcceptanceDigest: intent.AcceptanceDigest, SpecDigest: intent.SpecDigest,
 		HealthEffect: healthEffect, Observation: *observation, ObservedAt: time.Now().UTC().Truncate(time.Microsecond)}
 	encoded, err := json.Marshal(proof)
@@ -149,7 +151,7 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 		clientv3.Compare(clientv3.ModRevision(effects.submitAttemptKey(healthEffect)), "=", attempt.Kvs[0].ModRevision),
 	}
 	comparisons = append(comparisons, inventoryCompares...)
-	proofKey := s.initialFleetTrafficProofKey(intent.ID)
+	proofKey := s.initialFleetTrafficProofKey(intent.ID, claim.Generation())
 	createCompares := append(append([]clientv3.Cmp(nil), comparisons...), clientv3.Compare(clientv3.CreateRevision(proofKey), "=", 0))
 	txn, err := s.kv.Txn(ctx).If(createCompares...).Then(clientv3.OpPut(proofKey, string(encoded))).Commit()
 	if err != nil {
@@ -164,7 +166,7 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 	}
 	var existing InitialFleetTrafficProof
 	if decodeV3Record(prior.Kvs[0].Value, &existing) != nil || existing.SchemaVersion != initialFleetTrafficProofSchema ||
-		existing.IntentID != proof.IntentID || existing.OperationID != proof.OperationID || existing.DeploymentID != proof.DeploymentID ||
+		existing.IntentID != proof.IntentID || existing.OperationID != proof.OperationID || existing.ClaimGeneration != proof.ClaimGeneration || existing.DeploymentID != proof.DeploymentID ||
 		existing.AcceptanceDigest != proof.AcceptanceDigest || existing.SpecDigest != proof.SpecDigest || existing.HealthEffect != proof.HealthEffect ||
 		!reflect.DeepEqual(existing.Observation, proof.Observation) || existing.ObservedAt.IsZero() {
 		return nil, fmt.Errorf("existing traffic proof conflicts with current observation")
