@@ -92,6 +92,18 @@ switching DNS is not rollback.
 2. Build read-only inventory and preflight for all app writers, including
    Nomad allocations, schedules, connection pools and declared integrations.
    An unknown writer blocks the cutover.
+
+   `nomad.ObserveCutoverWriterJobs` now reads every job with the app ID prefix
+   in one Nomad region, including periodic children, function invocations and
+   unexpected IDs. It records pending/running allocations even for older job
+   versions or allocations Nomad wants stopped. It rereads job definitions,
+   the job list and allocation state, rejecting a changing view. A disposable
+   Nomad 2.0.7 readback and mock tests for old writers and list/allocation
+   races passed. This is a **read-only regional observation**, not a signed
+   writer inventory or a quiescence result. The coordinator still needs every
+   region, app-specific jobs outside the name prefix, queue consumers,
+   connection pools, external integrations and database sessions, plus a
+   stable evidence digest bound to the accepted cutover operation.
 3. Implement provider-specific source write fencing and its independent
    readback. A stopped application process is not proof that a database user
    or external integration cannot still write.
