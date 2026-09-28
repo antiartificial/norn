@@ -769,6 +769,22 @@ func ValidateTransition(previous, next Catalog) error {
 		if !kept {
 			continue
 		}
+		// A new explicit legacy entry takes precedence over the profile default.
+		// Stage it at the old target first; changing the binding target requires
+		// a separate generation-bumped transition after consumer cutover.
+		if before.LegacyPostgres != nil {
+			for _, databaseName := range sortedKeys(after.LegacyPostgresBindings) {
+				if _, existed := before.LegacyPostgresBindings[databaseName]; existed {
+					continue
+				}
+				binding := nextBindings[after.LegacyPostgresBindings[databaseName]]
+				legacy := before.LegacyPostgres
+				if binding.ServiceID != legacy.ServiceID || binding.Role != legacy.Role ||
+					binding.CredentialRef != legacy.CredentialRef || !sameTLSTarget(binding.TLS, legacy.TLS) {
+					return unsafe("legacyPostgresBindings", label+"/"+databaseName, "new legacy binding must first preserve the previous default target and credential")
+				}
+			}
+		}
 		for _, logical := range sortedKeys(before.DatabaseBindings) {
 			if bindingID, present := after.DatabaseBindings[logical]; present && bindingID != before.DatabaseBindings[logical] {
 				return unsafe("databaseBindings", label+"/"+logical, "a logical resource cannot be re-pointed to another binding; change the binding with a generation bump")

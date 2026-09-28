@@ -242,6 +242,13 @@ from the control database role or credentials: live Mini app connections
 that share the `norn` control role need a reviewed credential transition
 before they can enter a v3 application binding.
 
+When adding a database-name mapping to an existing profile with a legacy
+default, its first binding must use the default's service, role, credential
+reference and TLS target. This prevents a catalog edit alone from silently
+switching an imported app's connection. A later role or target change needs
+the normal binding-generation bump and the separate live consumer transition;
+the catalog check does not prove that the deployed job changed credentials.
+
 `secret:<path>` resolves under `NORN_DATABASE_SECRET_DIR`. The file is strict
 JSON `{"password": "…"}` and may carry nothing else. Host, port, database and
 user come from the catalog. TLS references resolve to PEM files. A YAML

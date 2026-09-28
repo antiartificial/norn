@@ -177,6 +177,38 @@ func TestLegacyDatabaseBindingsPreserveDistinctMiniRoles(t *testing.T) {
 	requireCode(t, ValidateTransition(catalog, repointed), CodeInvalidCatalog)
 }
 
+func TestLegacyBindingFirstOverridesDefaultOnlyAtSameTarget(t *testing.T) {
+	previous := testCatalog()
+	staged := cloneCatalog(previous)
+	staged.Bindings = append(staged.Bindings, DatabaseBinding{
+		APIVersion: APIVersion, ID: "blog-explicit", ServiceID: "mini-app-pg", Database: "blog",
+		Role: "legacy_apps", Generation: 1, CredentialRef: "secret:apps/legacy", TLS: DatabaseTLS{Mode: TLSDisabled},
+	})
+	staged.Profiles[0].LegacyPostgresBindings = map[string]string{"blog": "blog-explicit"}
+	if err := ValidateTransition(previous, staged); err != nil {
+		t.Fatalf("same-target staging rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Catalog){
+		"role":       func(c *Catalog) { c.Bindings[len(c.Bindings)-1].Role = "blog_app" },
+		"credential": func(c *Catalog) { c.Bindings[len(c.Bindings)-1].CredentialRef = "secret:apps/blog" },
+		"service":    func(c *Catalog) { c.Bindings[len(c.Bindings)-1].ServiceID = "other-pg" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := cloneCatalog(staged)
+			mutate(&changed)
+			requireCode(t, ValidateTransition(previous, changed), CodeUnsafeTransition)
+		})
+	}
+
+	rotated := cloneCatalog(staged)
+	rotated.Bindings[len(rotated.Bindings)-1].Role = "blog_app"
+	rotated.Bindings[len(rotated.Bindings)-1].Generation++
+	if err := ValidateTransition(staged, rotated); err != nil {
+		t.Fatalf("later generation-bumped role transition rejected: %v", err)
+	}
+}
+
 func TestExpectedIdentityRejectsEveryStaleField(t *testing.T) {
 	resolver := mustResolver(t, testCatalog())
 	current, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "fleet", Purpose: PurposeApplication, LogicalResourceID: "app-db"})
