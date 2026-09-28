@@ -41,3 +41,16 @@ func TestInfraSpecDigestBindsEndpointProcess(t *testing.T) {
 		t.Fatal("endpoint process change did not change source digest")
 	}
 }
+
+func TestInfraSpecDigestBindsTrafficProbe(t *testing.T) {
+	spec := &InfraSpec{App: "example", Processes: map[string]Process{"web": {Port: 8080}}, Endpoints: []Endpoint{{URL: "https://example.test", Process: "web", TrafficProbe: &TrafficProbeSpec{Path: "/route-proof", BodySHA256: "c2f21436748914ff673d5bb71c7e5fb50bcc64eced18dae230eface10d65b1cc"}}}}
+	first, err := InfraSpecDigest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Endpoints[0].TrafficProbe.Path = "/other"
+	second, err := InfraSpecDigest(spec)
+	if err != nil || first == second {
+		t.Fatalf("changed probe did not change signed source digest: %q %q %v", first, second, err)
+	}
+}

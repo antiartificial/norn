@@ -40,12 +40,12 @@ func (s *V3OperationStore) initialFleetTrafficProofKey(intentID string) string {
 
 // RecordClaimedInitialFleetTrafficProof probes the route selected by live
 // signed control state, then stores its observation under claim and inventory
-// revision fences. The probe path and expected body must be chosen by the
-// worker's trusted deployment policy; they are not part of signed InfraSpec
-// yet, so this receipt alone cannot authorize terminal active traffic.
-func (s *V3OperationStore) RecordClaimedInitialFleetTrafficProof(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, healthEffect effect.Token, observerPort, endpointPort int, caPEM, certPEM, keyPEM []byte, probePath, expectedBodySHA256 string, publicRoots *x509.CertPool) (*InitialFleetTrafficProof, error) {
+// revision fences. It derives the probe path and response digest from the
+// signed InfraSpec endpoint carried by the intent; callers cannot substitute
+// a response that happens to match a different service.
+func (s *V3OperationStore) RecordClaimedInitialFleetTrafficProof(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, healthEffect effect.Token, observerPort, endpointPort int, caPEM, certPEM, keyPEM []byte, publicRoots *x509.CertPool) (*InitialFleetTrafficProof, error) {
 	return s.recordClaimedInitialFleetTrafficProof(ctx, claim, lock, spec, healthEffect, observerPort, func(ctx context.Context, intent *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
-		return s.ObserveCurrentFleetIngressTraffic(ctx, intent.FleetTarget.Cluster, intent.FleetTarget.FleetEnvironment, observerPort, endpointPort, caPEM, certPEM, keyPEM, intent.RenderedRoute, intent.Generation, probePath, expectedBodySHA256, publicRoots)
+		return s.ObserveCurrentFleetIngressTraffic(ctx, intent.FleetTarget.Cluster, intent.FleetTarget.FleetEnvironment, observerPort, endpointPort, caPEM, certPEM, keyPEM, intent.RenderedRoute, intent.Generation, intent.Endpoint.ProbePath, intent.Endpoint.ProbeBodySHA256, publicRoots)
 	})
 }
 
@@ -179,6 +179,7 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 
 func trafficObservationMatchesIntent(intent *InitialFleetRouteIntent, observed *FleetIngressTrafficObservation) bool {
 	if intent == nil || observed == nil || !observed.PublicMatched || !strings.HasPrefix(observed.ProbePath, "/") || strings.HasPrefix(observed.ProbePath, "//") || strings.ContainsAny(observed.ProbePath, "?#") || len(observed.EndpointBodySHA256) != 64 ||
+		intent.Endpoint.ProbePath == "" || intent.Endpoint.ProbeBodySHA256 == "" || observed.ProbePath != intent.Endpoint.ProbePath || observed.EndpointBodySHA256 != intent.Endpoint.ProbeBodySHA256 ||
 		observed.Route.RouteSHA256 != intent.RenderedRoute.SHA256 || observed.Route.Generation != intent.Generation ||
 		!sameFleetIngressInventory(&intent.Inventory, &observed.Route.Inventory) || len(observed.Route.Nodes) != len(intent.Inventory.Nodes) || len(observed.NodeEndpoints) != len(intent.Inventory.Nodes) {
 		return false

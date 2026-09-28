@@ -142,7 +142,7 @@ func TestInitialFleetRouteIntentIsFencedAndIdempotentEtcd(t *testing.T) {
 	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	activeFleetIngressForRouteIntent(t, adapter)
-	spec := &model.InfraSpec{App: "demo", Regions: map[string]model.RegionTarget{"west": {NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}}}, Processes: map[string]model.Process{"web": {Port: 8080}}, Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "west", Process: "web"}}}
+	spec := &model.InfraSpec{App: "demo", Regions: map[string]model.RegionTarget{"west": {NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}}}, Processes: map[string]model.Process{"web": {Port: 8080}}, Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "west", Process: "web", TrafficProbe: &model.TrafficProbeSpec{Path: "/ready", BodySHA256: strings.Repeat("d", 64)}}}}
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	var err error
 	request.Deployment.SpecDigest, err = model.InfraSpecDigest(spec)

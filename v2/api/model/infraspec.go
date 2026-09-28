@@ -88,9 +88,10 @@ type PlacementSpec struct {
 }
 
 type Endpoint struct {
-	URL     string `yaml:"url" json:"url"`
-	Region  string `yaml:"region,omitempty" json:"region,omitempty"`
-	Process string `yaml:"process,omitempty" json:"process,omitempty"`
+	URL          string            `yaml:"url" json:"url"`
+	Region       string            `yaml:"region,omitempty" json:"region,omitempty"`
+	Process      string            `yaml:"process,omitempty" json:"process,omitempty"`
+	TrafficProbe *TrafficProbeSpec `yaml:"trafficProbe,omitempty" json:"trafficProbe,omitempty"`
 }
 
 // RegionTarget maps an InfraSpec region name to a Nomad federation target.

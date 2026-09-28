@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,12 +50,28 @@ func testPEM(t *testing.T) string {
 func TestReadinessFailureDoesNotStopLiveness(t *testing.T) {
 	t.Setenv("PILOT_FAIL_READINESS", "true")
 	s := &service{}
-	for path, want := range map[string]int{"/healthz": 200, "/readyz": 503, "/version": 200, "/metrics": 200} {
+	for path, want := range map[string]int{"/healthz": 200, "/readyz": 503, "/route-proof": 503, "/version": 200, "/metrics": 200} {
 		w := httptest.NewRecorder()
 		s.routes().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != want {
 			t.Fatalf("%s: got %d want %d", path, w.Code, want)
 		}
+	}
+	w := httptest.NewRecorder()
+	s.routes().ServeHTTP(w, httptest.NewRequest("GET", "/route-proof", nil))
+	if w.Body.String() == routeProofBody {
+		t.Fatal("unready pilot returned the signed route proof body")
+	}
+}
+
+func TestRouteProofBodyMatchesPinnedInfraSpec(t *testing.T) {
+	spec, err := os.ReadFile("infraspec.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(routeProofBody))
+	if !strings.Contains(string(spec), "bodySHA256: "+hex.EncodeToString(digest[:])) {
+		t.Fatal("Fleet pilot probe response differs from its pinned InfraSpec")
 	}
 }
 

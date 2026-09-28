@@ -89,14 +89,15 @@ probe, then repeats every-node route readback and rechecks the active Fleet inve
 probe path are explicit inputs. This remains an observation until the worker
 binds them to the accepted deployment and records a durable, revision-fenced
 proof before positive active weight.
-`RecordClaimedInitialFleetTrafficProof` now derives the route from the live
-signed intent, performs those probes, and stores an immutable observation with
+`RecordClaimedInitialFleetTrafficProof` now derives the route and exact probe
+path/response digest from the live signed InfraSpec intent, performs those
+probes, and stores an immutable observation with
 claim, app-lock, acceptance, effect, route-intent, target and Fleet inventory
 revision fences. An identical fresh observation can replay an uncertain write;
-a conflicting observation cannot overwrite the receipt. The probe path and
-expected response digest are still trusted worker inputs rather than signed
-InfraSpec fields, and terminal completion still refuses positive active
-weight. This record is not yet release qualification.
+a conflicting observation cannot overwrite the receipt. The Fleet pilot's
+readiness-gated `/route-proof` response is pinned by its InfraSpec digest.
+Terminal completion still refuses positive active weight; this record is not
+yet release qualification.
 
 ## Authority and host boundary
 

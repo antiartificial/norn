@@ -73,5 +73,8 @@ endpoints:
   - url: https://hello-norn-mysql.invalid
     region: nyc3
     process: web
+    trafficProbe:
+      path: /route-proof
+      bodySHA256: c2f21436748914ff673d5bb71c7e5fb50bcc64eced18dae230eface10d65b1cc
 # Run migrate separately with the migration identity; the web identity should
 # have SELECT/INSERT/UPDATE only.

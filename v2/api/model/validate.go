@@ -182,6 +182,11 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	// Endpoint URLs valid
 	for i, ep := range spec.Endpoints {
+		if ep.TrafficProbe != nil {
+			if err := ValidateTrafficProbe(ep.TrafficProbe); err != nil {
+				r.add("error", fmt.Sprintf("endpoints[%d].trafficProbe", i), err.Error())
+			}
+		}
 		if ep.Process != "" {
 			proc, ok := spec.Processes[ep.Process]
 			if !ok {
