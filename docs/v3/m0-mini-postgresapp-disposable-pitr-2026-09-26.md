@@ -32,6 +32,15 @@ last replayed commit cannot be reached. It deliberately writes and archives a
 later transaction so recovery can stop at the intended time and prove the
 exclusion boundary.
 
+The fixture now copies the base backup and WAL into a separate retained-input
+directory, removes the source cluster and original backup/archive directories,
+and restores only from that retained copy. A local rerun with Homebrew
+PostgreSQL 16.15 passed: two expected rows, four archived WAL files and no
+remaining disposable cluster directory. Postgres.app is unavailable on this
+workstation, so this rerun does not refresh the earlier Mini Postgres.app
+receipt. The retained directory is still on the same machine, not an off-host
+repository; no production data or protected Mini host was touched.
+
 Next, choose the Mini control RPO, off-host destination, and retention. For
 the 15-minute path, configure protected WAL archiving, base backups, lag and
 failure alerts, and a timed clean-host restore from the remote repository.

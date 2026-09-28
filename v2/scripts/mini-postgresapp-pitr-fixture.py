@@ -18,6 +18,7 @@ SOURCE = ROOT / 'source'
 BASE = ROOT / 'base'
 RESTORE = ROOT / 'restore'
 ARCHIVE = ROOT / 'archive'
+RETAINED = ROOT / 'retained-recovery-input'
 SOCKET = ROOT / 'socket'
 
 
@@ -62,10 +63,18 @@ try:
         raise RuntimeError('post-backup WAL was not archived')
     run([BIN / 'pg_ctl', '-D', SOURCE, '-m', 'fast', '-w', 'stop'])
     started_source = False
-    shutil.copytree(BASE, RESTORE)
+    RETAINED.mkdir()
+    shutil.copytree(BASE, RETAINED / 'base')
+    shutil.copytree(ARCHIVE, RETAINED / 'archive')
+    archived_count = len(list((RETAINED / 'archive').iterdir()))
+    shutil.rmtree(SOURCE)
+    shutil.rmtree(BASE)
+    shutil.rmtree(ARCHIVE)
+    shutil.copytree(RETAINED / 'base', RESTORE)
     (RESTORE / 'recovery.signal').touch()
     with (RESTORE / 'postgresql.conf').open('a') as config:
-        config.write(f"\nrestore_command = 'cp {ARCHIVE}/%f %p'\n")
+        config.write(f"\nrestore_command = 'cp {RETAINED / 'archive'}/%f %p'\n")
+        config.write("archive_mode = off\n")
         config.write(f"recovery_target_time = '{target}'\n")
         config.write("recovery_target_action = 'promote'\n")
     try:
@@ -79,7 +88,8 @@ try:
     if rows != 'before-backup,after-backup':
         raise RuntimeError(f'PITR rows differ: {rows}')
     print(json.dumps({'result': 'pass', 'postgres_version': run([BIN / 'postgres', '--version']),
-                      'rows': 2, 'archived_wal_files': len(list(ARCHIVE.iterdir())),
+                      'rows': 2, 'archived_wal_files': archived_count,
+                      'source_removed_before_restore': True,
                       'elapsed_seconds': round(time.monotonic() - start, 2)}))
 finally:
     stop_failed = False
