@@ -49,7 +49,7 @@ qualification remain separate gates; no deployment is authorized here.
 ## Claude retention pass R5–R11 (awaiting review)
 
 This pass follows [retention-review-checklist.md](retention-review-checklist.md)
-and the [handoff](retention-implementation-handoff.md). It is not M2
+and the [retention review checklist](retention-review-checklist.md). It is not M2
 completion. Everything object-store related was tested against the in-process
 emulator `internal/s3emulator`, and everything Nomad related against fakes. That
 qualifies no real provider (Garage, MinIO, S3, a Fleet object service) and no
@@ -350,7 +350,7 @@ Tests:
   `TestReviewWriterFreeHistoryStillRequiresRuntimeEvidence` and
   `TestReviewBaselineCannotHideKnownConflictBehindAmbiguousHistory`.
 
-### Retention (ADR 0001, [handoff](retention-implementation-handoff.md))
+### Retention (ADR 0001, [review checklist](retention-review-checklist.md))
 
 - **R1: archive contract.**
   - `archive.Store` is `PutImmutable`/`Get`/`Verify`/`List`.
@@ -474,7 +474,7 @@ Still unqualified:
 
 ## Claude batch four checkpoint: named consumers and runtime delivery
 
-Scope per [claude-m2-named-consumers-handoff.md](claude-m2-named-consumers-handoff.md).
+Scope per the [database consumer syntax review](database-consumer-syntax.md).
 There is no new migration, and writer contract 5 is unchanged. Fleet v1
 documents are unchanged. Details and the full test mapping are in
 [database-consumer-syntax.md §3.2 and §6](database-consumer-syntax.md).
@@ -531,8 +531,7 @@ None of this is deployed.
 
 ## Claude batch three checkpoint: M2 database consumer plumbing
 
-Scope per [claude-m2-integration-handoff.md](claude-m2-integration-handoff.md),
-[database-binding-handoff.md](database-binding-handoff.md) and the root
+Scope per [ADR 0003](adrs/0003-profiles-and-database-bindings.md) and the root
 [syntax review](database-consumer-syntax-review.md)/[checklist](database-consumer-review-checklist.md).
 No InfraSpec, Fleet v1 or parser change was made. The call-site inventory
 (C1–C12), the §2 per-item test mapping and the syntax proposal are in
@@ -596,8 +595,7 @@ None of this is deployed or qualified on a live host.
 
 ## Claude batch two checkpoint: supervised build.test effect recovery
 
-Scope per [claude-next-batch-review.md](claude-next-batch-review.md) and
-[effect-recovery-handoff.md](effect-recovery-handoff.md). No migration, schema
+Scope per [claude-next-batch-review.md](claude-next-batch-review.md). No migration, schema
 or recovery-registry change; migration 3 and its checksum are unchanged.
 
 Implemented:
@@ -884,7 +882,7 @@ Final review disposition: Sol high reported no remaining blocking finding in the
 - The concurrent retry ownership gap is fixed: `RetryClaimedOperation` now repeats ownership predicates in the final UPDATE and distinguishes ownership loss from unsafe retry. Astra source review accepted that correction. Primary independently passed `go test -race ./store -run '^TestRetryClaimCASRejectsOwnerChangeWhileUpdateWaitsOnRowLock$' -count=3` against PostgreSQL; the test holds a competing row update, observes retry waiting on the lock, commits the replacement owner, and checks its state remains intact.
 - Current combined foundation verification: independent `go test -race . ./store ./worker ./pipeline ./startup -count=1` passed with disposable PostgreSQL. This includes the built passive API using read-only database sessions and zero-request Nomad/Consul probes, actual legacy-schema adoption, and an executed shell rollback fixture with simulated service management. It is not a live supervisor/release or HA rehearsal.
 
-The next M1 store implementation is dispatched to Sol high after its ownership-slice checkpoint: [atomic operation acceptance](atomic-acceptance-handoff.md), including scoped identity, signed acceptance intent, transactional domain rows, and uncertain-commit resolution. HTTP and pipeline integration follow the agreed store contract; dispatch is not implementation completion.
+The next M1 store implementation was dispatched after its ownership-slice checkpoint: atomic operation acceptance, including scoped identity, signed acceptance intent, transactional domain rows, and uncertain-commit resolution. HTTP and pipeline integration follow the agreed store contract; dispatch is not implementation completion.
 
 Atomic-acceptance work now has initial domain types and migration SQL in the
 worktree, plus HTTP authentication provenance and verified actor-context code.
@@ -949,7 +947,7 @@ These observations are baseline evidence only. They are not a Mini upgrade rehea
 
 ## Claude batch one checkpoint: M2 resolver and recovery follow-through
 
-Scope per [claude-implementation-handoff.md](claude-implementation-handoff.md):
+Historical scope of this batch:
 the pure M2 database resolver/transition contract, then control-recovery
 verifier/CLI gaps. No parser, runtime, effect/supervisor or pipeline wiring
 changed. This is a reviewable local batch, not an M1/M2 gate.

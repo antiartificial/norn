@@ -1,6 +1,6 @@
 # Next Claude batch: execution recovery review
 
-Source review checkpoint, 2026-09-22. Do not start this batch concurrently with the database/recovery batch. This supplements effect-recovery-handoff.md; it is not acceptance evidence.
+Source review checkpoint, 2026-09-22. Do not start this batch concurrently with the database/recovery batch. This is historical review context, not acceptance evidence.
 
 ## Confirmed in current source
 
