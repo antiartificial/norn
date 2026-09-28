@@ -29,7 +29,9 @@ PostgreSQL's [version 17 `pg_dump` documentation](https://www.postgresql.org/doc
 does not guarantee loading a dump into an older major server. A PostgreSQL
 17 Mini source should therefore **not** be paired with the disposable Fleet
 PostgreSQL 16 target for the first restore rehearsal. The selected source
-must be checked directly; no app transfer has been attempted.
+must be checked directly; no app transfer has been attempted. A later
+[read-only Mini app-shape review](m6-m7-first-app-shape-review-2026-09-28.md)
+found that inspected live app URLs were not Mini's local PostgreSQL socket.
 
 ## Recommended first pair to review
 

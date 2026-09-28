@@ -179,6 +179,11 @@ passed schema 46 and passive startup against 28 original tables and 261,259
 rows, with unchanged live job and route-config fingerprints. Protected backup,
 off-host restore and the maintenance transition remain M5 work.
 
+The [read-only first-app shape review](m6-m7-first-app-shape-review-2026-09-28.md)
+found a PostgreSQL 17 source-major observation for `turnkey-offer-intake`,
+but did not select a live app or complete its writer inventory. The
+deploy-disabled synthetic mobility fixture remains the first M6/M7 rehearsal.
+
 The opt-in normal HTTP-to-Nomad local rehearsal has a
 [repeatable disposable runner](m4-http-to-nomad-local-qualification.md).
 First-route admission now rejects an InfraSpec without the signed endpoint
