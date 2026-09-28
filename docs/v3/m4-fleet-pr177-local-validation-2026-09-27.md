@@ -66,3 +66,8 @@ covers the full local Python contract suite at the publisher identity-check
 commit; the same-head Ansible syntax check above covers its playbook change.
 It does not replace the blocked hosted Linux contract job or protected-node
 publication evidence.
+
+A second exact-head run of the same full Python discovery command on
+2026-09-28 exited zero: **1,413 tests in 243.296 seconds, 2 skipped**. The
+different skip count is recorded as observed; neither run supplies the hosted
+Linux contract or protected ingress proof.
