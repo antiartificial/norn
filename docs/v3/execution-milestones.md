@@ -180,6 +180,13 @@ the [consumer contract](database-consumer-syntax.md). Protected Mini job and
 credential readback, old-allocation drain and cutover remain open. Local
 tests alone cannot sign this gate.
 
+The same-day read-only Mini job inventory found additional direct
+`DATABASE_URL` consumers outside the seven legacy InfraSpec declarations.
+`mail-mcp` shares `mailindexer` with `mail-indexer`; both jobs must be included
+in its role/credential transition and old-writer drain. `like-trove` and
+`vigil-gateway` declare `norn`-role URLs for their own databases. See the
+[fixture selection and consumer inventory](m2-m5-mini-compatibility-fixture-selection-2026-09-28.md).
+
 The [2026-09-28 read-only Mini refresh](m0-mini-baseline-refresh-2026-09-28.md)
 still identifies release `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`,
 an empty active operation queue at collection time, and PostgreSQL WAL

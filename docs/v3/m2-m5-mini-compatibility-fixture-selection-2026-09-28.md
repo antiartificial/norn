@@ -57,6 +57,32 @@ of which role those jobs would use. The private inventory must inspect their
 configured connection references and database privileges; the table alone
 does not authorize role changes.
 
+A further read-only Mini check on 2026-09-28 compared current PostgreSQL
+sessions with registered Nomad service jobs. Active `norn` sessions also
+appeared on `like_trove` and `vigil_gateway`; those databases are owned by
+`norn` but were outside the seven `infrastructure.postgres` declarations in
+the earlier app-spec inventory. Nomad job inspection (printing only parsed
+database/user identities and environment key names) found:
+
+| Job/task | Declared database connection identity | Consequence |
+| --- | --- | --- |
+| `like-trove` web | `DATABASE_URL`: `norn` / `like_trove` | Inventory as a direct-URL database consumer outside the seven legacy declarations. |
+| `mail-indexer` web | `POSTGRES_USER` / `POSTGRES_DB`: `norn` / `mailindexer` | Role split must preserve this job's connection path. |
+| `mail-mcp` mcp | `DATABASE_URL`: `norn` / `mailindexer` | The same database has a second registered consumer; split/drain both jobs before old-role access is removed. |
+| `signal-sideband` web | `DATABASE_URL` and `DB_*`: `norn` / `signal_sideband` | URL takes precedence in checked-out app code; a `DB_USER` edit alone does not switch the job. |
+| `vigil-gateway` web | `DATABASE_URL`: `norn` / `vigil_gateway` | Inventory as another direct-URL consumer outside the seven legacy declarations. |
+| `turnkey-offer-intake` web and worker | `DATABASE_URL`: `turnkey_offer_intake_app` / `turnkey_offer_intake` | Both processes require the same binding readback. |
+| `watchtower` web | `DATABASE_URL`: `watchtower` / `watchtower` | Distinct observed role; account for it in the broader Mini database inventory. |
+
+`field-harbor` had an active `norn` database session but no matching DB
+environment keys in its inspected web task. `contextdb` likewise had a
+`hermes` session without matching keys in its inspected tasks. Their
+connection source remains unresolved. A PostgreSQL session is not by itself
+attribution to a particular Nomad allocation, and job declarations do not
+prove the currently running process uses each value. Before activating a
+catalog or fencing an old role, join the exact allocations, process connection
+sources and all writers, including jobs outside the legacy InfraSpec syntax.
+
 For the proposed first fixture, a read-only `mailindexer` ownership query
 found eight ordinary tables, four sequences and 31 indexes owned by `norn`.
 The database itself is also owned by `norn`; the `public` schema uses
