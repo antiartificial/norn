@@ -102,7 +102,13 @@ The joined fixture needs two distinct private IPv4 addresses: the production
 Fleet inventory parser rejects loopback, IPv6, duplicate IPs and public IPs.
 The current macOS runner has only one locally bindable private IPv4 address;
 its two loopback TLS listeners therefore cannot be substituted for a completed
-Fleet inventory. Use an isolated Linux private network with two addressable
-ingress nodes for the next normal-executor rehearsal, keeping the same
-inventory validator and exact-node identity checks. This is a fixture
-requirement, not permission to provision or change a protected Fleet.
+Fleet inventory. The repeatable
+`python3 v2/api/scripts/qualify-v3-private-ingress-publisher.py` runner now
+cross-compiles the ingress test and uses two disposable Docker bridge networks
+with distinct private IPv4 addresses. The opt-in test passes those addresses
+through the production Fleet inventory parser, then uses the exported mTLS
+preflight and publication clients. It passed on 2026-09-27 and cleaned up its
+container and networks. This qualifies inventory shape through private node
+publication, including partial retry, but does not seed durable completed Fleet
+attempt evidence or run the normal release executor. A joined normal-executor
+rehearsal remains necessary. No protected Fleet was provisioned or changed.

@@ -2,14 +2,19 @@ package ingress
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,15 +24,42 @@ import (
 // publisher listeners. This fixture proves the wire and file boundary on two
 // loopback nodes; it does not prove Traefik or public load balancer traffic.
 func TestTwoNodePublisherTransportPartialRetry(t *testing.T) {
-	first, err := net.Listen("tcp", "127.0.0.1:0")
+	runTwoNodePublisherTransport(t, "127.0.0.1", "::1", false)
+}
+
+// Run this opt-in test inside an isolated Linux container attached to two
+// private bridge networks. It uses the same inventory parser as the executor.
+func TestPrivateFleetInventoryPublisherTransport(t *testing.T) {
+	addresses := strings.Split(os.Getenv("NORN_TEST_INGRESS_PRIVATE_IPS"), ",")
+	if len(addresses) != 2 {
+		t.Skip("set NORN_TEST_INGRESS_PRIVATE_IPS to two container-owned private IPv4 addresses")
+	}
+	for _, address := range addresses {
+		ip := net.ParseIP(address)
+		if ip == nil || ip.To4() == nil || !ip.IsPrivate() || ip.IsLoopback() {
+			t.Fatal("test ingress address must be a private IPv4 address")
+		}
+	}
+	if addresses[0] == addresses[1] {
+		t.Fatal("test ingress addresses must be distinct")
+	}
+	runTwoNodePublisherTransport(t, addresses[0], addresses[1], true)
+}
+
+func runTwoNodePublisherTransport(t *testing.T, firstIP, secondIP string, parseInventory bool) {
+	t.Helper()
+	first, err := net.Listen("tcp", net.JoinHostPort(firstIP, "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
 	port := first.Addr().(*net.TCPAddr).Port
-	second, err := net.Listen("tcp", net.JoinHostPort("::1", strconv.Itoa(port)))
+	second, err := net.Listen("tcp", net.JoinHostPort(secondIP, strconv.Itoa(port)))
 	if err != nil {
-		t.Skipf("second loopback address is unavailable: %v", err)
+		if !parseInventory {
+			t.Skipf("second loopback address is unavailable: %v", err)
+		}
+		t.Fatal(err)
 	}
 	defer second.Close()
 
@@ -37,7 +69,7 @@ func TestTwoNodePublisherTransportPartialRetry(t *testing.T) {
 		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 	caPEM, _, ca, caKey := nodeTestCertificate(t, nil, nil, &root)
 	serverTemplate := x509.Certificate{SerialNumber: big.NewInt(72), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+		IPAddresses: []net.IP{net.ParseIP(firstIP), net.ParseIP(secondIP)}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	serverPEM, serverKey, _, _ := nodeTestCertificate(t, ca, caKey, &serverTemplate)
 	const publisherURI = "spiffe://norn.test/control/ingress-publisher"
 	uri, _ := url.Parse(publisherURI)
@@ -76,8 +108,17 @@ func TestTwoNodePublisherTransportPartialRetry(t *testing.T) {
 	serve(first, "ingress-01", firstRoutes)
 	serve(second, "ingress-02", secondRoutes)
 	nodes := []IngressNode{
-		{ID: "ingress-01", APIURL: "https://127.0.0.1:18082"},
-		{ID: "ingress-02", APIURL: "https://[::1]:18082"},
+		{ID: "ingress-01", APIURL: "https://" + net.JoinHostPort(firstIP, "18082")},
+		{ID: "ingress-02", APIURL: "https://" + net.JoinHostPort(secondIP, "18082")},
+	}
+	if parseInventory {
+		body := []byte(fmt.Sprintf(`{"cluster":"norn-test","environment":"staging/private","ingressNodes":[{"name":"ingress-01","privateIP":"%s"},{"name":"ingress-02","privateIP":"%s"}],"nodesFileSHA256":"%s","schemaVersion":"norn.fleet-ingress-inventory/v1"}`+"\n", firstIP, secondIP, strings.Repeat("a", 64)))
+		digest := sha256.Sum256(body)
+		parsed, err := ParseFleetIngressInventory(body, "sha256:"+hex.EncodeToString(digest[:]), "norn-test", "staging/private", 18082)
+		if err != nil || len(parsed) != 2 {
+			t.Fatalf("completed private inventory nodes=%+v err=%v", parsed, err)
+		}
+		nodes = parsed
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
