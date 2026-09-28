@@ -96,6 +96,11 @@ That fixture is now available through
 `v2/scripts/test-pipeline-cgroup-linux.sh`: it starts three socket-only
 PostgreSQL servers as `postgres` in container tmpfs, then runs the pipeline
 tests as root. The joined replay test still seeds its migration effect. A
+local rerun at code head `f0350929` passed all six harness cases, including remote snapshot
+readback and the changed-snapshot refusal. The v3 CI workflow now has a
+dedicated opt-in harness job; the ordinary `go test ./...` job skips these
+cgroup cases. The hosted harness job still needs its own exact-head receipt.
+A
 second test now executes the accepted deployment through real source/build
 checkpoints, named snapshots, a PostgreSQL migration command and the real
 cgroup backend. The command commits one row and remains in its command cgroup
