@@ -34,9 +34,13 @@ A second authenticated read-only inventory at 10:19 UTC reported the same
 incidents, no configured Fleet/node pools, `ok` host status, and blocked v2
 production readiness. One open host incident is
 `service.capacity.below_minimum` for three processes, last observed on
-2026-09-16; its open state alone does not prove current undercapacity. Review
-the affected process identities and a fresh capacity observation before
-using them in the representative upgrade fixture. The production-readiness
+2026-09-16. Its detail names `ad-asset-verifier:web`, `hello-norn:web`, and
+`its-alive-api:web`. The fresh app readback shows all three still declare
+`deploy=true` and `web.min=1`, but each has zero allocations and is not
+healthy. This confirms a current desired-versus-observed exception; it does
+not establish whether the owner intentionally left those apps inactive.
+Resolve that intent before using any of them in the representative upgrade
+fixture or treating host assurance as clean. The production-readiness
 endpoint evaluates the current single-host development deployment, including
 one-member Nomad/Consul and local PostgreSQL. It is not evidence that the
 separately proposed three-control-node Fleet is deployed or qualified.
