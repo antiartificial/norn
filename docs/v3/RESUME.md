@@ -21,8 +21,9 @@ sign-off has occurred. The signed gate count remains **0/10**.
   `codex/v3-m0-m3-release-integration` targets
   `feature/norn-v3-planning-handoff`. At the pre-edit check, head
   `7a0c98960cfd690a9eb073f9f9ae9cfb1173ea4c` had nine passing checks;
-  the worktree was clean. The Mini checkpoint and handoff cleanup were pushed
-  later. Recheck their exact head and checks before using CI as evidence.
+  the worktree was clean. The Mini checkpoint and handoff cleanup reached
+  `e9ca9620b6fe358ef116f2c4d2440105a833e0de`; its Repository CI run
+  `36450512637` passed all seven jobs. Recheck later heads before using CI.
 - Fleet draft [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
   `codex/fleet-m3-host-etcd` at
   `6267655052b209b22dc8b3421cb9339f797af9bc`, targeting `main`.
@@ -39,8 +40,8 @@ The owner selected a **15-minute target** for the expendable development Mini,
 accepting a 24-hour fallback if the tighter mechanism proves disproportionate.
 The Mini now has `com.norn.control-checkpoint`, a user LaunchAgent with a
 600-second interval to leave room inside the 15-minute target for upload and
-schedule jitter. It decrypts only the `NORN_DATABASE_URL` from the
-inactive, owner-only v3 binding stage, creates a read-only custom dump and
+schedule jitter. It decrypts only the `NORN_DATABASE_URL` from the active,
+owner-only API SOPS file, creates a read-only custom dump and
 digest manifest, and keeps successful local checkpoints for 48 hours. It then
 uploads the verified pair to private personal DigitalOcean Space
 `norn-mini-control-temp-20260928-3830ba` in `nyc3` with a bucket-scoped key,
@@ -63,12 +64,34 @@ transition; keep that age rule separate from checkpoint retention. See the
 [measured budget](m0-mini-control-budget-proposal-2026-09-26.md), and
 [protected M5 backup path](m5-protected-backup-private-restore.md).
 
+On 2026-09-28 the staged SOPS ciphertext was promoted to the active API file
+after confirming that it added only the exact database URL and first audit
+signing key. The previous active ciphertext is saved at
+`/Users/0xadb/.config/norn/api.env.enc.json.pre-v3-binding-20260928`.
+The same installed v2 release restarted healthy. Before activation, 61,119
+completed audit rows had no digest/key ID; there were no audit incidents or
+Fleet capacity-plan operations. A fresh protected backup under the now-active
+runtime URL/key was created as
+`control-20260928T162830Z-985ead5a` (13,887,820 bytes,
+SHA-256 `5afadf3f6aab4d1b5f16b3571d9d16375c830be0de8927121ef75f09f7bfeda8`).
+The owner-only dump and proof remain on Mini under
+`/Users/0xadb/.local/share/norn-control-protected-20260928/`, with verified
+remote copies under `control/protected/` in the temporary Space. The
+read-only legacy-baseline doctor passed runtime binding, backup proof,
+legacy release, sole listener ownership, running process freshness, and
+zero active operations. It blocked on the reviewed script and exact signed
+v3 candidate release. A separate Mac downloaded the remote protected pair,
+verified its SHA-256/length, and restored it into isolated PostgreSQL 17:
+28 public tables, 61,125 audit rows, 483 operations and 483 deployments.
+The disposable container, image, credential copy and downloaded bytes were
+removed. This is an M5 backup/restore checkpoint, not an upgrade rehearsal.
+The temporary Space's seven-day expiration is not a durable release policy.
+
 Next: observe multiple scheduled intervals, alert on a missed/failed remote
 checkpoint, rehearse recovery after source-host loss with identity/auth and
-history checks, and measure the complete operator recovery time. The one
-restored dump was produced with the staged database URL, not the active M5
-audit-signing key. Keep M0 and M5 open until their distinct proof requirements
-are met. When this temporary setup is no longer needed, unload and remove the
+history checks, and measure the complete operator recovery time. Keep M0 and
+M5 open until their distinct proof requirements are met. When this temporary
+setup is no longer needed, unload and remove the
 LaunchAgent, remove its scoped credential from the Mini, revoke the key named
 `norn-mini-control-temp-20260928`, empty and delete the named Space, then
 remove its local checkpoints only after verifying no retained recovery need.
@@ -81,7 +104,7 @@ remove its local checkpoints only after verifying no retained recovery need.
 | M2 | Real-provider retention and separate-node restore; managed MySQL/WordPress recovery; archive/profile parity. |
 | M3 | Protected separate-host bootstrap, quorum/fault/restore/soak, PG-free operation and hosted Fleet contract CI. |
 | M4 | Normal etcd app admission and worker dispatch, observed ingress weight, loaded placement/drain on protected hosts. See the [M4 sequence](m4-etcd-app-admission-sequence-2026-09-26.md). |
-| M5 | Production-key protected backup, exact signed candidate, isolated Mini upgrade and rollback preserving jobs/routes/identities. |
+| M5 | Retain the production-key backup beyond the temporary Space policy; prepare the reviewed exact signed candidate and rehearse isolated upgrade/rollback preserving jobs/routes/identities. |
 | M6–M7 | Running v3 upgrade, supported app DB cutover, and one representative Mini-to-Fleet app move with rollback. |
 | M8–M9 | Signed qualified release, client/fault/soak evidence, then separately approved adoption. |
 

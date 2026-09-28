@@ -89,9 +89,13 @@ cannot preserve. A disposable PostgreSQL 16.15 run passed with a
 Unix-socket source and a synthetic row. That run validates the producer and
 verifier, not a Mini production-key backup. Retain and protect the resulting
 artifact off the source host as required by the change record, then run the
-private restore against those exact bytes. Mini's current launcher lacks the
-required URL and audit key, so no production-key artifact has yet been made.
+private restore against those exact bytes. The 2026-09-28 active Mini binding
+now carries the explicit URL and audit key. Its first protected artifact and
+proof were verified, copied to a temporary personal Space, downloaded on a
+separate Mac, and restored into isolated PostgreSQL 17; see [current handoff](RESUME.md).
+The Space's seven-day expiration and the generic restore do not qualify the
+M5 signed candidate, complete Mini upgrade, or long-term retention policy.
 The [2026-09-25 staged-binding rehearsal](m5-mini-staged-binding-backup-rehearsal-2026-09-25.md)
 proved this producer and private restore against live Mini data using an
 inactive encrypted key candidate. It does not replace the production-key,
-off-host retained backup requirement.
+off-host retained backup requirement at the time of that rehearsal.

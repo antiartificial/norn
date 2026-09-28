@@ -92,3 +92,11 @@ the staged key as a protected recovery input, and repeat the inventory before
 activation in case new rows appear. Re-run the binding doctor after activation
 and before producing the production-key backup. This remains an M5 preflight,
 not approval to switch the launcher or promote V3.
+
+## Subsequent activation — 2026-09-28
+
+The reviewed staged ciphertext was installed as the active API SOPS file after
+the signature inventory was repeated. The previous ciphertext was retained
+for rollback, and the same installed v2 API restarted healthy. The protected
+backup producer then created a proof under the active URL/key. The current
+status and remaining signed-candidate gate are in [RESUME.md](RESUME.md).
