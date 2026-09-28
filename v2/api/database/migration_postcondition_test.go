@@ -86,7 +86,9 @@ func TestSQLMigrationPostconditionChecksOriginalMySQLTarget(t *testing.T) {
 	}
 	intent := supervisor.MigrationIntent{TargetSHA256: targetSHA, TargetBindingID: resolved.Target.BindingID,
 		TargetGeneration: int64(resolved.Target.BindingGeneration), PostconditionSHA256: digest}
-	checker := &SQLMigrationPostconditionChecker{Resolved: resolved, Secrets: literalSecrets{"secret:mysql-review": `{"password":"` + password + `"}`}, Spec: spec}
+	currentRevision := int64(7)
+	checker := &SQLMigrationPostconditionChecker{Resolved: resolved, Secrets: literalSecrets{"secret:mysql-review": `{"password":"` + password + `"}`}, Spec: spec,
+		CatalogRevision: 7, CurrentTarget: func(context.Context) (ResolvedBinding, int64, error) { return resolved, currentRevision, nil }}
 	result, err := checker.CheckMigrationPostcondition(ctx, intent)
 	if err != nil || !result.Satisfied {
 		t.Fatalf("original MySQL postcondition=%+v err=%v", result, err)
@@ -129,11 +131,37 @@ func TestSQLMigrationPostconditionChecksOriginalPostgreSQLTarget(t *testing.T) {
 	}
 	intent := supervisor.MigrationIntent{TargetSHA256: targetSHA, TargetBindingID: resolved.Target.BindingID,
 		TargetGeneration: int64(resolved.Target.BindingGeneration), PostconditionSHA256: digest}
-	checker := &SQLMigrationPostconditionChecker{Resolved: resolved, Secrets: reviewMaterialSource(`{}`), Spec: spec}
+	currentRevision := int64(7)
+	checker := &SQLMigrationPostconditionChecker{Resolved: resolved, Secrets: reviewMaterialSource(`{}`), Spec: spec,
+		CatalogRevision: 7, CurrentTarget: func(context.Context) (ResolvedBinding, int64, error) { return resolved, currentRevision, nil }}
 	result, err := checker.CheckMigrationPostcondition(context.Background(), intent)
 	if err != nil || !result.Satisfied || result.TargetSHA256 != targetSHA || result.PostconditionSHA256 != digest {
 		t.Fatalf("original-target postcondition=%+v err=%v", result, err)
 	}
+	currentRevision++
+	if _, err := checker.CheckMigrationPostcondition(context.Background(), intent); err == nil {
+		t.Fatal("changed active catalog revision approved old migration")
+	}
+	currentRevision--
+	changedTarget := resolved
+	changedTarget.Target.BindingGeneration++
+	checker.CurrentTarget = func(context.Context) (ResolvedBinding, int64, error) { return changedTarget, currentRevision, nil }
+	if _, err := checker.CheckMigrationPostcondition(context.Background(), intent); err == nil {
+		t.Fatal("changed active catalog target approved old migration")
+	}
+	checker.CurrentTarget = func(context.Context) (ResolvedBinding, int64, error) { return resolved, currentRevision, nil }
+	reads := 0
+	checker.CurrentTarget = func(context.Context) (ResolvedBinding, int64, error) {
+		reads++
+		if reads == 2 {
+			return resolved, currentRevision + 1, nil
+		}
+		return resolved, currentRevision, nil
+	}
+	if _, err := checker.CheckMigrationPostcondition(context.Background(), intent); err == nil || reads != 2 {
+		t.Fatalf("catalog changed during postcondition check: reads=%d err=%v", reads, err)
+	}
+	checker.CurrentTarget = func(context.Context) (ResolvedBinding, int64, error) { return resolved, currentRevision, nil }
 	checker.Spec.ExpectedValue = "2"
 	intent.PostconditionSHA256, _ = checker.Spec.SHA256()
 	result, err = checker.CheckMigrationPostcondition(context.Background(), intent)

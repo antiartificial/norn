@@ -121,7 +121,24 @@ func (p *Pipeline) runSupervisedMigration(ctx context.Context, st *state, bound 
 		return err
 	}
 	reservation.SupervisorExecutionID = migrationExecutionID(reservation)
-	checker := &database.SQLMigrationPostconditionChecker{Resolved: bound.resolved, Secrets: p.DatabaseTargets.Secrets, Spec: check}
+	checker := &database.SQLMigrationPostconditionChecker{Resolved: bound.resolved, Secrets: p.DatabaseTargets.Secrets, Spec: check,
+		CatalogRevision: bound.recorded.CatalogRevision,
+		CurrentTarget: func(checkCtx context.Context) (database.ResolvedBinding, int64, error) {
+			resolver, revision, err := p.DatabaseTargets.resolverAt(checkCtx)
+			if err != nil {
+				return database.ResolvedBinding{}, 0, err
+			}
+			request := database.ResolveRequest{DeploymentProfileID: p.DatabaseTargets.ProfileID,
+				Purpose: database.PurposeApplication, Expected: &bound.resolved.Target}
+			if bound.name != "" {
+				request.LogicalResourceID = bound.name
+			} else if st.spec.Infrastructure != nil && st.spec.Infrastructure.Postgres != nil {
+				request.LegacyPostgres = &database.LegacyPostgresDeclaration{Database: st.spec.Infrastructure.Postgres.Database}
+			}
+			current, err := resolver.Resolve(request)
+			return current, revision, err
+		},
+	}
 	executor, err := config.executorFor(checker)
 	if err != nil {
 		return err

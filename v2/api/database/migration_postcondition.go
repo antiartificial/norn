@@ -51,12 +51,16 @@ type SQLMigrationPostconditionChecker struct {
 	Secrets  SecretSource
 	Spec     MigrationPostconditionSQL
 	Timeout  time.Duration
+	// CurrentTarget rereads the active catalog. A successful check is invalid
+	// when the accepted catalog revision or target has changed.
+	CurrentTarget   func(context.Context) (ResolvedBinding, int64, error)
+	CatalogRevision int64
 }
 
 const defaultMigrationPostconditionTimeout = 30 * time.Second
 
 func (c *SQLMigrationPostconditionChecker) CheckMigrationPostcondition(ctx context.Context, intent supervisor.MigrationIntent) (supervisor.MigrationPostconditionResult, error) {
-	if c == nil || c.Secrets == nil || c.Resolved.Target.Engine != c.Spec.Engine {
+	if c == nil || c.Secrets == nil || c.CurrentTarget == nil || c.CatalogRevision <= 0 || c.Resolved.Target.Engine != c.Spec.Engine {
 		return supervisor.MigrationPostconditionResult{}, fmt.Errorf("migration original-target checker is unavailable")
 	}
 	digest, err := c.Spec.SHA256()
@@ -68,6 +72,16 @@ func (c *SQLMigrationPostconditionChecker) CheckMigrationPostcondition(ctx conte
 		c.Resolved.Target.BindingID != intent.TargetBindingID ||
 		int64(c.Resolved.Target.BindingGeneration) != intent.TargetGeneration {
 		return supervisor.MigrationPostconditionResult{}, fmt.Errorf("migration target differs from accepted intent")
+	}
+	checkCatalog := func() error {
+		current, revision, err := c.CurrentTarget(ctx)
+		if err != nil || revision != c.CatalogRevision || current.Target != c.Resolved.Target {
+			return fmt.Errorf("migration active catalog differs from accepted target")
+		}
+		return nil
+	}
+	if err := checkCatalog(); err != nil {
+		return supervisor.MigrationPostconditionResult{}, err
 	}
 	timeout := c.Timeout
 	if timeout <= 0 {
@@ -88,6 +102,9 @@ func (c *SQLMigrationPostconditionChecker) CheckMigrationPostcondition(ctx conte
 		actual, err = checkMySQLMigrationSQL(checkCtx, session, c.Spec.Query)
 	}
 	if err != nil {
+		return supervisor.MigrationPostconditionResult{}, err
+	}
+	if err := checkCatalog(); err != nil {
 		return supervisor.MigrationPostconditionResult{}, err
 	}
 	return supervisor.MigrationPostconditionResult{TargetSHA256: targetSHA,

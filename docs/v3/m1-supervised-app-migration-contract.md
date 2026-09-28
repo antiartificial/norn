@@ -145,6 +145,14 @@ not establish MySQL migration safety.
 
 ## Current behavior and risk
 
+The SQL migration verifier now rereads the active catalog before and after
+its original-target postcondition query. A changed catalog revision or target
+leaves the effect unresolved even if the command exited zero and the SQL
+assertion matched. Disposable PostgreSQL and MySQL checker tests and the full
+database and pipeline package suites passed locally. This closes a stale
+catalog approval path; it does not provide the missing MySQL private launch
+or protected process-crash qualification.
+
 Migrations without a reviewed postcondition still execute with host `sh -c`
 when supervised migration mode is off. When the operator enables supervised
 mode, an unreviewed migration fails before launching a command.
