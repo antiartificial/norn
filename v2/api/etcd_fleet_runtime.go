@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -87,7 +88,15 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}
 	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
-	defer stopWorker()
+	var workerWG sync.WaitGroup
+	var deploy *etcdFleetDeployRuntime
+	defer func() {
+		stopWorker()
+		workerWG.Wait()
+		if deploy != nil {
+			_ = deploy.secrets.Close()
+		}
+	}()
 	workerEnabled, canaryHTTPEnabled, err := etcdCanaryPreviewFlags(os.Getenv)
 	if err != nil {
 		return err
@@ -100,13 +109,11 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}
 	}
 	deployConfig := strings.TrimSpace(os.Getenv(etcdFleetDeployWorkerConfigEnv))
-	var deploy *etcdFleetDeployRuntime
 	if deployConfig != "" {
 		deploy, err = newEtcdFleetDeployRuntime(workerCtx, cfg, operations, deployConfig)
 		if err != nil {
 			return fmt.Errorf("configure etcd Fleet deploy worker: %w", err)
 		}
-		defer deploy.secrets.Close()
 	}
 	releaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetReleaseHTTPEnv)), "true")
 	var releaseVerifier *pipeline.Pipeline
@@ -196,13 +203,20 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	// Complete selected runtime and listener preflights before any worker can
 	// claim queued work. Invalid release policy or a failed bind must not leave
 	// a short window for a deployment effect.
-	go catalogWorker.Run(workerCtx)
+	runWorker := func(value *worker.OperationWorker) {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			value.Run(workerCtx)
+		}()
+	}
+	runWorker(catalogWorker)
 	if canary != nil {
-		go canary.worker.Run(workerCtx)
+		runWorker(canary.worker)
 		log.Printf("etcd canary operation worker enabled; HTTP preview=%t", canaryHTTPEnabled)
 	}
 	if deploy != nil {
-		go deploy.worker.Run(workerCtx)
+		runWorker(deploy.worker)
 		log.Print("etcd Fleet app.deploy worker enabled for signed claimed operations")
 	}
 	errCh := make(chan error, 1)
@@ -218,6 +232,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	case e := <-errCh:
 		return e
 	case <-quit:
+		stopWorker()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(ctx)

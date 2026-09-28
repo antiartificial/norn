@@ -122,6 +122,12 @@ verifier preflights, router construction, and a successful API listener bind.
 Focused preflight tests and the main API package tests passed locally. This
 removes the identified startup window for configuration and bind failures; it does not
 qualify protected effects or sign a release gate.
+The same review found that the deployment secret source's deferred close ran
+before the worker context's deferred cancellation. Runtime shutdown now
+cancels and joins all selected workers before closing that secret source and
+the etcd client; signal shutdown cancels worker claims before draining the API.
+The main API package tests passed locally. A protected interruption rehearsal
+is still needed to validate in-flight external effects and successor recovery.
 
 ## Lane 1 Mini-preservation checkpoint
 
