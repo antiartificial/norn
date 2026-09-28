@@ -1,9 +1,12 @@
 # Norn v3 planning package
 
-**Paused implementation:** start with [Resume handoff](RESUME.md) for verified
-checkpoints, M0–M9 disposition, open work and the exact workspace to resume.
+**Current release work:** start with the [2026-09-28 release handoff](session-resume-2026-09-28.md)
+for the latest checked-in state, open gates, and next sequence. Git history
+retains earlier session handoffs.
 
-Status: proposed architecture, 2026-09-22. These documents authorize no implementation or live operations.
+The architecture below began as a proposal on 2026-09-22. Use the current
+handoff and execution milestones to distinguish later implementation from
+release qualification and live operations.
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 

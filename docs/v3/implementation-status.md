@@ -6,10 +6,11 @@ This status applies only to the local development branch `codex/v3-foundations`,
 
 ## Current stage
 
-**Paused at the user's request, 2026-09-22.** See [resume handoff](RESUME.md).
-The implementation process was interrupted and checked stopped. Sections below
-record implementation history; references to an active pass are historical
-until the user resumes. No full M0–M9 exit gate is declared complete.
+For the current release state and next sequence, see the
+[2026-09-28 release handoff](session-resume-2026-09-28.md). This document
+contains implementation detail accumulated across earlier slices. Sections
+below record implementation history; references to an active pass are
+historical. No full M0–M9 exit gate is declared complete.
 
 The active implementation goal covers the complete M0–M9 plan, not only the
 first patch. Implementation is now performed directly by Claude in this

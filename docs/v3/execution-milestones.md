@@ -250,7 +250,7 @@ requires the hosted `contract` check, and both PRs' contract jobs failed
 before runner steps because GitHub reported account billing or a spending
 limit. Local validation cannot satisfy that protected merge gate.
 
-[Implementation status](implementation-status.md) and [resume handoff](RESUME.md)
-retain the earlier bounded implementation checkpoints. This table governs only
+[Implementation status](implementation-status.md) and [current release handoff](session-resume-2026-09-28.md)
+record implementation detail and the latest release state. This table governs only
 the formal milestone percentage; each gate needs its own full-scope evidence
 and owner sign-off before its disposition changes.
