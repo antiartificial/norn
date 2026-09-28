@@ -23,6 +23,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/effect"
 	"norn/v2/api/etcdstore"
+	"norn/v2/api/fleetdeploy"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
@@ -125,6 +126,25 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	nomadClient, err := nomad.NewClient(address)
 	if err != nil {
 		t.Fatal(err)
+	}
+	lock, acquired, err := operations.AcquireAppOperationLock(ctx, app)
+	if err != nil || !acquired {
+		t.Fatalf("app lock acquired=%v err=%v", acquired, err)
+	}
+	defer lock.Release()
+	listenerCalled := false
+	executor := &fleetdeploy.ClaimedFleetDeploymentExecutor{
+		Store: operations, Nomad: nomadClient, AppsDir: appsDir, Authority: authority,
+		Route: fleetdeploy.ClaimedFleetRouteTransport{
+			Listen:       func() (net.Listener, error) { listenerCalled = true; return nil, fmt.Errorf("unexpected listener") },
+			ObserverPort: 18082, EndpointPort: 443,
+		},
+	}
+	if _, err := executor.ExecuteOperationWithAppLock(ctx, claimed, claim, lock); err == nil || !strings.Contains(err.Error(), "ingress inventory is unavailable") {
+		t.Fatalf("normal executor accepted release without completed ingress inventory: %v", err)
+	}
+	if listenerCalled {
+		t.Fatal("normal executor opened route listener before ingress inventory preflight")
 	}
 	plan, err := worker.PrepareClaimedFleetDeploymentJob(ctx, source, claim, authority, nomadClient, nil, nil)
 	if err != nil {

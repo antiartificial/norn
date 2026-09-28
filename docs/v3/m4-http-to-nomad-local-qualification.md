@@ -39,6 +39,10 @@ The normal executor now requires a completed active Fleet ingress inventory
 and an exact match between its node IDs and configured private certificate
 identities before database resolution, Nomad input staging, or job submission.
 The route intent still rechecks inventory after Nomad health. This preflight
-has unit coverage for missing, extra, repeated, and wrong node identities;
-it has not yet been exercised with the HTTP-to-Nomad fixture's synthetic
-Fleet target or protected ingress nodes.
+has unit coverage for missing, extra, repeated, and wrong node identities.
+The HTTP-to-Nomad fixture now also passes its claimed HTTP-accepted operation
+into the normal executor with no completed inventory: it refuses the release
+before opening the route listener. The fixture then directly exercises the
+Nomad effect to keep the allocation-health gate qualified. A completed
+inventory and protected ingress nodes have not been exercised through this
+normal executor path.
