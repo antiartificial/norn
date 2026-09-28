@@ -80,6 +80,9 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 	if err != nil {
 		return VerifiedFleetRouteSource{}, err
 	}
+	if endpoint.ProbePath == "" || endpoint.ProbeBodySHA256 == "" {
+		return VerifiedFleetRouteSource{}, fmt.Errorf("claimed first Fleet route lacks a signed traffic probe")
+	}
 	return VerifiedFleetRouteSource{App: spec.App, ControlEnvironment: accepted.Deployment.Environment, FleetCluster: target.Cluster, FleetEnvironment: target.FleetEnvironment, TargetGeneration: target.Generation, OperationID: claimed.ID, DeploymentID: accepted.Deployment.ID,
 		AcceptanceID: accepted.Intent.ID, AcceptanceDigest: accepted.Intent.CanonicalDigest,
 		Region: region, NomadRegion: acceptedRegion.NomadRegion, DesiredWeight: acceptedRegion.TrafficWeight,

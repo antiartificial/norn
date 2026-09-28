@@ -33,3 +33,5 @@ checked-out InfraSpec. This prevents an accepted release from reaching the
 worker without the signed path and response digest needed for terminal
 traffic proof. The local Nomad fixture carries that probe declaration but
 does not serve or verify its response.
+The claimed worker also rechecks this requirement before preparing Nomad
+inputs, including for operations accepted before the admission rule changed.

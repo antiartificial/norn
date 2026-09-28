@@ -61,6 +61,9 @@ endpoints:
   - url: https://pilot.example.test
     region: west
     process: web
+    trafficProbe:
+      path: /ready
+      bodySHA256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 `
 	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
 		t.Fatal(err)
