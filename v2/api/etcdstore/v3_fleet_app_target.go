@@ -101,11 +101,39 @@ func (s *V3OperationStore) putFleetAppTarget(ctx context.Context, target FleetAp
 	} else if target.Generation != 1 {
 		return 0, fmt.Errorf("Fleet app target initial generation must be one")
 	}
+	initialized, err := s.kv.Get(ctx, s.appAdmissionInitializedKey(target.App))
+	if err != nil {
+		return 0, err
+	}
+	if len(initialized.Kvs) == 0 {
+		if err := s.rejectPreIndexActiveAppOperations(ctx, target.App); err != nil {
+			return 0, fmt.Errorf("Fleet app target cannot change beside pre-index active work: %w", err)
+		}
+	}
+	active, err := s.kv.Get(ctx, s.appAdmissionActivePrefix(target.App), clientv3.WithPrefix(), clientv3.WithLimit(1))
+	if err != nil {
+		return 0, err
+	}
+	if len(active.Kvs) != 0 {
+		return 0, fmt.Errorf("Fleet app target cannot change while app work is active")
+	}
+	fence, err := s.kv.Get(ctx, s.appAdmissionFenceKey(target.App))
+	if err != nil {
+		return 0, err
+	}
+	var fenceRevision int64
+	if len(fence.Kvs) != 0 {
+		fenceRevision = fence.Kvs[0].ModRevision
+	}
 	encoded, err := json.Marshal(target)
 	if err != nil {
 		return 0, err
 	}
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", expectedRevision)).Then(clientv3.OpPut(key, string(encoded))).Commit()
+	txn, err := s.kv.Txn(ctx).If(
+		clientv3.Compare(clientv3.ModRevision(key), "=", expectedRevision),
+		clientv3.Compare(clientv3.CreateRevision(s.appAdmissionExclusiveKey(target.App)), "=", 0),
+		clientv3.Compare(clientv3.ModRevision(s.appAdmissionFenceKey(target.App)), "=", fenceRevision),
+	).Then(clientv3.OpPut(key, string(encoded))).Commit()
 	if err != nil {
 		return 0, err
 	}

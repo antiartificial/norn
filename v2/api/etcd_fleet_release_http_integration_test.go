@@ -20,6 +20,7 @@ import (
 	"norn/v2/api/handler"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
+	"norn/v2/api/worker"
 )
 
 func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T) {
@@ -39,7 +40,8 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations, err := etcdstore.NewV3OperationStore(client, prefix, uuid.NewString(), signer)
+	authority := uuid.NewString()
+	operations, err := etcdstore.NewV3OperationStore(client, prefix, authority, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +49,7 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 	if err := os.Mkdir(filepath.Join(appsDir, "demo"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	spec := "name: demo\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nprocesses:\n  web:\n    command: sleep 1\n"
+	spec := "name: demo\ndeploy: true\nrepo:\n  url: https://github.com/acme/demo\nprocesses:\n  web:\n    command: sleep 1\n    port: 8080\nendpoints:\n  - url: https://demo.example.test\n    region: local\n    process: web\n"
 	if err := os.WriteFile(filepath.Join(appsDir, "demo", "infraspec.yaml"), []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +121,8 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 	if err != nil || current.Generation != 1 {
 		t.Fatalf("initial target=%+v revision=%d err=%v", current, revision, err)
 	}
-	if _, err := operations.ConfigureFleetAppTarget(ctx, target, revision); err != nil {
-		t.Fatal(err)
+	if _, err := operations.ConfigureFleetAppTarget(ctx, target, revision); err == nil {
+		t.Fatal("Fleet target replacement passed while the release was active")
 	}
 	replayed := post(principal, "release-once", requestBody)
 	if replayed.Code != http.StatusOK || verified != 1 || !strings.Contains(replayed.Body.String(), accepted.ID) {
@@ -132,5 +134,17 @@ func TestEtcdFleetStagingReleaseHTTPAcceptsAndReplaysVerifiedSource(t *testing.T
 	}
 	if verified != 1 {
 		t.Fatalf("changed release invoked artifact verifier %d times", verified)
+	}
+	claimed, claim, err := operations.ClaimNextOperation(ctx, "local-fleet-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || claimed == nil || claimed.ID != accepted.ID {
+		t.Fatalf("normal accepted operation claim=%+v err=%v", claimed, err)
+	}
+	bound, err := worker.LoadClaimedFleetDeploymentSource(ctx, operations, *claimed, appsDir)
+	if err != nil || bound.Managed.Accepted.Deployment == nil || bound.Route.Endpoint != "https://demo.example.test" {
+		t.Fatalf("claimed signed release source=%+v err=%v", bound, err)
+	}
+	plan, err := worker.BuildClaimedFleetDeploymentJobPlan(bound, claim, authority)
+	if err != nil || plan.Job == nil || plan.Input.DeploymentID != bound.Managed.Accepted.Deployment.ID {
+		t.Fatalf("claimed Fleet job plan=%+v err=%v", plan, err)
 	}
 }

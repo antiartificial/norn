@@ -25,11 +25,17 @@ credential, and missing scope. The route calls this helper and the configured
 artifact verifier before accepting a deployment.
 
 A disposable real-etcd HTTP test accepted a first staging release, returned
-the same signed operation after token rotation and Fleet target replacement,
+the same signed operation after token rotation, refused Fleet target
+replacement while the release was active,
 restricted operation status to the originating CI run, and rejected a
 different artifact under the same idempotency key without repeating artifact
 verification. The test injects a successful artifact verifier and does not
 prove registry, signature, scan, Nomad, ingress, or public traffic behavior.
+The same test now claims the normal accepted operation, reloads its signed
+source and constructs the claimed Nomad job plan without submitting it.
+Fleet target configuration refuses a change while any indexed app operation
+is active; its transaction compares the app admission fence so a concurrent
+acceptance cannot slip between the active-work read and target write.
 Before enabling the flag, the verifier policy, scoped GitHub OIDC exchange,
 worker credentials, supported app shapes, and protected traffic rollback
 still require review and rehearsals.
