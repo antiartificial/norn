@@ -1,6 +1,8 @@
 # Norn v3 / Fleet session resume — 2026-09-26
 
-This is the current entry point for the next session. Read the detailed [M0–M3 handoff](m0-m3-handoff-2026-09-25.md) and [execution milestones](execution-milestones.md) for the contract and qualification history. Recheck Git, CI, Mini, Fleet, and provider state before acting; the observations below are a dated snapshot.
+Historical snapshot. Continue from the [2026-09-28 release handoff](session-resume-2026-09-28.md).
+
+This was the 2026-09-26 entry point. Read the detailed [M0–M3 handoff](m0-m3-handoff-2026-09-25.md) and [execution milestones](execution-milestones.md) for the contract and qualification history. Recheck Git, CI, Mini, Fleet, and provider state before acting; the observations below are a dated snapshot.
 
 The later [release gate status](release-gate-status-2026-09-26.md) records the
 current 0/10 signed-gate fraction, review heads, and critical path. The branch

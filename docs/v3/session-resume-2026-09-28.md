@@ -1,0 +1,46 @@
+# Norn v3 / Fleet release handoff — 2026-09-28
+
+This is the current resume point for the pragmatic v3 release. Recheck the
+repositories, PR checks, Mini, DigitalOcean account and provider prices before
+acting; the identities below are a dated snapshot. The authoritative release
+contract and gate details remain in the [M0–M9 execution milestones](execution-milestones.md).
+
+## Release target and progress
+
+Initial v3 has two required paths: upgrade the existing single-machine Mini
+from v2/PG to v3/PG while preserving workloads and data, and bootstrap an
+empty DigitalOcean Fleet with three etcd control members and independent app
+databases. A representative Mini-to-Fleet app move is separately rehearsed;
+moving every app is not an initial release gate. M8 qualification precedes
+the separately controlled M9 adoptions.
+
+The 2026-09-28 implementation estimates are M0 **60%**, M1 **65%**, M2
+**55%**, M3 **50%**, M4 **40%**, M5 **25%**, M6 **10%**, M7 **5%**, M8
+**10%**, M9 **0%**. Their equal-weight mean is about **32%**. These are
+judgment estimates, not elapsed-time forecasts. **0 of 10 release gates are
+signed**. Recent local rehearsals and green CI did not change the estimates
+or sign a gate.
+
+## Exact source and review state
+
+- Norn integration checkout: `/Users/arti/Documents/Codex/2026-09-26/i-d/work/v3-master-integration`, branch `codex/v3-master-integration`, clean at this check. Draft [PR #77](https://github.com/antiartificial/norn/pull/77) head `d3d9f33f6b656bc4814731fbb8e373c72e4f1757`; every reported exact-head check passed. This is review and local qualification, not an installed release.
+- Fleet host-etcd draft [PR #176](https://github.com/antiartificial/norn-fleet/pull/176) head `6267655052b209b22dc8b3421cb9339f797af9bc`, based on `main`. Ingress/readback draft [PR #177](https://github.com/antiartificial/norn-fleet/pull/177) head `7da27e162b1ca09088373a744ee6ef84c07ddab3`, based on #176's branch. Fleet `main` requires `contract`; both hosted contract jobs failed before runner steps with GitHub's account billing/spending-limit annotation. The later Fleet local receipt reports 1,415 Python tests at code head `5234aaf`, plus Ansible/OpenTofu validation. It does not replace hosted or protected-host evidence.
+- `mail-indexer` draft [PR #1](https://github.com/antiartificial/mail-indexer/pull/1) head `0a217e2a890900151de4ca298cb7630dfd25ee8f` and `mail-mcp` draft [PR #1](https://github.com/antiartificial/mail-mcp/pull/1) head `eec3db157a8cbcebcbde48bd30491256ce90c4bd` are based on their GitHub masters. Both local full Go suites passed; each hosted `test` job failed before runner steps from the same account billing block. Neither app PR is merged or deployed. Mini's app source checkouts contain unrelated dirty work; preserve them.
+
+## Mini evidence and limits
+
+- The latest [control private-copy receipt](m5-mini-private-copy-d71359e8-2026-09-28.md) used a read-only Mini `pg_dump` and a socket-only disposable Postgres.app 17 cluster. Candidate code head `d71359e8` preserved 28 original tables and 262,660 rows through schema 47, passed second migration and passive startup, and matched before/after Nomad base-job and cloudflared fingerprints. This is not an off-host protected restore or live upgrade.
+- The [mailindexer private-copy rehearsal](m2-mailindexer-private-shared-role-copy-2026-09-28.md) ran **locally on Mini**, not DO. It preserved 101,534 messages and both consumers' interaction writes through a copied role split and reversal. The [protected cutover plan](m2-mini-mailindexer-protected-role-cutover-plan-2026-09-28.md) remains a proposal. Running dirty image IDs and executable hashes were inventoried, but neither binary embeds a VCS revision; exact source-to-image reconciliation, off-host image/backup custody, complete writer inventory and both job credential changes remain.
+- The installed Mini release `a5da8ef15d12e9eca7561e90b90d96f6dc652a21` lacks the v3 startup/schema contract. A direct flag probe on 2026-09-28 briefly entered its normal startup path and logged a worker start before port 8800 prevented a second listener. Follow-up found no operation or mutation-audit rows in that window and the inspected Nomad job versions unchanged; external effects cannot be excluded by those checks. The [rollback-boundary record](m5-mini-installed-legacy-rollback-boundary-2026-09-28.md) preserves the incident and the new early marker guard. Use the reviewed legacy-baseline fence, not an assumed old-binary restart after migration.
+
+## Critical decisions and next sequence
+
+1. **Mini control recovery:** the owner must choose the [backup-only RPO](m0-mini-control-recovery-decision.md): at most 15 minutes with off-host WAL/PITR, or at most 24 hours with daily off-host backup. Name an off-host destination, retention and owner. Neither cadence, clean-host protected restore nor RTO is qualified. Keep the fresh M5 transition backup proof separate from the recurring disaster-recovery catalog.
+2. **Mini upgrade boundary:** qualify protected backup retrieval and restore, audit key/database URL, exact signed candidate, operation drain, legacy binary fence, maintenance transition and rollback decision before M5 sign-off or M9 Mini adoption. The live Mini remains on v2 at the last read-only observation; recheck it.
+3. **App role transition:** reconcile dirty deployed `mail-indexer` and `mail-mcp` images with source; review both app PRs and exact Nomad specs; inventory every database writer; establish off-host app backup and rollback artifacts. Only then schedule the [two-consumer role cutover](m2-mini-mailindexer-protected-role-cutover-plan-2026-09-28.md) and activate a catalog that matches observed live identities.
+4. **Fleet qualification:** restore hosted `contract` execution, then review the exact account, complete cost ceiling, management authority, runner, state, secrets and protected plan in the [Fleet readiness review](https://github.com/antiartificial/norn-fleet/blob/codex/fleet-ingress-readback/docs/runbooks/staging-v3-protected-rehearsal-readiness-2026-09-28.md). Integrate PR #176 before stacked #177. Rehearse three separate Linux hosts, etcd restore/faults and ingress/2→3→2 load behavior before M3/M4 sign-off. No DO Fleet resource was provisioned by this work.
+5. **Later release path:** implement and qualify the M6 provider-backed app database cutover and rolling upgrade, then the M7 representative app/data/work/traffic move. M8 needs a signed candidate, version matrix, client parity, soak/fault and operator evidence. M9 Mini, empty Fleet and selected-app adoptions remain separate operator changes.
+
+Preserve the original dirty checkouts, keep local/private-copy evidence distinct
+from protected runtime proof, and re-estimate milestones only when the exit
+evidence materially changes.

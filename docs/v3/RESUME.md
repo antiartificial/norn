@@ -1,5 +1,8 @@
 # Norn v3 pause and resume handoff
 
+Historical 2026-09-22 pause record. The current release handoff is
+[2026-09-28](session-resume-2026-09-28.md); the goal has since resumed.
+
 Current M0–M3 integration status is recorded in the [2026-09-23 checkpoint](m0-m3-checkpoint-2026-09-23.md).
 The pause-state and implementation descriptions below are historical as of
 2026-09-22; use the newer checkpoint and current branch before resuming work.
