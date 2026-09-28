@@ -40,6 +40,19 @@ import (
 // This opt-in rehearsal starts with the normal staging HTTP acceptance and
 // crosses the claimed worker's real Nomad effect. It deliberately stops before
 // ingress: allocation health alone must not complete positive traffic.
+type lostNomadSubmitResponse struct {
+	worker.DeploymentJobRemote
+	registrations int
+}
+
+func (r *lostNomadSubmitResponse) RegisterDeploymentJobCAS(ctx context.Context, request nomad.CASDeploymentJobRequest) (string, error) {
+	r.registrations++
+	if _, err := r.DeploymentJobRemote.RegisterDeploymentJobCAS(ctx, request); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("simulated lost Nomad submit response")
+}
+
 func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	endpoints, address, image := os.Getenv("NORN_TEST_ETCD_ENDPOINTS"), os.Getenv("NORN_TEST_NOMAD_ADDR"), os.Getenv("NORN_TEST_DEPLOYMENT_IMAGE")
 	if endpoints == "" || address == "" || image == "" {
@@ -174,8 +187,9 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstAttempt, err := worker.EnsureDeploymentJobEffect(ctx, effects, nomadClient, plan.Reservation, plan.Job)
-	if err != nil || !firstAttempt.Attempted || firstAttempt.EffectID == "" {
+	remote := &lostNomadSubmitResponse{DeploymentJobRemote: nomadClient}
+	firstAttempt, err := worker.EnsureDeploymentJobEffect(ctx, effects, remote, plan.Reservation, plan.Job)
+	if err != nil || !firstAttempt.Attempted || firstAttempt.EffectID == "" || remote.registrations != 1 {
 		t.Fatalf("initial Nomad submission attempt=%+v err=%v", firstAttempt, err)
 	}
 	if err := operations.DeferClaimedOperation(ctx, claim, "worker stopped after Nomad submit", time.Now().Add(-time.Second), nil); err != nil {
@@ -197,7 +211,7 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	var health effect.Token
 	var lastPending error
 	for {
-		health, err = worker.AdvanceClaimedFleetDeploymentJob(ctx, effects, nomadClient, plan)
+		health, err = worker.AdvanceClaimedFleetDeploymentJob(ctx, effects, remote, plan)
 		if err == nil {
 			break
 		}
@@ -236,6 +250,9 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	}
 	if health.EffectID == "" || health.Generation == 0 {
 		t.Fatalf("healthy Nomad effect token=%+v", health)
+	}
+	if remote.registrations != 1 {
+		t.Fatalf("successor made %d Nomad registration attempts, want one", remote.registrations)
 	}
 	api, err := nomadapi.NewClient(&nomadapi.Config{Address: address})
 	if err != nil {

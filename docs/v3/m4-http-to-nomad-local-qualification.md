@@ -8,12 +8,12 @@ real Docker allocation, and confirmed that the operation remained nonterminal
 without ingress proof. The allocation served the InfraSpec's `/ready` response
 through its assigned local host port; the test checked HTTP 200 and the exact
 `ready` body. By default, artifact verification in this test is synthetic.
-After its first Nomad submission attempt, the fixture now defers the original
-claim and lets a successor claim reconstruct the same signed job plan. The
-successor observes the original job through allocation health; Nomad's job
-version remains zero, showing that the job was not registered a second time.
-This is a controlled claim handoff, not a process crash during an ambiguous
-Nomad response.
+The fixture submits the job to real Nomad, discards the successful submit
+response, then defers the original claim. A successor claim reconstructs the
+same signed job plan and observes the original job through allocation health.
+The wrapper counts one registration attempt and Nomad's job version remains
+zero. This simulates a lost response with a controlled claim handoff; a real
+process crash and its timing window remain unqualified.
 
 Run from the Norn repository root on a Docker-capable Mac with `etcd`,
 `consul`, `nomad`, `docker`, `go`, and Python 3 available:
