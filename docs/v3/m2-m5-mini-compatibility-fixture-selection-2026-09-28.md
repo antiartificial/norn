@@ -15,6 +15,18 @@ listed both proposed fixture database names, `mailindexer` and
 `turnkey_offer_intake`. Existence alone does not prove that the current jobs
 connect to those databases or that the data can be restored.
 
+A second read-only `pg_stat_activity` query found idle sessions using role
+`norn` on `mailindexer` and role `turnkey_offer_intake_app` on
+`turnkey_offer_intake` (three and one sessions respectively at collection
+time). It also found role `norn` on `field_harbor` and `signal_sideband`.
+Session presence is not attribution to a particular Nomad allocation, but it
+establishes that the Mini's legacy application databases currently have
+different PostgreSQL login roles. The v3 `legacyPostgres` profile has only one
+`role` and `credentialRef` for every legacy database declaration. Therefore
+one default catalog entry cannot represent both proposed fixtures' observed
+login identities. The example `legacy_apps` role is illustrative and must not
+be applied to Mini as if it reflected its live connection identity.
+
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
 reported one healthy allocation. It is a smaller compatibility case than an
@@ -31,6 +43,15 @@ apps' actual database connection identity, job IDs, allocation behavior,
 endpoint routing or application data after candidate promotion. The resolver
 tests prove the legacy mapping contract on disposable PostgreSQL, not this
 Mini's application path.
+
+Before activating a Mini database catalog, add an explicit per-database
+legacy identity mapping (or an equivalent accepted-app binding) with unique
+target generations and transition checks. Populate it from a private
+credential and job-connection inventory, and make missing or ambiguous
+entries fail closed. Keep an unchanged legacy InfraSpec valid; requiring an
+app source edit would not satisfy the M2 upgrade compatibility gate. Rehearse
+both observed roles against private database copies before any protected
+runtime activation.
 
 For the private M2/M5 rehearsal, capture an owner-only before manifest for
 each fixture: exact app record and accepted spec fingerprint; declared
