@@ -4,12 +4,18 @@ This map is for reviewing draft Norn [PR #77](https://github.com/antiartificial/
 against protected `master`, then qualifying an exact candidate. It is not a
 milestone sign-off or permission to merge or deploy.
 
-At head `7139fed8`, GitHub reports 1,073 changed files, 159,209 additions,
-3,225 deletions. The PR remains draft with no recorded review decision. The diff includes older
+At review snapshot `ef8590c7`, GitHub reported 1,108 changed files, 164,550 additions,
+3,225 deletions across 100 commits. The PR remains draft with no recorded
+review decision. The diff includes older
 v2 work, multiple merged v3 implementation branches, and the protected-master
 integration. A green suite is necessary but cannot replace path-by-path
 review of this surface. Recheck these counts and the exact head before a
-review decision.
+review decision. The largest changed areas are `store`, `pipeline`,
+`etcdstore`, `handler`, `effect`, `nomad`, and `database`; their acceptance,
+claim, effect and recovery paths cross directory boundaries. A directory-only
+PR split would separate invariants from their callers. Keep dependency-ordered
+review lanes here until a proposed smaller PR identifies its exact source
+commits, required interfaces and rollback boundary.
 
 ## Review lanes in dependency order
 
@@ -189,7 +195,7 @@ protected ingress and public-path gate.
    [M0 recovery decision](m0-mini-control-recovery-decision.md), then measure a
    protected clean-host restore.
 2. Resolve GitHub account billing/spending status so Fleet PR #177's hosted
-   contract job can start. Its 1,413 local Python tests and static workflow,
+   contract job can start. Its 1,414 local Python tests and static workflow,
    schema, and OpenTofu checks do not substitute for the required hosted lane.
 3. Name the protected Fleet rehearsal target and owner-approved budget before
    provisioning. Qualify PR #176 before its stacked readback change, then
