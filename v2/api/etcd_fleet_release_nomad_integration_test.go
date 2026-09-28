@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleetdeploy"
 	"norn/v2/api/handler"
+	"norn/v2/api/ingress"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
@@ -235,6 +237,72 @@ func TestEtcdFleetStagingReleaseHTTPToDisposableNomad(t *testing.T) {
 	_ = probe.Body.Close()
 	if readErr != nil || probe.StatusCode != http.StatusOK || string(responseBody) != "ready" {
 		t.Fatalf("allocated app endpoint status=%d body=%q err=%v", probe.StatusCode, responseBody, readErr)
+	}
+	if rawNodes := os.Getenv("NORN_TEST_TRAEFIK_NODES"); rawNodes != "" {
+		entries := strings.Split(rawNodes, ";")
+		if len(entries) != 2 {
+			t.Fatal("Traefik rehearsal requires two loopback ingress nodes")
+		}
+		nodes := make([]ingress.IngressNode, 0, 2)
+		probeNodes := make([]ingress.RouteProbeNode, 0, 2)
+		directories := make([]string, 0, 2)
+		for index, entry := range entries {
+			parts := strings.Split(entry, ",")
+			if len(parts) != 3 {
+				t.Fatal("Traefik rehearsal node is incomplete")
+			}
+			nodeID := fmt.Sprintf("local-ingress-%d", index)
+			nodes = append(nodes, ingress.IngressNode{ID: nodeID, APIURL: "http://127.0.0.1:" + parts[1]})
+			probeNodes = append(probeNodes, ingress.RouteProbeNode{ID: nodeID, DialAddress: "127.0.0.1:" + parts[0]})
+			directories = append(directories, parts[2])
+		}
+		route, err := ingress.RenderWeightedRoute(ingress.WeightedRoute{App: app, Process: "web", Region: "local",
+			Endpoint: "https://" + app + ".example.test", Backends: []ingress.WeightedBackend{{DeploymentID: source.Managed.Accepted.Deployment.ID, Weight: 100}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		observe := func(targets []ingress.IngressNode) error {
+			_, err := ingress.ObserveRenderedRoute(ctx, &http.Client{Timeout: 3 * time.Second}, targets, route)
+			return err
+		}
+		publish := func(directory string) {
+			prior, err := ingress.ReadPublishedRouteRevision(directory, route.RouterName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ingress.PublishRenderedRoute(directory, route, prior, 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		waitObserved := func(targets []ingress.IngressNode) {
+			var observedErr error
+			for attempt := 0; attempt < 40; attempt++ {
+				if observedErr = observe(targets); observedErr == nil {
+					return
+				}
+				time.Sleep(250 * time.Millisecond)
+			}
+			t.Fatalf("Traefik did not load the deployment route: %v", observedErr)
+		}
+		publish(directories[0])
+		waitObserved(nodes[:1])
+		if err := observe(nodes); err == nil {
+			t.Fatal("partial ingress publication appeared complete")
+		}
+		publish(directories[1])
+		waitObserved(nodes)
+		caPEM, err := os.ReadFile(os.Getenv("NORN_TEST_TRAEFIK_CA_FILE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(caPEM) {
+			t.Fatal("Traefik rehearsal certificate is invalid")
+		}
+		if results, err := ingress.ProbeRenderedRouteNodes(ctx, probeNodes, route, "/ready",
+			"b24d6d33736ecd5604a4b17bc9c6481039fac362bb7df044ef1c10a2bfd21db6", roots); err != nil || len(results) != len(nodes) {
+			t.Fatalf("two-ingress deployment endpoint proof=%+v err=%v", results, err)
+		}
 	}
 	operation, err := operations.GetOperation(ctx, accepted.ID)
 	if err != nil || operation.Status.Terminal() {

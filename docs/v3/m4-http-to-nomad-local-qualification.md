@@ -17,6 +17,12 @@ docker pull docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c
 python3 v2/api/scripts/qualify-v3-http-nomad.py
 ```
 
+For the two-ingress extension, provide a locally verified Traefik binary:
+
+```sh
+NORN_TEST_TRAEFIK_BINARY=/absolute/path/to/traefik python3 v2/api/scripts/qualify-v3-http-nomad.py
+```
+
 The script checks that the exact image is cached, starts the three local
 agents on free loopback ports, runs the named-database HTTP admission test and
 the opt-in Nomad test, and stops the agents.
@@ -25,16 +31,28 @@ Desktop may delay release of a root-owned Nomad allocation log directory; if
 the script prints a disposable-state cleanup path, remove only that path after
 the script exits.
 
+With `NORN_TEST_TRAEFIK_BINARY` set, the script starts two independent
+loopback Traefik processes, each with a watched route directory and a
+disposable TLS certificate trusted by the test. The accepted deployment's
+Nomad service supplies the revision-specific backend through local Consul.
+Publishing the generation-one route on only the first ingress must fail the
+two-node observation; after publishing the same route on the second, both
+Traefik readbacks and both HTTPS `/ready` probes must pass. The disposable
+etcd, Consul, Nomad, Docker, and two-Traefik run passed on 2026-09-27.
+
 This result qualifies the normal local admission-to-Nomad path and a direct
-app endpoint response. It does not verify a real signed artifact, publish to
-ingress nodes, probe the public endpoint, prove weighted traffic, or qualify
-protected Fleet hosts. Those remain M4 release gates.
+app endpoint response. The optional extension also qualifies a local
+two-ingress route from that real allocation and rejects partial propagation.
+It does not verify a real signed artifact, use the authenticated host publisher
+or durable route authority, probe a public load balancer, prove weighted
+traffic, or qualify protected Fleet hosts. Those remain M4 release gates.
 
 First Fleet release admission now requires an exact traffic probe in the
 checked-out InfraSpec. This prevents an accepted release from reaching the
 worker without the signed path and response digest needed for terminal
 traffic proof. The local Nomad fixture carries that probe declaration and
-checks the direct allocation response; it does not probe through ingress.
+checks the direct allocation response. The optional two-ingress extension
+also probes that response through both local Traefik processes.
 The claimed worker also rechecks this requirement before preparing Nomad
 inputs, including for operations accepted before the admission rule changed.
 The normal executor now requires a completed active Fleet ingress inventory
