@@ -174,6 +174,9 @@ The opt-in normal HTTP-to-Nomad local rehearsal has a
 [repeatable disposable runner](m4-http-to-nomad-local-qualification.md).
 First-route admission now rejects an InfraSpec without the signed endpoint
 probe needed to complete its traffic proof.
+The claimed executor checks active ingress inventory and its exact node
+identity map before resolving databases or changing Nomad; the durable route
+intent revalidates that inventory after job health.
 
 [Implementation status](implementation-status.md) and [resume handoff](RESUME.md)
 retain the earlier bounded implementation checkpoints. This table governs only

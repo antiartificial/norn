@@ -35,3 +35,10 @@ traffic proof. The local Nomad fixture carries that probe declaration but
 does not serve or verify its response.
 The claimed worker also rechecks this requirement before preparing Nomad
 inputs, including for operations accepted before the admission rule changed.
+The normal executor now requires a completed active Fleet ingress inventory
+and an exact match between its node IDs and configured private certificate
+identities before database resolution, Nomad input staging, or job submission.
+The route intent still rechecks inventory after Nomad health. This preflight
+has unit coverage for missing, extra, repeated, and wrong node identities;
+it has not yet been exercised with the HTTP-to-Nomad fixture's synthetic
+Fleet target or protected ingress nodes.

@@ -67,6 +67,19 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if err != nil {
 		return nil, err
 	}
+	if e.Route.ObserverPort < 1024 || e.Route.ObserverPort > 65535 || e.Route.EndpointPort < 1 || e.Route.EndpointPort > 65535 {
+		return nil, fmt.Errorf("claimed Fleet route transport is incomplete")
+	}
+	// A completed Fleet inventory and matching private node identities must
+	// exist before staging inputs or submitting an external Nomad job. Route
+	// intent independently rechecks the active inventory after job health.
+	inventory, err := e.Store.CurrentActiveFleetIngressInventory(ctx, source.Route.FleetCluster, source.Route.FleetEnvironment, e.Route.ObserverPort)
+	if err != nil {
+		return nil, fmt.Errorf("claimed Fleet ingress inventory is unavailable: %w", err)
+	}
+	if err := requireClaimedFleetNodeIdentities(inventory.Nodes, e.Route.NodeURIs); err != nil {
+		return nil, err
+	}
 	if len(source.Managed.RuntimeTargets) > 0 {
 		if e.DatabaseProfile == "" || source.Managed.ProfileID != e.DatabaseProfile || e.JobSecrets == nil {
 			return nil, fmt.Errorf("claimed Fleet database profile differs from this worker")
@@ -95,9 +108,6 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 		return nil, fmt.Errorf("claimed Fleet route authority listener is unavailable")
 	}
 	defer listener.Close()
-	if e.Route.ObserverPort < 1024 || e.Route.ObserverPort > 65535 || e.Route.EndpointPort < 1 || e.Route.EndpointPort > 65535 || len(e.Route.NodeURIs) == 0 {
-		return nil, fmt.Errorf("claimed Fleet route transport is incomplete")
-	}
 	if _, err := ingress.PrivateControlRouteAuthorityTLS(listener, e.Route.AuthorityCertPEM, e.Route.AuthorityKeyPEM, e.Route.NodeCAPEM); err != nil {
 		return nil, err
 	}
@@ -139,4 +149,23 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 		"routeIntentId":   publication.Intent.ID,
 		"routeGeneration": publication.Intent.Generation,
 	}), nil
+}
+
+func requireClaimedFleetNodeIdentities(nodes []ingress.IngressNode, nodeURIs map[string]string) error {
+	if len(nodes) < 2 || len(nodeURIs) != len(nodes) {
+		return fmt.Errorf("claimed Fleet route identities differ from active ingress inventory")
+	}
+	seen := make(map[string]bool, len(nodeURIs))
+	for uri, id := range nodeURIs {
+		if uri == "" || id == "" || seen[id] {
+			return fmt.Errorf("claimed Fleet route identity is missing or repeated")
+		}
+		seen[id] = true
+	}
+	for _, node := range nodes {
+		if node.ID == "" || !seen[node.ID] {
+			return fmt.Errorf("claimed Fleet route identity is absent for an active ingress node")
+		}
+	}
+	return nil
 }
