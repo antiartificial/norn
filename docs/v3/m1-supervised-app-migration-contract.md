@@ -2,6 +2,13 @@
 
 Status: implementation boundary, 2026-09-27. This is not M1 sign-off.
 
+The [execution contract](execution-milestones.md) defines M1 as shared
+control semantics and a working PostgreSQL adapter. MySQL migration is a
+separate engine capability: it remains disabled in the resolver and is not
+an M1 exit criterion. Initial v3 still requires the declared MySQL binding
+and later selected-engine backup/restore and cutover qualification under M2
+and M6; PostgreSQL evidence cannot be used to advertise MySQL migration.
+
 The implementation now has an authenticated, secret-free migration intent,
 durable supervisor preparation and launch, a Linux private-pipe/cgroup
 backend, and signed command status observation. The helper discards command
@@ -96,12 +103,15 @@ That fixture is now available through
 `v2/scripts/test-pipeline-cgroup-linux.sh`: it starts three socket-only
 PostgreSQL servers as `postgres` in container tmpfs, then runs the pipeline
 tests as root. The joined replay test still seeds its migration effect. A
-local rerun at code head `f0350929` passed all six harness cases, including remote snapshot
-readback and the changed-snapshot refusal. The v3 CI workflow now has a
-dedicated opt-in harness job; the ordinary `go test ./...` job skips these
-cgroup cases. The hosted harness job still needs its own exact-head receipt.
-A
-second test now executes the accepted deployment through real source/build
+local rerun at code head `f0350929` passed all six harness cases, including
+remote snapshot readback and the changed-snapshot refusal. The v3 CI workflow
+now has a dedicated opt-in harness job; the ordinary `go test ./...` job skips
+these cgroup cases. At exact head `d95691b9`, the
+[hosted M1 job](https://github.com/antiartificial/norn/actions/runs/36416503304/job/108908803963)
+ran all six pipeline cases and the supervisor containment, descendant-timeout,
+helper-death and API-exit cases with no skips. This is disposable Linux
+evidence, not protected Mini runtime qualification. A second test now
+executes the accepted deployment through real source/build
 checkpoints, named snapshots, a PostgreSQL migration command and the real
 cgroup backend. The command commits one row and remains in its command cgroup
 when the first API test process exits. An expired claim is requeued; the
@@ -126,8 +136,9 @@ expired claim whose `migrate` step is running but has no effect remains failed
 for manual recovery and cannot be claimed by a successor. That test passed
 against a disposable PostgreSQL server; it does not assert an actual command
 was launched.
-Other crash windows, MySQL and protected-runtime
-qualification remain open; this local test does not sign M1.
+Other PostgreSQL crash windows and protected-runtime qualification remain
+open for M1. MySQL migration is separately unqualified under the later
+database capability gates; this local test signs neither boundary.
 
 ## MySQL supervised-launch boundary
 
