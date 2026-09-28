@@ -440,7 +440,7 @@ Still unqualified:
 
 ## Claude batch four checkpoint: named consumers and runtime delivery
 
-Scope per [claude-m2-named-consumers-handoff.md](claude-m2-named-consumers-handoff.md).
+Historical scope: named database consumers and runtime delivery.
 There is no new migration, and writer contract 5 is unchanged. Fleet v1
 documents are unchanged. Details and the full test mapping are in
 [database-consumer-syntax.md §3.2 and §6](database-consumer-syntax.md).
@@ -497,8 +497,7 @@ None of this is deployed.
 
 ## Claude batch three checkpoint: M2 database consumer plumbing
 
-Scope per [claude-m2-integration-handoff.md](claude-m2-integration-handoff.md),
-[database-binding-handoff.md](database-binding-handoff.md) and the root
+Scope per [database-binding-handoff.md](database-binding-handoff.md) and the root
 [syntax review](database-consumer-syntax-review.md)/[checklist](database-consumer-review-checklist.md).
 No InfraSpec, Fleet v1 or parser change was made. The call-site inventory
 (C1–C12), the §2 per-item test mapping and the syntax proposal are in
@@ -915,7 +914,7 @@ These observations are baseline evidence only. They are not a Mini upgrade rehea
 
 ## Claude batch one checkpoint: M2 resolver and recovery follow-through
 
-Scope per [claude-implementation-handoff.md](claude-implementation-handoff.md):
+Historical batch-one scope:
 the pure M2 database resolver/transition contract, then control-recovery
 verifier/CLI gaps. No parser, runtime, effect/supervisor or pipeline wiring
 changed. This is a reviewable local batch, not an M1/M2 gate.

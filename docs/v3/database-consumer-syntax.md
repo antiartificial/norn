@@ -2,9 +2,8 @@
 
 Status, 2026-09-22:
 - §2 (batch three) was accepted as a local compatibility checkpoint.
-- The catalog document and the `norn.app/v2` InfraSpec were approved locally in
-  [the named-consumers handoff](claude-m2-named-consumers-handoff.md). Batch
-  four implements them.
+- The catalog document and the `norn.app/v2` InfraSpec were approved locally
+  for batch four.
 - §6 records batch four with its tests. It awaits independent review and is
   not M2 completion.
 - Fleet v1 documents are unchanged.
@@ -13,8 +12,7 @@ Status, 2026-09-22:
 Parents: [ADR 0003](adrs/0003-profiles-and-database-bindings.md),
 [planning contracts](planning-contracts.md) (`DatabaseResolver`,
 `DatabaseService`, `DatabaseBinding`, `DeploymentProfile`),
-[database-binding handoff](database-binding-handoff.md),
-[M2 integration handoff](claude-m2-integration-handoff.md).
+[database-binding handoff](database-binding-handoff.md).
 
 ## 1. Current call-site inventory (source, 2026-09-22)
 

@@ -1,132 +1,103 @@
-# Norn v3 pause and resume handoff
+# V3 release work: current handoff
 
-Current M0–M3 integration status is recorded in the [2026-09-23 checkpoint](m0-m3-checkpoint-2026-09-23.md).
-The pause-state and implementation descriptions below are historical as of
-2026-09-22; use the newer checkpoint and current branch before resuming work.
+Updated 2026-09-28. This is the single current entry point. Recheck the exact
+Git heads, CI, Mini, Fleet and provider state before acting. Historical handoff
+snapshots remain in Git history; topic notes in this directory retain the
+detailed contracts and test evidence.
 
-Paused at the user's request on 2026-09-22 (America/Chicago).
-The full M0–M9 goal is paused, not completed. No full milestone exit gate is
-claimed achieved. Significant M1/M2 implementation checkpoints are verified.
+## Goal and release boundary
 
-## Workspace and execution state
+Qualify one initial v3 release for both the existing Mini (v2/PostgreSQL to
+v3/PostgreSQL, preserving workloads and application data) and a fresh,
+independent three-member etcd Fleet. Then rehearse moving one representative
+app from Mini to Fleet. [Execution milestones](execution-milestones.md) define
+M0–M9. M8 is release qualification; M9 is separately scoped adoption. No v3
+Mini/Fleet deployment, protected-master merge, provider cutover or milestone
+sign-off has occurred. The signed gate count remains **0/10**.
 
-- Worktree: `/Users/arti/Desktop/Claude/norn-v3-foundations`.
-- Implementation originated on `codex/v3-foundations`; baseline: `7304f39`.
-  The checkout is now on `feature/norn-v3-planning-handoff`. Documentation was
-  committed as `a1c52df`; the implementation is saved in a subsequent checkpoint
-  commit on this same branch at the user's request.
-- The checkpoint includes the existing API, CLI, UI, upgrade-script and test
-  changes. It is incomplete work, not a release or a completed milestone.
-  Recheck Git status before resuming and preserve any subsequent local edits.
-- No pushes, releases, deployments, or live workload migrations were performed
-  in this workflow. Main and Fleet checkouts were outside implementation scope.
-- Claude CLI was the sole implementation writer; Codex independently reviewed,
-  added regressions, and reran tests. Latest implementation pass completed;
-  its follow-up was launched and then interrupted for this pause before any
-  new implementation checkpoint. The process check found no matching Claude
-  CLI process after interruption. No implementation worker is intentionally
-  left running.
-- Claude resume session: `1cb95013-1361-40ef-b675-7a1866c93279`.
-  CLI: `/Users/arti/.local/bin/claude`. Resume only after the user resumes work;
-  first recheck processes and current files. Do not infer completion from the
-  session's report alone.
-- Existing disposable PostgreSQL fixtures were used. Their availability is
-  temporary; revalidate before reuse. Do not delete whole databases or stop
-  unrelated database services.
+## Current branches and live checks
 
-## Milestone disposition
+- Norn draft [PR #76](https://github.com/antiartificial/norn/pull/76):
+  `codex/v3-m0-m3-release-integration` at
+  `7a0c98960cfd690a9eb073f9f9ae9cfb1173ea4c`, targeting
+  `feature/norn-v3-planning-handoff`. All nine reported checks passed at this
+  head on 2026-09-27. The worktree was clean before this M0 checkpoint and
+  handoff cleanup; the current edits are not yet included in that PR head.
+- Fleet draft [PR #176](https://github.com/antiartificial/norn-fleet/pull/176):
+  `codex/fleet-m3-host-etcd` at
+  `6267655052b209b22dc8b3421cb9339f797af9bc`, targeting `main`.
+  Hosted `contract` failed before runner assignment under the GitHub account
+  billing/spending-limit condition; local tests do not replace hosted CI.
+- On 2026-09-28 the Mini inventory returned healthy host status, zero active
+  operations, 29 app entries, 13 active incidents and `fleet_configured=false`.
+  Production readiness remained blocked. This is a read-only platform
+  snapshot, not a control-backup or release result.
 
-| Milestone | Achieved checkpoints | Remaining exit requirements |
-| --- | --- | --- |
-| M0: decisions/baseline | Roadmap, six ADRs, execution plan, contracts, handoffs and source inventory exist | Live Mini baseline, measured budgets, fixture/rehearsal fidelity, decision/owner closure |
-| M1: shared control | Durable signed acceptance/idempotency slices; execution leases/fencing; schema ledger and passive startup; control recovery CLI; supervised build/test recovery | Complete shared store boundaries and all producer/effect coverage; runtime containment/reconciliation; complete compatibility/rollback proof |
-| M2: profiles/DBs/retention | Named PostgreSQL resolution and consumers; catalog/target guards; immutable saga archives; local and emulated S3 paths; archive recovery; initial reserve gate; bounded labelled diagnostic spool/history | Non-saga archival, atomic all-producer reserve accounting, remaining review findings, MySQL, complete profile/UI parity, real runtime and growth qualification |
-| M3: etcd/fresh Fleet | Planning/contracts | Etcd backend and invariant suite; host bootstrap/TLS/membership; snapshots/restore/compaction; three-node Fleet without control PG; fault/soak gates |
-| M4: capacity/placement | Planning/contracts | Durable scale intent, role/pool enrollment, spreading, capacity/drain/routing, interruption recovery; 2→3→2 under load |
-| M5: Mini upgrade | Supporting schema/passive/recovery foundations | Isolated representative upgrade/rollback rehearsal preserving IDs, data, jobs/routes and receipts |
-| M6: running upgrades/DB cutover | Fencing/checkpoint/target-identity foundations; accidental target switches refused | Rolling A→B proof, quorum-safe upstream upgrades, external migration journal, writer fence/catch-up/switch/reconnect/recovery; PG/MySQL qualification |
-| M7: app mobility | Planning/contracts | Representative Mini→Fleet app/data/files/jobs/traffic migration with ownership and rollback proof |
-| M8: release | Local tests only | Client parity, signed exact-version artifacts, runtime/fault/soak/growth evidence, runbooks and release acceptance |
-| M9: adoption | Not executed | Separately approved Mini upgrade, empty DO Fleet launch, selected workload migration |
+## Pragmatic next lane: Mini control recovery
 
-Initial release intent remains retained-PG Mini plus fresh three-control-node
-etcd Fleet. General PG↔etcd conversion, autonomous cloud scaling, multi-region
-HA and CockroachDB are not silently added to initial scope. Ordinary WordPress
-requires the planned MySQL adapter.
+The owner selected a **15-minute target** for the expendable development Mini,
+accepting a 24-hour fallback if the tighter mechanism proves disproportionate.
+The Mini now has `com.norn.control-checkpoint`, a user LaunchAgent with a
+600-second interval to leave room inside the 15-minute target for upload and
+schedule jitter. It decrypts only the `NORN_DATABASE_URL` from the
+inactive, owner-only v3 binding stage, creates a read-only custom dump and
+digest manifest, and keeps successful local checkpoints for 48 hours. It then
+uploads the verified pair to private personal DigitalOcean Space
+`norn-mini-control-temp-20260928-3830ba` in `nyc3` with a bucket-scoped key,
+reads the full remote dump back to verify SHA-256 and length, and publishes
+the manifest last. The Space has a seven-day expiration rule for `control/`.
+The broader key used only to create the Space was revoked.
 
-## Verified implementation checkpoints
+The first scheduled remote run exited 0. Its exact object was downloaded on a
+second Mac, verified against the remote manifest, and restored into an
+isolated PostgreSQL 17 container with 28 public tables. The disposable
+container, image and local download were removed. This proves one checkpoint,
+transfer and private restore. It does **not** yet prove a 15-minute bound over
+host sleep, login/logout, scheduler failure or sustained operation; nor a
+source-host-loss drill with identities/auth/history, a signed M5 candidate,
+or the draft 30-minute end-to-end RTO. The last measured control PostgreSQL
+`archive_mode` was `off`; this is frequent full dumps, not PITR. The
+one-hour-fresh `norn.legacy-control-backup/v1` proof belongs to the M5 upgrade
+transition; keep that age rule separate from checkpoint retention. See the
+[recovery decision](m0-mini-control-recovery-decision.md),
+[measured budget](m0-mini-control-budget-proposal-2026-09-26.md), and
+[protected M5 backup path](m5-protected-backup-private-restore.md).
 
-- PostgreSQL catalog/binding identities and generations; independent control/app
-  resolution; private credentials; migrate/snapshot/restore/probe plumbing;
-  web/worker/cron/function delivery rendering. TLS verify-full has scoped PG
-  evidence; actual Nomad template/allocation delivery is not qualified.
-- Catalog activation is durable and claim-fenced. Regression fixes reject
-  expired claims, foreign revisions, renamed target replacements, and known
-  conflicts concealed by ambiguous history. Baselines are operator attestations
-  plus target probes, not observations of all legacy writers.
-- Control export/inspection/recovery and supervised build/test effect recovery
-  have local integration evidence, not complete M1 external-effect coverage.
-- Saga evidence: terminal outbox/backfill, immutable publication/readback,
-  signed-content binding, late supplementary events, shadow comparison,
-  holds/pruning, archive-aware history and index rebuilding.
-- Local archive confinement/quota locking and S3-compatible conditional writes;
-  S3 tests use an in-process emulator, not DigitalOcean Spaces qualification.
-- Reader floor and connected-session checks, hold rechecks after external
-  verification; reproduced hold-during-verification regression fixed.
-- Diagnostic command capture is bounded during execution and redacts tested
-  truncation-boundary secrets. Nomad tasks receive explicit rotation settings.
-- Collector labels node/allocation/task/stream, resumes with deduplication/gap
-  reporting, uses a bounded local spool with loss counters/torn-tail recovery,
-  and serves app-authorized historical queries. Real Nomad/rotation and Fleet
-  cross-node retrieval are not qualified.
-- Initial durable evidence reserve blocks tested HTTP mutations under backlog
-  or archive pressure. This is not atomic all-producer byte reservation.
+Next: observe multiple scheduled intervals, alert on a missed/failed remote
+checkpoint, rehearse recovery after source-host loss with identity/auth and
+history checks, and measure the complete operator recovery time. The one
+restored dump was produced with the staged database URL, not the active M5
+audit-signing key. Keep M0 and M5 open until their distinct proof requirements
+are met. When this temporary setup is no longer needed, unload and remove the
+LaunchAgent, remove its scoped credential from the Mini, revoke the key named
+`norn-mini-control-temp-20260928`, empty and delete the named Space, then
+remove its local checkpoints only after verifying no retained recovery need.
 
-## Latest independent verification
+## Other release gates
 
-Full API suite passed with race detection and both disposable PostgreSQL URLs:
+| Gate | Next decisive evidence |
+| --- | --- |
+| M1 | External-effect fencing and reconciliation coverage; Mini compatibility and rollback. |
+| M2 | Real-provider retention and separate-node restore; managed MySQL/WordPress recovery; archive/profile parity. |
+| M3 | Protected separate-host bootstrap, quorum/fault/restore/soak, PG-free operation and hosted Fleet contract CI. |
+| M4 | Normal etcd app admission and worker dispatch, observed ingress weight, loaded placement/drain on protected hosts. See the [M4 sequence](m4-etcd-app-admission-sequence-2026-09-26.md). |
+| M5 | Production-key protected backup, exact signed candidate, isolated Mini upgrade and rollback preserving jobs/routes/identities. |
+| M6–M7 | Running v3 upgrade, supported app DB cutover, and one representative Mini-to-Fleet app move with rollback. |
+| M8–M9 | Signed qualified release, client/fault/soak evidence, then separately approved adoption. |
 
-`go test -race ./... -skip '^TestSampleDarwinHostMetrics$' -count=1`
+The direct PR-to-`master` path is not reviewable: the 2026-09-27 read-only
+merge simulation found 126 conflicts and different required CI contexts.
+Integrate in dependency-ordered slices against current protected `master`,
+preserving its macOS and pilot checks as well as v3 tests. Only a reviewed
+exact commit merged to protected `master` can enter the signed production
+release lane. The release integration audit remains available with
+`git show 7a0c9896:docs/v3/release-gate-status-2026-09-26.md`.
 
-Examples: pipeline 28.572s; retention 19.500s; startup 25.793s; store 14.625s;
-worker 20.284s; recovery CLI 19.905s; handler 15.121s; logcollect 5.139s;
-archive 4.510s. Only the known Darwin host-metrics sampler test was excluded.
-Tests include real scoped PostgreSQL, filesystem fixtures, S3 emulators and
-fake Nomad HTTP. They are not live infrastructure evidence. Later edits must
-be reverified; green tests do not close the semantic gaps below.
+## Worktree safety
 
-## Next implementation batch (dispatched, then interrupted)
-
-1. Read `retention-review-checklist.md` and `retention-implementation-handoff.md`.
-   Preserve all reviewer regressions and existing migration checksums.
-2. Split read-only archive opening from writer capability probing.
-   `archive-verify`/reindex must support Get/List-only credentials with zero
-   PUTs. Make checksum-only versus authenticated recovery explicit.
-3. Enforce evidence reserve transactionally at authoritative acceptance, for
-   HTTP and internal producers (cron/webhooks/children), including queued/running
-   obligations and oversized evidence. Use DB time. Preserve idempotent replay
-   of already accepted work under exhaustion. The two-second HTTP cache and
-   pending-saga count do not establish a storage bound.
-4. Implement dependency-safe non-saga evidence archive/prune/read-through:
-   terminal operation metadata/output, signed acceptance, checkpoints/effects,
-   then remaining historical domains. Preserve replay/recovery/current/rollback
-   holds and original signed bytes. Control events require cursor expiry/resync.
-5. Bound spool metadata/directory growth as allocations churn; test follower
-   fairness, terminal error versus EOF, batch-function discovery and scoped
-   retrieval. Address host/node disk budget and Fleet collector/retrieval design.
-6. Recheck remaining reader-census/new-session and phantom-hold races, archive
-   list bounds/deadlines, and recovery behavior. Then run focused and full tests,
-   update status, and progress toward M3 without declaring M2 done prematurely.
-
-## Resume order and authority
-
-Read this file → execution-milestones.md → implementation-status.md → latest
-retention review/handoff → relevant ADR and source/tests. Earlier implementation
-status sections are historical; use the latest checkpoint and current source.
-
-Before editing: verify branch/status, review any changes since this pause,
-confirm no other writer is active, and revalidate available test runtimes.
-Continue with Claude CLI if the user keeps that workflow; do not start competing
-writers. No provider mutation, SSH, install/new runtime, commit/push/release or
-deployment authority is implied by this handoff. Obtain separate scope for
-live qualification/adoption. Never add agent coauthor trailers.
+Preserve unrelated Norn and Fleet worktrees. This checkout is the draft Norn
+PR branch; the Fleet companion checkout is
+`/Users/arti/Desktop/Claude/norn-fleet-m3-host-etcd`. The main
+`/Users/arti/Desktop/Claude/norn-fleet` checkout was previously ahead and
+behind its upstream and must not be reset as part of v3 work. Run
+`git status --short --branch` before staging or changing either repository.

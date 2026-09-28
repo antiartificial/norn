@@ -1,9 +1,11 @@
 # Norn v3 planning package
 
-**Paused implementation:** start with [Resume handoff](RESUME.md) for verified
-checkpoints, M0–M9 disposition, open work and the exact workspace to resume.
+**Current work:** start with [RESUME.md](RESUME.md) for the live branch, Mini
+recovery lane, release gates and next action. The older topic handoffs below
+are design and implementation history, not competing resume instructions.
 
-Status: proposed architecture, 2026-09-22. These documents authorize no implementation or live operations.
+The architecture package began as a proposal on 2026-09-22. Check the current
+handoff and live evidence before using a dated status claim.
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 
@@ -18,9 +20,9 @@ An Architecture Decision Record (ADR) captures a consequential choice, its alter
 7. [ADR 0006 — Migration authority](adrs/0006-migration-authority.md).
 8. [Planning contracts](planning-contracts.md): state inventory, interface/resource proposals, compatibility, measurement and acceptance plan.
 9. [Execution milestones](execution-milestones.md): delivery sequence, parallel work, exit gates and release evidence.
-10. [Implementation status](implementation-status.md): branch-specific local progress and qualification boundary.
+10. [Implementation status](implementation-status.md): historical early branch progress and qualification boundary.
 11. [Foundation review](foundation-review.md): source-backed safety findings, bounded implementation slices and review acceptance tests.
-12. [Atomic acceptance handoff](atomic-acceptance-handoff.md): next M1 transaction, replay identity, signed evidence and integration test requirements.
+12. [Atomic acceptance handoff](atomic-acceptance-handoff.md): historical M1 transaction, replay identity, signed evidence and integration test requirements.
 13. [Retention implementation handoff](retention-implementation-handoff.md): M2 source-derived retention holds, archive/log separation and implementation gates.
 14. [Control recovery handoff](control-recovery-handoff.md): M1 consistent inspection/export and same-PG recovery requirements.
 15. [External-effect recovery handoff](effect-recovery-handoff.md): M1 resource-level execution ownership, supervisor proof and safe retry requirements.
