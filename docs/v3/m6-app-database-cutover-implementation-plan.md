@@ -61,10 +61,15 @@ switching DNS is not rollback.
    backend is terminated. The first PG fence must therefore disable login,
    terminate every session for the exact dedicated runtime role, and read back
    both `rolcanlogin = false` and zero sessions before final sync. This
-   rehearsal uses a test superuser; it does not qualify a narrowly privileged
-   production fence account or prove that other roles, pools, and integrations
-   cannot write. Those identities belong in the writer inventory and must
-   block promotion until each is fenced and verified.
+   On disposable PostgreSQL 16, the same sequence passed through a dedicated
+   non-superuser account with `CREATEROLE`, admin authority for the exact
+   runtime role without `INHERIT` or `SET`, `pg_signal_backend`, and
+   `pg_read_all_stats`. The fixture also rejects `SET ROLE` into the runtime
+   data role. This establishes a candidate privilege shape, not a qualified
+   production fence account: provider support, credential binding, exact
+   account identity, and revocation/readback still need implementation.
+   Other roles, pools, and integrations may still write; they belong in the
+   writer inventory and must block promotion until each is fenced and verified.
 4. Add initial restore, final transfer and integrity adapters for one exact
    engine/provider pair. Checkpoint each external effect before retrying it.
 5. Switch generation-bound runtime secrets and consumers only after the final
