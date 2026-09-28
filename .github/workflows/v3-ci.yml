@@ -94,6 +94,8 @@ jobs:
           cache-dependency-path: v2/api/go.sum
       - name: Rehearse migration API exits and successor recovery in disposable Linux cgroups
         run: bash v2/scripts/test-pipeline-cgroup-linux.sh
+      - name: Rehearse supervisor containment, timeout and helper death
+        run: bash v2/scripts/test-snapshot-cgroup-linux.sh
 
   mobility-local-transfer:
     name: M6 local mobility transfer and fence

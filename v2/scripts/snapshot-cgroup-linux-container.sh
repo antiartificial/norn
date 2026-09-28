@@ -12,8 +12,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The helper bind mount retains the host runner uid. Keep the execution
+# binary under a root-owned path accepted by the supervisor's path checks.
+install -d -o root -g root -m 0700 /opt/norn-test-runner
+install -o root -g root -m 0500 /runner /opt/norn-test-runner/norn-effect-runner
+
 NORN_REAL_CGROUP_TEST=1 \
-NORN_EFFECT_RUNNER_BINARY=/runner \
+NORN_EFFECT_RUNNER_BINARY=/opt/norn-test-runner/norn-effect-runner \
 NORN_TEST_PG_DUMP=/usr/lib/postgresql/16/bin/pg_dump \
 NORN_TEST_PG_SERVICE=integration \
 NORN_TEST_PSQL=/usr/lib/postgresql/16/bin/psql \
