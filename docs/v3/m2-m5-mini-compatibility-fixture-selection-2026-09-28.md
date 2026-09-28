@@ -36,6 +36,27 @@ app databases need a reviewed role/credential separation and compatible job
 connection transition before catalog activation. No role, privilege, secret
 or job was changed during this inspection.
 
+The read-only follow-up checked all seven declared legacy databases against
+`pg_database` ownership and active `pg_stat_activity` roles:
+
+| Database | Database owner | Session role observed |
+| --- | --- | --- |
+| `field_harbor` | `0xadb` | `norn` |
+| `gitea` | `0xadb` | None at collection time |
+| `hellonorn_db` | `0xadb` | None at collection time |
+| `mailindexer` | `norn` | `norn` |
+| `motifgarden` | `norn` | None at collection time |
+| `signal_sideband` | `0xadb` | `norn` |
+| `turnkey_offer_intake` | `turnkey_offer_intake_app` | `turnkey_offer_intake_app` |
+
+This narrows the currently observed login transition to at least
+`field-harbor`, `mail-indexer` and `signal-sideband`. `motifgarden` also needs
+an ownership/credential decision before its inactive workload can be treated
+as preserved. An absent session for `gitea` or `hello-norn` gives no evidence
+of which role those jobs would use. The private inventory must inspect their
+configured connection references and database privileges; the table alone
+does not authorize role changes.
+
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
 reported one healthy allocation. It is a smaller compatibility case than an
