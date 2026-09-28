@@ -171,12 +171,15 @@ type LegacyPostgresDefault struct {
 }
 
 type DeploymentProfile struct {
-	APIVersion        string                 `json:"apiVersion"`
-	ID                string                 `json:"id"`
-	Topology          DeploymentTopology     `json:"topology"`
-	AvailabilityClass AvailabilityClass      `json:"availabilityClass"`
-	DatabaseBindings  map[string]string      `json:"databaseBindings,omitempty"`
-	LegacyPostgres    *LegacyPostgresDefault `json:"legacyPostgres,omitempty"`
+	APIVersion        string             `json:"apiVersion"`
+	ID                string             `json:"id"`
+	Topology          DeploymentTopology `json:"topology"`
+	AvailabilityClass AvailabilityClass  `json:"availabilityClass"`
+	DatabaseBindings  map[string]string  `json:"databaseBindings,omitempty"`
+	// LegacyPostgresBindings maps an unchanged InfraSpec postgres.database to
+	// an explicit binding with its own role, credential and target generation.
+	LegacyPostgresBindings map[string]string      `json:"legacyPostgresBindings,omitempty"`
+	LegacyPostgres         *LegacyPostgresDefault `json:"legacyPostgres,omitempty"`
 }
 
 type Catalog struct {

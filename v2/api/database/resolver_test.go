@@ -141,6 +141,42 @@ func TestMiniExplicitLegacyResolution(t *testing.T) {
 	requireCode(t, err, CodeInvalidRequest)
 }
 
+func TestLegacyDatabaseBindingsPreserveDistinctMiniRoles(t *testing.T) {
+	catalog := testCatalog()
+	catalog.Bindings = append(catalog.Bindings, DatabaseBinding{APIVersion: APIVersion, ID: "billing-app", ServiceID: "mini-app-pg", Database: "billing", Role: "billing_app", Generation: 1, CredentialRef: "secret:apps/billing", TLS: DatabaseTLS{Mode: TLSDisabled}})
+	catalog.Profiles[0].LegacyPostgres = nil // no catch-all for unreviewed Mini databases
+	catalog.Profiles[0].LegacyPostgresBindings = map[string]string{"shop": "shop-primary", "billing": "billing-app"}
+	resolver := mustResolver(t, catalog)
+	for _, example := range []struct{ database, binding, role, credential string }{
+		{"shop", "shop-primary", "shop_app", "secret:apps/shop/primary"},
+		{"billing", "billing-app", "billing_app", "secret:apps/billing"},
+	} {
+		resolved, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LegacyPostgres: &LegacyPostgresDeclaration{Database: example.database}, RequiredCapabilities: []Capability{CapabilityRuntime}})
+		if err != nil || !resolved.Legacy || resolved.Target.BindingID != example.binding || resolved.Target.Role != example.role || resolved.CredentialRef != example.credential {
+			t.Fatalf("legacy %s = %+v, %v", example.database, resolved.Target, err)
+		}
+	}
+	_, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LegacyPostgres: &LegacyPostgresDeclaration{Database: "unreviewed"}})
+	requireCode(t, err, CodeResolutionNotFound)
+
+	missing := cloneCatalog(catalog)
+	missing.Profiles[0].LegacyPostgresBindings["billing"] = "missing"
+	requireCode(t, ValidateCatalog(missing), CodeResolutionNotFound)
+	mismatch := cloneCatalog(catalog)
+	mismatch.Profiles[0].LegacyPostgresBindings["billing"] = "shop-primary"
+	requireCode(t, ValidateCatalog(mismatch), CodeInvalidCatalog)
+	controlRole := cloneCatalog(catalog)
+	controlRole.Bindings[len(controlRole.Bindings)-1].Role = "norn"
+	requireCode(t, ValidateCatalog(controlRole), CodePurposeMismatch)
+
+	removed := cloneCatalog(catalog)
+	delete(removed.Profiles[0].LegacyPostgresBindings, "billing")
+	requireCode(t, ValidateTransition(catalog, removed), CodeUnsafeTransition)
+	repointed := cloneCatalog(catalog)
+	repointed.Profiles[0].LegacyPostgresBindings["billing"] = "shop-primary"
+	requireCode(t, ValidateTransition(catalog, repointed), CodeInvalidCatalog)
+}
+
 func TestExpectedIdentityRejectsEveryStaleField(t *testing.T) {
 	resolver := mustResolver(t, testCatalog())
 	current, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "fleet", Purpose: PurposeApplication, LogicalResourceID: "app-db"})

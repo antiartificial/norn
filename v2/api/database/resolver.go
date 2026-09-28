@@ -406,6 +406,19 @@ func validateProfile(profile DeploymentProfile, label string, services map[strin
 			return notFound("databaseBindings", label+"/"+logical, "logical resource references an unknown binding")
 		}
 	}
+	for _, databaseName := range sortedKeys(profile.LegacyPostgresBindings) {
+		if !model.IsSafePostgresDatabaseName(databaseName) {
+			return invalid("legacyPostgresBindings", label, "legacy database name is invalid")
+		}
+		binding, found := bindings[profile.LegacyPostgresBindings[databaseName]]
+		if !found {
+			return notFound("legacyPostgresBindings", label+"/"+databaseName, "legacy database references an unknown binding")
+		}
+		service := services[binding.ServiceID]
+		if service.Engine != EnginePostgreSQL || service.Purpose != PurposeApplication || binding.Database != databaseName {
+			return invalid("legacyPostgresBindings", label+"/"+databaseName, "legacy binding must name the same PostgreSQL application database")
+		}
+	}
 	if legacy := profile.LegacyPostgres; legacy != nil {
 		if !identifierPattern.MatchString(legacy.MappingID) {
 			return invalid("legacyPostgres.mappingId", label, "legacy mapping ID is invalid")
@@ -582,6 +595,11 @@ func (r *Resolver) resolveLegacy(profile DeploymentProfile, databaseName string)
 	if !model.IsSafePostgresDatabaseName(databaseName) {
 		return ResolvedBinding{}, &ResolverError{Code: CodeInvalidRequest, Field: "legacyPostgres.database", Resource: profileLabel, Reason: "legacy database name is invalid"}
 	}
+	if bindingID, found := profile.LegacyPostgresBindings[databaseName]; found {
+		binding := r.bindings[bindingID]
+		service := r.services[binding.ServiceID]
+		return r.resolved(profile, service, "", binding.ID, binding.Generation, binding.Database, binding.Role, binding.CredentialRef, binding.MySQLMaintenance, binding.PostgresFence, binding.TLS, true), nil
+	}
 	legacy := profile.LegacyPostgres
 	if legacy == nil {
 		return ResolvedBinding{}, notFound("legacyPostgres", profileLabel, "profile has no explicit legacy postgres default")
@@ -658,6 +676,9 @@ func ValidateTransition(previous, next Catalog) error {
 	referencedBindings := map[string]bool{}
 	for _, profile := range previous.Profiles {
 		for _, bindingID := range profile.DatabaseBindings {
+			referencedBindings[bindingID] = true
+		}
+		for _, bindingID := range profile.LegacyPostgresBindings {
 			referencedBindings[bindingID] = true
 		}
 		if profile.LegacyPostgres != nil {
@@ -751,6 +772,11 @@ func ValidateTransition(previous, next Catalog) error {
 		for _, logical := range sortedKeys(before.DatabaseBindings) {
 			if bindingID, present := after.DatabaseBindings[logical]; present && bindingID != before.DatabaseBindings[logical] {
 				return unsafe("databaseBindings", label+"/"+logical, "a logical resource cannot be re-pointed to another binding; change the binding with a generation bump")
+			}
+		}
+		for _, databaseName := range sortedKeys(before.LegacyPostgresBindings) {
+			if after.LegacyPostgresBindings[databaseName] != before.LegacyPostgresBindings[databaseName] {
+				return unsafe("legacyPostgresBindings", label+"/"+databaseName, "a legacy database binding cannot be removed or re-pointed")
 			}
 		}
 	}
@@ -911,6 +937,13 @@ func cloneCatalog(catalog Catalog) Catalog {
 				mapping[key] = value
 			}
 			profile.DatabaseBindings = mapping
+		}
+		if profile.LegacyPostgresBindings != nil {
+			mapping := make(map[string]string, len(profile.LegacyPostgresBindings))
+			for key, value := range profile.LegacyPostgresBindings {
+				mapping[key] = value
+			}
+			profile.LegacyPostgresBindings = mapping
 		}
 		if profile.LegacyPostgres != nil {
 			legacy := *profile.LegacyPostgres

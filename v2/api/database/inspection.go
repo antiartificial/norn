@@ -39,11 +39,12 @@ type BindingSummary struct {
 }
 
 type ProfileInspection struct {
-	ID                string             `json:"id"`
-	Topology          DeploymentTopology `json:"topology"`
-	AvailabilityClass AvailabilityClass  `json:"availabilityClass"`
-	DatabaseBindings  map[string]string  `json:"databaseBindings"`
-	LegacyPostgres    *BindingSummary    `json:"legacyPostgres,omitempty"`
+	ID                     string             `json:"id"`
+	Topology               DeploymentTopology `json:"topology"`
+	AvailabilityClass      AvailabilityClass  `json:"availabilityClass"`
+	DatabaseBindings       map[string]string  `json:"databaseBindings"`
+	LegacyPostgresBindings map[string]string  `json:"legacyPostgresBindings,omitempty"`
+	LegacyPostgres         *BindingSummary    `json:"legacyPostgres,omitempty"`
 }
 
 // EngineUse is an honest capability report: whether Norn has an adapter
@@ -75,6 +76,12 @@ func InspectCatalog(revision int64, digest string, catalog Catalog) CatalogInspe
 		inspection := ProfileInspection{ID: profile.ID, Topology: profile.Topology, AvailabilityClass: profile.AvailabilityClass, DatabaseBindings: map[string]string{}}
 		for logical, binding := range profile.DatabaseBindings {
 			inspection.DatabaseBindings[logical] = binding
+		}
+		if len(profile.LegacyPostgresBindings) > 0 {
+			inspection.LegacyPostgresBindings = make(map[string]string, len(profile.LegacyPostgresBindings))
+			for databaseName, binding := range profile.LegacyPostgresBindings {
+				inspection.LegacyPostgresBindings[databaseName] = binding
+			}
 		}
 		if legacy := profile.LegacyPostgres; legacy != nil {
 			inspection.LegacyPostgres = &BindingSummary{ID: legacy.MappingID, ServiceID: legacy.ServiceID, Role: legacy.Role, Generation: legacy.Generation,

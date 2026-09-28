@@ -26,6 +26,15 @@ different PostgreSQL login roles. The v3 `legacyPostgres` profile has only one
 one default catalog entry cannot represent both proposed fixtures' observed
 login identities. The example `legacy_apps` role is illustrative and must not
 be applied to Mini as if it reflected its live connection identity.
+The same read-only query found active `norn` sessions on control database
+`norn_v2`; `pg_database` lists `norn` as owner of both `norn_v2` and
+`mailindexer`. V3 catalog purpose separation deliberately rejects an
+application binding that shares a control role on the same provider. A
+per-database map alone therefore cannot admit `mail-indexer` unchanged under
+the intended security boundary. That app and the other observed `norn`-role
+app databases need a reviewed role/credential separation and compatible job
+connection transition before catalog activation. No role, privilege, secret
+or job was changed during this inspection.
 
 Use `mail-indexer` as the first **unchanged legacy PostgreSQL** fixture: its
 declared web process, database and endpoint are present, and the inventory
@@ -44,14 +53,18 @@ endpoint routing or application data after candidate promotion. The resolver
 tests prove the legacy mapping contract on disposable PostgreSQL, not this
 Mini's application path.
 
-Before activating a Mini database catalog, add an explicit per-database
-legacy identity mapping (or an equivalent accepted-app binding) with unique
-target generations and transition checks. Populate it from a private
-credential and job-connection inventory, and make missing or ambiguous
-entries fail closed. Keep an unchanged legacy InfraSpec valid; requiring an
-app source edit would not satisfy the M2 upgrade compatibility gate. Rehearse
-both observed roles against private database copies before any protected
-runtime activation.
+Draft PR #77 now has `legacyPostgresBindings`: an unchanged database name
+selects an explicit application binding with its own role, credential and
+generation. Its resolver tests cover distinct roles, missing entries,
+misbound names, control-role refusal and transition refusal. This is code
+capability, not a populated or activated Mini catalog. Before activation,
+populate the map from a private credential and job-connection inventory,
+omit the catch-all default so missing entries fail closed, and recredential
+the `norn`-role application connections
+through an independently rehearsed, reversible transition that preserves
+running workloads and data. Keep each legacy InfraSpec valid without a source
+edit. Rehearse the final distinct roles against private database copies
+before any protected runtime activation.
 
 For the private M2/M5 rehearsal, capture an owner-only before manifest for
 each fixture: exact app record and accepted spec fingerprint; declared

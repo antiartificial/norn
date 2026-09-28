@@ -220,6 +220,7 @@ reading:
     "apiVersion": "norn.database/v1alpha1",
     "id": "mini", "topology": "local", "availabilityClass": "single-host",
     "databaseBindings": {"primary": "shop-primary"},
+    "legacyPostgresBindings": {"shop": "shop-primary"},
     "legacyPostgres": {
       "mappingId": "mini-legacy-pg", "serviceId": "mini-app-pg",
       "role": "legacy_apps", "generation": 1,
@@ -228,6 +229,18 @@ reading:
   }]
 }
 ```
+
+`legacyPostgresBindings` lets an unchanged `infrastructure.postgres.database`
+declaration use an explicitly reviewed binding, including that binding's own
+role, credential reference and generation. Each key must equal its binding's
+database name and reference a PostgreSQL application binding. An unmapped
+legacy database uses `legacyPostgres` only when that optional default is
+present; omit the default on an imported Mini profile to fail closed for
+unreviewed databases. Existing database-name mappings cannot be removed or
+repointed in a catalog transition. This mapping does not waive separation
+from the control database role or credentials: live Mini app connections
+that share the `norn` control role need a reviewed credential transition
+before they can enter a v3 application binding.
 
 `secret:<path>` resolves under `NORN_DATABASE_SECRET_DIR`. The file is strict
 JSON `{"password": "…"}` and may carry nothing else. Host, port, database and
