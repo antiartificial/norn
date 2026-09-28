@@ -101,7 +101,8 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		go canary.worker.Run(workerCtx)
 		log.Printf("etcd canary operation worker enabled; HTTP preview=%t", canaryHTTPEnabled)
 	}
-	if deployConfig := strings.TrimSpace(os.Getenv(etcdFleetDeployWorkerConfigEnv)); deployConfig != "" {
+	deployConfig := strings.TrimSpace(os.Getenv(etcdFleetDeployWorkerConfigEnv))
+	if deployConfig != "" {
 		deploy, err := newEtcdFleetDeployRuntime(workerCtx, cfg, operations, deployConfig)
 		if err != nil {
 			return fmt.Errorf("configure etcd Fleet deploy worker: %w", err)
@@ -109,6 +110,17 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		defer deploy.secrets.Close()
 		go deploy.worker.Run(workerCtx)
 		log.Print("etcd Fleet app.deploy worker enabled for signed claimed operations")
+	}
+	releaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetReleaseHTTPEnv)), "true")
+	var releaseVerifier *pipeline.Pipeline
+	if releaseHTTPEnabled {
+		if deployConfig == "" {
+			return fmt.Errorf("%s requires %s", etcdFleetReleaseHTTPEnv, etcdFleetDeployWorkerConfigEnv)
+		}
+		releaseVerifier, err = newEtcdFleetReleaseVerifier(cfg)
+		if err != nil {
+			return fmt.Errorf("configure etcd Fleet release admission: %w", err)
+		}
 	}
 
 	router := chi.NewRouter()
@@ -118,7 +130,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
 	})
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(canaryHTTPEnabled, fleetGitHub != nil))
+		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled))
 	})
 	// Fleet runners carry fleet:operate only for their own attempts and
 	// reconciliation checkpoints. Inventory and general operation reads still
@@ -128,6 +140,10 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	catalogOperate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
 	router.With(read).Get("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetRead(cfg, operations))
+	if releaseHTTPEnabled {
+		releaseStage := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)
+		router.With(releaseStage).Post("/api/v1/apps/{id}/releases/deployments", etcdFleetReleaseDeployment(cfg, operations, releaseVerifier))
+	}
 	router.With(catalogOperate).Put("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetConfigure(cfg, operations))
 	router.With(read).Get("/api/v1/database/catalog", etcdFleetDatabaseCatalog(operations))
 	router.With(catalogOperate).Post("/api/v1/database/catalog/activations", etcdFleetCatalogActivation(operations))
@@ -136,7 +152,11 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if canaryHTTPEnabled {
 		router.With(plan).Post("/api/v1/apps/{id}/promote", etcdCanaryPromote(cfg, operations, identities, canary))
 	}
-	router.With(read).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled))
+	operationRead := read
+	if releaseHTTPEnabled {
+		operationRead = etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead, handler.ScopeReleaseStage)
+	}
+	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
 		fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations)
 		runnerAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
@@ -215,6 +235,11 @@ func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[st
 	if canaryHTTPEnabled {
 		features = append(features, "durable-canary-promotion-preview")
 		endpoints["appCanaryPromote"] = "/api/v1/apps/{id}/promote"
+		unsupported[0] = "other-app-mutations"
+	}
+	if len(githubEnabled) > 1 && githubEnabled[1] {
+		features = append(features, "staging-fleet-release-admission-v1")
+		endpoints["appReleaseDeployment"] = "/api/v1/apps/{id}/releases/deployments"
 		unsupported[0] = "other-app-mutations"
 	}
 	return map[string]interface{}{"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet", "features": features, "endpoints": endpoints, "unsupported": unsupported}
@@ -297,10 +322,17 @@ func etcdFleetPlans(operations *etcdstore.V3OperationStore) http.HandlerFunc {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]interface{}{"plans": plans, "count": len(plans)})
 	}
 }
-func etcdFleetOperation(operations *etcdstore.V3OperationStore, allowCanary bool) http.HandlerFunc {
+func cfgIfFleetRelease(enabled bool, cfg *config.Config) *config.Config {
+	if enabled {
+		return cfg
+	}
+	return nil
+}
+
+func etcdFleetOperation(operations *etcdstore.V3OperationStore, allowCanary bool, releaseConfig ...*config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := handler.AccessPrincipalFromRequest(r)
-		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || !principal.Allows(handler.ScopeAPIRead) {
+		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || (!principal.Allows(handler.ScopeAPIRead) && !principal.Allows(handler.ScopeReleaseStage)) {
 			handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "Fleet capacity-plan reads require a managed api:read principal")
 			return
 		}
@@ -309,7 +341,11 @@ func etcdFleetOperation(operations *etcdstore.V3OperationStore, allowCanary bool
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}
-		if op.Kind != "fleet.capacity-plan" && op.Kind != pipeline.CatalogActivationKind && !(allowCanary && op.Kind == "app.canary-promote") {
+		allowed := principal.Allows(handler.ScopeAPIRead) && (op.Kind == "fleet.capacity-plan" || op.Kind == pipeline.CatalogActivationKind || (allowCanary && op.Kind == "app.canary-promote"))
+		if !allowed && len(releaseConfig) > 0 && releaseConfig[0] != nil && op.Kind == "app.deploy" {
+			allowed = principal.Allows(handler.ScopeAPIRead) || fleetReleaseOperationReadable(*releaseConfig[0], principal, *op)
+		}
+		if !allowed {
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}

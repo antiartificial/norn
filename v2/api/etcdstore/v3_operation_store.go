@@ -258,9 +258,25 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	return s.acceptOperationAggregate(ctx, a, false)
 }
 
+// AcceptFleetReleaseDeployment is the trusted server-side staging release
+// producer's narrow commit boundary. It is not mounted as a raw acceptance
+// endpoint: the caller must derive this aggregate from a verified CI identity,
+// checked-out spec, configured target, active catalog, and admitted artifact.
+// The transaction still fences target/catalog changes and exclusive app work.
+func (s *V3OperationStore) AcceptFleetReleaseDeployment(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
+	if a.Identity.Kind != "app.deploy" || a.Operation.Kind != "app.deploy" || a.Operation.Source != "release-control-api" ||
+		a.Deployment == nil || a.Deployment.SourceKind != "release" || a.Deployment.Environment != "staging" ||
+		a.Operation.Payload == nil || a.Operation.Payload["specDigest"] != a.Deployment.SpecDigest || a.Operation.Payload["artifact"] != a.Deployment.ImageTag ||
+		a.Operation.Payload["sourceSha"] != a.Deployment.CommitSHA || !model.IsContentAddressedImage(a.Deployment.ImageTag) ||
+		len(a.Regions) != 1 || a.Regions[0].TrafficWeight != 100 || !a.Admission.OneActiveMutablePerApp {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "trusted Fleet release deployment aggregate is incomplete"}
+	}
+	return s.acceptDeploymentAggregate(ctx, a)
+}
+
 // acceptDeploymentAggregate prepares the durable deployment domain for the
-// future etcd worker. It is deliberately private until that worker and its
-// required capabilities are wired into the normal Fleet route.
+// etcd worker. The normal route may call it only through the restricted
+// server-side release producer above.
 func (s *V3OperationStore) acceptDeploymentAggregate(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
 	if a.Deployment == nil || !a.Admission.OneActiveMutablePerApp || a.FleetRunnerAttempt != nil || a.FleetReconciliation != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd deployment requires deployment fields and exclusive app admission"}

@@ -1,19 +1,22 @@
 # Etcd app deployment admission sequence — 2026-09-26
 
 Status: implementation contract for M4. App deployment on the normal etcd
-Fleet router is still unsupported. The first app-index slice was verified
-against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
+Fleet router is opt-in for staging releases only as of 2026-09-27; it has not
+been enabled or qualified on protected Fleet hosts. The first app-index
+slice was verified against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
 
-2026-09-27 update: an opt-in normal `app.deploy` worker exists, but no normal
-admission producer can create its signed deployment aggregate. A non-CI
+2026-09-27 update: an opt-in normal `app.deploy` worker and an independently
+opt-in staging release producer now exist. Their combined HTTP acceptance and
+exact replay path passed a disposable-etcd test, but claimed Nomad and ingress
+execution through that route has not yet been qualified. A non-CI
 platform operator can now create or replace the Fleet app target through the
 normal router with an expected etcd revision. Its cluster and environment
 come from the validated checked-out Fleet document, while its sole 100% region,
 Nomad region and datacenters must match one enabled checked-out InfraSpec.
 Create/read/stale-replace and mismatched placement refusal passed
 disposable-etcd tests. The target's validated reader supplies a
-future server-side admission builder with the revision that the existing
-admission transaction compares. A release path must derive the deployment
+server-side admission builder with the revision that the existing
+admission transaction compares. The staging release path derives deployment
 and accepted region from verified release evidence and that target. Database
 identity, source spec, and provenance cannot be copied from an arbitrary
 request body.
@@ -23,9 +26,9 @@ from the active catalog without reading credential material and emits the
 signed `databaseTargets` payload consumed by the claimed worker. It refuses
 legacy ambient PostgreSQL and declared migration/snapshot/restore work
 because this first-route executor does not perform those lifecycle steps.
-The binder is not yet called by a normal release admission producer; that
-producer must verify artifact provenance and accept the aggregate only while
-the catalog revision and Fleet target remain current. The private deployment
+The opt-in staging release producer calls the binder after artifact
+verification. It accepts only while the catalog revision and Fleet target
+remain current. The private deployment
 acceptance transaction now compares the active catalog pointer when a signed
 `databaseTargets` set is present. A disposable-etcd test accepted the current
 set, rejected a distinct stale request, and proved a changed pointer defeats
@@ -37,7 +40,8 @@ returns its original signed receipt.
 The public `V3OperationStore.Accept` still rejects any deployment/region
 aggregate before a write. A private preparation path now atomically persists
 the signed operation, deployment, resolved regions, and app gate for real-etcd
-contract tests; it is not exposed to the API or worker. A private terminal
+contract tests; the API reaches it only through the restricted, verified
+staging release producer. A private terminal
 transaction now writes deployment and region results with a live claim and app
 lock, and releases the app gate only with the terminal operation. Generic
 operation completion refuses accepted deployments. A signed-identity lookup

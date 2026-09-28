@@ -1,8 +1,9 @@
 # Normal Fleet release admission contract — 2026-09-27
 
-Status: implementation boundary for M4. No normal `app.deploy` producer is
-enabled on the etcd router. The opt-in worker and private acceptance tests do
-not qualify a public release route.
+Status: local implementation boundary for M4. The normal staging
+`app.deploy` producer is opt-in behind `NORN_ETCD_FLEET_RELEASE_HTTP=true` and
+requires the separately configured Fleet deploy worker. It has not been
+enabled or qualified on protected Fleet hosts.
 
 The normal etcd runtime now has a private
 `buildEtcdFleetReleaseAcceptance` function for the first staging deployment.
@@ -10,9 +11,9 @@ It requires an artifact verifier callback, an enabled server-owned spec,
 matching control-owned target placement, and a bound database target set. Its
 unit test covers successful construction and refusal before verification for
 missing verifier, disabled spec, wrong placement, wrong repository, and a
-failed verifier. It is not called by an HTTP route yet; authenticated
-principal binding, exact replay handling, verifier startup wiring, and the
-restricted store acceptance call remain open.
+failed verifier. The opt-in HTTP route now calls it after authenticated
+principal binding and exact replay lookup. The restricted store call
+atomically accepts the signed deployment; production admission remains closed.
 
 `handler.BindFleetStagingReleaseCandidate` now provides the narrow CI identity
 binding for that route. It requires a managed `release:stage` token scoped to
@@ -20,8 +21,18 @@ the app and staging environment, the protected default-branch push lane, and
 an exact source SHA. It derives every identity field from the verified token
 and carries only attestation evidence fields from the request. Focused tests
 reject wrong app, environment, intent, source, unprotected ref, non-managed
-credential, and missing scope. The route still has to call this helper and
-the configured artifact verifier before accepting a deployment.
+credential, and missing scope. The route calls this helper and the configured
+artifact verifier before accepting a deployment.
+
+A disposable real-etcd HTTP test accepted a first staging release, returned
+the same signed operation after token rotation and Fleet target replacement,
+restricted operation status to the originating CI run, and rejected a
+different artifact under the same idempotency key without repeating artifact
+verification. The test injects a successful artifact verifier and does not
+prove registry, signature, scan, Nomad, ingress, or public traffic behavior.
+Before enabling the flag, the verifier policy, scoped GitHub OIDC exchange,
+worker credentials, supported app shapes, and protected traffic rollback
+still require review and rehearsals.
 
 ## Entry and trust boundary
 
