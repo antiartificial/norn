@@ -108,8 +108,8 @@ hosted Go CI job was blocked before runner steps by GitHub's account
 billing/spending-limit annotation, so it has no hosted test receipt.
 
 A subsequent [private `mailindexer` shared-consumer role-copy rehearsal](m2-mailindexer-private-shared-role-copy-2026-09-28.md)
-passed on Mini: the latest copy preserved 101,532 messages through a
-12-object ownership split and rollback. Draft `mail-mcp` code and the current
+passed on Mini: the latest copy preserved 101,534 messages through a
+database-owner and 12-object ownership split and rollback. Draft `mail-mcp` code and the current
 dirty `mail-indexer` checkout each ran their store's startup schema path and
 wrote one interaction as the new role against the same copied database. This
 does not prove either exact dirty deployed image or either live Nomad job's

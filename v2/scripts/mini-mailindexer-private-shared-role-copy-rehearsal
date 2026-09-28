@@ -38,7 +38,7 @@ admin=$(id -un)
 sql -U "$admin" -d postgres -c 'CREATE ROLE norn LOGIN' >/dev/null
 sql -U "$admin" -d postgres -c 'CREATE ROLE mail_app LOGIN' >/dev/null
 sql -U "$admin" -d postgres -c 'CREATE DATABASE norn_v2_copy OWNER norn' >/dev/null
-sql -U "$admin" -d postgres -c 'CREATE DATABASE mail_copy' >/dev/null
+sql -U "$admin" -d postgres -c 'CREATE DATABASE mail_copy OWNER norn' >/dev/null
 "$postgres_bin/pg_restore" -h "$scratch/socket" -p 56435 -U "$admin" \
   -d mail_copy --no-owner --no-acl --exit-on-error "$scratch/mail.dump"
 
@@ -58,6 +58,7 @@ interactions_before=$(sql -U "$admin" -d mail_copy -c 'SELECT count(*) FROM publ
 (( messages_before > 0 )) || { printf 'restored messages table is empty\n' >&2; exit 1; }
 
 change_owners mail_app
+sql -U "$admin" -d postgres -c 'ALTER DATABASE mail_copy OWNER TO mail_app' >/dev/null
 sql -U "$admin" -d postgres -c 'REVOKE ALL ON DATABASE mail_copy FROM PUBLIC' >/dev/null
 sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE mail_copy TO mail_app' >/dev/null
 sql -U "$admin" -d mail_copy -c 'GRANT USAGE, CREATE ON SCHEMA public TO mail_app' >/dev/null
@@ -71,6 +72,9 @@ if sql -U norn -d mail_copy -c 'SELECT 1' >/dev/null 2>&1; then
 fi
 [[ $(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='norn_v2_copy'") == norn ]] || {
   printf 'control copy ownership changed\n' >&2; exit 1;
+}
+[[ $(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='mail_copy'") == mail_app ]] || {
+  printf 'application copy database ownership did not change\n' >&2; exit 1;
 }
 
 (
@@ -135,6 +139,7 @@ GO
 }
 
 change_owners norn
+sql -U "$admin" -d postgres -c 'ALTER DATABASE mail_copy OWNER TO norn' >/dev/null
 sql -U "$admin" -d mail_copy -c 'REVOKE USAGE, CREATE ON SCHEMA public FROM mail_app' >/dev/null
 sql -U "$admin" -d postgres -c 'REVOKE ALL ON DATABASE mail_copy FROM mail_app' >/dev/null
 sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE mail_copy TO norn' >/dev/null
@@ -150,4 +155,7 @@ if sql -U mail_app -d mail_copy -c 'SELECT 1' >/dev/null 2>&1; then
   printf 'replacement role can still connect after copied-role rollback\n' >&2; exit 1
 fi
 sql -U norn -d norn_v2_copy -c 'SELECT 1' >/dev/null
+[[ $(sql -U "$admin" -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='mail_copy'") == norn ]] || {
+  printf 'application copy database ownership did not return to old role\n' >&2; exit 1;
+}
 printf 'PASS: private mailindexer copy preserved %s messages and both consumer interaction writes through role split and rollback; control copy unchanged\n' "$messages_before"
