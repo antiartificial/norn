@@ -59,3 +59,20 @@ func TestObserveFleetIngressRouteRejectsInventoryReplacement(t *testing.T) {
 		t.Fatal("partial ingress observation was accepted")
 	}
 }
+
+func TestSameFleetIngressInventoryBindsClusterAndEnvironment(t *testing.T) {
+	before := &FleetIngressInventoryEvidence{PlanID: "plan", Cluster: "fleet-a", Environment: "staging"}
+	after := *before
+	if !sameFleetIngressInventory(before, &after) {
+		t.Fatal("identical inventory differs")
+	}
+	after.Cluster = "fleet-b"
+	if sameFleetIngressInventory(before, &after) {
+		t.Fatal("different Fleet cluster accepted as the same inventory")
+	}
+	after = *before
+	after.Environment = "production"
+	if sameFleetIngressInventory(before, &after) {
+		t.Fatal("different Fleet environment accepted as the same inventory")
+	}
+}
