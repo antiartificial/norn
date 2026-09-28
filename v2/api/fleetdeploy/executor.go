@@ -5,10 +5,12 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 
 	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
+	"norn/v2/api/ingress"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
@@ -79,6 +81,12 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 		return nil, fmt.Errorf("claimed Fleet route authority listener is unavailable")
 	}
 	defer listener.Close()
+	if e.Route.ObserverPort < 1024 || e.Route.ObserverPort > 65535 || e.Route.EndpointPort < 1 || e.Route.EndpointPort > 65535 || len(e.Route.NodeURIs) == 0 {
+		return nil, fmt.Errorf("claimed Fleet route transport is incomplete")
+	}
+	if _, err := ingress.PrivateControlRouteAuthorityTLS(listener, e.Route.AuthorityCertPEM, e.Route.AuthorityKeyPEM, e.Route.NodeCAPEM); err != nil {
+		return nil, err
+	}
 	effects, err := etcdstore.NewV3DeploymentEffectReservations(e.Store)
 	if err != nil {
 		return nil, err
@@ -107,7 +115,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
 		// Publication has already terminalized atomically. A listener shutdown
 		// error cannot change that result, so report the durable receipt.
-		_ = serveErr
+		log.Printf("claimed Fleet route authority shutdown after completed deployment: %v", serveErr)
 	}
 	if publication == nil || publication.Proof == nil || publication.Intent == nil {
 		return nil, fmt.Errorf("claimed Fleet deployment completed without route proof")

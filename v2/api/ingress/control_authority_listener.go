@@ -18,20 +18,11 @@ func ServePrivateControlRouteAuthority(ctx, lockCtx context.Context, listener ne
 	if ctx == nil || lockCtx == nil || ctx.Err() != nil || lockCtx.Err() != nil || listener == nil || handler == nil {
 		return fmt.Errorf("claimed route authority listener is unavailable")
 	}
-	address, ok := listener.Addr().(*net.TCPAddr)
-	if !ok || address.IP == nil || (!address.IP.IsPrivate() && !address.IP.IsLoopback()) || address.IP.IsUnspecified() {
-		return fmt.Errorf("route authority must use a private TCP listener")
-	}
-	identity, err := tls.X509KeyPair(certPEM, keyPEM)
+	tlsConfig, err := PrivateControlRouteAuthorityTLS(listener, certPEM, keyPEM, nodeCAPEM)
 	if err != nil {
-		return fmt.Errorf("route authority TLS identity: %w", err)
+		return err
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(nodeCAPEM) {
-		return fmt.Errorf("route authority node CA is invalid")
-	}
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 1 << 16,
-		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{identity}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots}}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 1 << 16, TLSConfig: tlsConfig}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(tls.NewListener(listener, server.TLSConfig)) }()
 	select {
@@ -53,4 +44,26 @@ func ServePrivateControlRouteAuthority(ctx, lockCtx context.Context, listener ne
 		return fmt.Errorf("route authority app lock ended: %w", lockCtx.Err())
 	}
 	return ctx.Err()
+}
+
+// PrivateControlRouteAuthorityTLS checks the bound private address and mTLS
+// material before a deployment is allowed to submit a Nomad job. The server
+// calls the same check again when it begins serving.
+func PrivateControlRouteAuthorityTLS(listener net.Listener, certPEM, keyPEM, nodeCAPEM []byte) (*tls.Config, error) {
+	if listener == nil {
+		return nil, fmt.Errorf("claimed route authority listener is unavailable")
+	}
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || address.IP == nil || (!address.IP.IsPrivate() && !address.IP.IsLoopback()) || address.IP.IsUnspecified() {
+		return nil, fmt.Errorf("route authority must use a private TCP listener")
+	}
+	identity, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("route authority TLS identity: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(nodeCAPEM) {
+		return nil, fmt.Errorf("route authority node CA is invalid")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{identity}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots}, nil
 }

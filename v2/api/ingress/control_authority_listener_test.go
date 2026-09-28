@@ -34,6 +34,15 @@ func TestPrivateRouteAuthorityListenerStopsWithAppLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := PrivateControlRouteAuthorityTLS(listener, serverPEM, serverKey, caPEM); err != nil {
+		t.Fatalf("private authority preflight: %v", err)
+	}
+	if _, err := PrivateControlRouteAuthorityTLS(listener, serverPEM, []byte("invalid"), caPEM); err == nil {
+		t.Fatal("invalid authority key passed preflight")
+	}
+	if _, err := PrivateControlRouteAuthorityTLS(listener, serverPEM, serverKey, []byte("invalid")); err == nil {
+		t.Fatal("invalid node CA passed preflight")
+	}
 	lockCtx, loseLock := context.WithCancel(context.Background())
 	served := make(chan error, 1)
 	go func() {
@@ -64,6 +73,9 @@ func TestPrivateRouteAuthorityListenerStopsWithAppLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer public.Close()
+	if _, err := PrivateControlRouteAuthorityTLS(public, serverPEM, serverKey, caPEM); err == nil {
+		t.Fatal("public authority listener passed preflight")
+	}
 	if err := ServePrivateControlRouteAuthority(context.Background(), context.Background(), public, handler, serverPEM, serverKey, caPEM); err == nil {
 		t.Fatal("public route authority listener was accepted")
 	}
