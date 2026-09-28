@@ -190,9 +190,9 @@ Draft [mail-mcp PR #1](https://github.com/antiartificial/mail-mcp/pull/1)
 removes its database-URL fallback; local Go tests passed, while hosted CI
 could not start because of the repository account billing/spending limit.
 The [private shared-consumer copy](m2-mailindexer-private-shared-role-copy-2026-09-28.md)
-then preserved 101,529 messages and a `mail-mcp` interaction write through
-copied-role split and rollback, with all 12 public objects transferred and
-returned. It did not switch either live Nomad job.
+then preserved 101,532 messages and interaction writes from both consumers
+through copied-role split and rollback, with all 12 public objects transferred
+and returned. It did not switch either live Nomad job.
 `like-trove` and `vigil-gateway` declare `norn`-role URLs for their own
 databases. See the
 [fixture selection and consumer inventory](m2-m5-mini-compatibility-fixture-selection-2026-09-28.md).

@@ -2,16 +2,21 @@
 set -euo pipefail
 umask 077
 
-[[ $# == 1 && -f "$1/internal/store/private_role_test.go" ]] || {
-  printf 'usage: %s <isolated-mail-mcp-worktree>\n' "$0" >&2
+[[ $# == 2 && -f "$1/internal/store/private_role_test.go" && -f "$2/internal/store/store.go" ]] || {
+  printf 'usage: %s <isolated-mail-mcp-worktree> <mail-indexer-checkout>\n' "$0" >&2
   exit 2
 }
 mail_mcp_worktree=$1
+mail_indexer_checkout=$2
 postgres_bin=/Applications/Postgres.app/Contents/Versions/latest/bin
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/norn-mail-role-copy.XXXXXXXX")
+probe_dir=
 cleanup() {
   "$postgres_bin/pg_ctl" -D "$scratch/data" -m immediate stop >/dev/null 2>&1 || true
   python3 -c 'import pathlib, shutil, sys; p=pathlib.Path(sys.argv[1]); assert p.name.startswith("norn-mail-role-copy."); shutil.rmtree(p)' "$scratch"
+  if [[ -n $probe_dir ]]; then
+    python3 -c 'import pathlib, shutil, sys; p=pathlib.Path(sys.argv[1]); assert p.name.startswith(".norn-mail-probe.") and p.parent == pathlib.Path(sys.argv[2]); shutil.rmtree(p)' "$probe_dir" "$mail_indexer_checkout"
+  fi
 }
 trap cleanup EXIT
 mkdir "$scratch/socket"
@@ -73,8 +78,60 @@ fi
   MAIL_MCP_TEST_DATABASE_URL="postgres://mail_app@localhost/mail_copy?host=$scratch/socket&port=56435&sslmode=disable" \
     /opt/homebrew/bin/go test ./internal/store -run '^TestPrivateCopiedDatabaseRole$' -count=1 -v
 )
-[[ $(sql -U mail_app -d mail_copy -c 'SELECT count(*) FROM public.message_interactions') == "$(( interactions_before + 1 ))" ]] || {
-  printf 'mail-mcp copied interaction write was not preserved\n' >&2; exit 1;
+probe_dir=$(mktemp -d "$mail_indexer_checkout/.norn-mail-probe.XXXXXXXX")
+cat >"$probe_dir/main.go" <<'GO'
+package main
+
+import (
+  "context"
+  "fmt"
+  "net/url"
+  "os"
+  "strings"
+  "time"
+
+  "github.com/jackc/pgx/v5/pgxpool"
+  "mail-indexer/internal/store"
+)
+
+func main() {
+  connection := os.Getenv("MAIL_INDEXER_TEST_DATABASE_URL")
+  parsed, err := url.Parse(connection)
+  if err != nil || parsed.Path != "/mail_copy" || !strings.HasPrefix(parsed.Query().Get("host"), "/") {
+    panic("probe requires mail_copy over a local Unix socket")
+  }
+  ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+  defer cancel()
+  pool, err := pgxpool.New(ctx, connection)
+  if err != nil { panic(err) }
+  defer pool.Close()
+  var databaseName, role string
+  var localSocket bool
+  if err := pool.QueryRow(ctx, "SELECT current_database(), current_user, inet_server_addr() IS NULL").Scan(&databaseName, &role, &localSocket); err != nil { panic(err) }
+  if databaseName != "mail_copy" || role != "mail_app" || !localSocket { panic("probe reached the wrong database or role") }
+  app, err := store.NewStore(ctx, connection)
+  if err != nil { panic(err) }
+  defer app.Close()
+  if err := app.InitSchema(ctx); err != nil { panic(err) }
+  var messageID string
+  if err := pool.QueryRow(ctx, "SELECT id FROM public.messages LIMIT 1").Scan(&messageID); err != nil { panic(err) }
+  action := "v3_indexer_private_probe"
+  query := "SELECT count(*) FROM public.message_interactions WHERE message_id=$1 AND user_action=$2"
+  var before, after int
+  if err := pool.QueryRow(ctx, query, messageID, action).Scan(&before); err != nil { panic(err) }
+  if err := app.RecordInteraction(ctx, messageID, action, "rehearsal"); err != nil { panic(err) }
+  if err := pool.QueryRow(ctx, query, messageID, action).Scan(&after); err != nil { panic(err) }
+  if after != before+1 { panic("mail-indexer interaction write was not observed") }
+  fmt.Println("PASS: mail-indexer startup schema and interaction write as mail_app on private copy")
+}
+GO
+(
+  cd "$mail_indexer_checkout"
+  MAIL_INDEXER_TEST_DATABASE_URL="postgres://mail_app@localhost/mail_copy?host=$scratch/socket&port=56435&sslmode=disable" \
+    /opt/homebrew/bin/go run "$probe_dir/main.go"
+)
+[[ $(sql -U mail_app -d mail_copy -c 'SELECT count(*) FROM public.message_interactions') == "$(( interactions_before + 2 ))" ]] || {
+  printf 'copied interactions from both consumers were not preserved\n' >&2; exit 1;
 }
 
 change_owners norn
@@ -84,8 +141,8 @@ sql -U "$admin" -d postgres -c 'GRANT CONNECT ON DATABASE mail_copy TO norn' >/d
 [[ $(sql -U norn -d mail_copy -c 'SELECT count(*) FROM public.messages') == "$messages_before" ]] || {
   printf 'messages changed across copied-role rollback\n' >&2; exit 1;
 }
-[[ $(sql -U norn -d mail_copy -c 'SELECT count(*) FROM public.message_interactions') == "$(( interactions_before + 1 ))" ]] || {
-  printf 'mail-mcp copied write was lost during rollback\n' >&2; exit 1;
+[[ $(sql -U norn -d mail_copy -c 'SELECT count(*) FROM public.message_interactions') == "$(( interactions_before + 2 ))" ]] || {
+  printf 'copied consumer writes were lost during rollback\n' >&2; exit 1;
 }
 owner_counts=$(sql -U "$admin" -d mail_copy -F '|' -c "SELECT count(*), count(*) FILTER (WHERE relowner='norn'::regrole) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','S')")
 [[ $owner_counts == '12|12' ]] || { printf 'copied tables and sequences did not return to the old owner\n' >&2; exit 1; }
@@ -93,4 +150,4 @@ if sql -U mail_app -d mail_copy -c 'SELECT 1' >/dev/null 2>&1; then
   printf 'replacement role can still connect after copied-role rollback\n' >&2; exit 1
 fi
 sql -U norn -d norn_v2_copy -c 'SELECT 1' >/dev/null
-printf 'PASS: private mailindexer copy preserved %s messages and one mail-mcp interaction write through role split and rollback; control copy unchanged\n' "$messages_before"
+printf 'PASS: private mailindexer copy preserved %s messages and both consumer interaction writes through role split and rollback; control copy unchanged\n' "$messages_before"
