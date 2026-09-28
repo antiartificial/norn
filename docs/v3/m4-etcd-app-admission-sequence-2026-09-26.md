@@ -4,6 +4,16 @@ Status: implementation contract for M4. App deployment on the normal etcd
 Fleet router is still unsupported. The first app-index slice was verified
 against disposable real etcd at `127.0.0.1:14679` on 2026-09-26.
 
+2026-09-27 update: an opt-in normal `app.deploy` worker exists, but no normal
+admission producer can create its signed deployment aggregate. The required
+Fleet app target also has only a private test writer. Its validated reader is
+available to a future server-side admission builder, with an etcd revision
+that the existing admission transaction compares. A reviewed operator path
+must first create or replace the target, then a release path must derive the
+deployment and accepted region from verified release evidence and that target.
+The target, database identity, source spec, and provenance cannot be copied
+from an arbitrary request body.
+
 ## Current boundary
 
 The public `V3OperationStore.Accept` still rejects any deployment/region

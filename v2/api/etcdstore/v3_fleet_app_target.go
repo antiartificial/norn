@@ -65,6 +65,16 @@ func (s *V3OperationStore) loadFleetAppTarget(ctx context.Context, app, environm
 	return target, response.Kvs[0].ModRevision, nil
 }
 
+// CurrentFleetAppTarget returns validated, control-owned placement and its
+// etcd revision for a server-side deployment admission builder. The later
+// admission transaction still compares this target revision atomically.
+func (s *V3OperationStore) CurrentFleetAppTarget(ctx context.Context, app, environment string) (FleetAppTarget, int64, error) {
+	if s == nil || s.kv == nil || app == "" || environment == "" {
+		return FleetAppTarget{}, 0, fmt.Errorf("Fleet app target reader is unavailable")
+	}
+	return s.loadFleetAppTarget(ctx, app, environment)
+}
+
 // putFleetAppTarget is private until an authenticated operator configuration
 // path can supply its expected revision. Generation and etcd CAS both advance
 // on replacement, so an old acceptance cannot be silently retargeted.

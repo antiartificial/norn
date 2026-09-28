@@ -20,6 +20,10 @@ func TestFleetAppTargetCASAndIdentityEtcd(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(loaded, target) || gotRevision != revision {
 		t.Fatalf("loaded target=%+v revision=%d err=%v", loaded, gotRevision, err)
 	}
+	current, currentRevision, err := adapter.CurrentFleetAppTarget(ctx, "pilot", "staging")
+	if err != nil || !reflect.DeepEqual(current, target) || currentRevision != revision {
+		t.Fatalf("current target=%+v revision=%d err=%v", current, currentRevision, err)
+	}
 	if _, _, err := adapter.loadFleetAppTarget(ctx, "other", "staging"); err == nil {
 		t.Fatal("unrelated app loaded the Fleet target")
 	}
@@ -45,5 +49,8 @@ func TestFleetAppTargetCASAndIdentityEtcd(t *testing.T) {
 	}
 	if _, _, err := adapter.loadFleetAppTarget(ctx, "pilot", "staging"); err == nil {
 		t.Fatal("corrupt app target identity was accepted")
+	}
+	if _, _, err := adapter.CurrentFleetAppTarget(ctx, "pilot", "staging"); err == nil {
+		t.Fatal("public target reader accepted a corrupt identity")
 	}
 }
