@@ -220,6 +220,13 @@ func (r *OperationResult) Finished() bool { return r != nil && r.finished }
 
 func (r *OperationResult) AppLockFenced() bool { return r != nil && r.appLockFenced }
 
+// FencedCompletedOperationResult is for an executor whose store has already
+// committed the terminal operation and its app-lock fence in one transaction.
+func FencedCompletedOperationResult(claim store.OperationClaim, message string, metadata map[string]interface{}) *OperationResult {
+	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: message,
+		Metadata: metadata, finished: true, appLockFenced: true}
+}
+
 func deferredResult(claim store.OperationClaim, err error) *OperationResult {
 	return &OperationResult{Claim: claim, deferred: err}
 }
