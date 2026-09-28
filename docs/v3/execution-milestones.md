@@ -231,8 +231,12 @@ publication and a failed public probe leave no proof or terminal deployment.
 The traffic observation is synthetic; this does not qualify effective Traefik state,
 the public load balancer, or a protected Fleet deployment.
 Fleet PR #177 has a [local validation record](m4-fleet-pr177-local-validation-2026-09-27.md)
-for 1,414 Python tests and Ansible syntax; GitHub's contract job remains
-unstarted because of account billing or a spending limit.
+for 1,415 Python tests and Ansible syntax. It targets Fleet PR #176's
+`codex/fleet-m3-host-etcd` branch, while PR #176 targets `main`; review and
+integrate the host-etcd base before the stacked ingress work. Fleet `main`
+requires the hosted `contract` check, and both PRs' contract jobs failed
+before runner steps because GitHub reported account billing or a spending
+limit. Local validation cannot satisfy that protected merge gate.
 
 [Implementation status](implementation-status.md) and [resume handoff](RESUME.md)
 retain the earlier bounded implementation checkpoints. This table governs only
