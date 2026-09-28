@@ -50,7 +50,9 @@ func main() {
 	case "migrate":
 		err = f.migrate(ctx)
 	case "serve":
-		server := &http.Server{Addr: ":8080", Handler: f.routes(), ReadHeaderTimeout: 5 * time.Second}
+		addr := os.Getenv("MOBILITY_HTTP_ADDR")
+		if addr == "" { addr = ":8080" }
+		server := &http.Server{Addr: addr, Handler: f.routes(), ReadHeaderTimeout: 5 * time.Second}
 		err = server.ListenAndServe()
 	case "worker":
 		err = f.ackOne(ctx)

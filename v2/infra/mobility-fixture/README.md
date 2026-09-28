@@ -15,6 +15,12 @@ owner. The web, worker, and tick commands all refuse writes when fenced.
 Never set `WRITE_ENABLED=true` on source and target at the same time.
 CI builds the Dockerfile to catch packaging failures; that build is not a
 signed or published release image.
+The [local transfer rehearsal](../../scripts/test-mobility-local-transfer.sh)
+uses two disposable PostgreSQL databases and file directories to exercise a
+baseline restore, final full replacement and exact quiesced-state comparison.
+It may set `MOBILITY_HTTP_ADDR` to a loopback test port; normal deployment
+still listens on `:8080`. This local test does not exercise Norn's cutover
+journal, provider role fence, Nomad or traffic switching.
 Run the explicit `migrate` command before the rehearsal; `serve` never runs
 schema changes on startup. Norn's InfraSpec migration command runs on the
 control host, so the fixture omits that field and needs a reviewed one-off

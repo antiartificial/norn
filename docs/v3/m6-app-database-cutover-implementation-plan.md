@@ -207,6 +207,14 @@ switching DNS is not rollback.
    provider/version before accepting it as a supported cutover source.
 4. Add initial restore, final transfer and integrity adapters for one exact
    engine/provider pair. Checkpoint each external effect before retrying it.
+
+   A [disposable fixture transfer](m6-local-mobility-transfer-2026-09-28.md)
+   now passes a baseline PostgreSQL dump/restore, a later final full
+   replacement, file copy and exact quiesced row/job/tick/file reconciliation
+   across separate databases on one socket-only server. It is an engine-local
+   rehearsal, not a provider adapter, incremental transfer or durable
+   cutover effect. Provider pairing, checkpointed retries and crash recovery
+   remain open.
 5. Switch generation-bound runtime secrets and consumers only after the final
    source fence and target integrity receipt. Prove stale allocations and
    credentials cannot write either target after activation.
