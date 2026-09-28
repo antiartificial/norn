@@ -4,18 +4,28 @@ This map is for reviewing draft Norn [PR #77](https://github.com/antiartificial/
 against protected `master`, then qualifying an exact candidate. It is not a
 milestone sign-off or permission to merge or deploy.
 
-At review snapshot `ef8590c7`, GitHub reported 1,108 changed files, 164,550 additions,
-3,225 deletions across 100 commits. The PR remains draft with no recorded
-review decision. The diff includes older
+At review snapshot `a177907a`, GitHub's PR summary reported 1,108 changed files,
+164,627 additions and 3,225 deletions across 1,084 reachable commits
+(326 on the first-parent path). A limited commit-list response previously
+showed only 100 and was incorrectly recorded as the full count. The PR remains
+draft with no recorded review decision. The diff includes older
 v2 work, multiple merged v3 implementation branches, and the protected-master
 integration. A green suite is necessary but cannot replace path-by-path
-review of this surface. Recheck these counts and the exact head before a
-review decision. The largest changed areas are `store`, `pipeline`,
+review of this surface. The merge base is `0c21b661` on protected `master`.
+Recheck these counts and the exact head before a review decision. The largest
+changed areas are `store`, `pipeline`,
 `etcdstore`, `handler`, `effect`, `nomad`, and `database`; their acceptance,
 claim, effect and recovery paths cross directory boundaries. A directory-only
 PR split would separate invariants from their callers. Keep dependency-ordered
 review lanes here until a proposed smaller PR identifies its exact source
 commits, required interfaces and rollback boundary.
+
+The exact-head workflow comparison changes three files: pinned action versions
+and Ubuntu 24.04 in the docs workflow, a new v3 CI workflow, and three binary
+build lines in `platform-release.yml` for the ingress observer, ingress
+publisher and effect runner. The protected release workflow's trigger,
+authorization, permissions, signing and publication steps have no diff from
+the merge base. This is a source comparison, not protected-release approval.
 
 ## Review lanes in dependency order
 
@@ -195,7 +205,7 @@ protected ingress and public-path gate.
    [M0 recovery decision](m0-mini-control-recovery-decision.md), then measure a
    protected clean-host restore.
 2. Resolve GitHub account billing/spending status so Fleet PR #177's hosted
-   contract job can start. Its 1,414 local Python tests and static workflow,
+   contract job can start. Its 1,415 local Python tests and static workflow,
    schema, and OpenTofu checks do not substitute for the required hosted lane.
 3. Name the protected Fleet rehearsal target and owner-approved budget before
    provisioning. Qualify PR #176 before its stacked readback change, then
