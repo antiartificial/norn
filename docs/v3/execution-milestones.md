@@ -186,8 +186,11 @@ The same-day read-only Mini job inventory found additional direct
 in its role/credential transition and old-writer drain. Its inspected source
 performs startup schema initialization and interaction writes, while its
 deployed image has a `-dirty` tag that prevents exact source attribution.
-`like-trove` and
-`vigil-gateway` declare `norn`-role URLs for their own databases. See the
+Draft [mail-mcp PR #1](https://github.com/antiartificial/mail-mcp/pull/1)
+removes its database-URL fallback; local Go tests passed, while hosted CI
+could not start because of the repository account billing/spending limit.
+`like-trove` and `vigil-gateway` declare `norn`-role URLs for their own
+databases. See the
 [fixture selection and consumer inventory](m2-m5-mini-compatibility-fixture-selection-2026-09-28.md).
 
 The [2026-09-28 read-only Mini refresh](m0-mini-baseline-refresh-2026-09-28.md)

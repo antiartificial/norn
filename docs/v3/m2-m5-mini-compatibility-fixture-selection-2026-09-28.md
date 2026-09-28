@@ -95,6 +95,17 @@ as a possible live writer and startup DDL consumer until exact-image/runtime
 readback proves otherwise. A `mailindexer` role split must include its
 connection update, startup behavior, in-flight request drain, and old-role
 session/access checks; the single-job private fixture does not cover these.
+The inspected `mail-mcp` configuration also falls back to an embedded local
+PostgreSQL URL when `DATABASE_URL` is absent. A rotation must make the URL
+required (and verify the exact deployed image) before relying on a missing
+environment value to fail closed. Its checkout is 24 commits ahead of its
+GitHub tracking branch and has uncommitted work, so an app fix needs an
+isolated review that preserves that state.
+Draft [mail-mcp PR #1](https://github.com/antiartificial/mail-mcp/pull/1)
+now makes `DATABASE_URL` mandatory and passed `go test ./...` in a separate
+worktree based on current GitHub master. It is not merged or deployed. Its
+hosted Go CI job was blocked before runner steps by GitHub's account
+billing/spending-limit annotation, so it has no hosted test receipt.
 
 For the proposed first fixture, a read-only `mailindexer` ownership query
 found eight ordinary tables, four sequences and 31 indexes owned by `norn`.
