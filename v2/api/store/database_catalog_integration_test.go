@@ -35,6 +35,35 @@ func storeTestCatalog() database.Catalog {
 	}
 }
 
+func TestDatabaseCatalogPersistsLegacyDatabaseBindings(t *testing.T) {
+	dbs, _, _ := setupEffectStores(t, 1)
+	db := dbs[0]
+	ctx := context.Background()
+	catalog := storeTestCatalog()
+	catalog.Profiles[0].LegacyPostgres = nil
+	catalog.Profiles[0].LegacyPostgresBindings = map[string]string{"shop": "shop-primary"}
+	first, err := db.ActivateDatabaseCatalog(ctx, 0, catalog, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := db.ActiveDatabaseCatalog(ctx)
+	if err != nil || active.Revision != first.Revision || active.Catalog.Profiles[0].LegacyPostgresBindings["shop"] != "shop-primary" {
+		t.Fatalf("persisted legacy binding = %+v, %v", active, err)
+	}
+	resolver, err := database.NewResolver(active.Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "mini", Purpose: database.PurposeApplication, LegacyPostgres: &database.LegacyPostgresDeclaration{Database: "shop"}})
+	if err != nil || resolved.Target.BindingID != "shop-primary" || !resolved.Legacy {
+		t.Fatalf("persisted legacy resolution = %+v, %v", resolved.Target, err)
+	}
+	delete(catalog.Profiles[0].LegacyPostgresBindings, "shop")
+	if _, err := db.ActivateDatabaseCatalog(ctx, first.Revision, catalog, "operator"); err == nil {
+		t.Fatal("catalog accepted removal of a legacy database binding")
+	}
+}
+
 func TestDatabaseCatalogRevisionsAreCompareAndSetAndPersistRetirements(t *testing.T) {
 	dbs, _, _ := setupEffectStores(t, 1)
 	db := dbs[0]
