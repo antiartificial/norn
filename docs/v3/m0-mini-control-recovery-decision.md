@@ -42,6 +42,16 @@ files. These are bounded local observations, not an inventory of every remote
 backup service or storage destination. No protected off-host restore receipt
 has been presented for either RPO option.
 
+At 2026-09-28 09:19 UTC, another read-only query of the owner-local Mini
+control database still reported `archive_mode=off`, `archive_timeout=0`, and
+zero archived and failed WAL files. A names-only inspection of the encrypted
+API configuration found S3/Garage variables but no
+`NORN_AUDIT_SIGNING_KEY` or `NORN_DATABASE_URL`; the inspected launchd
+environment also lacked those two values. The S3 names do not establish an
+off-host control-backup destination. The stable audit key and exact database
+URL are separate prerequisites for the protected M5 transition proof, even
+after the owner selects this M0 RPO and its off-host destination.
+
 ## Decision options
 
 | Option | User-visible data-loss bound after a host/storage loss | Implementation to qualify | Practical trade-off |
