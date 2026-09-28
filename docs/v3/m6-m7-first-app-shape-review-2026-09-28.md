@@ -5,6 +5,18 @@ inventory**. No application job, database, credential, or route was changed.
 The deploy-disabled synthetic web/worker mobility fixture remains the first
 M6/M7 rehearsal workload.
 
+Its checked-in InfraSpec currently declares exactly three processes: `web`
+(`serve`), periodic `worker`, and periodic `tick`. A model regression now
+requires exactly those three names; the Nomad translation test checks each
+mode and file mount. The fixture code gates writes in all three modes with
+`WRITE_ENABLED`, while the local transfer test independently fences the
+dedicated source PostgreSQL runtime role. At deployment, inventory every
+periodic child and old allocation, then inspect the exact runtime role and
+all other database sessions. Source code shape is not a live writer census
+or an owner attestation that no external writer exists. The fixture stays
+deploy-disabled until exact source, target, volume, role and release identities
+are reviewed.
+
 The Mini Nomad API listed 284 jobs, including retained periodic children.
 For each app below, the read-only inspection used the base job's group/task
 names and database environment **key names only**. It did not print URL values
