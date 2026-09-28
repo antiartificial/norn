@@ -12,6 +12,15 @@ maintenance window; these are 2026-09-28 observations.
 | `mail-indexer` | Nomad job version 5, modify index 220920, running allocation `7c93974d-6f61-ce1c-e5ad-06eb7ccfce01`, image `mail-indexer:b60b85d1488e-dirty`; its running Docker container resolves to local image ID `sha256:c9772834d09e7c9a4c648199226d13afb2adfe467c1d58d89499c5496b820056`. The task declares `POSTGRES_USER`/`POSTGRES_DB` as `norn`/`mailindexer`. |
 | `mail-mcp` | Nomad job version 3, modify index 368342, running allocation `610b2e79-57df-392d-4ca8-b99811046932`, image `mail-mcp:7a5dd2bb8c77-dirty`; its running Docker container resolves to local image ID `sha256:14332f2a762ab632e1d919919b834782e84188a8b9b64b64865ededc1cd749a5`. The task declares a `DATABASE_URL` for `norn`/`mailindexer`. |
 
+A read-only copy of each running executable identified the `mail-indexer`
+binary as SHA-256 `991b19d1f96441b9e3d11724bdfe142b542d931d36bcd40d7af16a6ccbc47119`
+and the `mail-mcp` binary as SHA-256
+`0980e483f43b826b6b4e552a799f50c799c616f65c2145330b6f5a32f1b4a78b`.
+Both report Go 1.25.10 on Linux arm64, but neither contains `vcs.revision` or
+`vcs.modified` build metadata. These hashes identify the running executables;
+they do not identify their source trees or replace an exported, verified image.
+The temporary inspection copies were removed.
+
 The [private-copy receipt](m2-mailindexer-private-shared-role-copy-2026-09-28.md)
 now starts with the application database owned by `norn`, transfers database
 and all 12 public table/sequence owners to `mail_app`, denies the old role on
