@@ -4,9 +4,9 @@ This map is for reviewing draft Norn [PR #77](https://github.com/antiartificial/
 against protected `master`, then qualifying an exact candidate. It is not a
 milestone sign-off or permission to merge or deploy.
 
-At head `ff4ccf7e95e8eeaa6c611ddb81e74474d8f7955d`, GitHub reports 991
-changed files, 149,576 additions, 3,160 deletions, and a mergeable draft.
-The branch is 882 commits ahead of `origin/master`. The diff includes older
+At head `d3fe52c6`, GitHub reports 1,073 changed files, 159,085 additions,
+3,225 deletions, and a draft blocked from merge. The branch is 1,006 commits
+ahead of `origin/master`. The diff includes older
 v2 work, multiple merged v3 implementation branches, and the protected-master
 integration. A green suite is necessary but cannot replace path-by-path
 review of this surface. Recheck these counts and the exact head before a
@@ -140,14 +140,18 @@ The private path now rejects positive active weight without a deployment-bound
 ingress proof; disposable etcd tests exercise that refusal and zero-traffic
 terminal fencing. This keeps the known gap closed while proof persistence and
 worker integration are developed.
-`ingress.ObserveRenderedRoute`, node endpoint probes, and public-host probes
-are separate read-only helpers; no durable region result binds their output
-to the exact accepted deployment, route generation, complete Fleet ingress
-inventory, and public load-balancer response. The local two-ingress fixture
-therefore cannot authorize a positive active weight on Fleet. Keep normal
-etcd app dispatch closed until the publisher and proof-to-result boundary are
-implemented and exercised on protected separate hosts. A claimed Nomad
-health result or caller-filled region value is insufficient for this gate.
+The private route-intent and terminal paths now bind positive active weight
+to an immutable, claim-fenced traffic proof and the signed deployment, health
+effect, Fleet target, and active ingress inventory revisions. The normal
+staging release HTTP route and claimed etcd worker remain independently
+opt-in. A disposable rehearsal accepts the release over HTTP, reaches a real
+healthy Nomad allocation, and sends its `/ready` response through two local
+Traefik processes. It rejects partial publication and withdrawal. Its OCI
+registry lookup can use the real public digest, but signature and vulnerability
+checks remain synthetic. The fixture writes local route files directly; it
+does not exercise the authenticated publisher, protected Fleet inventory,
+public load balancer, or a durable positive-weight terminal result. Those
+are the current lane-5 stop conditions before protected traffic activation.
 
 ## Immediate blocking decisions
 
@@ -155,8 +159,8 @@ health result or caller-filled region value is insufficient for this gate.
    [M0 recovery decision](m0-mini-control-recovery-decision.md), then measure a
    protected clean-host restore.
 2. Resolve GitHub account billing/spending status so Fleet PR #177's hosted
-   contract job can start. Its local 1,410-test pass does not substitute for
-   the required hosted lane.
+   contract job can start. Its 1,413 local Python tests and static workflow,
+   schema, and OpenTofu checks do not substitute for the required hosted lane.
 3. Name the protected Fleet rehearsal target and owner-approved budget before
    provisioning. Qualify PR #176 before its stacked readback change, then
    exercise exact candidate pins across separate hosts.
