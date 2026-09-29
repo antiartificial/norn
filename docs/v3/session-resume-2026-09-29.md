@@ -27,7 +27,9 @@ runner, reviewed plan, and a working finalizer before provider create.
   `master` as `8ac21f8e24bc3add8b1f4d3a1ae34fd5d2cd9b21`. The public
   [platform release](https://github.com/antiartificial/norn/releases/tag/platform-8ac21f8e24bc3add8b1f4d3a1ae34fd5d2cd9b21)
   has platform archives, manifests, signatures, and SBOMs for Darwin and
-  Linux. Asset presence is not signature verification or an installed release.
+  Linux. On 2026-09-29 the Darwin/ARM64 and Linux/AMD64 bundles passed the
+  repository's archive, manifest and Ed25519 signature verifier with the
+  Mini's pinned public key. Neither package is installed on the Mini or a Fleet.
 - Fleet [PR #176](https://github.com/antiartificial/norn-fleet/pull/176)
   and [#177](https://github.com/antiartificial/norn-fleet/pull/177) merged.
   [PR #188](https://github.com/antiartificial/norn-fleet/pull/188) merged to
@@ -38,6 +40,20 @@ runner, reviewed plan, and a working finalizer before provider create.
   after validation. GitHub-hosted Actions capacity remains exhausted; use the
   documented narrow self-hosted fallback for source checks and the exact
   protected pilot runner for plan/apply.
+- Fleet [PR #189](https://github.com/antiartificial/norn-fleet/pull/189)
+  merged to `main` as `01f4151374ecb84778003bf8ff8e14a2a2fa42a4`,
+  with Aaron Barton as both Git author and committer. The receipt bridge now
+  verifies a one-commit human PR fast-forward while retaining its signed
+  receipt, parent, PR and protected-main checks. The full local contract suite
+  passed 1,424 tests with three skips, and the required PR `contract` check
+  passed on a temporary self-hosted Linux runner. The exact-main
+  [no-cloud macOS qualification](https://github.com/antiartificial/norn-fleet/actions/runs/36621323531)
+  passed and published artifact
+  `pre-release-pilot-qualification-01f4151374ecb84778003bf8ff8e14a2a2fa42a4`
+  (GitHub artifact SHA-256 `a57702ef56e89babd085c44e945a44af786f2af27244b48ff38199a79dffa631`).
+  Its receipt reports 282 bounded tests and no cloud/Tailscale mutation or
+  OIDC use. Both temporary runners deregistered; only the shared finalizer
+  remains. A source change after this commit needs a new qualification.
 - The Mini still reports `v2.20.0-platform-30-ga5da8ef` at `/api/version`.
   A 2026-09-29 authenticated inventory found zero active Norn operations,
   host status OK, 29 app entries, and no configured Fleet node pools. This
@@ -84,9 +100,9 @@ temporary Mini backup Space remains active and is separate from pilot compute.
 1. Agree on a short workload test window and derive a fresh run ID, quote,
    cutoff, and retire-by. Keep the existing owner authorization for brief test
    spending; do not infer that an old signed run approval is reusable.
-2. Verify the exact released Norn candidate and current Fleet `main` source,
-   then run local/GitHub qualification through the documented self-hosted
-   fallback while hosted Actions capacity is unavailable.
+2. Recheck the verified Norn candidate and Fleet `main` at the start of the
+   window. Use the retained qualification for `01f4151` only while it remains
+   the exact protected source; rerun the no-cloud lane after any source change.
 3. Complete Gate 2 and Gate 3 for the fresh run. Register the exact protected
    runner name; check it against the workflow selector before backend or
    provider setup. Verify finalizer readiness and the signed retirement path.
