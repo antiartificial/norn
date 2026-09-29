@@ -199,17 +199,67 @@ and [36375312105](https://github.com/antiartificial/norn/actions/runs/3637531210
 This covers the simulated lost-response path, not a process crash or the
 protected ingress and public-path gate.
 
+## 2026-09-29 merge-prerequisite pass
+
+At code head `86d4ee6616871dcfac3749d455237cdf0ed5ab68`, the current PR had
+1,108 changed files, 19 successful checks, no recorded review decision and a
+clean Git diff. The protected-release workflow delta against `master` adds
+only the observer, publisher and effect-runner bundle build lines; its
+dispatch, publish environment, permissions and signing steps are unchanged.
+The focused release-manifest (9), release-artifact (8), platform-upgrade (10)
+and Go startup package tests passed locally at that head. This refreshes the
+lane-0 workflow and lane-1 startup/rollback source checkpoints; it is not a
+review of every acceptance/effect/ingress path in this integration diff.
+
+The candidate defaults to PostgreSQL, active startup and automatic schema
+migration, matching the old normal startup class. Passive mode requires an
+explicit read-only `check` and loopback bind. The legacy-baseline path still
+requires a fresh bound backup, zero active operations and a direct-loopback
+listener; it fences the installed old executable before migration and retains
+the fence on failed candidate postflight. The live Mini read-only inventory
+reported release `v2.20.0-platform-30-ga5da8ef`, 29 app entries, zero active
+operations and `fleet_configured=false`. Its app specs declared no function
+processes. No upgrade or mutation was attempted.
+
+One intentional default API change remains visible to clients: without the
+private function-v3 runtime, `POST /api/apps/{id}/invoke` returns 503 instead
+of using the unfenced v2 Nomad submission. The M1 boundary audit explicitly
+forbids restoring that unsafe fallback. Record it in the client/version
+matrix and qualify the replacement before claiming general function parity.
+The live inventory's absence of function processes narrows current Mini
+exposure but does not prove no external caller uses the route. This is a
+release-compatibility decision, not a reason to silently reactivate the old
+handler.
+
+Lane 2's PostgreSQL source checkpoint follows `PGOperationStore.Accept` into
+one transaction that inserts request identity, operation/domain rows, signed
+intent and evidence reservation. An uncertain commit resolves the identity
+from a fresh read or returns an indeterminate error. `ClaimNextOperation`
+requires an acceptance intent and observes the runtime mutation fence while
+claiming. `PGEffectStore.Reserve` checks authority, live claim owner,
+generation and lease, then holds unresolved app effects behind a durable
+app-wide reservation gate. The operation worker declines terminal publication
+after lost lease or app lock ownership. These are source checks, not evidence
+that every supervisor reconciles an ambiguous external response. The M1
+effect audit's remaining cross-backend and process-crash cases are still open.
+
+Open source-review work before a merge decision: record entrypoint/default,
+negative/recovery tests and rollback boundaries for lanes 2–6, then recheck
+the final exact head. Protected Mini, Fleet and ingress qualifications remain
+separate release gates after source review. No merge decision is recorded by
+this checkpoint.
+
 ## Immediate blocking decisions
 
 1. Superseded on 2026-09-28: the [M0 recovery decision](m0-mini-control-recovery-decision.md)
    permits an on-host backup for the dev Mini upgrade. Verify a fresh local
    backup and private restore before that transition; production recovery is
    a separate future qualification.
-2. Fleet PRs #176 and #177 passed their exact-head GitHub `contract` checks on
-   the documented ephemeral Linux x64 fallback. The temporary runners and
-   routing variable were removed. Resolve GitHub account billing/spending
-   status to restore normal GitHub-hosted execution; local tests alone were
-   not used to satisfy the protected merge check.
-3. Name the protected Fleet rehearsal target and owner-approved budget before
-   provisioning. Qualify PR #176 before its stacked readback change, then
-   exercise exact candidate pins across separate hosts.
+2. Fleet PRs #176 and #177 are merged after their exact-head GitHub `contract`
+   checks passed on the documented ephemeral Linux x64 fallback. The temporary
+   runners and routing variable were removed. Resolve GitHub account
+   billing/spending status to restore normal GitHub-hosted execution.
+3. Before the full disposable Fleet pilot, pin the signed v3 candidate and
+   protected target, then exercise separate-host qualification and the
+   documented retirement chain. The temporary DigitalOcean resources must be
+   removed after the test rather than left running for hours.

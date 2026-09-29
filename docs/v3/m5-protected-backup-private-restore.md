@@ -87,11 +87,14 @@ own partial files on failure. It passes supported URL connection parameters,
 including TLS CA and client material, to libpq and rejects parameters it
 cannot preserve. A disposable PostgreSQL 16.15 run passed with a
 Unix-socket source and a synthetic row. That run validates the producer and
-verifier, not a Mini production-key backup. Retain and protect the resulting
-artifact off the source host as required by the change record, then run the
-private restore against those exact bytes. Mini's current launcher lacks the
-required URL and audit key, so no production-key artifact has yet been made.
+verifier, not a Mini production-key backup. The development Mini's current
+[recovery decision](m0-mini-control-recovery-decision.md) permits an owner-only
+on-host backup for the upgrade window, with a private restore of those exact
+bytes before transition. At the time of the rehearsal below, Mini's launcher
+lacked the required URL and audit key; both were installed later, and a
+protected artifact and separate-Mac restore are recorded in the
+[current handoff](session-resume-2026-09-28.md).
 The [2026-09-25 staged-binding rehearsal](m5-mini-staged-binding-backup-rehearsal-2026-09-25.md)
 proved this producer and private restore against live Mini data using an
-inactive encrypted key candidate. It does not replace the production-key,
-off-host retained backup requirement.
+inactive encrypted key candidate. It did not itself prove the later protected
+backup, and it carries no host-loss recovery claim.

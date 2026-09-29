@@ -18,8 +18,12 @@ by the invoking user, at an absolute private path with mode exactly `0600`.
 Create a separate mode-`0600`, user-owned, absolute-path JSON backup proof.
 The [protected backup helper](m5-protected-backup-private-restore.md#create-the-protected-input)
 can create and verify both files after the protected maintenance environment
-has the exact runtime database URL and audit key. Retain the artifact outside
-the source host and separately prove its private restore before maintenance.
+has the exact runtime database URL and audit key. For this development Mini,
+retain the artifact and proof in an owner-only on-host directory through the
+maintenance and rollback decision window. Prove a private restore of that
+exact artifact before maintenance. Off-host host-loss recovery and a bounded
+RPO/RTO are separate production qualifications, not gates for this Mini
+upgrade.
 The proof contains exactly these fields:
 
 ```json
