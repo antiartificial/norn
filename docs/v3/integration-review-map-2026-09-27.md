@@ -224,8 +224,9 @@ processes. No upgrade or mutation was attempted.
 One intentional default API change remains visible to clients: without the
 private function-v3 runtime, `POST /api/apps/{id}/invoke` returns 503 instead
 of using the unfenced v2 Nomad submission. The M1 boundary audit explicitly
-forbids restoring that unsafe fallback. Record it in the client/version
-matrix and qualify the replacement before claiming general function parity.
+forbids restoring that unsafe fallback. It is recorded in the
+[client/version matrix](m8-client-version-matrix-2026-09-28.md); qualify the
+replacement before claiming general function parity.
 The live inventory's absence of function processes narrows current Mini
 exposure but does not prove no external caller uses the route. This is a
 release-compatibility decision, not a reason to silently reactivate the old
@@ -242,6 +243,19 @@ app-wide reservation gate. The operation worker declines terminal publication
 after lost lease or app lock ownership. These are source checks, not evidence
 that every supervisor reconciles an ambiguous external response. The M1
 effect audit's remaining cross-backend and process-crash cases are still open.
+
+The lane-6 client comparison found that the narrow etcd Fleet router's
+`/api/v1/capabilities` omitted the required `auth` object and the `fleet-v1`
+feature consumed by NornUI. The native client could not decode the document
+or recognize Fleet planning even though the corresponding endpoints existed.
+The router now advertises its actual narrow Fleet authority, Fleet planning
+and an unauthenticated principal with no WebSocket support. A focused Go
+contract test checks the required JSON shape and advertised routes. This is
+source compatibility for the read and plan surface, not NornUI runtime parity
+or a claim that the etcd router implements the full PostgreSQL API. The
+initial empty-Fleet contract explicitly does not require general PG/etcd
+control conversion; qualify the narrow router against the protected pilot
+and retain 501 responses for unsupported routes.
 
 Open source-review work before a merge decision: record entrypoint/default,
 negative/recovery tests and rollback boundaries for lanes 2–6, then recheck

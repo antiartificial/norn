@@ -236,3 +236,36 @@ func TestEtcdCanaryHTTPPreviewRequiresWorkerAndGatesCapabilities(t *testing.T) {
 		t.Fatal("enabled HTTP preview did not advertise its exact route")
 	}
 }
+
+func TestEtcdFleetCapabilitiesIncludeNativeFleetFields(t *testing.T) {
+	encoded, err := json.Marshal(etcdFleetCapabilities(false, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capability struct {
+		Authority string   `json:"authority"`
+		Features  []string `json:"features"`
+		Auth      struct {
+			Scopes                []string `json:"scopes"`
+			WebsocketBearerHeader bool     `json:"websocketBearerHeader"`
+			WebsocketQueryToken   bool     `json:"websocketQueryToken"`
+			Principal             struct {
+				Authenticated bool     `json:"authenticated"`
+				Scopes        []string `json:"scopes"`
+			} `json:"principal"`
+		} `json:"auth"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(encoded, &capability); err != nil {
+		t.Fatal(err)
+	}
+	if capability.Authority != "fleet-only" || !containsCapability(capability.Features, "fleet-v1") ||
+		!containsCapability(capability.Features, "fleet-inventory") || !containsCapability(capability.Features, "durable-fleet-capacity-plans") ||
+		capability.Endpoints["fleetNodePools"] != "/api/v1/fleet/node-pools" || capability.Endpoints["fleetPlans"] != "/api/v1/fleet/plans" {
+		t.Fatalf("native Fleet authority contract is incomplete: %+v", capability)
+	}
+	if len(capability.Auth.Scopes) == 0 || capability.Auth.Principal.Scopes == nil || capability.Auth.Principal.Authenticated ||
+		capability.Auth.WebsocketBearerHeader || capability.Auth.WebsocketQueryToken {
+		t.Fatalf("narrow Fleet authentication capability is invalid: %+v", capability.Auth)
+	}
+}

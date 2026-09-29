@@ -250,7 +250,7 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 }
 
 func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
-	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "fleet-app-target-configuration", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation"}
+	features := []string{"etcd-normal-router-v1", "fleet-authority-only-v1", "fleet-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "fleet-app-target-configuration", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation"}
 	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetAppTarget": "/api/v1/apps/{id}/fleet-target", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
@@ -271,7 +271,18 @@ func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[st
 		endpoints["appReleaseDeployment"] = "/api/v1/apps/{id}/releases/deployments"
 		unsupported[0] = "other-app-mutations"
 	}
-	return map[string]interface{}{"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet", "features": features, "endpoints": endpoints, "unsupported": unsupported}
+	return map[string]interface{}{
+		"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet",
+		// Native clients use this authority marker to avoid requesting app and
+		// host inventories that the narrow Fleet router does not expose.
+		"authority": "fleet-only",
+		"features":  features, "endpoints": endpoints, "unsupported": unsupported,
+		"auth": map[string]interface{}{
+			"scopes":                handler.AccessTokenScopeNames(),
+			"principal":             map[string]interface{}{"authenticated": false, "scopes": []string{}},
+			"websocketBearerHeader": false, "websocketQueryToken": false,
+		},
+	}
 }
 
 type etcdCanaryRuntime struct {
