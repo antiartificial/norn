@@ -220,7 +220,7 @@ func TestEtcdCanaryHTTPPreviewRequiresWorkerAndGatesCapabilities(t *testing.T) {
 	if err != nil || workerEnabled || httpEnabled {
 		t.Fatalf("default preview flags = %t %t err=%v", workerEnabled, httpEnabled, err)
 	}
-	base := etcdFleetCapabilities(false)
+	base := etcdFleetCapabilities(nil, false)
 	if _, advertised := base["endpoints"].(map[string]string)["appCanaryPromote"]; advertised {
 		t.Fatal("disabled HTTP preview advertised canary promotion")
 	}
@@ -231,21 +231,25 @@ func TestEtcdCanaryHTTPPreviewRequiresWorkerAndGatesCapabilities(t *testing.T) {
 	if err != nil || !workerEnabled || !httpEnabled {
 		t.Fatalf("qualified preview flags = %t %t err=%v", workerEnabled, httpEnabled, err)
 	}
-	preview := etcdFleetCapabilities(httpEnabled)
+	preview := etcdFleetCapabilities(nil, httpEnabled)
 	if preview["endpoints"].(map[string]string)["appCanaryPromote"] != "/api/v1/apps/{id}/promote" {
 		t.Fatal("enabled HTTP preview did not advertise its exact route")
 	}
 }
 
 func TestEtcdFleetCapabilitiesIncludeNativeFleetFields(t *testing.T) {
-	encoded, err := json.Marshal(etcdFleetCapabilities(false, true))
+	encoded, err := json.Marshal(etcdFleetCapabilities(&config.Config{Environment: "staging", Profile: "production"}, false, true))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var capability struct {
-		Authority string   `json:"authority"`
-		Features  []string `json:"features"`
-		Auth      struct {
+		Authority   string   `json:"authority"`
+		Features    []string `json:"features"`
+		Environment struct {
+			ID      string `json:"id"`
+			Profile string `json:"profile"`
+		} `json:"environment"`
+		Auth struct {
 			Scopes                []string `json:"scopes"`
 			WebsocketBearerHeader bool     `json:"websocketBearerHeader"`
 			WebsocketQueryToken   bool     `json:"websocketQueryToken"`
@@ -259,7 +263,8 @@ func TestEtcdFleetCapabilitiesIncludeNativeFleetFields(t *testing.T) {
 	if err := json.Unmarshal(encoded, &capability); err != nil {
 		t.Fatal(err)
 	}
-	if capability.Authority != "fleet-only" || !containsCapability(capability.Features, "fleet-v1") ||
+	if capability.Authority != "fleet-only" || capability.Environment.ID != "staging" || capability.Environment.Profile != "production" ||
+		!containsCapability(capability.Features, "fleet-v1") ||
 		!containsCapability(capability.Features, "fleet-inventory") || !containsCapability(capability.Features, "durable-fleet-capacity-plans") ||
 		capability.Endpoints["fleetNodePools"] != "/api/v1/fleet/node-pools" || capability.Endpoints["fleetPlans"] != "/api/v1/fleet/plans" {
 		t.Fatalf("native Fleet authority contract is incomplete: %+v", capability)

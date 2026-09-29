@@ -133,7 +133,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
 	})
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled))
+		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(cfg, canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled))
 	})
 	// Fleet runners carry fleet:operate only for their own attempts and
 	// reconciliation checkpoints. Inventory and general operation reads still
@@ -249,7 +249,7 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 	return workerEnabled, httpEnabled, nil
 }
 
-func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
+func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
 	features := []string{"etcd-normal-router-v1", "fleet-authority-only-v1", "fleet-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "fleet-app-target-configuration", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation"}
 	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetAppTarget": "/api/v1/apps/{id}/fleet-target", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
@@ -273,6 +273,7 @@ func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[st
 	}
 	return map[string]interface{}{
 		"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet",
+		"environment": map[string]string{"id": cfg.EnvironmentID(), "profile": cfg.ProfileID()},
 		// Native clients use this authority marker to avoid requesting app and
 		// host inventories that the narrow Fleet router does not expose.
 		"authority": "fleet-only",

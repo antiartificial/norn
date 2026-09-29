@@ -248,8 +248,9 @@ The lane-6 client comparison found that the narrow etcd Fleet router's
 `/api/v1/capabilities` omitted the required `auth` object and the `fleet-v1`
 feature consumed by NornUI. The native client could not decode the document
 or recognize Fleet planning even though the corresponding endpoints existed.
-The router now advertises its actual narrow Fleet authority, Fleet planning
-and an unauthenticated principal with no WebSocket support. A focused Go
+The router now advertises its actual narrow Fleet authority, configured
+environment/profile, Fleet planning and an unauthenticated principal with no
+WebSocket support. A focused Go
 contract test checks the required JSON shape and advertised routes. This is
 source compatibility for the read and plan surface, not NornUI runtime parity
 or a claim that the etcd router implements the full PostgreSQL API. The
