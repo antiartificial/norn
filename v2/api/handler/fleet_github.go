@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,21 +52,73 @@ func (h *Handler) CreateFleetGitHubPullRequest(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "stored fleet capacity plan is invalid")
 		return
 	}
-	if existing := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.pull-request"); existing != nil {
+	if _, ok := h.requireMatchingFleetEnvironment(w, r); !ok {
+		return
+	}
+	if existing, found, err := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.pull-request"); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	} else if found {
 		existing.AttachReceipt()
 		writeJSON(w, existing)
 		return
 	}
+	// The lock covers the signed receipt as well as the external call. GitHub
+	// can recover a duplicate PR request, but it cannot create the one signed
+	// Norn receipt that represents that protected plan mutation.
+	appLock, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-pull-request:"+plan.ID)
+	if lockErr != nil || !locked {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_in_progress", "another protected pull request is resolving this fleet plan")
+		return
+	}
+	defer appLock.Release()
+	r = r.WithContext(appLock.Context())
+	if existing, found, err := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.pull-request"); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	} else if found {
+		existing.AttachReceipt()
+		writeJSON(w, existing)
+		return
+	}
+	reservation, err := h.reserveFleetGitHubOperation(r, principal, plan.ID, "fleet.github.pull-request", map[string]interface{}{
+		"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest,
+		"pool": typed.Pool, "action": typed.Action, "proposed": typed.Proposed,
+	})
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
 	result, err := h.fleetGitHub.CreatePullRequest(r.Context(), typed.ID, typed.Digest, typed.Pool, typed.Action, typed.Proposed, typed.SourceDigest)
 	if errors.Is(err, githubapp.ErrStalePlan) {
+		if _, finishErr := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.pull-request", model.OperationFailed, "fleet pull request was not created because the plan is stale", map[string]interface{}{"planId": plan.ID, "outcome": "stale-plan"}); finishErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "stale plan outcome could not be durably recorded; retry safely")
+			return
+		}
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_plan_stale", "GitHub main changed after this Norn capacity plan; create a fresh plan")
+		return
+	}
+	if errors.Is(err, githubapp.ErrPermanentNoWrite) {
+		if _, finishErr := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.pull-request", model.OperationFailed, "fleet pull request was refused before GitHub mutation", map[string]interface{}{"planId": plan.ID, "outcome": "permanent-no-write"}); finishErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "GitHub refusal could not be durably recorded; retry safely")
+			return
+		}
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_refused", "GitHub rejected this plan before creating a pull request; create a fresh plan")
+		return
+	}
+	if errors.Is(err, githubapp.ErrPermanentAfterMutation) {
+		if _, finishErr := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.pull-request", model.OperationFailed, "fleet pull request was refused after a possible branch mutation", map[string]interface{}{"planId": plan.ID, "outcome": "permanent-after-mutation"}); finishErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "GitHub terminal outcome could not be durably recorded; retry safely")
+			return
+		}
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_refused", "GitHub rejected this plan after a possible protected branch mutation; create a fresh plan")
 		return
 	}
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_failed", "GitHub could not create or recover the fleet pull request")
 		return
 	}
-	op, err := h.recordFleetGitHubOperation(r, principal, plan.ID, "fleet.github.pull-request", "fleet pull request opened", map[string]interface{}{
+	op, err := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.pull-request", model.OperationSucceeded, "fleet pull request opened", map[string]interface{}{
 		"planId": plan.ID, "pullRequestNumber": result.Number, "url": result.URL, "branch": result.Branch, "state": result.State,
 	})
 	if err != nil {
@@ -72,8 +126,132 @@ func (h *Handler) CreateFleetGitHubPullRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 	preventSensitiveResponseCaching(w)
+	op.AttachReceipt()
 	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
 	writeJSONStatus(w, http.StatusCreated, op)
+}
+
+type fleetGitHubReconcileRequest struct {
+	Kind string `json:"kind"`
+}
+
+func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http.Request) {
+	_, plan, ok := h.requireFleetGitHubPlan(w, r)
+	if !ok {
+		return
+	}
+	var request fleetGitHubReconcileRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_github_reconcile", err.Error())
+		return
+	}
+	kind := "fleet.github." + request.Kind
+	if request.Kind != "pull-request" && request.Kind != "apply-dispatch" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_github_reconcile", "kind must be pull-request or apply-dispatch")
+		return
+	}
+	lockName := "fleet-github-pull-request:" + plan.ID
+	if request.Kind == "apply-dispatch" {
+		lockName = "fleet-github-dispatch:" + plan.ID
+	}
+	appLock, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), lockName)
+	if lockErr != nil || !locked {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_in_progress", "another request is resolving this Fleet GitHub reservation")
+		return
+	}
+	defer appLock.Release()
+	r = r.WithContext(appLock.Context())
+	op, found, err := h.resolveFleetGitHubOperation(r, plan.ID, kind)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	if !found {
+		WriteControlProblem(w, r, http.StatusNotFound, "fleet_github_reservation_not_found", "fleet GitHub reservation not found")
+		return
+	}
+	if op.Status.Terminal() {
+		op.AttachReceipt()
+		outcome := "already-terminal"
+		if completion, ok := op.Metadata["fleetGitHubCompletion"].(map[string]interface{}); ok {
+			if result, ok := completion["result"].(map[string]interface{}); ok {
+				if recorded, ok := result["outcome"].(string); ok && recorded != "" {
+					outcome = recorded
+				}
+			}
+		}
+		writeJSON(w, map[string]interface{}{"operation": op, "outcome": outcome})
+		return
+	}
+	var observed *githubapp.Reconciliation
+	if kind == "fleet.github.pull-request" {
+		typed, planErr := typedCapacityPlan(plan)
+		if planErr != nil || !h.verifyCapacityPlan(typed) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "stored fleet capacity plan is invalid")
+			return
+		}
+		observed, err = h.fleetGitHub.ReconcilePullRequest(r.Context(), typed.ID, typed.Digest, typed.Pool, typed.Action, typed.Proposed, typed.SourceDigest)
+	} else {
+		binding, bindErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
+		if bindErr != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_ambiguous", "dispatch binding is unavailable; the reservation remains queued")
+			return
+		}
+		fleetEnvironment, environmentOK := h.requireMatchingFleetEnvironment(w, r)
+		if !environmentOK {
+			return
+		}
+		if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), binding.AllowDestructive) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "the dispatch reservation belongs to a different current Fleet lane")
+			return
+		}
+		if binding.DispatchState == "prepared" && binding.RunID == 0 {
+			observed = &githubapp.Reconciliation{Outcome: "verified-no-write"}
+		} else {
+			approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID}
+			var recovered *githubapp.Dispatch
+			recovered, err = h.fleetGitHub.RecoverBoundPlan(r.Context(), plan.ID, binding.FleetEnvironment, approved, binding.DispatchNonceSHA256)
+			if err == nil {
+				observed = &githubapp.Reconciliation{Outcome: "recovered", Dispatch: recovered}
+			}
+		}
+	}
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_ambiguous", "GitHub could not authoritatively reconcile the reservation; it remains queued")
+		return
+	}
+	if observed.Outcome == "ambiguous" {
+		preventSensitiveResponseCaching(w)
+		writeJSON(w, map[string]interface{}{"operation": op, "outcome": observed.Outcome})
+		return
+	}
+	result := map[string]interface{}{"planId": plan.ID, "outcome": observed.Outcome, "verifiedAt": time.Now().UTC().Format(time.RFC3339Nano)}
+	status, message := model.OperationCanceled, "fleet GitHub reservation canceled after verified no external write"
+	if observed.PullRequest != nil {
+		status, message = model.OperationSucceeded, "fleet pull request recovered by operator reconciliation"
+		result["pullRequestNumber"], result["url"], result["branch"], result["state"] = observed.PullRequest.Number, observed.PullRequest.URL, observed.PullRequest.Branch, observed.PullRequest.State
+	}
+	if observed.Dispatch != nil {
+		binding, bindErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
+		if bindErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "verified workflow run could not be bound to its durable dispatch")
+			return
+		}
+		if _, bindErr = h.db.FinishFleetGitHubDispatch(r.Context(), plan.ID, binding.DispatchNonceSHA256, observed.Dispatch.RunID, observed.Dispatch.RunAttempt, observed.Dispatch.URL); bindErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "verified workflow run could not be bound to its durable dispatch")
+			return
+		}
+		status, message = model.OperationSucceeded, "protected fleet apply recovered by operator reconciliation"
+		result["runId"], result["url"], result["planRunId"], result["planSha256"], result["approvedHeadSha"] = observed.Dispatch.RunID, observed.Dispatch.URL, observed.Dispatch.PlanRunID, observed.Dispatch.PlanSHA, observed.Dispatch.ApprovedHeadSHA
+	}
+	finished, err := h.finishFleetGitHubReservation(r.Context(), op.ID, plan.ID, kind, status, message, result)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "verified outcome could not be durably signed")
+		return
+	}
+	finished.AttachReceipt()
+	preventSensitiveResponseCaching(w)
+	writeJSON(w, map[string]interface{}{"operation": finished, "outcome": observed.Outcome})
 }
 
 type fleetGitHubDispatchRequest struct {
@@ -173,7 +351,8 @@ func (h *Handler) PrepareFleetGitHubApply(w http.ResponseWriter, r *http.Request
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer release.Release()
+	r = r.WithContext(release.Context())
 	binding, bindErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 	if bindErr == nil {
 		if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), request.AllowDestructive) {
@@ -240,7 +419,8 @@ func (h *Handler) ResetFleetGitHubPreparation(w http.ResponseWriter, r *http.Req
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer release.Release()
+	r = r.WithContext(release.Context())
 	binding, err := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 	if err == pgx.ErrNoRows {
 		writeJSONStatus(w, http.StatusNoContent, nil)
@@ -298,7 +478,8 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer release.Release()
+	r = r.WithContext(release.Context())
 	binding, bindErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 	if bindErr == pgx.ErrNoRows {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_prepare_required", "prepare the external-Mac dispatch before presenting owner approval")
@@ -355,6 +536,13 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 	}
 	if binding.DispatchState != "prepared" {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_ambiguous", "the protected dispatch outcome is ambiguous")
+		return
+	}
+	if _, err := h.ensureFleetGitHubReservation(r, principal, plan.ID, "fleet.github.apply-dispatch", map[string]interface{}{
+		"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest,
+		"pool": typed.Pool, "action": typed.Action, "allowDestructive": request.AllowDestructive,
+	}); err != nil {
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
 	if _, err := h.db.MarkFleetGitHubDispatchSubmitting(r.Context(), plan.ID, binding.DispatchNonceSHA256); err != nil {
@@ -417,7 +605,8 @@ func (h *Handler) RerunFleetGitHubApply(w http.ResponseWriter, r *http.Request) 
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer release.Release()
+	r = r.WithContext(release.Context())
 	binding, err := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 	if err == pgx.ErrNoRows {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_rerun_not_allowed", "no protected dispatch binding exists")
@@ -470,6 +659,13 @@ func (h *Handler) RerunFleetGitHubApply(w http.ResponseWriter, r *http.Request) 
 		WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_dispatch_failed", "GitHub could not verify same-run retry eligibility")
 		return
 	}
+	if _, err := h.ensureFleetGitHubReservation(r, principal, plan.ID, fmt.Sprintf("fleet.github.apply-rerun.%d", binding.RunAttempt+1), map[string]interface{}{
+		"planId": plan.ID, "runId": binding.RunID, "priorRunAttempt": binding.RunAttempt,
+		"fleetEnvironment": fleetEnvironment, "allowDestructive": request.AllowDestructive,
+	}); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
 	if _, err := h.db.MarkFleetGitHubDispatchRerunSubmitting(r.Context(), plan.ID, binding.DispatchNonceSHA256, binding.RunID, binding.RunAttempt); err != nil {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the one permitted same-run retry fence could not be acquired")
 		return
@@ -491,21 +687,34 @@ func (h *Handler) RerunFleetGitHubApply(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) recordFleetGitHubRerun(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, planID, fleetEnvironment string, allowDestructive bool, binding *store.FleetGitHubDispatch) {
 	kind := fmt.Sprintf("fleet.github.apply-rerun.%d", binding.RunAttempt)
-	if existing := h.existingFleetGitHubOperation(r, planID, kind); existing != nil {
+	if existing, found, err := h.existingFleetGitHubOperation(r, planID, kind); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	} else if found {
 		existing.AttachReceipt()
 		writeJSON(w, existing)
 		return
 	}
-	op, err := h.recordFleetGitHubOperation(r, principal, planID, kind, "protected fleet apply rerun dispatched", map[string]interface{}{
+	result := map[string]interface{}{
 		"planId": planID, "runId": binding.RunID, "runAttempt": binding.RunAttempt, "url": binding.WorkflowURL,
 		"planRunId": binding.PlanRunID, "planSha256": binding.PlanSHA256, "approvedHeadSha": binding.ApprovedHeadSHA,
 		"pilotRunId": binding.PilotRunID, "fleetEnvironment": fleetEnvironment, "allowDestructive": allowDestructive,
-	})
+	}
+	reservation, err := h.ensureFleetGitHubReservation(r, principal, planID, kind, result)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	op := reservation
+	if reservation.Status == model.OperationQueued {
+		op, err = h.finishFleetGitHubReservation(r.Context(), reservation.ID, planID, kind, model.OperationSucceeded, "protected fleet apply rerun dispatched", result)
+	}
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "same-run retry exists but its durable Norn receipt could not be stored")
 		return
 	}
 	preventSensitiveResponseCaching(w)
+	op.AttachReceipt()
 	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
 	writeJSONStatus(w, http.StatusCreated, op)
 }
@@ -541,7 +750,10 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	// A completed operation is replay-safe only within the same current lane.
 	// In particular, disposable/fleet/nyc3 is shared by pilot runs and cannot
 	// be used to replay a receipt that was authorized by an older authority.
-	if existing := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.apply-dispatch"); existing != nil {
+	if existing, found, err := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.apply-dispatch"); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	} else if found {
 		binding, bindingErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 		if bindingErr != nil {
 			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not read the protected dispatch binding for the completed operation")
@@ -562,7 +774,8 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer release.Release()
+	r = r.WithContext(release.Context())
 	binding, bindingErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 	if bindingErr == nil && binding.DispatchState == "prepared" && binding.RunID == 0 {
 		// A prior call failed before its single permitted POST. The raw nonce was
@@ -634,6 +847,13 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_ambiguous", "the protected dispatch outcome is ambiguous; inspect the bound GitHub run before retrying")
 		return
 	}
+	if _, err := h.ensureFleetGitHubReservation(r, principal, plan.ID, "fleet.github.apply-dispatch", map[string]interface{}{
+		"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest,
+		"pool": typed.Pool, "action": typed.Action, "allowDestructive": request.AllowDestructive,
+	}); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
 	if _, err := h.db.MarkFleetGitHubDispatchSubmitting(r.Context(), plan.ID, binding.DispatchNonceSHA256); err != nil {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the protected dispatch submission fence could not be acquired")
 		return
@@ -658,15 +878,25 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) recordCompletedFleetGitHubDispatch(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, planID, fleetEnvironment string, allowDestructive bool, result *githubapp.Dispatch) {
-	op, err := h.recordFleetGitHubOperation(r, principal, planID, "fleet.github.apply-dispatch", "protected fleet apply dispatched", map[string]interface{}{
+	payload := map[string]interface{}{
 		"planId": planID, "runId": result.RunID, "url": result.URL, "planRunId": result.PlanRunID,
 		"planSha256": result.PlanSHA, "approvedHeadSha": result.ApprovedHeadSHA, "pilotRunId": result.PilotRunID, "fleetEnvironment": fleetEnvironment, "allowDestructive": allowDestructive, "existing": result.Existing,
-	})
+	}
+	reservation, err := h.ensureFleetGitHubReservation(r, principal, planID, "fleet.github.apply-dispatch", payload)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	op := reservation
+	if reservation.Status == model.OperationQueued {
+		op, err = h.finishFleetGitHubReservation(r.Context(), reservation.ID, planID, "fleet.github.apply-dispatch", model.OperationSucceeded, "protected fleet apply dispatched", payload)
+	}
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "workflow dispatch exists but its durable Norn receipt could not be stored; retry safely")
 		return
 	}
 	preventSensitiveResponseCaching(w)
+	op.AttachReceipt()
 	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
 	writeJSONStatus(w, http.StatusCreated, op)
 }
@@ -753,6 +983,9 @@ func (h *Handler) requireFleetGitHubPlan(w http.ResponseWriter, r *http.Request)
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_plan_store_unavailable", "durable operation storage is unavailable")
 		return AccessPrincipal{}, nil, false
 	}
+	if !h.fleetGitHubAcceptanceAvailable(w, r) {
+		return AccessPrincipal{}, nil, false
+	}
 	planID := chi.URLParam(r, "planID")
 	if _, err := uuid.Parse(planID); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_id", "plan ID must be a UUID")
@@ -816,26 +1049,184 @@ func (h *Handler) verifyCapacityPlan(plan *fleet.CapacityPlan) bool {
 	return (h.cfg == nil || !h.cfg.Production()) && plan.Signature == ""
 }
 
-func (h *Handler) existingFleetGitHubOperation(r *http.Request, planID, kind string) *model.Operation {
-	ops, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: kind, Ref: planID, Limit: 1})
-	if err != nil || len(ops) == 0 || ops[0].Status != model.OperationSucceeded {
-		return nil
+// Fleet GitHub actions are plan-scoped protected mutations. Their acceptance
+// identity is deliberately independent of the caller credential so a retry by
+// a rotated token or another authorized operator recovers the one durable
+// external-action receipt. The initiating credential remains signed audit
+// evidence, but must not make a second receipt possible for the same plan.
+func (h *Handler) fleetGitHubOperationIdentity(ctx context.Context, planID, kind string) (store.OperationRequestIdentity, error) {
+	if h == nil || h.operationStore == nil {
+		return store.OperationRequestIdentity{}, fmt.Errorf("signed operation acceptance is unavailable")
 	}
-	return &ops[0]
+	authority, err := h.operationStore.Authority(ctx)
+	if err != nil {
+		return store.OperationRequestIdentity{}, err
+	}
+	return store.OperationRequestIdentity{
+		Authority: authority,
+		Actor:     store.OperationActor{Issuer: authority + "/fleet-github", Subject: planID},
+		Kind:      kind,
+		Resource:  planID,
+		Key:       "protected-plan-receipt/v1",
+	}, nil
 }
 
-func (h *Handler) recordFleetGitHubOperation(r *http.Request, principal AccessPrincipal, planID, kind, message string, payload map[string]interface{}) (*model.Operation, error) {
-	now := time.Now().UTC()
-	finished := now
-	op := &model.Operation{
-		ID: uuid.NewString(), Kind: kind, Ref: planID, Status: model.OperationSucceeded,
-		Risk: "GitOps mutation only; provider credentials remain in protected GitHub environments", Source: "control-api",
-		Message: message, Payload: payload, Metadata: map[string]interface{}{"principal": strings.TrimSpace(principal.Subject), "principalTokenId": strings.TrimSpace(principal.TokenID), "environment": principal.Environment, "requestCI": principal.CI},
-		StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1,
+func (h *Handler) fleetGitHubAcceptanceAvailable(w http.ResponseWriter, r *http.Request) bool {
+	requestContext, ok := operationAcceptanceRequestContextFromRequest(r)
+	if !ok || requestContext.ReceiptID == "" || h.operationStore == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "operation_acceptance_unavailable", "durable signed operation acceptance is unavailable")
+		return false
 	}
-	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
+	if requestContext.ActorErr != nil || requestContext.Actor.Issuer == "" || requestContext.Actor.Subject == "" {
+		WriteControlProblem(w, r, http.StatusConflict, "operation_actor_ambiguous", "the authenticated credential does not establish a stable operation actor")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) fleetGitHubAcceptanceAudit(r *http.Request) (store.AcceptanceAuditContext, error) {
+	requestContext, ok := operationAcceptanceRequestContextFromRequest(r)
+	if !ok || requestContext.ReceiptID == "" || h.operationStore == nil {
+		return store.AcceptanceAuditContext{}, fmt.Errorf("signed operation acceptance is unavailable")
+	}
+	if requestContext.ActorErr != nil || requestContext.Actor.Issuer == "" || requestContext.Actor.Subject == "" {
+		return store.AcceptanceAuditContext{}, fmt.Errorf("stable operation actor is unavailable")
+	}
+	return store.AcceptanceAuditContext{
+		RequestReceiptID: requestContext.ReceiptID,
+		RequestID:        requestContext.RequestID,
+		CredentialID:     requestContext.Actor.CredentialID,
+		DeviceID:         requestContext.Actor.DeviceID,
+		Source:           requestContext.Actor.Source,
+		Scopes:           append([]string(nil), requestContext.Actor.Scopes...),
+	}, nil
+}
+
+func (h *Handler) existingFleetGitHubOperation(r *http.Request, planID, kind string) (*model.Operation, bool, error) {
+	operation, found, err := h.resolveFleetGitHubOperation(r, planID, kind)
+	if err != nil || !found {
+		return operation, found, err
+	}
+	switch operation.Status {
+	case model.OperationSucceeded:
+		return operation, true, nil
+	case model.OperationQueued:
+		return operation, false, nil
+	default:
+		identity, identityErr := h.fleetGitHubOperationIdentity(r.Context(), planID, kind)
+		if identityErr != nil {
+			return nil, false, identityErr
+		}
+		return nil, false, &store.AcceptanceConflictError{Identity: identity}
+	}
+}
+
+func (h *Handler) resolveFleetGitHubOperation(r *http.Request, planID, kind string) (*model.Operation, bool, error) {
+	identity, err := h.fleetGitHubOperationIdentity(r.Context(), planID, kind)
+	if err != nil {
+		return nil, false, err
+	}
+	resolver, ok := h.operationStore.(store.OperationIdentityResolver)
+	if !ok {
+		return nil, false, fmt.Errorf("signed operation acceptance cannot resolve fleet GitHub receipts")
+	}
+	accepted, err := resolver.ResolveIdentity(r.Context(), identity)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if accepted.Operation.Kind != kind || accepted.Operation.Ref != planID {
+		return nil, false, &store.AcceptanceConflictError{Identity: identity}
+	}
+	return &accepted.Operation, true, nil
+}
+
+func (h *Handler) ensureFleetGitHubReservation(r *http.Request, principal AccessPrincipal, planID, kind string, payload map[string]interface{}) (*model.Operation, error) {
+	if existing, found, err := h.resolveFleetGitHubOperation(r, planID, kind); err != nil {
+		return nil, err
+	} else if found {
+		if existing.Status != model.OperationQueued && existing.Status != model.OperationSucceeded {
+			identity, identityErr := h.fleetGitHubOperationIdentity(r.Context(), planID, kind)
+			if identityErr != nil {
+				return nil, identityErr
+			}
+			return nil, &store.AcceptanceConflictError{Identity: identity}
+		}
+		return existing, nil
+	}
+	return h.reserveFleetGitHubOperation(r, principal, planID, kind, payload)
+}
+
+// reserveFleetGitHubOperation admits a signed, immutable intent and its
+// archive capacity before any GitHub write. Its identity is plan-scoped, so a
+// crash can be retried by another authorized caller without creating another
+// external action or receipt.
+func (h *Handler) reserveFleetGitHubOperation(r *http.Request, _ AccessPrincipal, planID, kind string, payload map[string]interface{}) (*model.Operation, error) {
+	identity, err := h.fleetGitHubOperationIdentity(r.Context(), planID, kind)
+	if err != nil {
 		return nil, err
 	}
-	op.AttachReceipt()
-	return op, nil
+	audit, err := h.fleetGitHubAcceptanceAudit(r)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	op := &model.Operation{
+		ID: uuid.NewString(), Kind: kind, Ref: planID, Status: model.OperationQueued,
+		Risk: "GitOps mutation only; provider credentials remain in protected GitHub environments", Source: "control-api",
+		Message: "protected Fleet GitHub action reserved", Payload: map[string]interface{}{"fleetGitHub": payload},
+		Metadata: map[string]interface{}{}, StartedAt: now, UpdatedAt: now, MaxAttempts: 1,
+	}
+	acceptance := store.OperationAcceptance{Identity: identity, Operation: *op, Audit: audit, Semantics: map[string]interface{}{
+		"fleetGitHub": map[string]interface{}{"planId": planID, "kind": kind},
+	}}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		return nil, err
+	}
+	accepted, err := h.operationStore.Accept(r.Context(), acceptance)
+	if err != nil {
+		return nil, err
+	}
+	accepted.Operation.AttachReceipt()
+	return &accepted.Operation, nil
+}
+
+type fleetGitHubCompletionCanonical struct {
+	Schema      string                 `json:"schema"`
+	OperationID string                 `json:"operationId"`
+	PlanID      string                 `json:"planId"`
+	Kind        string                 `json:"kind"`
+	Status      model.OperationStatus  `json:"status"`
+	Result      map[string]interface{} `json:"result"`
+}
+
+// finishFleetGitHubReservation signs the recovered GitHub outcome separately
+// from the pre-dispatch acceptance. The operation metadata carries only this
+// signed completion record, which archive verification re-proves before it
+// accepts the terminal bundle.
+func (h *Handler) finishFleetGitHubReservation(ctx context.Context, operationID, planID, kind string, status model.OperationStatus, message string, result map[string]interface{}) (*model.Operation, error) {
+	if h == nil || h.cfg == nil {
+		return nil, fmt.Errorf("Fleet GitHub completion signer is unavailable")
+	}
+	canonical, err := json.Marshal(fleetGitHubCompletionCanonical{Schema: "norn.fleet-github-completion/v1", OperationID: operationID, PlanID: planID, Kind: kind, Status: status, Result: result})
+	if err != nil {
+		return nil, err
+	}
+	signer, err := store.NewHMACAcceptanceSigner(h.cfg.AuditSigningKey, h.cfg.AuditPreviousSigningKeys...)
+	if err != nil {
+		return nil, err
+	}
+	signature, err := signer.Sign(ctx, canonical)
+	if err != nil {
+		return nil, err
+	}
+	completion := map[string]interface{}{
+		"schema": "norn.fleet-github-completion/v1", "canonicalBytes": base64.StdEncoding.EncodeToString(canonical),
+		"signingAlgorithm": signature.Algorithm, "signingKeyId": signature.KeyID, "signature": signature.Value,
+		"result": result,
+	}
+	return h.db.FinishReservedFleetGitHubOperation(ctx, operationID, planID, kind, status, message, completion)
 }

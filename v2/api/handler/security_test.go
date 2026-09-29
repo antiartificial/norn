@@ -54,6 +54,26 @@ func TestSensitiveResponsesDisableCaching(t *testing.T) {
 	}
 }
 
+func TestReleaseQueueResponsesDisableCachingBeforeAuthorization(t *testing.T) {
+	h := &Handler{}
+	for _, endpoint := range []struct {
+		name  string
+		serve func(http.ResponseWriter, *http.Request)
+	}{
+		{name: "preflight", serve: h.QueueReleasePreflight},
+		{name: "deployment", serve: h.QueueReleaseDeployment},
+		{name: "promotion", serve: h.QueueReleasePromotion},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			endpoint.serve(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/apps/demo/releases", nil))
+			if recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("Pragma") != "no-cache" {
+				t.Fatalf("release cache headers = %#v", recorder.Header())
+			}
+		})
+	}
+}
+
 func TestAdminControlBoundaryRequiresPrincipal(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/enrollments/approve", nil)
 	rec := httptest.NewRecorder()

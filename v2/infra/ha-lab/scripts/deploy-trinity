@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Deploy feedmap-trinity onto the running lab via DIRECT Nomad submit (the image
+# is pre-built + pushed to the DO registry; the cluster pulls it — no git-clone
+# admission). Managed MySQL + Valkey + a dedicated feed prefix in the lab's
+# disposable Spaces bucket back it, wired through the nomad var
+# "nomad/jobs/feedmap-trinity".
+#
+# SAFETY: staging profile only. The job sets STAGING_WRITES_ENABLED=true and
+# REMOTE_WRITES_ENABLED=false, so derived feeds go to the disposable bucket and
+# no customer FTP/SFTP channel can fire (config/filesystems.php + tests).
+#
+# usage:
+#   lab deploy-trinity up               provision bucket + secrets, migrate, deploy, wait healthy
+#   lab deploy-trinity artisan CMD…     run one-shot `php artisan CMD…` (logs streamed)
+#   lab deploy-trinity ingest ID [ID…]  parse + publish each client's feeds to Spaces (one alloc each)
+#   lab deploy-trinity feeds            list feed objects in the staging bucket prefix
+#   lab deploy-trinity down             stop the trinity jobs (feeds kept unless --purge)
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+terraform_dir="${lab_root}/terraform"
+tf() { terraform -chdir="${terraform_dir}" "$@"; }
+
+command_name="${1:-help}"
+if [[ "${command_name}" == "help" || "${command_name}" == "-h" || "${command_name}" == "--help" ]]; then
+  sed -n '10,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:a5d036a09ff993304af760cd4be5f2a7f431bea98eb34303cecbccaa330c7c21"
+job_service="${lab_root}/nomad/feedmap-trinity.nomad.hcl"
+job_migrate="${lab_root}/nomad/feedmap-trinity-migrate.nomad.hcl"
+
+# Resolve the lab name from tfvars (not `tf output`, which needs the Spaces
+# backend creds we are about to load).
+lab_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${terraform_dir}/terraform.tfvars" 2>/dev/null || true)"
+[[ "${lab_name}" =~ ^[a-z][a-z0-9-]{2,23}$ ]] || { echo "no valid name_prefix in terraform.tfvars; run 'lab up' first" >&2; exit 1; }
+
+# Spaces credentials + endpoint + Nomad token from the per-lab secret store.
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+[[ -f "${secret_file}" ]] || { echo "missing lab secret file; run 'lab up' first" >&2; exit 1; }
+set -a; # shellcheck disable=SC1090
+source "${secret_file}"; set +a
+: "${NORN_HA_BACKUP_ACCESS_KEY:?Spaces access key not configured}"
+: "${NORN_HA_BACKUP_SECRET_KEY:?Spaces secret key not configured}"
+: "${NORN_HA_BACKUP_REGION:?Spaces region not configured}"
+: "${NORN_HA_NOMAD_MANAGEMENT_TOKEN:?Nomad management token not configured}"
+
+# Terraform state lives in the DO Spaces backend; export creds so `tf output` works.
+export AWS_ACCESS_KEY_ID="${NORN_HA_BACKUP_ACCESS_KEY}"
+export AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}"
+export AWS_EC2_METADATA_DISABLED=true
+
+first_ip="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+public_ips="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key)[] | .value.public_ip')"
+lb_ip="$(tf output -json regional_ingress 2>/dev/null | jq -r '.ip // empty' || true)"
+
+spaces_region="${NORN_HA_BACKUP_REGION}"
+spaces_endpoint="https://${spaces_region}.digitaloceanspaces.com"
+# The only Spaces key available is the lab's scoped backup key, which has access
+# solely to the backup bucket. Reuse it for derived feeds under a dedicated
+# prefix (isolated from terraform/state and WAL). Disposable Norn infra — never a
+# customer/production bucket. Purge is prefix-scoped so it can never touch state.
+feed_bucket="${NORN_HA_BACKUP_BUCKET:?backup bucket not configured}"
+feed_prefix="feeds"
+
+# DO Spaces operations via boto3 in the lab Python venv (no aws CLI dependency).
+# $1 is a Python snippet with a ready boto3 client `c` and bucket name `b`.
+lab_python="${lab_root}/.tools/ansible/bin/python"
+spaces_py() {
+  AWS_ACCESS_KEY_ID="${NORN_HA_BACKUP_ACCESS_KEY}" \
+  AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}" \
+  SP_ENDPOINT="${spaces_endpoint}" SP_REGION="${spaces_region}" SP_BUCKET="${feed_bucket}" SP_PREFIX="${feed_prefix}" \
+  "${lab_python}" -c "
+import os, boto3
+c = boto3.client('s3', endpoint_url=os.environ['SP_ENDPOINT'], region_name=os.environ['SP_REGION'])
+b = os.environ['SP_BUCKET']
+pfx = os.environ.get('SP_PREFIX', '')
+$1"
+}
+
+# Run a command on the leader-following first node with the Nomad mTLS env +
+# management token. Self-sufficient (does not depend on norn.env being updated by
+# a completed cutover): the API is HTTPS with client-cert + ACL after converge.
+on_first() {
+  ssh -o BatchMode=yes "root@${first_ip}" "
+    export NOMAD_ADDR=https://127.0.0.1:4646
+    export NOMAD_CACERT=/etc/nomad.d/pki/nomad-ca.pem
+    export NOMAD_CLIENT_CERT=/etc/nomad.d/pki/nomad.pem
+    export NOMAD_CLIENT_KEY=/etc/nomad.d/pki/nomad-key.pem
+    export NOMAD_TOKEN='${NORN_HA_NOMAD_MANAGEMENT_TOKEN}'
+    $1"
+}
+
+refresh_registry_cred() {
+  echo "==> refresh short-lived registry credential on nodes"
+  local cfg; cfg="$(mktemp)"; umask 077
+  doctl registry docker-config --expiry-seconds 259200 >"${cfg}"
+  local ip
+  for ip in ${public_ips}; do
+    scp -q "${cfg}" "root@${ip}:/etc/norn/registry-config.json"
+    scp -q "${cfg}" "root@${ip}:/etc/norn/docker/config.json"
+    ssh "root@${ip}" 'chown root:nornops /etc/norn/registry-config.json /etc/norn/docker/config.json; chmod 0640 /etc/norn/registry-config.json /etc/norn/docker/config.json'
+  done
+  rm -f "${cfg}"
+}
+
+put_nomad_var() {
+  # Nomad workload identity only grants a job read access to nomad/jobs/<its-own-
+  # job-id>. The service, migrate, and one-shot jobs have distinct ids, so write
+  # the same secret set to each job's own var path.
+  echo "==> write nomad vars (secrets + managed connections) for each trinity job"
+  local mysql redis app_key redis_host items
+  mysql="$(tf output -json managed_mysql)"
+  redis="$(tf output -json managed_redis)"
+  [[ "${mysql}" != "null" ]] || { echo "managed_mysql output is null — provision with use_managed_mysql=true" >&2; exit 1; }
+  [[ "${redis}" != "null" ]] || { echo "managed_redis output is null — provision with use_managed_redis=true" >&2; exit 1; }
+  app_key="base64:$(openssl rand -base64 32)"
+  # DO managed Redis requires TLS; phpredis honors a tls:// host prefix.
+  redis_host="tls://$(jq -r '.host' <<<"${redis}")"
+
+  items="$(jq -cn \
+    --arg app_key "${app_key}" \
+    --arg db_host "$(jq -r '.host' <<<"${mysql}")" \
+    --arg db_port "$(jq -r '.port' <<<"${mysql}")" \
+    --arg db_password "$(jq -r '.password' <<<"${mysql}")" \
+    --arg redis_host "${redis_host}" \
+    --arg redis_port "$(jq -r '.port' <<<"${redis}")" \
+    --arg redis_password "$(jq -r '.password' <<<"${redis}")" \
+    --arg sp_key "${NORN_HA_BACKUP_ACCESS_KEY}" \
+    --arg sp_secret "${NORN_HA_BACKUP_SECRET_KEY}" \
+    --arg sp_bucket "${feed_bucket}" \
+    --arg sp_region "${spaces_region}" \
+    --arg sp_endpoint "${spaces_endpoint}" \
+    '{APP_KEY:$app_key,
+      DB_HOST:$db_host, DB_PORT:$db_port, DB_PASSWORD:$db_password,
+      REDIS_HOST:$redis_host, REDIS_PORT:$redis_port, REDIS_PASSWORD:$redis_password,
+      DIGITALOCEAN_SPACES_KEY:$sp_key, DIGITALOCEAN_SPACES_SECRET:$sp_secret,
+      DIGITALOCEAN_SPACES_BUCKET:$sp_bucket, DIGITALOCEAN_SPACES_REGION:$sp_region,
+      DIGITALOCEAN_SPACES_ENDPOINT:$sp_endpoint}')"
+
+  local jobname
+  for jobname in feedmap-trinity feedmap-trinity-migrate feedmap-trinity-oneshot; do
+    jq -cn --argjson items "${items}" --arg path "nomad/jobs/${jobname}" '{Path:$path,Items:$items}' \
+      | on_first 'nomad var put -force -in=json -' >/dev/null
+    echo "    wrote nomad/jobs/${jobname}"
+  done
+}
+
+ensure_bucket() {
+  echo "==> verify staging feed bucket reachable: ${feed_bucket} (prefix ${feed_prefix}/)"
+  spaces_py "
+c.head_bucket(Bucket=b); print('    ok')"
+}
+
+run_migrate() {
+  echo "==> run one-shot migration (batch job)"
+  scp -q "${job_migrate}" "root@${first_ip}:/tmp/feedmap-trinity-migrate.nomad.hcl"
+  # Purge any prior (terminal) batch job first: re-submitting an identical dead
+  # batch spec does not spawn fresh allocations.
+  on_first "nomad job stop -purge feedmap-trinity-migrate >/dev/null 2>&1 || true"
+  on_first "nomad job run -detach -var 'image=${image}' /tmp/feedmap-trinity-migrate.nomad.hcl" >/dev/null
+  # `nomad job status -json <id>` returns [{Allocations,Evaluations,Summary,...}]
+  # with no top-level Status field, so poll the latest allocation's ClientStatus.
+  local i client
+  for i in $(seq 1 100); do
+    client="$(on_first 'nomad job status -json feedmap-trinity-migrate 2>/dev/null' | jq -r '[.[0].Allocations[]?] | sort_by(.CreateTime) | last | .ClientStatus // "none"' 2>/dev/null || true)"
+    case "${client}" in
+      complete) echo "    migration complete"; return 0 ;;
+      failed|lost)
+        echo "migration alloc ended with status: ${client}" >&2
+        on_first 'alloc=$(nomad job status -json feedmap-trinity-migrate | jq -r "[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID"); nomad alloc logs -stderr "$alloc" 2>/dev/null | tail -30' >&2 || true
+        return 1 ;;
+    esac
+    sleep 3
+  done
+  echo "migration did not finish in time" >&2; return 1
+}
+
+deploy_service() {
+  echo "==> submit trinity service job"
+  scp -q "${job_service}" "root@${first_ip}:/tmp/feedmap-trinity.nomad.hcl"
+  on_first "nomad job run -detach -var 'image=${image}' /tmp/feedmap-trinity.nomad.hcl" >/dev/null
+  echo "==> wait for web healthy + deployment successful"
+  local i
+  for i in $(seq 1 90); do
+    if on_first '
+      nomad job status -json feedmap-trinity 2>/dev/null | jq -e ".[0].Summary.Summary.web.Running >= 2" >/dev/null &&
+      nomad deployment list -json 2>/dev/null | jq -e "[.[] | select(.JobID==\"feedmap-trinity\")] | sort_by(.CreateIndex) | last | .Status == \"successful\"" >/dev/null'; then
+      echo "feedmap-trinity is running (web x2 + workers + scheduler)"
+      [[ -n "${lb_ip}" ]] && echo "reach it: curl -H 'Host: feedmap-trinity-staging.slopistry.com' http://${lb_ip}/api/livez"
+      return 0
+    fi
+    sleep 4
+  done
+  echo "service did not reach two healthy web allocations; inspect via 'lab connect' + NornUI" >&2
+  return 1
+}
+
+# Run a shell command in a one-shot batch alloc (full staging env + secrets),
+# wait for it to finish, and stream its logs. $1 = shell command string.
+run_oneshot() {
+  local cmd="$1"
+  local job_oneshot="${lab_root}/nomad/feedmap-trinity-oneshot.nomad.hcl"
+  scp -q "${job_oneshot}" "root@${first_ip}:/tmp/feedmap-trinity-oneshot.nomad.hcl"
+  on_first "nomad job stop -purge feedmap-trinity-oneshot >/dev/null 2>&1 || true"
+  on_first "nomad job run -detach -var 'image=${image}' -var 'cmd=${cmd}' /tmp/feedmap-trinity-oneshot.nomad.hcl" >/dev/null
+  local i client=""
+  for i in $(seq 1 100); do
+    client="$(on_first 'nomad job status -json feedmap-trinity-oneshot 2>/dev/null' | jq -r '[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ClientStatus // "none"' 2>/dev/null || true)"
+    case "${client}" in complete|failed|lost) break ;; esac
+    sleep 3
+  done
+  echo "--- one-shot logs (${client:-timeout}) ---"
+  on_first 'alloc=$(nomad job status -json feedmap-trinity-oneshot | jq -r "[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID"); nomad alloc logs "$alloc" 2>/dev/null; echo "=== stderr ==="; nomad alloc logs -stderr "$alloc" 2>/dev/null' || true
+  [[ "${client}" == "complete" ]]
+}
+
+case "${command_name}" in
+  up)
+    refresh_registry_cred
+    ensure_bucket
+    put_nomad_var
+    run_migrate
+    deploy_service
+    ;;
+  artisan)
+    shift
+    [[ $# -ge 1 ]] || { echo "usage: lab deploy-trinity artisan CMD..." >&2; exit 2; }
+    echo "==> one-shot: php artisan $*"
+    run_oneshot "php artisan $*"
+    ;;
+  ingest)
+    shift
+    [[ $# -ge 1 ]] || { echo "usage: lab deploy-trinity ingest CLIENT_ID [CLIENT_ID...]" >&2; exit 2; }
+    # Parse + publish per client in ONE alloc (parse writes local storage/app,
+    # feeds:publish-staging reads it — they must share an allocation).
+    rc=0
+    for cid in "$@"; do
+      [[ "${cid}" =~ ^[0-9]+$ ]] || { echo "skip non-numeric client id: ${cid}" >&2; continue; }
+      echo "==> ingest client ${cid} (parse -> publish to Spaces)"
+      run_oneshot "php artisan parser:observe ${cid} && php artisan feeds:publish-staging ${cid}" || rc=1
+    done
+    exit "${rc}"
+    ;;
+  feeds)
+    echo "feed objects in ${feed_bucket} (source/ + ${feed_prefix}/):"
+    spaces_py "
+p = c.get_paginator('list_objects_v2'); n = 0; tot = 0
+for pref in ['source/', pfx + '/']:
+    for page in p.paginate(Bucket=b, Prefix=pref):
+        for o in page.get('Contents', []):
+            if n < 12: print(f\"  {o['Key']}  {o['Size']} bytes\")
+            n += 1; tot += o['Size']
+print(f'... ({n} objects, {tot/1024/1024:.1f} MB total)' if n else '(no feeds published yet)')"
+    ;;
+  down)
+    on_first 'nomad job stop -purge feedmap-trinity 2>/dev/null || true; nomad job stop -purge feedmap-trinity-migrate 2>/dev/null || true; nomad job stop -purge feedmap-trinity-oneshot 2>/dev/null || true'
+    echo "trinity jobs stopped."
+    if [[ "${2:-}" == "--purge" ]]; then
+      # Prefix-scoped: delete ONLY the feed prefix. Never the bucket or state.
+      spaces_py "
+assert pfx and pfx not in ('', 'terraform', 'wal'), 'unsafe prefix'
+p = c.get_paginator('list_objects_v2'); n = 0
+for page in p.paginate(Bucket=b, Prefix=pfx + '/'):
+    for o in page.get('Contents', []):
+        c.delete_object(Bucket=b, Key=o['Key']); n += 1
+print(f'purged {n} object(s) under {b}/{pfx}/')"
+    else
+      echo "kept feed objects under ${feed_bucket}/${feed_prefix}/ (pass --purge to delete)"
+    fi
+    ;;
+  *)
+    sed -n '10,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

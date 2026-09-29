@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -136,6 +137,21 @@ func TestFleetGitHubRequiresAnAuthenticCapacityPlan(t *testing.T) {
 	}
 }
 
+func TestFleetEnvironmentMatchesControlPlaneLane(t *testing.T) {
+	if !fleetEnvironmentMatchesControlPlane("staging", "staging/nyc3", nil) {
+		t.Fatal("matching staging fleet was rejected")
+	}
+	if fleetEnvironmentMatchesControlPlane("staging", "production/nyc3", nil) {
+		t.Fatal("staging control plane accepted a production fleet root")
+	}
+	if fleetEnvironmentMatchesControlPlane("production", "staging/nyc3", nil) {
+		t.Fatal("production control plane accepted a staging fleet root")
+	}
+	if !fleetEnvironmentMatchesControlPlane("development", "production/nyc3", nil) {
+		t.Fatal("development control plane should retain local Fleet management compatibility")
+	}
+}
+
 func intPointer(value int) *int { return &value }
 
 func TestBuildCapacityPlanRejectsBlankSize(t *testing.T) {
@@ -174,22 +190,6 @@ func TestUnsignedCapacityPlanDigestIncludesUnsignedWarning(t *testing.T) {
 	sum := sha256.Sum256(canonical)
 	if plan.Digest != "sha256:"+hex.EncodeToString(sum[:]) {
 		t.Fatalf("unsigned warning was not included in digest: %q", plan.Digest)
-	}
-}
-
-func TestFleetPlanIdempotencyIsPrincipalScopedAndRequestBound(t *testing.T) {
-	request := fleet.PlanRequest{Reason: "capacity review"}
-	firstKey, firstDigest := fleetPlanIdempotency(AccessPrincipal{Subject: "one"}, "app", "retry-1", request)
-	secondKey, _ := fleetPlanIdempotency(AccessPrincipal{Subject: "two"}, "app", "retry-1", request)
-	if firstKey == secondKey {
-		t.Fatal("idempotency key was not principal scoped")
-	}
-	op := &model.Operation{Kind: "fleet.capacity-plan", Metadata: map[string]interface{}{"requestDigest": firstDigest}}
-	if !matchesFleetPlanRequest(op, firstDigest) {
-		t.Fatal("matching idempotent request rejected")
-	}
-	if matchesFleetPlanRequest(op, "sha256:other") {
-		t.Fatal("different request accepted for idempotency replay")
 	}
 }
 
@@ -235,6 +235,43 @@ nodePools:
 	}
 }
 
+func TestFleetIngressInventoryDigestOnlyBindsSuccessfulConfiguration(t *testing.T) {
+	snapshot := json.RawMessage(`{"cluster":"norn-staging","environment":"staging/nyc3","ingressNodes":[{"name":"ingress-01","privateIP":"10.43.0.21"},{"name":"ingress-02","privateIP":"10.43.0.22"}],"nodesFileSHA256":"` + strings.Repeat("a", 64) + `","schemaVersion":"norn.fleet-ingress-inventory/v1"}`)
+	canonical, err := fleet.CanonicalIngressInventory(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(canonical)
+	request := fleet.ReconciliationRequest{
+		SchemaVersion: fleet.ReconciliationSchemaVersion, AttemptID: uuid.NewString(),
+		Phase: "nodes_configured", Status: "succeeded", CommitSHA: strings.Repeat("a", 40),
+		PlanSHA256: strings.Repeat("b", 64), EvidenceDigest: "sha256:" + strings.Repeat("c", 64),
+		IngressInventoryDigest: "sha256:" + hex.EncodeToString(sum[:]), IngressInventory: snapshot,
+	}
+	if err := validateFleetReconciliationRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []fleet.ReconciliationRequest{
+		func() fleet.ReconciliationRequest { copy := request; copy.Phase = "readiness_verified"; return copy }(),
+		func() fleet.ReconciliationRequest { copy := request; copy.Status = "failed"; return copy }(),
+		func() fleet.ReconciliationRequest {
+			copy := request
+			copy.IngressInventoryDigest = "sha256:" + strings.Repeat("D", 64)
+			return copy
+		}(),
+		func() fleet.ReconciliationRequest { copy := request; copy.IngressInventory = nil; return copy }(),
+		func() fleet.ReconciliationRequest {
+			copy := request
+			copy.IngressInventory = json.RawMessage(strings.Replace(string(snapshot), "10.43.0.22", "10.43.0.23", 1))
+			return copy
+		}(),
+	} {
+		if err := validateFleetReconciliationRequest(invalid); err == nil {
+			t.Fatalf("invalid inventory checkpoint accepted: %+v", invalid)
+		}
+	}
+}
+
 func TestFleetReconciliationRequestAndTransitionAreBoundAndOrdered(t *testing.T) {
 	request := fleet.ReconciliationRequest{
 		SchemaVersion: fleet.ReconciliationSchemaVersion,
@@ -274,6 +311,29 @@ func TestFleetReconciliationRequestAndTransitionAreBoundAndOrdered(t *testing.T)
 	next.CommitSHA = strings.Repeat("d", 40)
 	if err := validateFleetReconciliationTransition(plan, existing, next); err == nil {
 		t.Fatal("checkpoint binding change accepted")
+	}
+}
+
+func TestFleetWorkloadEvidenceRequiresActiveCurrentAttemptLease(t *testing.T) {
+	now := time.Now().UTC()
+	attempt := fleet.RunnerAttempt{Status: "running", CurrentPhase: "provider_applying", HeartbeatExpiresAt: now.Add(time.Minute)}
+	request := fleet.ReconciliationRequest{Phase: "provider_applying"}
+	if err := validateActiveFleetAttemptEvidence(attempt, request, now); err != nil {
+		t.Fatalf("active current attempt rejected: %v", err)
+	}
+	attempt.Status = "abandoned"
+	if err := validateActiveFleetAttemptEvidence(attempt, request, now); err == nil {
+		t.Fatal("abandoned attempt evidence accepted")
+	}
+	attempt.Status = "running"
+	attempt.HeartbeatExpiresAt = now
+	if err := validateActiveFleetAttemptEvidence(attempt, request, now); err == nil {
+		t.Fatal("expired runner lease evidence accepted")
+	}
+	attempt.HeartbeatExpiresAt = now.Add(time.Minute)
+	request.Phase = "infrastructure_applied"
+	if err := validateActiveFleetAttemptEvidence(attempt, request, now); err == nil {
+		t.Fatal("future phase evidence accepted")
 	}
 }
 

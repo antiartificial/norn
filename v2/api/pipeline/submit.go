@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 
+	nomadapi "github.com/hashicorp/nomad/api"
 	"norn/v2/api/connector"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 )
 
@@ -28,6 +30,9 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		for k, v := range secretEnv {
 			env[k] = v
 		}
+	}
+	if conflicts := st.spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+		return databaseEnvConflictError(conflicts)
 	}
 
 	if st.spec.Infrastructure != nil && st.spec.Infrastructure.ObjectStorage != nil {
@@ -78,6 +83,36 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
+	// Provisioned-service variables must not shadow database delivery either.
+	if conflicts := st.spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+		return databaseEnvConflictError(conflicts)
+	}
+	if err := p.deliverDatabases(ctx, st, sg); err != nil {
+		return err
+	}
+	if st.spec.NamedDatabases() {
+		if err := p.requireLiveClaim(ctx, st); err != nil {
+			return err
+		}
+		if nomad.HasRuntimeDatabases(st.spec) && st.deliveryRevision == 0 {
+			return &DatabaseTargetError{Reason: "no staged database delivery revision for this deploy"}
+		}
+	}
+	// This private mode is intentionally positioned immediately before the
+	// first Nomad job registration. Database-variable staging above is not a
+	// runtime writer; every later registration is covered by this one-allocation
+	// cold-start protocol or refused during reservation.
+	coldStartGate, err := p.reserveWordPressVerifiedTLSColdStart(ctx, st)
+	if err != nil {
+		return err
+	}
+	coldStartResolved := coldStartGate == nil
+	defer func() {
+		if !coldStartResolved {
+			p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
+		}
+	}()
+
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
 		if proc.Port > 0 && len(st.spec.Endpoints) > 0 && p.Nomad != nil {
@@ -96,13 +131,34 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 	}
 
 	for _, region := range st.spec.ResolvedRegions() {
-		evalID, err := workloads.Submit(ctx, connector.SubmitRequest{
+		request := connector.SubmitRequest{
 			Spec: st.spec, Image: st.imageTag, Environment: env,
 			Region: region, DeploymentID: st.deploymentID,
-		})
+			DatabaseRevision: st.deliveryRevision,
+		}
+		if workloads.Name() == connector.NomadConsul {
+			if regionalServiceProcessCount(st.spec, region.Name) > 0 {
+				counts, err := p.DB.DesiredReplicaCounts(ctx, st.spec.App, region.Name)
+				if err != nil {
+					return fmt.Errorf("load desired replica intent: %w", err)
+				}
+				request.DesiredReplicaCounts = counts
+			}
+			request.PrepareNomadJob = func(job *nomadapi.Job) error {
+				return bindDeploymentJobProvenance(job, st.deploymentID, stringFromMap(st.operationPayload, "specDigest"), st.operationPayload)
+			}
+		}
+		evalID, err := workloads.Submit(ctx, request)
 		if err != nil {
 			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
 			return fmt.Errorf("submit workload in region %s: %w", region.Name, err)
+		}
+		if coldStartGate != nil {
+			if err := p.markWordPressVerifiedTLSColdStartLaunched(ctx, coldStartGate, st.spec.App, evalID); err != nil {
+				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
+				return err
+			}
+			coldStartResolved = true
 		}
 		st.regionEvals[region.Name] = evalID
 		_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusSubmitting, evalID, "", 0)
@@ -120,7 +176,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 func regionalServiceProcessCount(spec *model.InfraSpec, region string) int {
 	count := 0
 	for _, proc := range spec.Processes {
-		if proc.Schedule == "" && spec.ProcessRunsInRegion(proc, region) {
+		if proc.Schedule == "" && proc.Function == nil && spec.ProcessRunsInRegion(proc, region) {
 			count++
 		}
 	}

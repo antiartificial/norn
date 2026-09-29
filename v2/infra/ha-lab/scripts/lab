@@ -67,6 +67,12 @@ case "${command_name}" in
   deploy-app)
     "${script_dir}/deploy-app" "$@"
     ;;
+  deploy-trinity)
+    bash "${script_dir}/deploy-trinity" "$@"
+    ;;
+  deploy-pipeline)
+    bash "${script_dir}/deploy-pipeline" "$@"
+    ;;
   managed-db-grant)
     "${script_dir}/managed-db-grant" "$@"
     ;;
@@ -211,6 +217,8 @@ Norn DigitalOcean HA lab
   lab fleet sizes [REGION] | regions | validate [NAME]
   lab connect [NAME]
   lab deploy-app
+  lab deploy-trinity
+  lab deploy-pipeline
   lab down NAME [--confirm]
   lab bootstrap-tools
   lab preflight [NAME]
@@ -223,6 +231,7 @@ Norn DigitalOcean HA lab
   lab secrets operator-init | operator-id
   lab secrets operators NAME | add-operator NAME age1... | rm-operator NAME age1...
   lab secrets seal NAME | open NAME | view NAME [KEY] | push NAME | pull NAME
+  lab secrets log NAME | rollback NAME VERSION-ID | qualify NAME
   lab backup-repository init|status
   lab state-backend init|status
   lab audit-export

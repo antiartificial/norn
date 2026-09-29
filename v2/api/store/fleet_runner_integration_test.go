@@ -58,6 +58,19 @@ func isolatedMigrationDB(t *testing.T) *DB {
 	return db
 }
 
+func migrateControlThrough43(t *testing.T, db *DB) {
+	t.Helper()
+	old, err := NewSchemaMigrator(db.Pool, ControlSchemaMigrations()[:43], BinarySchemaCompatibility{
+		ReaderVersion: ControlSchemaReaderVersion, WriterVersion: ControlSchemaWriterVersion,
+	}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestMigrateSerializesParallelCalls exercises the same shared-database shape
 // used by `go test ./...`: each caller must wait for the one advisory-locked
 // schema program rather than interleaving ALTER/CREATE INDEX operations.
@@ -85,13 +98,18 @@ func TestMigrateSerializesParallelCalls(t *testing.T) {
 	}
 }
 
-// TestMigrateGatesLiveDML proves that the migration transaction drains an
-// already-running writer instead of interleaving DDL with it. It is purposely
-// run against an isolated PostgreSQL 16 database: an advisory migration lock
-// alone would not cover this separate DML transaction.
+// TestMigrateGatesLiveDML proves that a pending forward migration drains an
+// already-running writer before altering its table. A current schema has no
+// pending DDL and is intentionally a no-op.
 func TestMigrateGatesLiveDML(t *testing.T) {
 	db := isolatedMigrationDB(t)
-	if err := Migrate(db); err != nil {
+	old, err := NewSchemaMigrator(db.Pool, ControlSchemaMigrations()[:43], BinarySchemaCompatibility{
+		ReaderVersion: ControlSchemaReaderVersion, WriterVersion: ControlSchemaWriterVersion,
+	}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -99,7 +117,8 @@ func TestMigrateGatesLiveDML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO control_events (type, app_id) VALUES ('migration-live-dml', 'test')`); err != nil {
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(ctx, `UPDATE fleet_runner_attempts SET message=message WHERE false`); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
@@ -108,7 +127,7 @@ func TestMigrateGatesLiveDML(t *testing.T) {
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("migration completed while its conflicting live DML transaction was open")
+			t.Fatal("pending migration completed while its conflicting live DML transaction was open")
 		}
 		t.Fatalf("migration failed instead of waiting for live DML: %v", err)
 	case <-time.After(150 * time.Millisecond):
@@ -170,6 +189,10 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	if attempt.RootAttemptID != attempt.ID {
 		t.Fatalf("initial root attempt = %q, want %q", attempt.RootAttemptID, attempt.ID)
 	}
+	storedAttempt, err := db.GetFleetRunnerAttempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	concurrent := *attempt
 	concurrent.ID, concurrent.RunnerAttemptID, concurrent.Attempt = uuid.NewString(), "integration-2", 0
 	if err := db.CreateFleetRunnerAttempt(ctx, &concurrent); err == nil {
@@ -193,8 +216,8 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	if err := db.InsertFleetReconciliation(ctx, success, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	if !success.StartedAt.Equal(attempt.PhaseStartedAt) {
-		t.Fatalf("checkpoint start = %s, want server-owned phase start %s", success.StartedAt, attempt.PhaseStartedAt)
+	if !success.StartedAt.Equal(storedAttempt.PhaseStartedAt) {
+		t.Fatalf("checkpoint start = %s, want stored server-owned phase start %s", success.StartedAt, storedAttempt.PhaseStartedAt)
 	}
 	live, err = db.AdvanceFleetRunnerAttempt(ctx, attempt.ID, "infrastructure_applied", "inventory_generated", live.Revision, false)
 	if err != nil || live.CurrentPhase != "inventory_generated" || !live.PhaseStartedAt.After(attempt.PhaseStartedAt) {
@@ -259,18 +282,11 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	}
 }
 
-// TestFleetRunnerPilotRunMigrationRoundTrip exercises the upgrade against a
-// real PostgreSQL database. The legacy column drop is intentional: Migrate
-// must restore the safe empty default before both old ordinary and new
-// disposable records can be read.
+// TestFleetRunnerPilotRunMigrationRoundTrip upgrades a real version-43 row
+// before reading both ordinary and protected pilot attempts.
 func TestFleetRunnerPilotRunMigrationRoundTrip(t *testing.T) {
 	db := isolatedMigrationDB(t)
-	if err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Pool.Exec(context.Background(), `ALTER TABLE fleet_runner_attempts DROP COLUMN IF EXISTS pilot_run_id`); err != nil {
-		t.Fatal(err)
-	}
+	migrateControlThrough43(t, db)
 	ctx, now := context.Background(), time.Now().UTC()
 	finished := now
 	planID, attemptID, legacyPlanID, legacyID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -286,13 +302,12 @@ func TestFleetRunnerPilotRunMigrationRoundTrip(t *testing.T) {
 	// Insert before the upgrade while the legacy table has no pilot_run_id. The
 	// migration must backfill PostgreSQL's empty default on this real row.
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO fleet_runner_attempts (
-		id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery,
-		runner_attempt_id, status, current_phase, commit_sha, plan_sha256,
-		workflow_url, principal_subject, retry_of, heartbeat_sequence,
-		heartbeat_timeout_seconds, revision, started_at, phase_started_at,
-		heartbeat_at, updated_at, finished_at, last_error, metadata
-	) VALUES ($1,$2,1,$1,94,false,'ordinary-run','failed','infrastructure_applied',$3,$4,
-		'', '', '', 0,120,1,$5,$5,$5,$5,$5,'','{}')`,
+		id, plan_id, attempt, root_attempt_id, runner_attempt_id, status,
+		current_phase, commit_sha, plan_sha256, workflow_url, retry_of,
+		heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+		heartbeat_at, heartbeat_expires_at, updated_at, finished_at, message
+	) VALUES ($1,$2,1,$1,'ordinary-run','failed','infrastructure_applied',$3,$4,
+		'', '', 0,120,1,$5,$5,$5::timestamptz+interval '120 seconds',$5,$5,'')`,
 		legacyID, legacyPlanID, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now); err != nil {
 		t.Fatal(err)
 	}

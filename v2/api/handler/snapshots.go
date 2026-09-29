@@ -14,8 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"norn/v2/api/hub"
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/storage"
 )
 
@@ -26,15 +26,71 @@ type snapshotEntry struct {
 	Timestamp string `json:"timestamp"`
 	CreatedAt string `json:"createdAt,omitempty"`
 	Size      int64  `json:"size"`
+	// Target-aware fields, present when a database profile is configured.
+	LogicalDatabase   string `json:"logicalDatabase,omitempty"`
+	BindingID         string `json:"bindingId,omitempty"`
+	BindingGeneration uint64 `json:"bindingGeneration,omitempty"`
+	Provenance        string `json:"provenance,omitempty"`
 }
 
-type restoreReceipt struct {
-	Status             string         `json:"status"`
-	App                string         `json:"app"`
-	Database           string         `json:"database"`
-	Snapshot           snapshotEntry  `json:"snapshot"`
-	PreRestoreSnapshot *snapshotEntry `json:"preRestoreSnapshot,omitempty"`
-	RestoredAt         string         `json:"restoredAt"`
+// databaseLabel names an app's databases for reports: the v1 database name,
+// or the logical names of a v2 app.
+func databaseLabel(spec *model.InfraSpec) string {
+	if spec.NamedDatabases() {
+		names := make([]string, 0, len(spec.Databases))
+		for _, requirement := range spec.Databases {
+			names = append(names, requirement.Name)
+		}
+		return strings.Join(names, ",")
+	}
+	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
+		return spec.Infrastructure.Postgres.Database
+	}
+	return ""
+}
+
+// snapshotsForSpec is an app's restorable snapshot inventory. With a
+// database profile it comes from the target-aware layer restore uses, so it
+// only lists dumps whose provenance names the app's current target; without
+// one it is the unchanged v2 listing. Named databases are never listed by
+// database name alone.
+func (h *Handler) snapshotsForSpec(ctx context.Context, spec *model.InfraSpec) []snapshotEntry {
+	entries, err := h.snapshotsForSpecResult(ctx, spec)
+	if err != nil {
+		return []snapshotEntry{}
+	}
+	return entries
+}
+
+func (h *Handler) snapshotsForSpecResult(ctx context.Context, spec *model.InfraSpec) ([]snapshotEntry, error) {
+	if h.pipeline == nil || h.pipeline.DatabaseTargets == nil {
+		if spec.NamedDatabases() {
+			return nil, fmt.Errorf("named database snapshot targets are unavailable")
+		}
+		return listSnapshotsForSpec(spec), nil
+	}
+	groups, err := h.pipeline.TargetSnapshots(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	out := []snapshotEntry{}
+	for _, group := range groups {
+		for _, snapshot := range group.Snapshots {
+			entry := parseSnapshotEntry(group.DatabaseName, snapshot.Filename, snapshot.Size)
+			if entry == nil {
+				continue
+			}
+			entry.LogicalDatabase, entry.BindingID, entry.BindingGeneration, entry.Provenance = group.Database, group.BindingID, group.BindingGeneration, snapshot.Provenance
+			out = append(out, *entry)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Timestamp == out[j].Timestamp {
+			return out[i].Filename < out[j].Filename
+		}
+		return out[i].Timestamp > out[j].Timestamp
+	})
+	return out, nil
 }
 
 type snapshotRetentionReceipt struct {
@@ -58,12 +114,12 @@ func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
-	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+	if !spec.DeclaresDatabase() {
 		writeJSON(w, []snapshotEntry{})
 		return
 	}
 
-	writeJSON(w, listSnapshotsForSpec(spec))
+	writeJSON(w, h.snapshotsForSpec(r.Context(), spec))
 }
 
 // ListAppSnapshotsV1 exposes the same inventory through the versioned control
@@ -78,11 +134,11 @@ func (h *Handler) ListAppSnapshotsV1(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found or deployment is disabled")
 		return
 	}
-	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+	if !spec.DeclaresDatabase() {
 		writeJSON(w, []snapshotEntry{})
 		return
 	}
-	writeJSON(w, listSnapshotsForSpec(spec))
+	writeJSON(w, h.snapshotsForSpec(r.Context(), spec))
 }
 
 func listSnapshotsForSpec(spec *model.InfraSpec) []snapshotEntry {
@@ -133,25 +189,33 @@ func listSnapshotsForSpec(spec *model.InfraSpec) []snapshotEntry {
 	return snapshots
 }
 
-func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
+// importTargetSnapshot recovers an export into the current target's
+// namespace. It never touches a database: the manifest must name this app's
+// exact current target and the bytes must match it; restoring the imported
+// dump is the ordinary durable restore operation.
+func (h *Handler) importTargetSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	ts := chi.URLParam(r, "ts")
-
 	spec := h.findSpec(id)
 	if spec == nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
-	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
-		writeError(w, http.StatusBadRequest, "app has no postgres database")
+	if h.s3 == nil || spec.Snapshots == nil || spec.Snapshots.ExportBucket == "" {
+		writeError(w, http.StatusBadRequest, "object storage or export bucket not configured")
 		return
 	}
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := decodeJSON(r, &req); err != nil || !strings.HasPrefix(req.Key, "snapshots/"+id+"/") || strings.Contains(req.Key, "..") {
+		writeError(w, http.StatusBadRequest, "key must name a snapshot in this app's export prefix")
+		return
+	}
+	h.queueAppDataOperation(w, r, "app.snapshot-import", "snapshot import", map[string]interface{}{"bucket": spec.Snapshots.ExportBucket, "key": req.Key}, 1)
+}
 
-	dbName := spec.Infrastructure.Postgres.Database
-	if !model.IsSafePostgresDatabaseName(dbName) {
-		writeError(w, http.StatusConflict, "app postgres database name is unsafe for snapshot storage")
-		return
-	}
+func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
+	ts := chi.URLParam(r, "ts")
 	if !snapshotTimestampPattern.MatchString(ts) {
 		writeError(w, http.StatusBadRequest, "snapshot timestamp is invalid")
 		return
@@ -160,91 +224,10 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "restore requires confirm=true")
 		return
 	}
-
-	// Find matching snapshot file
-	entries, err := os.ReadDir("snapshots")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot read snapshots directory")
-		return
-	}
-
-	var matches []snapshotEntry
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(name, dbName+"_") && strings.HasSuffix(name, ".dump") {
-			info, err := entry.Info()
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			parsed := parseSnapshotEntry(dbName, name, info.Size())
-			if parsed != nil && parsed.Timestamp == ts {
-				matches = append(matches, *parsed)
-			}
-		}
-	}
-
-	if len(matches) == 0 {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("no snapshot found for timestamp %s", ts))
-		return
-	}
-	if len(matches) > 1 {
-		writeError(w, http.StatusConflict, fmt.Sprintf("snapshot timestamp %s is ambiguous", ts))
-		return
-	}
-	match := &matches[0]
-
-	snapshotPath := filepath.Join("snapshots", match.Filename)
-	var preRestore *snapshotEntry
-	preRestoreRequested := r.URL.Query().Get("preRestore") == "true" || (spec.Snapshots != nil && spec.Snapshots.PreRestore)
-	if preRestoreRequested {
-		created, err := createSnapshotForSpec(r.Context(), spec, "pre-restore")
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("pre-restore snapshot: %v", err))
-			return
-		}
-		preRestore = created
-	}
-
-	// #nosec G702 G204 -- no shell is used; the database name is strictly validated
-	// and snapshotPath comes from the regular-file inventory.
-	cmd := exec.CommandContext(r.Context(), "pg_restore", "--single-transaction", "--clean", "--if-exists", "-d", dbName, snapshotPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("pg_restore: %s", string(out)))
-		return
-	}
-
-	if h.ws != nil {
-		h.ws.Broadcast(hub.Event{
-			Type:  "snapshot.restored",
-			AppID: id,
-			Payload: map[string]string{
-				"database":  dbName,
-				"snapshot":  match.Filename,
-				"timestamp": ts,
-			},
-		})
-	}
-	if h.beacon != nil {
-		metadata := map[string]interface{}{
-			"database":  dbName,
-			"snapshot":  match.Filename,
-			"timestamp": ts,
-		}
-		if preRestore != nil {
-			metadata["preRestoreSnapshot"] = preRestore.Filename
-		}
-		h.emitSnapshotEvent(r, id, "snapshot.restored", model.BeaconWarning, "snapshot restored", fmt.Sprintf("%s restored snapshot %s", id, match.Filename), metadata)
-	}
-
-	writeJSON(w, restoreReceipt{
-		Status:             "restored",
-		App:                id,
-		Database:           dbName,
-		Snapshot:           *match,
-		PreRestoreSnapshot: preRestore,
-		RestoredAt:         timeNowUTC(),
-	})
+	// The compatibility route shares the signed durable operation used by the
+	// v1 control API. The worker validates snapshot ownership and always takes
+	// a safety snapshot before restore; the API must never run pg_restore inline.
+	h.queueAppDataOperation(w, r, "app.snapshot-restore", "destructive database restore with safety snapshot", map[string]interface{}{"snapshot": ts}, 1)
 }
 
 func (h *Handler) ApplySnapshotRetention(w http.ResponseWriter, r *http.Request) {
@@ -255,17 +238,58 @@ func (h *Handler) ApplySnapshotRetention(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	keep := queryIntDefault(r, "keep", snapshotKeepForSpec(spec, 3))
-	if keep < 1 {
-		writeError(w, http.StatusBadRequest, "keep must be at least 1")
+	if keep < 1 || keep > 1000 {
+		writeError(w, http.StatusBadRequest, "keep must be between 1 and 1000")
 		return
 	}
 	confirm := r.URL.Query().Get("confirm") == "true"
-	snapshots := listSnapshotsForSpec(spec)
+	if confirm {
+		// File deletion belongs to the accepted worker operation. A repeated
+		// compatibility request must resolve through the same idempotency key.
+		h.queueAppDataOperation(w, r, "app.snapshot-prune", "destructive snapshot retention", map[string]interface{}{"keep": keep}, 1)
+		return
+	}
+	selected := strings.TrimSpace(r.URL.Query().Get("database"))
+	if spec.NamedDatabases() {
+		if selected == "" && len(spec.Databases) == 1 {
+			selected = spec.Databases[0].Name
+		}
+		requirement, declared := spec.DatabaseByName(selected)
+		if !declared {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_database_selection", "database must name one of the app's declared databases")
+			return
+		}
+		canSnapshot := false
+		for _, capability := range requirement.Capabilities {
+			canSnapshot = canSnapshot || capability == "snapshot"
+		}
+		if !canSnapshot {
+			WriteControlProblem(w, r, http.StatusConflict, "snapshot_not_configured", "selected database does not declare snapshot capability")
+			return
+		}
+	} else if selected != "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_database_selection", "database selection requires a named database")
+		return
+	}
+	snapshots, err := h.snapshotsForSpecResult(r.Context(), spec)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "snapshot_inventory_unavailable", "snapshot inventory could not be verified for retention preview")
+		return
+	}
+	if spec.NamedDatabases() {
+		filtered := snapshots[:0]
+		for _, snapshot := range snapshots {
+			if snapshot.LogicalDatabase == selected {
+				filtered = append(filtered, snapshot)
+			}
+		}
+		snapshots = filtered
+	}
 	receipt := snapshotRetentionReceipt{
 		Status:    "preview",
 		App:       id,
 		Keep:      keep,
-		DryRun:    !confirm,
+		DryRun:    true,
 		AppliedAt: timeNowUTC(),
 	}
 	for i, snapshot := range snapshots {
@@ -273,32 +297,7 @@ func (h *Handler) ApplySnapshotRetention(w http.ResponseWriter, r *http.Request)
 			receipt.Kept = append(receipt.Kept, snapshot)
 			continue
 		}
-		if !confirm {
-			receipt.WouldPrune = append(receipt.WouldPrune, snapshot)
-			continue
-		}
-		if err := os.Remove(filepath.Join("snapshots", snapshot.Filename)); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prune %s: %v", snapshot.Filename, err))
-			return
-		}
-		receipt.Pruned = append(receipt.Pruned, snapshot)
-	}
-	if confirm {
-		receipt.Status = "applied"
-		if h.ws != nil {
-			h.ws.Broadcast(hub.Event{
-				Type:  "snapshot.retention",
-				AppID: id,
-				Payload: map[string]string{
-					"keep":   fmt.Sprintf("%d", keep),
-					"pruned": fmt.Sprintf("%d", len(receipt.Pruned)),
-				},
-			})
-		}
-		h.emitSnapshotEvent(r, id, "snapshot.retention.applied", model.BeaconInfo, "snapshot retention applied", fmt.Sprintf("%s pruned %d snapshot(s)", id, len(receipt.Pruned)), map[string]interface{}{
-			"keep":   keep,
-			"pruned": len(receipt.Pruned),
-		})
+		receipt.WouldPrune = append(receipt.WouldPrune, snapshot)
 	}
 	writeJSON(w, receipt)
 }
@@ -438,7 +437,7 @@ func (h *Handler) ExportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
-	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+	if !spec.DeclaresDatabase() {
 		writeError(w, http.StatusBadRequest, "app has no postgres database")
 		return
 	}
@@ -454,36 +453,66 @@ func (h *Handler) ExportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no export bucket configured")
 		return
 	}
+	if h.pipeline != nil && h.pipeline.DatabaseTargets != nil {
+		groups, err := h.pipeline.TargetSnapshots(r.Context(), spec)
+		if err != nil {
+			writeError(w, http.StatusConflict, fmt.Sprintf("snapshot inventory: %v", err))
+			return
+		}
+		selected := r.URL.Query().Get("database")
+		if selected == "" && len(groups) != 1 {
+			writeError(w, http.StatusBadRequest, "database is required when multiple snapshot targets are declared")
+			return
+		}
+		var group *pipeline.TargetSnapshotGroup
+		for index := range groups {
+			if selected == "" || groups[index].Database == selected {
+				group = &groups[index]
+				break
+			}
+		}
+		if group == nil || group.Unavailable != "" {
+			writeError(w, http.StatusConflict, "selected database snapshot inventory is unavailable")
+			return
+		}
+		filename := r.URL.Query().Get("snapshot")
+		if filename == "" && len(group.Snapshots) > 0 {
+			filename = group.Snapshots[0].Filename
+		}
+		found := false
+		for _, snapshot := range group.Snapshots {
+			found = found || snapshot.Filename == filename
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "no restorable snapshot of the selected target matches")
+			return
+		}
+		h.queueAppDataOperation(w, r, "app.snapshot-export", "snapshot export", map[string]interface{}{"bucket": exportBucket, "snapshot": filename, "database": group.Database}, 1)
+		return
+	}
+	if spec.NamedDatabases() {
+		writeError(w, http.StatusConflict, "named databases require a database profile")
+		return
+	}
 
 	snapshots := listSnapshotsForSpec(spec)
 	if len(snapshots) == 0 {
 		writeError(w, http.StatusNotFound, "no local snapshots available")
 		return
 	}
-	snapshot := snapshots[0] // latest
-
-	key := "snapshots/" + id + "/" + snapshot.Filename
-	localPath := filepath.Join("snapshots", snapshot.Filename)
-	if err := h.s3.PutObject(r.Context(), exportBucket, key, localPath); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("upload snapshot: %v", err))
+	filename := r.URL.Query().Get("snapshot")
+	if filename == "" {
+		filename = snapshots[0].Filename
+	}
+	found := false
+	for _, snapshot := range snapshots {
+		found = found || snapshot.Filename == filename
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "no local snapshot matches")
 		return
 	}
-
-	h.emitSnapshotEvent(r, id, "snapshot.exported", model.BeaconInfo, "snapshot exported",
-		fmt.Sprintf("%s exported snapshot %s to %s", id, snapshot.Filename, exportBucket),
-		map[string]interface{}{
-			"bucket":   exportBucket,
-			"key":      key,
-			"snapshot": snapshot.Filename,
-		})
-
-	writeJSON(w, map[string]interface{}{
-		"status":   "exported",
-		"app":      id,
-		"snapshot": snapshot,
-		"bucket":   exportBucket,
-		"key":      key,
-	})
+	h.queueAppDataOperation(w, r, "app.snapshot-export", "snapshot export", map[string]interface{}{"bucket": exportBucket, "snapshot": filename}, 1)
 }
 
 func (h *Handler) ListRemoteSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -526,11 +555,19 @@ func (h *Handler) ListRemoteSnapshots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
+	if h.pipeline != nil && h.pipeline.DatabaseTargets != nil {
+		h.importTargetSnapshot(w, r)
+		return
+	}
 	id := chi.URLParam(r, "id")
 
 	spec := h.findSpec(id)
 	if spec == nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		return
+	}
+	if spec.NamedDatabases() {
+		writeError(w, http.StatusConflict, "named databases require a database profile")
 		return
 	}
 	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
@@ -566,43 +603,13 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "app postgres database name is unsafe for snapshot storage")
 		return
 	}
-	expectedPrefix := "snapshots/" + id + "/"
-	filename := filepath.Base(req.Key)
-	if !strings.HasPrefix(req.Key, expectedPrefix) || strings.Contains(strings.TrimPrefix(req.Key, expectedPrefix), "/") || parseSnapshotEntry(dbName, filename, 1) == nil {
+	filename, keyErr := pipeline.LegacySnapshotKeyName(req.Key, id, dbName)
+	if keyErr != nil || parseSnapshotEntry(dbName, filename, 1) == nil {
 		writeError(w, http.StatusBadRequest, "key must name a valid snapshot in this app's export prefix")
 		return
 	}
 
-	localPath := filepath.Join("snapshots", filename)
-	if err := os.MkdirAll("snapshots", 0o750); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create snapshots dir: %v", err))
-		return
-	}
-	if err := h.s3.GetObject(r.Context(), exportBucket, req.Key, localPath); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("download snapshot: %v", err))
-		return
-	}
-	info, err := os.Lstat(localPath)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-		_ = os.Remove(localPath)
-		writeError(w, http.StatusBadGateway, "downloaded snapshot is not a non-empty regular file")
-		return
-	}
-
-	h.emitSnapshotEvent(r, id, "snapshot.imported", model.BeaconInfo, "snapshot imported",
-		fmt.Sprintf("%s imported snapshot %s from %s", id, filename, exportBucket),
-		map[string]interface{}{
-			"bucket":    exportBucket,
-			"key":       req.Key,
-			"localPath": "snapshots/" + filename,
-		})
-
-	writeJSON(w, map[string]interface{}{
-		"status":    "imported",
-		"app":       id,
-		"key":       req.Key,
-		"localPath": "snapshots/" + filename,
-	})
+	h.queueAppDataOperation(w, r, "app.snapshot-import", "snapshot import", map[string]interface{}{"bucket": exportBucket, "key": req.Key}, 1)
 }
 
 func (h *Handler) findSpec(appID string) *model.InfraSpec {

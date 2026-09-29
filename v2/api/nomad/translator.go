@@ -18,7 +18,7 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) (*
 	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
 		return nil, err
 	}
-	return translateForRegion(spec, imageTag, env, spec.ResolvedRegions()[0]), nil
+	return TranslateForRegionAt(spec, imageTag, env, spec.ResolvedRegions()[0], 0), nil
 }
 
 // TranslateForRegion creates the regional service job and filters processes by
@@ -28,11 +28,16 @@ func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
 		return nil, err
 	}
-	return translateForRegion(spec, imageTag, env, region), nil
+	return TranslateForRegionAt(spec, imageTag, env, region, 0), nil
 }
 
-func translateForRegion(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
-	jobID := spec.App
+// TranslateForRegionAt reads the staged database delivery revision. Callers
+// must validate the InfraSpec before using this runtime-only translation.
+func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64) *nomadapi.Job {
+	return translateForRegionAtWithJobID(spec, imageTag, env, region, databaseRevision, spec.App)
+}
+
+func translateForRegionAtWithJobID(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64, jobID string) *nomadapi.Job {
 	jobType := "service"
 
 	job := nomadapi.NewServiceJob(jobID, jobID, region.NomadRegion, 50)
@@ -58,28 +63,19 @@ func translateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 		if !spec.ProcessRunsInRegion(proc, region.Name) {
 			continue
 		}
-		if proc.Schedule != "" {
-			// Scheduled processes become separate batch jobs — skip here
+		if proc.Schedule != "" || proc.Function != nil {
+			// Scheduled and function processes run as separate batch jobs.
 			continue
 		}
 
 		tg := nomadapi.NewTaskGroup(procName, 1)
-		if spec.RequiresDistinctHosts() {
-			// Nomad requires distinct_hosts at job or group scope, never task
-			// scope. Keeping it on each service group avoids coupling unrelated
-			// processes while making every replica of this HA process distinct.
+		if spec.RequiresDistinctHosts() || (proc.Placement != nil && proc.Placement.DistinctHosts) {
 			tg.Constraints = append(tg.Constraints, nomadapi.NewConstraint("", nomadapi.ConstraintDistinctHosts, ""))
 		}
 
 		// Scaling
 		if proc.Scaling != nil && (proc.Scaling.Min > 0 || proc.Scaling.PerRegion > 0) {
-			count := proc.Scaling.Min
-			if count == 0 {
-				count = 1
-			}
-			if proc.Scaling.PerRegion > 0 {
-				count = proc.Scaling.PerRegion
-			}
+			count := proc.DeclaredReplicaCount()
 			tg.Count = &count
 		}
 
@@ -114,7 +110,7 @@ func translateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 		}
 
 		// Task
-		task := nomadapi.NewTask(procName, "docker")
+		task := newDockerTask(procName)
 		task.Config = map[string]interface{}{
 			"image": imageTag,
 		}
@@ -125,10 +121,11 @@ func translateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 
 		configureProcessNetworking(spec, procName, proc, region, task, tg)
 
-		// Job-owned Nomad variable values are deliberately withheld from task.Env
-		// and instead rendered by Nomad into owner-only allocation files.
+		// Nomad variable values are rendered into owner-only files, never task.Env.
 		task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
-		configureNomadVariableFiles(proc.NomadVariables, spec.App, task)
+		configureNomadVariableFiles(proc.NomadVariables, jobID, task)
+		addDatabaseTemplates(spec, jobID, databaseRevision, task)
+		applyStartupAdapter(spec, procName, imageTag, task)
 
 		// Resources
 		cpu := 100
@@ -160,14 +157,13 @@ func translateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 		}
 
 		// Volume mounts
+		tg.Volumes = make(map[string]*nomadapi.VolumeRequest, len(spec.Volumes))
 		for _, vol := range spec.Volumes {
-			tg.Volumes = map[string]*nomadapi.VolumeRequest{
-				vol.Name: {
-					Name:     vol.Name,
-					Type:     "host",
-					Source:   vol.Name,
-					ReadOnly: vol.ReadOnly,
-				},
+			tg.Volumes[vol.Name] = &nomadapi.VolumeRequest{
+				Name:     vol.Name,
+				Type:     "host",
+				Source:   vol.Name,
+				ReadOnly: vol.ReadOnly,
 			}
 			task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
 				Volume:      &vol.Name,
@@ -187,6 +183,26 @@ func translateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 
 	return job
 }
+
+// ApplyDesiredReplicaCounts overlays acknowledged control-plane scale intent
+// on a newly translated service job. An absent entry deliberately preserves
+// the InfraSpec Scaling.Min/PerRegion result, which is the compatibility
+// behavior for apps never scaled through the durable API.
+func ApplyDesiredReplicaCounts(job *nomadapi.Job, counts map[string]int) {
+	if job == nil || len(counts) == 0 {
+		return
+	}
+	for _, group := range job.TaskGroups {
+		if group == nil || group.Name == nil {
+			continue
+		}
+		if count, ok := counts[*group.Name]; ok {
+			group.Count = replicaCountPtr(count)
+		}
+	}
+}
+
+func replicaCountPtr(value int) *int { return &value }
 
 func configureProcessNetworking(spec *model.InfraSpec, procName string, proc model.Process, region model.ResolvedRegion, task *nomadapi.Task, tg *nomadapi.TaskGroup) {
 	ports := []string{}
@@ -313,19 +329,19 @@ func servicePlacementTags(spec *model.InfraSpec, region model.ResolvedRegion) []
 	return tags
 }
 
-// TranslatePeriodic creates a separate Nomad periodic batch job for a scheduled process.
+// TranslatePeriodic creates a separate Nomad periodic batch job.
 func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) (*nomadapi.Job, error) {
 	if err := validatePeriodicTranslation(spec, procName, proc); err != nil {
 		return nil, err
 	}
-	return translatePeriodicForRegion(spec, procName, proc, imageTag, env, spec.ResolvedRegions()[0]), nil
+	return TranslatePeriodicForRegionAt(spec, procName, proc, imageTag, env, spec.ResolvedRegions()[0], 0), nil
 }
 
 func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion) (*nomadapi.Job, error) {
 	if err := validatePeriodicTranslation(spec, procName, proc); err != nil {
 		return nil, err
 	}
-	return translatePeriodicForRegion(spec, procName, proc, imageTag, env, region), nil
+	return TranslatePeriodicForRegionAt(spec, procName, proc, imageTag, env, region, 0), nil
 }
 
 func validatePeriodicTranslation(spec *model.InfraSpec, procName string, proc model.Process) error {
@@ -335,7 +351,8 @@ func validatePeriodicTranslation(spec *model.InfraSpec, procName string, proc mo
 	return model.ValidateNomadVariableFilesForProcess(spec, procName, proc)
 }
 
-func translatePeriodicForRegion(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
+// TranslatePeriodicForRegionAt reads a staged database delivery revision.
+func TranslatePeriodicForRegionAt(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64) *nomadapi.Job {
 	jobID := fmt.Sprintf("%s-%s", spec.App, procName)
 	job := nomadapi.NewBatchJob(jobID, jobID, region.NomadRegion, 50)
 	if pool := spec.EffectiveNodePool(); pool != "" {
@@ -362,7 +379,7 @@ func translatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 
 	tg := nomadapi.NewTaskGroup(procName, 1)
 	configureNoRetryPolicy(tg)
-	task := nomadapi.NewTask(procName, "docker")
+	task := newDockerTask(procName)
 	task.Config = map[string]interface{}{
 		"image": imageTag,
 	}
@@ -371,7 +388,8 @@ func translatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
 	task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
-	configureNomadVariableFiles(proc.NomadVariables, fmt.Sprintf("%s-%s", spec.App, procName), task)
+	configureNomadVariableFiles(proc.NomadVariables, jobID, task)
+	addDatabaseTemplates(spec, jobID, databaseRevision, task)
 
 	cpu := 100
 	mem := 128
@@ -389,14 +407,13 @@ func translatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 	}
 
 	// Volume mounts for periodic jobs
+	tg.Volumes = make(map[string]*nomadapi.VolumeRequest, len(spec.Volumes))
 	for _, vol := range spec.Volumes {
-		tg.Volumes = map[string]*nomadapi.VolumeRequest{
-			vol.Name: {
-				Name:     vol.Name,
-				Type:     "host",
-				Source:   vol.Name,
-				ReadOnly: vol.ReadOnly,
-			},
+		tg.Volumes[vol.Name] = &nomadapi.VolumeRequest{
+			Name:     vol.Name,
+			Type:     "host",
+			Source:   vol.Name,
+			ReadOnly: vol.ReadOnly,
 		}
 		task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
 			Volume:      &vol.Name,
@@ -422,7 +439,7 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 	if proc.NomadVariables != nil && hasFunctionRequestMetadata(env) {
 		return nil, fmt.Errorf("function request metadata is unsupported when nomadVariables are configured")
 	}
-	return translateBatch(spec, procName, proc, imageTag, env, jobID), nil
+	return TranslateBatchAt(spec, procName, proc, imageTag, env, jobID, 0), nil
 }
 
 func hasFunctionRequestMetadata(env map[string]string) bool {
@@ -434,7 +451,8 @@ func hasFunctionRequestMetadata(env map[string]string) bool {
 	return false
 }
 
-func translateBatch(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string) *nomadapi.Job {
+// TranslateBatchAt reads the invocation's private database delivery revision.
+func TranslateBatchAt(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string, databaseRevision int64) *nomadapi.Job {
 	job := nomadapi.NewBatchJob(jobID, jobID, "global", 50)
 	job.Datacenters = []string{"dc1"}
 
@@ -449,7 +467,7 @@ func translateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 	tg := nomadapi.NewTaskGroup(procName, 1)
 	configureNoRetryPolicy(tg)
 
-	task := nomadapi.NewTask(procName, "docker")
+	task := newDockerTask(procName)
 	task.Config = map[string]interface{}{
 		"image": imageTag,
 	}
@@ -459,6 +477,7 @@ func translateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 	}
 	task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
 	configureNomadVariableFiles(proc.NomadVariables, jobID, task)
+	addDatabaseTemplates(spec, jobID, databaseRevision, task)
 
 	cpu := 100
 	mem := 128
@@ -479,14 +498,13 @@ func translateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 	}
 
 	// Volume mounts for batch jobs
+	tg.Volumes = make(map[string]*nomadapi.VolumeRequest, len(spec.Volumes))
 	for _, vol := range spec.Volumes {
-		tg.Volumes = map[string]*nomadapi.VolumeRequest{
-			vol.Name: {
-				Name:     vol.Name,
-				Type:     "host",
-				Source:   vol.Name,
-				ReadOnly: vol.ReadOnly,
-			},
+		tg.Volumes[vol.Name] = &nomadapi.VolumeRequest{
+			Name:     vol.Name,
+			Type:     "host",
+			Source:   vol.Name,
+			ReadOnly: vol.ReadOnly,
 		}
 		task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
 			Volume:      &vol.Name,
@@ -516,6 +534,19 @@ func configureNoRetryPolicy(tg *nomadapi.TaskGroup) {
 		Attempts:  &attempts,
 		Unlimited: &unlimited,
 	}
+}
+
+// Every task has an explicit bounded Nomad log rotation budget.
+const (
+	TaskLogMaxFiles      = 5
+	TaskLogMaxFileSizeMB = 10
+)
+
+func newDockerTask(name string) *nomadapi.Task {
+	task := nomadapi.NewTask(name, "docker")
+	maxFiles, maxFileSize, disabled := TaskLogMaxFiles, TaskLogMaxFileSizeMB, false
+	task.LogConfig = &nomadapi.LogConfig{MaxFiles: &maxFiles, MaxFileSizeMB: &maxFileSize, Disabled: &disabled}
+	return task
 }
 
 func boolPtr(b bool) *bool    { return &b }

@@ -12,8 +12,11 @@ import (
 
 func init() {
 	rootCmd.AddCommand(deployCmd)
+	deployCmd.Flags().StringVar(&deployIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 	deployCmd.AddCommand(deployStepsCmd)
 }
+
+var deployIdempotencyKey string
 
 var deployCmd = &cobra.Command{
 	Use:   "deploy <app> [ref]",
@@ -29,14 +32,18 @@ var deployCmd = &cobra.Command{
 		fmt.Println(style.Title.Render("deploying " + appID))
 		fmt.Printf("  ref: %s\n\n", ref)
 
-		sagaID, err := client.Deploy(appID, ref)
+		key, err := requestIdempotencyKey(cmd, deployIdempotencyKey, "norn-deploy")
+		if err != nil {
+			return err
+		}
+		accepted, err := client.Deploy(appID, ref, key)
 		if err != nil {
 			return fmt.Errorf("deploy failed: %w", err)
 		}
 
-		fmt.Printf("  saga: %s\n\n", style.DimText.Render(sagaID))
+		fmt.Printf("  saga: %s\n\n", style.DimText.Render(accepted.SagaID))
 
-		return streamSagaEvents(sagaID)
+		return finishEnqueue(accepted)
 	},
 }
 

@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Make and verify bounded, Mini-local control PostgreSQL checkpoints.
+
+This is a local development recovery aid. It is not an off-host backup.
+"""
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+def source_environment(database_url):
+    helper = Path(__file__).with_name("mini-create-protected-backup")
+    loader = importlib.machinery.SourceFileLoader("mini_protected_backup", str(helper))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module.source_environment(database_url)
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def verify(directory, basename, pg_restore):
+    if basename != Path(basename).name or not basename.startswith("control-"):
+        raise ValueError("invalid checkpoint name")
+    archive = directory / (basename + ".dump")
+    manifest = directory / (basename + ".json")
+    for path in (archive, manifest):
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError("checkpoint must be an owner-only regular file")
+    record = json.loads(manifest.read_text())
+    if record.get("schema") != "norn.mini-local-control-checkpoint/v1" or record.get("archive") != archive.name:
+        raise ValueError("invalid checkpoint manifest")
+    if archive.stat().st_size != record.get("bytes") or digest(archive) != record.get("sha256"):
+        raise ValueError("checkpoint bytes differ from manifest")
+    subprocess.run([str(pg_restore), "--list", str(archive)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    return record
+
+
+def checkpoint(directory, database_url, pg_dump, pg_restore, keep_hours):
+    if shutil.disk_usage(directory).free < 4 * 1024 ** 3:
+        raise ValueError("less than 4 GiB free for checkpoint")
+    source = source_environment(database_url)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    basename = "control-" + stamp + "-" + os.urandom(4).hex()
+    archive = directory / (basename + ".dump")
+    manifest = directory / (basename + ".json")
+    fd, scratch = tempfile.mkstemp(prefix=".control-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            subprocess.run([str(pg_dump), "--format=custom", "--no-owner", "--no-privileges"],
+                           stdout=output, stderr=subprocess.DEVNULL, env=source, check=True, timeout=300)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(scratch, 0o600)
+        subprocess.run([str(pg_restore), "--list", scratch], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        size = os.path.getsize(scratch)
+        if size == 0:
+            raise ValueError("empty checkpoint")
+        record = {"schema": "norn.mini-local-control-checkpoint/v1", "archive": archive.name,
+                  "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                  "bytes": size, "sha256": digest(Path(scratch))}
+        os.link(scratch, archive)
+        os.unlink(scratch)
+        fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as output:
+            json.dump(record, output, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        verify(directory, basename, pg_restore)
+        cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - keep_hours * 3600
+        for old in directory.glob("control-*.json"):
+            if old.name == manifest.name or old.stat().st_mtime >= cutoff:
+                continue
+            old_base = old.name[:-5]
+            try:
+                verify(directory, old_base, pg_restore)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                continue
+            (directory / (old_base + ".dump")).unlink()
+            old.unlink()
+        print(json.dumps({"checkpoint": basename, "bytes": size, "sha256": record["sha256"]}))
+    finally:
+        if os.path.exists(scratch):
+            os.unlink(scratch)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--directory", required=True, type=Path)
+    parser.add_argument("--postgres-bin", type=Path, default=Path("/Applications/Postgres.app/Contents/Versions/latest/bin"))
+    parser.add_argument("--keep-hours", type=int, default=48)
+    parser.add_argument("--verify", metavar="CHECKPOINT")
+    args = parser.parse_args()
+    directory = args.directory
+    if not directory.is_absolute() or directory.is_symlink():
+        parser.error("directory must be an absolute real directory")
+    info = directory.stat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        parser.error("directory must be owner-owned with mode 0700")
+    if args.keep_hours < 1:
+        parser.error("keep-hours must be positive")
+    pg_restore = args.postgres_bin / "pg_restore"
+    if args.verify:
+        print(json.dumps(verify(directory, args.verify, pg_restore)))
+        return
+    database_url = os.environ.get("NORN_DATABASE_URL", "")
+    if not database_url:
+        parser.error("NORN_DATABASE_URL is required")
+    lock_fd = os.open(directory / ".checkpoint.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        lock_info = os.fstat(lock_fd)
+        if lock_info.st_uid != os.geteuid() or not stat.S_ISREG(lock_info.st_mode) or stat.S_IMODE(lock_info.st_mode) != 0o600:
+            raise ValueError("checkpoint lock must be owner-only")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        checkpoint(directory, database_url, args.postgres_bin / "pg_dump", pg_restore, args.keep_hours)
+    finally:
+        os.close(lock_fd)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print("mini control checkpoint failed: " + type(exc).__name__, file=sys.stderr)
+        raise SystemExit(1)

@@ -1,0 +1,759 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// EvidenceIntent is one row of the evidence archive outbox/index.
+type EvidenceIntent struct {
+	ID              string
+	SubjectKind     string
+	SubjectID       string
+	App             string
+	OperationID     string
+	Sequence        int
+	State           string
+	EventIDs        []string
+	EventCount      int
+	CutoffTimestamp *time.Time
+	ObjectKey       string
+	ObjectSHA256    string
+	ObjectBytes     int64
+	Attempts        int
+	LastError       string
+	CreatedAt       time.Time
+	VerifiedAt      *time.Time
+	PrunedAt        *time.Time
+	PrunedEvents    int
+}
+
+const evidenceIntentColumns = `id, subject_kind, subject_id, app, operation_id, sequence, state, event_ids, event_count, cutoff_timestamp,
+	object_key, object_sha256, object_bytes, attempts, last_error, created_at, verified_at, pruned_at, pruned_events`
+
+func scanEvidenceIntent(row pgx.Row) (EvidenceIntent, error) {
+	var intent EvidenceIntent
+	var ids []byte
+	err := row.Scan(&intent.ID, &intent.SubjectKind, &intent.SubjectID, &intent.App, &intent.OperationID, &intent.Sequence, &intent.State, &ids,
+		&intent.EventCount, &intent.CutoffTimestamp, &intent.ObjectKey, &intent.ObjectSHA256, &intent.ObjectBytes, &intent.Attempts, &intent.LastError,
+		&intent.CreatedAt, &intent.VerifiedAt, &intent.PrunedAt, &intent.PrunedEvents)
+	if err != nil {
+		return EvidenceIntent{}, err
+	}
+	if err := json.Unmarshal(ids, &intent.EventIDs); err != nil {
+		return EvidenceIntent{}, fmt.Errorf("evidence intent %s has malformed event ids", intent.ID)
+	}
+	return intent, nil
+}
+
+// terminalStatuses are the statuses whose operations are eligible evidence.
+const terminalStatusSQL = `('succeeded', 'failed', 'canceled')`
+
+// BackfillEvidenceIntents creates pending sequence-1 intents for terminal
+// operations with a saga that finished before the grace period and have no
+// intent yet (terminal paths other than FinishClaimedOperation, older
+// writers, pre-existing history). It seals nothing.
+func (db *DB) BackfillEvidenceIntents(ctx context.Context, finishedBefore time.Duration, limit int) (int64, error) {
+	result, err := db.Pool.Exec(ctx, `
+		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+		SELECT 'ei-' || gen_random_uuid()::text, 'saga', o.saga_id, o.app, o.id, 1, 'pending'
+		FROM operations o
+		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id <> '' AND o.kind <> '`+PrivateInvocationOperationKind+`' AND o.finished_at < now() - $1::interval
+		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents i WHERE i.subject_kind = 'saga' AND i.subject_id = o.saga_id)
+		ORDER BY o.finished_at
+		LIMIT $2
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, finishedBefore.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+// BackfillNonSagaFleetGitHubEvidenceIntents restores archive work for signed
+// terminal operation receipts written before their operation-subject outbox
+// existed. Function invocations are included even when correlated with a saga:
+// their evidence is the exact terminal func_executions projection, never the
+// saga event stream. Every candidate joins acceptance evidence so an unsigned
+// operation is not substituted for a protected receipt.
+func (db *DB) BackfillNonSagaFleetGitHubEvidenceIntents(ctx context.Context, finishedBefore time.Duration, limit int) (int64, error) {
+	result, err := db.Pool.Exec(ctx, `
+		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+		SELECT 'ei-' || gen_random_uuid()::text, 'operation', o.id, o.app, o.id, 1, 'pending'
+		FROM operations o
+		JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
+		WHERE (
+			(o.status IN `+terminalStatusSQL+` AND o.saga_id = ''
+			 AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch'))
+			OR
+			(o.kind = '`+PrivateInvocationOperationKind+`' AND o.status IN ('succeeded', 'failed')
+			 AND EXISTS (
+				SELECT 1 FROM func_executions f
+				WHERE f.id = o.id AND f.app = o.app AND f.process = o.payload->>'process'
+				  AND f.finished_at IS NOT NULL
+				  AND ((o.status = 'succeeded' AND f.status = 'complete')
+				       OR (o.status = 'failed' AND f.status = 'failed'))
+			 ))
+		)
+		  AND o.finished_at < now() - $1::interval
+		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents i WHERE i.subject_kind = 'operation' AND i.subject_id = o.id)
+		ORDER BY o.finished_at
+		LIMIT $2
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, finishedBefore.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+// EnsureSupplementaryEvidenceIntents creates the next-sequence pending
+// intent for sagas that already have bundles but gained events outside every
+// bundle (late publication after terminalization), once they are quiet.
+func (db *DB) EnsureSupplementaryEvidenceIntents(ctx context.Context, quiet time.Duration) (int64, error) {
+	result, err := db.Pool.Exec(ctx, `
+		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+		SELECT 'ei-' || gen_random_uuid()::text, 'saga', latest.subject_id, latest.app, latest.operation_id, latest.sequence + 1, 'pending'
+		FROM (
+			SELECT DISTINCT ON (subject_id) subject_id, app, operation_id, sequence, state
+			FROM evidence_archive_intents WHERE subject_kind = 'saga'
+			ORDER BY subject_id, sequence DESC
+		) latest
+		WHERE latest.state IN ('verified', 'pruned')
+		  AND EXISTS (
+			SELECT 1 FROM saga_events e WHERE e.saga_id = latest.subject_id
+			  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents j WHERE j.subject_kind = 'saga' AND j.subject_id = e.saga_id AND j.event_ids ? e.id))
+		  AND NOT EXISTS (SELECT 1 FROM saga_events e WHERE e.saga_id = latest.subject_id AND e.timestamp > now() - $1::interval)
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, quiet.String())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+// EvidenceSource is the hot evidence a bundle is built from, read inside
+// the claiming transaction.
+type EvidenceSource struct {
+	OperationJSON json.RawMessage
+	OperationKind string
+	// EffectsJSON preserves terminal external-effect outcome and output
+	// references exactly as held by PostgreSQL at archive cutoff.
+	EffectsJSON json.RawMessage
+	// FunctionExecutionJSON and FunctionEffectAttemptsJSON are public terminal
+	// invocation evidence. They intentionally exclude the private invocation
+	// envelope and Nomad variable contents.
+	FunctionExecutionJSON      json.RawMessage
+	FunctionEffectAttemptsJSON json.RawMessage
+	Acceptance                 *AcceptanceEvidenceRow
+	DeploymentID               string
+	Events                     []EvidenceEvent
+}
+
+// AcceptanceEvidenceRow is the persisted signed acceptance, byte-exact.
+type AcceptanceEvidenceRow struct {
+	IntentID              string
+	RequestIdentityID     string
+	RequestReceiptID      string
+	FingerprintVersion    string
+	FingerprintDigest     string
+	RequestCanonicalBytes []byte
+	CanonicalBytes        []byte
+	CanonicalDigest       string
+	SigningAlgorithm      string
+	SigningKeyID          string
+	Signature             string
+}
+
+// EvidenceEvent mirrors a saga_events row.
+type EvidenceEvent struct {
+	ID        string
+	SagaID    string
+	Timestamp time.Time
+	Source    string
+	App       string
+	Category  string
+	Action    string
+	Message   string
+	Metadata  map[string]string
+}
+
+// ErrNoEvidenceWork means no pending intent is ready.
+var ErrNoEvidenceWork = errors.New("no evidence archive work is ready")
+
+// ProcessPendingEvidenceIntent claims one pending intent whose operation is
+// terminal and whose saga has been quiet for the given period (FOR UPDATE
+// SKIP LOCKED), loads its hot evidence (events not in any earlier bundle)
+// and calls publish inside the same transaction. publish must upload,
+// read back and verify the object and return its exact identity; the intent
+// is then acknowledged (verified) in the same transaction. A publish error
+// is recorded on the intent, which stays pending (the evidence stays hot).
+func (db *DB) ProcessPendingEvidenceIntent(ctx context.Context, quiet time.Duration, publish func(context.Context, EvidenceIntent, EvidenceSource) (EvidencePublication, error)) (EvidenceIntent, error) {
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return EvidenceIntent{}, err
+	}
+	defer tx.Rollback(ctx)
+	intent, err := scanEvidenceIntent(tx.QueryRow(ctx, `
+		SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents i
+		WHERE i.state = 'pending' AND (
+			(i.subject_kind = 'saga'
+			  AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.saga_id = i.subject_id AND o.status NOT IN `+terminalStatusSQL+`)
+			  AND NOT EXISTS (SELECT 1 FROM saga_events e WHERE e.saga_id = i.subject_id AND e.timestamp > now() - $1::interval))
+			OR
+			(i.subject_kind = 'operation'
+			  AND EXISTS (SELECT 1 FROM operations o JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
+			              WHERE o.id = i.operation_id AND o.id = i.subject_id
+			                AND ((o.saga_id = '' AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch') AND o.status IN `+terminalStatusSQL+`)
+			                     OR (o.kind = '`+PrivateInvocationOperationKind+`' AND o.status IN ('succeeded', 'failed')
+			                         AND EXISTS (SELECT 1 FROM func_executions f
+			                                     WHERE f.id = o.id AND f.app = o.app AND f.process = o.payload->>'process'
+			                                       AND f.finished_at IS NOT NULL
+			                                       AND ((o.status = 'succeeded' AND f.status = 'complete')
+			                                            OR (o.status = 'failed' AND f.status = 'failed'))))))
+			)
+		)
+		ORDER BY i.created_at LIMIT 1 FOR UPDATE SKIP LOCKED`, quiet.String()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return EvidenceIntent{}, ErrNoEvidenceWork
+	}
+	if err != nil {
+		return EvidenceIntent{}, err
+	}
+	source, err := loadEvidenceSource(ctx, tx, intent)
+	if err != nil {
+		return intent, err
+	}
+	publication, publishErr := publish(ctx, intent, source)
+	if publishErr != nil {
+		if _, err := tx.Exec(ctx, `UPDATE evidence_archive_intents SET attempts = attempts + 1, last_error = $2, updated_at = now() WHERE id = $1`, intent.ID, truncateError(publishErr.Error())); err != nil {
+			return intent, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return intent, err
+		}
+		return intent, publishErr
+	}
+	ids, err := json.Marshal(publication.EventIDs)
+	if err != nil {
+		return intent, err
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE evidence_archive_intents
+		SET state = 'verified', event_ids = $2, event_count = $3, cutoff_timestamp = $4, object_key = $5, object_sha256 = $6, object_bytes = $7,
+		    attempts = attempts + 1, last_error = '', verified_at = now(), updated_at = now()
+		WHERE id = $1 AND state = 'pending'`, intent.ID, ids, len(publication.EventIDs), publication.CutoffTimestamp, publication.ObjectKey, publication.ObjectSHA256, publication.ObjectBytes)
+	if err != nil {
+		return intent, err
+	}
+	if result.RowsAffected() != 1 {
+		return intent, fmt.Errorf("evidence intent %s changed during publication", intent.ID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return intent, err
+	}
+	return db.EvidenceIntent(ctx, intent.ID)
+}
+
+// EvidencePublication is the verified object identity and exact cutoff.
+type EvidencePublication struct {
+	EventIDs        []string
+	CutoffTimestamp *time.Time
+	ObjectKey       string
+	ObjectSHA256    string
+	ObjectBytes     int64
+}
+
+func truncateError(message string) string {
+	if len(message) > 1000 {
+		return message[:1000]
+	}
+	return message
+}
+
+func loadEvidenceSource(ctx context.Context, tx pgx.Tx, intent EvidenceIntent) (EvidenceSource, error) {
+	var source EvidenceSource
+	if intent.OperationID != "" {
+		if err := tx.QueryRow(ctx, `SELECT row_to_json(o)::text::jsonb, o.kind FROM operations o WHERE o.id = $1`, intent.OperationID).Scan(&source.OperationJSON, &source.OperationKind); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				if intent.SubjectKind == "operation" {
+					return source, fmt.Errorf("operation evidence intent %s operation is missing", intent.ID)
+				}
+			} else {
+				return source, err
+			}
+		}
+		var acceptance AcceptanceEvidenceRow
+		var receipt *string
+		err := tx.QueryRow(ctx, `SELECT id, request_identity_id, request_receipt_id, fingerprint_version, fingerprint_digest, request_canonical_bytes, canonical_bytes,
+			canonical_digest, signing_algorithm, signing_key_id, signature FROM operation_acceptance_intents WHERE operation_id = $1`, intent.OperationID).Scan(
+			&acceptance.IntentID, &acceptance.RequestIdentityID, &receipt, &acceptance.FingerprintVersion, &acceptance.FingerprintDigest,
+			&acceptance.RequestCanonicalBytes, &acceptance.CanonicalBytes, &acceptance.CanonicalDigest, &acceptance.SigningAlgorithm, &acceptance.SigningKeyID, &acceptance.Signature)
+		switch {
+		case err == nil:
+			if receipt != nil {
+				acceptance.RequestReceiptID = *receipt
+			}
+			source.Acceptance = &acceptance
+		case !errors.Is(err, pgx.ErrNoRows):
+			return source, err
+		}
+		if intent.SubjectKind == "operation" && source.Acceptance == nil {
+			return source, fmt.Errorf("operation evidence intent %s has no signed acceptance", intent.ID)
+		}
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(row_to_json(f) ORDER BY f.created_at, f.id), '[]'::jsonb)::text::jsonb
+			FROM operation_effects f WHERE f.operation_id = $1`, intent.OperationID).Scan(&source.EffectsJSON); err != nil {
+			return source, err
+		}
+		if source.OperationKind == PrivateInvocationOperationKind {
+			if err := tx.QueryRow(ctx, `SELECT row_to_json(f)::text::jsonb FROM func_executions f
+				WHERE f.id = $1`, intent.OperationID).Scan(&source.FunctionExecutionJSON); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return source, fmt.Errorf("function operation evidence intent %s has no execution projection", intent.ID)
+				}
+				return source, err
+			}
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(row_to_json(a) ORDER BY a.stage), '[]'::jsonb)::text::jsonb
+				FROM function_invocation_effect_attempts a WHERE a.operation_id = $1`, intent.OperationID).Scan(&source.FunctionEffectAttemptsJSON); err != nil {
+				return source, err
+			}
+		}
+	}
+	if intent.SubjectKind == "saga" {
+		_ = tx.QueryRow(ctx, `SELECT id FROM deployments WHERE saga_id = $1 ORDER BY started_at DESC LIMIT 1`, intent.SubjectID).Scan(&source.DeploymentID)
+	}
+	if intent.SubjectKind != "saga" {
+		return source, nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT e.id, e.saga_id, e.timestamp, e.source, e.app, e.category, e.action, e.message, e.metadata
+		FROM saga_events e
+		WHERE e.saga_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents j WHERE j.subject_kind = 'saga' AND j.subject_id = e.saga_id AND j.id <> $2 AND j.event_ids ? e.id)
+		ORDER BY e.timestamp, e.id`, intent.SubjectID, intent.ID)
+	if err != nil {
+		return source, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event EvidenceEvent
+		var metadata []byte
+		if err := rows.Scan(&event.ID, &event.SagaID, &event.Timestamp, &event.Source, &event.App, &event.Category, &event.Action, &event.Message, &metadata); err != nil {
+			return source, err
+		}
+		if len(metadata) > 0 {
+			if err := json.Unmarshal(metadata, &event.Metadata); err != nil {
+				return source, fmt.Errorf("saga event %s has malformed metadata", event.ID)
+			}
+		}
+		source.Events = append(source.Events, event)
+	}
+	return source, rows.Err()
+}
+
+// EvidenceIntent reads one intent.
+func (db *DB) EvidenceIntent(ctx context.Context, id string) (EvidenceIntent, error) {
+	return scanEvidenceIntent(db.Pool.QueryRow(ctx, `SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents WHERE id = $1`, id))
+}
+
+// EvidenceIntentsForSubject lists a subject's intents by sequence.
+func (db *DB) EvidenceIntentsForSubject(ctx context.Context, kind, subjectID string) ([]EvidenceIntent, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents WHERE subject_kind = $1 AND subject_id = $2 ORDER BY sequence`, kind, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EvidenceIntent
+	for rows.Next() {
+		intent, err := scanEvidenceIntent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, intent)
+	}
+	return out, rows.Err()
+}
+
+// EvidenceHolds returns the reasons a verified bundle's events must stay
+// hot. An empty result permits pruning. Holds (retention handoff):
+//   - the saga's operation is non-terminal, needs manual recovery, awaits
+//     external effect recovery, or has unresolved effects;
+//   - the saga's deployment is non-terminal, or is one of the app's two
+//     latest deployed deployments (current and rollback candidate);
+//   - the operation finished less than minAge ago (replay/incident margin);
+//   - the schema still admits hot-only (pre-archive) readers.
+func evidenceHolds(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, intent EvidenceIntent, minAge time.Duration) ([]string, error) {
+	cronTriggerCorrectionProof := `o.kind='app.cron-trigger' AND o.status='failed'
+		AND f.operation_id=o.id AND f.stage='app.cron-trigger.nomad' AND f.lifecycle='completed' AND f.outcome='succeeded'
+		AND EXISTS (
+			SELECT 1 FROM operations r
+			JOIN evidence_archive_intents i ON i.subject_kind='saga' AND i.subject_id=r.saga_id
+				AND i.operation_id=r.id AND i.state IN ('verified','pruned')
+			WHERE r.kind='app.cron-trigger-reconcile' AND r.status='succeeded' AND r.app=o.app
+				AND r.payload->>'sourceOperationId'=o.id AND r.payload->>'effectId'=f.id
+				AND r.payload->>'evalId'=f.runtime_instance_id AND r.payload->>'jobId'=o.payload->>'jobId'
+				AND r.metadata->>'sourceOperationId'=o.id AND r.metadata->>'effectId'=f.id
+				AND r.metadata->>'evalId'=f.runtime_instance_id
+				AND COALESCE(r.metadata->>'observedAt','')<>''
+				AND EXISTS(SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id=r.id)
+		)`
+	cronTriggerManualResolved := `EXISTS(SELECT 1 FROM operation_effects f WHERE f.operation_id=o.id AND (` + cronTriggerCorrectionProof + `))`
+	var holds []string
+	check := func(reason, query string, args ...any) error {
+		var held bool
+		if err := q.QueryRow(ctx, query, args...).Scan(&held); err != nil {
+			return err
+		}
+		if held {
+			holds = append(holds, reason)
+		}
+		return nil
+	}
+	checks := []struct {
+		reason, query string
+	}{
+		{"operation-active", `SELECT EXISTS (SELECT 1 FROM operations WHERE saga_id = $1 AND status NOT IN ` + terminalStatusSQL + `)`},
+		{"manual-recovery", `SELECT EXISTS (
+			SELECT 1 FROM operations o
+			WHERE o.saga_id = $1 AND (
+				COALESCE(o.metadata->>'externalEffectRecoveryPending' = 'true', false)
+				OR (
+					COALESCE(o.metadata->>'manualRecoveryRequired' = 'true', false)
+					AND NOT (
+						o.kind IN ('app.deploy', 'app.rollback')
+						AND o.status = 'failed'
+						AND o.last_error = 'operation executor lease expired'
+						AND EXISTS (
+							SELECT 1
+							FROM operations r
+							JOIN evidence_archive_intents i ON i.subject_kind = 'saga'
+								AND i.subject_id = r.saga_id
+								AND i.operation_id = r.id
+								AND i.state IN ('verified', 'pruned')
+							WHERE r.kind = 'app.deployment-reconcile'
+								AND r.status = 'succeeded'
+								AND r.app = o.app
+								AND r.payload->>'sourceOperationId' = o.id
+								AND r.payload->>'deploymentId' = o.payload->>'deploymentId'
+								AND r.metadata->>'sourceOperationId' = o.id
+								AND r.metadata->>'deploymentId' = o.payload->>'deploymentId'
+								AND r.metadata->>'imageTag' = r.payload->>'imageTag'
+								AND r.metadata->>'specDigest' = r.payload->>'specDigest'
+								AND COALESCE(r.metadata->>'observedAt', '') <> ''
+								AND EXISTS (SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = r.id)
+								AND EXISTS (
+									SELECT 1 FROM deployments d
+									WHERE d.id = r.payload->>'deploymentId'
+										AND d.app = r.app
+										AND d.saga_id = o.saga_id
+										AND d.status = 'deployed'
+										AND d.finished_at IS NOT NULL
+										AND d.image_tag = r.payload->>'imageTag'
+										AND d.spec_digest = r.payload->>'specDigest'
+										AND EXISTS (SELECT 1 FROM deployment_regions dr WHERE dr.deployment_id = d.id)
+										AND NOT EXISTS (
+											SELECT 1 FROM deployment_regions dr
+											WHERE dr.deployment_id = d.id
+												AND (dr.status <> 'deployed' OR dr.active_weight <> dr.desired_weight OR dr.eval_id = '')
+										)
+								)
+						)
+					)
+				)
+			) AND NOT (` + cronTriggerManualResolved + `)
+		)`},
+		{"unresolved-effect", `SELECT EXISTS (SELECT 1 FROM operation_effects f JOIN operations o ON o.id = f.operation_id WHERE o.saga_id = $1 AND f.lifecycle <> 'resolved'
+			AND NOT (` + cronTriggerCorrectionProof + `))`},
+		{"deployment-active", `SELECT EXISTS (SELECT 1 FROM deployments WHERE saga_id = $1 AND status NOT IN ('deployed', 'failed'))`},
+		{"deployment-current-or-rollback", `SELECT EXISTS (SELECT 1 FROM deployments d WHERE d.saga_id = $1 AND d.status = 'deployed' AND d.id IN (
+			SELECT id FROM deployments x WHERE x.app = d.app AND x.status = 'deployed' ORDER BY x.started_at DESC LIMIT 2))`},
+	}
+	for _, c := range checks {
+		if err := check(c.reason, c.query, intent.SubjectID); err != nil {
+			return nil, err
+		}
+	}
+	if err := check("retention-age", `SELECT EXISTS (SELECT 1 FROM operations WHERE saga_id = $1 AND (finished_at IS NULL OR finished_at > now() - $2::interval))`, intent.SubjectID, minAge.String()); err != nil {
+		return nil, err
+	}
+	// Hot-only (contract-1) readers must be retired before history leaves
+	// the hot table; migration 7 raises the floor, this re-proves it.
+	if err := check("legacy-readers-admitted", `SELECT NOT EXISTS (SELECT 1 FROM norn_schema_compatibility WHERE singleton AND minimum_reader_version >= $1)`, EvidenceArchiveReaderVersion); err != nil {
+		return nil, err
+	}
+	// The floor only stops old binaries from starting. Already-running ones
+	// are visible as sessions of the control role on this database that do
+	// not declare an archive-aware reader contract (pre-archive binaries set
+	// no declaration at all); any such session holds pruning.
+	if err := check("unretired-readers-connected", unretiredReaderSessionsSQL, EvidenceArchiveReaderVersion); err != nil {
+		return nil, err
+	}
+	return holds, nil
+}
+
+const unretiredReaderSessionsSQL = `SELECT EXISTS (
+	SELECT 1 FROM pg_stat_activity
+	WHERE datname = current_database() AND usename = current_user AND backend_type = 'client backend' AND pid <> pg_backend_pid()
+	  AND coalesce(substring(application_name from '^norn/reader=([0-9]+)/')::int, 0) < $1)`
+
+// UnretiredReaderSessions lists the application names of control-role
+// sessions that hold pruning because they declare no archive-aware reader
+// contract.
+func (db *DB) UnretiredReaderSessions(ctx context.Context) ([]string, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT coalesce(nullif(application_name, ''), '(unnamed)') FROM pg_stat_activity
+		WHERE datname = current_database() AND usename = current_user AND backend_type = 'client backend' AND pid <> pg_backend_pid()
+		  AND coalesce(substring(application_name from '^norn/reader=([0-9]+)/')::int, 0) < $1
+		ORDER BY 1`, EvidenceArchiveReaderVersion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// EvidenceHolds reports the current holds on an intent.
+func (db *DB) EvidenceHolds(ctx context.Context, intent EvidenceIntent, minAge time.Duration) ([]string, error) {
+	return evidenceHolds(ctx, db.Pool, intent, minAge)
+}
+
+// PruneVerifiedEvidence deletes exactly the saga events recorded in a
+// verified bundle and records the pruned watermark. It never holds locks
+// across external I/O:
+//  1. holds are checked without locks (cheap early refusal);
+//  2. verify re-proves the archived object's recorded identity (external);
+//  3. a short deletion transaction locks the intent, the saga's operation
+//     and deployment rows and the app's deployed rows (so writers that would
+//     create a hold — a recovery flag, a new effect row through its foreign
+//     key, a status change — are serialized with the deletion), re-checks
+//     every hold including the reader floor and connected readers, and only
+//     then deletes. A hold committed during verification is therefore seen.
+func (db *DB) PruneVerifiedEvidence(ctx context.Context, intentID string, minAge time.Duration, verify func(context.Context, EvidenceIntent) error) (int, []string, error) {
+	intent, err := db.EvidenceIntent(ctx, intentID)
+	if err != nil {
+		return 0, nil, err
+	}
+	if intent.State != "verified" {
+		return 0, nil, fmt.Errorf("evidence intent %s is %s, not verified", intent.ID, intent.State)
+	}
+	if holds, err := evidenceHolds(ctx, db.Pool, intent, minAge); err != nil || len(holds) > 0 {
+		return 0, holds, err
+	}
+	if err := verify(ctx, intent); err != nil {
+		return 0, nil, fmt.Errorf("archived object failed verification before pruning: %w", err)
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, nil, err
+	}
+	defer tx.Rollback(ctx)
+	locked, err := scanEvidenceIntent(tx.QueryRow(ctx, `SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents WHERE id = $1 FOR UPDATE`, intentID))
+	if err != nil {
+		return 0, nil, err
+	}
+	if locked.State != "verified" || locked.ObjectSHA256 != intent.ObjectSHA256 || !equalStrings(locked.EventIDs, intent.EventIDs) {
+		return 0, nil, fmt.Errorf("evidence intent %s changed during verification", intent.ID)
+	}
+	for _, lock := range []string{
+		`SELECT 1 FROM operations WHERE saga_id = $1 FOR UPDATE`,
+		`SELECT 1 FROM deployments WHERE saga_id = $1 FOR UPDATE`,
+		`SELECT 1 FROM deployments WHERE status = 'deployed' AND app IN (SELECT app FROM deployments WHERE saga_id = $1) FOR SHARE`,
+	} {
+		if _, err := tx.Exec(ctx, lock, intent.SubjectID); err != nil {
+			return 0, nil, err
+		}
+	}
+	holds, err := evidenceHolds(ctx, tx, locked, minAge)
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(holds) > 0 {
+		return 0, holds, nil
+	}
+	ids, _ := json.Marshal(intent.EventIDs)
+	result, err := tx.Exec(ctx, `DELETE FROM saga_events WHERE saga_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb))`, intent.SubjectID, ids)
+	if err != nil {
+		return 0, nil, err
+	}
+	pruned := int(result.RowsAffected())
+	if _, err := tx.Exec(ctx, `UPDATE evidence_archive_intents SET state = 'pruned', pruned_at = now(), pruned_events = $2, updated_at = now() WHERE id = $1`, intent.ID, pruned); err != nil {
+		return 0, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, nil, err
+	}
+	return pruned, nil, nil
+}
+
+// RetireVerifiedOperationAcceptance removes only the hot signed acceptance
+// payload and its logical-byte reservation for an archive-supported Fleet
+// GitHub receipt. It leaves the operation, immutable archive index, and the
+// expired request identity fingerprint tombstone in place. Verification runs
+// before the short transaction; the transaction then re-proves every mutable
+// condition and releases the reservation with the payload atomically.
+func (db *DB) RetireVerifiedOperationAcceptance(ctx context.Context, intentID string, verify func(context.Context, EvidenceIntent) error) (bool, []string, error) {
+	intent, err := db.EvidenceIntent(ctx, intentID)
+	if err != nil {
+		return false, nil, err
+	}
+	if intent.State != "verified" || intent.SubjectKind != "operation" {
+		return false, nil, nil
+	}
+	if err := verify(ctx, intent); err != nil {
+		return false, nil, fmt.Errorf("archived object failed verification before acceptance retirement: %w", err)
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, nil, err
+	}
+	defer tx.Rollback(ctx)
+	locked, err := scanEvidenceIntent(tx.QueryRow(ctx, `SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents WHERE id=$1 FOR UPDATE`, intentID))
+	if err != nil {
+		return false, nil, err
+	}
+	if locked.State != "verified" || locked.SubjectKind != "operation" || locked.ObjectSHA256 != intent.ObjectSHA256 {
+		return false, []string{"archive-intent-changed"}, nil
+	}
+	var operationID, acceptanceID, identityID, receiptID, status, kind, sagaID string
+	var recoveryHold, effectHold bool
+	err = tx.QueryRow(ctx, `SELECT o.id,ai.id,ai.request_identity_id,COALESCE(ai.request_receipt_id,''),o.status,o.kind,o.saga_id,
+		COALESCE(o.metadata->>'manualRecoveryRequired'='true',false) OR COALESCE(o.metadata->>'externalEffectRecoveryPending'='true',false),
+		EXISTS(SELECT 1 FROM operation_effects f WHERE f.operation_id=o.id AND f.lifecycle <> 'resolved')
+		FROM operations o
+		JOIN operation_acceptance_intents ai ON ai.operation_id=o.id
+		JOIN operation_request_identities ri ON ri.id=ai.request_identity_id
+		WHERE o.id=$1 FOR UPDATE OF o,ai,ri`, locked.OperationID).Scan(
+		&operationID, &acceptanceID, &identityID, &receiptID, &status, &kind, &sagaID, &recoveryHold, &effectHold)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, []string{"acceptance-already-retired"}, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	holds := []string{}
+	if locked.SubjectID != operationID || sagaID != "" || (kind != "fleet.github.pull-request" && kind != "fleet.github.apply-dispatch") {
+		holds = append(holds, "unsupported-operation-subject")
+	}
+	if status != "succeeded" && status != "failed" && status != "canceled" {
+		holds = append(holds, "operation-active")
+	}
+	if recoveryHold {
+		holds = append(holds, "manual-recovery")
+	}
+	if effectHold {
+		holds = append(holds, "unresolved-effect")
+	}
+	var legacyReaders bool
+	if err := tx.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM norn_schema_compatibility WHERE singleton AND minimum_reader_version >= $1)`, OperationAcceptanceRetirementReaderVersion).Scan(&legacyReaders); err != nil {
+		return false, nil, err
+	}
+	if legacyReaders {
+		holds = append(holds, "legacy-readers-admitted")
+	}
+	if err := tx.QueryRow(ctx, unretiredReaderSessionsSQL, OperationAcceptanceRetirementReaderVersion).Scan(&legacyReaders); err != nil {
+		return false, nil, err
+	}
+	if legacyReaders {
+		holds = append(holds, "unretired-readers-connected")
+	}
+	if len(holds) > 0 {
+		return false, holds, nil
+	}
+	expired, _, err := expireReplayIdentityInTx(ctx, tx, identityID)
+	if err != nil {
+		return false, nil, err
+	}
+	if !expired {
+		return false, []string{"replay-not-expired"}, nil
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO retired_operation_acceptances (operation_id,request_identity_id,request_receipt_id,archive_intent_id)
+		VALUES ($1,$2,NULLIF($3,''),$4)`, operationID, identityID, receiptID, locked.ID); err != nil {
+		return false, nil, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM signed_acceptance_byte_reservations WHERE acceptance_intent_id=$1`, acceptanceID); err != nil {
+		return false, nil, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM operation_acceptance_intents WHERE operation_id=$1`, operationID); err != nil {
+		return false, nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE evidence_archive_intents SET state='pruned',pruned_at=now(),pruned_events=0,updated_at=now() WHERE id=$1`, locked.ID); err != nil {
+		return false, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, nil, err
+	}
+	return true, nil, nil
+}
+
+// PrunedEvidenceIntents pages through pruned saga bundles holding events,
+// newest cutoff first, optionally for one app ("" for all apps).
+func (db *DB) PrunedEvidenceIntents(ctx context.Context, app string, offset, limit int) ([]EvidenceIntent, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents
+		WHERE subject_kind = 'saga' AND state = 'pruned' AND event_count > 0 AND ($1 = '' OR app = $1)
+		ORDER BY cutoff_timestamp DESC NULLS LAST, id DESC OFFSET $2 LIMIT $3`, app, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EvidenceIntent
+	for rows.Next() {
+		intent, err := scanEvidenceIntent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, intent)
+	}
+	return out, rows.Err()
+}
+
+// VerifiedEvidenceIntents lists verified (not yet pruned) intents, oldest
+// first.
+func (db *DB) VerifiedEvidenceIntents(ctx context.Context, limit int) ([]EvidenceIntent, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents WHERE state = 'verified' ORDER BY verified_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EvidenceIntent
+	for rows.Next() {
+		intent, err := scanEvidenceIntent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, intent)
+	}
+	return out, rows.Err()
+}
+
+// RestoreEvidenceIntent records a pruned bundle found in the archive (index
+// recovery without historical PostgreSQL). It never overwrites an existing
+// row for the same subject and sequence.
+func (db *DB) RestoreEvidenceIntent(ctx context.Context, intent EvidenceIntent) (bool, error) {
+	ids, err := json.Marshal(intent.EventIDs)
+	if err != nil {
+		return false, err
+	}
+	result, err := db.Pool.Exec(ctx, `
+		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state, event_ids, event_count, cutoff_timestamp,
+			object_key, object_sha256, object_bytes, verified_at, pruned_at, last_error)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pruned', $7, $8, $9, $10, $11, $12, now(), now(), 'restored from archive index')
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`,
+		intent.ID, intent.SubjectKind, intent.SubjectID, intent.App, intent.OperationID, intent.Sequence, ids, len(intent.EventIDs), intent.CutoffTimestamp,
+		intent.ObjectKey, intent.ObjectSHA256, intent.ObjectBytes)
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
+}

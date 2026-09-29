@@ -33,9 +33,6 @@ func (c *AppleConnector) Validate(spec *model.InfraSpec, production bool) error 
 	if production {
 		return fmt.Errorf("apple-container connector is development-only")
 	}
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("apple-container connector requires macOS")
-	}
 	if c == nil || c.Engine == nil {
 		return fmt.Errorf("apple-container connector is not configured")
 	}
@@ -63,6 +60,9 @@ func (c *AppleConnector) Validate(spec *model.InfraSpec, production bool) error 
 		if process.Canary != nil && process.Canary.Count > 0 {
 			return fmt.Errorf("process %s uses canary deployment, which is not yet supported by the apple-container connector", name)
 		}
+	}
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("apple-container connector requires macOS")
 	}
 	if err := c.Engine.Healthy(); err != nil {
 		return fmt.Errorf("apple-container runtime is unavailable: %w", err)

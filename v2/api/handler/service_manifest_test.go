@@ -41,6 +41,9 @@ processes:
   nightly:
     schedule: "0 3 * * *"
     command: /contextdb snapshot export
+  thumbnail:
+    function:
+      timeout: 30s
 endpoints:
   - url: http://127.0.0.1:7701
 `)
@@ -119,6 +122,12 @@ endpoints:
 	}
 	if got := len(cron.Endpoints); got != 0 {
 		t.Fatalf("cron endpoints = %d, want 0", got)
+	}
+	if cron.ExpectedState != "scheduled" || cron.Schedule != "0 3 * * *" {
+		t.Fatalf("cron expected state = %q schedule = %q, want scheduled 0 3 * * *", cron.ExpectedState, cron.Schedule)
+	}
+	if function := entries["thumbnail"]; function.Type != "function" || function.ExpectedState != "on_demand" {
+		t.Fatalf("function = %+v, want on-demand function", function)
 	}
 }
 

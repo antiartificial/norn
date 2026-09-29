@@ -11,17 +11,23 @@ type ServiceManifest struct {
 }
 
 type ServiceManifestEntry struct {
-	Name         string              `json:"name"`
-	App          string              `json:"app"`
-	Process      string              `json:"process"`
-	Type         string              `json:"type"`
-	Status       string              `json:"status"`
-	HealthPath   string              `json:"healthPath,omitempty"`
-	Metrics      *ServiceMetrics     `json:"metrics,omitempty"`
-	Reachability ServiceReachability `json:"reachability"`
-	Endpoints    []Endpoint          `json:"endpoints,omitempty"`
-	Instances    []ServiceInstance   `json:"instances,omitempty"`
-	Metadata     map[string]string   `json:"metadata,omitempty"`
+	Name    string `json:"name"`
+	App     string `json:"app"`
+	Process string `json:"process"`
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	// ExpectedState distinguishes a continuously running service from work that
+	// is intentionally dormant between scheduled or on-demand executions.
+	// Consumers should not turn those expected-idle states into incidents merely
+	// because no Consul instance is present.
+	ExpectedState string              `json:"expectedState,omitempty"`
+	Schedule      string              `json:"schedule,omitempty"`
+	HealthPath    string              `json:"healthPath,omitempty"`
+	Metrics       *ServiceMetrics     `json:"metrics,omitempty"`
+	Reachability  ServiceReachability `json:"reachability"`
+	Endpoints     []Endpoint          `json:"endpoints,omitempty"`
+	Instances     []ServiceInstance   `json:"instances,omitempty"`
+	Metadata      map[string]string   `json:"metadata,omitempty"`
 }
 
 type ServiceManifestContract struct {

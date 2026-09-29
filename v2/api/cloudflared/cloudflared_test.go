@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsPublicEndpoint(t *testing.T) {
@@ -32,6 +34,53 @@ func TestIsPublicEndpoint(t *testing.T) {
 	}
 }
 
+func TestRestartTargetsManagedCloudflaredAgent(t *testing.T) {
+	bin := t.TempDir()
+	validator := filepath.Join(bin, "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	previousBinary, previousLabel := binaryPath, launchLabel
+	SetBinaryPath(validator)
+	SetLaunchLabel("com.norn.cloudflared")
+	t.Cleanup(func() { binaryPath, launchLabel = previousBinary, previousLabel })
+	output := filepath.Join(t.TempDir(), "launchctl-args")
+	stub := filepath.Join(bin, "launchctl")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncase \"$1\" in\n  kickstart) printf '%s\\n' \"$@\" > \"$NORN_TEST_LAUNCHCTL_ARGS\" ;;\n  print) printf 'state = %s\\n' \"$NORN_TEST_LAUNCHCTL_STATE\" ;;\n  *) exit 1 ;;\nesac\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("NORN_TEST_LAUNCHCTL_ARGS", output)
+	t.Setenv("NORN_TEST_LAUNCHCTL_STATE", "running")
+	if err := Restart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("kickstart\n-k\ngui/%d/com.norn.cloudflared\n", os.Getuid())
+	if string(data) != want {
+		t.Fatalf("launchctl args=%q want=%q", strings.TrimSpace(string(data)), strings.TrimSpace(want))
+	}
+	t.Setenv("NORN_TEST_LAUNCHCTL_STATE", "waiting")
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := Restart(ctx); err == nil {
+		t.Fatal("waiting managed agent was treated as restarted")
+	}
+}
+
+func TestLaunchTargetUsesConfiguredLabel(t *testing.T) {
+	previous := launchLabel
+	SetLaunchLabel("com.example.cloudflared")
+	t.Cleanup(func() { launchLabel = previous })
+	want := fmt.Sprintf("gui/%d/com.example.cloudflared", os.Getuid())
+	if got := launchTarget(); got != want {
+		t.Fatalf("launch target=%q want=%q", got, want)
+	}
+}
+
 func TestPrunePrivateIngress(t *testing.T) {
 	cfg := &Config{Ingress: []IngressRule{
 		{Hostname: "api.example.com", Service: "http://192.0.2.10:8080"},
@@ -51,13 +100,13 @@ func TestPrunePrivateIngress(t *testing.T) {
 }
 
 func TestApplyConfigUsesPrivatePermissions(t *testing.T) {
-	validator := filepath.Join(t.TempDir(), "cloudflared")
-	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	previous := configPath
 	previousBinary := binaryPath
 	t.Cleanup(func() { configPath, binaryPath = previous, previousBinary })
+	validator := filepath.Join(t.TempDir(), "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	SetBinaryPath(validator)
 	path := filepath.Join(t.TempDir(), "config.yml")
 	SetConfigPath(path)
@@ -80,39 +129,25 @@ func TestApplyConfigUsesPrivatePermissions(t *testing.T) {
 }
 
 func TestApplyConfigValidationFailurePreservesPreviousFile(t *testing.T) {
-	dir := t.TempDir()
-	destination := filepath.Join(dir, "config.yml")
-	previous := []byte("tunnel: previous\n")
-	if err := os.WriteFile(destination, previous, 0o600); err != nil {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yml")
+	before := []byte("tunnel: previous\n")
+	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
-	validator := filepath.Join(dir, "cloudflared")
-	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	validator := filepath.Join(root, "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	previousConfig, previousBinary := configPath, binaryPath
-	SetConfigPath(destination)
+	SetConfigPath(path)
 	SetBinaryPath(validator)
 	t.Cleanup(func() { configPath, binaryPath = previousConfig, previousBinary })
-
 	if err := ApplyConfig(context.Background(), &Config{Tunnel: "replacement"}); err == nil {
-		t.Fatal("ApplyConfig succeeded with a failing validator")
+		t.Fatal("invalid candidate replaced live config")
 	}
-	data, err := os.ReadFile(destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != string(previous) {
-		t.Fatalf("previous config changed after validation failure: %q", data)
-	}
-}
-
-func TestLaunchTargetUsesCurrentUIDAndConfiguredLabel(t *testing.T) {
-	previous := launchLabel
-	SetLaunchLabel("com.example.cloudflared")
-	t.Cleanup(func() { launchLabel = previous })
-	want := fmt.Sprintf("gui/%d/com.example.cloudflared", os.Getuid())
-	if got := launchTarget(); got != want {
-		t.Fatalf("launchTarget() = %q, want %q", got, want)
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("live config=%q err=%v", after, err)
 	}
 }

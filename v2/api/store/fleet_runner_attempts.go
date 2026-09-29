@@ -42,8 +42,8 @@ func (db *DB) CreateFleetRunnerAttempt(ctx context.Context, attempt *model.Fleet
 			id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
 			commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
 			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
-			heartbeat_at, updated_at, finished_at, last_error, metadata
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+			heartbeat_at, updated_at, finished_at, last_error, metadata, heartbeat_expires_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$21::timestamptz + ($17::int * interval '1 second'))
 	`, attempt.ID, attempt.PlanID, attempt.Attempt, attempt.RootAttemptID, attempt.SourceDispatchRunID, attempt.PilotRunID, attempt.Recovery, attempt.RunnerAttemptID, attempt.Status, attempt.CurrentPhase,
 		attempt.CommitSHA, attempt.PlanSHA256, attempt.WorkflowURL, attempt.PrincipalSubject, attempt.RetryOf,
 		attempt.HeartbeatSequence, attempt.HeartbeatTimeoutSeconds, attempt.Revision, attempt.StartedAt, attempt.PhaseStartedAt,
@@ -116,6 +116,7 @@ func (db *DB) HeartbeatFleetRunnerAttempt(ctx context.Context, id, phase string,
 	row := db.Pool.QueryRow(ctx, `
 		UPDATE fleet_runner_attempts
 		SET status = 'running', heartbeat_sequence = $1, heartbeat_at = now(),
+		    heartbeat_expires_at = now() + (heartbeat_timeout_seconds * interval '1 second'),
 		    updated_at = now(), revision = revision + 1,
 		    metadata = metadata || jsonb_build_object('heartbeatMessage', $2::text)
 		WHERE id = $3 AND current_phase = $4 AND revision = $5
@@ -142,6 +143,7 @@ func (db *DB) AdvanceFleetRunnerAttempt(ctx context.Context, id, fromPhase, toPh
 	row := db.Pool.QueryRow(ctx, `
 		UPDATE fleet_runner_attempts a
 		SET current_phase = $1, status = $2, updated_at = now(), heartbeat_at = now(),
+		    heartbeat_expires_at = now() + (heartbeat_timeout_seconds * interval '1 second'),
 		    phase_started_at = CASE WHEN $2 = 'succeeded' THEN a.phase_started_at ELSE now() END,
 		    revision = revision + 1, finished_at = $3
 		WHERE a.id = $4 AND a.current_phase = $5 AND a.revision = $6
@@ -289,8 +291,8 @@ func (db *DB) RetryFleetRunnerAttempt(ctx context.Context, previous *model.Fleet
 			id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
 			commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
 			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
-			heartbeat_at, updated_at, finished_at, last_error, metadata
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+			heartbeat_at, updated_at, finished_at, last_error, metadata, heartbeat_expires_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$21::timestamptz + ($17::int * interval '1 second'))
 	`, replacement.ID, replacement.PlanID, replacement.Attempt, replacement.RootAttemptID, replacement.SourceDispatchRunID, replacement.PilotRunID, replacement.Recovery, replacement.RunnerAttemptID,
 		replacement.Status, replacement.CurrentPhase, replacement.CommitSHA, replacement.PlanSHA256,
 		replacement.WorkflowURL, replacement.PrincipalSubject, replacement.RetryOf,
@@ -363,8 +365,8 @@ func (db *DB) RecoverFleetRunnerAttempt(ctx context.Context, previous *model.Fle
 			id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
 			commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
 			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
-			heartbeat_at, updated_at, finished_at, last_error, metadata
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+			heartbeat_at, updated_at, finished_at, last_error, metadata, heartbeat_expires_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$21::timestamptz + ($17::int * interval '1 second'))
 	`, recovery.ID, recovery.PlanID, recovery.Attempt, recovery.RootAttemptID, recovery.SourceDispatchRunID, recovery.PilotRunID, recovery.Recovery, recovery.RunnerAttemptID,
 		recovery.Status, recovery.CurrentPhase, recovery.CommitSHA, recovery.PlanSHA256,
 		recovery.WorkflowURL, recovery.PrincipalSubject, recovery.RetryOf,

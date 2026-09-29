@@ -17,6 +17,11 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path}`
 }
 
+export function apiAuthority(): string {
+  const url = new URL(apiUrl('/'), window.location.href)
+  return `${url.origin}${url.pathname.replace(/\/$/, '')}`
+}
+
 // Enrollment tokens deliberately live only in this module. They are never
 // accepted from URL parameters or persisted in browser storage.
 export function setMemoryAccessToken(token: string): void {

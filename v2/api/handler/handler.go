@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 
 	"norn/v2/api/beacon"
 	"norn/v2/api/config"
@@ -20,6 +22,7 @@ import (
 	"norn/v2/api/engine"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/hub"
+	"norn/v2/api/logcollect"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/privateattestation"
@@ -75,6 +78,17 @@ type Handler struct {
 	auditPruneAt                    time.Time
 	wakeLocks                       sync.Map
 	execConns                       sync.Map
+	evidenceReserveMu               sync.Mutex
+	evidenceReserveAt               time.Time
+	evidenceReserveStatus           store.EvidenceReserveStatus
+	logSpool                        *logcollect.Spool
+	execOwnerOnce                   sync.Once
+	execOwnerID                     string
+	execLeaseDurationOverride       time.Duration
+	execWatchIntervalOverride       time.Duration
+	accessTokenLineage              accessTokenLineageResolver
+	operationStore                  store.OperationStore
+	operationStoreError             error
 }
 
 // ConfigurePrivateReleaseSigner installs the staging-only signer after startup
@@ -101,6 +115,20 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		hostMetrics: newHostMetricsCache(defaultHostMetricsSampler, time.Now, defaultHostMetricsSamplePeriod),
 		githubJWKS:  newGitHubJWKCache(),
 		workloads:   connector.NewNomadConsul(n, c),
+		execOwnerID: execRuntimeOwnerID(),
+	}
+	if db != nil && db.Pool != nil {
+		h.accessTokenLineage = db
+		if cfg != nil {
+			if signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...); err == nil {
+				operationStore, storeErr := store.NewPGOperationStore(db, signer, store.AcceptancePolicy{ExpectedAuthority: cfg.ControlAuthority, ReplayTTL: cfg.OperationReplayTTL})
+				if storeErr != nil {
+					h.operationStoreError = storeErr
+				} else {
+					h.operationStore = operationStore
+				}
+			}
+		}
 	}
 	if cfg != nil && githubapp.Configured(fleetGitHubConfig(cfg)) {
 		h.fleetGitHub, h.fleetGitHubConfigError = githubapp.New(fleetGitHubConfig(cfg), nil)
@@ -138,6 +166,33 @@ func (h *Handler) requireNomadConnector(w http.ResponseWriter) bool {
 		return false
 	}
 	return true
+}
+
+// OperationStore exposes the single signed acceptance boundary constructed
+// from this handler's audit-key and authority policy so pipeline producers use
+// the same signer and replay namespace as HTTP handlers.
+func (h *Handler) OperationStore() store.OperationStore {
+	if h == nil {
+		return nil
+	}
+	return h.operationStore
+}
+
+// OperationStoreError reports invalid operation-acceptance policy discovered
+// while assembling the handler. Startup must check it before serving traffic.
+func (h *Handler) OperationStoreError() error {
+	if h == nil {
+		return nil
+	}
+	return h.operationStoreError
+}
+
+func execRuntimeOwnerID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown-host"
+	}
+	return fmt.Sprintf("%s:%d:%s", host, os.Getpid(), uuid.NewString())
 }
 
 func fleetGitHubConfig(cfg *config.Config) githubapp.Config {

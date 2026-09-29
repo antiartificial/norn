@@ -1,0 +1,258 @@
+name: Norn CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: norn-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-and-cli:
+    name: ${{ matrix.component }}
+    runs-on: ubuntu-24.04
+    services:
+      etcd:
+        image: quay.io/coreos/etcd:v3.5.15
+        env:
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
+        ports:
+          - 2379:2379
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: norn_ci
+          POSTGRES_PASSWORD: norn_ci
+          POSTGRES_DB: norn_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U norn_ci -d norn_ci"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            directory: v2/api
+          - component: cli
+            directory: v2/cli
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: ${{ matrix.directory }}/go.mod
+          cache-dependency-path: ${{ matrix.directory }}/go.sum
+      - name: Wait for etcd
+        run: |
+          for ((attempt=0; attempt<30; attempt++)); do
+            if curl --fail --silent http://127.0.0.1:2379/health | grep -q '"health":"true"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - name: Test ${{ matrix.component }}
+        working-directory: ${{ matrix.directory }}
+        env:
+          NORN_TEST_ETCD_ENDPOINTS: ${{ matrix.component == 'api' && 'http://127.0.0.1:2379' || '' }}
+          NORN_TEST_DATABASE_URL: ${{ matrix.component == 'api' && 'postgres://norn_ci:norn_ci@127.0.0.1:5432/norn_ci?sslmode=disable' || '' }}
+        run: go test ./...
+      - name: Test M7 mobility fixture against PostgreSQL
+        if: matrix.component == 'api'
+        working-directory: v2/infra/mobility-fixture
+        env:
+          MOBILITY_TEST_DATABASE_URL: postgres://norn_ci:norn_ci@127.0.0.1:5432/norn_ci?sslmode=disable
+        run: |
+          go test -count=1 ./...
+          python3 -m unittest -v test_compare_state.py
+
+  mobility-fixture-image:
+    name: M7 mobility fixture image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - name: Build deploy-disabled fixture image
+        run: docker build --progress=plain --tag norn/mobility-fixture:ci v2/infra/mobility-fixture
+
+  migration-process-crash:
+    name: M1 migration process-crash recovery
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Rehearse migration API exits and successor recovery in disposable Linux cgroups
+        run: bash v2/scripts/test-pipeline-cgroup-linux.sh
+      - name: Rehearse supervisor containment, timeout and helper death
+        run: bash v2/scripts/test-snapshot-cgroup-linux.sh
+
+  ingress-private-transport:
+    name: M4 private ingress transport
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Pull disposable ingress and etcd images
+        run: |
+          docker pull ubuntu:24.04
+          docker pull quay.io/coreos/etcd:v3.5.17
+      - name: Rehearse private inventory, claimed route and mTLS publication
+        run: python3 v2/api/scripts/qualify-v3-private-ingress-publisher.py
+
+  mobility-local-transfer:
+    name: M6 local mobility transfer and fence
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/infra/mobility-fixture/go.mod
+          cache-dependency-path: v2/infra/mobility-fixture/go.sum
+      - name: Install disposable PostgreSQL 16 tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Rehearse source fence and final transfer
+        env:
+          NORN_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+        run: bash v2/scripts/test-mobility-local-transfer.sh
+
+  api-production-etcd:
+    name: api production etcd TLS RBAC
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Start disposable TLS etcd with scoped RBAC
+        run: v2/api/scripts/etcd-tls-rbac-fixture.sh
+      - name: Prove PG-free production Fleet plan and replay
+        working-directory: v2/api
+        run: go test ./... -run '^TestEtcdFleetRuntimeProductionTLSRBACProcess$' -count=1
+
+  mini-schema-fixture:
+    name: Mini synthetic schema fixture
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.7
+        env:
+          POSTGRES_USER: norn_fixture
+          POSTGRES_PASSWORD: norn_fixture
+          POSTGRES_DB: norn_fixture
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U norn_fixture -d norn_fixture"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Prove synthetic Mini control records and event day through current migrations
+        working-directory: v2/api
+        env:
+          NORN_TEST_DATABASE_URL: postgres://norn_fixture:norn_fixture@127.0.0.1:5432/norn_fixture?sslmode=disable
+        run: go test ./store -run '^TestSyntheticMiniControlUpgradeAndReaderBoundary$' -count=1 -v
+      - name: Verify Mini protected backup producer and proof
+        run: |
+          python3 v2/scripts/test-mini-create-protected-backup.py
+          python3 v2/scripts/test-mini-protected-backup.py
+          python3 v2/scripts/test-mini-private-copy-source.py
+          python3 v2/scripts/test-legacy-baseline-doctor.py
+
+  web:
+    name: web
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6.0.0
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.0.1
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: v2/ui/pnpm-lock.yaml
+      - name: Install web dependencies
+        working-directory: v2/ui
+        run: pnpm install --frozen-lockfile
+      - name: Test web
+        working-directory: v2/ui
+        run: pnpm test
+      - name: Build web
+        working-directory: v2/ui
+        run: pnpm build
+
+  release-bundle:
+    name: release bundle rehearsal
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: |
+            v2/api/go.sum
+            v2/cli/go.sum
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+          cache-dependency-path: v2/ui/pnpm-lock.yaml
+      - name: Verify release helpers
+        run: |
+          python3 v2/scripts/platform-release-manifest_test.py
+          python3 v2/scripts/platform_release_artifact_test.py
+      - name: Verify platform upgrade preflight and promotion lock
+        run: python3 v2/scripts/platform_upgrade_integration_test.py
+      - name: Build, package, sign and import a disposable release
+        run: bash v2/scripts/test-platform-release-bundle.sh
+
+  workflows:
+    name: workflow validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version: '1.26.6'
+      - name: Validate GitHub Actions syntax
+        run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Require immutable third-party action references
+        run: |
+          set -euo pipefail
+          while IFS= read -r action_ref; do
+            [[ "$action_ref" == ./* ]] && continue
+            revision="${action_ref##*@}"
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "action is not pinned to a full lowercase commit SHA: $action_ref" >&2
+              exit 1
+            }
+          done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -exec sed -nE 's/^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*([^[:space:]#]+).*/\1/p' {} +)

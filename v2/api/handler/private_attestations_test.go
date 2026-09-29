@@ -130,7 +130,12 @@ func TestCreatePrivateReleaseAttestationRejectsWrongEnvironmentAndMode(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := privateRouteHandler(t, nil, test.environment, test.mode, app, "personal-owner/private-repo")
-			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, principal, body, "wrong-lane"), http.StatusConflict, "private_attestation_unavailable")
+			bound := principal
+			bound.Environment = test.environment
+			identity := *principal.CI
+			identity.Environment = test.environment
+			bound.CI = &identity
+			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, bound, body, "wrong-lane"), http.StatusConflict, "private_attestation_unavailable")
 		})
 	}
 }
@@ -153,6 +158,84 @@ func TestQualificationResponsesDisableCaching(t *testing.T) {
 	h.QueueReleaseRollback(rollbackRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/rollbacks", nil))
 	if rollbackRecorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("rollback cache policy=%q", rollbackRecorder.Header().Get("Cache-Control"))
+	}
+}
+
+func TestReleaseRollbackFailsClosedWithoutDurableDependencies(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		db       *store.DB
+		pipeline *pipeline.Pipeline
+	}{
+		{name: "missing store", pipeline: &pipeline.Pipeline{}},
+		{name: "missing pipeline", db: &store.DB{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := &Handler{cfg: &config.Config{Environment: "production"}, db: test.db, pipeline: test.pipeline}
+			principal := AccessPrincipal{Scopes: []string{ScopeReleaseRollback}, App: "private-route", Environment: "production"}
+			request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/releases/rollbacks", nil), &principal)
+			recorder := httptest.NewRecorder()
+			router := chi.NewRouter()
+			router.Post("/api/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
+			router.ServeHTTP(recorder, request)
+			requirePrivateRouteProblem(t, recorder, http.StatusServiceUnavailable, "operation_store_unavailable")
+			if recorder.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("rollback cache policy=%q", recorder.Header().Get("Cache-Control"))
+			}
+		})
+	}
+}
+
+func TestScopedReleaseTokenRequiresCurrentControlEnvironment(t *testing.T) {
+	h := &Handler{cfg: &config.Config{Environment: "production"}}
+	for _, test := range []struct {
+		name      string
+		principal AccessPrincipal
+		allowed   bool
+	}{
+		{name: "matching production", principal: AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "production"}, allowed: true},
+		{name: "staging token on production", principal: AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "staging"}},
+		{name: "mismatched CI environment", principal: AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "production", CI: &CIIdentity{Environment: "staging"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/releases/promotions", nil), &test.principal)
+			recorder := httptest.NewRecorder()
+			_, allowed := h.requireReleaseControlScope(recorder, request, ScopeReleasePromote, "private-route")
+			if allowed != test.allowed {
+				t.Fatalf("allowed=%v status=%d", allowed, recorder.Code)
+			}
+			if !test.allowed {
+				requirePrivateRouteProblem(t, recorder, http.StatusForbidden, "release_token_binding_invalid")
+			}
+		})
+	}
+}
+
+func TestReleasePromotionRejectsStagingScopedTokenBeforeRequestProcessing(t *testing.T) {
+	h := &Handler{cfg: &config.Config{Environment: "production"}}
+	principal := AccessPrincipal{Scopes: []string{ScopeReleasePromote}, App: "private-route", Environment: "staging"}
+	request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/releases/promotions", nil), &principal)
+	recorder := httptest.NewRecorder()
+	router := chi.NewRouter()
+	router.Post("/api/v1/apps/{id}/releases/promotions", h.QueueReleasePromotion)
+	router.ServeHTTP(recorder, request)
+	requirePrivateRouteProblem(t, recorder, http.StatusForbidden, "release_token_binding_invalid")
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("promotion cache policy=%q", recorder.Header().Get("Cache-Control"))
+	}
+}
+
+func TestReleaseQualificationFailsClosedWithoutPipeline(t *testing.T) {
+	h := &Handler{cfg: &config.Config{Environment: "staging"}, db: &store.DB{}}
+	principal := AccessPrincipal{Scopes: []string{ScopeReleaseQualify}, App: "private-route", Environment: "staging"}
+	request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/qualifications", nil), &principal)
+	recorder := httptest.NewRecorder()
+	router := chi.NewRouter()
+	router.Post("/api/v1/apps/{id}/qualifications", h.CreateReleaseQualification)
+	router.ServeHTTP(recorder, request)
+	requirePrivateRouteProblem(t, recorder, http.StatusServiceUnavailable, "qualification_signing_unavailable")
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("qualification cache policy=%q", recorder.Header().Get("Cache-Control"))
 	}
 }
 
@@ -236,7 +319,11 @@ func TestCreatePrivateReleaseAttestationRequiresScopedStagingCI(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			principal := privateRoutePrincipal(app)
 			mutate(&principal)
-			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, principal, body, "bad-ci-"+strings.ReplaceAll(name, " ", "-")), http.StatusForbidden, "private_attestation_lane_invalid")
+			expected := "private_attestation_lane_invalid"
+			if name == "token environment" || name == "CI environment" {
+				expected = "release_token_binding_invalid"
+			}
+			requirePrivateRouteProblem(t, invokePrivateRoute(h, app, principal, body, "bad-ci-"+strings.ReplaceAll(name, " ", "-")), http.StatusForbidden, expected)
 		})
 	}
 }
@@ -308,6 +395,7 @@ func TestHandlerRollbackPassesServerOwnedAppToNornVerifier(t *testing.T) {
 	signerRef := "personal-owner/norn/.github/workflows/norn-app-release.yml@" + signerSHA
 	candidate := model.ReleaseCandidate{Repository: "personal-owner/private-repo", RepositoryVisibility: "private", SignerWorkflowRef: signerRef, SignerWorkflowSHA: signerSHA, Attestation: model.ReleaseAttestationIdentity{Mode: "norn-signed-private", Issuer: githubActionsOIDCIssuer, SubjectDigest: digest, MaterialSHA: sourceSHA}}
 	p := &pipeline.Pipeline{
+		RegistryURL:          "registry.example.test/norn",
 		ReleaseAdmissionMode: "attested", ReleaseAttestationTrustMode: "norn-signed-private", ReleaseAttestationIssuer: githubActionsOIDCIssuer, ReleaseAttestationRepositories: []string{candidate.Repository}, ReleaseAttestationWorkflowRefs: []string{signerRef}, ReleaseRequireSBOM: true,
 		VerifyArtifact: func(context.Context, string) error { return nil }, ScanArtifact: func(context.Context, string) error { return nil },
 		VerifyNornPrivateAttestations: func(_ context.Context, _ string, _ string, app string, _ model.ReleaseCandidate) error {
@@ -319,10 +407,10 @@ func TestHandlerRollbackPassesServerOwnedAppToNornVerifier(t *testing.T) {
 	}
 	h := &Handler{pipeline: p}
 	target := &model.Deployment{CommitSHA: sourceSHA, ImageTag: artifact}
-	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "private-route"}, target, candidate); err != nil {
+	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "private-route", Repo: &model.RepoSpec{URL: "https://github.com/personal-owner/private-repo"}}, target, candidate); err != nil {
 		t.Fatalf("handler rejected valid Norn-private rollback: %v", err)
 	}
-	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "another-app"}, target, candidate); err == nil {
+	if err := h.verifyRollbackReleaseArtifact(context.Background(), &model.InfraSpec{App: "another-app", Repo: &model.RepoSpec{URL: "https://github.com/personal-owner/private-repo"}}, target, candidate); err == nil {
 		t.Fatal("handler accepted Norn-private rollback for the wrong app")
 	}
 }
@@ -348,8 +436,15 @@ func TestCreatePrivateReleaseAttestationSuccessReplayAndConflict(t *testing.T) {
 	if err := store.Migrate(database); err != nil {
 		t.Fatal(err)
 	}
+	if err := database.SetEvidenceReservePolicy(context.Background(), store.EvidenceReservePolicy{Enabled: true, MaxPending: 1000000, MaxPendingAge: 50 * 365 * 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordArchiveCapacity(context.Background(), false, ""); err != nil {
+		t.Fatal(err)
+	}
 	app := "private-route-" + strings.ToLower(strings.ReplaceAll(uuid.NewString(), "-", ""))
 	t.Cleanup(func() {
+		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM release_attestation_byte_reservations WHERE operation_id IN (SELECT id FROM operations WHERE app=$1 AND kind='release.attestation')`, app)
 		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM operations WHERE app=$1 AND kind='release.attestation'`, app)
 	})
 	h := privateRouteHandler(t, database, "staging", "norn-signed-private", app, "personal-owner/private-repo")
@@ -397,4 +492,49 @@ func TestCreatePrivateReleaseAttestationSuccessReplayAndConflict(t *testing.T) {
 	}
 	conflict := invokePrivateRoute(h, app, principal, privateRouteRequestBody(app, 1), "stable-build")
 	requirePrivateRouteProblem(t, conflict, http.StatusConflict, "idempotency_key_reused")
+}
+
+func TestCreatePrivateReleaseAttestationReserveExhaustion(t *testing.T) {
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	database, err := store.Connect(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(database.Close)
+	if err := store.Migrate(database); err != nil {
+		t.Fatal(err)
+	}
+	app := "private-reserve-" + strings.ToLower(strings.ReplaceAll(uuid.NewString(), "-", ""))
+	t.Cleanup(func() {
+		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM release_attestation_byte_reservations WHERE operation_id IN (SELECT id FROM operations WHERE app=$1 AND kind='release.attestation')`, app)
+		_, _ = database.Pool.Exec(context.Background(), `DELETE FROM operations WHERE app=$1 AND kind='release.attestation'`, app)
+		_ = database.RecordArchiveCapacity(context.Background(), false, "")
+	})
+	ctx := context.Background()
+	if err := database.SetEvidenceReservePolicy(ctx, store.EvidenceReservePolicy{Enabled: true, MaxPending: 1000000, MaxPendingAge: 50 * 365 * 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RecordArchiveCapacity(ctx, true, "test archive full"); err != nil {
+		t.Fatal(err)
+	}
+	h := privateRouteHandler(t, database, "staging", "norn-signed-private", app, "personal-owner/private-repo")
+	principal := privateRoutePrincipal(app)
+	principal.TokenID = uuid.NewString()
+	body := privateRouteRequestBody(app, 0)
+	rejected := invokePrivateRoute(h, app, principal, body, "reserve-retry")
+	requirePrivateRouteProblem(t, rejected, http.StatusServiceUnavailable, "evidence_reserve_exhausted")
+	var rows int
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE app=$1 AND kind='release.attestation'`, app).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("rejected attestation rows=%d err=%v", rows, err)
+	}
+	if err := database.RecordArchiveCapacity(ctx, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	created := invokePrivateRoute(h, app, principal, body, "reserve-retry")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("retry after reserve recovery status=%d body=%s", created.Code, created.Body.String())
+	}
 }

@@ -78,8 +78,10 @@ state remains authoritative; the event stream tells clients what changed.
 Before reconnecting, read `GET /api/v1/events/info` for retention bounds and
 supported stream features. `types` and `apps` provide comma-separated,
 exact-match subscriptions. `heartbeat` opts into a 10–120 second liveness
-frame. A stale cursor is rejected before upgrade with `event_cursor_gap`; an
-ahead cursor uses `event_cursor_ahead`. Both include current bounds so the
+frame. An expired cursor is rejected before upgrade with `event_cursor_expired`
+and a `resync` cursor; refresh authoritative state before reconnecting at that
+cursor. `prunedThroughCursor` remains valid even after the retained window is
+empty. An ahead cursor uses `event_cursor_ahead`. Both include current bounds so the
 client can reconcile REST state deliberately.
 
 ### Step Status Values

@@ -11,10 +11,11 @@ import (
 )
 
 var (
-	queuedUpgradeMode  string
-	queuedDrainMode    string
-	maintenanceWait    bool
-	maintenanceTimeout time.Duration
+	queuedUpgradeMode         string
+	queuedDrainMode           string
+	maintenanceWait           bool
+	maintenanceTimeout        time.Duration
+	maintenanceIdempotencyKey string
 )
 
 func init() {
@@ -27,6 +28,7 @@ func init() {
 	for _, command := range []*cobra.Command{platformQueuePreflightCmd, platformQueueUpgradeCmd, platformQueueRollbackCmd, platformQueueSmokeCmd, hostQueueAssureCmd} {
 		command.Flags().BoolVar(&maintenanceWait, "wait", true, "Wait for the durable operation to finish")
 		command.Flags().DurationVar(&maintenanceTimeout, "timeout", 2*time.Hour, "Maximum time to wait")
+		command.Flags().StringVar(&maintenanceIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 	}
 	platformQueueUpgradeCmd.Flags().StringVar(&queuedUpgradeMode, "mode", "restart", "Upgrade mode: restart or proxy")
 	platformQueueUpgradeCmd.Flags().StringVar(&queuedDrainMode, "drain", "fail", "Drain behavior: fail, wait, or force")
@@ -41,7 +43,11 @@ var platformQueuePreflightCmd = &cobra.Command{
 		if len(args) == 1 {
 			ref = args[0]
 		}
-		op, err := client.QueuePlatformPreflight(ref)
+		key, err := maintenanceRequestKey(cmd)
+		if err != nil {
+			return err
+		}
+		op, err := client.QueuePlatformPreflight(ref, key)
 		return handleMaintenanceOperation(cmd, op, err)
 	},
 }
@@ -55,7 +61,11 @@ var platformQueueUpgradeCmd = &cobra.Command{
 		if len(args) == 1 {
 			ref = args[0]
 		}
-		op, err := client.QueuePlatformUpgrade(ref, queuedUpgradeMode, queuedDrainMode)
+		key, err := maintenanceRequestKey(cmd)
+		if err != nil {
+			return err
+		}
+		op, err := client.QueuePlatformUpgrade(ref, queuedUpgradeMode, queuedDrainMode, key)
 		return handleMaintenanceOperation(cmd, op, err)
 	},
 }
@@ -65,7 +75,11 @@ var platformQueueSmokeCmd = &cobra.Command{
 	Short: "Queue authenticated platform smoke through the host maintenance agent",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		op, err := client.QueuePlatformSmoke()
+		key, err := maintenanceRequestKey(cmd)
+		if err != nil {
+			return err
+		}
+		op, err := client.QueuePlatformSmoke(key)
 		return handleMaintenanceOperation(cmd, op, err)
 	},
 }
@@ -75,7 +89,11 @@ var platformQueueRollbackCmd = &cobra.Command{
 	Short: "Queue a restart-safe platform rollback through the host maintenance agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		op, err := client.QueuePlatformRollback(args[0])
+		key, err := maintenanceRequestKey(cmd)
+		if err != nil {
+			return err
+		}
+		op, err := client.QueuePlatformRollback(args[0], key)
 		return handleMaintenanceOperation(cmd, op, err)
 	},
 }
@@ -85,9 +103,17 @@ var hostQueueAssureCmd = &cobra.Command{
 	Short: "Queue host assurance through the independent host maintenance agent",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		op, err := client.QueueHostAssurance()
+		key, err := maintenanceRequestKey(cmd)
+		if err != nil {
+			return err
+		}
+		op, err := client.QueueHostAssurance(key)
 		return handleMaintenanceOperation(cmd, op, err)
 	},
+}
+
+func maintenanceRequestKey(cmd *cobra.Command) (string, error) {
+	return requestIdempotencyKey(cmd, maintenanceIdempotencyKey, "norn-maintenance")
 }
 
 func handleMaintenanceOperation(cmd *cobra.Command, op *api.Operation, err error) error {

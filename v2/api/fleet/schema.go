@@ -2,6 +2,16 @@
 // repository contract. It deliberately contains no cloud-provider clients.
 package fleet
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+	"time"
+
+	"norn/v2/api/ingress"
+)
+
 const (
 	APIVersion = "norn.dev/fleet/v1"
 	Kind       = "Cluster"
@@ -131,7 +141,122 @@ type ReconciliationRequest struct {
 	PlanSHA256     string `json:"planSha256"`
 	StateSerial    int64  `json:"stateSerial,omitempty"`
 	EvidenceDigest string `json:"evidenceDigest"`
-	Message        string `json:"message,omitempty"`
+	// IngressInventoryDigest binds a private Fleet hook snapshot to the
+	// successful nodes_configured checkpoint. Its host list is stored in the
+	// protected reconciliation payload for later route observation.
+	IngressInventoryDigest string          `json:"ingressInventoryDigest,omitempty"`
+	IngressInventory       json.RawMessage `json:"ingressInventory,omitempty"`
+	Message                string          `json:"message,omitempty"`
+}
+
+func ValidIngressInventoryCheckpoint(request ReconciliationRequest) bool {
+	if request.IngressInventoryDigest == "" && len(request.IngressInventory) == 0 {
+		return true
+	}
+	if request.Phase != "nodes_configured" || request.Status != "succeeded" || len(request.IngressInventory) == 0 || len(request.IngressInventory) > 64<<10 || !strings.HasPrefix(request.IngressInventoryDigest, "sha256:") || len(request.IngressInventoryDigest) != len("sha256:")+64 {
+		return false
+	}
+	value := strings.TrimPrefix(request.IngressInventoryDigest, "sha256:")
+	decoded, err := hex.DecodeString(value)
+	if err != nil || hex.EncodeToString(decoded) != value {
+		return false
+	}
+	var snapshot struct {
+		Cluster     string `json:"cluster"`
+		Environment string `json:"environment"`
+	}
+	if err := json.Unmarshal(request.IngressInventory, &snapshot); err != nil {
+		return false
+	}
+	canonical, err := CanonicalIngressInventory(request.IngressInventory)
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(canonical)
+	if request.IngressInventoryDigest != "sha256:"+hex.EncodeToString(sum[:]) {
+		return false
+	}
+	_, err = ingress.ParseFleetIngressInventory(canonical, request.IngressInventoryDigest, snapshot.Cluster, snapshot.Environment, 18082)
+	return err == nil
+}
+
+// CanonicalIngressInventory reproduces the Fleet hook's sorted compact JSON
+// plus newline, independent of HTTP field formatting.
+func CanonicalIngressInventory(raw json.RawMessage) ([]byte, error) {
+	var document any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, err
+	}
+	return append(encoded, '\n'), nil
+}
+
+const RunnerAttemptSchemaVersion = "norn.fleet-runner-attempt/v1"
+
+// RunnerAttempt is the server-owned, restart-safe lease held by a protected
+// fleet runner. It never contains credentials or provider state.
+type RunnerAttempt struct {
+	SchemaVersion   string `json:"schemaVersion"`
+	ID              string `json:"id"`
+	PlanID          string `json:"planId"`
+	Attempt         int    `json:"attempt"`
+	RunnerAttemptID string `json:"runnerAttemptId"`
+	Status          string `json:"status"`
+	CurrentPhase    string `json:"currentPhase"`
+	CommitSHA       string `json:"commitSha"`
+	PlanSHA256      string `json:"planSha256"`
+	WorkflowURL     string `json:"workflowUrl"`
+	// RootAttemptID is output-only server-owned ancestry. Clients cannot set it.
+	RootAttemptID           string     `json:"rootAttemptId"`
+	RetryOf                 string     `json:"retryOf,omitempty"`
+	HeartbeatSequence       int64      `json:"heartbeatSequence"`
+	HeartbeatTimeoutSeconds int        `json:"heartbeatTimeoutSeconds"`
+	Revision                int64      `json:"revision"`
+	StartedAt               time.Time  `json:"startedAt"`
+	HeartbeatAt             time.Time  `json:"heartbeatAt"`
+	HeartbeatExpiresAt      time.Time  `json:"heartbeatExpiresAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
+	FinishedAt              *time.Time `json:"finishedAt,omitempty"`
+	LastError               string     `json:"lastError,omitempty"`
+}
+
+type RunnerAttemptCreateRequest struct {
+	SchemaVersion           string `json:"schemaVersion"`
+	RunnerAttemptID         string `json:"runnerAttemptId"`
+	CommitSHA               string `json:"commitSha"`
+	PlanSHA256              string `json:"planSha256"`
+	WorkflowURL             string `json:"workflowUrl"`
+	DispatchNonce           string `json:"dispatchNonce"`
+	SourceDispatchRunID     string `json:"sourceDispatchRunId"`
+	Resume                  bool   `json:"resume,omitempty"`
+	HeartbeatTimeoutSeconds int    `json:"heartbeatTimeoutSeconds"`
+}
+type RunnerAttemptHeartbeatRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Phase         string `json:"phase"`
+	Sequence      int64  `json:"sequence"`
+	Revision      int64  `json:"revision"`
+	Message       string `json:"message,omitempty"`
+}
+type RunnerAttemptAdvanceRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	ExpectedPhase string `json:"expectedPhase"`
+	Revision      int64  `json:"revision"`
+}
+type RunnerAttemptCancelRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Revision      int64  `json:"revision"`
+	Reason        string `json:"reason,omitempty"`
+}
+type RunnerAttemptRetryRequest struct {
+	SchemaVersion   string `json:"schemaVersion"`
+	Revision        int64  `json:"revision"`
+	RunnerAttemptID string `json:"runnerAttemptId"`
+	WorkflowURL     string `json:"workflowUrl"`
+	Reason          string `json:"reason,omitempty"`
 }
 
 type RunnerAttemptStartRequest struct {

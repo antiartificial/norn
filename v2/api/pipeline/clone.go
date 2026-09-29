@@ -55,6 +55,9 @@ func (p *Pipeline) clone(ctx context.Context, st *state, sg *saga.Saga) error {
 		if shaOut, revErr := revCmd.Output(); revErr == nil {
 			st.commitSHA = strings.TrimSpace(string(shaOut))
 		}
+		if isFullCommitSHA(st.sourceRef) && !strings.EqualFold(st.sourceRef, st.commitSHA) {
+			return fmt.Errorf("resolved source SHA %s does not match requested immutable SHA %s", st.commitSHA, st.sourceRef)
+		}
 		st.sourceKind = "git_clone"
 		st.sourcePath = st.spec.Repo.URL
 		p.recordSourceProvenance(ctx, st, sg)
@@ -73,6 +76,18 @@ func (p *Pipeline) clone(ctx context.Context, st *state, sg *saga.Saga) error {
 	st.sourcePath = srcDir
 	p.recordSourceProvenance(ctx, st, sg)
 	return nil
+}
+
+func isFullCommitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, char := range value {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Pipeline) checkoutRequestedRef(ctx context.Context, workDir, ref, repoURL string) error {

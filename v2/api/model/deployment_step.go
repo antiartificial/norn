@@ -34,7 +34,7 @@ type DeploymentStep struct {
 
 func StepKind(stepName string) DeploymentStepKind {
 	switch stepName {
-	case "clone", "admission", "build", "artifact-admission", "test":
+	case "release-binding", "clone", "admission", "build", "artifact-admission", "test":
 		return DeploymentStepReadOnly
 	default:
 		return DeploymentStepMutable

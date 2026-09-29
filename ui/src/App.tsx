@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { apiUrl, fetchOpts } from './lib/api.ts'
 import { useApps } from './hooks/useApps.ts'
 import { useWebSocket } from './hooks/useWebSocket.ts'
@@ -54,6 +54,7 @@ export function App() {
 
   const [webhookToast, setWebhookToast] = useState<string | null>(null)
   const [restartingApp, setRestartingApp] = useState<string | null>(null)
+	const restartKeys = useRef<Record<string, string>>({})
   const [rollingBackApp, setRollingBackApp] = useState<string | null>(null)
   const [healthHistory, setHealthHistory] = useState<Record<string, HealthCheck[]>>({})
   const [healthApp, setHealthApp] = useState<string | null>(null)
@@ -161,6 +162,7 @@ export function App() {
       })
     }
     if (event.type === 'app.restarted') {
+		delete restartKeys.current[event.appId]
       setRestartingApp(null)
       refetch()
     }
@@ -260,8 +262,11 @@ export function App() {
   }
 
   const handleRestart = async (appId: string) => {
+		const key = restartKeys.current[appId] ?? `restart-${appId}-${crypto.randomUUID()}`
+		restartKeys.current[appId] = key
     setRestartingApp(appId)
-    await fetch(apiUrl(`/api/apps/${appId}/restart`), { ...fetchOpts, method: 'POST' })
+		const response = await fetch(apiUrl(`/api/v1/apps/${appId}/restart`), { ...fetchOpts, method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: '{}' })
+		if (!response.ok) { setRestartingApp(null); return }
     // Clear after a timeout in case WS event doesn't arrive
     setTimeout(() => setRestartingApp((cur) => cur === appId ? null : cur), 10_000)
   }

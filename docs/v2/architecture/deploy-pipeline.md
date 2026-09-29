@@ -22,12 +22,14 @@ multiple allocations when no regional Traefik origin is configured.
 ### 3. Build
 
 In development, builds a Docker image using the configured Dockerfile and can
-push it to `NORN_REGISTRY_URL`. In production, `build.image` must instead name
-an externally published `image@sha256:...`. This keeps signing credentials out
-of Norn and separates publisher authority from deploy authority. The external
-builder is responsible for tests, maximum-provenance/SBOM attestations,
-vulnerability approval, and signing the digest with the
-`norn.git.sha=<full commit>` annotation.
+push it to `NORN_REGISTRY_URL`. In the production release channel, external CI
+builds once and the signed staging qualification binds that published
+`image@sha256:...`; Norn does not rebuild it. Norn authorizes the repository
+from `build.image`, when pinned, or from `NORN_REGISTRY_URL/<app>` for a
+Dockerfile build spec. This keeps signing credentials out of Norn and separates
+publisher authority from deploy authority. The external builder is responsible
+for tests, maximum-provenance/SBOM attestations, vulnerability approval, and
+signing the digest with the `norn.git.sha=<full commit>` annotation.
 
 ### 4. Artifact admission
 

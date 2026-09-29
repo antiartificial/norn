@@ -8,6 +8,60 @@ import (
 	"time"
 )
 
+func TestOperationReplayTTLIsExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "")
+	if got := Load().OperationReplayTTL; got != 0 {
+		t.Fatalf("default operation replay TTL = %s", got)
+	}
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "720h")
+	if got := Load().OperationReplayTTL; got != 30*24*time.Hour {
+		t.Fatalf("operation replay TTL = %s", got)
+	}
+	for _, value := range []string{"malformed", "-1h"} {
+		t.Setenv("NORN_OPERATION_REPLAY_TTL", value)
+		if got := Load().OperationReplayTTL; got >= 0 {
+			t.Fatalf("invalid operation replay TTL %q did not fail closed: %s", value, got)
+		}
+	}
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "0")
+	if got := Load().OperationReplayTTL; got != 0 {
+		t.Fatalf("explicit zero operation replay TTL = %s", got)
+	}
+}
+
+func TestReleaseAttestationLimitDistinguishesUnsetFromExplicitZero(t *testing.T) {
+	const key = "NORN_EVIDENCE_RESERVE_MAX_RELEASE_ATTESTATION_BYTES"
+	previous, wasSet := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(key, previous)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+	if cfg := Load(); cfg.EvidenceReserveAttestSet || cfg.EvidenceReserveAttestBytes != 0 {
+		t.Fatalf("unset attestation limit = set %v bytes %d", cfg.EvidenceReserveAttestSet, cfg.EvidenceReserveAttestBytes)
+	}
+	t.Setenv(key, "0")
+	if cfg := Load(); !cfg.EvidenceReserveAttestSet || cfg.EvidenceReserveAttestBytes != 0 {
+		t.Fatalf("explicit zero attestation limit = set %v bytes %d", cfg.EvidenceReserveAttestSet, cfg.EvidenceReserveAttestBytes)
+	}
+}
+
+func TestPrivateInvocationKeyRingRuntimeConfig(t *testing.T) {
+	t.Setenv("NORN_PRIVATE_INVOCATION_ENABLED", "true")
+	t.Setenv("NORN_FUNCTION_V3_PREVIEW_ENABLED", "true")
+	t.Setenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID", "invocation-2026-09")
+	t.Setenv("NORN_PRIVATE_INVOCATION_KEYS", `{"invocation-2026-09":"base64-key-material"}`)
+	cfg := Load()
+	if !cfg.PrivateInvocationEnabled || !cfg.FunctionV3PreviewEnabled || cfg.PrivateInvocationCurrentKeyID != "invocation-2026-09" || cfg.PrivateInvocationKeys == "" {
+		t.Fatal("private invocation runtime configuration was not loaded")
+	}
+}
+
 func TestLegacyTokenSigningDeadline(t *testing.T) {
 	t.Setenv("NORN_LEGACY_TOKEN_SIGNING_UNTIL", "2026-08-10T12:00:00Z")
 	if got := Load().LegacyTokenSigningUntil; !got.Equal(time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)) {

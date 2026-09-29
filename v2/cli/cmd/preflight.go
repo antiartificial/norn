@@ -10,7 +10,10 @@ import (
 
 func init() {
 	rootCmd.AddCommand(preflightCmd)
+	preflightCmd.Flags().StringVar(&preflightIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 }
+
+var preflightIdempotencyKey string
 
 var preflightCmd = &cobra.Command{
 	Use:     "preflight <app> [ref]",
@@ -27,13 +30,17 @@ var preflightCmd = &cobra.Command{
 		fmt.Println(style.Title.Render("preflighting " + appID))
 		fmt.Printf("  ref: %s\n\n", ref)
 
-		sagaID, err := client.Preflight(appID, ref)
+		key, err := requestIdempotencyKey(cmd, preflightIdempotencyKey, "norn-preflight")
+		if err != nil {
+			return err
+		}
+		accepted, err := client.Preflight(appID, ref, key)
 		if err != nil {
 			return fmt.Errorf("preflight failed: %w", err)
 		}
 
-		fmt.Printf("  saga: %s\n\n", style.DimText.Render(sagaID))
+		fmt.Printf("  saga: %s\n\n", style.DimText.Render(accepted.SagaID))
 
-		return streamSagaEvents(sagaID)
+		return finishEnqueue(accepted)
 	},
 }

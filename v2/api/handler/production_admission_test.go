@@ -12,6 +12,7 @@ import (
 func TestProductionSubstrateMutationClassification(t *testing.T) {
 	for _, path := range []string{
 		"/api/apps/demo/deploy", "/api/apps/demo/rollback", "/api/deploy-groups/core/deploy",
+		"/api/v1/apps/demo/promotions", "/api/v1/apps/demo/releases/deployments",
 		"/api/v1/platform/upgrades", "/api/webhooks/github",
 	} {
 		if !productionSubstrateMutation(httptest.NewRequest(http.MethodPost, path, nil)) {

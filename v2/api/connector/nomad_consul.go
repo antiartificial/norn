@@ -62,9 +62,12 @@ func (c *NomadConsulConnector) Submit(ctx context.Context, req SubmitRequest) (s
 	}
 	var firstEval string
 	if serviceProcessCount(req.Spec, req.Region.Name) > 0 {
-		job, err := nomad.TranslateForRegion(req.Spec, req.Image, req.Environment, req.Region)
-		if err != nil {
-			return "", err
+		job := nomad.TranslateForRegionAt(req.Spec, req.Image, req.Environment, req.Region, req.DatabaseRevision)
+		nomad.ApplyDesiredReplicaCounts(job, req.DesiredReplicaCounts)
+		if req.PrepareNomadJob != nil {
+			if err := req.PrepareNomadJob(job); err != nil {
+				return "", err
+			}
 		}
 		eval, err := c.Nomad.SubmitJobRegion(job, req.Region.NomadRegion)
 		if err != nil {
@@ -76,9 +79,11 @@ func (c *NomadConsulConnector) Submit(ctx context.Context, req SubmitRequest) (s
 		if process.Schedule == "" || !req.Spec.ProcessRunsInRegion(process, req.Region.Name) {
 			continue
 		}
-		job, err := nomad.TranslatePeriodicForRegion(req.Spec, name, process, req.Image, req.Environment, req.Region)
-		if err != nil {
-			return "", fmt.Errorf("periodic process %s: %w", name, err)
+		job := nomad.TranslatePeriodicForRegionAt(req.Spec, name, process, req.Image, req.Environment, req.Region, req.DatabaseRevision)
+		if req.PrepareNomadJob != nil {
+			if err := req.PrepareNomadJob(job); err != nil {
+				return "", fmt.Errorf("periodic process %s: %w", name, err)
+			}
 		}
 		eval, err := c.Nomad.SubmitJobRegion(job, req.Region.NomadRegion)
 		if err != nil {
@@ -235,7 +240,7 @@ func (c *NomadConsulConnector) ClusterStats(ctx context.Context) (int, int, []Up
 }
 
 func (c *NomadConsulConnector) StreamLogs(ctx context.Context, app string, follow bool) (io.ReadCloser, error) {
-	return c.Nomad.StreamLogs(app, follow)
+	return c.Nomad.StreamLogs(ctx, app, follow)
 }
 
 func (c *NomadConsulConnector) ResolveExecTarget(ctx context.Context, app, allocation, process string) (string, string, error) {
@@ -249,7 +254,7 @@ func (c *NomadConsulConnector) ExecWebSocket(ctx context.Context, target, task s
 func serviceProcessCount(spec *model.InfraSpec, region string) int {
 	count := 0
 	for _, process := range spec.Processes {
-		if process.Schedule == "" && spec.ProcessRunsInRegion(process, region) {
+		if process.Schedule == "" && process.Function == nil && spec.ProcessRunsInRegion(process, region) {
 			count++
 		}
 	}

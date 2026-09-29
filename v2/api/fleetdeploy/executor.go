@@ -1,0 +1,175 @@
+package fleetdeploy
+
+import (
+	"context"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"strings"
+
+	"norn/v2/api/database"
+	"norn/v2/api/etcdstore"
+	"norn/v2/api/ingress"
+	"norn/v2/api/model"
+	"norn/v2/api/nomad"
+	"norn/v2/api/pipeline"
+	"norn/v2/api/store"
+	"norn/v2/api/worker"
+)
+
+// ClaimedFleetRouteTransport contains private, worker-owned control transport
+// material. Listener must bind a private address before the Nomad effect is
+// advanced; the ingress listener is closed at the end of each claim attempt.
+type ClaimedFleetRouteTransport struct {
+	Listen           func() (net.Listener, error)
+	NodeURIs         map[string]string
+	AuthorityCertPEM []byte
+	AuthorityKeyPEM  []byte
+	NodeCAPEM        []byte
+	PublisherCAPEM   []byte
+	PublisherCertPEM []byte
+	PublisherKeyPEM  []byte
+	ObserverCAPEM    []byte
+	ObserverCertPEM  []byte
+	ObserverKeyPEM   []byte
+	PublicRoots      *x509.CertPool
+	ObserverPort     int
+	PublisherPort    int
+	EndpointPort     int
+}
+
+// ClaimedFleetDeploymentExecutor runs the signed first-route deployment under
+// the normal operation worker's claim and app lock. Runtime construction must
+// supply a private authority listener and separately scoped TLS identities.
+type ClaimedFleetDeploymentExecutor struct {
+	Store           *etcdstore.V3OperationStore
+	Nomad           *nomad.Client
+	DatabaseSecrets database.SecretSource
+	JobSecrets      nomad.ManagedJobSecretSource
+	AppsDir         string
+	Authority       string
+	DatabaseProfile string
+	Route           ClaimedFleetRouteTransport
+}
+
+func (e *ClaimedFleetDeploymentExecutor) ExecuteOperation(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error) {
+	return nil, fmt.Errorf("claimed Fleet deployment requires a worker app lock")
+}
+
+func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context.Context, op *model.Operation, claim store.OperationClaim,
+	lock store.AppOperationLock) (*pipeline.OperationResult, error) {
+	if e == nil || e.Store == nil || e.Nomad == nil || op == nil || op.Kind != "app.deploy" || op.ID != claim.OperationID() ||
+		lock == nil || lock.Fence() == "" || lock.Context().Err() != nil || e.Route.Listen == nil || e.Authority == "" || e.AppsDir == "" {
+		return nil, fmt.Errorf("claimed Fleet deployment executor is unavailable")
+	}
+	source, err := worker.LoadClaimedFleetDeploymentSource(ctx, e.Store, *op, e.AppsDir)
+	if err != nil {
+		return nil, err
+	}
+	if e.Route.ObserverPort < 1024 || e.Route.ObserverPort > 65535 || e.Route.PublisherPort < 1024 || e.Route.PublisherPort > 65535 || e.Route.PublisherPort == e.Route.ObserverPort || e.Route.EndpointPort < 1 || e.Route.EndpointPort > 65535 {
+		return nil, fmt.Errorf("claimed Fleet route transport is incomplete")
+	}
+	// A completed Fleet inventory and matching private node identities must
+	// exist before staging inputs or submitting an external Nomad job. Route
+	// intent independently rechecks the active inventory after job health.
+	inventory, err := e.Store.CurrentActiveFleetIngressInventory(ctx, source.Route.FleetCluster, source.Route.FleetEnvironment, e.Route.ObserverPort)
+	if err != nil {
+		return nil, fmt.Errorf("claimed Fleet ingress inventory is unavailable: %w", err)
+	}
+	if err := requireClaimedFleetNodeIdentities(inventory.Nodes, e.Route.NodeURIs); err != nil {
+		return nil, err
+	}
+	if err := ingress.ProbePublisherNodesWithTLS(ctx, e.Route.PublisherCAPEM, e.Route.PublisherCertPEM, e.Route.PublisherKeyPEM, inventory.Nodes, e.Route.PublisherPort); err != nil {
+		return nil, fmt.Errorf("claimed Fleet publisher preflight failed: %w", err)
+	}
+	if len(source.Managed.RuntimeTargets) > 0 {
+		if e.DatabaseProfile == "" || source.Managed.ProfileID != e.DatabaseProfile || e.JobSecrets == nil {
+			return nil, fmt.Errorf("claimed Fleet database profile differs from this worker")
+		}
+		secretEnv, err := e.JobSecrets.EnvMap(source.Spec.App)
+		if err != nil {
+			return nil, fmt.Errorf("claimed Fleet app secrets are unavailable")
+		}
+		if conflicts := source.Spec.DatabaseEnvConflicts(secretEnv); len(conflicts) > 0 {
+			return nil, fmt.Errorf("claimed Fleet database env conflicts with app secrets: %s", strings.Join(conflicts, ", "))
+		}
+	}
+	databaseItems, err := worker.ResolveClaimedFleetRuntimeDatabaseItems(ctx, source, e.Store, e.DatabaseSecrets)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := worker.PrepareClaimedFleetDeploymentJob(ctx, source, claim, e.Authority, e.Nomad, databaseItems, e.JobSecrets)
+	if err != nil {
+		return nil, err
+	}
+	listener, err := e.Route.Listen()
+	if err != nil {
+		return nil, err
+	}
+	if listener == nil {
+		return nil, fmt.Errorf("claimed Fleet route authority listener is unavailable")
+	}
+	defer listener.Close()
+	if _, err := ingress.PrivateControlRouteAuthorityTLS(listener, e.Route.AuthorityCertPEM, e.Route.AuthorityKeyPEM, e.Route.NodeCAPEM); err != nil {
+		return nil, err
+	}
+	effects, err := etcdstore.NewV3DeploymentEffectReservations(e.Store)
+	if err != nil {
+		return nil, err
+	}
+	healthEffect, err := worker.AdvanceClaimedFleetDeploymentJob(ctx, effects, e.Nomad, plan)
+	if err != nil {
+		return nil, err
+	}
+	serveCtx, stopServing := context.WithCancel(ctx)
+	defer stopServing()
+	served := make(chan error, 1)
+	go func() {
+		served <- e.Store.ServeClaimedInitialFleetRouteAuthority(serveCtx, claim, lock, source.Spec,
+			e.Route.ObserverPort, healthEffect, e.Route.NodeURIs, listener,
+			e.Route.AuthorityCertPEM, e.Route.AuthorityKeyPEM, e.Route.NodeCAPEM)
+	}()
+	publication, publishErr := e.Store.PublishProveCompleteClaimedInitialFleetRoute(ctx, claim, lock, source.Spec, healthEffect,
+		e.Route.ObserverPort, e.Route.PublisherPort, e.Route.EndpointPort, e.Route.PublisherCAPEM, e.Route.PublisherCertPEM, e.Route.PublisherKeyPEM,
+		e.Route.ObserverCAPEM, e.Route.ObserverCertPEM, e.Route.ObserverKeyPEM, e.Route.PublicRoots)
+	stopServing()
+	_ = listener.Close()
+	serveErr := <-served
+	if publishErr != nil {
+		return nil, publishErr
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		// Publication has already terminalized atomically. A listener shutdown
+		// error cannot change that result, so report the durable receipt.
+		log.Printf("claimed Fleet route authority shutdown after completed deployment: %v", serveErr)
+	}
+	if publication == nil || publication.Proof == nil || publication.Intent == nil {
+		return nil, fmt.Errorf("claimed Fleet deployment completed without route proof")
+	}
+	return pipeline.FencedCompletedOperationResult(claim, "Fleet deployment healthy and ingress traffic proved", map[string]interface{}{
+		"deploymentId":    source.Managed.Accepted.Deployment.ID,
+		"routeIntentId":   publication.Intent.ID,
+		"routeGeneration": publication.Intent.Generation,
+	}), nil
+}
+
+func requireClaimedFleetNodeIdentities(nodes []ingress.IngressNode, nodeURIs map[string]string) error {
+	if len(nodes) < 2 || len(nodeURIs) != len(nodes) {
+		return fmt.Errorf("claimed Fleet route identities differ from active ingress inventory")
+	}
+	seen := make(map[string]bool, len(nodeURIs))
+	for uri, id := range nodeURIs {
+		if uri == "" || id == "" || seen[id] {
+			return fmt.Errorf("claimed Fleet route identity is missing or repeated")
+		}
+		seen[id] = true
+	}
+	for _, node := range nodes {
+		if node.ID == "" || !seen[node.ID] {
+			return fmt.Errorf("claimed Fleet route identity is absent for an active ingress node")
+		}
+	}
+	return nil
+}

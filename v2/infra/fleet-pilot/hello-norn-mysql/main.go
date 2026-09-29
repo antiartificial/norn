@@ -25,6 +25,9 @@ import (
 )
 
 var version = "development"
+
+const routeProofBody = "hello-norn-mysql route proof v1\n"
+
 var validID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,96}$`)
 
 type service struct {
@@ -206,19 +209,23 @@ func (s *service) routes() http.Handler {
 	// wedged process without turning a transient managed-database issue into a
 	// restart storm.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /route-proof", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if !s.ready(ctx) {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(routeProofBody))
+	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		if os.Getenv("PILOT_FAIL_READINESS") == "true" || s.db == nil || s.db.PingContext(ctx) != nil {
+		if !s.ready(ctx) {
 			http.Error(w, "not ready", 503)
 			return
 		}
-		rows, err := s.db.QueryContext(ctx, "SELECT id FROM pilot_records LIMIT 0")
-		if err != nil {
-			http.Error(w, "schema not ready", 503)
-			return
-		}
-		rows.Close()
 		w.WriteHeader(200)
 	})
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +240,17 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("PUT /records/{id}", s.record)
 	mux.HandleFunc("GET /records/{id}", s.record)
 	return mux
+}
+
+func (s *service) ready(ctx context.Context) bool {
+	if os.Getenv("PILOT_FAIL_READINESS") == "true" || s.db == nil || s.db.PingContext(ctx) != nil {
+		return false
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT id FROM pilot_records LIMIT 0")
+	if err != nil {
+		return false
+	}
+	return rows.Close() == nil
 }
 
 func (s *service) record(w http.ResponseWriter, r *http.Request) {

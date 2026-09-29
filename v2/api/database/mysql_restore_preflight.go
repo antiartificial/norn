@@ -1,0 +1,181 @@
+package database
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"syscall"
+)
+
+const (
+	MySQLSQLArtifactV1 = "norn.mysql-sql/v1"
+	MySQLSQLArtifactV2 = "norn.mysql-sql/v2"
+)
+const MaxMySQLStagedArtifactBytes int64 = 64 << 30
+
+// MySQLSQLArtifact identifies a local, private SQL dump. A future durable
+// recovery operation must sign and retain this record with its operation and
+// source catalog revision before any restore is allowed.
+type MySQLSQLArtifact struct {
+	Format      MySQLSQLArtifactFormat  `json:"format"`
+	Source      TargetIdentity          `json:"source"`
+	Bytes       int64                   `json:"bytes"`
+	SHA256      string                  `json:"sha256"`
+	Expectation MySQLRestoreExpectation `json:"expectation"`
+}
+
+type MySQLSQLArtifactFormat string
+
+// MySQLRestorePreparation is a read-only result for a future durable restore
+// executor. It grants no permission to mutate the target.
+type MySQLRestorePreparation struct {
+	Source TargetIdentity `json:"source"`
+	Target TargetIdentity `json:"target"`
+	Bytes  int64          `json:"bytes"`
+	SHA256 string         `json:"sha256"`
+}
+
+// PrepareMySQLRestore verifies an exact catalog target, a bounded owner-only
+// artifact and an empty destination before any SQL write. It deliberately
+// bypasses neither the public capability gate nor the need for a durable
+// operation fence: callers cannot use this result as restore authorization.
+func PrepareMySQLRestore(ctx context.Context, resolver *Resolver, profileID, logicalID string, expected TargetIdentity, secrets SecretSource, path string, artifact MySQLSQLArtifact) (MySQLRestorePreparation, error) {
+	if resolver == nil || !validMySQLArtifactIdentity(expected) {
+		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore requires an exact expected target")
+	}
+	resolved, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: profileID, Purpose: PurposeApplication, LogicalResourceID: logicalID, Expected: &expected})
+	if err != nil {
+		return MySQLRestorePreparation{}, err
+	}
+	if resolved.Target.Engine != EngineMySQL || resolved.Target != expected {
+		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore target identity changed")
+	}
+	return PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, resolved, expected, secrets, path, artifact)
+}
+
+// PrepareMySQLRestoreWithResolvedCredential repeats the private target and
+// artifact preflight with a separately resolved credential. The runtime
+// identity still defines the target fence; only the MySQL connection switches
+// to the restore identity after maintenance has locked runtime access.
+func PrepareMySQLRestoreWithResolvedCredential(ctx context.Context, target, credential ResolvedBinding, expected TargetIdentity, secrets SecretSource, path string, artifact MySQLSQLArtifact) (MySQLRestorePreparation, error) {
+	if target.Target.Engine != EngineMySQL || target.Target != expected || credential.Target.Engine != EngineMySQL ||
+		credential.Target.ServiceID != expected.ServiceID || credential.Target.ServiceGeneration != expected.ServiceGeneration ||
+		credential.Target.BindingID != expected.BindingID || credential.Target.BindingGeneration != expected.BindingGeneration || credential.Target.Database != expected.Database {
+		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore target identity changed")
+	}
+	if artifact.Format != MySQLSQLArtifactV2 || !validMySQLArtifactIdentity(artifact.Source) || !validMySQLRestoreExpectation(artifact.Expectation) ||
+		(artifact.Source.ServiceID == expected.ServiceID && artifact.Source.ServiceGeneration == expected.ServiceGeneration && artifact.Source.Database == expected.Database) {
+		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore artifact source is invalid or equals the target")
+	}
+	if err := VerifyMySQLSQLArtifact(path, artifact); err != nil {
+		return MySQLRestorePreparation{}, err
+	}
+	session, err := OpenSession(ctx, credential, secrets)
+	if err != nil {
+		return MySQLRestorePreparation{}, err
+	}
+	defer session.Close()
+	if _, err := session.Probe(ctx); err != nil {
+		return MySQLRestorePreparation{}, err
+	}
+	if credential.MySQLMaintenance != nil && credential.Target.Role == credential.MySQLMaintenance.RestoreRole {
+		if err := verifyMySQLRestoreAccount(ctx, session, credential.Target.Role, credential.MySQLMaintenance.RestoreAccountHost); err != nil {
+			return MySQLRestorePreparation{}, err
+		}
+	}
+	if session.mysqlConnector == nil {
+		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore target connector is unavailable")
+	}
+	db := sql.OpenDB(session.mysqlConnector)
+	defer db.Close()
+	for _, query := range []string{
+		`SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
+		`SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE()`,
+		`SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA = DATABASE()`,
+	} {
+		var count int64
+		if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore destination inspection failed")
+		}
+		if count != 0 {
+			return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore destination is not empty")
+		}
+	}
+	return MySQLRestorePreparation{Source: artifact.Source, Target: expected, Bytes: artifact.Bytes, SHA256: artifact.SHA256}, nil
+}
+
+// VerifyMySQLSQLArtifact rejects symlinks, non-regular or publicly readable
+// files, size drift and checksum mismatch. The artifact is checked before
+// opening the destination connection. A later executor must verify it again
+// while holding its durable target fence and use the same opened inode.
+func VerifyMySQLSQLArtifact(path string, artifact MySQLSQLArtifact) error {
+	file, err := OpenVerifiedMySQLSQLArtifact(path, artifact)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
+// OpenVerifiedMySQLSQLArtifact returns the already checked inode rather than
+// merely checking its pathname. Restore supervisors pass this descriptor to
+// mysql as stdin, so a path replacement after verification cannot change the
+// bytes that reach the target.
+func OpenVerifiedMySQLSQLArtifact(path string, artifact MySQLSQLArtifact) (*os.File, error) {
+	if artifact.Format != MySQLSQLArtifactV2 || !validMySQLArtifactIdentity(artifact.Source) || !validMySQLRestoreExpectation(artifact.Expectation) || artifact.Bytes <= 0 || artifact.Bytes > MaxMySQLStagedArtifactBytes || len(artifact.SHA256) != 64 {
+		return nil, fmt.Errorf("MySQL restore artifact metadata is invalid")
+	}
+	if _, err := hex.DecodeString(artifact.SHA256); err != nil || strings.ToLower(artifact.SHA256) != artifact.SHA256 {
+		return nil, fmt.Errorf("MySQL restore artifact checksum is invalid")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, fmt.Errorf("MySQL restore artifact path must be absolute")
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("MySQL restore artifact cannot be opened")
+	}
+	fail := func(message string) (*os.File, error) {
+		_ = file.Close()
+		return nil, fmt.Errorf("%s", message)
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() != artifact.Bytes {
+		return fail("MySQL restore artifact is not a matching private regular file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return fail("MySQL restore artifact ownership is invalid")
+	}
+	hash := sha256.New()
+	read, err := io.Copy(hash, io.LimitReader(file, artifact.Bytes+1))
+	if err != nil || read != artifact.Bytes {
+		return fail("MySQL restore artifact read failed")
+	}
+	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), artifact.SHA256) {
+		return fail("MySQL restore artifact checksum differs")
+	}
+	endInfo, err := file.Stat()
+	if err != nil || !os.SameFile(info, endInfo) || endInfo.Size() != artifact.Bytes || !endInfo.ModTime().Equal(info.ModTime()) {
+		return fail("MySQL restore artifact changed while reading")
+	}
+	var extra [1]byte
+	if n, err := file.Read(extra[:]); n != 0 || !errors.Is(err, io.EOF) {
+		return fail("MySQL restore artifact changed while reading")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fail("MySQL restore artifact cannot be rewound")
+	}
+	return file, nil
+}
+
+func validMySQLArtifactIdentity(target TargetIdentity) bool {
+	return target.Engine == EngineMySQL && target.ServiceGeneration > 0 && target.BindingGeneration > 0 &&
+		identifierPattern.MatchString(target.ServiceID) && identifierPattern.MatchString(target.BindingID) &&
+		mysqlDatabasePattern.MatchString(target.Database) && mysqlUserPattern.MatchString(target.Role)
+}

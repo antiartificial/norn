@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// DiscoveryIgnoreFile marks an app directory as retained source that must not
+// become a deployable app or an operator inventory entry.
+const DiscoveryIgnoreFile = ".norn-discovery-ignore"
+
 // DiscoverApps scans the given directory for subdirectories containing
 // infraspec.yaml with deploy: true.
 func DiscoverApps(appsDir string) ([]*InfraSpec, error) {
@@ -29,6 +33,16 @@ func discoverApps(appsDir string, deployOnly bool) ([]*InfraSpec, error) {
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
+		}
+		marker, err := os.Lstat(filepath.Join(appsDir, entry.Name(), DiscoveryIgnoreFile))
+		if err == nil {
+			if !marker.Mode().IsRegular() {
+				return nil, &os.PathError{Op: "discover", Path: filepath.Join(appsDir, entry.Name(), DiscoveryIgnoreFile), Err: os.ErrInvalid}
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return nil, err
 		}
 		specPath := filepath.Join(appsDir, entry.Name(), "infraspec.yaml")
 		spec, err := LoadInfraSpec(specPath)

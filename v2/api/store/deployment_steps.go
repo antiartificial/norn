@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"norn/v2/api/model"
@@ -42,7 +43,7 @@ func (db *DB) FinishDeploymentStep(ctx context.Context, deploymentID, step strin
 		metadata = map[string]interface{}{}
 	}
 	data, _ := json.Marshal(metadata)
-	_, err := db.Pool.Exec(ctx, `
+	result, err := db.Pool.Exec(ctx, `
 		UPDATE deployment_steps
 		SET status = $1,
 		    finished_at = now(),
@@ -51,7 +52,13 @@ func (db *DB) FinishDeploymentStep(ctx context.Context, deploymentID, step strin
 		    metadata = metadata || $4::jsonb
 		WHERE deployment_id = $5 AND step = $6
 	`, status, durationMs, message, data, deploymentID, step)
-	return err
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("deployment step %s/%s is missing", deploymentID, step)
+	}
+	return nil
 }
 
 func (db *DB) ListDeploymentSteps(ctx context.Context, deploymentID string) ([]model.DeploymentStep, error) {

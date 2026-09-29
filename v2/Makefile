@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: dev api cli host-agent build doctor clean ui \
+.PHONY: dev api cli host-agent ingress-observer build doctor clean ui \
 	consul-dev nomad-dev consul-server nomad-server \
 	up up-fed down logs
 
@@ -18,8 +18,14 @@ cli:
 host-agent:
 	cd api && go build -o ../bin/norn-host-agent ./cmd/norn-host-agent
 
-build: api cli host-agent
-	@echo "built api + cli + host agent → bin/"
+ingress-observer:
+	cd api && go build -o ../bin/norn-ingress-observer ./cmd/norn-ingress-observer
+
+ingress-publisher:
+	cd api && go build -o ../bin/norn-ingress-publisher ./cmd/norn-ingress-publisher
+
+build: api cli host-agent ingress-observer ingress-publisher
+	@echo "built api + cli + host agent + ingress observer + publisher → bin/"
 
 ui:
 	cd ui && pnpm build

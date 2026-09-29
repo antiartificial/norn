@@ -99,6 +99,8 @@ The workload provides:
 - `/healthz`: process liveness independent of database readiness.
 - `/readyz`: verified database connectivity; setting
   `PILOT_FAIL_READINESS=true` in a reviewed test release makes it fail.
+- `/route-proof`: the same readiness check followed by a fixed response whose
+  SHA-256 is pinned in the InfraSpec endpoint for Fleet ingress probes.
 - `/version`: source version and allocation identity with caching disabled.
 - `PUT /records/{id}`: idempotent synthetic write, followed by readback.
 - `GET /records/{id}`: read a known synthetic ID.

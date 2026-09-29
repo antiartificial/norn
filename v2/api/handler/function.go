@@ -1,15 +1,18 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"norn/v2/api/hub"
+	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
@@ -28,6 +31,11 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if h.nomad == nil {
+		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
 		return
 	}
 
@@ -58,10 +66,14 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("process %s not found", procName))
 		return
 	}
-	// Request metadata is delivered through the function runtime environment.
-	// Nomad variable-file transport deliberately withholds that environment to
-	// prevent secret values from reaching task.Env, so accepting both would
-	// silently drop the caller's request. Reject before recording an execution.
+	if proc.Function == nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("process %s is not a function", procName))
+		return
+	}
+	if err := model.ValidateNomadVariableFilesForProcess(spec, procName, proc); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if proc.NomadVariables != nil && (req.Body != "" || req.Method != "" || req.Path != "") {
 		writeError(w, http.StatusBadRequest, "function request metadata is unsupported when nomadVariables are configured")
 		return
@@ -101,7 +113,7 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 
 	// Create unique job ID
 	execID := uuid.New().String()
-	jobID := fmt.Sprintf("%s-%s-%d", id, procName, time.Now().UnixMilli())
+	jobID := fmt.Sprintf("%s-%s-%s", id, procName, execID)
 
 	// Record execution
 	fe := &store.FuncExecution{
@@ -111,23 +123,63 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		Status:    "running",
 		StartedAt: time.Now(),
 	}
-	h.db.InsertFuncExecution(r.Context(), fe)
-
-	// Build and submit batch job
-	batchJob, err := nomad.TranslateBatch(spec, procName, proc, imageTag, env, jobID)
-	if err != nil {
-		h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := h.db.InsertFuncExecution(r.Context(), fe); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "cannot record function execution")
 		return
 	}
+
+	// Named databases reach the invocation only through its own private,
+	// create-only copy of the app's promoted delivery revision, revalidated
+	// against the running targets. The copy is never updated; cleanup
+	// deletes only exactly that material.
+	var owned map[string]string
+	revision := int64(0)
+	if spec.NamedDatabases() {
+		fail := func(status int, message string) {
+			h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)
+			writeError(w, status, message)
+		}
+		if conflicts := spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+			fail(http.StatusConflict, fmt.Sprintf("%s delivered by the database binding must not also come from secrets or the request", strings.Join(conflicts, ", ")))
+			return
+		}
+		if nomad.HasRuntimeDatabases(spec) {
+			if h.pipeline == nil || h.pipeline.DatabaseTargets == nil {
+				fail(http.StatusConflict, "named databases require a database profile")
+				return
+			}
+			if h.findSpec(jobID) != nil {
+				fail(http.StatusConflict, "function job ID collides with an app name")
+				return
+			}
+			material, err := h.pipeline.RunningDeliveryRevision(r.Context(), spec, "global", id)
+			if err != nil {
+				fail(http.StatusConflict, err.Error())
+				return
+			}
+			if owned, err = h.nomad.CopyDatabaseVariable("global", jobID, material); err != nil {
+				fail(http.StatusConflict, err.Error())
+				return
+			}
+			revision = material.Revision
+		}
+	}
+
+	// Build and submit batch job
+	batchJob := nomad.TranslateBatchAt(spec, procName, proc, imageTag, env, jobID, revision)
 	_, err = h.nomad.SubmitJob(batchJob)
 	if err != nil {
+		if owned != nil {
+			_ = h.nomad.DeleteDatabaseVariable("global", jobID, owned)
+		}
 		h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	// Async wait for completion
+	// Once Nomad accepted the job, the completion watcher must outlive the
+	// HTTP request that created it. Its own deadline is bounded below.
 	go func() {
 		timeout := 30 * time.Second
 		if proc.Function != nil && proc.Function.Timeout != "" {
@@ -137,10 +189,23 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		start := time.Now()
-		status, exitCode, _ := h.nomad.WaitBatchComplete(r.Context(), jobID, timeout)
+		watchCtx, cancel := context.WithTimeout(context.Background(), timeout+time.Minute)
+		defer cancel()
+		status, exitCode, waitErr := h.nomad.WaitBatchComplete(watchCtx, jobID, timeout)
 		durationMs := time.Since(start).Milliseconds()
+		if waitErr != nil && status == "" {
+			status = "unknown"
+		}
 
-		h.db.UpdateFuncExecution(r.Context(), execID, status, exitCode, durationMs)
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer updateCancel()
+		h.db.UpdateFuncExecution(updateCtx, execID, status, exitCode, durationMs)
+		if owned != nil && (status == "complete" || status == "failed") {
+			// The one-shot job was purged; its copy of the connection goes.
+			// Any other outcome leaves the copy, which only this unique job
+			// ID can read, rather than racing a still-pending allocation.
+			_ = h.nomad.DeleteDatabaseVariable("global", jobID, owned)
+		}
 		h.ws.Broadcast(hub.Event{
 			Type:  "function.completed",
 			AppID: id,

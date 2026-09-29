@@ -1,0 +1,47 @@
+{
+  "apiVersion": "norn.database/v1alpha1",
+  "services": [
+    {
+      "apiVersion": "norn.database/v1alpha1",
+      "id": "mini-app-pg",
+      "generation": 3,
+      "purpose": "application",
+      "engine": "postgresql",
+      "engineVersion": "16.4",
+      "providerRef": "local:mini-postgres",
+      "endpoint": {"host": "/var/run/postgresql", "port": 5432},
+      "topology": {"mode": "local-shared", "availabilityClass": "single-host"},
+      "tls": {"minimumMode": "disabled"},
+      "recovery": {"capabilities": ["runtime", "migration", "snapshot", "restore", "health"]}
+    }
+  ],
+  "bindings": [
+    {
+      "apiVersion": "norn.database/v1alpha1",
+      "id": "shop-primary",
+      "serviceId": "mini-app-pg",
+      "database": "shop",
+      "role": "shop_app",
+      "generation": 2,
+      "credentialRef": "secret:apps/shop/primary",
+      "tls": {"mode": "disabled"}
+    }
+  ],
+  "profiles": [
+    {
+      "apiVersion": "norn.database/v1alpha1",
+      "id": "mini",
+      "topology": "local",
+      "availabilityClass": "single-host",
+      "databaseBindings": {"primary": "shop-primary"},
+      "legacyPostgres": {
+        "mappingId": "mini-legacy-pg",
+        "serviceId": "mini-app-pg",
+        "role": "legacy_apps",
+        "generation": 1,
+        "credentialRef": "secret:apps/legacy",
+        "tls": {"mode": "disabled"}
+      }
+    }
+  ]
+}

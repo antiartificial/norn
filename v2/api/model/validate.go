@@ -125,6 +125,9 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 		if proc.HostPort > 0 && proc.Scaling != nil && (proc.Scaling.Min > 1 || proc.Scaling.PerRegion > 1) {
 			r.add("error", field+".hostPort", "fixed hostPort cannot be used with multiple allocations in one region")
 		}
+		if proc.Placement != nil && proc.Placement.DistinctHosts && (proc.Schedule != "" || proc.Function != nil) {
+			r.add("error", field+".placement.distinctHosts", "distinctHosts requires a service process")
+		}
 
 		// Resource bounds
 		if proc.Resources != nil {
@@ -179,6 +182,19 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	// Endpoint URLs valid
 	for i, ep := range spec.Endpoints {
+		if ep.TrafficProbe != nil {
+			if err := ValidateTrafficProbe(ep.TrafficProbe); err != nil {
+				r.add("error", fmt.Sprintf("endpoints[%d].trafficProbe", i), err.Error())
+			}
+		}
+		if ep.Process != "" {
+			proc, ok := spec.Processes[ep.Process]
+			if !ok {
+				r.add("error", fmt.Sprintf("endpoints[%d].process", i), fmt.Sprintf("process %q is not declared", ep.Process))
+			} else if proc.Port <= 0 || proc.Schedule != "" || proc.Function != nil {
+				r.add("error", fmt.Sprintf("endpoints[%d].process", i), "endpoint process must be a service with a port")
+			}
+		}
 		if ep.URL == "" {
 			r.add("error", fmt.Sprintf("endpoints[%d].url", i), "endpoint URL is required")
 			continue
@@ -207,6 +223,8 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			r.add("error", field+".mount", "volume mount path must be absolute")
 		}
 	}
+
+	validateDatabaseDeclarations(r, spec)
 
 	// Postgres infra requires database name
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {

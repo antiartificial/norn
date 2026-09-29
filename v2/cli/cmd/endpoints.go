@@ -11,6 +11,7 @@ import (
 )
 
 func init() {
+	addIngressOperationFlags(endpointsToggleCmd)
 	rootCmd.AddCommand(endpointsCmd)
 	endpointsCmd.AddCommand(endpointsToggleCmd)
 }
@@ -106,12 +107,15 @@ var endpointsToggleCmd = &cobra.Command{
 			style.Bold.Render(action),
 		)
 
-		if err := client.ToggleEndpoint(appID, hostname, newState); err != nil {
+		key, err := requestIdempotencyKey(cmd, ingressIdempotencyKey, "norn-endpoint-toggle")
+		if err != nil {
+			return err
+		}
+		op, err := client.ToggleEndpoint(appID, hostname, newState, key)
+		if err != nil {
 			return fmt.Errorf("toggle failed: %w", err)
 		}
-
-		fmt.Println(style.SuccessBox.Render("cloudflared updated"))
-		return nil
+		return handleIngressOperation(cmd, op, "cloudflared endpoint toggle")
 	},
 }
 

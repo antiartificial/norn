@@ -334,3 +334,51 @@ func resolveRef(root map[string]interface{}, ref string) (interface{}, bool) {
 	_ = fmt.Sprintf("%v", current)
 	return current, true
 }
+
+func TestIdempotentOperationAcceptancePublishesReplayExpiry(t *testing.T) {
+	var document map[string]interface{}
+	if err := yaml.Unmarshal(controlV1, &document); err != nil {
+		t.Fatalf("parse OpenAPI: %v", err)
+	}
+	errorCode, ok := resolveRef(document, "#/components/schemas/ErrorCode")
+	if !ok {
+		t.Fatal("missing ErrorCode schema")
+	}
+	enum := errorCode.(map[string]interface{})["x-extensible-enum"].([]interface{})
+	foundCode := false
+	for _, value := range enum {
+		foundCode = foundCode || value == "idempotency_window_expired"
+	}
+	if !foundCode {
+		t.Fatal("ErrorCode omits idempotency_window_expired")
+	}
+
+	covered := 0
+	for path, rawPath := range document["paths"].(map[string]interface{}) {
+		for method, rawOperation := range rawPath.(map[string]interface{}) {
+			operation, ok := rawOperation.(map[string]interface{})
+			if !ok || !hasRequiredIdempotencyKey(operation["parameters"]) {
+				continue
+			}
+			covered++
+			responses, ok := operation["responses"].(map[string]interface{})
+			if !ok || responses["410"] == nil {
+				t.Errorf("%s %s omits the 410 replay-expiry response", strings.ToUpper(method), path)
+			}
+		}
+	}
+	if covered < 15 {
+		t.Fatalf("only %d idempotent acceptance operations were checked", covered)
+	}
+}
+
+func hasRequiredIdempotencyKey(raw interface{}) bool {
+	parameters, _ := raw.([]interface{})
+	for _, rawParameter := range parameters {
+		parameter, _ := rawParameter.(map[string]interface{})
+		if parameter["$ref"] == "#/components/parameters/RequiredIdempotencyKey" || parameter["name"] == "Idempotency-Key" && parameter["required"] == true {
+			return true
+		}
+	}
+	return false
+}

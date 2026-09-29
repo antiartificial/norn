@@ -1,0 +1,64 @@
+# Mini ingress destination join — 2026-09-25
+
+This read-only follow-up narrows the four hostname identities that had no
+declared app endpoint match in the [workload join](m0-mini-workload-join-2026-09-25.md).
+It inspected Mini's owner-local cloudflared configuration, the authenticated
+loopback Norn API, live listener metadata, and the current app allocation
+summary. It did not copy hostnames, destination URLs, credentials, or job
+environment values into this repository. No route or service was changed.
+
+The inspected configuration was
+`/Users/0xadb/.cloudflared/config.yml`, SHA-256
+`da95d8bc386cefbfa19ff194cb8e82d1049ade912c1c5b12e97f84c944210d22`.
+Its 16 named ingress entries matched the API's `/api/cloudflared/ingress`
+hostname entries in order. The `com.norn.cloudflared` LaunchAgent reported
+`running`. This binds the API's inventory to the inspected file at the
+observation time; it does not prove every public DNS or proxy request reaches
+its destination.
+
+| Unmatched identity | Destination evidence | Disposition |
+| --- | --- | --- |
+| First and second | Both point to Mini `localhost:8080`. A later listener check found an IPv4 Python `open-webui` process bound to `*:8080`; the separate Docker backend listener was bound to Mini's LAN address. A loopback HEAD request returned 200 from Uvicorn. The Python process was a direct child of launchd, listed under `ai.openwebui.hermes`. | Technical destination is the host Open WebUI service, outside Norn's declared app endpoints. Its accountable owner and intended external exposure still need review. |
+| Third | Points to Mini loopback port 8800. `norn-api` owns the listener, and TCP accepted a connection. | Identified as a Norn control API route, outside app endpoint ownership. Public reachability and intended exposure still need review. |
+| Fourth | Points to the current `vigil-gateway` allocation's node address and its declared process port 8144. TCP accepted a connection. | Strong current runtime match to Vigil, although no declared app endpoint names this hostname; owner should record the exception and verify the full route. |
+
+The file also contains a second entry for the third hostname with an
+`http_status` destination after its API route. This is a duplicate rule in
+the ordered configuration and requires an owner review of intended matching
+and fallback behavior. A final unnamed fallback rule was outside the named
+hostname count.
+
+These observations identify a current technical destination for all four
+unmatched identities: Open WebUI (two), Norn API (one), and Vigil (one).
+They do not establish accountable ownership or intended external exposure
+for the host Open WebUI and Norn API routes. The route gate still needs
+cloudflared-to-service request proof, Consul or Traefik ownership where
+applicable, and owner decisions before the Mini upgrade fixture can claim
+representative traffic coverage.
+
+## HTTPS request-path refresh — 2026-09-26 23:10 UTC
+
+The owner-local cloudflared config SHA-256 was unchanged at
+`da95d8bc386cefbfa19ff194cb8e82d1049ade912c1c5b12e97f84c944210d22`.
+A read-only probe from Mini used each of the four unmatched configured HTTPS
+hostnames and printed only destination class and status:
+
+| Destination class | Request path | Result |
+| --- | --- | --- |
+| Open WebUI, first route | `/` | HTTP 200 |
+| Open WebUI, second route | `/` | HTTP 200 |
+| Norn control API | `/api/health` | HTTP 200 |
+| Vigil gateway | `/health` | HTTP 200 |
+
+Vigil's `/` returned HTTP 404; its checked-in gateway registers `/health`, so
+the path-specific probe is the relevant one. These results add a current
+hostname-to-response check from Mini to the prior destination/listener join.
+A second bounded GET compared each public response body with a fresh request
+to its exact configured local destination and path. All four pairs matched
+byte-for-byte (Open WebUI 11,027 bytes each, Norn health 293 bytes, Vigil
+health 29 bytes); bodies were compared in process and not retained in this
+repository. This is strong current destination identity evidence from Mini.
+It does not prove reachability from an independent external network, every
+auth path, DNS propagation, or intended exposure.
+Open WebUI and Norn API route owners still need to accept their external
+exposure, and the duplicate ordered Norn hostname rule still needs review.
