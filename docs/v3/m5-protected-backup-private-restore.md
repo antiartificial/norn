@@ -93,7 +93,7 @@ on-host backup for the upgrade window, with a private restore of those exact
 bytes before transition. At the time of the rehearsal below, Mini's launcher
 lacked the required URL and audit key; both were installed later, and a
 protected artifact and separate-Mac restore are recorded in the
-[current handoff](session-resume-2026-09-28.md).
+[current handoff](session-resume-2026-09-29.md).
 The [2026-09-25 staged-binding rehearsal](m5-mini-staged-binding-backup-rehearsal-2026-09-25.md)
 proved this producer and private restore against live Mini data using an
 inactive encrypted key candidate. It did not itself prove the later protected

@@ -7,7 +7,7 @@ This status applies only to the local development branch `codex/v3-foundations`,
 ## Current stage
 
 For the current release state and next sequence, see the
-[2026-09-28 release handoff](session-resume-2026-09-28.md). This document
+[2026-09-29 release handoff](session-resume-2026-09-29.md). This document
 contains implementation detail accumulated across earlier slices. Sections
 below record implementation history; references to an active pass are
 historical. No full M0–M9 exit gate is declared complete.

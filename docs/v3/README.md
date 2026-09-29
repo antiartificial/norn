@@ -1,6 +1,6 @@
 # Norn v3 planning package
 
-**Current release work:** start with the [2026-09-28 release handoff](session-resume-2026-09-28.md)
+**Current release work:** start with the [2026-09-29 release handoff](session-resume-2026-09-29.md)
 for the latest checked-in state, open gates, and next sequence. It is the only
 handoff in this tree; Git history retains earlier session and topic handoffs.
 

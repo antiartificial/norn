@@ -1,6 +1,6 @@
 # Norn v3 execution milestones
 
-Status: integration under review in draft PR #77 on `codex/v3-master-integration`, 2026-09-27. Scope incorporates the Mini/Fleet clarification. Protected Fleet provisioning and live cutovers have not started. Detailed ADRs remain proposed where decisions are unresolved.
+Status: source integrated on Norn `master` by PR #77, 2026-09-29. A signed platform package exists; protected Fleet provisioning and live Mini cutover have not succeeded. The [current release handoff](session-resume-2026-09-29.md) records the latest operational evidence. Detailed ADRs remain proposed where decisions are unresolved.
 
 ## Release contract
 
@@ -142,8 +142,9 @@ General cross-backend conversion, local single-member etcd, Fleet-PG qualificati
 ## Execution status
 
 As of 2026-09-28, **0 of 10 M0–M9 gates are signed (0%)**. This is the release
-gate completion ratio, not an estimate of code completed. The integration is
-under review in draft PR #77; passing local tests and CI do not sign a gate.
+gate completion ratio, not an estimate of code completed. PR #77 has since
+merged and a platform package was published; source integration, local tests
+and CI still do not sign a gate.
 
 For planning, the estimated implementation progress on 2026-09-28 is below.
 These are judgment estimates rounded to 5%, based on the breadth of working
@@ -243,17 +244,18 @@ The traffic observation is synthetic; this does not qualify effective Traefik st
 the public load balancer, or a protected Fleet deployment.
 Fleet PR #177 has an [earlier local validation record](m4-fleet-pr177-local-validation-2026-09-27.md)
 for 1,413 Python tests and Ansible syntax; its [later Fleet readiness review](https://github.com/antiartificial/norn-fleet/blob/codex/fleet-ingress-readback/docs/runbooks/staging-v3-protected-rehearsal-readiness-2026-09-28.md)
-reports 1,415 tests at Fleet code head `5234aaf`. PR #177 targets PR #176's
-`codex/fleet-m3-host-etcd` branch, while PR #176 targets `main`; review and
-integrate the host-etcd base before the stacked ingress work. Fleet `main`
-requires `contract`. Both PRs have exact-head passing checks on the documented
+reports 1,415 tests at Fleet code head `5234aaf`. PRs #176 and #177 have
+since merged to Fleet `main`. Both had exact-head passing checks on the documented
 repository-scoped ephemeral Linux x64 fallback ([#176 run](https://github.com/antiartificial/norn-fleet/actions/runs/36285145209),
 [#177 run](https://github.com/antiartificial/norn-fleet/actions/runs/36477152422)).
-Normal GitHub-hosted runner assignment remains blocked by the account billing
-or spending limit. These checks validate source; they do not prove a protected
-provider plan, host bootstrap or release gate.
+The later external-Mac runner-name correction [PR #188](https://github.com/antiartificial/norn-fleet/pull/188)
+also merged after exact-head validation on a temporary self-hosted runner.
+Normal GitHub-hosted runner assignment remains blocked by the account monthly
+Actions limit. These checks validate source; they do not prove a protected
+provider plan, host bootstrap or release gate. The 2026-09-29 disposable
+attempt stopped before compute creation and was retired; see the current handoff.
 
-[Implementation status](implementation-status.md) and [current release handoff](session-resume-2026-09-28.md)
+[Implementation status](implementation-status.md) and [current release handoff](session-resume-2026-09-29.md)
 record implementation detail and the latest release state. This table governs only
 the formal milestone percentage; each gate needs its own full-scope evidence
 and owner sign-off before its disposition changes.
