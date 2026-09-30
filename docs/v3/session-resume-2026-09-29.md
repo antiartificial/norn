@@ -15,11 +15,14 @@ a signed package, local drills, and a green PR check are evidence for their
 specific layers; none alone signs M0–M9 or proves a live Fleet.
 
 The immediate operational priority is a **bounded disposable Fleet pilot**,
-followed by verified full retirement. The owner approved brief test spending
-and wants time to run workloads on the pilot; no test resources should remain
-up for hours without ongoing tests. A fresh run needs an agreed workload test
-window, current quote, signed cutoff/retire-by, Gate 3 GO, exact protected
-runner, reviewed plan, and a working finalizer before provider create.
+followed by verified full retirement. Earlier spending approval covered only
+the external-Mac run and its fixed window. The larger paired $10/four-hour
+proposal is not yet authorized. No test resources should remain up without
+ongoing tests. The paired topology is the intended path to
+real Fleet fitness evidence; it is one bounded qualification slice, not a
+substitute for the full M0–M9 release contract. Use the focused
+[Fleet fitness matrix](fleet-fitness-pilot-matrix-2026-09-29.md) and preserve
+enough of the signed window for retirement and final-zero verification.
 
 ## Verified source and runtime state
 
@@ -54,6 +57,21 @@ runner, reviewed plan, and a working finalizer before provider create.
   Its receipt reports 282 bounded tests and no cloud/Tailscale mutation or
   OIDC use. Both temporary runners deregistered; only the shared finalizer
   remains. A source change after this commit needs a new qualification.
+- Fleet `main` advanced through the protected plan-bridge correction at
+  `f5910c35c6a191153c743c032114d337ad67e9e3`. Human receipt
+  [PR #194](https://github.com/antiartificial/norn-fleet/pull/194) then
+  fast-forwarded the exact one-commit, receipt-only head
+  `15f7f237bf5d91d636e1ebf5a1c871386781e34c` to protected `main` after its
+  required `contract` check passed. GitHub reported the PR merged at that same
+  SHA; its author and committer were both Aaron Barton. This is reviewed Fleet
+  intent, not provider execution or live Fleet evidence.
+- Protected qualification
+  [run 36639496593](https://github.com/antiartificial/norn-fleet/actions/runs/36639496593)
+  succeeded on attempt 2 at exact protected head `15f7f237`. Attempt 1 reached
+  the artifact upload and failed only when that upload timed out. The retained
+  receipt was downloaded as `R/pre-release-pilot-qualification-B.json` and
+  verified for the resumed run. This is no-cloud qualification, not a provider
+  apply or live runtime result.
 - The Mini still reports `v2.20.0-platform-30-ga5da8ef` at `/api/version`.
   A 2026-09-29 authenticated inventory found zero active Norn operations,
   host status OK, 29 app entries, and no configured Fleet node pools. This
@@ -95,21 +113,93 @@ label, idle-state, and no-active-workflow checks; each GET returned 404.
 Only the shared external-Mac finalizer runner remained registered. The
 temporary Mini backup Space remains active and is separate from pilot compute.
 
+The successor run `pilot260929g` reached partial pre-create preparation. Its signed
+cutoff is `2026-09-30T00:00:00Z` and its `retireBy` is
+`2026-09-30T01:00:00Z`. The signed Gate 3 `GO` is retained at
+`R/gate3-go.json`. Controller prepare reached the verified dormant state with
+HTTP 409 as the expected no-post-create-binding response, zero CAS writes and
+the reviewed network route adopted. Local PKI and bootstrap material are
+prepared.
+
+The isolated `norn-pilot260929g-state` Space was created in NYC3 with versioning
+enabled and its scoped key. The broad bootstrap key was revoked; the retained
+bootstrap receipt is `R/backend/bootstrap-receipt.json`. No compute, load
+balancer, managed database or live Fleet has been created. The four shared
+finalizer variables were corrected and read back against the current run's
+evidence root, final-zero output and finalizer key/key ID.
+
+The exact Tailscale pilot tag-owner policy was saved and read back through the
+authenticated administrator. Five short-lived node keys and their receipts
+were then issued successfully under the existing authority/OAuth client.
+Before provider compute, review found that the signed Gate 3 GO bound
+`github-app-installation-evidence-p2.json`, while the protected workflow derives
+and requires the canonical sibling `github-app-installation-evidence.json`.
+The runtime exact-path check therefore rejects this GO. Because backend and
+node-key preparation has already occurred, a new local preflight cannot
+truthfully repeat the signed pre-Gate-4 absence observations in this epoch.
+`pilot260929g` entered the supported partial-precreate abort path; the cleanup
+and final-zero are now complete as recorded below. Preserve its original GO. None of this preparation is live
+Fleet evidence or a milestone sign-off.
+
+## Latest cleanup and launch preparation
+
+Fleet [PR #195](https://github.com/antiartificial/norn-fleet/pull/195) merged
+as `b5f546c` and [PR #196](https://github.com/antiartificial/norn-fleet/pull/196)
+as `93539d5242e5e94e2f90eeea821fe8550f7fb0ac`. The latter passed
+[1,429 contract tests](https://github.com/antiartificial/norn-fleet/actions/runs/36644956943)
+and [285 protected no-cloud qualification tests](https://github.com/antiartificial/norn-fleet/actions/runs/36646242045).
+The exact receipt and source Git trees were verified locally.
+
+The state Space and scoped key are verified absent. The local controller,
+its two routes and retire-by watchdog are closed. All five Tailscale keys were
+retired with signed terminal observations. A v2 proof-reader defect required
+each intermediate deletion to report no remaining keys; the actual signed
+sequence was four, three, two, one, zero. Reviewed
+[PR #197](https://github.com/antiartificial/norn-fleet/pull/197), commit
+`538c775`, validates bounded remaining-key subsets and monotonic removal.
+It passed 50 focused cleanup tests and all
+[1,430 contract tests](https://github.com/antiartificial/norn-fleet/actions/runs/36647151475),
+then merged as `172c2c3ec53d8e8541a228a8714d178bb4603d23`. That exact protected
+head passed [286 no-cloud qualification tests](https://github.com/antiartificial/norn-fleet/actions/runs/36647958590);
+the receipt, both Git trees and all qualification file digests were verified.
+
+The supported local Phase-B CLI used that reviewed reader fix with the
+unchanged intent prepared by exact protected `93539d5`. It removed only runner
+217 and preserved finalizer runner 23. The signed final-zero record and raw
+event chain verified at `2026-09-29T23:50:32Z`:
+`R/partial-precreate-abort/evidence-final/partial-precreate-final-zero.json`.
+`R/partial-precreate-abort/phase-b-executor.json` records the reader execution
+revision. The full Tailscale policy was then restored to its original baseline;
+`R/retention/policy-restoration-receipt.json` retains that separate observation.
+This is partial-precreate technical zero; billing finalization remains separate.
+
+The next useful run uses the paired disposable management/Fleet topology and
+normal bootstrap: actual Norn v3 on three etcd-backed cloud control nodes,
+plus two ingress nodes. Its Linux runner admission is corrected in PR #196.
+The signed Norn `8ac21f8e` Linux bundle, official etcd v3.5.17 tools, complete
+Linux management tool set and sealed Ansible environment are verified locally.
+The exact protected Fleet checkout archive is also built and verified.
+Neutral receipts, the concrete `pilot260929h` proposal and command recipe are
+under `/Users/arti/.config/norn-fleet/v3-launch-prep-20260929`.
+
 ## Next sequence
 
-1. Agree on a short workload test window and derive a fresh run ID, quote,
-   cutoff, and retire-by. Keep the existing owner authorization for brief test
-   spending; do not infer that an old signed run approval is reusable.
-2. Recheck the verified Norn candidate and Fleet `main` at the start of the
-   window. Use the retained qualification for `01f4151` only while it remains
-   the exact protected source; rerun the no-cloud lane after any source change.
-3. Complete Gate 2 and Gate 3 for the fresh run. Register the exact protected
-   runner name; check it against the workflow selector before backend or
-   provider setup. Verify finalizer readiness and the signed retirement path.
-4. Execute the reviewed plan/apply, prove provider inventory and runtime
-   readiness, let the owner test workloads, then run the reviewed retirement
-   and final-zero path. Independently verify provider absence and retain
-   evidence and billing review.
-5. Continue M5 Mini upgrade and M6/M7 application database/mobility work as
-   separate gates. Do not count the disposable pilot as the Mini cutover or
-   as full v3 release qualification.
+1. Use qualified protected Fleet `172c2c3` and its verified checkout archive.
+   Preserve the completed original pilot's final-zero and policy-restoration
+   evidence.
+2. Follow the [paired operator plan](fleet-next-epoch-operator-sequence-2026-09-29.md).
+   The estimated four-hour infrastructure usage is $3.10, with a proposed $10
+   total ceiling covering possible Spaces charges and teardown. This is not
+   spend approval. Exact plans require staged backend and management setup;
+   review each authorized stage before progressing.
+3. Execute the reviewed paired Fleet plan with the signed v3 candidate and
+   run the [fitness matrix](fleet-fitness-pilot-matrix-2026-09-29.md): exact etcd
+   membership, authenticated Norn API continuity, separately labeled etcd CAS,
+   one-control loss/rejoin, workload
+   placement and ingress continuity. Reserve the final hour for retirement.
+4. Retire Fleet before management and retain final technical-zero evidence.
+   Billing verification remains separate.
+5. Use observed results to advance M3/M4/M8 without declaring full release
+   qualification. Rotation, rolling upgrade, destructive restore, soak and
+   ingress scaling remain separate evidence. Mini M5 upgrade and M9 adoption
+   stay independent; no Mini mutation is part of this Fleet run.
