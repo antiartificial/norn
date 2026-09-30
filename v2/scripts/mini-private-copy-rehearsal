@@ -8,14 +8,24 @@ set -euo pipefail
 # uses a private socket-only PostgreSQL cluster.
 
 usage() {
-  printf 'usage: NORN_CANDIDATE_SHA=<40-hex-sha> %s <disposable-candidate-binary>\n' "$0" >&2
+  printf 'usage: NORN_CANDIDATE_SHA=<40-hex-sha> NORN_CANDIDATE_VERSION=<signed-release-version> %s <disposable-candidate-binary>\n' "$0" >&2
   exit 2
 }
 
 [[ $# -eq 1 ]] || usage
 candidate=$1
 expected_sha=${NORN_CANDIDATE_SHA:-}
+expected_version=${NORN_CANDIDATE_VERSION:-}
 [[ $expected_sha =~ ^[0-9a-f]{40}$ ]] || usage
+# The caller obtains this label from a manifest already verified for
+# expected_sha. Keep that immutable binding outside this rehearsal while
+# refusing a free-form value here. A describe-style suffix, when present,
+# must identify the supplied SHA as well.
+[[ $expected_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+-platform(-[0-9]+-g[0-9a-f]{7,40})?$ ]] || usage
+if [[ $expected_version == *-g* ]]; then
+  version_sha=${expected_version##*-g}
+  [[ $expected_sha == "$version_sha"* ]] || usage
+fi
 [[ -f $candidate && -x $candidate ]] || {
   printf 'candidate must be an executable regular file: %s\n' "$candidate" >&2
   exit 2
@@ -366,17 +376,17 @@ done
 }
 curl -fsS "http://127.0.0.1:$passive_port/api/version" >"$scratch/version.json"
 curl -fsS "http://127.0.0.1:$passive_port/api/schema" >"$scratch/schema.json"
-PASSIVE_HEALTH_JSON=$(<"$scratch/health.json") PASSIVE_VERSION_JSON=$(<"$scratch/version.json") SCHEMA_JSON=$(<"$scratch/schema.json") EXPECTED_SHA=$expected_sha CATALOG_VERSION=$catalog_version MINIMUM_READER=$minimum_reader MINIMUM_WRITER=$minimum_writer python3 - <<'PY'
+PASSIVE_HEALTH_JSON=$(<"$scratch/health.json") PASSIVE_VERSION_JSON=$(<"$scratch/version.json") SCHEMA_JSON=$(<"$scratch/schema.json") EXPECTED_VERSION=$expected_version CATALOG_VERSION=$catalog_version MINIMUM_READER=$minimum_reader MINIMUM_WRITER=$minimum_writer python3 - <<'PY'
 import json
 import os
 
-expected_sha = os.environ["EXPECTED_SHA"]
+expected_version = os.environ["EXPECTED_VERSION"]
 health = json.loads(os.environ["PASSIVE_HEALTH_JSON"])
 version = json.loads(os.environ["PASSIVE_VERSION_JSON"])
 schema = json.loads(os.environ["SCHEMA_JSON"])
 assert health["status"] == "passive"
-assert version == {"version": expected_sha}
-assert schema["version"] == expected_sha
+assert version == {"version": expected_version}
+assert schema["version"] == expected_version
 assert schema["startupContract"] == "norn.startup/v2"
 assert schema["startupMode"] == "passive"
 assert schema["schemaMode"] == "check"
@@ -401,6 +411,7 @@ wait "$passive_pid" || true
 passive_pid=
 
 printf 'candidate_sha=%s\n' "$expected_sha"
+printf 'candidate_version=%s\n' "$expected_version"
 printf 'postgres_version=%s\n' "$("$postgres_bin/postgres" --version)"
 printf 'original_tables=%s\n' "$original_table_count"
 printf 'original_rows=%s\n' "$before_rows"
