@@ -59,9 +59,9 @@ definitions, private endpoints, or configuration:
 
 The [September 28 refresh](m0-mini-baseline-refresh-2026-09-28.md) recorded 27
 app records and 44 service entries. The two-record increase is accounted for by
-an additional retained record for each of `mail-mcp` and `signal-sideband`.
-This is a count reconciliation, not an explanation of how or why those records
-were created.
+an additional discovered InfraSpec for each of `mail-mcp` and
+`signal-sideband`. The follow-up below identifies their source directories;
+it does not establish who created them or authorize their removal.
 
 The inventory still reports known disabled or unhealthy applications and
 snapshot/secret warnings. Host status `ok`, production readiness `blocked`, and
@@ -102,10 +102,10 @@ Read-only joins identify the active runtime configuration:
   and the manifest; this refresh did not perform an endpoint request.
 
 Therefore record A matches the single rendered Nomad job and the current dirty
-source InfraSpec. Record B is a retained control-plane record with no distinct
-Nomad job found by name. Read-only evidence does not establish its creation
-path, whether any historical receipt intentionally owns it, or whether an owner
-wants it merged or removed. Do not mutate either record from this join alone.
+source InfraSpec. Record B has no distinct Nomad job found by name. The
+follow-up below identifies its source checkout, but does not establish who
+created that checkout or whether an owner wants to retain it. Do not mutate
+either source from this join alone.
 
 ## Duplicate `signal-sideband` identity join
 
@@ -136,11 +136,39 @@ Read-only joins identify the active runtime configuration:
   the inspected source state without claiming the commit alone defines runtime.
 
 Therefore record A matches the single rendered Nomad job and the current dirty
-source InfraSpec. Record B is a retained control-plane record with no distinct
-Nomad job or route found. Read-only evidence does not establish its creation
-path, retained receipt ownership, or intended lifecycle. Do not infer that the
+source InfraSpec. Record B has no distinct Nomad job or route found. The
+follow-up below identifies its source checkout, but does not establish who
+created that checkout or its intended lifecycle. Do not infer that the
 duplicate manifest row means two allocations or two independently configured
 public routes.
+
+## Read-only discovery-source follow-up — 18:16–18:27 UTC
+
+A fresh authenticated inventory still returned 29 apps, 46 manifest entries,
+zero active operations and no configured Fleet. Read-only Mini filesystem and
+Git inspection then identified the extra InfraSpecs under the API's scanned
+projects directory:
+
+| API identity | Runtime-matching source | Additional discovered source | CPU shares | Additional source HEAD |
+| --- | --- | --- | --- | --- |
+| `mail-mcp` | `projects/mail-mcp/infraspec.yaml` | `projects/mail-mcp-v3-db-readiness/infraspec.yaml` | 25 versus 100 | `eec3db157a8cbcebcbde48bd30491256ce90c4bd` |
+| `signal-sideband` | `projects/signal-sideband/infraspec.yaml` | `projects/signal-sideband-v3-readiness/infraspec.yaml` | 25 versus 200 | `871e45e621b6f07a99c77929e56155bcf0069762` |
+
+Both additional checkouts were clean on `codex/v3-db-readiness` at inspection
+time. Their `deploy: true` InfraSpecs account for the second named inventory
+and manifest entries. Source at the API-reported `a5da8ef` version shows
+`model.DiscoverAllApps` scanning every immediate child directory with a
+valid named InfraSpec; it does not read an application table for this
+inventory. The source's runtime discovery also includes enabled copies. The
+observed rows match that mechanism, without proving the installed binary's
+digest or asserting that a second Nomad job, route or database record exists.
+
+Protected master now supports an explicit `.norn-discovery-ignore` marker for
+retained source directories, but the installed Mini API version predates that
+change. Resolution requires either a later signed Mini release followed by an
+owner-approved marker on the retained readiness checkouts, or an owner-approved
+relocation outside the scanned projects directory using the installed version.
+The source checkouts and live runtime were not changed by this follow-up.
 
 ## Fixture and budget evidence boundary
 
@@ -184,9 +212,12 @@ an SLA or release gate merely by appearing in this worksheet.
 
 ## Remaining M0 gaps
 
-1. Identify the write/import and receipt lineage that created each second
-   `mail-mcp` and `signal-sideband` record, then obtain an owner decision about
-   retention, merge, or removal through a separately reviewed mutation.
+1. Decide whether the two V3 readiness source checkouts should remain under
+   the scanned projects directory. If retained, exclude them from discovery
+   after the installed API supports `.norn-discovery-ignore`; otherwise move
+   them through a separately reviewed source-management action. Verify the
+   resulting app and manifest identity counts without disturbing either live
+   Nomad job. The identity of whoever created the copies remains unverified.
 2. Record a named human decision and accepted/deferred budget for every
    M0-blocking row in the decision register. Do not infer acceptance from code.
 3. At the maintenance window, pin the installed Mini release manifest and
