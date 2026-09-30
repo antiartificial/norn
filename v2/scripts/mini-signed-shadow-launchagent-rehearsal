@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# Opt-in M5 composition: verified signed candidate + private restored database
+# + a disposable macOS LaunchAgent. It never targets the live API label/port.
+set -euo pipefail
+
+shadow_start() {
+  [[ ${NORN_M5_SIGNED_SHADOW_REHEARSAL:-} == 1 ]] || { echo 'shadow handoff requires explicit rehearsal opt-in' >&2; return 2; }
+  [[ ${NORN_M5_SHADOW_SESSION:-} == /* && -f ${NORN_M5_SHADOW_SESSION:-} && ! -L ${NORN_M5_SHADOW_SESSION:-} ]] || { echo 'shadow handoff capability is absent' >&2; return 2; }
+  read -r session_label session_port session_token <"$NORN_M5_SHADOW_SESSION"
+  [[ $session_label == "${NORN_M5_SHADOW_LABEL:-}" && $session_port == "${NORN_M5_SHADOW_PORT:-}" && $session_token == "${NORN_M5_SHADOW_HANDOFF_TOKEN:-}" ]] || { echo 'shadow handoff capability does not match this run' >&2; return 2; }
+  [[ ${NORN_REHEARSAL_PRIVATE_DATABASE_URL:-} == postgresql://*'host='%* ]] || { echo 'missing socket-only private database URL' >&2; return 2; }
+  [[ ${NORN_M5_SHADOW_LABEL:-} =~ ^com\.norn\.m5\.shadow\.[0-9a-f]{12}\.[0-9a-f]{16}$ ]] || { echo 'shadow label is invalid' >&2; return 2; }
+  [[ ${NORN_M5_SHADOW_PORT:-} =~ ^[0-9]+$ && $NORN_M5_SHADOW_PORT -ge 1024 && $NORN_M5_SHADOW_PORT -le 65535 && $NORN_M5_SHADOW_PORT -ne 8800 ]] || { echo 'shadow port is invalid' >&2; return 2; }
+  NORN_M5_SHADOW_ROOT="$NORN_M5_SHADOW_ROOT" NORN_M5_SHADOW_SESSION="$NORN_M5_SHADOW_SESSION" NORN_M5_SHADOW_PLIST="$NORN_M5_SHADOW_PLIST" NORN_M5_SHADOW_ENV="$NORN_M5_SHADOW_ENV" NORN_M5_SHADOW_LAUNCHER="$NORN_M5_SHADOW_LAUNCHER" NORN_M5_SHADOW_API="$NORN_M5_SHADOW_API" NORN_M5_SHADOW_RELEASE="$NORN_M5_SHADOW_RELEASE" python3 - <<'PY'
+import os, stat
+root=os.path.realpath(os.environ['NORN_M5_SHADOW_ROOT'])
+info=os.lstat(root)
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700: raise SystemExit('shadow root ownership or mode is unsafe')
+for name in ('NORN_M5_SHADOW_SESSION','NORN_M5_SHADOW_PLIST','NORN_M5_SHADOW_ENV','NORN_M5_SHADOW_LAUNCHER','NORN_M5_SHADOW_API','NORN_M5_SHADOW_RELEASE'):
+    path=os.environ[name]
+    if os.path.islink(path) or os.path.commonpath((root, os.path.realpath(path))) != root: raise SystemExit('shadow path escapes its private root')
+session=os.lstat(os.environ['NORN_M5_SHADOW_SESSION'])
+release=os.lstat(os.environ['NORN_M5_SHADOW_RELEASE'])
+api=os.lstat(os.environ['NORN_M5_SHADOW_API'])
+if session.st_uid != os.getuid() or stat.S_IMODE(session.st_mode) != 0o600: raise SystemExit('shadow handoff capability ownership or mode is unsafe')
+if not stat.S_ISDIR(release.st_mode) or release.st_uid != os.getuid() or not stat.S_ISREG(api.st_mode) or api.st_uid != os.getuid(): raise SystemExit('shadow signed snapshot ownership is unsafe')
+PY
+  canonical_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+  canonical_manifest="$canonical_root/v2/scripts/platform-release-manifest"
+  canonical_artifact="$canonical_root/v2/scripts/platform-release-artifact"
+  [[ $("$canonical_manifest" verify --release "$NORN_M5_SHADOW_RELEASE" --expected-sha "$NORN_M5_SHADOW_SHA") == signed ]] || { echo 'shadow candidate snapshot no longer verifies as signed' >&2; return 1; }
+  "$canonical_artifact" verify --release-dir "$NORN_M5_SHADOW_RELEASE" --public-key "$NORN_M5_SHADOW_PUBLIC_KEY" --quiet
+  [[ ${NORN_M5_SHADOW_PLIST:-} != "$HOME/Library/LaunchAgents"/* ]] || { echo 'shadow plist must not use the live LaunchAgents directory' >&2; return 2; }
+  cat >"$NORN_M5_SHADOW_ENV" <<EOF
+NORN_DATABASE_URL=$NORN_REHEARSAL_PRIVATE_DATABASE_URL
+NORN_PORT=$NORN_M5_SHADOW_PORT
+NORN_BIND_ADDR=127.0.0.1
+NORN_STARTUP_MODE=passive
+NORN_SCHEMA_MODE=check
+NORN_SKIP_DEPLOYMENT_RECOVERY=true
+NORN_SKIP_OPERATION_RECOVERY=true
+NORN_SKIP_OPERATION_WORKER=true
+NORN_SKIP_NOMAD_WATCHER=true
+EOF
+  chmod 600 "$NORN_M5_SHADOW_ENV"
+  printf '#!/usr/bin/env bash\nset -a\n. %q\nset +a\nexec %q\n' "$NORN_M5_SHADOW_ENV" "$NORN_M5_SHADOW_API" >"$NORN_M5_SHADOW_LAUNCHER"
+  chmod 700 "$NORN_M5_SHADOW_LAUNCHER"
+  PLIST="$NORN_M5_SHADOW_PLIST" LABEL="$NORN_M5_SHADOW_LABEL" LAUNCHER="$NORN_M5_SHADOW_LAUNCHER" python3 - <<'PY'
+import os, plistlib
+with open(os.environ['PLIST'], 'wb') as f:
+    plistlib.dump({'Label': os.environ['LABEL'], 'ProgramArguments': [os.environ['LAUNCHER']],
+                   'RunAtLoad': True, 'KeepAlive': False,
+                   'StandardOutPath': os.environ['PLIST'] + '.out',
+                   'StandardErrorPath': os.environ['PLIST'] + '.err'}, f)
+PY
+  chmod 600 "$NORN_M5_SHADOW_PLIST"
+  command -v launchctl >/dev/null || { echo 'launchctl is required for the shadow run' >&2; return 2; }
+  command -v lsof >/dev/null || { echo 'lsof is required for the shadow run' >&2; return 2; }
+  : >"$NORN_M5_SHADOW_RUNTIME_ATTEMPTED_FILE"
+  launchctl bootstrap "gui/$(id -u)" "$NORN_M5_SHADOW_PLIST"
+  : >"$NORN_M5_SHADOW_BOOTSTRAPPED_FILE"
+  shadow_pid=
+  for _ in $(seq 1 50); do
+    shadow_state=$(launchctl print "gui/$(id -u)/$NORN_M5_SHADOW_LABEL" 2>/dev/null || true)
+    shadow_pid=$(awk '/^[[:space:]]*pid = [1-9][0-9]*/ { print $3; exit }' <<<"$shadow_state")
+    [[ $shadow_pid =~ ^[1-9][0-9]*$ ]] && break
+    sleep 0.1
+  done
+  [[ $shadow_pid =~ ^[1-9][0-9]*$ ]] || { echo 'shadow LaunchAgent has no running PID' >&2; return 1; }
+  for _ in $(seq 1 50); do
+    curl -fsS "http://127.0.0.1:$NORN_M5_SHADOW_PORT/api/health" >"$NORN_M5_SHADOW_ROOT/health.json" 2>/dev/null && break
+    sleep 0.1
+  done
+  [[ $(lsof -nP -iTCP:"$NORN_M5_SHADOW_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u) == "$shadow_pid" ]] || {
+    echo 'shadow port is not solely owned by the shadow LaunchAgent' >&2; return 1;
+  }
+  PORT="$NORN_M5_SHADOW_PORT" VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
+import json, os, urllib.request
+base = 'http://127.0.0.1:' + os.environ['PORT']
+def get(path):
+    with urllib.request.urlopen(base + path, timeout=2) as response: return json.load(response)
+health, version, schema = get('/api/health'), get('/api/version'), get('/api/schema')
+if health.get('status') != 'passive' or version.get('version') != os.environ['VERSION']:
+    raise SystemExit('shadow LaunchAgent did not serve the verified passive candidate')
+if schema.get('startupMode') != 'passive' or schema.get('schemaMode') != 'check':
+    raise SystemExit('shadow LaunchAgent startup mode is not isolated')
+if any(schema.get(key) is not False for key in ('operationRecoveryEnabled', 'operationWorkerEnabled', 'nomadWatcherEnabled')):
+    raise SystemExit('shadow LaunchAgent enabled recovery or workers')
+PY
+  launchctl bootout "gui/$(id -u)/$NORN_M5_SHADOW_LABEL"
+  : >"$NORN_M5_SHADOW_RUNTIME_PASSED_FILE"
+  echo "signed shadow LaunchAgent passed: $NORN_M5_SHADOW_LABEL"
+}
+
+if [[ ${1:-} == shadow-start ]]; then shadow_start; exit $?; fi
+
+usage() { echo 'set NORN_M5_SIGNED_SHADOW_REHEARSAL=1 and use: run --candidate-release <absolute> --public-key <absolute>' >&2; exit 2; }
+[[ ${NORN_M5_SIGNED_SHADOW_REHEARSAL:-} == 1 && ${1:-} == run ]] || usage
+shift
+release= public_key=
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --candidate-release) release=${2:-}; shift 2 ;;
+    --public-key) public_key=${2:-}; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ $release == /* && -d $release && ! -L $release && $public_key == /* && -f $public_key && ! -L $public_key ]] || usage
+[[ -n ${NORN_REHEARSAL_BACKUP_ARTIFACT:-} && -n ${NORN_REHEARSAL_BACKUP_PROOF:-} && -z ${NORN_REHEARSAL_SOURCE_DATABASE_URL:-} ]] || { echo 'signed shadow rehearsal requires protected backup mode without a source URL' >&2; exit 2; }
+root=$(cd "$(dirname "$0")/../.." && pwd)
+source_release=$release
+manifest="$root/v2/scripts/platform-release-manifest"
+artifact="$root/v2/scripts/platform-release-artifact"
+receipt=${NORN_M5_SHADOW_RECEIPT:-}
+[[ $receipt == /* && ! -e $receipt && -d $(dirname "$receipt") ]] || { echo 'NORN_M5_SHADOW_RECEIPT must be a new absolute path in an existing directory' >&2; exit 2; }
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/norn-m5-signed-shadow.XXXXXX")
+chmod 700 "$scratch"
+trap 'rm -rf -- "$scratch"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+candidate_copy="$scratch/$(basename "$source_release")"
+key_copy="$scratch/pinned-release-public-key"
+PUBLIC_KEY="$public_key" KEY_COPY="$key_copy" python3 - <<'PY'
+import os, stat
+source=os.environ['PUBLIC_KEY']; target=os.environ['KEY_COPY']
+flags=os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+fd=os.open(source, flags)
+try:
+    info=os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid(): raise SystemExit('pinned public key is unsafe')
+    out=os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        while chunk:=os.read(fd, 65536): os.write(out, chunk)
+    finally: os.close(out)
+finally: os.close(fd)
+PY
+public_key="$key_copy"
+cp -RP "$release" "$candidate_copy"
+[[ -z $(find "$candidate_copy" -type l -print -quit) ]] || { rm -rf -- "$scratch"; echo 'candidate release snapshot contains a symbolic link' >&2; exit 2; }
+release="$candidate_copy"
+api="$release/bin/norn-api"
+[[ -x $manifest && -x $artifact && -x $api && -f $release/release.env ]] || { rm -rf -- "$scratch"; echo 'candidate release or trusted verifier is incomplete' >&2; exit 2; }
+read -r sha version < <(RELEASE_ENV="$release/release.env" python3 - <<'PY'
+import os, re
+rows = dict(row.rstrip('\n').split('=', 1) for row in open(os.environ['RELEASE_ENV'], encoding='utf-8') if '=' in row)
+sha, version = rows.get('NORN_RELEASE_SHA',''), rows.get('NORN_RELEASE_VERSION','')
+if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-platform(?:-[0-9]+-g[0-9a-f]{7,40})?', version): raise SystemExit(2)
+if '-g' in version and not sha.startswith(version.rsplit('-g',1)[1]): raise SystemExit(2)
+print(sha, version)
+PY
+)
+[[ $(basename "$source_release") == "$sha" ]] || { echo 'candidate release directory does not match its signed SHA' >&2; exit 1; }
+[[ $("$manifest" verify --release "$release" --expected-sha "$sha") == signed ]] || { echo 'candidate manifest is not signed' >&2; exit 1; }
+"$artifact" verify --release-dir "$release" --public-key "$public_key" --quiet
+nonce=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
+label="com.norn.m5.shadow.${sha:0:12}.$nonce"
+port=$(python3 - <<'PY'
+import socket
+while True:
+    s=socket.socket(); s.bind(('127.0.0.1', 0)); port=s.getsockname()[1]; s.close()
+    if port != 8800: print(port); break
+PY
+)
+hook="$scratch/shadow-hook"
+printf '#!/usr/bin/env bash\nexec %q shadow-start\n' "$0" >"$hook"; chmod 700 "$hook"
+session="$scratch/handoff-capability"
+token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+printf '%s %s %s\n' "$label" "$port" "$token" >"$session"; chmod 600 "$session"
+bootstrapped="$scratch/bootstrapped"
+runtime_attempted="$scratch/runtime-attempted"
+runtime_passed="$scratch/runtime-passed"
+write_receipt() { status=$1 RECEIPT="$receipt" SHA="$sha" LABEL="$label" PORT="$port" ATTEMPTED="$runtime_attempted" PASSED="$runtime_passed" python3 - <<'PY'
+import datetime,json,os,tempfile
+runtime='passed' if os.path.exists(os.environ['PASSED']) and int(os.environ['status']) == 0 else ('failed' if os.path.exists(os.environ['ATTEMPTED']) else 'not-run')
+value={'schema':'norn.m5-signed-shadow-launchagent-rehearsal/v1','completedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'exitCode':int(os.environ['status']),'candidateSHA':os.environ['SHA'],'shadowLabel':os.environ['LABEL'],'shadowPort':int(os.environ['PORT']),'runtimeClaim':runtime}
+fd,path=tempfile.mkstemp(prefix='.norn-m5-shadow-receipt.',dir=os.path.dirname(os.environ['RECEIPT'])); os.fchmod(fd,0o600)
+with os.fdopen(fd,'w') as f: json.dump(value,f,sort_keys=True); f.write('\n')
+try: os.link(path, os.environ['RECEIPT'])
+except FileExistsError: raise SystemExit('shadow receipt path was claimed concurrently')
+finally: os.unlink(path)
+PY
+}
+cleanup() { status=$?; if [[ -f $bootstrapped ]]; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi; write_receipt "$status"; rm -rf -- "$scratch"; exit "$status"; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+export NORN_M5_SHADOW_ROOT="$scratch" NORN_M5_SHADOW_LABEL="$label" NORN_M5_SHADOW_PORT="$port" NORN_M5_SHADOW_VERSION="$version" NORN_M5_SHADOW_API="$api" NORN_M5_SHADOW_RELEASE="$release" NORN_M5_SHADOW_SHA="$sha" NORN_M5_SHADOW_MANIFEST="$manifest" NORN_M5_SHADOW_ARTIFACT="$artifact" NORN_M5_SHADOW_PUBLIC_KEY="$public_key" NORN_M5_SHADOW_SESSION="$session" NORN_M5_SHADOW_HANDOFF_TOKEN="$token" NORN_M5_SHADOW_BOOTSTRAPPED_FILE="$bootstrapped" NORN_M5_SHADOW_RUNTIME_ATTEMPTED_FILE="$runtime_attempted" NORN_M5_SHADOW_RUNTIME_PASSED_FILE="$runtime_passed"
+export NORN_M5_SHADOW_PLIST="$scratch/$label.plist" NORN_M5_SHADOW_ENV="$scratch/runtime.env" NORN_M5_SHADOW_LAUNCHER="$scratch/launch-shadow-api"
+NORN_CANDIDATE_SHA="$sha" NORN_CANDIDATE_VERSION="$version" NORN_REHEARSAL_SHADOW_COMMAND="$hook" "$root/v2/scripts/mini-private-copy-rehearsal" "$api"

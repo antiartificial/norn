@@ -2,9 +2,11 @@
 """Check Mini source URL fidelity before any read-only dump is opened."""
 
 import os
+import signal
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.parse
 
@@ -92,6 +94,23 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
                 result = self.run_source(query, environment)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.capture.exists(), result.stderr)
+
+    def test_term_after_private_scratch_setup_preserves_nonzero_signal_status(self):
+        dump = self.postgres_bin / "pg_dump"
+        dump.write_text("#!/bin/sh\nsleep 30\n")
+        dump.chmod(0o700)
+        env = os.environ.copy()
+        env.update({
+            "NORN_CANDIDATE_SHA": SHA, "NORN_CANDIDATE_VERSION": VERSION,
+            "NORN_REHEARSAL_POSTGRES_BIN": str(self.postgres_bin),
+            "NORN_REHEARSAL_SOURCE_DATABASE_URL": "postgresql://norn@/norn_private?" + urllib.parse.urlencode({"host": str(self.root)}),
+        })
+        process = subprocess.Popen([str(SCRIPT), str(self.candidate)], env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+        time.sleep(0.2)
+        os.killpg(process.pid, signal.SIGTERM)
+        _, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 143, stderr)
 
 
 if __name__ == "__main__":

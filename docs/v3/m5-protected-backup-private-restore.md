@@ -73,6 +73,52 @@ private restore still leaves the scheduled maintenance, actual service fence,
 promotion, traffic observation, and supported rollback/roll-forward procedure
 as separate gates.
 
+## Signed shadow LaunchAgent rehearsal
+
+`mini-signed-shadow-launchagent-rehearsal` composes the protected-backup
+private restore with a separately bootstrapped macOS LaunchAgent. It verifies
+the exact candidate release manifest and Ed25519 artifact before use. Only
+after the private restore, two migrate-only passes, and direct passive check
+does it start `com.norn.m5.shadow.<candidate-prefix>` against the socket-only
+private database. The generated plist, launcher, runtime environment, logs,
+and cleanup state stay in a fresh mode-`0700` temporary directory. It never
+names `com.norn.api`, `~/Library/LaunchAgents`, port `8800`, or the current
+release link.
+
+Run the following only in a scheduled macOS rehearsal with a fresh protected
+backup; keep the URL and audit key in the protected shell environment:
+
+```sh
+NORN_M5_SIGNED_SHADOW_REHEARSAL=1 \
+NORN_REHEARSAL_BACKUP_ARTIFACT=/absolute/private/control.dump \
+NORN_REHEARSAL_BACKUP_PROOF=/absolute/private/control-proof.json \
+NORN_REHEARSAL_LEGACY_RELEASE_SHA=<installed-legacy-sha> \
+NORN_M5_SHADOW_RECEIPT=/absolute/private/shadow-rehearsal-receipt.json \
+NORN_DATABASE_URL='<protected-maintenance-url>' \
+NORN_AUDIT_SIGNING_KEY='<protected-maintenance-key>' \
+v2/scripts/mini-signed-shadow-launchagent-rehearsal run \
+  --candidate-release /absolute/releases/<candidate-sha> \
+  --public-key /absolute/pinned-release-public-key.pem
+```
+
+The shadow agent must report the release-derived version, `passive`/`check`,
+and disabled deployment recovery, operation recovery, operation worker, and
+Nomad watcher. It is an unrun runtime gate until it succeeds on the selected
+macOS host. Source checks and fixtures do not prove Mini LaunchAgent behavior,
+traffic continuity, rollback, production release qualification, or host-loss
+recovery.
+
+The receipt path must be new and absolute. The harness atomically writes a
+mode-`0600` sanitized receipt with the candidate SHA, unique shadow label,
+port, exit code, and whether the runtime check passed. It copies the requested
+release into the private scratch root and verifies that snapshot, so release
+contents cannot change between signature verification and shadow execution.
+The receipt is published without replacement; a concurrent claimant makes the
+rehearsal fail visibly. Its runtime state is `not-run`, `failed`, or `passed`,
+so an early source/restore failure is not presented as a completed macOS run.
+Argument, path, and candidate-snapshot identity rejection occurs before an
+attempt exists and intentionally creates no receipt.
+
 ## Create the protected input
 
 The checked

@@ -68,6 +68,17 @@ remove_candidate=${NORN_REHEARSAL_REMOVE_CANDIDATE:-false}
   printf 'NORN_REHEARSAL_REMOVE_CANDIDATE must be true or false\n' >&2
   exit 2
 }
+shadow_command=${NORN_REHEARSAL_SHADOW_COMMAND:-}
+if [[ -n $shadow_command ]]; then
+  [[ $shadow_command == /* && -f $shadow_command && -x $shadow_command ]] || {
+    printf 'NORN_REHEARSAL_SHADOW_COMMAND must name an executable absolute path\n' >&2
+    exit 2
+  }
+  [[ -n $backup_artifact ]] || {
+    printf 'shadow handoff requires protected backup mode, not a source connection\n' >&2
+    exit 2
+  }
+fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/norn-mini-private-copy.XXXXXX")
 chmod 700 "$scratch"
 data_dir=$scratch/postgres
@@ -143,7 +154,10 @@ cleanup() {
   fi
   exit "$status"
 }
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 if [[ $check_live_state == true ]]; then
   capture_live_state "$scratch/live-before.json"
@@ -397,6 +411,13 @@ assert schema["operationRecoveryEnabled"] is False
 assert schema["operationWorkerEnabled"] is False
 assert schema["nomadWatcherEnabled"] is False
 PY
+
+# The only supported caller handoff occurs after private restore, both
+# migrate-only passes, and the direct passive check. The URL names this
+# socket-only private cluster; the source database URL is never exported.
+if [[ -n $shadow_command ]]; then
+  NORN_REHEARSAL_PRIVATE_DATABASE_URL=$private_database_url "$shadow_command"
+fi
 
 if [[ $check_live_state == true ]]; then
   capture_live_state "$scratch/live-after.json"
