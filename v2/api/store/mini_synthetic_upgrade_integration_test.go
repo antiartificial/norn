@@ -64,12 +64,14 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	// These are legacy-shape reads: they select only columns present before
-	// the migration ledger, including original IDs and receipt bytes.
+	// the migration ledger, including original IDs, credential material,
+	// deployment/job identity, route weights, and receipt bytes.
 	const legacyRead = `SELECT jsonb_build_object(
+		'device', (SELECT jsonb_build_object('id',id,'name',name,'publicKey',public_key) FROM access_devices WHERE id='device-synthetic'),
 		'token', (SELECT jsonb_build_object('jti',jti,'device',device_id,'scopes',scopes) FROM access_tokens WHERE jti='token-synthetic'),
 		'operation', (SELECT jsonb_build_object('id',id,'status',status,'receipt',metadata->>'receipt','generation',lock_generation) FROM operations WHERE id='operation-synthetic'),
-		'deployment', (SELECT jsonb_build_object('id',id,'image',image_tag,'status',status) FROM deployments WHERE id='deployment-synthetic'),
-		'region', (SELECT jsonb_build_object('region',region,'weight',active_weight) FROM deployment_regions WHERE deployment_id='deployment-synthetic'),
+		'deployment', (SELECT jsonb_build_object('id',id,'app',app,'commit',commit_sha,'image',image_tag,'saga',saga_id,'status',status) FROM deployments WHERE id='deployment-synthetic'),
+		'region', (SELECT jsonb_build_object('region',region,'nomadRegion',nomad_region,'desiredWeight',desired_weight,'activeWeight',active_weight) FROM deployment_regions WHERE deployment_id='deployment-synthetic'),
 		'step', (SELECT jsonb_build_object('step',step,'marker',metadata->>'marker') FROM deployment_steps WHERE deployment_id='deployment-synthetic'),
 		'cron', (SELECT jsonb_build_object('process',process,'paused',paused,'schedule',schedule) FROM cron_states WHERE app='synthetic-app'),
 		'webhook', (SELECT jsonb_build_object('id',id,'marker',payload->>'marker') FROM webhook_deliveries WHERE id='webhook-synthetic'),
@@ -148,8 +150,10 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status, err = migrator.Migrate(ctx); err != nil || status.CurrentMigrationVersion != 47 || len(status.AppliedVersions) != 3 {
-		t.Fatalf("additive migrations 45-47 status=%+v err=%v", status, err)
+	latestVersion := migrations[len(migrations)-1].Version
+	remainingMigrations := len(migrations) - 44
+	if status, err = migrator.Migrate(ctx); err != nil || status.CurrentMigrationVersion != latestVersion || len(status.AppliedVersions) != remainingMigrations {
+		t.Fatalf("additive migrations 45-%d status=%+v err=%v", latestVersion, status, err)
 	}
 	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); err != nil {
 		t.Fatalf("additive attestation reserve blocked previous writer: %v", err)
