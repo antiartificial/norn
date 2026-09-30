@@ -22,8 +22,8 @@ API serving.
 
 ### 1. Schema startup currently terminates every running exec session
 
-[`store.Migrate`](../../v2/api/store/postgres.go) includes an unconditional
-`UPDATE exec_sessions ... WHERE status='running'`. [`main`](../../v2/api/main.go)
+[`store.Migrate`](https://github.com/antiartificial/norn/blob/master/v2/api/store/postgres.go) includes an unconditional
+`UPDATE exec_sessions ... WHERE status='running'`. [`main`](https://github.com/antiartificial/norn/blob/master/v2/api/main.go)
 runs that migration before it considers the deployment-recovery,
 operation-recovery, or worker skip flags. Consequently a platform candidate
 started with all workers and recovery disabled can still fail a healthy exec
@@ -31,25 +31,25 @@ session owned by the serving API.
 
 The current stream handler records no durable API owner. It changes a session
 from `pending` to `running`, retains the WebSocket only in the local
-[`Handler.execConns`](../../v2/api/handler/handler.go), polls the row for
+[`Handler.execConns`](https://github.com/antiartificial/norn/blob/master/v2/api/handler/handler.go), polls the row for
 revocation, and finishes by session ID alone in
-[`exec_session.go`](../../v2/api/handler/exec_session.go). That is enough for
+[`exec_session.go`](https://github.com/antiartificial/norn/blob/master/v2/api/handler/exec_session.go). That is enough for
 cross-replica cancellation, but not enough to distinguish a live owner from a
 dead one or reject a stale owner's completion.
 
 ### 2. Deployment startup recovery is also replica-wide
 
-[`RecoverInFlightDeployments`](../../v2/api/store/postgres.go) fails every
+[`RecoverInFlightDeployments`](https://github.com/antiartificial/norn/blob/master/v2/api/store/postgres.go) fails every
 deployment whose status is not `deployed` or `failed`. It does not join the
 deployment to its durable operation or check that operation's owner lease.
-[`main`](../../v2/api/main.go) invokes it at ordinary startup before operation
+[`main`](https://github.com/antiartificial/norn/blob/master/v2/api/main.go) invokes it at ordinary startup before operation
 recovery. A newly started replica can therefore fail a deployment still being
 executed by a healthy replica. Candidate scripts avoid this only by setting a
 skip environment variable; the store behavior itself is not owner-safe.
 
 ### 3. Operation claiming is atomic, but later writes are not claim-fenced
 
-[`ClaimNextOperation`](../../v2/api/store/operations.go) correctly uses
+[`ClaimNextOperation`](https://github.com/antiartificial/norn/blob/master/v2/api/store/operations.go) correctly uses
 `FOR UPDATE SKIP LOCKED`, records `locked_by`, and assigns a lease. The rest of
 the lifecycle is weaker:
 
@@ -69,7 +69,7 @@ currently decrements it and retry budget is a different concern.
 
 ### 4. The advisory app lock is useful serialization, not an effect fence
 
-[`AcquireAppOperationLock`](../../v2/api/store/operations.go) pins a PostgreSQL
+[`AcquireAppOperationLock`](https://github.com/antiartificial/norn/blob/master/v2/api/store/operations.go) pins a PostgreSQL
 connection and serializes mutable work for one app. It prevents a healthy
 second worker from entering the same app pipeline while the connection and
 lock remain live. It does not stop a paused or partitioned process after its
@@ -84,7 +84,7 @@ exists.
 
 ### 5. Migration authority is not yet versioned or single-owner
 
-[`store.Migrate`](../../v2/api/store/postgres.go) is one large idempotent SQL
+[`store.Migrate`](https://github.com/antiartificial/norn/blob/master/v2/api/store/postgres.go) is one large idempotent SQL
 batch run by every API process. It has no schema-version ledger, minimum
 readable/writable version guard, dedicated migration role, or explicit pinned
 advisory lock. Worker-disabled candidates still run it. Removing the exec DML
@@ -198,7 +198,7 @@ etcd.
 ### Remove completion bypasses
 
 Thread the immutable claim through
-[`Pipeline.ExecuteOperation`](../../v2/api/pipeline/pipeline.go), data
+[`Pipeline.ExecuteOperation`](https://github.com/antiartificial/norn/blob/master/v2/api/pipeline/pipeline.go), data
 operations, deploy, rollback and preflight. Replace every pipeline and worker
 `FinishOperation` call with claim-aware completion. Remove the unused
 `FinishOperationBySaga`, or restrict it so it cannot modify running claimed

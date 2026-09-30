@@ -2,7 +2,7 @@
 
 Status: four private-copy passes on Mini; no live job, database, role or secret mutation.
 
-The [reproducible rehearsal](../../v2/scripts/mini-mailindexer-private-shared-role-copy-rehearsal)
+The [reproducible rehearsal](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-mailindexer-private-shared-role-copy-rehearsal)
 (SHA-256 `2c9dd2483d1d74f5f29dbf636f1b55f707c12e8f226afc58729a352fd877bffe`)
 made a read-only `pg_dump` of the current `mailindexer` database over Mini's
 local PostgreSQL socket. It restored the archive into a separate Postgres.app

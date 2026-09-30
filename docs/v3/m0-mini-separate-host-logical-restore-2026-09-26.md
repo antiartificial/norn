@@ -6,11 +6,11 @@ second host, and verify restored content. It uses only synthetic rows. It does
 not read `norn_v2`, carry a production credential, or select an off-host
 repository, backup schedule, RPO, or retention policy.
 
-The [export fixture](../../v2/scripts/mini-postgresapp-offhost-export-fixture.py)
+The [export fixture](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-postgresapp-offhost-export-fixture.py)
 starts a temporary Postgres.app 17 cluster under `/tmp` on the Mini, inserts
 two known rows, and writes a custom-format dump to stdout. It stops and
 removes the cluster. The dump was transferred over SSH to a mode-`0600` file
-on this Mac. The [restore fixture](../../v2/scripts/mini-postgresapp-offhost-restore-fixture.py)
+on this Mac. The [restore fixture](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-postgresapp-offhost-restore-fixture.py)
 requires that small synthetic dump, starts a clean local cluster using
 Postgres.app 17, restores it, checks both rows, and removes the cluster.
 

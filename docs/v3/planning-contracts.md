@@ -6,7 +6,7 @@ The initial release has two required paths: existing Mini v2→v3 on its retaine
 
 ## State inventory and retention boundary
 
-Inventory source: the 24 control tables declared by [`Migrate`](../../v2/api/store/postgres.go) in the current working tree. HA-lab application tables are not control tables. Classification below is proposed policy; existing deletion behavior must be audited before changing it. A table name alone never proves a record is disposable.
+Inventory source: the 24 control tables declared by [`Migrate`](https://github.com/antiartificial/norn/blob/master/v2/api/store/postgres.go) in the current working tree. HA-lab application tables are not control tables. Classification below is proposed policy; existing deletion behavior must be audited before changing it. A table name alone never proves a record is disposable.
 
 | Existing tables | Authoritative state to retain | Archive/retention handling proposed |
 | --- | --- | --- |

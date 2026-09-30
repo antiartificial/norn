@@ -7,9 +7,10 @@ live app, production credential, or Mini/Fleet Nomad server.
 The initial Norn template piped a `nomadVar` item directly to `toJSON`.
 [Nomad's template contract](https://developer.hashicorp.com/nomad/docs/job-specification/template)
 defines those items as objects and requires `.Value` when piping the stored
-string into a template function. The Norn template now renders both database
-URLs and component values as `{{ .<revision-item>.Value | toJSON }}` for
-environment delivery. File delivery continues to render the item as text.
+string into a template function. The Norn template now reads each revision
+item's `.Value` and passes it to `toJSON` for database URLs and component
+values delivered through the environment. File delivery still renders the
+item as text.
 
 A disposable local Nomad 2.0.7 development agent used the `raw_exec` driver
 and a batch allocation. Its private `nomad/jobs/<job-id>` variable held a

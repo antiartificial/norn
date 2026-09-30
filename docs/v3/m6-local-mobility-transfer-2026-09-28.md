@@ -1,6 +1,6 @@
 # Local mobility fixture transfer — 2026-09-28
 
-The repeatable [`test-mobility-local-transfer.sh`](../../v2/scripts/test-mobility-local-transfer.sh)
+The repeatable [`test-mobility-local-transfer.sh`](https://github.com/antiartificial/norn/blob/master/v2/scripts/test-mobility-local-transfer.sh)
 passed against a disposable socket-only PostgreSQL cluster and the checked-in
 mobility fixture. The rehearsal built the fixture binary locally, created
 separate `source` and `target` databases and file directories, and removed

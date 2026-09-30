@@ -4,7 +4,7 @@ Status: the repeatable private-copy migration and passive-startup checks
 passed. This is supporting M0/M5 evidence; it does not qualify a Mini upgrade,
 legacy fence, rollback, or production backup restore.
 
-The checked [rehearsal script](../../v2/scripts/mini-private-copy-rehearsal)
+The checked [rehearsal script](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-private-copy-rehearsal)
 was syntax-checked before use and ran on the Mini with a candidate built from
 exact commit `afc1b3d6c22eee89eda6f5bee1815b2eb938db88`. The candidate binary had
 SHA-256 `3bb8093eb4670e708c0bb9b46c6db339fd1656d495e246f4bc573f6bf4d9dbd3`.

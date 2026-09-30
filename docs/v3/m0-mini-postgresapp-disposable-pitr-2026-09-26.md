@@ -5,7 +5,7 @@ if the owner selects the 15-minute off-host PITR option. It did not connect to
 `norn_v2`, change the Mini's PostgreSQL settings, upload an archive, or use a
 production credential.
 
-The [fixture](../../v2/scripts/mini-postgresapp-pitr-fixture.py) creates a
+The [fixture](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-postgresapp-pitr-fixture.py) creates a
 temporary Postgres.app cluster on port 15551 under `/tmp`, archives WAL to a
 second temporary directory, takes a physical base backup, writes one row
 after that backup, records a recovery target, then writes another row after

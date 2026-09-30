@@ -1,6 +1,6 @@
 # M5 protected control backup private restore
 
-The [private-copy rehearsal](../../v2/scripts/mini-private-copy-rehearsal) has a
+The [private-copy rehearsal](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-private-copy-rehearsal) has a
 protected-backup input mode for the one-way
 [legacy-baseline transition](m5-legacy-baseline-transition.md). It does not
 connect to the source database in this mode. It validates the exact
@@ -76,7 +76,7 @@ as separate gates.
 ## Create the protected input
 
 The checked
-[`mini-create-protected-backup`](../../v2/scripts/mini-create-protected-backup)
+[`mini-create-protected-backup`](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-create-protected-backup)
 helper creates a custom-format dump and exact proof in an existing absolute
 directory owned by the invoking user with mode `0700`. It requires the same
 `NORN_DATABASE_URL` and `NORN_AUDIT_SIGNING_KEY` that the maintenance command

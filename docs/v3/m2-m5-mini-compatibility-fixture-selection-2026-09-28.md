@@ -127,7 +127,7 @@ Do not use a broad `REASSIGN OWNED BY norn` against the live server as a
 shortcut: the role also owns control database `norn_v2`. The private
 rehearsal must scope ownership changes to the selected application database
 and verify that `norn_v2` ownership and control sessions are unchanged.
-The opt-in [disposable role-split fixture](../../v2/scripts/test-mini-role-split-disposable.sh)
+The opt-in [disposable role-split fixture](https://github.com/antiartificial/norn/blob/master/v2/scripts/test-mini-role-split-disposable.sh)
 passed locally with Homebrew PostgreSQL 16.15. It created synthetic control
 and app databases owned by `norn`, transferred only the app database, table
 and sequence to a separate role, preserved two data rows and migration DDL,
@@ -139,7 +139,7 @@ preserved `norn_v2` ownership. It is a procedure-shape check only: it does
 not cover `mailindexer`'s actual schema, grants, secrets, running job,
 connection drain, operational rollback or production-key backup.
 
-The [private `signal_sideband` copy rehearsal](../../v2/scripts/mini-signal-sideband-private-role-copy-rehearsal)
+The [private `signal_sideband` copy rehearsal](https://github.com/antiartificial/norn/blob/master/v2/scripts/mini-signal-sideband-private-role-copy-rehearsal)
 then passed on Mini with Postgres.app 17.7 (script SHA-256
 `4094790fad9ad968c5fbf4bbed6807d5b1fb25f365c95c104900e15f172de31d`).
 It made a read-only dump over Mini's local socket, restored it into a

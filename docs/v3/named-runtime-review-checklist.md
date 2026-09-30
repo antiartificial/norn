@@ -264,7 +264,7 @@ material and per-allocation target references (or an explicitly proven controlle
 handoff) remain necessary. Do not fix only the old helper while preserving the
 same unsafe mutation through a newly named method.
 
-`nomad/database_delivery.go` currently publishes to nomad/jobs/<jobID> and
+`nomad/database_delivery.go` currently publishes to `nomad/jobs/{jobID}` and
 templates use change_mode=restart. PutDatabaseVariable reads the latest index
 and then CAS-updates any changed URL. This is NOT operation/target fencing:
 an older accepted operation arriving later can read the newer index and replace

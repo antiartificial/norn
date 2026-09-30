@@ -20,7 +20,7 @@ First qualify the full journal with a disposable **Mini-hosted representative
 fixture** containing PostgreSQL rows, file objects, web requests, an
 acknowledged work queue, and a schedule. The fixture must really run on Mini
 and move to an independent Fleet; a local-only simulation is insufficient.
-The deploy-disabled [mobility fixture](../../v2/infra/mobility-fixture/README.md)
+The deploy-disabled [mobility fixture](https://github.com/antiartificial/norn/blob/master/v2/infra/mobility-fixture/README.md)
 now provides those five shapes and reports item digests, missing/mismatched/
 orphaned files, pending/acknowledged jobs, and schedule ticks. Its web, worker,
 and schedule writers all require explicit admission. A disposable PostgreSQL

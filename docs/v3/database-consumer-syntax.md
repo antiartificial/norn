@@ -190,7 +190,7 @@ revision as a precondition), and the store half of that already exists.
 Credentials appear only as references; endpoints are identity.
 
 The authoritative, executable example is
-[`v2/api/database/testdata/catalog-example.json`](../../v2/api/database/testdata/catalog-example.json).
+[`v2/api/database/testdata/catalog-example.json`](https://github.com/antiartificial/norn/blob/master/v2/api/database/testdata/catalog-example.json).
 `TestCatalogExampleDecodesStrictlyAndResolves` decodes it strictly, validates
 it, and resolves both `primary` and a legacy declaration. It is shown here for
 reading:
@@ -269,7 +269,7 @@ proposed here.
 
 Fleet v1 documents are unchanged. The app's name stays the existing `name:`
 key (`model.InfraSpec.App`). The executable example is
-[`v2/api/model/testdata/app-v2-example.yaml`](../../v2/api/model/testdata/app-v2-example.yaml).
+[`v2/api/model/testdata/app-v2-example.yaml`](https://github.com/antiartificial/norn/blob/master/v2/api/model/testdata/app-v2-example.yaml).
 It pairs with the catalog example: its logical name `primary` maps to
 `shop-primary`. `TestAppV2ExampleDecodesStrictlyAndValidates` checks it.
 
