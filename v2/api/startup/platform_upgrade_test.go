@@ -378,6 +378,47 @@ printf '%s\n' "$FAKE_LEGACY_PID"
 	}
 }
 
+// A nonzero drain is the last reversible refusal: it must leave both the
+// launchd binary and the schema untouched.
+func TestPlatformUpgradeLegacyBaselineRejectsActiveOperationsBeforeFence(t *testing.T) {
+	fixture := newSchemaTransitionFixture(t, 2)
+	legacySHA := strings.Repeat("a", 40)
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+legacySHA+"\nNORN_RELEASE_VERSION=v2.20.0-platform\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifact := []byte("private fixture backup artifact\n")
+	artifactPath := filepath.Join(fixture.root, "legacy-backup.dump")
+	if err := os.WriteFile(artifactPath, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(artifact)
+	proofPath := filepath.Join(fixture.root, "legacy-backup-proof.json")
+	proof, err := json.Marshal(map[string]any{"schema": "norn.legacy-control-backup/v1", "sourceReleaseSHA": legacySHA, "databaseIdentity": fixture.databaseID, "backupSHA256": fmt.Sprintf("%x", digest), "backupBytes": len(artifact), "createdAt": time.Now().UTC().Format(time.RFC3339)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proofPath, proof, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fenceState, fenced := filepath.Join(fixture.root, "legacy-fence-state.json"), filepath.Join(fixture.root, "legacy-fenced")
+	cmd := fixture.command(t)
+	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
+	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced, "FAKE_ACTIVE_OPERATION_COUNT=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "requires zero active operations before fencing") {
+		t.Fatalf("active operations did not stop transition: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(fenced); !os.IsNotExist(err) {
+		t.Fatalf("legacy was fenced before drain cleared: %v", err)
+	}
+	if _, err := os.Stat(fixture.migrationMarker); !os.IsNotExist(err) {
+		t.Fatalf("migration ran before drain cleared: %v", err)
+	}
+	if linked, err := os.Readlink(fixture.currentLink); err != nil || linked != fixture.previousRelease {
+		t.Fatalf("current release changed: %q %v", linked, err)
+	}
+}
+
 func TestPlatformUpgradeRejectsExactContractWithNonzeroExit(t *testing.T) {
 	binary := writeExecutable(t, `#!/usr/bin/env bash
 printf '%s\n' '{"name":"norn.startup/v2","schemaModes":["auto","check","migrate-only"],"startupModes":["active","passive"],"passiveRoutes":["/api/health","/api/version","/api/schema"],"schemaContract":{"readerVersion":1,"writerVersion":3,"catalogMigrationVersion":3,"catalogMinimumReaderVersion":1,"catalogMinimumWriterVersion":3}}'
@@ -790,7 +831,7 @@ case "$url" in
   */api/schema)
     printf '{"currentMigrationVersion":%s,"minimumReaderVersion":1,"minimumWriterVersion":%s,"version":"%s","startupContract":"norn.startup/v2","binarySchemaContract":{"readerVersion":1,"writerVersion":%s,"catalogMigrationVersion":%s,"catalogMinimumReaderVersion":1,"catalogMinimumWriterVersion":%s},"processId":4242,"processInstanceId":"11111111-1111-4111-8111-111111111111","databaseIdentity":"%s","startupMode":"active","schemaMode":"check","operationRecoveryEnabled":true,"operationWorkerEnabled":true,"nomadWatcherEnabled":true}\n' "$current_migration" "$minimum_writer" "$version" "$writer" "$catalog" "$minimum_writer" "$FAKE_DATABASE_IDENTITY"
     ;;
-  */api/operations/active*) printf '{"count":0}\n' ;;
+  */api/operations/active*) printf '{"count":%s}\n' "${FAKE_ACTIVE_OPERATION_COUNT:-0}" ;;
   *) exit 22 ;;
 esac
 `)
