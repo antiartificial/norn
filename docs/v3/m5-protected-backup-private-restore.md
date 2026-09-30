@@ -15,6 +15,7 @@ with a disposable candidate binary built from the exact candidate commit:
 
 ```sh
 NORN_CANDIDATE_SHA=<full-candidate-commit-sha> \
+NORN_CANDIDATE_VERSION=<exact-NORN_RELEASE_VERSION-from-verified-release.env> \
 NORN_REHEARSAL_LEGACY_RELEASE_SHA=<full-installed-release-sha> \
 NORN_REHEARSAL_BACKUP_PROOF=/absolute/private/path/control-proof.json \
 NORN_REHEARSAL_BACKUP_ARTIFACT=/absolute/private/path/control.dump \
@@ -22,6 +23,14 @@ NORN_DATABASE_URL='<exact-control-database-url>' \
 NORN_AUDIT_SIGNING_KEY='<existing-audit-signing-key>' \
 v2/scripts/mini-private-copy-rehearsal /absolute/path/to/disposable/norn-api
 ```
+
+Before invoking the rehearsal, the caller must verify the signed candidate
+manifest for `NORN_CANDIDATE_SHA` and read both `NORN_RELEASE_SHA` and
+`NORN_RELEASE_VERSION` from that verified release's `release.env`. The
+rehearsal checks that the candidate returns that exact version label from its
+passive `/api/version` and `/api/schema` responses; it does not replace the
+manifest's SHA-to-version binding. Describe-style labels must also carry a
+short SHA prefix matching `NORN_CANDIDATE_SHA`.
 
 Keep the URL and signing key in the normal protected environment rather than
 typing them into a shared shell history. The script rejects a source-database
@@ -37,6 +46,7 @@ The proof validator has disposable positive and negative fixture tests:
 
 ```sh
 python3 v2/scripts/test-mini-protected-backup.py
+python3 v2/scripts/test-mini-private-copy-source.py
 bash -n v2/scripts/mini-private-copy-rehearsal
 ```
 
