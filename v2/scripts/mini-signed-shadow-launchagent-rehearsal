@@ -5,18 +5,21 @@ set -euo pipefail
 
 write_shadow_env() {
   local output=$1
-  RUNTIME_ENV="$output" PRIVATE_DATABASE_URL="$NORN_REHEARSAL_PRIVATE_DATABASE_URL" SHADOW_PORT="$NORN_M5_SHADOW_PORT" python3 - <<'PY'
-import os, shlex, stat, urllib.parse
+  RUNTIME_ENV="$output" PRIVATE_DATABASE_URL="$NORN_REHEARSAL_PRIVATE_DATABASE_URL" SHADOW_PORT="$NORN_M5_SHADOW_PORT" SHADOW_DB_SESSION="$NORN_M5_SHADOW_DB_SESSION" python3 - <<'PY'
+import os, re, shlex, stat, urllib.parse
 
 output = os.environ['RUNTIME_ENV']
 database_url = os.environ['PRIVATE_DATABASE_URL']
 parsed = urllib.parse.urlparse(database_url)
 query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+session = os.environ['SHADOW_DB_SESSION']
 if (parsed.scheme not in ('postgres', 'postgresql') or parsed.hostname is not None
         or parsed.path != '/norn_private' or parsed.fragment
         or set(query) != {'host', 'port', 'sslmode'}
         or any(len(values) != 1 for values in query.values())):
     raise SystemExit('private database URL does not name the isolated socket target')
+if not re.fullmatch(r'norn-m5-shadow-[0-9a-f]{16}', session):
+    raise SystemExit('private database session marker is invalid')
 socket_dir = query['host'][0]
 scratch_dir = os.path.dirname(socket_dir)
 if (not os.path.isabs(socket_dir) or os.path.islink(socket_dir) or os.path.islink(scratch_dir)
@@ -35,8 +38,11 @@ except ValueError:
     raise SystemExit('private database socket port is invalid')
 if not 1 <= port <= 65535 or query['sslmode'][0] != 'disable':
     raise SystemExit('private database socket settings are invalid')
+runtime_query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+runtime_query.append(('application_name', session))
+runtime_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(runtime_query)))
 values = {
-    'NORN_DATABASE_URL': database_url,
+    'NORN_DATABASE_URL': runtime_url,
     'NORN_PORT': os.environ['SHADOW_PORT'],
     'NORN_BIND_ADDR': '127.0.0.1',
     'NORN_STARTUP_MODE': 'passive',
@@ -54,9 +60,54 @@ with os.fdopen(fd, 'w', encoding='utf-8') as handle:
 PY
   local round_trip
   round_trip=$(/bin/bash -c 'set -a; . "$1"; printf %s "$NORN_DATABASE_URL"' _ "$output")
-  [[ $round_trip == "$NORN_REHEARSAL_PRIVATE_DATABASE_URL" ]] || {
+  ROUND_TRIP="$round_trip" PRIVATE_DATABASE_URL="$NORN_REHEARSAL_PRIVATE_DATABASE_URL" SHADOW_DB_SESSION="$NORN_M5_SHADOW_DB_SESSION" python3 - <<'PY' || {
+import os, urllib.parse
+actual = urllib.parse.urlparse(os.environ['ROUND_TRIP'])
+expected = urllib.parse.urlparse(os.environ['PRIVATE_DATABASE_URL'])
+query = urllib.parse.parse_qs(actual.query, keep_blank_values=True, strict_parsing=True)
+if query.pop('application_name', []) != [os.environ['SHADOW_DB_SESSION']]:
+    raise SystemExit(1)
+actual_base = actual._replace(query='')
+expected_base = expected._replace(query='')
+actual_query = sorted((key, value) for key, values in query.items() for value in values)
+expected_query = sorted(urllib.parse.parse_qsl(expected.query, keep_blank_values=True))
+if actual_base != expected_base or actual_query != expected_query:
+    raise SystemExit(1)
+PY
     echo 'private database URL changed while rendering the shadow environment' >&2
     return 2
+  }
+}
+
+assert_private_session() {
+  local database_url=$1 marker=$2 psql
+  psql="${NORN_REHEARSAL_POSTGRES_BIN:-/Applications/Postgres.app/Contents/Versions/latest/bin}/psql"
+  [[ -x $psql ]] || { echo 'private PostgreSQL session verifier is unavailable' >&2; return 2; }
+  local connection
+  connection=$(PRIVATE_DATABASE_URL="$database_url" SHADOW_DB_SESSION="$marker" python3 - <<'PY'
+import os, re, urllib.parse
+parsed = urllib.parse.urlparse(os.environ['PRIVATE_DATABASE_URL'])
+query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+marker = os.environ['SHADOW_DB_SESSION']
+if not re.fullmatch(r'norn-m5-shadow-[0-9a-f]{16}', marker):
+    raise SystemExit('private database session marker is invalid')
+if (parsed.scheme not in ('postgres', 'postgresql') or parsed.hostname is not None
+        or parsed.path != '/norn_private' or set(query) != {'host', 'port', 'sslmode'}
+        or any(len(values) != 1 for values in query.values())):
+    raise SystemExit('private database session verifier target is invalid')
+socket = query['host'][0]
+if any(character in socket for character in '\t\r\n'):
+    raise SystemExit('private database session verifier target is invalid')
+print('\t'.join((socket, query['port'][0], marker)))
+PY
+  ) || return $?
+  local socket port checked_marker count
+  IFS=$'\t' read -r socket port checked_marker <<<"$connection"
+  count=$("$psql" -X -v ON_ERROR_STOP=1 -At -h "$socket" -p "$port" -U norn -d norn_private \
+    -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = '$checked_marker' AND datname = 'norn_private' AND client_addr IS NULL AND pid <> pg_backend_pid()") || return $?
+  [[ $count =~ ^[1-9][0-9]*$ ]] || {
+    echo 'running shadow has no session on the private PostgreSQL cluster' >&2
+    return 1
   }
 }
 
@@ -75,6 +126,7 @@ shadow_start() {
   [[ $session_label == "${NORN_M5_SHADOW_LABEL:-}" && $session_port == "${NORN_M5_SHADOW_PORT:-}" && $session_token == "${NORN_M5_SHADOW_HANDOFF_TOKEN:-}" ]] || { echo 'shadow handoff capability does not match this run' >&2; return 2; }
   [[ -n ${NORN_REHEARSAL_PRIVATE_DATABASE_URL:-} ]] || { echo 'missing socket-only private database URL' >&2; return 2; }
   [[ ${NORN_M5_SHADOW_LABEL:-} =~ ^com\.norn\.m5\.shadow\.[0-9a-f]{12}\.[0-9a-f]{16}$ ]] || { echo 'shadow label is invalid' >&2; return 2; }
+  [[ ${NORN_M5_SHADOW_DB_SESSION:-} == "norn-m5-shadow-${NORN_M5_SHADOW_LABEL##*.}" ]] || { echo 'shadow database session does not match this run' >&2; return 2; }
   [[ ${NORN_M5_SHADOW_PORT:-} =~ ^[0-9]+$ && $NORN_M5_SHADOW_PORT -ge 1024 && $NORN_M5_SHADOW_PORT -le 65535 && $NORN_M5_SHADOW_PORT -ne 8800 ]] || { echo 'shadow port is invalid' >&2; return 2; }
   NORN_M5_SHADOW_ROOT="$NORN_M5_SHADOW_ROOT" NORN_M5_SHADOW_SESSION="$NORN_M5_SHADOW_SESSION" NORN_M5_SHADOW_PLIST="$NORN_M5_SHADOW_PLIST" NORN_M5_SHADOW_ENV="$NORN_M5_SHADOW_ENV" NORN_M5_SHADOW_LAUNCHER="$NORN_M5_SHADOW_LAUNCHER" NORN_M5_SHADOW_API="$NORN_M5_SHADOW_API" NORN_M5_SHADOW_RELEASE="$NORN_M5_SHADOW_RELEASE" python3 - <<'PY'
 import os, stat
@@ -138,6 +190,7 @@ PY
   [[ $(lsof -nP -iTCP:"$NORN_M5_SHADOW_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u) == "$shadow_pid" ]] || {
     echo 'shadow port is not solely owned by the shadow LaunchAgent' >&2; return 1;
   }
+  assert_private_session "$NORN_REHEARSAL_PRIVATE_DATABASE_URL" "$NORN_M5_SHADOW_DB_SESSION"
   PORT="$NORN_M5_SHADOW_PORT" VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
 import json, os, urllib.request
 base = 'http://127.0.0.1:' + os.environ['PORT']
@@ -157,6 +210,7 @@ PY
 }
 
 if [[ ${1:-} == render-env ]]; then write_shadow_env "${2:-}"; exit $?; fi
+if [[ ${1:-} == assert-private-session ]]; then assert_private_session "$NORN_REHEARSAL_PRIVATE_DATABASE_URL" "$NORN_M5_SHADOW_DB_SESSION"; exit $?; fi
 if [[ ${1:-} == shadow-start ]]; then shadow_start; exit $?; fi
 
 usage() { echo 'set NORN_M5_SIGNED_SHADOW_REHEARSAL=1 and use: run --candidate-release <absolute> --public-key <absolute>' >&2; exit 2; }
@@ -220,6 +274,7 @@ PY
 "$artifact" verify --release-dir "$release" --public-key "$public_key" --quiet
 nonce=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
 label="com.norn.m5.shadow.${sha:0:12}.$nonce"
+db_session="norn-m5-shadow-$nonce"
 port=$(python3 - <<'PY'
 import socket
 while True:
@@ -246,11 +301,20 @@ except FileExistsError: raise SystemExit('shadow receipt path was claimed concur
 finally: os.unlink(path)
 PY
 }
-cleanup() { status=$?; if [[ -f $bootstrapped ]]; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi; write_receipt "$status"; remove_scratch "$scratch"; exit "$status"; }
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM HUP
+  cleanup_failed=false
+  if [[ -f $bootstrapped ]]; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
+  write_receipt "$status" || cleanup_failed=true
+  remove_scratch "$scratch" || cleanup_failed=true
+  if [[ $cleanup_failed == true && $status -eq 0 ]]; then status=1; fi
+  exit "$status"
+}
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
-export NORN_M5_SHADOW_ROOT="$scratch" NORN_M5_SHADOW_LABEL="$label" NORN_M5_SHADOW_PORT="$port" NORN_M5_SHADOW_VERSION="$version" NORN_M5_SHADOW_API="$api" NORN_M5_SHADOW_RELEASE="$release" NORN_M5_SHADOW_SHA="$sha" NORN_M5_SHADOW_MANIFEST="$manifest" NORN_M5_SHADOW_ARTIFACT="$artifact" NORN_M5_SHADOW_PUBLIC_KEY="$public_key" NORN_M5_SHADOW_SESSION="$session" NORN_M5_SHADOW_HANDOFF_TOKEN="$token" NORN_M5_SHADOW_BOOTSTRAPPED_FILE="$bootstrapped" NORN_M5_SHADOW_RUNTIME_ATTEMPTED_FILE="$runtime_attempted" NORN_M5_SHADOW_RUNTIME_PASSED_FILE="$runtime_passed"
+export NORN_M5_SHADOW_ROOT="$scratch" NORN_M5_SHADOW_LABEL="$label" NORN_M5_SHADOW_DB_SESSION="$db_session" NORN_M5_SHADOW_PORT="$port" NORN_M5_SHADOW_VERSION="$version" NORN_M5_SHADOW_API="$api" NORN_M5_SHADOW_RELEASE="$release" NORN_M5_SHADOW_SHA="$sha" NORN_M5_SHADOW_MANIFEST="$manifest" NORN_M5_SHADOW_ARTIFACT="$artifact" NORN_M5_SHADOW_PUBLIC_KEY="$public_key" NORN_M5_SHADOW_SESSION="$session" NORN_M5_SHADOW_HANDOFF_TOKEN="$token" NORN_M5_SHADOW_BOOTSTRAPPED_FILE="$bootstrapped" NORN_M5_SHADOW_RUNTIME_ATTEMPTED_FILE="$runtime_attempted" NORN_M5_SHADOW_RUNTIME_PASSED_FILE="$runtime_passed"
 export NORN_M5_SHADOW_PLIST="$scratch/$label.plist" NORN_M5_SHADOW_ENV="$scratch/runtime.env" NORN_M5_SHADOW_LAUNCHER="$scratch/launch-shadow-api"
 NORN_CANDIDATE_SHA="$sha" NORN_CANDIDATE_VERSION="$version" NORN_REHEARSAL_SHADOW_COMMAND="$hook" "$root/v2/scripts/mini-private-copy-rehearsal" "$api"

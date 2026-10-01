@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import os
+import signal
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -11,6 +14,31 @@ class SignedShadowGuardTests(unittest.TestCase):
     def invoke(self, *args, env=None):
         values = os.environ.copy(); values.update(env or {})
         return subprocess.run([str(SCRIPT), *args], text=True, capture_output=True, env=values)
+
+    def cleanup_harness(self, root, private_copy_body):
+        scripts = root / 'repo' / 'v2' / 'scripts'; scripts.mkdir(parents=True)
+        harness = scripts / SCRIPT.name; shutil.copy2(SCRIPT, harness)
+        for name, body in {
+            'platform-release-manifest': "#!/bin/sh\nprintf 'signed\\n'\n",
+            'platform-release-artifact': '#!/bin/sh\nexit 0\n',
+            'mini-private-copy-rehearsal': '#!/bin/sh\n' + private_copy_body,
+        }.items():
+            path = scripts / name; path.write_text(body, encoding='utf-8'); path.chmod(0o700)
+        sha = 'c' * 40
+        release = root / sha; (release / 'bin').mkdir(parents=True)
+        (release / 'release.env').write_text(
+            f'NORN_RELEASE_SHA={sha}\nNORN_RELEASE_VERSION=v1.2.3-platform\n', encoding='utf-8')
+        api = release / 'bin' / 'norn-api'; api.write_text('#!/bin/sh\n', encoding='utf-8'); api.chmod(0o700)
+        key = root / 'key'; key.write_text('fixture', encoding='utf-8')
+        scratch = root / 'scratch'; scratch.mkdir()
+        receipt = root / 'receipt.json'
+        env = os.environ.copy(); env.update({
+            'TMPDIR': str(scratch), 'NORN_M5_SIGNED_SHADOW_REHEARSAL': '1',
+            'NORN_REHEARSAL_BACKUP_ARTIFACT': '/private/backup',
+            'NORN_REHEARSAL_BACKUP_PROOF': '/private/proof',
+            'NORN_M5_SHADOW_RECEIPT': str(receipt),
+        })
+        return harness, release, key, scratch, receipt, env
 
     def test_requires_opt_in_before_reading_targets(self):
         result = self.invoke('run', '--candidate-release', '/missing', '--public-key', '/missing')
@@ -40,6 +68,7 @@ class SignedShadowGuardTests(unittest.TestCase):
             result = self.invoke('shadow-start', env={
                 'NORN_M5_SIGNED_SHADOW_REHEARSAL': '1', 'NORN_M5_SHADOW_SESSION': str(session),
                 'NORN_M5_SHADOW_LABEL': label, 'NORN_M5_SHADOW_PORT': '8800',
+                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef',
                 'NORN_M5_SHADOW_HANDOFF_TOKEN': 'token',
                 'NORN_REHEARSAL_PRIVATE_DATABASE_URL': 'postgresql://norn@/norn_private?host=%2Fprivate',
             })
@@ -55,12 +84,14 @@ class SignedShadowGuardTests(unittest.TestCase):
             result = self.invoke('render-env', str(output), env={
                 'NORN_REHEARSAL_PRIVATE_DATABASE_URL': url,
                 'NORN_M5_SHADOW_PORT': '12345',
+                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef',
             })
             self.assertEqual(result.returncode, 0, result.stderr)
             readback = subprocess.run(
                 ['/bin/bash', '-c', 'set -a; . "$1"; printf %s "$NORN_DATABASE_URL"', '_', str(output)],
                 text=True, capture_output=True, check=True)
-            self.assertEqual(readback.stdout, url)
+            self.assertIn('host=' + str(socket).replace('/', '%2F'), readback.stdout)
+            self.assertIn('application_name=norn-m5-shadow-0123456789abcdef', readback.stdout)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
     def test_rendered_environment_rejects_network_database_fallback(self):
@@ -69,10 +100,30 @@ class SignedShadowGuardTests(unittest.TestCase):
             result = self.invoke('render-env', str(output), env={
                 'NORN_REHEARSAL_PRIVATE_DATABASE_URL': 'postgresql://norn@127.0.0.1/norn_private?host=127.0.0.1&port=5432&sslmode=disable',
                 'NORN_M5_SHADOW_PORT': '12345',
+                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef',
             })
             self.assertEqual(result.returncode, 1)
             self.assertIn('does not name the isolated socket target', result.stderr)
             self.assertFalse(output.exists())
+
+    def test_private_session_assertion_rejects_absent_or_mangled_binding(self):
+        with tempfile.TemporaryDirectory(prefix='norn-mini-private-copy.') as temporary:
+            root = Path(temporary)
+            socket = root / 'socket'; socket.mkdir(mode=0o700)
+            postgres = root / 'postgres'; postgres.mkdir()
+            psql = postgres / 'psql'
+            psql.write_text('#!/bin/sh\nprintf 0\n', encoding='utf-8'); psql.chmod(0o700)
+            url = f'postgresql://norn@/norn_private?host={socket}&port=55432&sslmode=disable'
+            base = {'NORN_REHEARSAL_PRIVATE_DATABASE_URL': url,
+                    'NORN_REHEARSAL_POSTGRES_BIN': str(postgres)}
+            absent = self.invoke('assert-private-session', env={**base,
+                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef'})
+            self.assertEqual(absent.returncode, 1)
+            self.assertIn('has no session', absent.stderr)
+            mangled = self.invoke('assert-private-session', env={**base,
+                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcde&'})
+            self.assertNotEqual(mangled.returncode, 0)
+            self.assertIn('session marker is invalid', mangled.stderr)
 
     def test_forged_handoff_is_stopped_by_snapshot_signature_recheck(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -86,6 +137,7 @@ class SignedShadowGuardTests(unittest.TestCase):
                 'NORN_M5_SIGNED_SHADOW_REHEARSAL': '1', 'NORN_M5_SHADOW_ROOT': str(root),
                 'NORN_M5_SHADOW_SESSION': str(session), 'NORN_M5_SHADOW_LABEL': label,
                 'NORN_M5_SHADOW_PORT': '12345', 'NORN_M5_SHADOW_HANDOFF_TOKEN': 'token',
+                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef',
                 'NORN_REHEARSAL_PRIVATE_DATABASE_URL': 'postgresql://norn@/norn_private?host=%2Fprivate',
                 'NORN_M5_SHADOW_PLIST': str(root / 'plist'), 'NORN_M5_SHADOW_ENV': str(root / 'env'),
                 'NORN_M5_SHADOW_LAUNCHER': str(root / 'launcher'), 'NORN_M5_SHADOW_API': str(api),
@@ -132,6 +184,36 @@ class SignedShadowGuardTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn('platform release manifest error', result.stderr)
             self.assertEqual(list(scratch_parent.iterdir()), [])
+
+    def test_receipt_race_still_removes_scratch_and_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            harness, release, key, scratch, receipt, env = self.cleanup_harness(
+                root, 'printf "{}\\n" > "$NORN_M5_SHADOW_RECEIPT"\nexit 0\n')
+            result = subprocess.run([str(harness), 'run', '--candidate-release', str(release),
+                                     '--public-key', str(key)], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(receipt.read_text(encoding='utf-8'), '{}\n')
+            self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_term_path_writes_receipt_and_removes_scratch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            harness, release, key, scratch, receipt, env = self.cleanup_harness(
+                root, ': > "$NORN_M5_TEST_READY"\nsleep 30\n')
+            ready = root / 'ready'; env['NORN_M5_TEST_READY'] = str(ready)
+            process = subprocess.Popen([str(harness), 'run', '--candidate-release', str(release),
+                                        '--public-key', str(key)], env=env, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            for _ in range(100):
+                if ready.exists(): break
+                time.sleep(0.02)
+            self.assertTrue(ready.exists())
+            os.killpg(process.pid, signal.SIGTERM)
+            _, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 143, stderr)
+            self.assertIn('"exitCode": 143', receipt.read_text(encoding='utf-8'))
+            self.assertEqual(list(scratch.iterdir()), [])
 
     def test_has_unique_label_and_disabled_workers(self):
         text = SCRIPT.read_text(encoding='utf-8')
