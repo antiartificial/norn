@@ -5,7 +5,7 @@ set -euo pipefail
 
 write_shadow_env() {
   local output=$1
-  RUNTIME_ENV="$output" PRIVATE_DATABASE_URL="$NORN_REHEARSAL_PRIVATE_DATABASE_URL" SHADOW_PORT="$NORN_M5_SHADOW_PORT" SHADOW_DB_SESSION="$NORN_M5_SHADOW_DB_SESSION" python3 - <<'PY'
+  RUNTIME_ENV="$output" PRIVATE_DATABASE_URL="$NORN_REHEARSAL_PRIVATE_DATABASE_URL" AUDIT_SIGNING_KEY="$NORN_AUDIT_SIGNING_KEY" SHADOW_PORT="$NORN_M5_SHADOW_PORT" SHADOW_DB_SESSION="$NORN_M5_SHADOW_DB_SESSION" python3 - <<'PY'
 import os, re, shlex, stat, urllib.parse
 
 output = os.environ['RUNTIME_ENV']
@@ -13,6 +13,7 @@ database_url = os.environ['PRIVATE_DATABASE_URL']
 parsed = urllib.parse.urlparse(database_url)
 query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
 session = os.environ['SHADOW_DB_SESSION']
+signing_key = os.environ['AUDIT_SIGNING_KEY']
 if (parsed.scheme not in ('postgres', 'postgresql') or parsed.hostname is not None
         or parsed.path != '/norn_private' or parsed.fragment
         or set(query) != {'host', 'port', 'sslmode'}
@@ -20,6 +21,8 @@ if (parsed.scheme not in ('postgres', 'postgresql') or parsed.hostname is not No
     raise SystemExit('private database URL does not name the isolated socket target')
 if not re.fullmatch(r'norn-m5-shadow-[0-9a-f]{16}', session):
     raise SystemExit('private database session marker is invalid')
+if len(signing_key) < 32:
+    raise SystemExit('shadow database identity key is unavailable')
 socket_dir = query['host'][0]
 scratch_dir = os.path.dirname(socket_dir)
 if (not os.path.isabs(socket_dir) or os.path.islink(socket_dir) or os.path.islink(scratch_dir)
@@ -43,6 +46,7 @@ runtime_query.append(('application_name', session))
 runtime_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(runtime_query)))
 values = {
     'NORN_DATABASE_URL': runtime_url,
+    'NORN_AUDIT_SIGNING_KEY': signing_key,
     'NORN_PORT': os.environ['SHADOW_PORT'],
     'NORN_BIND_ADDR': '127.0.0.1',
     'NORN_STARTUP_MODE': 'passive',
@@ -79,36 +83,37 @@ PY
   }
 }
 
-assert_private_session() {
-  local database_url=$1 marker=$2 psql
-  psql="${NORN_REHEARSAL_POSTGRES_BIN:-/Applications/Postgres.app/Contents/Versions/latest/bin}/psql"
-  [[ -x $psql ]] || { echo 'private PostgreSQL session verifier is unavailable' >&2; return 2; }
-  local connection
-  connection=$(PRIVATE_DATABASE_URL="$database_url" SHADOW_DB_SESSION="$marker" python3 - <<'PY'
-import os, re, urllib.parse
-parsed = urllib.parse.urlparse(os.environ['PRIVATE_DATABASE_URL'])
-query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-marker = os.environ['SHADOW_DB_SESSION']
-if not re.fullmatch(r'norn-m5-shadow-[0-9a-f]{16}', marker):
-    raise SystemExit('private database session marker is invalid')
-if (parsed.scheme not in ('postgres', 'postgresql') or parsed.hostname is not None
-        or parsed.path != '/norn_private' or set(query) != {'host', 'port', 'sslmode'}
-        or any(len(values) != 1 for values in query.values())):
-    raise SystemExit('private database session verifier target is invalid')
-socket = query['host'][0]
-if any(character in socket for character in '\t\r\n'):
-    raise SystemExit('private database session verifier target is invalid')
-print('\t'.join((socket, query['port'][0], marker)))
+verify_shadow_schema() {
+  local schema_json=$1
+  # The API replaces libpq application_name with its reader-contract label, so
+  # pg_stat_activity cannot retain the rehearsal marker. Instead bind the
+  # LaunchAgent PID to the HMAC of its exact sourced DSN. This payload is only
+  # constructed after store.Connect has pinged PostgreSQL and the passive
+  # schema check has completed a read-only transaction.
+  SCHEMA_JSON="$schema_json" DATABASE_URL="$NORN_DATABASE_URL" SIGNING_KEY="$NORN_AUDIT_SIGNING_KEY" EXPECTED_PID="$NORN_M5_SHADOW_PID" EXPECTED_VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
+import hashlib, hmac, json, os
+
+database_url = os.environ['DATABASE_URL']
+signing_key = os.environ['SIGNING_KEY']
+if not database_url or len(signing_key) < 32:
+    raise SystemExit('shadow database binding inputs are unavailable')
+mac = hmac.new(signing_key.encode(), digestmod=hashlib.sha256)
+mac.update(b'norn.database-identity/v1\x00')
+mac.update(database_url.encode())
+expected_identity = 'hmac-sha256:' + mac.hexdigest()
+with open(os.environ['SCHEMA_JSON'], encoding='utf-8') as source:
+    schema = json.load(source)
+if schema.get('processId') != int(os.environ['EXPECTED_PID']):
+    raise SystemExit('shadow schema response does not belong to the LaunchAgent process')
+if not hmac.compare_digest(str(schema.get('databaseIdentity', '')), expected_identity):
+    raise SystemExit('shadow schema response is not bound to the exact private database URL')
+if schema.get('version') != os.environ['EXPECTED_VERSION']:
+    raise SystemExit('shadow schema response does not belong to the verified candidate')
+if schema.get('startupMode') != 'passive' or schema.get('schemaMode') != 'check':
+    raise SystemExit('shadow LaunchAgent startup mode is not isolated')
+if any(schema.get(key) is not False for key in ('operationRecoveryEnabled', 'operationWorkerEnabled', 'nomadWatcherEnabled')):
+    raise SystemExit('shadow LaunchAgent enabled recovery or workers')
 PY
-  ) || return $?
-  local socket port checked_marker count
-  IFS=$'\t' read -r socket port checked_marker <<<"$connection"
-  count=$("$psql" -X -v ON_ERROR_STOP=1 -At -h "$socket" -p "$port" -U norn -d norn_private \
-    -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = '$checked_marker' AND datname = 'norn_private' AND client_addr IS NULL AND pid <> pg_backend_pid()") || return $?
-  [[ $count =~ ^[1-9][0-9]*$ ]] || {
-    echo 'running shadow has no session on the private PostgreSQL cluster' >&2
-    return 1
-  }
 }
 
 remove_scratch() {
@@ -190,19 +195,17 @@ PY
   [[ $(lsof -nP -iTCP:"$NORN_M5_SHADOW_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u) == "$shadow_pid" ]] || {
     echo 'shadow port is not solely owned by the shadow LaunchAgent' >&2; return 1;
   }
-  assert_private_session "$NORN_REHEARSAL_PRIVATE_DATABASE_URL" "$NORN_M5_SHADOW_DB_SESSION"
-  PORT="$NORN_M5_SHADOW_PORT" VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
-import json, os, urllib.request
-base = 'http://127.0.0.1:' + os.environ['PORT']
-def get(path):
-    with urllib.request.urlopen(base + path, timeout=2) as response: return json.load(response)
-health, version, schema = get('/api/health'), get('/api/version'), get('/api/schema')
-if health.get('status') != 'passive' or version.get('version') != os.environ['VERSION']:
-    raise SystemExit('shadow LaunchAgent did not serve the verified passive candidate')
-if schema.get('startupMode') != 'passive' or schema.get('schemaMode') != 'check':
-    raise SystemExit('shadow LaunchAgent startup mode is not isolated')
-if any(schema.get(key) is not False for key in ('operationRecoveryEnabled', 'operationWorkerEnabled', 'nomadWatcherEnabled')):
-    raise SystemExit('shadow LaunchAgent enabled recovery or workers')
+  curl -fsS "http://127.0.0.1:$NORN_M5_SHADOW_PORT/api/version" >"$NORN_M5_SHADOW_ROOT/version.json"
+  curl -fsS "http://127.0.0.1:$NORN_M5_SHADOW_PORT/api/schema" >"$NORN_M5_SHADOW_ROOT/schema.json"
+  local runtime_database_url
+  runtime_database_url=$(/bin/bash -c 'set -a; . "$1"; printf %s "$NORN_DATABASE_URL"' _ "$NORN_M5_SHADOW_ENV")
+  NORN_DATABASE_URL="$runtime_database_url" NORN_M5_SHADOW_PID="$shadow_pid" verify_shadow_schema "$NORN_M5_SHADOW_ROOT/schema.json"
+  VERSION_JSON="$NORN_M5_SHADOW_ROOT/version.json" EXPECTED_VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
+import json, os
+with open(os.environ['VERSION_JSON'], encoding='utf-8') as source:
+    version = json.load(source)
+if version.get('version') != os.environ['EXPECTED_VERSION']:
+    raise SystemExit('shadow LaunchAgent did not serve the verified candidate')
 PY
   launchctl bootout "gui/$(id -u)/$NORN_M5_SHADOW_LABEL"
   : >"$NORN_M5_SHADOW_RUNTIME_PASSED_FILE"
@@ -210,7 +213,7 @@ PY
 }
 
 if [[ ${1:-} == render-env ]]; then write_shadow_env "${2:-}"; exit $?; fi
-if [[ ${1:-} == assert-private-session ]]; then assert_private_session "$NORN_REHEARSAL_PRIVATE_DATABASE_URL" "$NORN_M5_SHADOW_DB_SESSION"; exit $?; fi
+if [[ ${1:-} == verify-shadow-schema ]]; then verify_shadow_schema "${2:-}"; exit $?; fi
 if [[ ${1:-} == shadow-start ]]; then shadow_start; exit $?; fi
 
 usage() { echo 'set NORN_M5_SIGNED_SHADOW_REHEARSAL=1 and use: run --candidate-release <absolute> --public-key <absolute>' >&2; exit 2; }
