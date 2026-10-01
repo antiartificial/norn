@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import hashlib
+import hmac
+import json
 import os
 import signal
 import shutil
@@ -64,7 +67,7 @@ class SignedShadowGuardTests(unittest.TestCase):
             root = Path(temporary)
             session = root / 'session'
             label = 'com.norn.m5.shadow.0123456789ab.0123456789abcdef'
-            session.write_text(f'{label} 8800 token\n', encoding='utf-8')
+            session.write_text(f'{label} 8800 token {"ab" * 32}\n', encoding='utf-8')
             result = self.invoke('shadow-start', env={
                 'NORN_M5_SIGNED_SHADOW_REHEARSAL': '1', 'NORN_M5_SHADOW_SESSION': str(session),
                 'NORN_M5_SHADOW_LABEL': label, 'NORN_M5_SHADOW_PORT': '8800',
@@ -85,6 +88,8 @@ class SignedShadowGuardTests(unittest.TestCase):
                 'NORN_REHEARSAL_PRIVATE_DATABASE_URL': url,
                 'NORN_M5_SHADOW_PORT': '12345',
                 'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef',
+                'NORN_M5_SHADOW_IDENTITY_KEY': 'ab' * 32,
+                'NORN_AUDIT_SIGNING_KEY': 'production-key-must-not-be-copied-' + 'x' * 32,
             })
             self.assertEqual(result.returncode, 0, result.stderr)
             readback = subprocess.run(
@@ -92,6 +97,9 @@ class SignedShadowGuardTests(unittest.TestCase):
                 text=True, capture_output=True, check=True)
             self.assertIn('host=' + str(socket).replace('/', '%2F'), readback.stdout)
             self.assertIn('application_name=norn-m5-shadow-0123456789abcdef', readback.stdout)
+            subprocess.run(['/bin/bash', '-c', '. "$1"; test "$NORN_AUDIT_SIGNING_KEY" = "$2"',
+                            '_', str(output), 'ab' * 32], check=True)
+            self.assertNotIn('production-key-must-not-be-copied', output.read_text(encoding='utf-8'))
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
     def test_rendered_environment_rejects_network_database_fallback(self):
@@ -101,35 +109,67 @@ class SignedShadowGuardTests(unittest.TestCase):
                 'NORN_REHEARSAL_PRIVATE_DATABASE_URL': 'postgresql://norn@127.0.0.1/norn_private?host=127.0.0.1&port=5432&sslmode=disable',
                 'NORN_M5_SHADOW_PORT': '12345',
                 'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef',
+                'NORN_M5_SHADOW_IDENTITY_KEY': 'ab' * 32,
             })
             self.assertEqual(result.returncode, 1)
             self.assertIn('does not name the isolated socket target', result.stderr)
             self.assertFalse(output.exists())
 
-    def test_private_session_assertion_rejects_absent_or_mangled_binding(self):
-        with tempfile.TemporaryDirectory(prefix='norn-mini-private-copy.') as temporary:
+    def test_schema_binding_rejects_absent_or_mangled_runtime_url(self):
+        with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            socket = root / 'socket'; socket.mkdir(mode=0o700)
-            postgres = root / 'postgres'; postgres.mkdir()
-            psql = postgres / 'psql'
-            psql.write_text('#!/bin/sh\nprintf 0\n', encoding='utf-8'); psql.chmod(0o700)
-            url = f'postgresql://norn@/norn_private?host={socket}&port=55432&sslmode=disable'
-            base = {'NORN_REHEARSAL_PRIVATE_DATABASE_URL': url,
-                    'NORN_REHEARSAL_POSTGRES_BIN': str(postgres)}
-            absent = self.invoke('assert-private-session', env={**base,
-                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcdef'})
+            schema_file = root / 'schema.json'
+            database_url = 'postgresql://norn@/norn_private?host=%2Fprivate&port=55432&sslmode=disable&application_name=norn-m5-shadow-0123456789abcdef'
+            signing_key = 'ab' * 32
+            digest = hmac.new(signing_key.encode(), b'norn.database-identity/v1\x00' + database_url.encode(), hashlib.sha256).hexdigest()
+            schema_file.write_text(json.dumps({
+                'processId': 4242, 'databaseIdentity': 'hmac-sha256:' + digest,
+                'version': 'v1.2.3-platform', 'startupMode': 'passive', 'schemaMode': 'check',
+                'operationRecoveryEnabled': False, 'operationWorkerEnabled': False,
+                'nomadWatcherEnabled': False,
+            }), encoding='utf-8')
+            base = {'NORN_M5_SHADOW_IDENTITY_KEY': signing_key, 'NORN_M5_SHADOW_PID': '4242',
+                    'NORN_M5_SHADOW_VERSION': 'v1.2.3-platform'}
+            valid = self.invoke('verify-shadow-schema', str(schema_file), env={**base,
+                'NORN_DATABASE_URL': database_url})
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            absent = self.invoke('verify-shadow-schema', str(schema_file), env={**base,
+                'NORN_DATABASE_URL': ''})
             self.assertEqual(absent.returncode, 1)
-            self.assertIn('has no session', absent.stderr)
-            mangled = self.invoke('assert-private-session', env={**base,
-                'NORN_M5_SHADOW_DB_SESSION': 'norn-m5-shadow-0123456789abcde&'})
-            self.assertNotEqual(mangled.returncode, 0)
-            self.assertIn('session marker is invalid', mangled.stderr)
+            self.assertIn('binding inputs are unavailable', absent.stderr)
+            mangled = self.invoke('verify-shadow-schema', str(schema_file), env={**base,
+                'NORN_DATABASE_URL': database_url + '&sslmode=require'})
+            self.assertEqual(mangled.returncode, 1)
+            self.assertIn('not bound to the exact private database URL', mangled.stderr)
+            wrong_process = self.invoke('verify-shadow-schema', str(schema_file), env={**base,
+                'NORN_DATABASE_URL': database_url, 'NORN_M5_SHADOW_PID': '4243'})
+            self.assertEqual(wrong_process.returncode, 1)
+            self.assertIn('does not belong to the LaunchAgent process', wrong_process.stderr)
+            wrong_key = self.invoke('verify-shadow-schema', str(schema_file), env={**base,
+                'NORN_DATABASE_URL': database_url, 'NORN_M5_SHADOW_IDENTITY_KEY': 'cd' * 32})
+            self.assertEqual(wrong_key.returncode, 1)
+            self.assertIn('not bound to the exact private database URL', wrong_key.stderr)
+            for field, value, message in (
+                ('version', 'v9.9.9-platform', 'verified candidate'),
+                ('startupMode', 'active', 'startup mode is not isolated'),
+                ('schemaMode', 'migrate', 'startup mode is not isolated'),
+            ):
+                changed = json.loads(schema_file.read_text(encoding='utf-8'))
+                changed[field] = value
+                schema_file.write_text(json.dumps(changed), encoding='utf-8')
+                result = self.invoke('verify-shadow-schema', str(schema_file), env={**base,
+                    'NORN_DATABASE_URL': database_url})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                changed[field] = {'version': 'v1.2.3-platform', 'startupMode': 'passive',
+                                  'schemaMode': 'check'}[field]
+                schema_file.write_text(json.dumps(changed), encoding='utf-8')
 
     def test_forged_handoff_is_stopped_by_snapshot_signature_recheck(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); root.chmod(0o700)
             label = 'com.norn.m5.shadow.0123456789ab.0123456789abcdef'
-            session = root / 'session'; session.write_text(f'{label} 12345 token\n', encoding='utf-8'); session.chmod(0o600)
+            session = root / 'session'; session.write_text(f'{label} 12345 token {"ab" * 32}\n', encoding='utf-8'); session.chmod(0o600)
             release = root / ('a' * 40); release.mkdir()
             key = root / 'key'; key.write_text('fixture', encoding='utf-8')
             api = root / 'api'; api.write_text('fixture', encoding='utf-8')
