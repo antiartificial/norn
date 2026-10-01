@@ -4,12 +4,15 @@ set -euo pipefail
 # Local, provider-free M4 replica qualification. This starts one disposable
 # Nomad server, three app-pool clients, and one disposable PostgreSQL server.
 
-for tool in nomad initdb pg_ctl createdb go python3; do
+for tool in nomad initdb pg_ctl createdb go python3 docker; do
   command -v "$tool" >/dev/null || { printf 'missing tool: %s\n' "$tool" >&2; exit 2; }
 done
 
+m4_image=${NORN_TEST_M4_IMAGE:-docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662}
+docker pull "$m4_image" >/dev/null
+
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
-scratch_base=${TMPDIR:-/tmp}
+scratch_base=${NORN_TEST_TMPDIR:-/tmp}
 scratch=$(mktemp -d "$scratch_base/norn-m4-capacity.XXXXXX")
 chmod 700 "$scratch"
 nomad_pids=()
@@ -24,16 +27,34 @@ cleanup() {
 			tail -40 "$log" >&2 || true
 		done
 	fi
-  for pid in "${nomad_pids[@]}"; do kill "$pid" >/dev/null 2>&1 || true; done
-  for pid in "${nomad_pids[@]}"; do wait "$pid" >/dev/null 2>&1 || true; done
-  if [[ $pg_started == true ]]; then pg_ctl -D "$scratch/postgres" -m immediate -w stop >/dev/null 2>&1 || true; fi
+	for pid in "${nomad_pids[@]}"; do kill "$pid" >/dev/null 2>&1 || true; done
+	for pid in "${nomad_pids[@]}"; do wait "$pid" >/dev/null 2>&1 || true; done
+	# Nomad can retain stopped Docker containers after purging the job. Remove
+	# only containers whose mounts are rooted in this harness's private scratch
+	# directory so their allocation directories can be deleted deterministically.
+	while IFS= read -r container_id; do
+		[[ -n $container_id ]] || continue
+		if docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$container_id" 2>/dev/null | grep -Fqx "$scratch" || \
+		   docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$container_id" 2>/dev/null | grep -Fq "$scratch/"; then
+			docker container rm --force "$container_id" >/dev/null 2>&1 || true
+		fi
+	done < <(docker ps --all --quiet --filter label=com.hashicorp.nomad.alloc_id)
+	if [[ $pg_started == true ]]; then pg_ctl -D "$scratch/postgres" -m immediate -w stop >/dev/null 2>&1 || true; fi
+	chmod -R u+rwX "$scratch" >/dev/null 2>&1 || true
   SCRATCH="$scratch" SCRATCH_BASE="$scratch_base" python3 - <<'PY'
-import os, shutil
+import os, shutil, time
 from pathlib import Path
 p=Path(os.environ['SCRATCH']); base=Path(os.environ['SCRATCH_BASE']).resolve()
 if p.parent.resolve()!=base or not p.name.startswith('norn-m4-capacity.') or p.is_symlink():
     raise SystemExit('refusing to remove unexpected scratch path')
-if p.exists(): shutil.rmtree(p)
+if p.exists():
+    for attempt in range(5):
+        try:
+            shutil.rmtree(p)
+            break
+        except PermissionError:
+            if attempt == 4: raise
+            time.sleep(.2)
 PY
 	return "$status"
 }
@@ -119,5 +140,6 @@ PY
 
 cd "$repo_root/v2/api"
 NORN_TEST_M4_NOMAD_ADDR="$nomad_addr" \
+NORN_TEST_M4_IMAGE="$m4_image" \
 NORN_TEST_DATABASE_URL="postgresql://norn_m4@/norn_m4?host=$socket_query&port=$pg_port&sslmode=disable" \
 go test ./pipeline -run '^TestM4ReplicaIntentAcrossThreeDisposableNomadClients$' -count=1 -v

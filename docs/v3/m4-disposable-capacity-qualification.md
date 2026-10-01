@@ -7,12 +7,16 @@ pool clients with `raw_exec`, and a Unix-socket-only PostgreSQL server. It then
 runs `TestM4ReplicaIntentAcrossThreeDisposableNomadClients` and removes every
 temporary process and file.
 
-The test submits a two-replica service with a hard `distinct_hosts` constraint,
+The test submits a two-replica service through Norn's deployment submit path
+with a hard `distinct_hosts` constraint,
 verifies two running allocations on different clients, accepts a signed durable
 scale operation to three, and verifies three distinct placements. It reads the
-persisted desired replica intent, applies that intent to a redeploy, and proves
-the three placements survive. A second durable scale operation returns the job
-to two distinct running placements.
+persisted desired replica intent through a second Norn submit whose InfraSpec
+still declares two replicas, and proves the redeploy remains at three. A second
+durable scale operation returns the job to two distinct running placements.
+
+The protected `Norn CI` workflow runs the harness on pull requests and protected
+`master` pushes with a hash-pinned Nomad 1.9.7 binary and a ten-minute job bound.
 
 This is pre-live evidence for durable replica intent, redeploy precedence,
 logical app-pool selection, and actual Nomad placement. It does not create or

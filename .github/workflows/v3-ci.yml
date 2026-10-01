@@ -83,6 +83,38 @@ jobs:
       - name: Build deploy-disabled fixture image
         run: docker build --progress=plain --tag norn/mobility-fixture:ci v2/infra/mobility-fixture
 
+  m4-disposable-capacity:
+    name: M4 durable replicas on three Nomad clients
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Install pinned disposable Nomad and PostgreSQL
+        env:
+          NOMAD_VERSION: 1.9.7
+          NOMAD_SHA256: e9c7337893eceb549557ef9ad341b3ae64f5f43e29ff1fb167b70cfd16748d2d
+        run: |
+          set -euo pipefail
+          archive="nomad_${NOMAD_VERSION}_linux_amd64.zip"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/$archive" \
+            "https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/$archive"
+          printf '%s  %s\n' "$NOMAD_SHA256" "$RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tool_dir="$RUNNER_TEMP/norn-m4-tools"
+          mkdir -p "$tool_dir"
+          unzip -q "$RUNNER_TEMP/$archive" nomad -d "$tool_dir"
+          echo "$tool_dir" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Qualify durable replicas and placement
+        run: bash v2/scripts/test-m4-capacity-local.sh
+
   migration-process-crash:
     name: M1 migration process-crash recovery
     runs-on: ubuntu-24.04

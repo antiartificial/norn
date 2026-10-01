@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/saga"
 	"norn/v2/api/store"
 )
 
@@ -148,39 +150,86 @@ func TestM4ReplicaIntentAcrossThreeDisposableNomadClients(t *testing.T) {
 		t.Fatalf("eligible app clients=%d, want exactly 3 disposable clients", eligible)
 	}
 
-	jobID := "norn-m4-capacity-" + uuid.NewString()
-	job := nomadapi.NewServiceJob(jobID, jobID, "global", 50).AddDatacenter("dc1")
-	job.NodePool = stringPointer("app")
-	group := nomadapi.NewTaskGroup("web", 2).AddTask(
-		nomadapi.NewTask("sleep", "raw_exec").SetConfig("command", "/bin/sleep").SetConfig("args", []string{"180"}),
-	)
-	group.Constraints = append(group.Constraints, nomadapi.NewConstraint("", nomadapi.ConstraintDistinctHosts, ""))
-	job.AddTaskGroup(group)
-	if _, err := client.SubmitJob(job); err != nil {
-		t.Fatal(err)
+	image := os.Getenv("NORN_TEST_M4_IMAGE")
+	if image == "" {
+		t.Fatal("NORN_TEST_M4_IMAGE is required")
 	}
-	t.Cleanup(func() { _ = client.StopJob(jobID, true) })
+	jobID := "norn-m4-capacity-" + uuid.NewString()
+	t.Cleanup(func() { stopM4Job(t, client, jobID) })
+	p.Nomad = client
 	p.ScaleEffects, err = NewNomadScaleEffects(db, client)
 	if err != nil {
 		t.Fatal(err)
 	}
+	spec := &model.InfraSpec{App: jobID, Deploy: true, Placement: &model.PlacementSpec{NodePool: "app", DistinctHosts: true},
+		Processes: map[string]model.Process{"web": {Command: "sleep 600", Scaling: &model.Scaling{Min: 2}}}}
+	submitM4Deployment(t, p, spec, image)
 
 	waitM4Placement(t, client.API(), jobID, 2)
+	waitM4Deployment(t, client, jobID)
 	runM4Scale(t, p, db, request, jobID, 3)
 	waitM4Placement(t, client.API(), jobID, 3)
 
-	counts, err := db.DesiredReplicaCounts(context.Background(), jobID, "local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	nomad.ApplyDesiredReplicaCounts(job, counts)
-	if _, err := client.SubmitJob(job); err != nil {
-		t.Fatal(err)
-	}
+	// The InfraSpec still declares two replicas. A real Norn submit must load
+	// the acknowledged desired count and keep three, rather than resetting it.
+	submitM4Deployment(t, p, spec, image)
 	waitM4Placement(t, client.API(), jobID, 3)
+	waitM4Deployment(t, client, jobID)
 
 	runM4Scale(t, p, db, request, jobID, 2)
 	waitM4Placement(t, client.API(), jobID, 2)
+}
+
+func stopM4Job(t *testing.T, client *nomad.Client, jobID string) {
+	t.Helper()
+	if err := client.StopJob(jobID, true); err != nil {
+		t.Errorf("purge M4 job: %v", err)
+		return
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		allocations, _, err := client.API().Jobs().Allocations(jobID, false, nil)
+		running := 0
+		for _, allocation := range allocations {
+			if allocation.ClientStatus == nomadapi.AllocClientStatusPending || allocation.ClientStatus == nomadapi.AllocClientStatusRunning {
+				running++
+			}
+		}
+		if err == nil && running == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("M4 job cleanup retained %d live allocations: %v", running, err)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func waitM4Deployment(t *testing.T, client *nomad.Client, jobID string) {
+	t.Helper()
+	deadline := time.Now().Add(150 * time.Second)
+	for {
+		deployment, err := client.LatestDeploymentRegion(jobID, "global")
+		if err == nil && deployment != nil && deployment.Status == "successful" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Nomad deployment did not settle: deployment=%+v err=%v", deployment, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func submitM4Deployment(t *testing.T, p *Pipeline, spec *model.InfraSpec, image string) {
+	t.Helper()
+	deploymentID := uuid.NewString()
+	st := &state{spec: spec, imageTag: image, deploymentID: deploymentID, regionEvals: map[string]string{},
+		operationPayload: map[string]interface{}{"specDigest": "sha256:" + strings.Repeat("a", 64)}}
+	log := saga.New(saga.DiscardStore{}, spec.App, "m4-disposable-integration", "deploy")
+	if err := p.submit(context.Background(), st, log); err != nil {
+		t.Fatalf("submit deployment %s through Norn pipeline: %v", deploymentID, err)
+	}
 }
 
 func runM4Scale(t *testing.T, p *Pipeline, db *store.DB, request EnqueueRequest, jobID string, count int) {
@@ -232,5 +281,3 @@ func waitM4Placement(t *testing.T, api *nomadapi.Client, jobID string, count int
 		time.Sleep(100 * time.Millisecond)
 	}
 }
-
-func stringPointer(value string) *string { return &value }
