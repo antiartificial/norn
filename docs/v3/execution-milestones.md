@@ -147,7 +147,7 @@ General cross-backend conversion, local single-member etcd, Fleet-PG qualificati
 
 ## Execution status
 
-As of 2026-09-29, **0 of 10 M0–M9 gates are signed (0%)**. This is the release
+As of 2026-10-01, **0 of 10 M0–M9 gates are signed (0%)**. This is the release
 gate completion ratio, not an estimate of code completed. Norn PR #77 and its
 signed package are integrated. Fleet PRs #195/#196 corrected pre-create and
 paired runner admission. PR #197 passed 1,430 contract tests, merged as
@@ -163,15 +163,16 @@ sign-off. The later `pilot261001a` has a distinct [approved and still
 precreate-bound envelope](fleet-pilot-approval-preflight-2026-10-01.md); prior
 pilot keys, backends and clock do not carry forward.
 
-For planning, the estimated implementation progress on 2026-09-28 is below.
+For planning, the estimated implementation progress on 2026-10-01 is below.
 These are judgment estimates rounded to 5%, based on the breadth of working
 implementation and evidence relative to each exit. They are not release
 sign-offs, schedule forecasts, or a substitute for the gate evidence below.
-The simple, equally weighted mean is about **32%**; later Fleet and adoption
+The simple, equally weighted mean is about **36%**; later Fleet and adoption
 milestones may require disproportionate time.
-The Mini backup policy changed on 2026-09-28; no additional runtime evidence
-was produced by that decision, so these estimates and gate dispositions stay
-unchanged.
+Since the September 28 estimate, M4 gained exact-source local three-client
+placement/drain and a signed candidate; M5 gained an actual-Mini-data signed
+private-copy shadow; and M8 gained complete signed-asset verification and a
+run-bound pilot packet. None proves a live Fleet, Mini switch, or gate sign-off.
 
 | Milestone | Estimated work complete | Main remaining boundary |
 | --- | ---: | --- |
@@ -179,11 +180,11 @@ unchanged.
 | M1 | 65% | Protected runtime and remaining effect recovery proof |
 | M2 | 55% | Real-provider retention and separate-node restore |
 | M3 | 50% | Protected multi-host bootstrap, faults and soak |
-| M4 | 40% | Normal app execution, ingress authority and loaded Fleet proof |
-| M5 | 25% | Representative Mini upgrade and rollback |
+| M4 | 45% | Normal app execution, ingress authority and loaded Fleet proof |
+| M5 | 40% | Isolated maintenance transition, rollback and preservation proof |
 | M6 | 10% | Rolling upgrade and app database cutover rehearsals |
 | M7 | 5% | Complete app mobility and traffic rollback rehearsal |
-| M8 | 10% | Remaining release qualification, version matrix and soak/fault evidence |
+| M8 | 25% | M3–M7 prerequisites, client parity, provider-backed Fleet qualification and operator sign-off |
 | M9 | 0% | Controlled adoption after qualification |
 
 | Gate | Current disposition | Evidence and next qualification boundary |
@@ -234,10 +235,13 @@ The [2026-09-28 read-only Mini refresh](m0-mini-baseline-refresh-2026-09-28.md)
 still identifies release `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`,
 an empty active operation queue at collection time, and PostgreSQL WAL
 archiving off. It does not alter the M0 or M5 estimates or sign either gate.
-The [latest candidate private Mini copy](m5-mini-private-copy-schema47-2026-09-28.md)
+The [September 28 candidate private Mini copy](m5-mini-private-copy-schema47-2026-09-28.md)
 passed schema 47 and passive startup against 28 original tables and 261,547
-rows, with unchanged live job and route-config fingerprints. Protected backup,
-fresh local backup/private restore and the maintenance transition remain M5 work.
+rows, with unchanged live job and route-config fingerprints. A later
+[signed 8a protected backup/private restore and shadow](m5-mini-signed-shadow-2026-10-01.md)
+passed against 275,168 original rows. A new transition-bound backup/shadow
+pair, isolated maintenance transition and rollback/preservation proof remain
+M5 work; the live switch remains M9.
 
 The [read-only first-app shape review](m6-m7-first-app-shape-review-2026-09-28.md)
 found a PostgreSQL 17 source-major observation for `turnkey-offer-intake`,
