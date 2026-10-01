@@ -65,6 +65,22 @@ func TestPhaseProofVerifierRejectsForgedStaleAndCompetingProofs(t *testing.T) {
 	if _, err := verifier.VerifyPhaseProof(context.Background(), j, forgedRef, forged); !errors.Is(err, ErrPhaseProofInvalid) {
 		t.Fatalf("forged proof accepted: %v", err)
 	}
+	for _, next := range []Phase{PhaseFinalSync, PhaseAccept} {
+		var skipped PhaseProof
+		if err := json.Unmarshal(raw, &skipped); err != nil {
+			t.Fatal(err)
+		}
+		skipped.NextPhase = next
+		skippedRaw, skippedRef := resignProof(t, j, private, skipped)
+		if _, err := verifier.VerifyPhaseProof(context.Background(), j, skippedRef, skippedRaw); !errors.Is(err, ErrPhaseProofInvalid) {
+			t.Fatalf("skipped phase %q accepted: %v", next, err)
+		}
+	}
+	unknownRef := ref
+	unknownRef.NextPhase = Phase("unknown")
+	if _, err := verifier.VerifyPhaseProof(context.Background(), j, unknownRef, raw); !errors.Is(err, ErrPhaseProofInvalid) {
+		t.Fatalf("unknown phase accepted: %v", err)
+	}
 	staleRaw, staleRef := signedProofBytes(t, j, private, now.Add(-2*time.Hour))
 	var stale PhaseProof
 	if err := json.Unmarshal(staleRaw, &stale); err != nil {

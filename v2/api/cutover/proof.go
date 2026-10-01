@@ -194,6 +194,11 @@ func validPhaseProofReference(j Journal, ref PhaseEvidenceReference, raw []byte)
 	if err != nil || want != ref || ref.NextPhase == PhasePrepare {
 		return ErrPhaseProofInvalid
 	}
+	// A digest-matching reference alone does not establish a legal journal edge.
+	// Reuse the journal transition validator before granting the capability.
+	if _, err := j.AdvanceWithEvidence(ref); err != nil {
+		return ErrPhaseProofInvalid
+	}
 	return nil
 }
 func sameBinding(p DatabaseBindingGeneration, t database.TargetIdentity) bool {
