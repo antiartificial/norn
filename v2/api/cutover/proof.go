@@ -246,6 +246,10 @@ func digestBytes(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeTo
 // observer signature and orders effects by their stable ID before encoding.
 func CanonicalPhaseProof(p PhaseProof) ([]byte, error) {
 	p.Signature = ProofSignature{}
+	// PhaseProof is frequently retained for an effect retry/readback after it
+	// has been signed. Sorting a shallow-copied slice would mutate that caller
+	// state and could turn a later signature check into an order-dependent race.
+	p.Effects = append([]ExternalEffect(nil), p.Effects...)
 	sort.Slice(p.Effects, func(i, j int) bool { return p.Effects[i].ID < p.Effects[j].ID })
 	return json.Marshal(p)
 }

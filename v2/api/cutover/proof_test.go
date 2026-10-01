@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,25 @@ func TestCrashClassifierFailsClosedForLostResponseAndPartialEffect(t *testing.T)
 		if got.State != CrashStateAmbiguous || !got.Reconcile {
 			t.Fatalf("unsafe crash classification=%+v", got)
 		}
+	}
+}
+
+func TestCanonicalPhaseProofDoesNotMutateEffectOrder(t *testing.T) {
+	p := PhaseProof{Effects: []ExternalEffect{
+		{ID: "z-last", Kind: "fence", SHA256: strings.Repeat("a", 64)},
+		{ID: "a-first", Kind: "sync", SHA256: strings.Repeat("b", 64)},
+	}, Signature: ProofSignature{Algorithm: "ed25519", KeyID: "key", Value: "signature"}}
+	before := append([]ExternalEffect(nil), p.Effects...)
+	first, err := CanonicalPhaseProof(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Effects[0] != before[0] || p.Effects[1] != before[1] {
+		t.Fatalf("canonicalization mutated caller effect order: got=%+v want=%+v", p.Effects, before)
+	}
+	second, err := CanonicalPhaseProof(p)
+	if err != nil || string(first) != string(second) {
+		t.Fatalf("canonical bytes are unstable: err=%v first=%s second=%s", err, first, second)
 	}
 }
 
