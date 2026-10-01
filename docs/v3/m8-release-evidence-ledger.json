@@ -5,15 +5,18 @@
   "milestone_status": "open",
   "norn": {
     "signed_candidate": {
-      "commit": "47eb704445d793c64e9f3f289cd82de9a6caee95",
-      "tag": "platform-47eb704445d793c64e9f3f289cd82de9a6caee95",
-      "release_run": 36802095059,
-      "darwin_arm64_archive_sha256": "78dab1cbe2888a3d59ba9d5a42c1948bf87c9748b02f0033804eaeef7c4e6aa7",
+      "commit": "8a291142677a7b00cc8606e61ac0a6952fff3e5c",
+      "tag": "platform-8a291142677a7b00cc8606e61ac0a6952fff3e5c",
+      "release_run": 36813207019,
+      "darwin_arm64_archive_sha256": "82c91b87bafef6b55064bfa474fce80e135cc6caffd70a6aade98ecca7aa9ed4",
+      "asset_count": 16,
+      "mini_import_signature_verified": true,
+      "mini_passive_preflight": "blocked_legacy_schema_metadata_absent",
       "evidence_class": "signed_runtime_candidate"
     },
     "current_source": {
       "commit": "8a291142677a7b00cc8606e61ac0a6952fff3e5c",
-      "evidence_class": "ci_only_source",
+      "evidence_class": "protected_signed_source",
       "successful_master_runs": {
         "repository_ci": 36807641901,
         "norn_ci": 36807641851,

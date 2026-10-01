@@ -40,10 +40,16 @@ def main() -> None:
             "candidate tag must bind the full candidate commit")
     require(candidate["evidence_class"] == "signed_runtime_candidate",
             "candidate must remain the signed runtime candidate")
-    require(source["evidence_class"] == "ci_only_source",
-            "current source must remain CI-only until another release is signed")
-    require(len({candidate["commit"], source["commit"], mini["commit"]}) == 3,
-            "candidate, current source and Mini runtime must remain distinct")
+    require(source["evidence_class"] == "protected_signed_source"
+            and candidate["commit"] == source["commit"],
+            "signed candidate must bind exact protected source")
+    require(candidate["asset_count"] == 16
+            and bool(re.fullmatch(r"[0-9a-f]{64}", candidate["darwin_arm64_archive_sha256"]))
+            and candidate["mini_import_signature_verified"] is True
+            and candidate["mini_passive_preflight"] == "blocked_legacy_schema_metadata_absent",
+            "signed release and blocked Mini preflight must retain their exact evidence boundary")
+    require(candidate["commit"] != mini["commit"],
+            "signed candidate must not be presented as Mini live runtime")
     require(not mini["installed_digest_verified"] and not mini["fleet_configured"],
             "Mini digest/Fleet claims exceed the recorded observation")
     require(fleet["live"]["evidence_class"] == "unobserved"
