@@ -40,8 +40,10 @@ It does not authenticate GitHub runs, release assets, or live observations.
 
 M8 remains open pending one coherent candidate that includes the intended
 current source, an exact NornUI release/build, a private Mini signed
-upgrade/rollback rehearsal followed by live preservation evidence, and a fresh
-provider-backed Fleet qualification. The Fleet evidence must bind exact
+upgrade/rollback rehearsal followed by live preservation evidence, the M6
+application-database cutover and recovery gate, the M7 complete Mini-to-Fleet
+application mobility rehearsal, and a fresh provider-backed Fleet
+qualification. The Fleet evidence must bind exact
 installed Norn/Fleet/upstream versions to protected plan/apply, three-member
 etcd health, independent app databases, client behavior, soak/fault recovery,
 request/error/latency results, operation/effect reconciliation, retention

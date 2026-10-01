@@ -79,6 +79,14 @@
       "status": "open",
       "evidence_refs": []
     },
+    "m6_application_database_cutover_and_recovery": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "m7_mini_to_fleet_application_mobility": {
+      "status": "open",
+      "evidence_refs": []
+    },
     "fleet_protected_plan_apply_installed_readback": {
       "status": "open",
       "evidence_refs": []

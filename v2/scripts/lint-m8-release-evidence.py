@@ -60,6 +60,8 @@ def main() -> None:
         "coherent_signed_candidate",
         "exact_nornui_release_and_client_parity",
         "mini_private_upgrade_rollback_live_preservation",
+        "m6_application_database_cutover_and_recovery",
+        "m7_mini_to_fleet_application_mobility",
         "fleet_protected_plan_apply_installed_readback",
         "fleet_runner_and_upstream_version_binding",
         "fleet_fixture_topology_resource_binding",
