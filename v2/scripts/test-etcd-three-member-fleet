@@ -89,14 +89,18 @@ endpoint_for() {
   port="$(docker port "$network-$1" 2379/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)"
   printf 'https://127.0.0.1:%s' "$port"
 }
+wait_healthy_endpoints() {
+  local attempt
+  for attempt in {1..30}; do
+    if etcdctl endpoint health >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  etcdctl endpoint health >/dev/null
+}
 endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
 export ETCDCTL_ENDPOINTS="$endpoints" ETCDCTL_CACERT="$work_dir/ca.crt"
 export ETCDCTL_CERT="$work_dir/client.crt" ETCDCTL_KEY="$work_dir/client.key"
-for _ in {1..30}; do
-  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
-  sleep 1
-done
-etcdctl endpoint health >/dev/null
+wait_healthy_endpoints
 
 root_password="$(openssl rand -hex 24)"
 runtime_password="$(openssl rand -hex 24)"
@@ -130,22 +134,18 @@ if [ "$(docker inspect "$network-m3" --format '{{len .NetworkSettings.Networks}}
 fi
 NORN_TEST_ETCD_TLS_ENDPOINTS="$(endpoint_for m1),$(endpoint_for m2)"
 export NORN_TEST_ETCD_TLS_ENDPOINTS
-ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" etcdctl endpoint health >/dev/null
+ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" wait_healthy_endpoints
 run_process_test
 docker network connect --alias m3 "$network" "$network-m3"
 endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
 export ETCDCTL_ENDPOINTS="$endpoints" NORN_TEST_ETCD_TLS_ENDPOINTS="$endpoints"
-for _ in {1..30}; do
-  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
-  sleep 1
-done
-etcdctl endpoint health >/dev/null
+wait_healthy_endpoints
 
 echo 'One-member loss: quorum and normal runtime survive'
 docker stop "$network-m3" >/dev/null
 NORN_TEST_ETCD_TLS_ENDPOINTS="$(endpoint_for m1),$(endpoint_for m2)"
 export NORN_TEST_ETCD_TLS_ENDPOINTS
-ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" etcdctl endpoint health >/dev/null
+ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" wait_healthy_endpoints
 run_process_test
 
 echo 'Quorum loss: linearizable read and write refuse'
@@ -163,11 +163,7 @@ echo 'Recover quorum and take an authenticated snapshot'
 docker start "$network-m2" "$network-m3" >/dev/null
 endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
 export ETCDCTL_ENDPOINTS="$endpoints"
-for _ in {1..30}; do
-  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
-  sleep 1
-done
-etcdctl endpoint health >/dev/null
+wait_healthy_endpoints
 ETCDCTL_ENDPOINTS="$(endpoint_for m1)" etcdctl snapshot save "$work_dir/snapshot.db" >/dev/null
 etcdctl snapshot status "$work_dir/snapshot.db" >/dev/null
 
@@ -201,11 +197,7 @@ done
 for member in m1 m2 m3; do start_member "$member" "/qual/restored-$member"; done
 endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
 export ETCDCTL_ENDPOINTS="$endpoints" NORN_TEST_ETCD_TLS_ENDPOINTS="$endpoints"
-for _ in {1..30}; do
-  if etcdctl endpoint health >/dev/null 2>&1; then break; fi
-  sleep 1
-done
-etcdctl endpoint health >/dev/null
+wait_healthy_endpoints
 value="$(etcdctl get '/norn-test/tls-fleet-runtime/qualification-sentinel' --print-value-only)"
 test "$value" = snapshot-retained
 run_process_test
