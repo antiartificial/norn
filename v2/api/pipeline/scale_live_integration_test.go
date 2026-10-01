@@ -163,18 +163,23 @@ func TestM4ReplicaIntentAcrossThreeDisposableNomadClients(t *testing.T) {
 	}
 	spec := &model.InfraSpec{App: jobID, Deploy: true, Placement: &model.PlacementSpec{NodePool: "app", DistinctHosts: true},
 		Processes: map[string]model.Process{"web": {Command: "sleep 600", Scaling: &model.Scaling{Min: 2}}}}
-	submitM4Deployment(t, p, spec, image)
+	initial := submitM4Deployment(t, p, client, spec, image)
 
 	waitM4Placement(t, client.API(), jobID, 2)
-	waitM4Deployment(t, client, jobID)
+	waitM4Deployment(t, client, initial)
 	runM4Scale(t, p, db, request, jobID, 3)
 	waitM4Placement(t, client.API(), jobID, 3)
+	beforeRedeploy, _, err := client.API().Jobs().Info(jobID, nil)
+	if err != nil || beforeRedeploy == nil || beforeRedeploy.Version == nil {
+		t.Fatalf("read pre-redeploy job revision: job=%+v err=%v", beforeRedeploy, err)
+	}
 
 	// The InfraSpec still declares two replicas. A real Norn submit must load
 	// the acknowledged desired count and keep three, rather than resetting it.
-	submitM4Deployment(t, p, spec, image)
+	redeploy := submitM4Deployment(t, p, client, spec, image)
+	waitM4Deployment(t, client, redeploy)
+	assertM4RedeployedJob(t, client.API(), jobID, redeploy.nornDeploymentID, *beforeRedeploy.Version)
 	waitM4Placement(t, client.API(), jobID, 3)
-	waitM4Deployment(t, client, jobID)
 
 	runM4Scale(t, p, db, request, jobID, 2)
 	waitM4Placement(t, client.API(), jobID, 2)
@@ -206,22 +211,29 @@ func stopM4Job(t *testing.T, client *nomad.Client, jobID string) {
 	}
 }
 
-func waitM4Deployment(t *testing.T, client *nomad.Client, jobID string) {
+type m4DeploymentReceipt struct {
+	nornDeploymentID  string
+	evaluationID      string
+	nomadDeploymentID string
+}
+
+func waitM4Deployment(t *testing.T, client *nomad.Client, receipt m4DeploymentReceipt) {
 	t.Helper()
 	deadline := time.Now().Add(150 * time.Second)
 	for {
-		deployment, err := client.LatestDeploymentRegion(jobID, "global")
+		deployment, _, err := client.API().Deployments().Info(receipt.nomadDeploymentID, &nomadapi.QueryOptions{Region: "global"})
 		if err == nil && deployment != nil && deployment.Status == "successful" {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Nomad deployment did not settle: deployment=%+v err=%v", deployment, err)
+			t.Fatalf("Nomad deployment %s for Norn deployment %s and evaluation %s did not settle: deployment=%+v err=%v",
+				receipt.nomadDeploymentID, receipt.nornDeploymentID, receipt.evaluationID, deployment, err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func submitM4Deployment(t *testing.T, p *Pipeline, spec *model.InfraSpec, image string) {
+func submitM4Deployment(t *testing.T, p *Pipeline, client *nomad.Client, spec *model.InfraSpec, image string) m4DeploymentReceipt {
 	t.Helper()
 	deploymentID := uuid.NewString()
 	st := &state{spec: spec, imageTag: image, deploymentID: deploymentID, regionEvals: map[string]string{},
@@ -229,6 +241,38 @@ func submitM4Deployment(t *testing.T, p *Pipeline, spec *model.InfraSpec, image 
 	log := saga.New(saga.DiscardStore{}, spec.App, "m4-disposable-integration", "deploy")
 	if err := p.submit(context.Background(), st, log); err != nil {
 		t.Fatalf("submit deployment %s through Norn pipeline: %v", deploymentID, err)
+	}
+	evaluationID := st.regionEvals["local"]
+	if evaluationID == "" {
+		t.Fatalf("Norn deployment %s returned no local Nomad evaluation", deploymentID)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		evaluation, _, err := client.API().Evaluations().Info(evaluationID, &nomadapi.QueryOptions{Region: "global"})
+		if err == nil && evaluation != nil && evaluation.DeploymentID != "" {
+			return m4DeploymentReceipt{nornDeploymentID: deploymentID, evaluationID: evaluationID, nomadDeploymentID: evaluation.DeploymentID}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resolve Nomad deployment for Norn deployment %s evaluation %s: evaluation=%+v err=%v", deploymentID, evaluationID, evaluation, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func assertM4RedeployedJob(t *testing.T, api *nomadapi.Client, jobID, deploymentID string, priorVersion uint64) {
+	t.Helper()
+	job, _, err := api.Jobs().Info(jobID, &nomadapi.QueryOptions{Region: "global"})
+	if err != nil || job == nil || job.Version == nil {
+		t.Fatalf("read exact redeployed job: job=%+v err=%v", job, err)
+	}
+	if *job.Version <= priorVersion {
+		t.Fatalf("redeployed job version=%d, want newer than %d", *job.Version, priorVersion)
+	}
+	if job.Meta[nomad.DeploymentIDMeta] != deploymentID {
+		t.Fatalf("redeployed job provenance=%q, want Norn deployment %q", job.Meta[nomad.DeploymentIDMeta], deploymentID)
+	}
+	if len(job.TaskGroups) != 1 || job.TaskGroups[0].Count == nil || *job.TaskGroups[0].Count != 3 {
+		t.Fatalf("redeployed task groups=%+v, want exact desired count 3", job.TaskGroups)
 	}
 }
 
