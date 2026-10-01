@@ -1,6 +1,6 @@
 # Norn v3 execution milestones
 
-Status (2026-10-01): protected Norn master `8a291142` has a published signed platform release and exact-master CI; protected Fleet main `39b7b3c8` passed validation and provider-free qualification. The disposable `pilot261001a` has a $10/four-hour, eight-Droplet-peak authorization and an unstarted billable clock. Mini still runs legacy `a5da8ef` with no Fleet pools. The [signed Mini preflight](m5-mini-signed-preflight-2026-10-01.md) stopped before candidate health because legacy schema metadata is absent; live preservation was observed. No live Fleet or M8 sign-off is proven. See the [current release evidence ledger](m8-client-version-matrix-2026-09-28.md).
+Status (2026-10-01): protected Norn master `8a291142` has a published signed platform release and exact-master CI; protected Fleet main `39b7b3c8` passed validation and provider-free qualification. The disposable `pilot261001a` has a [dated $10/four-hour, eight-Droplet-peak authorization and precreate receipt](fleet-pilot-approval-preflight-2026-10-01.md); its billable clock was unstarted at the last readback. Mini still runs legacy `a5da8ef` with no Fleet pools. The [signed Mini preflight](m5-mini-signed-preflight-2026-10-01.md) stopped before candidate health because legacy schema metadata is absent; live preservation was observed. No live Fleet or M8 sign-off is proven. See the [current release evidence ledger](m8-client-version-matrix-2026-09-28.md).
 
 ## Release contract
 
@@ -159,7 +159,9 @@ bucket/key, five issued node keys, local controller/routes/watchdog and offline
 runner 217 are closed. Signed partial-precreate final-zero was verified at
 23:50:32Z; the full Tailscale policy was restored to its pre-pilot baseline.
 The cleanup is operational evidence, not live Fleet fitness or a milestone
-sign-off. The next paired HA run is a reviewable, unapproved $10/four-hour plan.
+sign-off. The later `pilot261001a` has a distinct [approved and still
+precreate-bound envelope](fleet-pilot-approval-preflight-2026-10-01.md); prior
+pilot keys, backends and clock do not carry forward.
 
 For planning, the estimated implementation progress on 2026-09-28 is below.
 These are judgment estimates rounded to 5%, based on the breadth of working
