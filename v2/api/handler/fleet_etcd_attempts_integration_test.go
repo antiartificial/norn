@@ -21,9 +21,18 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
+
+type fakeFleetApplyRunObserver struct {
+	observation *githubapp.ApplyRunObservation
+}
+
+func (f fakeFleetApplyRunObserver) ObserveApplyRunAttempt(context.Context, string, string, bool, *githubapp.Dispatch, string, int64) (*githubapp.ApplyRunObservation, error) {
+	return f.observation, nil
+}
 
 func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
@@ -121,6 +130,33 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	if replay := call(path+"/attempts", "create-one", create); replay.Code != http.StatusOK {
 		t.Fatalf("create replay: %d %s", replay.Code, replay.Body.String())
 	}
+	for name, mutate := range map[string]func(*fleet.RunnerAttemptCreateRequest){
+		"different-source-run": func(value *fleet.RunnerAttemptCreateRequest) { value.SourceDispatchRunID = "8" },
+		"different-nonce":      func(value *fleet.RunnerAttemptCreateRequest) { value.DispatchNonce = strings.Repeat("e", 64) },
+		"wrong-resume":         func(value *fleet.RunnerAttemptCreateRequest) { value.Resume = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := create
+			mutate(&forged)
+			if got := call(path+"/attempts", "replay-"+name, forged); got.Code != http.StatusConflict {
+				t.Fatalf("forged replay: %d %s", got.Code, got.Body.String())
+			}
+		})
+	}
+	for name, mutate := range map[string]func(*CIIdentity){
+		"wrong-intent": func(value *CIIdentity) { value.Intent = "recover" },
+		"wrong-sha":    func(value *CIIdentity) { value.SHA = strings.Repeat("a", 40) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := *principal.CI
+			mutate(&forged)
+			principal.CI = &forged
+			defer func() { principal.CI = ci }()
+			if got := call(path+"/attempts", "replay-"+name, create); got.Code != http.StatusConflict {
+				t.Fatalf("wrong workload replay: %d %s", got.Code, got.Body.String())
+			}
+		})
+	}
 	advancePath := path + "/attempts/" + attempt.ID + "/advance"
 	advance := fleet.RunnerAttemptAdvanceRequest{SchemaVersion: fleet.RunnerAttemptSchemaVersion, ExpectedPhase: attempt.CurrentPhase, Revision: attempt.Revision}
 	if noEvidence := call(advancePath, "", advance); noEvidence.Code != http.StatusConflict {
@@ -156,6 +192,17 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	if err != nil || len(lineage) != 1 {
 		t.Fatalf("successor persisted after rejection: attempts=%+v err=%v", lineage, err)
 	}
+	h.github = fakeFleetApplyRunObserver{observation: &githubapp.ApplyRunObservation{RunID: 7, RunAttempt: 1, Status: "completed", Conclusion: "failure", ObservedAt: time.Now().UTC()}}
+	if got := call(path+"/attempts", "recover-eight-proven", recovery); got.Code != http.StatusCreated {
+		t.Fatalf("proven successor: %d %s", got.Code, got.Body.String())
+	}
+	wrongRecoverySHA := *principal.CI
+	wrongRecoverySHA.SHA = strings.Repeat("a", 40)
+	principal.CI = &wrongRecoverySHA
+	if got := call(path+"/attempts", "recover-eight-wrong-sha", recovery); got.Code != http.StatusConflict {
+		t.Fatalf("wrong successor workload SHA replay: %d %s", got.Code, got.Body.String())
+	}
+	principal.CI = &CIIdentity{Provider: "github-actions", Repository: "acme/fleet", RunID: "8", RunAttempt: "1", SHA: commitSHA, Intent: "recover"}
 	forged := principal
 	forged.CI = &CIIdentity{Provider: "github-actions", Repository: "acme/fleet", RunID: "8", RunAttempt: "1", SHA: commitSHA, Intent: "apply"}
 	principal = forged

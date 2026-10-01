@@ -104,6 +104,20 @@ type FleetRunnerAttemptAdmission struct {
 	WorkloadIntent          string `json:"workloadIntent"`
 	WorkloadRunID           string `json:"workloadRunId"`
 	WorkloadSHA             string `json:"workloadSha"`
+	// PredecessorStop is server-observed GitHub terminal evidence. It is only
+	// present on the one supported recovery successor and is covered by the
+	// signed acceptance envelope.
+	PredecessorStop *FleetRunnerPredecessorStopEvidence `json:"predecessorStop,omitempty"`
+}
+
+type FleetRunnerPredecessorStopEvidence struct {
+	PredecessorID       string    `json:"predecessorId"`
+	SourceDispatchRunID string    `json:"sourceDispatchRunId"`
+	RunAttempt          int64     `json:"runAttempt"`
+	WorkflowURL         string    `json:"workflowUrl"`
+	Status              string    `json:"status"`
+	Conclusion          string    `json:"conclusion"`
+	ObservedAt          time.Time `json:"observedAt"`
 }
 
 type OperationAcceptance struct {

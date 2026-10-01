@@ -677,6 +677,7 @@ type fleetRunnerAttemptEnvelope struct {
 	CommitSHA               string `json:"commitSha"`
 	PlanSHA256              string `json:"planSha256"`
 	WorkflowURL             string `json:"workflowUrl"`
+	WorkloadSHA             string `json:"workloadSha,omitempty"`
 	RootAttemptID           string `json:"rootAttemptId"`
 	RetryOf                 string `json:"retryOf,omitempty"`
 	HeartbeatTimeoutSeconds int    `json:"heartbeatTimeoutSeconds"`
@@ -692,7 +693,7 @@ func newAcceptanceEnvelope(a OperationAcceptance, identityID, intentID string, a
 		Fingerprint: a.Fingerprint, OperationID: a.Operation.ID, SagaID: a.Operation.SagaID, DeploymentID: deploymentID,
 		AcceptedAt: acceptedAt.Format(time.RFC3339Nano), Audit: a.Audit}
 	if attempt := a.acceptedFleetRunnerAttempt; attempt != nil {
-		envelope.FleetRunnerAttempt = &fleetRunnerAttemptEnvelope{ID: attempt.ID, PlanID: attempt.PlanID, Attempt: attempt.Attempt, RunnerAttemptID: attempt.RunnerAttemptID, CommitSHA: attempt.CommitSHA, PlanSHA256: attempt.PlanSHA256, WorkflowURL: attempt.WorkflowURL, RootAttemptID: attempt.RootAttemptID, RetryOf: attempt.RetryOf, HeartbeatTimeoutSeconds: attempt.HeartbeatTimeoutSeconds}
+		envelope.FleetRunnerAttempt = &fleetRunnerAttemptEnvelope{ID: attempt.ID, PlanID: attempt.PlanID, Attempt: attempt.Attempt, RunnerAttemptID: attempt.RunnerAttemptID, CommitSHA: attempt.CommitSHA, PlanSHA256: attempt.PlanSHA256, WorkflowURL: attempt.WorkflowURL, WorkloadSHA: attempt.WorkloadSHA, RootAttemptID: attempt.RootAttemptID, RetryOf: attempt.RetryOf, HeartbeatTimeoutSeconds: attempt.HeartbeatTimeoutSeconds}
 	}
 	return envelope
 }

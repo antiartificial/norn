@@ -151,12 +151,19 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	if err := decodeV3Record(stateResponse.Kvs[0].Value, &state); err != nil || state.Version <= 0 {
 		return store.AcceptedOperation{}, fmt.Errorf("fleet runner plan state is corrupt")
 	}
-	attempts, _, err := s.listFleetRunnerAttempts(ctx, admission.PlanID)
+	attempts, attemptRevisions, err := s.listFleetRunnerAttempts(ctx, admission.PlanID)
 	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
 	if err := fleetValidateLineage(attempts); err != nil {
 		return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_lineage_invalid", err.Error())
+	}
+	var preparationResponse *clientv3.GetResponse
+	if len(attempts) > 0 {
+		preparationResponse, err = s.kv.Get(ctx, s.fleetGitHubDispatchPreparationKey(admission.PlanID))
+		if err != nil || len(preparationResponse.Kvs) != 1 {
+			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_dispatch_mismatch", "runner attempt dispatch preparation is unavailable")
+		}
 	}
 	for _, item := range attempts {
 		if item.RunnerAttemptID == admission.RunnerAttemptID {
@@ -178,19 +185,33 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 		if !admission.Resume || admission.WorkloadIntent != "recover" {
 			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_resume_required", "successor must be a protected recovery")
 		}
+		if len(attempts) != 1 || predecessor.Attempt != 1 {
+			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_recovery_limit", "only one protected recovery successor is supported")
+		}
 		if predecessor.Status == "succeeded" {
 			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_complete", "fleet plan already succeeded")
 		}
-		// A control-record cancellation or expired heartbeat does not establish
-		// that the prior provider-changing workflow stopped. No successor may
-		// start until an independently verified exact-workflow stop proof is
-		// bound to this admission and checked in the same transaction.
-		return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_external_stop_unproven", "predecessor workflow termination or reconciliation is unproven")
+		proof := admission.PredecessorStop
+		if proof == nil || !store.ValidateFleetRunnerPredecessorStopEvidence(*proof, predecessor.ID, admission.SourceDispatchRunID) || proof.WorkflowURL != dispatch.WorkflowURL || !strings.HasSuffix(predecessor.RunnerAttemptID, ":"+admission.SourceDispatchRunID+":"+strconv.FormatInt(proof.RunAttempt, 10)) {
+			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_external_stop_unproven", "predecessor workflow termination or reconciliation is unproven")
+		}
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	item := fleet.RunnerAttempt{SchemaVersion: fleet.RunnerAttemptSchemaVersion, ID: admission.AttemptID, PlanID: admission.PlanID, Attempt: len(attempts) + 1, RunnerAttemptID: admission.RunnerAttemptID, Status: "queued", CurrentPhase: fleetInitialPhase(plan.Operation.Payload), CommitSHA: admission.CommitSHA, PlanSHA256: admission.PlanSHA256, WorkflowURL: admission.WorkflowURL, RootAttemptID: admission.AttemptID, HeartbeatTimeoutSeconds: admission.HeartbeatTimeoutSeconds, Revision: 1, StartedAt: now, HeartbeatAt: now, HeartbeatExpiresAt: now.Add(time.Duration(admission.HeartbeatTimeoutSeconds) * time.Second), UpdatedAt: now}
+	item := fleet.RunnerAttempt{SchemaVersion: fleet.RunnerAttemptSchemaVersion, ID: admission.AttemptID, PlanID: admission.PlanID, Attempt: len(attempts) + 1, RunnerAttemptID: admission.RunnerAttemptID, Status: "queued", CurrentPhase: fleetInitialPhase(plan.Operation.Payload), CommitSHA: admission.CommitSHA, PlanSHA256: admission.PlanSHA256, WorkflowURL: admission.WorkflowURL, WorkloadSHA: admission.WorkloadSHA, RootAttemptID: admission.AttemptID, HeartbeatTimeoutSeconds: admission.HeartbeatTimeoutSeconds, Revision: 1, StartedAt: now, HeartbeatAt: now, HeartbeatExpiresAt: now.Add(time.Duration(admission.HeartbeatTimeoutSeconds) * time.Second), UpdatedAt: now}
+	if len(attempts) == 1 {
+		predecessor := attempts[0]
+		item.RootAttemptID, item.RetryOf = predecessor.RootAttemptID, predecessor.ID
+		// Destructive/drain paths re-prove prechange before mutation. A proven
+		// non-destructive successor resumes the first unproven predecessor phase.
+		if !fleetPlanRequiresDrain(plan.Operation.Payload) {
+			item.CurrentPhase = predecessor.CurrentPhase
+		}
+	}
 	puts := make([]clientv3.Op, 0, 6)
 	compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.opKey(admission.PlanID)), "=", planRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerDispatchKey(admission.PlanID)), "=", dispatchResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerPlanStateKey(admission.PlanID)), "=", stateResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptKey(admission.PlanID, item.ID)), "=", 0)}
+	if preparationResponse != nil {
+		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetGitHubDispatchPreparationKey(admission.PlanID)), "=", preparationResponse.Kvs[0].ModRevision))
+	}
 	store.BindAcceptedFleetRunnerAttempt(&acceptance, &item)
 	acceptedAt := now
 	identityID, intentID := uuid.NewString(), uuid.NewString()
@@ -213,6 +234,16 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	}
 	nextState, _ := json.Marshal(v3FleetRunnerPlanState{Version: state.Version + 1})
 	puts = append(puts, clientv3.OpPut(key, string(acceptanceRecord)), clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(operationRecord)), clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, acceptedAt, acceptance.Operation.ID), acceptance.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(acceptance.Operation.ID), key), clientv3.OpPut(s.fleetRunnerAttemptKey(admission.PlanID, item.ID), string(attemptRecord)), clientv3.OpPut(s.fleetRunnerPlanStateKey(admission.PlanID), string(nextState)))
+	if len(attempts) == 1 {
+		predecessor := attempts[0]
+		predecessor.Status, predecessor.LastError, predecessor.Revision, predecessor.UpdatedAt, predecessor.FinishedAt = "failed", "server-observed GitHub workflow "+admission.PredecessorStop.Conclusion, predecessor.Revision+1, now, &now
+		encodedPredecessor, marshalErr := json.Marshal(predecessor)
+		if marshalErr != nil {
+			return store.AcceptedOperation{}, marshalErr
+		}
+		puts = append(puts, clientv3.OpPut(s.fleetRunnerAttemptKey(admission.PlanID, predecessor.ID), string(encodedPredecessor)))
+		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetRunnerAttemptKey(admission.PlanID, predecessor.ID)), "=", attemptRevisions[predecessor.ID]))
+	}
 	txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
 	if err != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}

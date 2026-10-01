@@ -66,6 +66,9 @@ func normalizeFleetRunnerAttemptAcceptance(acceptance *OperationAcceptance) erro
 	if admission.WorkloadIntent == "recover" && !admission.Resume {
 		return &AcceptanceValidationError{Reason: "fleet recovery workload must explicitly resume a prior attempt"}
 	}
+	if !admission.Resume && admission.PredecessorStop != nil {
+		return &AcceptanceValidationError{Reason: "initial fleet runner attempt cannot carry predecessor termination evidence"}
+	}
 	if value, _ := acceptance.Operation.Payload["attemptId"].(string); value != admission.AttemptID {
 		return &AcceptanceValidationError{Reason: "fleet runner-attempt operation payload must link its attempt"}
 	}
@@ -83,10 +86,44 @@ func normalizeFleetRunnerAttemptAcceptance(acceptance *OperationAcceptance) erro
 			return &AcceptanceValidationError{Reason: "fleet runner-attempt operation payload differs from typed admission"}
 		}
 	}
+	if err := requireFleetPredecessorStopBinding(admission.PredecessorStop, acceptance.Operation.Payload, acceptance.Semantics); err != nil {
+		return &AcceptanceValidationError{Reason: err.Error()}
+	}
 	if _, exists := acceptance.Operation.Payload["dispatchNonce"]; exists || containsJSONKey(acceptance.Semantics, "dispatchNonce") {
 		return &AcceptanceValidationError{Reason: "raw fleet dispatch nonce cannot enter signed or public acceptance data"}
 	}
 	return nil
+}
+
+func requireFleetPredecessorStopBinding(proof *FleetRunnerPredecessorStopEvidence, payload, semantics map[string]interface{}) error {
+	payloadValue, payloadPresent := payload["predecessorStop"]
+	semanticsValue, semanticsPresent := semantics["predecessorStop"]
+	if proof == nil {
+		if (payloadPresent && payloadValue != nil) || (semanticsPresent && semanticsValue != nil) {
+			return fmt.Errorf("fleet predecessor stop proof is not admitted")
+		}
+		return nil
+	}
+	if !payloadPresent || !semanticsPresent || !jsonEqual(payloadValue, proof) || !jsonEqual(semanticsValue, proof) {
+		return fmt.Errorf("fleet predecessor stop proof differs from typed admission")
+	}
+	return nil
+}
+
+func validFleetRunnerPredecessorStop(proof FleetRunnerPredecessorStopEvidence, predecessorID, sourceDispatchRunID string) bool {
+	if proof.PredecessorID != predecessorID || proof.SourceDispatchRunID != sourceDispatchRunID || proof.RunAttempt <= 0 || proof.Status != "completed" || (proof.Conclusion != "failure" && proof.Conclusion != "cancelled" && proof.Conclusion != "timed_out") || proof.ObservedAt.IsZero() || time.Since(proof.ObservedAt) > 5*time.Minute || proof.ObservedAt.After(time.Now().UTC().Add(time.Minute)) {
+		return false
+	}
+	parsed, err := url.Parse(proof.WorkflowURL)
+	return err == nil && parsed.Scheme == "https" && parsed.Host == "github.com" && parsed.User == nil && len(proof.WorkflowURL) <= 2048
+}
+
+// ValidateFleetRunnerPredecessorStopEvidence is the backend-specific recovery
+// gate for a server-observed protected workflow termination. PostgreSQL keeps
+// its established recovery contract; the etcd Fleet aggregate requires this
+// additional proof before it admits its single successor.
+func ValidateFleetRunnerPredecessorStopEvidence(proof FleetRunnerPredecessorStopEvidence, predecessorID, sourceDispatchRunID string) bool {
+	return validFleetRunnerPredecessorStop(proof, predecessorID, sourceDispatchRunID)
 }
 
 // NormalizeFleetRunnerAttemptAcceptance validates the typed runner-attempt
@@ -119,6 +156,13 @@ func trimFleetRunnerAttemptAdmission(admission *FleetRunnerAttemptAdmission) {
 	admission.WorkloadIntent = strings.TrimSpace(admission.WorkloadIntent)
 	admission.WorkloadRunID = strings.TrimSpace(admission.WorkloadRunID)
 	admission.WorkloadSHA = strings.TrimSpace(admission.WorkloadSHA)
+	if admission.PredecessorStop != nil {
+		admission.PredecessorStop.PredecessorID = strings.TrimSpace(admission.PredecessorStop.PredecessorID)
+		admission.PredecessorStop.SourceDispatchRunID = strings.TrimSpace(admission.PredecessorStop.SourceDispatchRunID)
+		admission.PredecessorStop.WorkflowURL = strings.TrimSpace(admission.PredecessorStop.WorkflowURL)
+		admission.PredecessorStop.Status = strings.TrimSpace(admission.PredecessorStop.Status)
+		admission.PredecessorStop.Conclusion = strings.TrimSpace(admission.PredecessorStop.Conclusion)
+	}
 }
 
 func lowerHex(value string, length int) bool {
@@ -332,7 +376,7 @@ func verifyImmutableFleetRunnerAttempt(expected *FleetRunnerAttemptAdmission, ou
 	if output == nil || actual == nil {
 		return fmt.Errorf("accepted fleet runner attempt is missing")
 	}
-	if output.ID != actual.ID || output.PlanID != actual.PlanID || output.Attempt != actual.Attempt || output.RunnerAttemptID != actual.RunnerAttemptID || output.CommitSHA != actual.CommitSHA || output.PlanSHA256 != actual.PlanSHA256 || output.WorkflowURL != actual.WorkflowURL || output.RootAttemptID != actual.RootAttemptID || output.RetryOf != actual.RetryOf || output.HeartbeatTimeoutSeconds != actual.HeartbeatTimeoutSeconds {
+	if output.ID != actual.ID || output.PlanID != actual.PlanID || output.Attempt != actual.Attempt || output.RunnerAttemptID != actual.RunnerAttemptID || output.CommitSHA != actual.CommitSHA || output.PlanSHA256 != actual.PlanSHA256 || output.WorkflowURL != actual.WorkflowURL || (output.WorkloadSHA != "" && output.WorkloadSHA != actual.WorkloadSHA) || output.RootAttemptID != actual.RootAttemptID || output.RetryOf != actual.RetryOf || output.HeartbeatTimeoutSeconds != actual.HeartbeatTimeoutSeconds {
 		return fmt.Errorf("signed fleet runner-attempt output differs from durable lineage")
 	}
 	if actual.PlanID != expected.PlanID || actual.RunnerAttemptID != expected.RunnerAttemptID || actual.CommitSHA != expected.CommitSHA || actual.PlanSHA256 != expected.PlanSHA256 || actual.WorkflowURL != expected.WorkflowURL || actual.HeartbeatTimeoutSeconds != expected.HeartbeatTimeoutSeconds {
