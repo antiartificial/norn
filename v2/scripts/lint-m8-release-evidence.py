@@ -48,6 +48,10 @@ def main() -> None:
             and candidate["mini_import_signature_verified"] is True
             and candidate["mini_passive_preflight"] == "blocked_legacy_schema_metadata_absent",
             "signed release and blocked Mini preflight must retain their exact evidence boundary")
+    receipt = ROOT / candidate["mini_preflight_receipt"]
+    require(receipt.is_file() and candidate["commit"] in receipt.read_text()
+            and "schema metadata is absent" in receipt.read_text(),
+            "Mini preflight claim requires its dated command/result receipt")
     require(candidate["commit"] != mini["commit"],
             "signed candidate must not be presented as Mini live runtime")
     require(not mini["installed_digest_verified"] and not mini["fleet_configured"],

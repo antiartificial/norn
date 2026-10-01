@@ -12,6 +12,7 @@
       "asset_count": 16,
       "mini_import_signature_verified": true,
       "mini_passive_preflight": "blocked_legacy_schema_metadata_absent",
+      "mini_preflight_receipt": "docs/v3/m5-mini-signed-preflight-2026-10-01.md",
       "evidence_class": "signed_runtime_candidate"
     },
     "current_source": {
