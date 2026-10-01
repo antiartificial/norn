@@ -89,6 +89,38 @@ func ReadPhaseEvidence(ctx context.Context, reader archive.Reader, j Journal, re
 	return data, nil
 }
 
+// ReadProposedPhaseEvidence reads evidence that has been retained for the
+// current edge but has not yet been committed into the journal. Coordinators
+// use this before an external effect: accepting caller-supplied proof bytes
+// would make an archive digest a mere assertion rather than recovery evidence.
+func ReadProposedPhaseEvidence(ctx context.Context, reader archive.Reader, j Journal, ref PhaseEvidenceReference) ([]byte, error) {
+	if reader == nil {
+		return nil, fmt.Errorf("%w: missing archive reader", ErrTransition)
+	}
+	if err := j.Validate(); err != nil {
+		return nil, err
+	}
+	want, err := NewPhaseEvidenceReference(j, ref.NextPhase, ref.EvidenceSHA256)
+	if err != nil || want != ref {
+		return nil, fmt.Errorf("%w: proposed phase reference differs from journal", ErrTransition)
+	}
+	key, err := PhaseEvidenceKey(j, ref.NextPhase)
+	if err != nil {
+		return nil, err
+	}
+	data, info, err := reader.Get(ctx, key, maxPhaseEvidenceBytes)
+	if err != nil {
+		return nil, err
+	}
+	if info.Key != key || info.SHA256 != ref.EvidenceSHA256 || info.Size != int64(len(data)) || int64(len(data)) > maxPhaseEvidenceBytes || digestBytes(data) != ref.EvidenceSHA256 {
+		return nil, fmt.Errorf("%w: proposed phase evidence identity differs", archive.ErrObjectCorrupt)
+	}
+	if err := reader.Verify(ctx, info); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 // VerifyJournalEvidence checks that every referenced phase remains readable
 // from the archive. It verifies the byte chain only; effect-specific proof
 // still belongs to an independent coordinator.
