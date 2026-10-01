@@ -55,7 +55,46 @@ type ActivationEffect interface {
 // and reject a stale current value.
 type ActivationJournal interface {
 	LoadActivationJournal(context.Context, string) (Journal, error)
-	AdvanceActivationJournal(context.Context, Journal, PhaseEvidenceReference) (Journal, error)
+	AdvanceActivationJournal(context.Context, Journal, *VerifiedActivationCommit) (Journal, error)
+}
+
+// VerifiedActivationCommit is an in-process capability minted only after an
+// exact installed-generation readback. It is the only value a future claimed
+// adapter may accept for the Activate journal CAS; callers cannot assemble one
+// from decoded proof bytes or an evidence reference.
+type VerifiedActivationCommit struct {
+	intentSHA      string
+	journalRev     uint64
+	reference      PhaseEvidenceReference
+	authorityEpoch uint64
+	claim          OperationClaimBinding
+	consumer       ConsumerGeneration
+	sourceFence    ExternalEffect
+	finalSync      ExternalEffect
+	marker         *struct{}
+}
+
+// ValidFor proves this exact pre-activation journal and evidence edge produced
+// the capability. Adapters must still CAS their durable journal row/value.
+func (c *VerifiedActivationCommit) ValidFor(j Journal) bool {
+	if c == nil || c.marker == nil || j.Phase != PhaseFinalSync || j.Revision != c.journalRev || c.reference.NextPhase != PhaseActivate {
+		return false
+	}
+	digest, err := IntentSHA256(j.Intent)
+	if err != nil || digest != c.intentSHA || c.authorityEpoch != j.Intent.AuthorityGeneration || c.claim.OperationID != j.Intent.OperationID || c.claim.OwnerID == "" || c.claim.Generation == 0 || c.consumer.Generation == 0 || !validDigest(c.consumer.CredentialDigest) || !sameBinding(c.consumer.Target, j.Intent.Target) || c.sourceFence.ID == "" || !validDigest(c.sourceFence.SHA256) || c.finalSync.ID == "" || !validDigest(c.finalSync.SHA256) {
+		return false
+	}
+	want, err := NewPhaseEvidenceReference(j, PhaseActivate, c.reference.EvidenceSHA256)
+	return err == nil && want == c.reference
+}
+
+// EvidenceReference returns the bound immutable proof reference only from a
+// valid capability. It is safe to copy, but cannot authorize a CAS by itself.
+func (c *VerifiedActivationCommit) EvidenceReference() (PhaseEvidenceReference, bool) {
+	if c == nil || c.marker == nil {
+		return PhaseEvidenceReference{}, false
+	}
+	return c.reference, true
 }
 
 // ActivationCoordinator only owns the FinalSync -> Activate boundary. The
@@ -154,7 +193,11 @@ func (c ActivationCoordinator) ResumeActivation(ctx context.Context, operationID
 			return Journal{}, ErrActivationBlocked
 		}
 	}
-	next, err := c.Journal.AdvanceActivationJournal(ctx, j, ref)
+	commit, err := newVerifiedActivationCommit(j, ref, proof, req)
+	if err != nil {
+		return Journal{}, err
+	}
+	next, err := c.Journal.AdvanceActivationJournal(ctx, j, commit)
 	if err != nil {
 		return Journal{}, fmt.Errorf("%w: commit activation: %v", ErrActivationBlocked, err)
 	}
@@ -162,6 +205,25 @@ func (c ActivationCoordinator) ResumeActivation(ctx context.Context, operationID
 		return Journal{}, ErrActivationBlocked
 	}
 	return next, nil
+}
+
+func newVerifiedActivationCommit(j Journal, ref PhaseEvidenceReference, proof *VerifiedPhaseProof, request ActivationRequest) (*VerifiedActivationCommit, error) {
+	if proof == nil || !proof.Valid() || !proofMatchesActivationRequest(j, proof, request) {
+		return nil, ErrActivationBlocked
+	}
+	intentSHA, err := IntentSHA256(j.Intent)
+	if err != nil {
+		return nil, ErrActivationBlocked
+	}
+	return &VerifiedActivationCommit{intentSHA: intentSHA, journalRev: j.Revision, reference: ref, authorityEpoch: request.AuthorityEpoch, claim: request.Claim, consumer: request.Consumer, sourceFence: request.SourceFence, finalSync: request.FinalSync, marker: &struct{}{}}, nil
+}
+
+func proofMatchesActivationRequest(j Journal, proof *VerifiedPhaseProof, request ActivationRequest) bool {
+	if proof.Phase() != PhaseActivate || proof.JournalRevision() != j.Revision || request.OperationID != j.Intent.OperationID || request.AuthorityEpoch != j.Intent.AuthorityGeneration {
+		return false
+	}
+	want, err := activationRequest(j, proof)
+	return err == nil && want == request
 }
 
 func journalBeforeActivation(j Journal) Journal {

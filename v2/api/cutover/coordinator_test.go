@@ -143,6 +143,46 @@ func TestJournalBeforeActivationDoesNotMutateCommittedJournal(t *testing.T) {
 	}
 }
 
+func TestVerifiedActivationCommitRejectsForgeryAndBindingDrift(t *testing.T) {
+	j := finalSyncJournal(t)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	pub, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ref := signedActivationProof(t, j, private, now, 42)
+	proof, err := activationVerifier(pub, now).VerifyPhaseProof(context.Background(), j, ref, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := activationRequest(j, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := newVerifiedActivationCommit(j, ref, proof, request)
+	if err != nil || !commit.ValidFor(j) {
+		t.Fatalf("verified commit: commit=%v err=%v", commit, err)
+	}
+	if _, ok := (&VerifiedActivationCommit{}).EvidenceReference(); ok || (&VerifiedActivationCommit{}).ValidFor(j) {
+		t.Fatal("unminted activation commit was accepted")
+	}
+	drifted := j
+	drifted.Revision++
+	if commit.ValidFor(drifted) {
+		t.Fatal("commit accepted a different journal revision")
+	}
+	otherRef := ref
+	otherRef.EvidenceSHA256 = strings.Repeat("e", 64)
+	if got, ok := commit.EvidenceReference(); !ok || got != ref || got == otherRef {
+		t.Fatalf("commit reference binding got=%+v ok=%v", got, ok)
+	}
+	wrongRequest := request
+	wrongRequest.Consumer.Generation++
+	if _, err := newVerifiedActivationCommit(j, ref, proof, wrongRequest); !errors.Is(err, ErrActivationBlocked) {
+		t.Fatalf("mismatched consumer request minted commit: %v", err)
+	}
+}
+
 func TestActivationCoordinatorFailsClosedWithoutRetainedVerifiedPermit(t *testing.T) {
 	j := finalSyncJournal(t)
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -247,9 +287,16 @@ func (m *memoryActivationJournal) LoadActivationJournal(_ context.Context, id st
 	}
 	return m.journal, nil
 }
-func (m *memoryActivationJournal) AdvanceActivationJournal(_ context.Context, current Journal, ref PhaseEvidenceReference) (Journal, error) {
+func (m *memoryActivationJournal) AdvanceActivationJournal(_ context.Context, current Journal, commit *VerifiedActivationCommit) (Journal, error) {
 	if current.Revision != m.journal.Revision || current.Phase != m.journal.Phase {
 		return Journal{}, errors.New("cas lost")
+	}
+	if !commit.ValidFor(current) {
+		return Journal{}, errors.New("unverified activation commit")
+	}
+	ref, ok := commit.EvidenceReference()
+	if !ok {
+		return Journal{}, errors.New("missing activation evidence")
 	}
 	next, err := current.AdvanceWithEvidence(ref)
 	if err != nil {
