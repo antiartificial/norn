@@ -69,11 +69,14 @@ type PhaseProof struct {
 	Source                DatabaseBindingGeneration `json:"source"`
 	Target                DatabaseBindingGeneration `json:"target"`
 	WriterInventorySHA256 string                    `json:"writerInventorySha256"`
-	Effects               []ExternalEffect          `json:"effects"`
-	ObserverID            string                    `json:"observerId"`
-	ObservedAt            time.Time                 `json:"observedAt"`
-	ExpiresAt             time.Time                 `json:"expiresAt"`
-	Signature             ProofSignature            `json:"signature"`
+	// Consumer is populated only for activation proofs. It binds the external
+	// authority's permit to one target credential generation.
+	Consumer   ConsumerGeneration `json:"consumer,omitempty"`
+	Effects    []ExternalEffect   `json:"effects"`
+	ObserverID string             `json:"observerId"`
+	ObservedAt time.Time          `json:"observedAt"`
+	ExpiresAt  time.Time          `json:"expiresAt"`
+	Signature  ProofSignature     `json:"signature"`
 }
 
 // DatabaseBindingGeneration purposefully mirrors only the existing immutable
@@ -104,11 +107,17 @@ type PhaseProofVerifier struct {
 // packages outside cutover, so callers cannot substitute decoded JSON for a
 // verifier result.
 type VerifiedPhaseProof struct {
-	proof  PhaseProof
-	marker *struct{}
+	proof            PhaseProof
+	authorizesEffect bool
+	marker           *struct{}
 }
 
 func (p *VerifiedPhaseProof) Valid() bool { return p != nil && p.marker != nil }
+
+// AuthorizesEffect is false for an expired proof recovered from a committed
+// edge. Historical proof verification can identify a boundary, never replay
+// an external effect.
+func (p *VerifiedPhaseProof) AuthorizesEffect() bool { return p.Valid() && p.authorizesEffect }
 func (p *VerifiedPhaseProof) Phase() Phase {
 	if !p.Valid() {
 		return ""
@@ -145,18 +154,45 @@ func (v PhaseProofVerifier) VerifyPhaseProof(ctx context.Context, j Journal, ref
 	if err := json.Unmarshal(raw, &proof); err != nil {
 		return nil, fmt.Errorf("%w: decode", ErrPhaseProofInvalid)
 	}
-	if err := v.verify(ctx, j, ref, proof); err != nil {
+	if err := v.verify(ctx, j, ref, proof, true); err != nil {
+		return nil, err
+	}
+	return &VerifiedPhaseProof{proof: cloneProof(proof), authorizesEffect: true, marker: &struct{}{}}, nil
+}
+
+// VerifyHistoricalPhaseProof validates retained proof bytes for recovery. It
+// may describe a committed journal edge or an externally applied effect whose
+// journal CAS response was lost. Expiry prevents new effects but does not
+// erase this evidence; the caller must still perform an exact current readback.
+func (v PhaseProofVerifier) VerifyHistoricalPhaseProof(ctx context.Context, j Journal, ref PhaseEvidenceReference, raw []byte) (*VerifiedPhaseProof, error) {
+	if v.Acceptance == nil || v.Readback == nil || len(v.TrustedObserverKey) != ed25519.PublicKeySize || v.TrustedObserverKeyID == "" || len(raw) == 0 {
+		return nil, ErrPhaseProofInvalid
+	}
+	if err := j.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: journal: %v", ErrPhaseProofInvalid, err)
+	}
+	if err := validPhaseProofReference(j, ref, raw); err != nil {
+		return nil, err
+	}
+	var proof PhaseProof
+	if err := json.Unmarshal(raw, &proof); err != nil {
+		return nil, fmt.Errorf("%w: decode", ErrPhaseProofInvalid)
+	}
+	if err := v.verify(ctx, j, ref, proof, false); err != nil {
 		return nil, err
 	}
 	return &VerifiedPhaseProof{proof: cloneProof(proof), marker: &struct{}{}}, nil
 }
 
-func (v PhaseProofVerifier) verify(ctx context.Context, j Journal, ref PhaseEvidenceReference, p PhaseProof) error {
+func (v PhaseProofVerifier) verify(ctx context.Context, j Journal, ref PhaseEvidenceReference, p PhaseProof, requireUnexpired bool) error {
 	now := time.Now().UTC()
 	if v.Now != nil {
 		now = v.Now().UTC()
 	}
-	if p.SchemaVersion != PhaseProofSchema || p.NextPhase != ref.NextPhase || p.JournalRevision != j.Revision || p.JournalReceiptSHA256 != j.Receipts[j.Phase] || p.AuthorityEpoch != j.Intent.AuthorityGeneration || p.CatalogRevision != j.Intent.CatalogRevision || p.CatalogDigest != j.Intent.CatalogDigest || p.WriterInventorySHA256 != j.Intent.WriterInventorySHA256 || p.Accepted.OperationID != j.Intent.OperationID || p.Accepted.OperationKind != "database.cutover" || p.Accepted.App != j.Intent.App || p.Accepted.CandidateRelease != j.Intent.CandidateRelease || p.Accepted.IntentSHA256 != ref.IntentSHA256 || p.Claim.OperationID != j.Intent.OperationID || p.Claim.OwnerID == "" || p.Claim.Generation == 0 || p.ObserverID == "" || !p.ObservedAt.Before(p.ExpiresAt) || now.Before(p.ObservedAt) || !now.Before(p.ExpiresAt) || p.Signature.Algorithm != "ed25519" || p.Signature.KeyID != v.TrustedObserverKeyID {
+	if p.SchemaVersion != PhaseProofSchema || p.NextPhase != ref.NextPhase || p.JournalRevision != j.Revision || p.JournalReceiptSHA256 != j.Receipts[j.Phase] || p.AuthorityEpoch != j.Intent.AuthorityGeneration || p.CatalogRevision != j.Intent.CatalogRevision || p.CatalogDigest != j.Intent.CatalogDigest || p.WriterInventorySHA256 != j.Intent.WriterInventorySHA256 || p.Accepted.OperationID != j.Intent.OperationID || p.Accepted.OperationKind != "database.cutover" || p.Accepted.App != j.Intent.App || p.Accepted.CandidateRelease != j.Intent.CandidateRelease || p.Accepted.IntentSHA256 != ref.IntentSHA256 || p.Claim.OperationID != j.Intent.OperationID || p.Claim.OwnerID == "" || p.Claim.Generation == 0 || p.ObserverID == "" || !p.ObservedAt.Before(p.ExpiresAt) || now.Before(p.ObservedAt) || p.Signature.Algorithm != "ed25519" || p.Signature.KeyID != v.TrustedObserverKeyID {
+		return ErrPhaseProofInvalid
+	}
+	if requireUnexpired && !now.Before(p.ExpiresAt) {
 		return ErrPhaseProofInvalid
 	}
 	if !sameBinding(p.Source, j.Intent.Source) || !sameBinding(p.Target, j.Intent.Target) || !validDigest(p.Accepted.CanonicalSHA256) || digestBytes(p.Accepted.CanonicalBytes) != p.Accepted.CanonicalSHA256 {
@@ -210,6 +246,10 @@ func digestBytes(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeTo
 // observer signature and orders effects by their stable ID before encoding.
 func CanonicalPhaseProof(p PhaseProof) ([]byte, error) {
 	p.Signature = ProofSignature{}
+	// PhaseProof is frequently retained for an effect retry/readback after it
+	// has been signed. Sorting a shallow-copied slice would mutate that caller
+	// state and could turn a later signature check into an order-dependent race.
+	p.Effects = append([]ExternalEffect(nil), p.Effects...)
 	sort.Slice(p.Effects, func(i, j int) bool { return p.Effects[i].ID < p.Effects[j].ID })
 	return json.Marshal(p)
 }
