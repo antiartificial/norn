@@ -18,6 +18,8 @@ export interface ActivityEntry { id: number; event: HubEvent; capturedAt: string
 interface AppActionAcceptance { sagaId?: string; operationId?: string; status?: string; replayed?: boolean; message?: string }
 
 const acceptedStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'canceled'])
+const releasePipelineFeatures = ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1']
+const releasePipelineEndpoints = ['releasePreflight', 'releaseDeployments', 'releaseQualifications', 'releasePromotions', 'releaseRollbacks']
 
 function validateAppActionAcceptance(value: AppActionAcceptance): AppActionAcceptance {
   if (!value.operationId || !value.status || !acceptedStatuses.has(value.status)) {
@@ -280,7 +282,8 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const fleetAvailable = ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'].every((feature) => capabilities.data?.features.includes(feature))
   const appRecoveryAvailable = capabilities.data?.features.includes('durable-app-recovery-v1') === true
   const environment = capabilities.data?.environment ?? { id: 'development', profile: 'development' }
-  const releasePipelineAvailable = ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'].every((feature) => capabilities.data?.features.includes(feature))
+  const releasePipelineAvailable = releasePipelineFeatures.every((feature) => capabilities.data?.features.includes(feature))
+    && releasePipelineEndpoints.every((endpoint) => Boolean(capabilities.data?.endpoints?.[endpoint]))
   const grantedScopes = capabilities.data?.auth?.principal?.scopes ?? []
   const catalogWritable = !capabilities.data?.features.includes('app-catalog-read-only-v1')
   // Fleet authority is intentionally scoped: only a write grant may expose
