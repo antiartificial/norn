@@ -58,7 +58,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.26.6
-          cache-dependency-path: v2/infra/fleet-pilot/hello-norn-mysql/go.sum
+          cache-dependency-path: |
+            v2/api/go.sum
+            v2/infra/fleet-pilot/hello-norn-mysql/go.sum
       - name: Verify pilot Go workload
         working-directory: v2/infra/fleet-pilot/hello-norn-mysql
         run: |
@@ -68,6 +70,29 @@ jobs:
       - name: Run pilot exercise tests
         working-directory: v2/infra/fleet-pilot
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_exercise.py -v
+      - name: Install pinned etcdctl
+        env:
+          ETCD_ARCHIVE_SHA256: eff6ac621d41711085d0f38fab17d8fa3705f6326c3ff11301a1f5a71fc94edd
+          ETCD_VERSION: 3.5.17
+        run: |
+          set -euo pipefail
+          archive="etcd-v${ETCD_VERSION}-linux-amd64.tar.gz"
+          url="https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/${archive}"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/$archive" "$url"
+          printf '%s  %s\n' "$ETCD_ARCHIVE_SHA256" "$RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$RUNNER_TEMP/$archive" \
+            --directory "$RUNNER_TEMP" "etcd-v${ETCD_VERSION}-linux-amd64/etcdctl"
+          tool_dir="$RUNNER_TEMP/etcd-tools"
+          mkdir -p "$tool_dir"
+          install -m 0755 "$RUNNER_TEMP/etcd-v${ETCD_VERSION}-linux-amd64/etcdctl" "$tool_dir/etcdctl"
+          echo "$tool_dir" >> "$GITHUB_PATH"
+      - name: Qualify three-member Fleet control store
+        env:
+          NORN_ETCD_IMAGE: quay.io/coreos/etcd@sha256:a055da833a7c013b836ed0822e8ec1f99b059658be255ad8d0fcd31b635ae3d6
+        timeout-minutes: 10
+        run: |
+          docker pull "$NORN_ETCD_IMAGE"
+          bash v2/scripts/test-etcd-three-member-fleet
 
   openapi:
     name: OpenAPI contract
