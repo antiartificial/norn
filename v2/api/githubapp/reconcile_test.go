@@ -21,6 +21,45 @@ func TestApplyRunDisplayTitleUsesNonceContract(t *testing.T) {
 	}
 }
 
+func TestVerifyApplyRunAcceptsWorkflowRunNameAndRetainsProtectedIdentity(t *testing.T) {
+	planID := "11111111-1111-4111-8111-111111111111"
+	nonce := strings.Repeat("a", 64)
+	headSHA := strings.Repeat("b", 40)
+	title := fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", planID, nonce)
+	approved := &Dispatch{ApprovedHeadSHA: headSHA}
+	client := testClient(t, http.NotFoundHandler())
+	run := &applyRun{
+		ID: 93, HTMLURL: "https://github.com/acme/norn-fleet/actions/runs/93",
+		Event: "workflow_dispatch", HeadSHA: headSHA, HeadBranch: "main",
+		Path: ".github/workflows/apply.yml@main", Name: title, DisplayTitle: title,
+	}
+	run.Actor.Login, run.Actor.Type = "norn[bot]", "Bot"
+	if err := client.verifyApplyRun(run, planID, "production/nyc3", approved, nonce, "norn[bot]"); err != nil {
+		t.Fatalf("live workflow run-name rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*applyRun){
+		"workflow path and ref": func(candidate *applyRun) { candidate.Path = ".github/workflows/apply.yml@feature" },
+		"GitHub App actor":      func(candidate *applyRun) { candidate.Actor.Login = "other[bot]" },
+		"plan": func(candidate *applyRun) {
+			candidate.DisplayTitle = fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", "other-plan", nonce)
+			candidate.Name = candidate.DisplayTitle
+		},
+		"nonce": func(candidate *applyRun) {
+			candidate.DisplayTitle = fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", planID, strings.Repeat("c", 64))
+			candidate.Name = candidate.DisplayTitle
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := *run
+			mutate(&candidate)
+			if err := client.verifyApplyRun(&candidate, planID, "production/nyc3", approved, nonce, "norn[bot]"); err == nil {
+				t.Fatal("tampered workflow run was accepted")
+			}
+		})
+	}
+}
+
 func TestObserveApplyRunBindsProtectedIdentityAndTerminalState(t *testing.T) {
 	planID := "11111111-1111-4111-8111-111111111111"
 	nonce := strings.Repeat("a", 64)

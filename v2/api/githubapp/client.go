@@ -829,7 +829,7 @@ func (c *Client) verifyApplyRunByNonceHash(run *applyRun, planID, fleetEnvironme
 }
 
 func (c *Client) verifyApplyRunIdentity(run *applyRun, approved *Dispatch, appActor string) error {
-	if run == nil || approved == nil || !canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadSHA != approved.ApprovedHeadSHA || !workflowPathMatches(run.Path, c.cfg.ApplyWorkflow, c.cfg.DefaultBranch) || run.Name != "apply" || run.Actor.Type != "Bot" || run.Actor.Login != appActor {
+	if run == nil || approved == nil || !canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadSHA != approved.ApprovedHeadSHA || !workflowPathMatches(run.Path, c.cfg.ApplyWorkflow, c.cfg.DefaultBranch) || (run.Name != "apply" && run.Name != run.DisplayTitle) || run.Actor.Type != "Bot" || run.Actor.Login != appActor {
 		return fmt.Errorf("GitHub apply run does not match the protected dispatch identity")
 	}
 	return nil
