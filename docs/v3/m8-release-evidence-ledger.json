@@ -13,7 +13,14 @@
       "mini_import_signature_verified": true,
       "mini_passive_preflight": "blocked_legacy_schema_metadata_absent",
       "mini_preflight_receipt": "docs/v3/m5-mini-signed-preflight-2026-10-01.md",
-      "evidence_class": "signed_runtime_candidate"
+      "evidence_class": "signed_runtime_candidate",
+      "all_16_assets_size_sha256_verified": true,
+      "all_four_bundles_ed25519_verified": true,
+      "linux_amd64_archive_sha256": "6b3032b935c6d4d736313409f0a4a440c5f8c58f8104fa31d72762b0fce3c76e",
+      "mini_private_copy_shadow": "passed_actual_legacy_data_no_live_switch",
+      "mini_shadow_receipt": "docs/v3/m5-mini-signed-shadow-2026-10-01.md",
+      "release_api_immutable": true,
+      "asset_verification_receipt": "docs/v3/m8-platform-asset-verification-2026-10-01.md"
     },
     "current_source": {
       "commit": "8a291142677a7b00cc8606e61ac0a6952fff3e5c",
