@@ -5,7 +5,7 @@ set -euo pipefail
 
 write_shadow_env() {
   local output=$1
-  RUNTIME_ENV="$output" PRIVATE_DATABASE_URL="$NORN_REHEARSAL_PRIVATE_DATABASE_URL" AUDIT_SIGNING_KEY="$NORN_AUDIT_SIGNING_KEY" SHADOW_PORT="$NORN_M5_SHADOW_PORT" SHADOW_DB_SESSION="$NORN_M5_SHADOW_DB_SESSION" python3 - <<'PY'
+  RUNTIME_ENV="$output" PRIVATE_DATABASE_URL="$NORN_REHEARSAL_PRIVATE_DATABASE_URL" IDENTITY_KEY="$NORN_M5_SHADOW_IDENTITY_KEY" SHADOW_PORT="$NORN_M5_SHADOW_PORT" SHADOW_DB_SESSION="$NORN_M5_SHADOW_DB_SESSION" python3 - <<'PY'
 import os, re, shlex, stat, urllib.parse
 
 output = os.environ['RUNTIME_ENV']
@@ -13,7 +13,7 @@ database_url = os.environ['PRIVATE_DATABASE_URL']
 parsed = urllib.parse.urlparse(database_url)
 query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
 session = os.environ['SHADOW_DB_SESSION']
-signing_key = os.environ['AUDIT_SIGNING_KEY']
+identity_key = os.environ['IDENTITY_KEY']
 if (parsed.scheme not in ('postgres', 'postgresql') or parsed.hostname is not None
         or parsed.path != '/norn_private' or parsed.fragment
         or set(query) != {'host', 'port', 'sslmode'}
@@ -21,7 +21,7 @@ if (parsed.scheme not in ('postgres', 'postgresql') or parsed.hostname is not No
     raise SystemExit('private database URL does not name the isolated socket target')
 if not re.fullmatch(r'norn-m5-shadow-[0-9a-f]{16}', session):
     raise SystemExit('private database session marker is invalid')
-if len(signing_key) < 32:
+if not re.fullmatch(r'[0-9a-f]{64}', identity_key):
     raise SystemExit('shadow database identity key is unavailable')
 socket_dir = query['host'][0]
 scratch_dir = os.path.dirname(socket_dir)
@@ -46,7 +46,7 @@ runtime_query.append(('application_name', session))
 runtime_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(runtime_query)))
 values = {
     'NORN_DATABASE_URL': runtime_url,
-    'NORN_AUDIT_SIGNING_KEY': signing_key,
+    'NORN_AUDIT_SIGNING_KEY': identity_key,
     'NORN_PORT': os.environ['SHADOW_PORT'],
     'NORN_BIND_ADDR': '127.0.0.1',
     'NORN_STARTUP_MODE': 'passive',
@@ -90,7 +90,7 @@ verify_shadow_schema() {
   # LaunchAgent PID to the HMAC of its exact sourced DSN. This payload is only
   # constructed after store.Connect has pinged PostgreSQL and the passive
   # schema check has completed a read-only transaction.
-  SCHEMA_JSON="$schema_json" DATABASE_URL="$NORN_DATABASE_URL" SIGNING_KEY="$NORN_AUDIT_SIGNING_KEY" EXPECTED_PID="$NORN_M5_SHADOW_PID" EXPECTED_VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
+  SCHEMA_JSON="$schema_json" DATABASE_URL="$NORN_DATABASE_URL" SIGNING_KEY="$NORN_M5_SHADOW_IDENTITY_KEY" EXPECTED_PID="$NORN_M5_SHADOW_PID" EXPECTED_VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
 import hashlib, hmac, json, os
 
 database_url = os.environ['DATABASE_URL']
@@ -127,8 +127,9 @@ remove_scratch() {
 shadow_start() {
   [[ ${NORN_M5_SIGNED_SHADOW_REHEARSAL:-} == 1 ]] || { echo 'shadow handoff requires explicit rehearsal opt-in' >&2; return 2; }
   [[ ${NORN_M5_SHADOW_SESSION:-} == /* && -f ${NORN_M5_SHADOW_SESSION:-} && ! -L ${NORN_M5_SHADOW_SESSION:-} ]] || { echo 'shadow handoff capability is absent' >&2; return 2; }
-  read -r session_label session_port session_token <"$NORN_M5_SHADOW_SESSION"
+  read -r session_label session_port session_token session_identity_key <"$NORN_M5_SHADOW_SESSION"
   [[ $session_label == "${NORN_M5_SHADOW_LABEL:-}" && $session_port == "${NORN_M5_SHADOW_PORT:-}" && $session_token == "${NORN_M5_SHADOW_HANDOFF_TOKEN:-}" ]] || { echo 'shadow handoff capability does not match this run' >&2; return 2; }
+  [[ $session_identity_key =~ ^[0-9a-f]{64}$ ]] || { echo 'shadow handoff identity key is invalid' >&2; return 2; }
   [[ -n ${NORN_REHEARSAL_PRIVATE_DATABASE_URL:-} ]] || { echo 'missing socket-only private database URL' >&2; return 2; }
   [[ ${NORN_M5_SHADOW_LABEL:-} =~ ^com\.norn\.m5\.shadow\.[0-9a-f]{12}\.[0-9a-f]{16}$ ]] || { echo 'shadow label is invalid' >&2; return 2; }
   [[ ${NORN_M5_SHADOW_DB_SESSION:-} == "norn-m5-shadow-${NORN_M5_SHADOW_LABEL##*.}" ]] || { echo 'shadow database session does not match this run' >&2; return 2; }
@@ -153,7 +154,7 @@ PY
   [[ $("$canonical_manifest" verify --release "$NORN_M5_SHADOW_RELEASE" --expected-sha "$NORN_M5_SHADOW_SHA") == signed ]] || { echo 'shadow candidate snapshot no longer verifies as signed' >&2; return 1; }
   "$canonical_artifact" verify --release-dir "$NORN_M5_SHADOW_RELEASE" --public-key "$NORN_M5_SHADOW_PUBLIC_KEY" --quiet
   [[ ${NORN_M5_SHADOW_PLIST:-} != "$HOME/Library/LaunchAgents"/* ]] || { echo 'shadow plist must not use the live LaunchAgents directory' >&2; return 2; }
-  write_shadow_env "$NORN_M5_SHADOW_ENV"
+  NORN_M5_SHADOW_IDENTITY_KEY="$session_identity_key" write_shadow_env "$NORN_M5_SHADOW_ENV"
   printf '#!/usr/bin/env bash\nset -a\n. %q\nset +a\nexec %q\n' "$NORN_M5_SHADOW_ENV" "$NORN_M5_SHADOW_API" >"$NORN_M5_SHADOW_LAUNCHER"
   chmod 700 "$NORN_M5_SHADOW_LAUNCHER"
   PLIST="$NORN_M5_SHADOW_PLIST" LABEL="$NORN_M5_SHADOW_LABEL" LAUNCHER="$NORN_M5_SHADOW_LAUNCHER" python3 - <<'PY'
@@ -199,7 +200,7 @@ PY
   curl -fsS "http://127.0.0.1:$NORN_M5_SHADOW_PORT/api/schema" >"$NORN_M5_SHADOW_ROOT/schema.json"
   local runtime_database_url
   runtime_database_url=$(/bin/bash -c 'set -a; . "$1"; printf %s "$NORN_DATABASE_URL"' _ "$NORN_M5_SHADOW_ENV")
-  NORN_DATABASE_URL="$runtime_database_url" NORN_M5_SHADOW_PID="$shadow_pid" verify_shadow_schema "$NORN_M5_SHADOW_ROOT/schema.json"
+  NORN_DATABASE_URL="$runtime_database_url" NORN_M5_SHADOW_IDENTITY_KEY="$session_identity_key" NORN_M5_SHADOW_PID="$shadow_pid" verify_shadow_schema "$NORN_M5_SHADOW_ROOT/schema.json"
   VERSION_JSON="$NORN_M5_SHADOW_ROOT/version.json" EXPECTED_VERSION="$NORN_M5_SHADOW_VERSION" python3 - <<'PY'
 import json, os
 with open(os.environ['VERSION_JSON'], encoding='utf-8') as source:
@@ -278,6 +279,7 @@ PY
 nonce=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
 label="com.norn.m5.shadow.${sha:0:12}.$nonce"
 db_session="norn-m5-shadow-$nonce"
+identity_key=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 port=$(python3 - <<'PY'
 import socket
 while True:
@@ -289,7 +291,7 @@ hook="$scratch/shadow-hook"
 printf '#!/usr/bin/env bash\nexec %q shadow-start\n' "$0" >"$hook"; chmod 700 "$hook"
 session="$scratch/handoff-capability"
 token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
-printf '%s %s %s\n' "$label" "$port" "$token" >"$session"; chmod 600 "$session"
+printf '%s %s %s %s\n' "$label" "$port" "$token" "$identity_key" >"$session"; chmod 600 "$session"
 bootstrapped="$scratch/bootstrapped"
 runtime_attempted="$scratch/runtime-attempted"
 runtime_passed="$scratch/runtime-passed"
