@@ -13,6 +13,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/etcdstore"
+	"norn/v2/api/fleet"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -105,6 +106,21 @@ func fleetRunnerAcceptance(t *testing.T, adapter *etcdstore.V3OperationStore, pl
 	return request
 }
 
+func verifiedFleetRecoveryAcceptance(t *testing.T, adapter *etcdstore.V3OperationStore, planID, nonce, key, runID string, predecessor *fleet.RunnerAttempt) store.OperationAcceptance {
+	t.Helper()
+	request := fleetRunnerAcceptance(t, adapter, planID, nonce, key, runID, "recover", predecessor.ID)
+	proof := &store.FleetRunnerPredecessorStopEvidence{PredecessorID: predecessor.ID, SourceDispatchRunID: "7", RunAttempt: 1, WorkflowURL: "https://github.com/acme/fleet/actions/runs/7", Status: "completed", Conclusion: "failure", ObservedAt: time.Now().UTC()}
+	request.FleetRunnerAttempt.PredecessorStop = proof
+	request.Operation.Payload["predecessorStop"] = proof
+	request.Semantics["predecessorStop"] = proof
+	var err error
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request
+}
+
 func TestV3FleetRunnerAttemptAcceptanceReplayAndRevisionCASEtcd(t *testing.T) {
 	adapter, _, _ := fleetRunnerEtcdStore(t)
 	plan := fleetRunnerPlan(t, adapter, "scale")
@@ -142,7 +158,7 @@ func TestV3FleetRunnerAttemptAcceptanceReplayAndRevisionCASEtcd(t *testing.T) {
 	}
 }
 
-func TestV3FleetRunnerAttemptRejectsConcurrentRecoveryWithoutStopProofEtcd(t *testing.T) {
+func TestV3FleetRunnerAttemptAllowsOneVerifiedRecoverySuccessorEtcd(t *testing.T) {
 	adapter, client, prefix := fleetRunnerEtcdStore(t)
 	plan := fleetRunnerPlan(t, adapter, "scale")
 	nonce := bindFleetRunnerDispatch(t, adapter, plan)
@@ -162,7 +178,7 @@ func TestV3FleetRunnerAttemptRejectsConcurrentRecoveryWithoutStopProofEtcd(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	requests := []store.OperationAcceptance{fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "recover-a", "8", "recover", root.FleetRunnerAttempt.ID), fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "recover-b", "9", "recover", root.FleetRunnerAttempt.ID)}
+	requests := []store.OperationAcceptance{verifiedFleetRecoveryAcceptance(t, adapter, plan.ID, nonce, "recover-a", "8", root.FleetRunnerAttempt), verifiedFleetRecoveryAcceptance(t, adapter, plan.ID, nonce, "recover-b", "9", root.FleetRunnerAttempt)}
 	start := make(chan struct{})
 	outcomes := make(chan error, 2)
 	var wait sync.WaitGroup
@@ -182,24 +198,32 @@ func TestV3FleetRunnerAttemptRejectsConcurrentRecoveryWithoutStopProofEtcd(t *te
 	close(start)
 	wait.Wait()
 	close(outcomes)
+	accepted := 0
 	rejected := 0
 	for err := range outcomes {
-		var admissionErr *store.FleetRunnerAttemptAdmissionError
-		if errors.As(err, &admissionErr) && admissionErr.Code == "fleet_runner_attempt_external_stop_unproven" {
-			rejected++
+		if err == nil {
+			accepted++
 		} else {
-			t.Fatalf("recovery err=%v", err)
+			rejected++
 		}
 	}
-	if rejected != 2 {
-		t.Fatalf("rejected=%d, want two unproven successors", rejected)
+	if accepted != 1 || rejected != 1 {
+		t.Fatalf("accepted=%d rejected=%d, want one winner", accepted, rejected)
 	}
 	attempts, err := adapter.ListFleetRunnerAttempts(context.Background(), plan.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(attempts) != 1 || attempts[0].ID != root.FleetRunnerAttempt.ID || attempts[0].Status != "queued" || attempts[0].Revision != root.FleetRunnerAttempt.Revision {
+	if len(attempts) != 2 || attempts[0].Attempt != 2 || attempts[0].RetryOf != root.FleetRunnerAttempt.ID || attempts[0].RootAttemptID != root.FleetRunnerAttempt.ID || attempts[1].ID != root.FleetRunnerAttempt.ID || attempts[1].Status != "failed" {
 		t.Fatalf("attempts=%#v", attempts)
+	}
+	if _, err := adapter.Accept(context.Background(), verifiedFleetRecoveryAcceptance(t, adapter, plan.ID, nonce, "recover-third", "10", &attempts[0])); !errors.Is(err, store.ErrFleetRunnerAttemptAdmission) {
+		t.Fatalf("third successor err=%v", err)
+	} else {
+		var admissionErr *store.FleetRunnerAttemptAdmissionError
+		if !errors.As(err, &admissionErr) || admissionErr.Code != "fleet_runner_attempt_recovery_limit" {
+			t.Fatalf("third successor admission=%v", err)
+		}
 	}
 }
 

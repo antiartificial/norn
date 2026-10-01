@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
@@ -27,10 +29,19 @@ import (
 type EtcdFleetRunnerHandler struct {
 	operations *etcdstore.V3OperationStore
 	control    *Handler
+	github     fleetApplyRunObserver
 }
 
-func NewEtcdFleetRunnerHandler(cfg *config.Config, operations *etcdstore.V3OperationStore) *EtcdFleetRunnerHandler {
-	return &EtcdFleetRunnerHandler{operations: operations, control: &Handler{cfg: cfg, operationStore: operations, pipeline: &pipeline.Pipeline{OperationStore: operations}}}
+type fleetApplyRunObserver interface {
+	ObserveApplyRunAttempt(context.Context, string, string, bool, *githubapp.Dispatch, string, int64) (*githubapp.ApplyRunObservation, error)
+}
+
+func NewEtcdFleetRunnerHandler(cfg *config.Config, operations *etcdstore.V3OperationStore, githubClients ...fleetApplyRunObserver) *EtcdFleetRunnerHandler {
+	var github fleetApplyRunObserver
+	if len(githubClients) == 1 {
+		github = githubClients[0]
+	}
+	return &EtcdFleetRunnerHandler{operations: operations, control: &Handler{cfg: cfg, operationStore: operations, pipeline: &pipeline.Pipeline{OperationStore: operations}}, github: github}
 }
 
 func (h *EtcdFleetRunnerHandler) plan(w http.ResponseWriter, r *http.Request) (*model.Operation, bool) {
@@ -102,7 +113,57 @@ func (h *EtcdFleetRunnerHandler) Create(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	admission := &store.FleetRunnerAttemptAdmission{PlanID: plan.ID, AttemptID: uuid.NewString(), RunnerAttemptID: request.RunnerAttemptID, CommitSHA: request.CommitSHA, PlanSHA256: request.PlanSHA256, WorkflowURL: request.WorkflowURL, DispatchNonceSHA256: hashFleetDispatchNonce(request.DispatchNonce), SourceDispatchRunID: request.SourceDispatchRunID, Resume: request.Resume, HeartbeatTimeoutSeconds: request.HeartbeatTimeoutSeconds, WorkloadIntent: principal.CI.Intent, WorkloadRunID: principal.CI.RunID, WorkloadSHA: principal.CI.SHA}
+	attempts, err := h.operations.ListFleetRunnerAttempts(r.Context(), plan.ID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_read_failed", "existing runner attempts could not be read")
+		return
+	}
+	for index := range attempts {
+		item := &attempts[index]
+		if item.RunnerAttemptID == request.RunnerAttemptID && item.CommitSHA == request.CommitSHA && item.PlanSHA256 == request.PlanSHA256 && item.WorkflowURL == request.WorkflowURL {
+			// An exact runner identity is necessary but not sufficient for a
+			// replay: keep the one-time dispatch proof, source run, and recovery
+			// shape bound to the immutable server records as well.
+			binding, bindingErr := h.operations.GetFleetRunnerDispatch(r.Context(), plan.ID)
+			preparation, preparationErr := h.operations.GetFleetGitHubDispatchPreparation(r.Context(), plan.ID)
+			expectedIntent := "apply"
+			if item.Attempt > 1 {
+				expectedIntent = "recover"
+			}
+			workloadSHA := fleetReplayWorkloadSHA(item)
+			if bindingErr != nil || preparationErr != nil || admission.DispatchNonceSHA256 != preparation.DispatchNonceSHA256 || admission.SourceDispatchRunID != strconv.FormatInt(binding.RunID, 10) || request.Resume != (item.Attempt > 1) || principal.CI.Intent != expectedIntent || workloadSHA == "" || principal.CI.SHA != workloadSHA {
+				WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "runner attempt identity is already bound to different protected dispatch input")
+				return
+			}
+			writeJSON(w, item)
+			return
+		}
+	}
+	if len(attempts) > 0 && request.Resume {
+		admission.ExpectedPredecessorID = attempts[0].ID
+		if len(attempts) != 1 || !request.Resume || principal.CI.Intent != "recover" || h.github == nil {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_external_stop_unproven", "a single verified protected recovery successor is required")
+			return
+		}
+		preparation, prepErr := h.operations.GetFleetGitHubDispatchPreparation(r.Context(), plan.ID)
+		binding, bindingErr := h.operations.GetFleetRunnerDispatch(r.Context(), plan.ID)
+		predecessorAttempt := fleetRunAttemptFromRunnerID(attempts[0].RunnerAttemptID, admission.SourceDispatchRunID)
+		if prepErr != nil || bindingErr != nil || preparation.DispatchNonceSHA256 != admission.DispatchNonceSHA256 || predecessorAttempt == 0 {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_dispatch_mismatch", "recovery dispatch preparation is unavailable or mismatched")
+			return
+		}
+		bound := &githubapp.Dispatch{RunID: binding.RunID, URL: binding.WorkflowURL, PlanRunID: preparation.PlanRunID, PlanSHA: preparation.PlanSHA256, ApprovedHeadSHA: preparation.ApprovedHeadSHA, PilotRunID: h.control.cfg.FleetGitHubPilotRunID}
+		observed, observeErr := h.github.ObserveApplyRunAttempt(r.Context(), plan.ID, preparation.FleetEnvironment, preparation.AllowDestructive, bound, preparation.DispatchNonce, predecessorAttempt)
+		if observeErr != nil || observed == nil || observed.RunID != binding.RunID || observed.RunAttempt != predecessorAttempt || observed.Status != "completed" || (observed.Conclusion != "failure" && observed.Conclusion != "cancelled" && observed.Conclusion != "timed_out") || observed.ObservedAt.IsZero() || observed.ObservedAt.After(time.Now().UTC().Add(time.Minute)) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_external_stop_unproven", "GitHub has not proved the exact predecessor workflow terminal")
+			return
+		}
+		admission.PredecessorStop = &store.FleetRunnerPredecessorStopEvidence{PredecessorID: attempts[0].ID, SourceDispatchRunID: admission.SourceDispatchRunID, RunAttempt: observed.RunAttempt, WorkflowURL: binding.WorkflowURL, Status: observed.Status, Conclusion: observed.Conclusion, ObservedAt: observed.ObservedAt}
+	}
 	semantics := map[string]interface{}{"action": "fleet.runner-attempt", "planId": plan.ID, "runnerAttemptId": request.RunnerAttemptID, "commitSha": request.CommitSHA, "planSha256": request.PlanSHA256, "workflowUrl": request.WorkflowURL, "dispatchNonceSha256": admission.DispatchNonceSHA256, "sourceDispatchRunId": request.SourceDispatchRunID, "resume": request.Resume, "heartbeatTimeoutSeconds": request.HeartbeatTimeoutSeconds, "workload": map[string]interface{}{"intent": principal.CI.Intent, "runId": principal.CI.RunID, "sha": principal.CI.SHA}}
+	if admission.PredecessorStop != nil {
+		semantics["predecessorStop"] = admission.PredecessorStop
+	}
 	enqueue, err := h.enqueue(r, principal, r.Header.Get("Idempotency-Key"), semantics)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", err.Error())
@@ -120,17 +181,13 @@ func (h *EtcdFleetRunnerHandler) Create(w http.ResponseWriter, r *http.Request) 
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	attempts, err := h.operations.ListFleetRunnerAttempts(r.Context(), plan.ID)
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_read_failed", "existing runner attempts could not be read")
-		return
-	}
-	if len(attempts) > 0 {
-		admission.ExpectedPredecessorID = attempts[0].ID
-	}
 	now := time.Now().UTC()
 	finished := now
-	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.runner-attempt", Ref: plan.ID, Status: model.OperationSucceeded, Risk: "protected runner lease; external termination requires independent proof", Source: "fleet-runner", Message: "protected fleet runner attempt accepted", Payload: map[string]interface{}{"attemptId": admission.AttemptID, "planId": plan.ID, "runnerAttemptId": request.RunnerAttemptID, "commitSha": request.CommitSHA, "planSha256": request.PlanSHA256, "workflowUrl": request.WorkflowURL, "dispatchNonceSha256": admission.DispatchNonceSHA256, "sourceDispatchRunId": request.SourceDispatchRunID, "resume": request.Resume, "heartbeatTimeoutSeconds": request.HeartbeatTimeoutSeconds}, Metadata: map[string]interface{}{}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
+	payload := map[string]interface{}{"attemptId": admission.AttemptID, "planId": plan.ID, "runnerAttemptId": request.RunnerAttemptID, "commitSha": request.CommitSHA, "planSha256": request.PlanSHA256, "workflowUrl": request.WorkflowURL, "dispatchNonceSha256": admission.DispatchNonceSHA256, "sourceDispatchRunId": request.SourceDispatchRunID, "resume": request.Resume, "heartbeatTimeoutSeconds": request.HeartbeatTimeoutSeconds}
+	if admission.PredecessorStop != nil {
+		payload["predecessorStop"] = admission.PredecessorStop
+	}
+	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.runner-attempt", Ref: plan.ID, Status: model.OperationSucceeded, Risk: "protected runner lease; external termination requires independent proof", Source: "fleet-runner", Message: "protected fleet runner attempt accepted", Payload: payload, Metadata: map[string]interface{}{}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
 	accepted, err := h.control.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
 		if replay, resolveErr := h.control.pipeline.ResolveEnqueue(r.Context(), enqueue, "fleet.runner-attempt", plan.ID); resolveErr == nil && acceptedRequestMatches(replay, enqueue) && replay.FleetRunnerAttempt != nil {
@@ -150,6 +207,33 @@ func (h *EtcdFleetRunnerHandler) Create(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSONStatus(w, http.StatusCreated, accepted.FleetRunnerAttempt)
+}
+
+func fleetReplayWorkloadSHA(item *fleet.RunnerAttempt) string {
+	if item == nil {
+		return ""
+	}
+	if item.WorkloadSHA != "" {
+		return item.WorkloadSHA
+	}
+	// Pre-gate v3 root attempts did not persist workload SHA and could never
+	// have a successor; their exact apply identity used CommitSHA.
+	if item.Attempt == 1 {
+		return item.CommitSHA
+	}
+	return ""
+}
+
+func fleetRunAttemptFromRunnerID(runnerID, sourceRunID string) int64 {
+	parts := strings.Split(strings.TrimSpace(runnerID), ":")
+	if len(parts) < 2 || parts[len(parts)-2] != sourceRunID {
+		return 0
+	}
+	attempt, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	if err != nil || attempt <= 0 {
+		return 0
+	}
+	return attempt
 }
 
 func (h *EtcdFleetRunnerHandler) ownAttempt(w http.ResponseWriter, r *http.Request) (*fleet.RunnerAttempt, bool) {

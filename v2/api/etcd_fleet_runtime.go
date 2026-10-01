@@ -161,7 +161,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
-		fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations)
+		fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations, fleetGitHub)
 		runnerAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/pull-request", etcdFleetGitHubPullRequest(cfg, operations, fleetGitHub))
