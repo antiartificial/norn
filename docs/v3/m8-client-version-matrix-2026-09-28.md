@@ -16,6 +16,36 @@ machine-readable index is
 | Fleet live runtime | no version observed | Unobserved | The Mini readback reports zero Fleet node pools; that establishes only that the Mini is not configured for Fleet. | Complete provider, backend and installed-state inventory remains absent. Fresh protected plan/apply, exact installed versions, three-member etcd health, protected attempt/reconciliation, soak/fault and retirement evidence remain open. |
 | NornUI | proposed source `3252851ec74647e73a8d84935101694d6606de3a` in [PR #20](https://github.com/antiartificial/NornUI/pull/20), based on protected main `742445c491cd58c3e8992dab2ccafb212d938fab`; no published/installed version recorded | Open PR with successful exact-head [macOS build and unit tests 36827216694](https://github.com/antiartificial/NornUI/actions/runs/36827216694) and a separate [private development-signed Release-build receipt](m8-nornui-release-build-2026-10-01.md) | The source-derived signed-8a fixture decodes. An opt-in local test also passed the real Norn capabilities handler and bearer middleware response through the actual Swift `NornClient` over loopback, including wrong-bearer rejection. Release controls require the complete advertised feature/route contract, old event streams remain supported, and same-profile Fleet capability withdrawal clears gated caches. The local build passed 237 tests with zero failures and one standalone opt-in skip; the separate cross-client run executed and passed that opt-in test. A clean exact-source arm64 Release app passed strict signature and private receipt verification. The earlier `b59afc6` app launched in fixture mode showing sample data. | PR is unmerged and no published or installed NornUI release exists. The Apple Development signature and local HMAC receipt are pilot evidence only. Loopback capability negotiation does not cover all endpoints or live Mini/Fleet behavior; real etcd Fleet client behavior and M8 sign-off remain open. |
 
+## Proposed post-checkpoint qualification changes
+
+These changes are reviewable branches, not protected-source or installed-state
+evidence. [Norn #101](https://github.com/antiartificial/norn/pull/101)
+at `4cb0c209dbcfba42dc1287d926e889c1202c8c60` records the real signed-staging
+capabilities handler output as a canonical corpus and requires all three
+release features plus all five release routes in the web client. Local Go,
+Vitest and web-build checks passed. [NornUI #22](https://github.com/antiartificial/NornUI/pull/22)
+at `4ea9dfbfe707e627e005a44cb14f2d4f9954112c` is stacked on #20; it
+replaces the manually reconstructed fixture with the same canonical bytes,
+pins their SHA-256, and tests the actual Swift request, bearer header,
+decoding and missing-route/feature behavior. Its local 235-test suite passed.
+Both proposed sources must be reconciled to their final protected commits
+before claiming cross-client release parity.
+
+[NornUI #21](https://github.com/antiartificial/NornUI/pull/21) at
+`44386772555c60c4d3aacf13e83e9826a9a1ce2e` adds a protected-main-only
+Developer ID signing and Apple notarization workflow. The
+`release-qualification` environment now requires `antiartificial` review and
+protected branches and has the Apple team variable, but no signing secrets.
+Its credentialed job has not run; no notarized NornUI artifact exists.
+
+[Norn #100](https://github.com/antiartificial/norn/pull/100) at
+`7eae814515b7a897161351ec832ba92459753f81` is stacked on the M6 signed
+phase-proof contract in #96. It adds an offline FinalSync-to-Activate
+coordinator and crash/lost-response reconciliation tests, but the PostgreSQL
+and etcd claimed journal adapters still refuse activation. No real Fleet
+external authority, consumer switch, provider effect, traffic cutover or
+Mini-to-Fleet mobility was exercised.
+
 ## Pinned inputs at this checkpoint
 
 The Norn source gates pin Go `1.26.6`, Node `24.19.0`, pnpm `10.32.1`,
