@@ -65,7 +65,11 @@
   },
   "nornui": {
     "last_observed_source_commit": "742445c491cd58c3e8992dab2ccafb212d938fab",
-    "evidence_class": "historical_source_only",
+    "proposed_pr": 20,
+    "proposed_commit": "63a0b5e9a884fc09d9a491d145b4620acfe7f84e",
+    "exact_head_ci_run": 36821630818,
+    "source_derived_signed_8a_capability_decode": "passed_open_pr_not_live_capture",
+    "evidence_class": "open_pr_exact_head_ci_not_release",
     "released_or_installed_version": null,
     "m8_support": "unknown_unsupported"
   },
