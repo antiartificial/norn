@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, apiAuthority, apiFetch, clearMemoryAccessToken, hasMemoryAccessToken } from '../lib/api.ts'
+import { supportsReleasePipeline } from '../lib/capabilities.ts'
 import { clearDurableIntent, durableIntent } from '../lib/durableIntent.ts'
 import { pollIngressOperation, validateIngressAcceptance } from '../lib/ingressOperation.ts'
 import { appGroups } from '../lib/format.ts'
@@ -280,7 +281,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const fleetAvailable = ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'].every((feature) => capabilities.data?.features.includes(feature))
   const appRecoveryAvailable = capabilities.data?.features.includes('durable-app-recovery-v1') === true
   const environment = capabilities.data?.environment ?? { id: 'development', profile: 'development' }
-  const releasePipelineAvailable = ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'].every((feature) => capabilities.data?.features.includes(feature))
+  const releasePipelineAvailable = supportsReleasePipeline(capabilities.data)
   const grantedScopes = capabilities.data?.auth?.principal?.scopes ?? []
   const catalogWritable = !capabilities.data?.features.includes('app-catalog-read-only-v1')
   // Fleet authority is intentionally scoped: only a write grant may expose
