@@ -35,6 +35,11 @@ import (
 
 const apiVersion = "2026-03-10"
 
+// GitHub's 2026-03-10 REST version removed merge_commit_sha from pull request
+// responses. The older version still supplies the exact merged commit needed
+// to bind a protected plan, including squash and merge-commit PRs.
+const pullMergeCommitAPIVersion = "2022-11-28"
+
 var (
 	repositoryRe         = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 	workflowRe           = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
@@ -606,7 +611,7 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID, fleetEn
 		MergeCommitSHA string `json:"merge_commit_sha"`
 		MergedAt       string `json:"merged_at"`
 	}
-	if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/pulls/%d", pr.Number)), nil, &pulls); err != nil || pulls.MergedAt == "" || pulls.MergeCommitSHA == "" {
+	if err := c.requestWithVersion(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/pulls/%d", pr.Number)), nil, &pulls, pullMergeCommitAPIVersion); err != nil || pulls.MergedAt == "" || pulls.MergeCommitSHA == "" {
 		return nil, ErrNotReady
 	}
 	var runs struct {
@@ -1106,6 +1111,10 @@ func (c *Client) request(ctx context.Context, token, method, endpoint string, bo
 }
 
 func (c *Client) requestWithAuth(ctx context.Context, token, method, endpoint string, body, response any) error {
+	return c.requestWithVersion(ctx, token, method, endpoint, body, response, apiVersion)
+}
+
+func (c *Client) requestWithVersion(ctx context.Context, token, method, endpoint string, body, response any, version string) error {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -1120,7 +1129,7 @@ func (c *Client) requestWithAuth(ctx context.Context, token, method, endpoint st
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-GitHub-Api-Version", apiVersion)
+	req.Header.Set("X-GitHub-Api-Version", version)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

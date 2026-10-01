@@ -341,6 +341,7 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	_, _ = entry.Write([]byte(planSHA + "\n"))
 	_ = zipWriter.Close()
 	var dispatched map[string]any
+	var pullVersion, planVersion string
 	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/app" {
 			fmt.Fprint(w, `{"slug":"norn"}`)
@@ -355,8 +356,14 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
 			fmt.Fprint(w, `[{"number":8,"html_url":"https://github.com/acme/norn-fleet/pull/8","state":"closed","merged_at":"2027-01-15T08:00:00Z"}]`)
 		case r.URL.Path == "/repos/acme/norn-fleet/pulls/8":
+			pullVersion = r.Header.Get("X-GitHub-Api-Version")
+			if pullVersion != pullMergeCommitAPIVersion {
+				fmt.Fprint(w, `{"merged_at":"2027-01-15T08:00:00Z"}`)
+				return
+			}
 			fmt.Fprintf(w, `{"merge_commit_sha":%q,"merged_at":"2027-01-15T08:00:00Z"}`, headSHA)
 		case strings.Contains(r.URL.Path, "/actions/workflows/plan.yml/runs"):
+			planVersion = r.Header.Get("X-GitHub-Api-Version")
 			fmt.Fprintf(w, `{"workflow_runs":[{"id":91,"head_sha":%q,"status":"completed","conclusion":"success"}]}`, headSHA)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/91/artifacts":
 			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-production-nyc3-91","expired":false}]}`)
@@ -374,6 +381,9 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	approved, err := client.ResolveApprovedPlan(context.Background(), planID, "production/nyc3")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if pullVersion != pullMergeCommitAPIVersion || planVersion != apiVersion {
+		t.Fatalf("GitHub API versions: pull=%q plan=%q", pullVersion, planVersion)
 	}
 	result, err := client.DispatchBoundPlan(context.Background(), planID, "production/nyc3", true, approved, nonce)
 	if err != nil {
