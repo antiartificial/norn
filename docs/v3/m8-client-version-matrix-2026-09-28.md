@@ -30,6 +30,8 @@ pins their SHA-256, and tests the actual Swift request, bearer header,
 decoding and missing-route/feature behavior. Its local 235-test suite passed.
 Both proposed sources must be reconciled to their final protected commits
 before claiming cross-client release parity.
+Their exact open-PR CI checks passed on 2026-10-01; those checks do not
+replace a published NornUI artifact or live Mini/Fleet client exercise.
 
 [NornUI #21](https://github.com/antiartificial/NornUI/pull/21) at
 `44386772555c60c4d3aacf13e83e9826a9a1ce2e` adds a protected-main-only
@@ -37,6 +39,8 @@ Developer ID signing and Apple notarization workflow. The
 `release-qualification` environment now requires `antiartificial` review and
 protected branches and has the Apple team variable, but no signing secrets.
 Its credentialed job has not run; no notarized NornUI artifact exists.
+The PR's ordinary macOS build and unit-test check passed; it does not run
+the protected signing workflow.
 
 [Norn #100](https://github.com/antiartificial/norn/pull/100) at
 `7eae814515b7a897161351ec832ba92459753f81` is stacked on the M6 signed
@@ -45,6 +49,8 @@ coordinator and crash/lost-response reconciliation tests, but the PostgreSQL
 and etcd claimed journal adapters still refuse activation. No real Fleet
 external authority, consumer switch, provider effect, traffic cutover or
 Mini-to-Fleet mobility was exercised.
+Its exact open-PR CI checks passed; this is local coordinator qualification,
+not a live activation receipt.
 
 ## Pinned inputs at this checkpoint
 
