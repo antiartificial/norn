@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-10-01",
+  "milestone": "M8",
+  "milestone_status": "open",
+  "norn": {
+    "signed_candidate": {
+      "commit": "47eb704445d793c64e9f3f289cd82de9a6caee95",
+      "tag": "platform-47eb704445d793c64e9f3f289cd82de9a6caee95",
+      "release_run": 36802095059,
+      "darwin_arm64_archive_sha256": "78dab1cbe2888a3d59ba9d5a42c1948bf87c9748b02f0033804eaeef7c4e6aa7",
+      "evidence_class": "signed_runtime_candidate"
+    },
+    "current_source": {
+      "commit": "8a291142677a7b00cc8606e61ac0a6952fff3e5c",
+      "evidence_class": "ci_only_source",
+      "successful_master_runs": {
+        "repository_ci": 36807641901,
+        "norn_ci": 36807641851,
+        "docs": 36807641929
+      }
+    },
+    "mini_live": {
+      "commit": "a5da8ef15d12e9eca7561e90b90d96f6dc652a21",
+      "reported_version": "v2.20.0-platform-30-ga5da8ef",
+      "evidence_class": "live_legacy_observation",
+      "installed_digest_verified": false,
+      "fleet_configured": false
+    }
+  },
+  "fleet": {
+    "desired_source": {
+      "commit": "39b7b3c817ae818014455eead12be4991dc39698",
+      "evidence_class": "desired_ci_qualified_source",
+      "successful_main_runs": {
+        "validate": 36809166429,
+        "provider_free_qualification": 36809196735
+      },
+      "runtime_pin_state": "unresolved_until_protected_plan",
+      "required_runtime_pins": [
+        "norn_archive_and_sha256",
+        "nornui_bundle_and_sha256",
+        "nomad_package_version",
+        "consul_package_version",
+        "etcd_etcdctl_etcdutl_sources_and_sha256"
+      ]
+    },
+    "live": {
+      "evidence_class": "unobserved",
+      "commit": null,
+      "mini_node_pools_observed": 0,
+      "boundary": "Mini readback is not provider or Fleet-state inventory"
+    }
+  },
+  "nornui": {
+    "last_observed_source_commit": "742445c491cd58c3e8992dab2ccafb212d938fab",
+    "evidence_class": "historical_source_only",
+    "released_or_installed_version": null,
+    "m8_support": "unknown_unsupported"
+  },
+  "norn_ci_pins": {
+    "go": "1.26.6",
+    "node": "24.19.0",
+    "pnpm": "10.32.1",
+    "etcdctl": "3.5.17",
+    "etcdctl_archive_sha256": "eff6ac621d41711085d0f38fab17d8fa3705f6326c3ff11301a1f5a71fc94edd",
+    "etcd_image": "quay.io/coreos/etcd@sha256:a055da833a7c013b836ed0822e8ec1f99b059658be255ad8d0fcd31b635ae3d6"
+  },
+  "release_contract_gates": {
+    "coherent_signed_candidate": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "exact_nornui_release_and_client_parity": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "mini_private_upgrade_rollback_live_preservation": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "fleet_protected_plan_apply_installed_readback": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "fleet_runner_and_upstream_version_binding": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "fleet_fixture_topology_resource_binding": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "fleet_request_error_latency_results": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "fleet_operation_effect_reconciliation": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "fleet_soak_fault_retention_restore_retirement": {
+      "status": "open",
+      "evidence_refs": []
+    },
+    "operator_release_signoff": {
+      "status": "open",
+      "evidence_refs": []
+    }
+  }
+}

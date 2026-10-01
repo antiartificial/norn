@@ -147,3 +147,5 @@ jobs:
           go-version: 1.26.6
       - name: Lint GitHub Actions workflows
         run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
+      - name: Lint M8 release evidence boundaries
+        run: python3 v2/scripts/lint-m8-release-evidence.py
