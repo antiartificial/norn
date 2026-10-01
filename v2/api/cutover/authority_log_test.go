@@ -27,7 +27,8 @@ func (authorityEvidenceCheck) VerifyAuthorityEvidence(_ context.Context, _ Autho
 }
 
 // TestAuthorityLogVerifier exercises durable reopen, the complete signed
-// chain and the distinction between historical recovery and a live permit.
+// chain and the distinction between archive recovery and typed prospective
+// readback.
 func TestAuthorityLogVerifierDurableReopenAndExpiry(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -47,19 +48,29 @@ func TestAuthorityLogVerifierDurableReopenAndExpiry(t *testing.T) {
 	}
 	defer reader.Close()
 	v := AuthorityLogVerifier{Archive: reader, TrustRoots: []AuthorityTrustKey{{KeyID: "key-1", PublicKey: pub}}, EvidenceVerifier: authorityEvidenceCheck{}, Now: func() time.Time { return now }}
-	chain, err := v.VerifyCurrent(ctx, "cutover-1")
-	if err != nil || !chain.AuthorizesNewEffect() {
-		t.Fatalf("current chain = %#v, %v", chain, err)
+	chain, err := v.VerifyHistorical(ctx, "cutover-1")
+	if err != nil || !chain.Valid() {
+		t.Fatalf("historical chain = %#v, %v", chain, err)
 	}
 	if _, digest, ok := chain.LastManifest(); !ok || digest == "" {
 		t.Fatal("last durable boundary missing")
 	}
+	if prospective, err := v.VerifyProspective(ctx, "cutover-1"); err != nil || !prospective.Valid() {
+		t.Fatalf("prospective readback = %#v, %v", prospective, err)
+	}
+	// Recovery deliberately needs neither a live external readback adapter nor
+	// a current permit; it only verifies retained immutable bytes.
+	archiveOnly := v
+	archiveOnly.EvidenceVerifier = nil
+	if recovered, err := archiveOnly.VerifyHistorical(ctx, "cutover-1"); err != nil || !recovered.Valid() {
+		t.Fatalf("archive-only recovery = %#v, %v", recovered, err)
+	}
 	v.Now = func() time.Time { return now.Add(2 * time.Hour) }
-	if _, err := v.VerifyCurrent(ctx, "cutover-1"); !errors.Is(err, ErrAuthorityLogInvalid) {
-		t.Fatalf("expired current chain err=%v", err)
+	if _, err := v.VerifyProspective(ctx, "cutover-1"); !errors.Is(err, ErrAuthorityLogInvalid) {
+		t.Fatalf("expired prospective chain err=%v", err)
 	}
 	historical, err := v.VerifyHistorical(ctx, "cutover-1")
-	if err != nil || historical.AuthorizesNewEffect() {
+	if err != nil || !historical.Valid() {
 		t.Fatalf("historical chain = %#v, %v", historical, err)
 	}
 }
@@ -106,6 +117,10 @@ func TestAuthorityLogVerifierRejectsChainAndEvidenceFailures(t *testing.T) {
 		{"bad signature", func(ms []AuthorityManifest) { ms[1].Signature.KeyID = "key-2" }},
 		{"bad prior hash", func(ms []AuthorityManifest) { ms[1].PriorManifestSHA256 = strings.Repeat("a", 64) }},
 		{"tuple drift", func(ms []AuthorityManifest) { ms[1].Tuple.Target.BindingGeneration++ }},
+		{"missing control store", func(ms []AuthorityManifest) { ms[1].TargetControlStoreID = "" }},
+		{"missing consistency group", func(ms []AuthorityManifest) { ms[1].ConsistencyGroupSHA256 = "" }},
+		{"non digest release", func(ms []AuthorityManifest) { ms[1].Tuple.CandidateRelease = "sha256:release" }},
+		{"non monotonic signed time", func(ms []AuthorityManifest) { ms[1].SignedAt = ms[0].SignedAt }},
 		{"replayed evidence", func(ms []AuthorityManifest) { ms[1].Evidence = ms[0].Evidence }},
 		{"phase skip", func(ms []AuthorityManifest) { ms[1].Phase = PhaseFinalSync }},
 	} {
@@ -121,7 +136,7 @@ func TestAuthorityLogVerifierRejectsChainAndEvidenceFailures(t *testing.T) {
 			tc.mutate(manifests)
 			publishAuthorityManifests(t, ctx, store, manifests, private)
 			v := authorityVerifier(store, pub, now)
-			if _, err := v.VerifyCurrent(ctx, "cutover-1"); !errors.Is(err, ErrAuthorityLogInvalid) {
+			if _, err := v.VerifyHistorical(ctx, "cutover-1"); !errors.Is(err, ErrAuthorityLogInvalid) {
 				t.Fatalf("err=%v", err)
 			}
 		})
@@ -198,9 +213,33 @@ func TestAuthorityLogVerifierAcceptsRotatedKeys(t *testing.T) {
 	ms[2].PriorManifestSHA256 = hex.EncodeToString(sum1[:])
 	publishAuthorityManifests(t, ctx, s, ms[:1], private1)
 	publishAuthorityManifests(t, ctx, s, ms[1:], private2)
-	v := AuthorityLogVerifier{Archive: s, TrustRoots: []AuthorityTrustKey{{KeyID: "key-1", PublicKey: pub1, ValidUntil: now.Add(time.Hour)}, {KeyID: "key-2", PublicKey: pub2, ValidFrom: now}}, EvidenceVerifier: authorityEvidenceCheck{}, Now: func() time.Time { return now.Add(30 * time.Minute) }}
-	if _, err := v.VerifyCurrent(ctx, "cutover-1"); err != nil {
+	v := AuthorityLogVerifier{Archive: s, TrustRoots: []AuthorityTrustKey{{KeyID: "key-1", PublicKey: pub1, ValidUntil: now.Add(time.Hour)}, {KeyID: "key-2", PublicKey: pub2, ValidFrom: now.Add(-time.Hour)}}, EvidenceVerifier: authorityEvidenceCheck{}, Now: func() time.Time { return now.Add(30 * time.Minute) }}
+	if _, err := v.VerifyProspective(ctx, "cutover-1"); err != nil {
 		t.Fatalf("rotated chain: %v", err)
+	}
+}
+
+func TestAuthorityLogVerifierAllowsSameControlStoreAndDoesNotReviveRetiredSigner(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	s, err := archive.OpenLocal(filepath.Join(t.TempDir(), "authority"), 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	pub, private, _ := ed25519.GenerateKey(rand.Reader)
+	ms := buildAuthorityManifests(t, ctx, s, "cutover-1", private, now, []Phase{PhasePrepare, PhaseQuiesce, PhaseFinalSync})
+	for i := range ms {
+		ms[i].TargetControlStoreID = ms[i].SourceControlStoreID
+	}
+	relinkAuthorityManifests(t, ms, private)
+	publishAuthorityManifests(t, ctx, s, ms, private)
+	v := AuthorityLogVerifier{Archive: s, TrustRoots: []AuthorityTrustKey{{KeyID: "key-1", PublicKey: pub, ValidUntil: now.Add(15 * time.Minute)}}, EvidenceVerifier: authorityEvidenceCheck{}, Now: func() time.Time { return now.Add(30 * time.Minute) }}
+	if historical, err := v.VerifyHistorical(ctx, "cutover-1"); err != nil || !historical.Valid() {
+		t.Fatalf("historical old key = %#v, %v", historical, err)
+	}
+	if _, err := v.VerifyProspective(ctx, "cutover-1"); !errors.Is(err, ErrAuthorityLogInvalid) {
+		t.Fatalf("retired signer prospective err=%v", err)
 	}
 }
 
@@ -222,7 +261,8 @@ func buildAuthorityManifests(t *testing.T, ctx context.Context, s archive.Store,
 		if _, err := s.PutImmutable(ctx, e.Key, raw); err != nil {
 			t.Fatal(err)
 		}
-		m := AuthorityManifest{SchemaVersion: AuthorityManifestSchema, LogID: id, Sequence: uint64(i + 1), Phase: phase, Tuple: testIntent(), PriorManifestSHA256: prior, Evidence: []AuthorityEvidence{e}, RecoveryPolicy: "repair-forward", SignedAt: now, ExpiresAt: now.Add(time.Hour), Signature: AuthoritySignature{Algorithm: "ed25519", KeyID: "key-1"}}
+		signedAt := now.Add(time.Duration(i-len(phases)+1) * time.Second)
+		m := AuthorityManifest{SchemaVersion: AuthorityManifestSchema, LogID: id, Sequence: uint64(i + 1), Phase: phase, Tuple: authorityIntent(), SourceControlStoreID: "source-control", SourceAuthorityEpoch: 11, TargetControlStoreID: "target-control", TargetAuthorityEpoch: 12, ConsistencyGroupSHA256: strings.Repeat("c", 64), PriorManifestSHA256: prior, Evidence: []AuthorityEvidence{e}, RecoveryPolicy: "repair-forward", SignedAt: signedAt, ExpiresAt: now.Add(time.Hour), Signature: AuthoritySignature{Algorithm: "ed25519", KeyID: "key-1"}}
 		raw, err := signedAuthorityManifest(m, private)
 		if err != nil {
 			t.Fatal(err)
@@ -232,6 +272,11 @@ func buildAuthorityManifests(t *testing.T, ctx context.Context, s archive.Store,
 		out = append(out, m)
 	}
 	return out
+}
+func authorityIntent() Intent {
+	intent := testIntent()
+	intent.CandidateRelease = "sha256:" + strings.Repeat("d", 64)
+	return intent
 }
 func publishAuthorityManifests(t *testing.T, ctx context.Context, s archive.Store, manifests []AuthorityManifest, private ed25519.PrivateKey) {
 	t.Helper()
@@ -248,6 +293,19 @@ func publishAuthorityManifests(t *testing.T, ctx context.Context, s archive.Stor
 		if _, err = s.PutImmutable(ctx, key, raw); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+func relinkAuthorityManifests(t *testing.T, manifests []AuthorityManifest, private ed25519.PrivateKey) {
+	t.Helper()
+	prior := ""
+	for i := range manifests {
+		manifests[i].PriorManifestSHA256 = prior
+		raw, err := signedAuthorityManifest(manifests[i], private)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		prior = hex.EncodeToString(sum[:])
 	}
 }
 func signedAuthorityManifest(m AuthorityManifest, private ed25519.PrivateKey) ([]byte, error) {

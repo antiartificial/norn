@@ -52,17 +52,22 @@ type AuthoritySignature struct {
 // log and binds every phase to the same source/target, release, catalog and
 // writer inventory selected when the migration began.
 type AuthorityManifest struct {
-	SchemaVersion       string              `json:"schemaVersion"`
-	LogID               string              `json:"logId"`
-	Sequence            uint64              `json:"sequence"`
-	Phase               Phase               `json:"phase"`
-	Tuple               Intent              `json:"tuple"`
-	PriorManifestSHA256 string              `json:"priorManifestSha256,omitempty"`
-	Evidence            []AuthorityEvidence `json:"evidence"`
-	RecoveryPolicy      string              `json:"recoveryPolicy"`
-	SignedAt            time.Time           `json:"signedAt"`
-	ExpiresAt           time.Time           `json:"expiresAt"`
-	Signature           AuthoritySignature  `json:"signature"`
+	SchemaVersion          string              `json:"schemaVersion"`
+	LogID                  string              `json:"logId"`
+	Sequence               uint64              `json:"sequence"`
+	Phase                  Phase               `json:"phase"`
+	Tuple                  Intent              `json:"tuple"`
+	SourceControlStoreID   string              `json:"sourceControlStoreId"`
+	SourceAuthorityEpoch   uint64              `json:"sourceAuthorityEpoch"`
+	TargetControlStoreID   string              `json:"targetControlStoreId"`
+	TargetAuthorityEpoch   uint64              `json:"targetAuthorityEpoch"`
+	ConsistencyGroupSHA256 string              `json:"consistencyGroupSha256"`
+	PriorManifestSHA256    string              `json:"priorManifestSha256,omitempty"`
+	Evidence               []AuthorityEvidence `json:"evidence"`
+	RecoveryPolicy         string              `json:"recoveryPolicy"`
+	SignedAt               time.Time           `json:"signedAt"`
+	ExpiresAt              time.Time           `json:"expiresAt"`
+	Signature              AuthoritySignature  `json:"signature"`
 }
 
 // AuthorityTrustKey permits a verifier to retain old public keys during key
@@ -76,9 +81,9 @@ type AuthorityTrustKey struct {
 	RevokedAt  *time.Time
 }
 
-// AuthorityEvidenceVerifier checks typed evidence after immutable byte
-// identity has been established. It must perform any fresh readback required
-// for a changing external fact; nil is intentionally rejected.
+// AuthorityEvidenceVerifier is only used for a prospective check after the
+// immutable historical chain has been accepted. Implementations perform the
+// fresh typed readback needed for a changing external fact.
 type AuthorityEvidenceVerifier interface {
 	VerifyAuthorityEvidence(context.Context, AuthorityManifest, AuthorityEvidence, []byte) error
 }
@@ -90,20 +95,15 @@ type AuthorityLogVerifier struct {
 	Now              func() time.Time
 }
 
-// VerifiedAuthorityChain is an in-process read result. Historical chains
-// identify a durable boundary, while only a current unexpired chain can be
-// used as an input to a later, separately fenced effect adapter.
+// VerifiedAuthorityChain is immutable recovery information. It never permits
+// an effect: archive List is not a linearizable read of a log head.
 type VerifiedAuthorityChain struct {
-	manifests           []AuthorityManifest
-	manifestDigests     []string
-	authorizesNewEffect bool
-	marker              *struct{}
+	manifests       []AuthorityManifest
+	manifestDigests []string
+	marker          *struct{}
 }
 
 func (c *VerifiedAuthorityChain) Valid() bool { return c != nil && c.marker != nil }
-func (c *VerifiedAuthorityChain) AuthorizesNewEffect() bool {
-	return c.Valid() && c.authorizesNewEffect
-}
 func (c *VerifiedAuthorityChain) LastManifest() (AuthorityManifest, string, bool) {
 	if !c.Valid() || len(c.manifests) == 0 {
 		return AuthorityManifest{}, "", false
@@ -132,20 +132,48 @@ func AuthorityManifestKey(logID string, sequence uint64, digest string) (string,
 	return fmt.Sprintf("%s/%s/%020d/%s.json", authorityLogPrefix, logID, sequence, digest), nil
 }
 
-// VerifyCurrent rejects an expired last manifest. It is the only reader mode
-// suitable as a prerequisite for a prospective phase transition or effect.
-func (v AuthorityLogVerifier) VerifyCurrent(ctx context.Context, logID string) (*VerifiedAuthorityChain, error) {
-	return v.verify(ctx, logID, true)
-}
-
 // VerifyHistorical validates retained authority after expiry so recovery can
 // find the final durable boundary. It never grants a new effect permit.
 func (v AuthorityLogVerifier) VerifyHistorical(ctx context.Context, logID string) (*VerifiedAuthorityChain, error) {
-	return v.verify(ctx, logID, false)
+	return v.verifyHistorical(ctx, logID)
 }
 
-func (v AuthorityLogVerifier) verify(ctx context.Context, logID string, requireUnexpired bool) (*VerifiedAuthorityChain, error) {
-	if v.Archive == nil || v.EvidenceVerifier == nil || !validAuthorityName(logID) {
+// VerifyProspective requires a current, typed readback of every retained
+// evidence item and an unexpired final manifest. Its result is still not an
+// effect permit; the execution adapter must independently fence and observe
+// the exact generation it will change.
+func (v AuthorityLogVerifier) VerifyProspective(ctx context.Context, logID string) (*VerifiedAuthorityChain, error) {
+	if v.EvidenceVerifier == nil {
+		return nil, ErrAuthorityLogInvalid
+	}
+	chain, err := v.verifyHistorical(ctx, logID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if v.Now != nil {
+		now = v.Now().UTC()
+	}
+	last, _, ok := chain.LastManifest()
+	if !ok || !now.Before(last.ExpiresAt) {
+		return nil, ErrAuthorityLogInvalid
+	}
+	if !v.trustKeyValidNow(last.Signature.KeyID, now) {
+		return nil, ErrAuthorityLogInvalid
+	}
+	for _, manifest := range chain.manifests {
+		for _, evidence := range manifest.Evidence {
+			data, info, err := v.Archive.Get(ctx, evidence.Key, maxAuthorityEvidence)
+			if err != nil || info.Key != evidence.Key || info.SHA256 != evidence.SHA256 || info.Size != int64(len(data)) || digestBytes(data) != evidence.SHA256 || v.Archive.Verify(ctx, info) != nil || v.EvidenceVerifier.VerifyAuthorityEvidence(ctx, manifest, evidence, data) != nil {
+				return nil, ErrAuthorityLogInvalid
+			}
+		}
+	}
+	return chain, nil
+}
+
+func (v AuthorityLogVerifier) verifyHistorical(ctx context.Context, logID string) (*VerifiedAuthorityChain, error) {
+	if v.Archive == nil || !validAuthorityName(logID) {
 		return nil, ErrAuthorityLogInvalid
 	}
 	if !validAuthorityTrustRoots(v.TrustRoots) {
@@ -201,10 +229,7 @@ func (v AuthorityLogVerifier) verify(ctx context.Context, logID string, requireU
 		manifests = append(manifests, cloneAuthorityManifest(manifest))
 		digests = append(digests, item.digest)
 	}
-	if requireUnexpired && !now.Before(manifests[len(manifests)-1].ExpiresAt) {
-		return nil, ErrAuthorityLogInvalid
-	}
-	return &VerifiedAuthorityChain{manifests: manifests, manifestDigests: digests, authorizesNewEffect: requireUnexpired, marker: &struct{}{}}, nil
+	return &VerifiedAuthorityChain{manifests: manifests, manifestDigests: digests, marker: &struct{}{}}, nil
 }
 
 func (v AuthorityLogVerifier) verifyManifest(ctx context.Context, m AuthorityManifest, now time.Time, index int, prior []AuthorityManifest, priorDigests []string, tuple Intent, seenEvidence map[string]bool) error {
@@ -214,7 +239,7 @@ func (v AuthorityLogVerifier) verifyManifest(ctx context.Context, m AuthorityMan
 	if now.Before(m.SignedAt) {
 		return ErrAuthorityLogInvalid
 	}
-	if index > 0 && !sameAuthorityTuple(tuple, m.Tuple) {
+	if index > 0 && (!sameAuthorityTuple(tuple, m.Tuple) || !sameAuthorityControlTuple(prior[0], m) || !prior[index-1].SignedAt.Before(m.SignedAt)) {
 		return ErrAuthorityLogInvalid
 	}
 	trust, ok := v.trustKey(m.Signature.KeyID, m.SignedAt)
@@ -240,9 +265,6 @@ func (v AuthorityLogVerifier) verifyManifest(ctx context.Context, m AuthorityMan
 		if err != nil || info.Key != evidence.Key || info.SHA256 != evidence.SHA256 || info.Size != int64(len(data)) || digestBytes(data) != evidence.SHA256 || v.Archive.Verify(ctx, info) != nil {
 			return ErrAuthorityLogInvalid
 		}
-		if err := v.EvidenceVerifier.VerifyAuthorityEvidence(ctx, m, evidence, data); err != nil {
-			return fmt.Errorf("%w: evidence %s", ErrAuthorityLogInvalid, evidence.ID)
-		}
 	}
 	return nil
 }
@@ -255,6 +277,18 @@ func (v AuthorityLogVerifier) trustKey(keyID string, signedAt time.Time) (Author
 		return key, true
 	}
 	return AuthorityTrustKey{}, false
+}
+
+// trustKeyValidNow intentionally differs from trustKey: prospective work
+// cannot revive a rotated-out key by presenting a backdated SignedAt. This is
+// not used for historical recovery, which verifies the key window at signing.
+func (v AuthorityLogVerifier) trustKeyValidNow(keyID string, now time.Time) bool {
+	for _, key := range v.TrustRoots {
+		if key.KeyID == keyID && key.RevokedAt == nil && (key.ValidFrom.IsZero() || !now.Before(key.ValidFrom)) && (key.ValidUntil.IsZero() || now.Before(key.ValidUntil)) {
+			return true
+		}
+	}
+	return false
 }
 
 func validAuthorityTrustRoots(keys []AuthorityTrustKey) bool {
@@ -291,7 +325,7 @@ func validAuthorityManifest(m AuthorityManifest) bool {
 	if !validAuthorityName(m.LogID) || m.Sequence == 0 || !validPhase(m.Phase) || m.RecoveryPolicy == "" || !validUTCTime(m.SignedAt) || !validUTCTime(m.ExpiresAt) || !m.SignedAt.Before(m.ExpiresAt) || m.Signature.Algorithm != "ed25519" || !validAuthorityName(m.Signature.KeyID) || len(m.Evidence) == 0 {
 		return false
 	}
-	if _, err := New(m.Tuple); err != nil {
+	if _, err := New(m.Tuple); err != nil || !validCandidateReleaseDigest(m.Tuple.CandidateRelease) || !validAuthorityName(m.SourceControlStoreID) || !validAuthorityName(m.TargetControlStoreID) || m.SourceAuthorityEpoch == 0 || m.TargetAuthorityEpoch == 0 || !validDigest(m.ConsistencyGroupSHA256) {
 		return false
 	}
 	seen := map[string]bool{}
@@ -322,6 +356,12 @@ func sameAuthorityTuple(a, b Intent) bool {
 	x, e1 := IntentSHA256(a)
 	y, e2 := IntentSHA256(b)
 	return e1 == nil && e2 == nil && x == y
+}
+func sameAuthorityControlTuple(a, b AuthorityManifest) bool {
+	return a.SourceControlStoreID == b.SourceControlStoreID && a.SourceAuthorityEpoch == b.SourceAuthorityEpoch && a.TargetControlStoreID == b.TargetControlStoreID && a.TargetAuthorityEpoch == b.TargetAuthorityEpoch && a.ConsistencyGroupSHA256 == b.ConsistencyGroupSHA256
+}
+func validCandidateReleaseDigest(value string) bool {
+	return strings.HasPrefix(value, "sha256:") && validDigest(strings.TrimPrefix(value, "sha256:"))
 }
 
 func parseAuthorityManifestKey(logID, key string) (uint64, string, bool) {
