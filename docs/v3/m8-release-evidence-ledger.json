@@ -39,11 +39,12 @@
     }
   },
   "pilot261001a": {
-    "status": "approved_precreate_only_pending_first_billable_create",
+    "status": "retired_after_partial_management_precreate_no_fleet",
     "spend_ceiling_usd": 10,
     "maximum_lifespan_hours_from_first_billable_create": 4,
-    "last_provider_readback": "zero_pilot_mutations_at_2026-10-01T03:22:35.287865Z",
-    "boundary": "approval, exact-source binding, and zero-mutation readback are not a protected plan, runner attempt, provider apply, installed Fleet, or M8 sign-off"
+    "retirement_readback": "2026-10-01T17:24:17.913904Z: thirteen exact management provider IDs absent; both scoped Spaces key IDs absent and backends deleted; fourteen Tailscale auth keys invalid/revoked; zero pilot devices",
+    "tailscale_retirement": "original tag-owner policy and two temporary OAuth clients still pending action-time confirmation",
+    "boundary": "the management bootstrap was fully retired and Fleet was never created; the expired pilot approval, provider cleanup, and signed candidate do not establish installed Fleet fitness or M8 sign-off"
   },
   "norn": {
     "signed_candidate": {
@@ -76,6 +77,8 @@
     "mini_live": {
       "commit": "a5da8ef15d12e9eca7561e90b90d96f6dc652a21",
       "reported_version": "v2.20.0-platform-30-ga5da8ef",
+      "readback_at": "2026-10-01T17:46:40Z",
+      "readback_summary": "host ok; 29 app entries; 46 services; zero active operations; thirteen active incidents; zero Fleet node pools; production readiness blocked",
       "evidence_class": "live_legacy_observation",
       "installed_digest_verified": false,
       "fleet_configured": false
@@ -83,11 +86,15 @@
   },
   "fleet": {
     "desired_source": {
-      "commit": "39b7b3c817ae818014455eead12be4991dc39698",
-      "evidence_class": "desired_ci_qualified_source",
+      "commit": "8976fff715140eee99ca24ec6b1df10b0bf25405",
+      "evidence_class": "protected_validated_desired_source",
       "successful_main_runs": {
-        "validate": 36809166429,
-        "provider_free_qualification": 36809196735
+        "validate": 36893072470
+      },
+      "last_provider_free_qualification": {
+        "commit": "39b7b3c817ae818014455eead12be4991dc39698",
+        "run": 36809196735,
+        "boundary": "stale for current protected source; repeat only when preparing the next authorized pilot"
       },
       "runtime_pin_state": "unresolved_until_protected_plan",
       "required_runtime_pins": [
