@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"os"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/store"
 )
 
 // This opt-in test exercises signed acceptance, a claimed PostgreSQL effect,
@@ -113,3 +115,122 @@ func TestClaimedScaleAgainstDisposablePostgresAndNomad(t *testing.T) {
 		t.Fatalf("Nomad desired scale = %d, %v", desired, err)
 	}
 }
+
+// TestM4ReplicaIntentAcrossThreeDisposableNomadClients exercises the Norn side
+// of the M4 capacity gate against real scheduler state. The companion harness
+// starts three loopback Nomad clients in the app node pool; this test proves
+// durable 2 -> 3 -> redeploy -> 3 -> 2 replica intent and distinct placement.
+func TestM4ReplicaIntentAcrossThreeDisposableNomadClients(t *testing.T) {
+	addr := os.Getenv("NORN_TEST_M4_NOMAD_ADDR")
+	if addr == "" || os.Getenv("NORN_TEST_DATABASE_URL") == "" {
+		t.Skip("disposable M4 Nomad and PostgreSQL URLs are required")
+	}
+	parsed, err := url.Parse(addr)
+	if err != nil || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" {
+		t.Fatal("disposable M4 Nomad address must be a loopback HTTP URL")
+	}
+	p, db, request := acceptancePipelineFixture(t)
+	client, err := nomad.NewClient(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes, _, err := client.API().Nodes().List(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eligible := 0
+	for _, node := range nodes {
+		if node != nil && node.Status == "ready" && node.SchedulingEligibility == "eligible" && node.NodePool == "app" {
+			eligible++
+		}
+	}
+	if eligible != 3 {
+		t.Fatalf("eligible app clients=%d, want exactly 3 disposable clients", eligible)
+	}
+
+	jobID := "norn-m4-capacity-" + uuid.NewString()
+	job := nomadapi.NewServiceJob(jobID, jobID, "global", 50).AddDatacenter("dc1")
+	job.NodePool = stringPointer("app")
+	group := nomadapi.NewTaskGroup("web", 2).AddTask(
+		nomadapi.NewTask("sleep", "raw_exec").SetConfig("command", "/bin/sleep").SetConfig("args", []string{"180"}),
+	)
+	group.Constraints = append(group.Constraints, nomadapi.NewConstraint("", nomadapi.ConstraintDistinctHosts, ""))
+	job.AddTaskGroup(group)
+	if _, err := client.SubmitJob(job); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.StopJob(jobID, true) })
+	p.ScaleEffects, err = NewNomadScaleEffects(db, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitM4Placement(t, client.API(), jobID, 2)
+	runM4Scale(t, p, db, request, jobID, 3)
+	waitM4Placement(t, client.API(), jobID, 3)
+
+	counts, err := db.DesiredReplicaCounts(context.Background(), jobID, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nomad.ApplyDesiredReplicaCounts(job, counts)
+	if _, err := client.SubmitJob(job); err != nil {
+		t.Fatal(err)
+	}
+	waitM4Placement(t, client.API(), jobID, 3)
+
+	runM4Scale(t, p, db, request, jobID, 2)
+	waitM4Placement(t, client.API(), jobID, 2)
+}
+
+func runM4Scale(t *testing.T, p *Pipeline, db *store.DB, request EnqueueRequest, jobID string, count int) {
+	t.Helper()
+	request.Key = fmt.Sprintf("m4-scale-%d-%s", count, uuid.NewString())
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: jobID, SagaID: uuid.NewString(), Status: model.OperationQueued,
+		Source: "m4-disposable-integration", StartedAt: time.Now().UTC(), MaxAttempts: 3,
+		Payload: map[string]interface{}{"group": "web", "region": "local", "nomadRegion": "global", "count": count}}
+	accepted, err := p.QueueOperation(context.Background(), op, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := db.ClaimNextOperation(context.Background(), "m4-scale-worker", time.Minute, []string{"app.scale"})
+	if err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
+		t.Fatalf("claim scale %d = %+v, %v", count, claimed, err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		result, executeErr := p.ExecuteOperation(context.Background(), claimed, claim)
+		if executeErr == nil && result != nil && result.Status == model.OperationSucceeded {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scale to %d did not complete: result=%+v err=%v", count, result, executeErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func waitM4Placement(t *testing.T, api *nomadapi.Client, jobID string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		allocations, _, err := api.Jobs().Allocations(jobID, false, nil)
+		nodes := map[string]struct{}{}
+		running := 0
+		for _, allocation := range allocations {
+			if allocation.TaskGroup == "web" && allocation.DesiredStatus == nomadapi.AllocDesiredStatusRun && allocation.ClientStatus == nomadapi.AllocClientStatusRunning {
+				running++
+				nodes[allocation.NodeID] = struct{}{}
+			}
+		}
+		if err == nil && running == count && len(nodes) == count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("running allocations=%d distinct placements=%d, want %d (err=%v)", running, len(nodes), count, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
