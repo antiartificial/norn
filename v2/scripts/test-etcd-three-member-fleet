@@ -8,7 +8,8 @@ work_dir="$(mktemp -d "${TMPDIR:-/tmp}/norn-etcd-three.XXXXXX")"
 chmod 700 "$work_dir"
 suffix="$(basename "$work_dir" | tr -cd '[:alnum:]' | tail -c 8)"
 network="norn-etcd-qual-$suffix"
-image="quay.io/coreos/etcd:v3.5.17"
+image="${NORN_ETCD_IMAGE:-quay.io/coreos/etcd@sha256:a055da833a7c013b836ed0822e8ec1f99b059658be255ad8d0fcd31b635ae3d6}"
+container_user="$(id -u):$(id -g)"
 containers=()
 cleanup() {
   local status=$? attempt
@@ -69,7 +70,7 @@ cluster='m1=https://m1:2380,m2=https://m2:2380,m3=https://m3:2380'
 start_member() {
   local member="$1" data_dir="$2" container="$network-$1"
   mkdir -p "$work_dir/${data_dir##*/}"
-  docker run -d --name "$container" --network "$network" --network-alias "$member" \
+  docker run -d --user "$container_user" --name "$container" --network "$network" --network-alias "$member" \
     -p '127.0.0.1::2379' -v "$work_dir:/qual" "$image" /usr/local/bin/etcd \
     --name "$member" --data-dir "$data_dir" \
     --listen-client-urls 'https://0.0.0.0:2379' --advertise-client-urls "https://$member:2379" \
@@ -181,7 +182,7 @@ if len(snapshot) < 1024:
 snapshot[len(snapshot) // 2] ^= 0xFF
 Path(sys.argv[2]).write_bytes(snapshot)
 PY
-if docker run --rm -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/corrupt.db \
+if docker run --rm --user "$container_user" -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/corrupt.db \
   --name m1 --initial-cluster "$cluster" \
   --initial-advertise-peer-urls 'https://m1:2380' \
   --data-dir /qual/corrupt-restore >/dev/null 2>&1; then
@@ -192,7 +193,7 @@ echo 'Full-cluster restore from snapshot and normal runtime replay'
 for member in m1 m2 m3; do docker rm -f "$network-$member" >/dev/null; done
 containers=()
 for member in m1 m2 m3; do
-  docker run --rm -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/snapshot.db \
+  docker run --rm --user "$container_user" -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/snapshot.db \
     --name "$member" --initial-cluster "$cluster" \
     --initial-advertise-peer-urls "https://$member:2380" \
     --data-dir "/qual/restored-$member" >/dev/null
