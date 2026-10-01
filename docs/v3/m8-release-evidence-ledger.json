@@ -3,6 +3,48 @@
   "observed_at": "2026-10-01",
   "milestone": "M8",
   "milestone_status": "open",
+  "reviewed_open_pull_requests": {
+    "observed_on": "2026-10-01",
+    "norn_m8_evidence": {
+      "number": 98,
+      "base": "master",
+      "head": "068071cfa182f8c380b8bb2bcb982b02cc75a1a0",
+      "merge_state": "clean",
+      "required_checks": "all_success",
+      "boundary": "open review source and CI evidence; neither is a protected merge, live promotion, or M8 sign-off"
+    },
+    "norn_m6_authority_chain": {
+      "number": 102,
+      "base": "codex/m6-m7-cutover-recovery",
+      "head": "8365f00e39df0a5b59ac9ab97f31c6caa09db509",
+      "merge_state": "clean",
+      "required_check_state": "all_success_at_exact_head",
+      "boundary": "stacked non-master review source and green CI are not cutover, Fleet, or release evidence"
+    },
+    "fleet_local_drain": {
+      "number": 209,
+      "base": "main",
+      "head": "a20d5f8c260e919f088b4fe351fd6189fd52df94",
+      "merge_state": "clean",
+      "required_checks": "contract_success",
+      "boundary": "open source qualification only; no protected Fleet plan, runner attempt, provider inventory, or installed-state proof"
+    },
+    "nornui_capability_contract": {
+      "number": 20,
+      "base": "main",
+      "head": "3252851ec74647e73a8d84935101694d6606de3a",
+      "merge_state": "clean",
+      "required_checks": "macos_build_and_unit_tests_success",
+      "boundary": "open source qualification only; no published or installed NornUI release"
+    }
+  },
+  "pilot261001a": {
+    "status": "approved_precreate_only_pending_first_billable_create",
+    "spend_ceiling_usd": 10,
+    "maximum_lifespan_hours_from_first_billable_create": 4,
+    "last_provider_readback": "zero_pilot_mutations_at_2026-10-01T03:22:35.287865Z",
+    "boundary": "approval, exact-source binding, and zero-mutation readback are not a protected plan, runner attempt, provider apply, installed Fleet, or M8 sign-off"
+  },
   "norn": {
     "signed_candidate": {
       "commit": "8a291142677a7b00cc8606e61ac0a6952fff3e5c",

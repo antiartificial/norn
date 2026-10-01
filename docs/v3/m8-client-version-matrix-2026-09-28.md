@@ -16,6 +16,28 @@ machine-readable index is
 | Fleet live runtime | no version observed | Unobserved | The Mini readback reports zero Fleet node pools; that establishes only that the Mini is not configured for Fleet. | Complete provider, backend and installed-state inventory remains absent. Fresh protected plan/apply, exact installed versions, three-member etcd health, protected attempt/reconciliation, soak/fault and retirement evidence remain open. |
 | NornUI | proposed source `3252851ec74647e73a8d84935101694d6606de3a` in [PR #20](https://github.com/antiartificial/NornUI/pull/20), based on protected main `742445c491cd58c3e8992dab2ccafb212d938fab`; no published/installed version recorded | Open PR with successful exact-head [macOS build and unit tests 36827216694](https://github.com/antiartificial/NornUI/actions/runs/36827216694) and a separate [private development-signed Release-build receipt](m8-nornui-release-build-2026-10-01.md) | The source-derived signed-8a fixture decodes. An opt-in local test also passed the real Norn capabilities handler and bearer middleware response through the actual Swift `NornClient` over loopback, including wrong-bearer rejection. Release controls require the complete advertised feature/route contract, old event streams remain supported, and same-profile Fleet capability withdrawal clears gated caches. The local build passed 237 tests with zero failures and one standalone opt-in skip; the separate cross-client run executed and passed that opt-in test. A clean exact-source arm64 Release app passed strict signature and private receipt verification. The earlier `b59afc6` app launched in fixture mode showing sample data. | PR is unmerged and no published or installed NornUI release exists. The Apple Development signature and local HMAC receipt are pilot evidence only. Loopback capability negotiation does not cover all endpoints or live Mini/Fleet behavior; real etcd Fleet client behavior and M8 sign-off remain open. |
 
+## Open PR and pilot audit — 2026-10-01
+
+This is a source-review snapshot, captured after the checkpoint. Strict branch
+protection requires the named status contexts and linear history, but no
+approvals at these bases. Passing PR checks establish only the checked source
+at its listed head.
+
+| Surface | Head and current check state | Release boundary |
+| --- | --- | --- |
+| [Norn #98](https://github.com/antiartificial/norn/pull/98) | Open against protected `master` at `068071cfa182f8c380b8bb2bcb982b02cc75a1a0`; clean. All seven required contexts passed: API/CLI Go tests, Fleet pilot workload, OpenAPI contract, workflow lint, web UI build, and M4 durable replicas. | This ledger's PR is unmerged. Its green CI neither promotes `8a291142` on Mini nor creates a Fleet. |
+| [Norn #102](https://github.com/antiartificial/norn/pull/102) | Open stacked review against `codex/m6-m7-cutover-recovery` at `8365f00e39df0a5b59ac9ab97f31c6caa09db509`; clean. All exact-head required checks passed after the bounded etcd leader-election wait was exercised in the Fleet pilot workload job. | It is not against protected `master`; green stacked CI is not cutover, Fleet, or release evidence. |
+| [Fleet #209](https://github.com/antiartificial/norn-fleet/pull/209) | Open against protected `main` at `a20d5f8c260e919f088b4fe351fd6189fd52df94`; clean. Required `contract` passed. | A local drain qualification PR does not establish a plan, protected runner attempt, provider inventory, or installed Fleet. |
+| [NornUI #20](https://github.com/antiartificial/NornUI/pull/20) | Open against protected `main` at `3252851ec74647e73a8d84935101694d6606de3a`; clean. Required macOS build and unit-test check passed. | It is the development-signed build source, not a published or installed NornUI release. |
+
+`pilot261001a` remains owner-approved and precreate-bound: a $10 incremental
+ceiling, four-hour limit measured from the first billable create, and complete
+retirement. Its last indexed provider readback at `2026-10-01T03:22:35Z`
+reported zero pilot mutations and a pending first billable create. The packet
+is bound to signed Norn `8a291142` and Fleet desired source `39b7b3c8`; it has
+not produced backends, a protected plan, runner attempt, provider apply, or a
+live Fleet. See the [pilot precreate receipt](fleet-pilot-approval-preflight-2026-10-01.md).
+
 ## Proposed post-checkpoint qualification changes
 
 These changes are reviewable branches, not protected-source or installed-state
