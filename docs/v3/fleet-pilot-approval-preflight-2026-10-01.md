@@ -32,13 +32,20 @@ passed protected validation and no-cloud qualification. The protected
 ingress 2→3→2 implementation is already in that source through
 [Fleet PR #204](https://github.com/antiartificial/norn-fleet/pull/204), but
 the pilot proposal still stages a fixed three-control/two-ingress creation.
-The owner-only packet's fitness matrix names Norn candidate `47eb704445d793c64e9f3f289cd82de9a6caee95`,
-while the newly published signed platform release is
-`8a291142677a7b00cc8606e61ac0a6952fff3e5c`. The packet therefore is
-**not an apply-ready authority for the signed candidate**. Rebind and verify
-the exact release artifacts, source provenance, plans, and protected inputs
-before any billable creation; retain the original spend approval and clock
-receipts unchanged.
+At `2026-10-01T04:43:53Z`, the owner-only packet was rebound to signed Norn
+`8a291142677a7b00cc8606e61ac0a6952fff3e5c`. The new release-binding
+receipt has SHA-256 `44cf498e5e9c8a70e61efc949e88da228746e9853b1ceaf79ec5d2fabaa67691`;
+the fitness matrix has SHA-256
+`2cf73cb65bc3debc5fc0407507854bd328c78d661f8abe205f95c73e11444559`.
+Both Darwin arm64 and Linux amd64 bundles passed the pinned Ed25519 verifier,
+and their archive, manifest, signature and SBOM digests matched the published
+assets. The Linux amd64 archive SHA-256 is
+`6b3032b935c6d4d736313409f0a4a440c5f8c58f8104fa31d72762b0fce3c76e`.
+All 14 indexed packet artifacts passed a post-update hash check. The spend
+approval and clock receipts retained their original bytes and hashes. This
+is candidate provenance only: no fresh backends, protected plans, runner
+inputs, apply, or live qualification exist yet, and the old `47eb704` shadow
+receipt does not qualify the new candidate.
 An ingress scale exercise needs its own reviewed run-bound transition, Norn
 plan, protected attempt, exact-node drain, and remaining time/cost checks.
 It tests an ingress workload pool; it does not prove a separate application
