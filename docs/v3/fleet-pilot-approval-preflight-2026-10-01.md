@@ -32,6 +32,13 @@ passed protected validation and no-cloud qualification. The protected
 ingress 2→3→2 implementation is already in that source through
 [Fleet PR #204](https://github.com/antiartificial/norn-fleet/pull/204), but
 the pilot proposal still stages a fixed three-control/two-ingress creation.
+The owner-only packet's fitness matrix names Norn candidate `47eb704445d793c64e9f3f289cd82de9a6caee95`,
+while the newly published signed platform release is
+`8a291142677a7b00cc8606e61ac0a6952fff3e5c`. The packet therefore is
+**not an apply-ready authority for the signed candidate**. Rebind and verify
+the exact release artifacts, source provenance, plans, and protected inputs
+before any billable creation; retain the original spend approval and clock
+receipts unchanged.
 An ingress scale exercise needs its own reviewed run-bound transition, Norn
 plan, protected attempt, exact-node drain, and remaining time/cost checks.
 It tests an ingress workload pool; it does not prove a separate application
