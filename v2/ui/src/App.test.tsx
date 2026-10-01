@@ -25,6 +25,14 @@ const unhealthyApp = {
   nomadStatus: 'failed',
 }
 
+const releaseCapabilityEndpoints = {
+  releasePreflight: '/api/v1/apps/{id}/releases/preflight',
+  releaseDeployments: '/api/v1/apps/{id}/releases/deployments',
+  releaseQualifications: '/api/v1/apps/{id}/qualifications',
+  releasePromotions: '/api/v1/apps/{id}/promotions',
+  releaseRollbacks: '/api/v1/apps/{id}/releases/rollbacks',
+}
+
 function releaseQualification(overrides: Record<string, unknown> = {}) {
   const sourceSha = 'a'.repeat(40)
   const artifact = `registry.example/api@sha256:${'b'.repeat(64)}`
@@ -183,6 +191,7 @@ describe('App shell routing', () => {
         protocolVersion: 1,
         serverVersion: 'test',
         features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'],
+        endpoints: releaseCapabilityEndpoints,
         environment: { id: 'production', profile: 'production' },
       }),
       '/api/v1/apps/api/qualifications': json({ schemaVersion: 'norn.release-qualifications/v2', qualifications: [releaseQualification()], count: 1 }),
@@ -211,7 +220,7 @@ describe('App shell routing', () => {
       bundle: { schemaVersion: 'norn.private-release-attestation/v1', keyId: 'sha256:private-key', provenance: { payloadType: 'application/vnd.in-toto+json', payload: 'provenance', signatures: [{ keyid: 'sha256:private-key', sig: 'sig' }] }, sbom: { payloadType: 'application/vnd.in-toto+json', payload: 'sbom', signatures: [{ keyid: 'sha256:private-key', sig: 'sig' }] } },
     }
     installFetch({
-      '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1', 'norn-signed-private-v1'], environment: { id: 'production', profile: 'production' } }),
+      '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1', 'norn-signed-private-v1'], endpoints: releaseCapabilityEndpoints, environment: { id: 'production', profile: 'production' } }),
       '/api/v1/apps/api/qualifications': json({ schemaVersion: 'norn.release-qualifications/v2', qualifications: [qualification], count: 1 }),
     })
     renderApp('/releases')
@@ -225,7 +234,7 @@ describe('App shell routing', () => {
 
   it('keeps production evidence review-only when the selected application changes', async () => {
     installFetch({
-      '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'], environment: { id: 'production', profile: 'production' } }),
+      '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'], endpoints: releaseCapabilityEndpoints, environment: { id: 'production', profile: 'production' } }),
       '/api/v1/apps/api/qualifications': json({ schemaVersion: 'norn.release-qualifications/v2', qualifications: [releaseQualification()], count: 1 }),
     })
     renderApp('/releases')
@@ -242,6 +251,7 @@ describe('App shell routing', () => {
         protocolVersion: 1,
         serverVersion: 'test',
         features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'],
+        endpoints: releaseCapabilityEndpoints,
         environment: { id: 'staging', profile: 'development' },
       }),
       '/api/v1/apps/api/qualifications': json(releaseQualification({ id: 'qualification-new', deploymentId: deploymentID, expiresAt: '2026-09-01T15:00:00Z' }), 201),
@@ -263,6 +273,7 @@ describe('App shell routing', () => {
         protocolVersion: 1,
         serverVersion: 'test',
         features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'],
+        endpoints: releaseCapabilityEndpoints,
         environment: { id: 'staging', profile: 'development' },
       }),
       '/api/v1/apps/api/qualifications': json({ schemaVersion: 'norn.release-qualifications/v2', qualifications: [], count: 0 }),
