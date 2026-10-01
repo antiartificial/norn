@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Guard and record the irreversible Mini legacy-baseline transition."""
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.request
+import urllib.parse
+from pathlib import Path
+
+SCHEMA = "norn.m5-protected-transition/v1"
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def load_private(path: Path, label: str) -> dict:
+    if not path.is_absolute() or path.is_symlink():
+        fail(f"{label} must be an absolute regular non-symlink file")
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        fail(f"{label} must be an owner-only mode-0600 regular file")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"{label} is not readable JSON: {error}")
+
+
+def atomic_private_json(path: Path, value: dict, *, replace: bool) -> None:
+    if not replace and path.exists():
+        fail(f"output already exists: {path}")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    os.fchmod(fd, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if replace:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                fail(f"output was claimed concurrently: {path}")
+            os.unlink(temporary)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def validate_output(path: Path, label: str) -> None:
+    if not path.is_absolute() or path.parent.is_symlink() or not path.parent.is_dir():
+        fail(f"{label} path is unsafe")
+    parent = path.parent.stat()
+    if parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) != 0o700:
+        fail(f"{label} parent must be an owner-only mode-0700 directory")
+
+
+def fetch_json(base: str, path: str, token: str) -> object:
+    request = urllib.request.Request(base.rstrip("/") + path)
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response)
+
+
+def stable_state(base: str, token: str) -> dict:
+    health = fetch_json(base, "/api/health", token)
+    apps = fetch_json(base, "/api/apps", token)
+    manifest = fetch_json(base, "/api/services/manifest", token)
+    if isinstance(manifest, dict):
+        manifest = manifest.get("services")
+    if not isinstance(health, dict) or not isinstance(apps, list) or not isinstance(manifest, list):
+        fail("Mini preservation endpoints returned unsupported JSON")
+    services_health = health.get("services", {})
+    connector = health.get("network", {}).get("workloadConnector")
+    required_health = ("nomad", "consul", f"workload-connector/{connector}")
+    if (health.get("status") != "ok" or connector != "nomad-consul"
+            or any(services_health.get(name) != "up" for name in required_health)):
+        fail("Mini workload observation is degraded or incomplete")
+
+    def safe_endpoint(value: object) -> str:
+        if value in (None, ""):
+            return ""
+        if not isinstance(value, str):
+            fail("endpoint URL is not a string")
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+            fail("endpoint URL contains credentials, query parameters, or a fragment")
+        return value
+
+    app_rows = []
+    for app in apps:
+        spec = app.get("spec", {})
+        processes = spec.get("processes", {})
+        app_rows.append({
+            "name": spec.get("name"), "deploy": spec.get("deploy"),
+            "specDigest": digest(spec), "nomadStatus": app.get("nomadStatus"), "healthy": app.get("healthy"),
+            "endpoints": sorted(safe_endpoint(item.get("url")) for item in spec.get("endpoints", [])),
+            "secretReferences": sorted(spec.get("secrets", [])),
+            "processes": [{"name": name, "schedule": value.get("schedule"), "port": value.get("port"),
+                           "scale": value.get("scaling")}
+                          for name, value in sorted(processes.items())],
+            "allocations": sorted({item.get("id") for item in app.get("allocations") or [] if item.get("id")}),
+        })
+    service_rows = []
+    for service in manifest:
+        service_rows.append({
+            "name": service.get("name"), "app": service.get("app"),
+            "process": service.get("process"), "type": service.get("type"),
+            "status": service.get("status"), "expectedState": service.get("expectedState"),
+            "schedule": service.get("schedule"),
+            "endpoints": sorted(safe_endpoint(item.get("url")) for item in service.get("endpoints", [])),
+            "instances": sorted({item.get("allocationId") or item.get("id")
+                                 for item in service.get("instances") or []
+                                 if item.get("allocationId") or item.get("id")}),
+        })
+    return {"workloadHealth": {name: services_health[name] for name in required_health},
+            "apps": sorted(app_rows, key=lambda row: json.dumps(row, sort_keys=True)),
+            "services": sorted(service_rows, key=lambda row: json.dumps(row, sort_keys=True))}
+
+
+def digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--candidate-ref", required=True)
+    parser.add_argument("--candidate-sha", required=True)
+    parser.add_argument("--legacy-release", required=True)
+    parser.add_argument("--backup-proof", required=True, type=Path)
+    parser.add_argument("--backup-artifact", required=True, type=Path)
+    parser.add_argument("--shadow-receipt", required=True, type=Path)
+    parser.add_argument("--ledger", required=True, type=Path)
+    parser.add_argument("--receipt", required=True, type=Path)
+    parser.add_argument("--api", default=os.environ.get("NORN_API", "http://127.0.0.1:8800"))
+    parser.add_argument("--upgrade-script", type=Path)
+    args = parser.parse_args()
+    if os.environ.get("NORN_M5_PROTECTED_TRANSITION") != "1":
+        fail("set NORN_M5_PROTECTED_TRANSITION=1 for this irreversible maintenance action")
+    for value, label in ((args.candidate_sha, "candidate SHA"), (args.legacy_release, "legacy release SHA")):
+        if len(value) != 40 or any(ch not in "0123456789abcdef" for ch in value):
+            fail(f"{label} must be 40 lowercase hexadecimal characters")
+    if args.candidate_ref != args.candidate_sha:
+        fail("candidate ref must be the exact candidate SHA")
+    parsed_api = urllib.parse.urlsplit(args.api)
+    if (parsed_api.scheme != "http" or parsed_api.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or parsed_api.path not in {"", "/"} or parsed_api.query or parsed_api.fragment or parsed_api.username):
+        fail("API must be a direct loopback HTTP base")
+    validate_output(args.ledger, "transition ledger")
+    validate_output(args.receipt, "transition receipt")
+    if args.ledger == args.receipt:
+        fail("transition ledger and receipt paths must differ")
+    if args.receipt.exists():
+        fail("transition receipt already exists")
+    backup = load_private(args.backup_proof, "backup proof")
+    shadow = load_private(args.shadow_receipt, "shadow receipt")
+    if backup.get("schema") != "norn.legacy-control-backup/v1" or backup.get("sourceReleaseSHA") != args.legacy_release:
+        fail("backup proof does not bind the declared legacy release")
+    if (shadow.get("schema") != "norn.m5-signed-shadow-launchagent-rehearsal/v2"
+            or shadow.get("runtimeClaim") != "passed" or shadow.get("privateRestoreClaim") != "passed"):
+        fail("shadow receipt is not a successful v2 signed-shadow proof")
+    if shadow.get("candidateSHA") != args.candidate_sha:
+        fail("shadow receipt does not bind the declared candidate")
+    if shadow.get("backupSHA256") != backup.get("backupSHA256") or shadow.get("backupBytes") != backup.get("backupBytes"):
+        fail("shadow receipt does not bind the protected backup proof")
+    artifact = args.backup_artifact
+    if not artifact.is_absolute() or artifact.is_symlink() or not artifact.is_file():
+        fail("backup artifact must be an absolute regular non-symlink file")
+    if stat.S_IMODE(artifact.stat().st_mode) != 0o600 or artifact.stat().st_uid != os.geteuid():
+        fail("backup artifact must be owner-only mode 0600")
+    if artifact.stat().st_size != backup.get("backupBytes") or file_digest(artifact) != backup.get("backupSHA256"):
+        fail("backup artifact no longer matches its proof")
+    if args.ledger.exists():
+        fail("transition ledger already exists; inspect it and use the documented recovery path")
+    token = os.environ.get("NORN_TOKEN") or os.environ.get("NORN_API_TOKEN", "")
+    before = stable_state(args.api, token)
+    ledger = {"schema": SCHEMA, "state": "prepared", "preparedAt": now(),
+              "legacyReleaseSHA": args.legacy_release, "candidateSHA": args.candidate_sha,
+              "backupSHA256": backup["backupSHA256"], "beforeDigest": digest(before)}
+    atomic_private_json(args.ledger, ledger, replace=False)
+    upgrade = args.upgrade_script or Path(__file__).with_name("platform-upgrade")
+    if args.upgrade_script and os.environ.get("NORN_M5_TRANSITION_TEST_HOOKS") != "1":
+        fail("--upgrade-script is restricted to the hermetic test harness")
+    ledger.update({"state": "candidate-recovery-required", "upgradeStartedAt": now()})
+    atomic_private_json(args.ledger, ledger, replace=True)
+    command = [str(upgrade), "legacy-baseline", args.candidate_ref,
+               "--legacy-release", args.legacy_release,
+               "--backup-proof", str(args.backup_proof),
+               "--backup-artifact", str(args.backup_artifact)]
+    upgrade_environment = os.environ.copy()
+    upgrade_environment["NORN_API_BASE"] = args.api.rstrip("/")
+    result = subprocess.run(command, env=upgrade_environment)
+    ledger["upgradeExitCode"] = result.returncode
+    if result.returncode:
+        ledger["failedAt"] = now()
+        atomic_private_json(args.ledger, ledger, replace=True)
+        return result.returncode
+    after = stable_state(args.api, token)
+    ledger["afterDigest"] = digest(after)
+    if before != after:
+        ledger.update({"state": "postflight-preservation-failed", "failedAt": now()})
+        atomic_private_json(args.ledger, ledger, replace=True)
+        fail("Mini app, allocation, route, secret-reference, or schedule identity changed during transition")
+    ledger.update({"state": "complete", "completedAt": now()})
+    atomic_private_json(args.ledger, ledger, replace=True)
+    receipt = dict(ledger)
+    receipt["preservation"] = {"matched": True, "snapshot": before}
+    atomic_private_json(args.receipt, receipt, replace=False)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except SystemExit as error:
+        if isinstance(error.code, str):
+            print(error.code, file=sys.stderr)
+            raise SystemExit(2)
+        raise
