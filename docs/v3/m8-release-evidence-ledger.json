@@ -69,6 +69,8 @@
     "proposed_commit": "63a0b5e9a884fc09d9a491d145b4620acfe7f84e",
     "exact_head_ci_run": 36821630818,
     "source_derived_signed_8a_capability_decode": "passed_open_pr_not_live_capture",
+    "unsigned_release_build_receipt": "docs/v3/m8-nornui-release-build-2026-10-01.md",
+    "local_signing_state": "not_completed_no_signed_artifact",
     "evidence_class": "open_pr_exact_head_ci_not_release",
     "released_or_installed_version": null,
     "m8_support": "unknown_unsupported"
