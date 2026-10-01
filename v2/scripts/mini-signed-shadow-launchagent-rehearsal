@@ -295,10 +295,17 @@ printf '%s %s %s %s\n' "$label" "$port" "$token" "$identity_key" >"$session"; ch
 bootstrapped="$scratch/bootstrapped"
 runtime_attempted="$scratch/runtime-attempted"
 runtime_passed="$scratch/runtime-passed"
-write_receipt() { status=$1 RECEIPT="$receipt" SHA="$sha" LABEL="$label" PORT="$port" ATTEMPTED="$runtime_attempted" PASSED="$runtime_passed" python3 - <<'PY'
-import datetime,json,os,tempfile
+write_receipt() { status=$1 RECEIPT="$receipt" SHA="$sha" LABEL="$label" PORT="$port" ATTEMPTED="$runtime_attempted" PASSED="$runtime_passed" BACKUP_ARTIFACT="$NORN_REHEARSAL_BACKUP_ARTIFACT" BACKUP_PROOF="$NORN_REHEARSAL_BACKUP_PROOF" python3 - <<'PY'
+import datetime,hashlib,json,os,tempfile
 runtime='passed' if os.path.exists(os.environ['PASSED']) and int(os.environ['status']) == 0 else ('failed' if os.path.exists(os.environ['ATTEMPTED']) else 'not-run')
-value={'schema':'norn.m5-signed-shadow-launchagent-rehearsal/v1','completedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'exitCode':int(os.environ['status']),'candidateSHA':os.environ['SHA'],'shadowLabel':os.environ['LABEL'],'shadowPort':int(os.environ['PORT']),'runtimeClaim':runtime}
+with open(os.environ['BACKUP_PROOF'], encoding='utf-8') as source: proof=json.load(source)
+digest=hashlib.sha256()
+with open(os.environ['BACKUP_ARTIFACT'],'rb') as source:
+    for chunk in iter(lambda:source.read(1024*1024),b''): digest.update(chunk)
+size=os.path.getsize(os.environ['BACKUP_ARTIFACT'])
+if proof.get('backupSHA256') != digest.hexdigest() or proof.get('backupBytes') != size:
+    raise SystemExit('protected backup changed before shadow receipt publication')
+value={'schema':'norn.m5-signed-shadow-launchagent-rehearsal/v2','completedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'exitCode':int(os.environ['status']),'candidateSHA':os.environ['SHA'],'shadowLabel':os.environ['LABEL'],'shadowPort':int(os.environ['PORT']),'runtimeClaim':runtime,'privateRestoreClaim':'passed' if runtime == 'passed' else 'unproven','backupSHA256':digest.hexdigest(),'backupBytes':size}
 fd,path=tempfile.mkstemp(prefix='.norn-m5-shadow-receipt.',dir=os.path.dirname(os.environ['RECEIPT'])); os.fchmod(fd,0o600)
 with os.fdopen(fd,'w') as f: json.dump(value,f,sort_keys=True); f.write('\n')
 try: os.link(path, os.environ['RECEIPT'])

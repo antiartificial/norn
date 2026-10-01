@@ -271,7 +271,9 @@ jobs:
       - name: Verify platform upgrade preflight and promotion lock
         run: python3 v2/scripts/platform_upgrade_integration_test.py
       - name: Verify signed shadow LaunchAgent guards
-        run: python3 v2/scripts/test-mini-signed-shadow-launchagent-rehearsal.py
+        run: |
+          python3 v2/scripts/test-mini-signed-shadow-launchagent-rehearsal.py
+          python3 v2/scripts/test-mini-protected-transition-rehearsal.py
       - name: Build, package, sign and import a disposable release
         run: bash v2/scripts/test-platform-release-bundle.sh
 

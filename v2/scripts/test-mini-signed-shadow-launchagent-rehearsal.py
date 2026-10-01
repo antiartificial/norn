@@ -35,10 +35,15 @@ class SignedShadowGuardTests(unittest.TestCase):
         key = root / 'key'; key.write_text('fixture', encoding='utf-8')
         scratch = root / 'scratch'; scratch.mkdir()
         receipt = root / 'receipt.json'
+        backup = root / 'backup.dump'; backup.write_bytes(b'protected-backup'); backup.chmod(0o600)
+        proof = root / 'proof.json'; proof.write_text(json.dumps({
+            'backupSHA256': hashlib.sha256(backup.read_bytes()).hexdigest(),
+            'backupBytes': backup.stat().st_size,
+        }), encoding='utf-8'); proof.chmod(0o600)
         env = os.environ.copy(); env.update({
             'TMPDIR': str(scratch), 'NORN_M5_SIGNED_SHADOW_REHEARSAL': '1',
-            'NORN_REHEARSAL_BACKUP_ARTIFACT': '/private/backup',
-            'NORN_REHEARSAL_BACKUP_PROOF': '/private/proof',
+            'NORN_REHEARSAL_BACKUP_ARTIFACT': str(backup),
+            'NORN_REHEARSAL_BACKUP_PROOF': str(proof),
             'NORN_M5_SHADOW_RECEIPT': str(receipt),
         })
         return harness, release, key, scratch, receipt, env
@@ -252,7 +257,12 @@ class SignedShadowGuardTests(unittest.TestCase):
             os.killpg(process.pid, signal.SIGTERM)
             _, stderr = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 143, stderr)
-            self.assertIn('"exitCode": 143', receipt.read_text(encoding='utf-8'))
+            value = json.loads(receipt.read_text(encoding='utf-8'))
+            self.assertEqual(value['schema'], 'norn.m5-signed-shadow-launchagent-rehearsal/v2')
+            self.assertEqual(value['exitCode'], 143)
+            self.assertEqual(value['backupSHA256'], hashlib.sha256(b'protected-backup').hexdigest())
+            self.assertEqual(value['backupBytes'], len(b'protected-backup'))
+            self.assertEqual(value['privateRestoreClaim'], 'unproven')
             self.assertEqual(list(scratch.iterdir()), [])
 
     def test_has_unique_label_and_disabled_workers(self):
