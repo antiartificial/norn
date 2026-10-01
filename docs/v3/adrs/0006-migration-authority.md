@@ -23,9 +23,10 @@ database, exact source and target service/binding identities and generations,
 source and target control-store identities and authority epochs, candidate
 release digest, active catalog revision and digest, complete writer-inventory
 digest, consistency-group digest, authority generation, phase, prior-manifest
-digest, evidence object identity and digest, signer key ID, expiry, and declared
-recovery policy. Record credential references rather than DSNs, tokens or key
-material. Canonical bytes and schema version are part of the signed contract.
+digest, evidence object identity and digest, signer key ID, phase-advancement
+expiry, and declared recovery policy. Record credential references rather than
+DSNs, tokens or key material. Canonical bytes and schema version are part of
+the signed contract.
 
 Use a dedicated migration-evidence signing role. Fleet's protected execution
 environment holds its private key; Norn and independently retained recovery
@@ -36,11 +37,17 @@ verify an unretired migration chain. Missing or revoked verification material
 fails closed.
 
 Norn verifies a phase by checking the complete signature and hash chain,
-manifest identity and expiry, retained immutable evidence bytes, and typed
-phase-specific assertions. A digest proves byte identity, not that an external
-effect occurred. Where a fact can change, Norn or a dedicated verifier performs
-a fresh, narrow readback against the exact source, target, consumer generation
-or route identity named by the manifest. Fleet obtains short-lived,
+manifest identity, signed phase-advancement expiry, retained immutable evidence
+bytes, and typed phase-specific assertions. Expiry prevents the manifest from
+authorizing a new phase transition or external effect after its deadline; it
+does not erase the manifest's historical validity or prevent recovery from
+using it to identify the last durable boundary. Continuing after expiry
+requires a signed successor that binds the prior manifest and fresh readbacks;
+an expired manifest alone cannot authorize action. A digest proves byte
+identity, not that an external effect occurred. Where a fact can change, Norn
+or a dedicated verifier performs a fresh, narrow readback against the exact
+source, target, consumer generation or route identity named by the manifest.
+Fleet obtains short-lived,
 migration- and phase-scoped Norn credentials through its protected workload
 identity. Norn does not receive Fleet's provider token, remote-state
 credentials, database maintenance credentials, traffic-publisher credentials
@@ -123,7 +130,7 @@ external proof or fresh readback is absent, stale or ambiguous.
 
 ## Acceptance evidence
 
-For each supported cutover path, interrupt every checkpoint and recover using the manifest without the source API. Test stale writers/executors, ambiguous responses, target validation failure and consumer generation mismatch. Exercise the published post-write recovery boundary: reverse migration only when that path is supported, otherwise forward repair or restore with explicitly declared loss bounds. Verify constraints/checksums, identities, auth, receipts and acknowledged work as applicable. Demonstrate fresh etcd operation, archive retrieval and full restore with no control PG dependency. Measure mutation pause, write interruption and recovery time against per-path budgets. Deferred general control-store conversion and reverse conversion are not initial GA gates.
+For each supported cutover path, interrupt every checkpoint and recover using the manifest without the source API, including after the phase-advancement expiry has passed. Prove the expired chain still identifies the last durable boundary while refusing any new transition or external effect until a signed successor and fresh readbacks exist. Test stale writers/executors, ambiguous responses, target validation failure and consumer generation mismatch. Exercise the published post-write recovery boundary: reverse migration only when that path is supported, otherwise forward repair or restore with explicitly declared loss bounds. Verify constraints/checksums, identities, auth, receipts and acknowledged work as applicable. Demonstrate fresh etcd operation, archive retrieval and full restore with no control PG dependency. Measure mutation pause, write interruption and recovery time against per-path budgets. Deferred general control-store conversion and reverse conversion are not initial GA gates.
 
 ## Decisions retained for each selected path
 
