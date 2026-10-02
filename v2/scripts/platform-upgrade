@@ -51,6 +51,9 @@ Environment:
   NORN_RELEASE_VERIFY_HOOK Executable called with <release-dir> <release.json>.
   NORN_RELEASE_CONFIG_FILE Private strict key=value host config. Defaults to
                            $HOME/.config/norn/release.env when it exists.
+  NORN_RELEASE_MANIFEST_HELPER Process-local trusted manifest helper. Keep an
+                           approved rollback-bridge helper outside the managed
+                           helper directory because activation resynchronizes it.
   NORN_RELEASE_SIGNATURE_POLICY allow-unsigned or require-signed.
   NORN_ALLOW_LEGACY_RELEASES Explicit one-time unsigned legacy rollback escape hatch.
   NORN_RELEASE_LOGS_DIR    Mutable release logs outside immutable artifacts.
