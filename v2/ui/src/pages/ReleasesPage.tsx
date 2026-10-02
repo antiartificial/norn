@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api.ts'
 import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/durableIntent.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { Deployment, ReleaseQualification, ReleaseQualificationResponse } from '../types/index.ts'
+import type { DeploymentListResponse, ReleaseQualification, ReleaseQualificationResponse } from '../types/index.ts'
 import { Button, CopyButton, EmptyState, ErrorState, StatusChip, useToast } from '../components/ui/index.ts'
 
 function short(value: string, count = 12): string {
@@ -50,7 +50,7 @@ function EnvironmentBadge({ environment }: { environment: string }) {
 }
 
 export function ReleasesPage() {
-  const { apps, environment, releasePipelineAvailable } = useRuntimeContext()
+  const { apps, capabilities, environment, releasePipelineAvailable } = useRuntimeContext()
   const [appId, setAppId] = useState(apps[0]?.spec.name ?? '')
   const [deploymentId, setDeploymentId] = useState('')
   const [deploymentIdError, setDeploymentIdError] = useState('')
@@ -58,6 +58,7 @@ export function ReleasesPage() {
   const { toast } = useToast()
   const isProduction = environment.id === 'production'
   const isStaging = environment.id === 'staging'
+  const qualificationsPath = capabilities?.endpoints?.releaseQualifications?.replace('{id}', encodeURIComponent(appId))
 
   useEffect(() => {
     if (apps[0]) setAppId((current) => current || apps[0].spec.name)
@@ -69,19 +70,19 @@ export function ReleasesPage() {
 
   const qualifications = useQuery({
     queryKey: ['release-qualifications', appId],
-    queryFn: () => apiFetch<ReleaseQualificationResponse>(`/api/v1/apps/${encodeURIComponent(appId ?? '')}/qualifications`),
-    enabled: Boolean(appId) && releasePipelineAvailable,
+    queryFn: () => apiFetch<ReleaseQualificationResponse>(qualificationsPath!),
+    enabled: Boolean(appId) && Boolean(qualificationsPath) && releasePipelineAvailable,
     staleTime: 10_000,
   })
   const deployments = useQuery({
     queryKey: ['deployments', { app: appId, limit: 12 }],
-    queryFn: () => apiFetch<Deployment[]>(`/api/deployments?app=${encodeURIComponent(appId ?? '')}&limit=12`),
+    queryFn: () => apiFetch<DeploymentListResponse>(`/api/v1/deployments?app=${encodeURIComponent(appId ?? '')}&limit=12`),
     enabled: isStaging && Boolean(appId) && releasePipelineAvailable,
     staleTime: 10_000,
   })
 
   const qualificationRequest = useMutation({
-    mutationFn: async ({ deploymentId: value, intent }: { deploymentId: string; intent: DurableIntent }) => apiFetch<ReleaseQualification>(`/api/v1/apps/${encodeURIComponent(appId)}/qualifications`, {
+    mutationFn: async ({ deploymentId: value, intent }: { deploymentId: string; intent: DurableIntent }) => apiFetch<ReleaseQualification>(qualificationsPath!, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.key },
       body: JSON.stringify({ deploymentId: value }),
@@ -139,7 +140,7 @@ export function ReleasesPage() {
         <section className="release-card" aria-labelledby="record-qualification-title">
           <div className="release-card-heading"><div><h3 id="record-qualification-title">Record successful staging qualification</h3><p>Select a successful staging deployment or enter its exact UUID. This creates the first signed evidence receipt.</p></div><StatusChip tone="warning" label="staging only" /></div>
           <div className="release-qualification-entry">
-            <label>Successful staging deployment<select value="" onChange={(event) => { if (event.target.value) { setDeploymentId(event.target.value); setDeploymentIdError('') } }} aria-describedby="deployment-id-help"><option value="">Choose a recent successful deployment</option>{(deployments.data ?? []).filter((deployment) => ['healthy', 'deployed', 'succeeded'].includes(deployment.status.toLowerCase())).map((deployment) => <option key={deployment.id} value={deployment.id}>{short(deployment.id, 24)} · {short(deployment.commitSha)} · {deployment.status}</option>)}</select></label>
+            <label>Successful staging deployment<select value="" onChange={(event) => { if (event.target.value) { setDeploymentId(event.target.value); setDeploymentIdError('') } }} aria-describedby="deployment-id-help"><option value="">Choose a recent successful deployment</option>{(deployments.data?.deployments ?? []).filter((deployment) => ['healthy', 'deployed', 'succeeded'].includes(deployment.status.toLowerCase())).map((deployment) => <option key={deployment.id} value={deployment.id}>{short(deployment.id, 24)} · {short(deployment.commitSha)} · {deployment.status}</option>)}</select></label>
             <label>Deployment UUID<input value={deploymentId} onChange={(event) => { setDeploymentId(event.target.value); setDeploymentIdError('') }} spellCheck={false} autoCapitalize="off" autoComplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" aria-describedby="deployment-id-help deployment-id-error" aria-invalid={Boolean(deploymentIdError)} /></label>
           </div>
           <p id="deployment-id-help" className="release-field-hint">Use the deployment ID shown when the staging release operation succeeds. Only a successful staging deployment can be qualified.</p>
