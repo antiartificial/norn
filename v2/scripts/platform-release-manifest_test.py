@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -24,6 +25,17 @@ BINARIES = (
     "platform-release-verify-github",
     "platform-upgrade",
 )
+LEGACY_BINARIES = (
+    "host-runtime",
+    "norn",
+    "norn-api",
+    "norn-host-agent",
+    "platform-release-artifact",
+    "platform-release-fetch-github",
+    "platform-release-manifest",
+    "platform-release-verify-github",
+    "platform-upgrade",
+)
 
 
 class PlatformReleaseManifestTests(unittest.TestCase):
@@ -38,15 +50,18 @@ class PlatformReleaseManifestTests(unittest.TestCase):
         (self.source / "v2/api/go.sum").write_text("api lock\n", encoding="utf-8")
         (self.source / "v2/cli/go.sum").write_text("cli lock\n", encoding="utf-8")
         (self.source / "v2/ui/pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
-        (self.release / "bin").mkdir(parents=True)
-        (self.release / "ui/assets").mkdir(parents=True)
-        for name in BINARIES:
-            binary = self.release / "bin" / name
+        self.populate_release(self.release, BINARIES)
+        self.create(self.release)
+
+    def populate_release(self, release: Path, binaries: tuple[str, ...]) -> None:
+        (release / "bin").mkdir(parents=True)
+        (release / "ui/assets").mkdir(parents=True)
+        for name in binaries:
+            binary = release / "bin" / name
             binary.write_bytes(name.encode("utf-8"))
             binary.chmod(0o755)
-        (self.release / "ui/index.html").write_text("<main>Norn</main>\n", encoding="utf-8")
-        (self.release / "ui/assets/app.js").write_text("export default 1\n", encoding="utf-8")
-        self.create(self.release)
+        (release / "ui/index.html").write_text("<main>Norn</main>\n", encoding="utf-8")
+        (release / "ui/assets/app.js").write_text("export default 1\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -62,12 +77,12 @@ class PlatformReleaseManifestTests(unittest.TestCase):
             self.fail(f"helper failed: {result.stderr}")
         return result
 
-    def create(self, release: Path) -> None:
+    def create(self, release: Path, expect_success: bool = True) -> subprocess.CompletedProcess[str]:
         (release / "release.env").write_text(
             f"NORN_RELEASE_SHA={SHA}\nNORN_RELEASE_VERSION=v2.18.0\nNORN_UI_DIR=ui\n",
             encoding="utf-8",
         )
-        self.run_helper(
+        result = self.run_helper(
             "create",
             "--release", str(release),
             "--source", str(self.source),
@@ -86,10 +101,58 @@ class PlatformReleaseManifestTests(unittest.TestCase):
             "--go-ldflag=-buildid=",
             "--cgo-enabled", "0",
             "--source-date-epoch", "1787792400",
+            expect_success=expect_success,
         )
+        if not expect_success:
+            return result
+        self.seal(release)
+
+        return result
+
+    def seal(self, release: Path) -> None:
         for path in sorted(release.rglob("*"), reverse=True):
             path.chmod(0o555 if path.is_dir() or path.parent == release / "bin" else 0o444)
         release.chmod(0o555)
+
+    def legacy_release(self, signed: bool = False) -> Path:
+        legacy = self.root / "legacy-release"
+        self.populate_release(legacy, BINARIES)
+        self.create(legacy)
+        for path in sorted(legacy.rglob("*"), reverse=True):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        legacy.chmod(0o755)
+        for name in set(BINARIES) - set(LEGACY_BINARIES):
+            (legacy / "bin" / name).unlink()
+        manifest_path = legacy / "release.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"]["binaries"] = {
+            path: digest
+            for path, digest in manifest["artifacts"]["binaries"].items()
+            if path.removeprefix("bin/") in LEGACY_BINARIES
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        signature_path = legacy / "release.signature.json"
+        signature = json.loads(signature_path.read_text(encoding="utf-8"))
+        if signed:
+            signatures = legacy / "signatures"
+            signatures.mkdir()
+            manifest = signatures / "legacy.manifest.json"
+            detached = signatures / "legacy.manifest.sig"
+            manifest.write_text("{}\n", encoding="utf-8")
+            detached.write_bytes(b"detached-signature")
+            signature["status"] = "signed"
+            signature["artifacts"] = {
+                f"signatures/{path.name}": hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (manifest, detached)
+            }
+        signature["manifestSha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        signature_path.write_text(
+            json.dumps(signature, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        self.seal(legacy)
+        return legacy
 
     def verify(self, release: Path, expect_success: bool = True) -> subprocess.CompletedProcess[str]:
         return self.run_helper(
@@ -117,6 +180,41 @@ class PlatformReleaseManifestTests(unittest.TestCase):
             [f"bin/{name}" for name in BINARIES],
         )
         self.assertEqual(len(manifest["ui"]["treeSha256"]), 64)
+
+    def test_verify_accepts_legacy_binary_layout_for_rollback_compatibility(self) -> None:
+        legacy = self.legacy_release(signed=True)
+
+        result = self.verify(legacy)
+        self.assertEqual(result.stdout.strip(), "signed")
+
+    def test_create_rejects_legacy_binary_layout(self) -> None:
+        legacy = self.root / "new-legacy-layout"
+        self.populate_release(legacy, LEGACY_BINARIES)
+
+        result = self.create(legacy, expect_success=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("new release binary set differs", result.stderr)
+
+    def test_verify_rejects_missing_required_binary_from_current_layout(self) -> None:
+        binary = self.release / "bin/norn-effect-runner"
+        binary.parent.chmod(0o755)
+        binary.unlink()
+        binary.parent.chmod(0o555)
+
+        result = self.verify(self.release, expect_success=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("binary set differs", result.stderr)
+
+    def test_verify_rejects_extra_binary_from_current_layout(self) -> None:
+        binary = self.release / "bin/unexpected-helper"
+        binary.parent.chmod(0o755)
+        binary.write_text("unexpected\n", encoding="utf-8")
+        binary.chmod(0o555)
+        binary.parent.chmod(0o555)
+
+        result = self.verify(self.release, expect_success=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("binary set differs", result.stderr)
 
     def test_verify_rejects_binary_tampering(self) -> None:
         (self.release / "bin/norn-api").chmod(0o755)
