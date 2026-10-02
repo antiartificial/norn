@@ -14,8 +14,20 @@ export const releasePipelineEndpoints = [
   'releaseRollbacks',
 ] as const
 
+export const releasePipelineEndpointPaths: Record<(typeof releasePipelineEndpoints)[number], string> = {
+  releasePreflight: '/api/v1/apps/{id}/releases/preflight',
+  releaseDeployments: '/api/v1/apps/{id}/releases/deployments',
+  releaseQualifications: '/api/v1/apps/{id}/qualifications',
+  releasePromotions: '/api/v1/apps/{id}/promotions',
+  releaseRollbacks: '/api/v1/apps/{id}/releases/rollbacks',
+}
+
 export function supportsReleasePipeline(capabilities?: CapabilitiesResponse): boolean {
-  return capabilities?.authority !== 'fleet-only'
-    && releasePipelineFeatures.every((feature) => capabilities?.features.includes(feature))
-    && releasePipelineEndpoints.every((endpoint) => Boolean(capabilities?.endpoints?.[endpoint]))
+  if (!capabilities || typeof capabilities !== 'object' || capabilities.protocolVersion !== 1 || capabilities.authority === 'fleet-only') return false
+
+  const { features, endpoints } = capabilities
+  if (!Array.isArray(features) || !endpoints || typeof endpoints !== 'object' || Array.isArray(endpoints)) return false
+
+  return releasePipelineFeatures.every((feature) => features.includes(feature))
+    && releasePipelineEndpoints.every((endpoint) => endpoints[endpoint] === releasePipelineEndpointPaths[endpoint])
 }
