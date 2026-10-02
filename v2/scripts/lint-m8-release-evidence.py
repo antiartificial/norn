@@ -31,7 +31,7 @@ def main() -> None:
         ("candidate", candidate["commit"]),
         ("current source", source["commit"]),
         ("Mini", mini["commit"]),
-        ("Fleet desired", fleet["desired_source"]["commit"]),
+        ("current protected Fleet source", fleet["current_protected_source"]["commit"]),
         ("NornUI observation", ui["last_observed_source_commit"]),
     ):
         require(bool(SHA.fullmatch(value)), f"{label} commit must be a full SHA")
@@ -44,24 +44,37 @@ def main() -> None:
             and candidate["commit"] == source["commit"],
             "signed candidate must bind exact protected source")
     require(candidate["asset_count"] == 16
-            and bool(re.fullmatch(r"[0-9a-f]{64}", candidate["darwin_arm64_archive_sha256"]))
-            and candidate["mini_import_signature_verified"] is True
-            and candidate["mini_passive_preflight"] == "blocked_legacy_schema_metadata_absent",
-            "signed release and blocked Mini preflight must retain their exact evidence boundary")
-    receipt = ROOT / candidate["mini_preflight_receipt"]
-    require(receipt.is_file() and candidate["commit"] in receipt.read_text()
-            and "schema metadata is absent" in receipt.read_text(),
-            "Mini preflight claim requires its dated command/result receipt")
+            and candidate["release_run"] == 36936156456
+            and candidate["release_api_immutable"] is True
+            and candidate["asset_bytes_sha256_verified"] is True
+            and candidate["bundle_signatures_verified"] is True
+            and candidate["mini_import_or_preflight"] == "not_repeated_for_this_candidate",
+            "current release facts and unperformed Mini qualification boundaries must remain explicit")
+    receipt = ROOT / candidate["asset_verification_receipt"]
+    require(receipt.is_file(),
+            "verified release assets require a dated non-secret receipt")
+    receipt_text = receipt.read_text()
+    for claim in (candidate["commit"], "all 16 release assets", "Ed25519"):
+        require(claim in receipt_text,
+                "release receipt must bind the candidate and verification claims")
     require(candidate["commit"] != mini["commit"],
             "signed candidate must not be presented as Mini live runtime")
-    require(not mini["installed_digest_verified"] and not mini["fleet_configured"],
+    require(not mini["installed_digest_verified"] and not mini["fleet_configured"]
+            and mini["production_readiness"] == "blocked_separately",
             "Mini digest/Fleet claims exceed the recorded observation")
+    require((ROOT / mini["readback_receipt"]).is_file(),
+            "Mini readback requires a dated source and boundary summary")
+    pilot = fleet["pilot261002d"]
+    require(pilot["status"] == "offline_hold_packet"
+            and pilot["run_matching_provider_resources_observed"] == 0
+            and pilot["run_matching_billable_resources_observed"] == 0,
+            "current Fleet HOLD packet must remain zero for this run")
     require(fleet["live"]["evidence_class"] == "unobserved"
             and fleet["live"]["commit"] is None,
-            "desired Fleet source must not be presented as observed installed state")
-    require(fleet["desired_source"]["runtime_pin_state"]
+            "Fleet source and HOLD packet must not be presented as observed installed state")
+    require(fleet["current_protected_source"]["runtime_pin_state"]
             == "unresolved_until_protected_plan"
-            and len(fleet["desired_source"]["required_runtime_pins"]) == 5,
+            and len(fleet["current_protected_source"]["required_runtime_pins"]) == 5,
             "uncreated Fleet runtime pins must remain explicit and unresolved")
     require(ui["released_or_installed_version"] is None
             and ui["m8_support"] == "unknown_unsupported",

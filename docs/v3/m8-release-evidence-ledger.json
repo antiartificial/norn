@@ -1,23 +1,23 @@
 {
   "schema_version": 1,
-  "observed_at": "2026-10-01",
+  "observed_at": "2026-10-02",
   "milestone": "M8",
   "milestone_status": "open",
   "reviewed_open_pull_requests": {
-    "observed_on": "2026-10-01",
+    "observed_on": "2026-10-02",
     "norn_m8_evidence": {
       "number": 98,
       "base": "master",
-      "head": "068071cfa182f8c380b8bb2bcb982b02cc75a1a0",
-      "merge_state": "clean",
-      "required_checks": "all_success",
-      "boundary": "open review source and CI evidence; neither is a protected merge, live promotion, or M8 sign-off"
+      "pre_refresh_local_head": "d0f4fdea30f2e2034e12d51cb3b804551ca38336",
+      "remote_review_head": "8834682ebe0cb71037af05e0d7b9a19421875191",
+      "remote_merge_state": "behind",
+      "boundary": "this is the pre-refresh branch snapshot; earlier remote CI evidence is not reasserted for the refresh, and neither review source is a protected merge, live promotion, or M8 sign-off"
     },
     "norn_m6_authority_chain": {
       "number": 102,
       "base": "codex/m6-m7-cutover-recovery",
       "head": "8365f00e39df0a5b59ac9ab97f31c6caa09db509",
-      "merge_state": "clean",
+      "merge_state_at_observation": "clean",
       "required_check_state": "all_success_at_exact_head",
       "boundary": "stacked non-master review source and green CI are not cutover, Fleet, or release evidence"
     },
@@ -25,7 +25,7 @@
       "number": 209,
       "base": "main",
       "head": "a20d5f8c260e919f088b4fe351fd6189fd52df94",
-      "merge_state": "clean",
+      "merge_state": "behind",
       "required_checks": "contract_success",
       "boundary": "open source qualification only; no protected Fleet plan, runner attempt, provider inventory, or installed-state proof"
     },
@@ -43,58 +43,58 @@
     "spend_ceiling_usd": 10,
     "maximum_lifespan_hours_from_first_billable_create": 4,
     "retirement_readback": "2026-10-01T17:24:17.913904Z: thirteen exact management provider IDs absent; both scoped Spaces key IDs absent and backends deleted; fourteen Tailscale auth keys invalid/revoked; zero pilot devices",
-    "tailscale_retirement": "original tag-owner policy and two temporary OAuth clients still pending action-time confirmation",
+    "tailscale_retirement": "temporary tag-owner delegation subsequently restored to the original owners; historical OAuth client status not reasserted at this checkpoint",
     "boundary": "the management bootstrap was fully retired and Fleet was never created; the expired pilot approval, provider cleanup, and signed candidate do not establish installed Fleet fitness or M8 sign-off"
   },
   "norn": {
     "signed_candidate": {
-      "commit": "8a291142677a7b00cc8606e61ac0a6952fff3e5c",
-      "tag": "platform-8a291142677a7b00cc8606e61ac0a6952fff3e5c",
-      "release_run": 36813207019,
-      "darwin_arm64_archive_sha256": "82c91b87bafef6b55064bfa474fce80e135cc6caffd70a6aade98ecca7aa9ed4",
+      "commit": "847c81741dd5b095d6833368ee8bb72dea6873d9",
+      "tag": "platform-847c81741dd5b095d6833368ee8bb72dea6873d9",
+      "release_run": 36936156456,
       "asset_count": 16,
-      "mini_import_signature_verified": true,
-      "mini_passive_preflight": "blocked_legacy_schema_metadata_absent",
-      "mini_preflight_receipt": "docs/v3/m5-mini-signed-preflight-2026-10-01.md",
       "evidence_class": "signed_runtime_candidate",
-      "all_16_assets_size_sha256_verified": true,
-      "all_four_bundles_ed25519_verified": true,
-      "linux_amd64_archive_sha256": "6b3032b935c6d4d736313409f0a4a440c5f8c58f8104fa31d72762b0fce3c76e",
-      "mini_private_copy_shadow": "passed_actual_legacy_data_no_live_switch",
-      "mini_shadow_receipt": "docs/v3/m5-mini-signed-shadow-2026-10-01.md",
       "release_api_immutable": true,
-      "asset_verification_receipt": "docs/v3/m8-platform-asset-verification-2026-10-01.md"
+      "asset_inventory": "independent 2026-10-02 receipt downloaded all 16 release assets and matched their GitHub SHA-256 digests",
+      "asset_bytes_sha256_verified": true,
+      "bundle_signatures_verified": true,
+      "asset_verification_receipt": "docs/v3/m8-platform-asset-verification-2026-10-02.md",
+      "mini_import_or_preflight": "not_repeated_for_this_candidate",
+      "mini_public_trust_anchor_sha256": "05144c7584b005c95e95d05d5e5bff06676f456f37dbd99bf6b09849c6c2855c",
+      "mini_release_policy": "require-signed_read_only_verified",
+      "boundary": "independent receipt verification covers published bytes, manifest bindings, and all four Ed25519 manifest signatures; a subsequent read-only check matched Mini's public trust anchor and signed policy, but did not import or preflight this candidate on Mini, promote it, or exercise an upgrade path"
     },
     "current_source": {
-      "commit": "8a291142677a7b00cc8606e61ac0a6952fff3e5c",
+      "commit": "847c81741dd5b095d6833368ee8bb72dea6873d9",
       "evidence_class": "protected_signed_source",
-      "successful_master_runs": {
-        "repository_ci": 36807641901,
-        "norn_ci": 36807641851,
-        "docs": 36807641929
-      }
+      "protected_branch": "master",
+      "release_run": 36936156456,
+      "release_api_immutable": true
     },
     "mini_live": {
       "commit": "a5da8ef15d12e9eca7561e90b90d96f6dc652a21",
       "reported_version": "v2.20.0-platform-30-ga5da8ef",
-      "readback_at": "2026-10-01T17:46:40Z",
-      "readback_summary": "host ok; 29 app entries; 46 services; zero active operations; thirteen active incidents; zero Fleet node pools; production readiness blocked",
+      "readback_at": "2026-10-02T22:45:14Z",
+      "readback_receipt": "docs/v3/m8-mini-live-readback-2026-10-02.md",
+      "readback_summary": "API health, host doctor, and smoke checks passed; 46 services; zero active operations; 20 of 20 recent deploys passed",
       "evidence_class": "live_legacy_observation",
       "installed_digest_verified": false,
-      "fleet_configured": false
+      "fleet_configured": false,
+      "production_readiness": "blocked_separately"
     }
   },
   "fleet": {
-    "desired_source": {
-      "commit": "8976fff715140eee99ca24ec6b1df10b0bf25405",
-      "evidence_class": "protected_validated_desired_source",
+    "pilot261002d": {
+      "status": "offline_hold_packet",
+      "run_matching_provider_resources_observed": 0,
+      "run_matching_billable_resources_observed": 0,
+      "boundary": "complete precreate inventories found zero resources matching this run; unrelated account resources exist, and precreate zero is not a protected plan, provider apply, post-create inventory, installed Fleet, or M8 sign-off"
+    },
+    "current_protected_source": {
+      "commit": "5ead17eb7574e2c3336220ad99e56eef68715f26",
+      "evidence_class": "protected_qualified_source_not_installed",
       "successful_main_runs": {
-        "validate": 36893072470
-      },
-      "last_provider_free_qualification": {
-        "commit": "39b7b3c817ae818014455eead12be4991dc39698",
-        "run": 36809196735,
-        "boundary": "stale for current protected source; repeat only when preparing the next authorized pilot"
+        "validate": 37071072390,
+        "hosted_pre_release_qualification": 37071170456
       },
       "runtime_pin_state": "unresolved_until_protected_plan",
       "required_runtime_pins": [
@@ -108,8 +108,7 @@
     "live": {
       "evidence_class": "unobserved",
       "commit": null,
-      "mini_node_pools_observed": 0,
-      "boundary": "Mini readback is not provider or Fleet-state inventory"
+      "boundary": "the HOLD packet has precreate run-scoped provider-zero inventories, but no post-create provider, backend-state, or installed Fleet readback"
     }
   },
   "nornui": {

@@ -1,6 +1,6 @@
 # M8 release evidence ledger
 
-Status: exact-current evidence checkpoint collected 2026-10-01. This ledger
+Status: exact-current evidence checkpoint collected 2026-10-02. This ledger
 does **not** sign M8, promote a candidate, or prove a live Fleet. The
 machine-readable index is
 [`m8-release-evidence-ledger.json`](m8-release-evidence-ledger.json).
@@ -9,24 +9,20 @@ machine-readable index is
 
 | Surface | Exact version | Evidence class | Capability established | Boundary / open gate |
 | --- | --- | --- | --- | --- |
-| Norn signed candidate | `8a291142677a7b00cc8606e61ac0a6952fff3e5c`; tag `platform-8a291142677a7b00cc8606e61ac0a6952fff3e5c` | Published [release run 36813207019](https://github.com/antiartificial/norn/actions/runs/36813207019), after protected environment approval | Four OS/architecture bundles passed and the published release has 16 assets: one archive, manifest, signature and SBOM per platform. All four bundles were independently downloaded, passed the pinned Ed25519 bundle verifier, and all 16 local asset sizes and SHA-256 digests matched the GitHub release whose target commit is exact `8a291142` ([dated asset receipt](m8-platform-asset-verification-2026-10-01.md)). The release API reported `immutable: true`. The Linux amd64 archive SHA-256 is `6b3032b935c6d4d736313409f0a4a440c5f8c58f8104fa31d72762b0fce3c76e`. Mini imported and verified the signed artifact using the staged current manifest helper; its [signed private-copy shadow](m5-mini-signed-shadow-2026-10-01.md) passed against real Mini data. | This is a signed candidate containing M4 durable-replica code, not the live runtime. Live promotion, protected plan/apply and Fleet qualification remain open. Ordinary passive Mini preflight stops on absent legacy schema metadata; the protected private-copy shadow path passed. |
-| Norn protected source | `8a291142677a7b00cc8606e61ac0a6952fff3e5c` | Signed exact-master source; successful [Repository CI 36807641901](https://github.com/antiartificial/norn/actions/runs/36807641901), [Norn CI 36807641851](https://github.com/antiartificial/norn/actions/runs/36807641851), and [docs 36807641929](https://github.com/antiartificial/norn/actions/runs/36807641929) | The signed source includes the three-client durable-replica and etcd failure qualifications. | CI and publication do not prove Mini promotion or a live Fleet. |
-| Mini live runtime | API `v2.20.0-platform-30-ga5da8ef`; source identity `a5da8ef15d12e9eca7561e90b90d96f6dc652a21` | Read-only [2026-09-30 baseline](m0-mini-baseline-refresh-2026-09-30.md) and [2026-10-01 signed preflight/post-state receipt](m5-mini-signed-preflight-2026-10-01.md) | Existing PostgreSQL control plane and workloads remain observable; host healthy, zero active operations, 29 apps and 46 services after the failed passive candidate check. | Installed binary/manifest digest was not rehashed. Mini reports `fleet_configured=false`; it is not running `8a291142`. The persistent managed manifest helper has an older binary allowlist; the exact-source private-copy shadow path passed while ordinary preflight still finds no live migration ledger or compatibility row. Signed upgrade, rollback and post-upgrade preservation remain open. |
-| Fleet protected source / desired next pilot | `4f2dcacbc1deb09600f0cc07b6dd71f42f54680d` | Successful exact-main [qualification run 36904266947](https://github.com/antiartificial/norn-fleet/actions/runs/36904266947) on the hosted macOS lane, with one retained receipt artifact and SHA-256 `4ef24ceb07cf13ee3791f61d019879f8501aadaf25e65badcfe04a11b28993de`. The owner-only local receipt passed `external_mac_hosted_qualification_bridge.verify`: authenticated repository, workflow, successful run/attempt, artifact digest and bytes, exact commit and clean source-tree bindings. [PR #222](https://github.com/antiartificial/norn-fleet/pull/222) merged as the same human-authored/committed fast-forward SHA after all three checks passed. Earlier [run 36902491336](https://github.com/antiartificial/norn-fleet/actions/runs/36902491336) failed before tests in hosted interpreter materialization. | The source includes the repaired hosted interpreter check and excludes the unsupported VPC project-assignment URN that stopped the previous management create. All 1,517 local Python contract tests passed with four skips on its parent `8976fff`; PR #222's protected contract job passed. | Exact-source qualification is now present for offline release admission. A fresh pilot still requires run-bound owner approvals, protected runner and provider-backed Fleet fitness evidence; desired source is not runtime evidence. |
-| Fleet live runtime | no version observed | Unobserved | The Mini readback reports zero Fleet node pools; that establishes only that the Mini is not configured for Fleet. | Complete provider, backend and installed-state inventory remains absent. Fresh protected plan/apply, exact installed versions, three-member etcd health, protected attempt/reconciliation, soak/fault and retirement evidence remain open. |
+| Norn signed candidate | `847c81741dd5b095d6833368ee8bb72dea6873d9`; tag `platform-847c81741dd5b095d6833368ee8bb72dea6873d9` | Immutable [release run 36936156456](https://github.com/antiartificial/norn/actions/runs/36936156456) and independent [2026-10-02 asset receipt](m8-platform-asset-verification-2026-10-02.md) | The receipt downloaded all 16 assets, matched each GitHub SHA-256 digest, verified each manifest's exact commit/tag and archive/SBOM digests, and passed all four Ed25519 manifest signatures. A subsequent read-only check matched Mini's public trust anchor and `require-signed` policy. | The receipt does not import/preflight or promote this candidate on Mini, exercise an upgrade/rollback, run protected Fleet plan/apply, or qualify a Fleet. |
+| Norn protected source | `847c81741dd5b095d6833368ee8bb72dea6873d9` | Protected `master`, exact immutable release target | The release target and protected source are the same full commit. | A protected source and immutable release do not prove Mini promotion or a live Fleet. |
+| Mini live runtime | API `v2.20.0-platform-30-ga5da8ef`; source identity `a5da8ef15d12e9eca7561e90b90d96f6dc652a21` | Read-only [2026-10-02 Mini observation](m8-mini-live-readback-2026-10-02.md) | Health/doctor/smoke passed; 46 services, zero active operations, and 20/20 recent deploys passed. | Installed binary/manifest digest was not rehashed. Mini is not running `847c817`; production readiness remains blocked separately. Upgrade, rollback, and post-upgrade preservation remain open. |
+| Fleet protected source | `5ead17eb7574e2c3336220ad99e56eef68715f26` | Exact-main [validation 37071072390](https://github.com/antiartificial/norn-fleet/actions/runs/37071072390) and hosted [pre-release qualification 37071170456](https://github.com/antiartificial/norn-fleet/actions/runs/37071170456) passed for this commit. The owner-only `pilot261002d` packet retains the qualification receipt and complete precreate inventories. | Protected source and provider-free qualification are available for planning. No runtime pins or installed Fleet were proved. |
+| Fleet live runtime | no version observed | Unobserved | Complete precreate inventories in the `pilot261002d` HOLD packet found zero resources matching this run; unrelated account resources exist. | Precreate zero is not post-create provider, backend-state, or installed-state proof. Protected plan/apply, exact installed versions, three-member etcd health, protected attempt/reconciliation, soak/fault, and retirement evidence remain open. |
 | NornUI | proposed source `3252851ec74647e73a8d84935101694d6606de3a` in [PR #20](https://github.com/antiartificial/NornUI/pull/20), based on protected main `742445c491cd58c3e8992dab2ccafb212d938fab`; no published/installed version recorded | Open PR with successful exact-head [macOS build and unit tests 36827216694](https://github.com/antiartificial/NornUI/actions/runs/36827216694) and a separate [private development-signed Release-build receipt](m8-nornui-release-build-2026-10-01.md) | The source-derived signed-8a fixture decodes. An opt-in local test also passed the real Norn capabilities handler and bearer middleware response through the actual Swift `NornClient` over loopback, including wrong-bearer rejection. Release controls require the complete advertised feature/route contract, old event streams remain supported, and same-profile Fleet capability withdrawal clears gated caches. The local build passed 237 tests with zero failures and one standalone opt-in skip; the separate cross-client run executed and passed that opt-in test. A clean exact-source arm64 Release app passed strict signature and private receipt verification. The earlier `b59afc6` app launched in fixture mode showing sample data. | PR is unmerged and no published or installed NornUI release exists. The Apple Development signature and local HMAC receipt are pilot evidence only. Loopback capability negotiation does not cover all endpoints or live Mini/Fleet behavior; real etcd Fleet client behavior and M8 sign-off remain open. |
 
-The 2026-10-01T17:46Z authenticated Mini inventory still reported
-`v2.20.0-platform-30-ga5da8ef`, host status `ok`, 29 app entries, 46 services,
-zero active operations, 13 active incidents, zero Fleet node pools, and blocked
-production readiness. The earlier signed private-copy shadow is valuable M5
-rehearsal evidence, but its backup/shadow proof pair is now older than the
-one-hour default accepted by the [protected transition](m5-protected-maintenance-transition.md).
-The live transition needs a fresh backup, isolated restore and shadow, drain,
-then the reviewed `legacy-baseline` maintenance path; [PR #99](https://github.com/antiartificial/norn/pull/99)
-only hardens freshness and replay checks and does not itself perform that path.
+The 2026-10-02 authenticated [Mini readback](m8-mini-live-readback-2026-10-02.md) reports the legacy API identity
+above, passing API health, host doctor, and smoke checks; 46 services; zero
+active operations; and 20/20 recent deploys passed. Production readiness is
+still blocked separately. The earlier signed private-copy shadow is historical
+M5 rehearsal evidence for `8a291142`, not qualification of `847c817`.
 
-## Open PR and pilot audit — 2026-10-01
+## Open PR and pilot audit — 2026-10-02
 
 This is a source-review snapshot, captured after the checkpoint. Strict branch
 protection requires the named status contexts and linear history, but no
@@ -35,10 +31,10 @@ at its listed head.
 
 | Surface | Head and current check state | Release boundary |
 | --- | --- | --- |
-| [Norn #98](https://github.com/antiartificial/norn/pull/98) | Open against protected `master` at `068071cfa182f8c380b8bb2bcb982b02cc75a1a0`; clean. All seven required contexts passed: API/CLI Go tests, Fleet pilot workload, OpenAPI contract, workflow lint, web UI build, and M4 durable replicas. | This ledger's PR is unmerged. Its green CI neither promotes `8a291142` on Mini nor creates a Fleet. |
-| [Norn #102](https://github.com/antiartificial/norn/pull/102) | Open stacked review against `codex/m6-m7-cutover-recovery` at `8365f00e39df0a5b59ac9ab97f31c6caa09db509`; clean. All exact-head required checks passed after the bounded etcd leader-election wait was exercised in the Fleet pilot workload job. | It is not against protected `master`; green stacked CI is not cutover, Fleet, or release evidence. |
-| [Fleet #209](https://github.com/antiartificial/norn-fleet/pull/209) | Open against protected `main` at `a20d5f8c260e919f088b4fe351fd6189fd52df94`; clean. Required `contract` passed. | A local drain qualification PR does not establish a plan, protected runner attempt, provider inventory, or installed Fleet. |
-| [NornUI #20](https://github.com/antiartificial/NornUI/pull/20) | Open against protected `main` at `3252851ec74647e73a8d84935101694d6606de3a`; clean. Required macOS build and unit-test check passed. | It is the development-signed build source, not a published or installed NornUI release. |
+| [Norn #98](https://github.com/antiartificial/norn/pull/98) | Before this refresh, the local worktree was at unpushed `d0f4fdea30f2e2034e12d51cb3b804551ca38336`; the remote head was `8834682ebe0cb71037af05e0d7b9a19421875191`, behind protected `master`. This refresh had no checks at its new head at the time of observation. | Neither local review work nor prior green CI promotes `847c817` on Mini or creates a Fleet. |
+| [Norn #102](https://github.com/antiartificial/norn/pull/102) | Open stacked review against `codex/m6-m7-cutover-recovery` at `8365f00e39df0a5b59ac9ab97f31c6caa09db509`; exact-head required checks passed after the bounded etcd leader-election wait was exercised in the Fleet pilot workload job. | It is not against protected `master`; green stacked CI is not cutover, Fleet, or release evidence. |
+| [Fleet #209](https://github.com/antiartificial/norn-fleet/pull/209) | Open against protected `main` at `a20d5f8c260e919f088b4fe351fd6189fd52df94`; GitHub currently reports it behind `main`. Its earlier `contract` passed at this head. | A local drain qualification PR does not establish a plan, protected runner attempt, provider inventory, or installed Fleet. |
+| [NornUI #20](https://github.com/antiartificial/NornUI/pull/20) | Open against protected `main` at `3252851ec74647e73a8d84935101694d6606de3a`; GitHub reported a clean merge state at this observation. Required macOS build and unit-test check passed. | It is the development-signed build source, not a published or installed NornUI release. |
 
 `pilot261001a` is retired. Its $10 incremental ceiling and four-hour lifespan
 were specific to that run and have expired. Management precreate reached
@@ -46,11 +42,15 @@ partial provider infrastructure, then a reviewed abort removed it. A
 2026-10-01T17:24Z handoff recorded all 13 exact management provider IDs absent,
 both scoped Spaces key IDs absent, both state backends deleted, 14 Tailscale
 auth keys revoked/invalid, and zero pilot devices. Fleet itself was never
-created, and production was not switched. The original Tailscale tag-owner
-policy and two temporary OAuth clients still await action-time confirmation
-for restoration/deletion. The [pilot precreate receipt](fleet-pilot-approval-preflight-2026-10-01.md)
+created, and production was not switched. The temporary Tailscale tag-owner
+delegation was subsequently restored to the original owners. The status of
+the two historical OAuth clients is not reasserted by this checkpoint. The
+[pilot precreate receipt](fleet-pilot-approval-preflight-2026-10-01.md)
 is historical authorization evidence, not approval for another run or live
-Fleet fitness evidence.
+Fleet fitness evidence. `pilot261002d` is an offline HOLD packet: complete
+precreate provider readbacks record zero resources matching that exact run;
+unrelated account resources exist, and no billable pilot resources were created.
+It is not a protected plan, provider apply, installed Fleet, or M8 sign-off.
 
 A read-only 2026-10-01T17:43Z price/availability refresh found NYC3
 `s-2vcpu-4gb` at $0.03571/hour and `s-1vcpu-2gb` at $0.01786/hour in the
@@ -109,8 +109,8 @@ the etcd image digest
 `sha256:a055da833a7c013b836ed0822e8ec1f99b059658be255ad8d0fcd31b635ae3d6`.
 Fleet exact-main validation pins OpenTofu `1.10.6` for normal environments and
 `1.12.6` for disposable pilots. These are build and qualification inputs; they
-do not identify the versions installed on an uncreated Fleet. Fleet `8976fff`
-requires protected inputs to pin the Norn archive and digest, NornUI bundle and
+do not identify the versions installed on an uncreated Fleet. The current
+protected Fleet source requires inputs to pin the Norn archive and digest, NornUI bundle and
 digest, Nomad and Consul package versions, and etcd/etcdctl/etcdutl sources and
 digests. No reviewed plan has supplied those values, so the ledger records
 them as unresolved rather than borrowing versions from local CI.
@@ -122,8 +122,9 @@ It does not authenticate GitHub runs, release assets, or live observations.
 
 ## Gates still missing
 
-M8 has a signed candidate at the intended current source but remains open
-pending an exact NornUI release/build and remaining client parity, a private Mini signed
+M8 has an immutable signed candidate at the current protected source with
+independently verified published release assets, but remains open pending exact
+NornUI release/build and remaining client parity, a private Mini signed
 upgrade/rollback rehearsal followed by live preservation evidence, the M6
 application-database cutover and recovery gate, the M7 complete Mini-to-Fleet
 application mobility rehearsal, and a fresh provider-backed Fleet
