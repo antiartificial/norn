@@ -162,8 +162,9 @@ The cleanup is operational evidence, not live Fleet fitness or a milestone
 sign-off. The later `pilot261001a` had a distinct
 [bounded envelope](fleet-pilot-approval-preflight-2026-10-01.md), now expired.
 Its partial management precreate was aborted and provider resources retired;
-Fleet was never created. Tailscale tag-owner restoration and two temporary
-OAuth-client deletions remain pending action-time confirmation. No prior pilot
+Fleet was never created. The temporary Tailscale tag-owner delegation was
+subsequently restored; the two historical OAuth clients' current status was
+not rechecked for this checkpoint. No prior pilot
 keys, backends, approval or clock carry forward to a future run.
 
 For planning, the estimated implementation progress on 2026-10-01 is below.

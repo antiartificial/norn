@@ -17,15 +17,15 @@ import (
 )
 
 const (
-	crossClientValidBearer      = "norn-cross-client-valid-bearer"
-	crossClientWrongBearer      = "norn-cross-client-wrong-bearer"
-	crossClientCoordinationFile = "/tmp/norn-cross-client-capabilities.json"
+	crossClientValidBearer = "norn-cross-client-valid-bearer"
+	crossClientWrongBearer = "norn-cross-client-wrong-bearer"
 )
 
 // TestCrossClientCapabilitiesHarness serves the actual capability handler over
 // a loopback-only ephemeral port. Set NORN_CROSS_CLIENT_SWIFT_TEST_COMMAND to
 // run the opt-in NornUI test while this server is alive; its process receives
-// the URL and both test-only bearer values through the environment.
+// the URL, test-only bearer values, and a per-test coordination-file path
+// through the environment.
 func TestCrossClientCapabilitiesHarness(t *testing.T) {
 	cfg := &config.Config{
 		Environment:                      "staging",
@@ -63,7 +63,6 @@ func TestCrossClientCapabilitiesHarness(t *testing.T) {
 	})
 
 	baseURL := "http://" + listener.Addr().String()
-	writeCrossClientCoordinationFile(t, baseURL)
 	capabilities := fetchCrossClientCapabilities(t, baseURL, crossClientValidBearer)
 	if capabilities.Auth.Principal == nil || !capabilities.Auth.Principal.Authenticated || capabilities.Auth.Principal.Subject != "control-plane" || !containsCapability(capabilities.Auth.Principal.Scopes, "admin") {
 		t.Fatalf("valid bearer principal = %#v, want authenticated control-plane admin", capabilities.Auth.Principal)
@@ -99,6 +98,7 @@ func TestCrossClientCapabilitiesHarness(t *testing.T) {
 		t.Log("NORN_CROSS_CLIENT_SWIFT_TEST_COMMAND is unset; Go loopback contract verified without launching the opt-in Swift client")
 		return
 	}
+	coordinationFile := writeCrossClientCoordinationFile(t, baseURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
@@ -106,6 +106,7 @@ func TestCrossClientCapabilitiesHarness(t *testing.T) {
 		"NORN_CROSS_CLIENT_BASE_URL="+baseURL,
 		"NORN_CROSS_CLIENT_VALID_BEARER="+crossClientValidBearer,
 		"NORN_CROSS_CLIENT_WRONG_BEARER="+crossClientWrongBearer,
+		"NORN_CROSS_CLIENT_COORDINATION_FILE="+coordinationFile,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -113,15 +114,12 @@ func TestCrossClientCapabilitiesHarness(t *testing.T) {
 	}
 }
 
-func writeCrossClientCoordinationFile(t *testing.T, baseURL string) {
+func writeCrossClientCoordinationFile(t *testing.T, baseURL string) string {
 	t.Helper()
-	file, err := os.OpenFile(crossClientCoordinationFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	path := filepath.Join(t.TempDir(), "norn-cross-client-capabilities.json")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		t.Fatalf("create exclusive cross-client coordination file %s: %v", crossClientCoordinationFile, err)
-	}
-	t.Cleanup(func() { _ = os.Remove(crossClientCoordinationFile) })
-	if filepath.Dir(crossClientCoordinationFile) != "/tmp" {
-		t.Fatalf("cross-client coordination file escaped tmp: %s", crossClientCoordinationFile)
+		t.Fatalf("create exclusive cross-client coordination file %s: %v", path, err)
 	}
 	if err := json.NewEncoder(file).Encode(struct {
 		BaseURL     string `json:"baseURL"`
@@ -134,6 +132,7 @@ func writeCrossClientCoordinationFile(t *testing.T, baseURL string) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+	return path
 }
 
 type crossClientCapabilities struct {
