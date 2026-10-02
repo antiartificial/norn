@@ -286,8 +286,8 @@ original_columns_dir=$scratch/original-columns
 mkdir -m 700 "$original_columns_dir"
 mapfile_compat >"$original_tables"
 original_table_count=$(wc -l <"$original_tables" | tr -d ' ')
-[[ $original_table_count -eq 28 ]] || {
-  printf 'expected 28 original public tables, found %s\n' "$original_table_count" >&2
+[[ $original_table_count -gt 0 ]] || {
+  printf 'expected at least one original public table, found none\n' >&2
   exit 1
 }
 

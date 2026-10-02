@@ -62,6 +62,40 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
             env.update(extra_environment)
         return subprocess.run([str(SCRIPT), str(self.candidate)], env=env, capture_output=True, text=True, timeout=15)
 
+    def install_table_fixture(self):
+        """Let the rehearsal reach its restored-schema table validation."""
+        for name in ("initdb", "pg_ctl", "createdb", "pg_restore"):
+            path = self.postgres_bin / name
+            path.write_text("#!/bin/sh\nexit 0\n")
+            path.chmod(0o700)
+        dump = self.postgres_bin / "pg_dump"
+        dump.write_text(
+            "#!/bin/sh\n"
+            "for argument in \"$@\"; do\n"
+            "  case \"$argument\" in --file=*) : > \"${argument#--file=}\";; esac\n"
+            "done\n"
+        )
+        dump.chmod(0o700)
+        psql = self.postgres_bin / "psql"
+        psql.write_text(
+            "#!/bin/sh\n"
+            "query=\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = -c ]; then query=$2; shift 2; else shift; fi\n"
+            "done\n"
+            "if [ -n \"${NORN_TEST_PSQL_LOG:-}\" ]; then printf '%s\\n' \"$query\" >> \"$NORN_TEST_PSQL_LOG\"; fi\n"
+            "case \"$query\" in\n"
+            "  *\"SELECT tablename FROM pg_tables\"*)\n"
+            "    [ -z \"${NORN_TEST_TABLES:-}\" ] || printf '%s\\n' \"$NORN_TEST_TABLES\";;\n"
+            "  *\"FROM pg_index\"*)\n"
+            "    case \"$query\" in *\"table_58\"*) exit 0;; *) printf 'id\\n';; esac;;\n"
+            "  *\"FROM pg_attribute\"*) printf 'id\\n';;\n"
+            "  *\"SELECT count(*) FROM public.\"*) printf '0\\n';;\n"
+            "  *\"COPY (SELECT row_to_json\"*) printf '{}\\n';;\n"
+            "esac\n"
+        )
+        psql.chmod(0o700)
+
     def test_supported_parameters_reach_dump_without_inherited_overrides(self):
         query = urllib.parse.urlencode({
             "host": str(self.root), "hostaddr": "127.0.0.1", "sslmode": "verify-full",
@@ -94,6 +128,26 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
                 result = self.run_source(query, environment)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.capture.exists(), result.stderr)
+
+    def test_more_than_28_tables_reaches_the_last_table_primary_key_gate(self):
+        self.install_table_fixture()
+        tables = [f"table_{number:02d}" for number in range(59)]
+        psql_log = self.root / "psql.log"
+        result = self.run_source(urllib.parse.urlencode({"host": str(self.root)}), {
+            "NORN_TEST_TABLES": "\n".join(tables),
+            "NORN_TEST_PSQL_LOG": str(psql_log),
+        })
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("original table has no primary key: table_58", result.stderr)
+        self.assertNotIn("expected 28 original public tables", result.stderr)
+        self.assertIn('COPY (SELECT row_to_json(full_row)::text FROM (SELECT id FROM public."table_57"',
+                      psql_log.read_text())
+
+    def test_no_original_tables_is_rejected_before_fingerprinting(self):
+        self.install_table_fixture()
+        result = self.run_source(urllib.parse.urlencode({"host": str(self.root)}))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected at least one original public table, found none", result.stderr)
 
     def test_term_after_private_scratch_setup_preserves_nonzero_signal_status(self):
         dump = self.postgres_bin / "pg_dump"
