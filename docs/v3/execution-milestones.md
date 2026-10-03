@@ -1,6 +1,6 @@
 # Norn v3 execution milestones
 
-Status: Norn PR #77 is integrated and signed candidate `8ac21f8e` exists. Fleet PRs #195–#197 merged; the final change passed 1,430 contract tests and exact protected `172c2c3` passed 286 no-cloud qualification tests. `pilot260929g` stopped before compute and is now closed with verified partial-precreate final-zero and restored Tailscale policy. PR #197 contains the reviewed replay fix used for its final runner retirement. No live Fleet or new paired-run spend is authorized. See the [current release handoff](session-resume-2026-09-29.md).
+Status (2026-10-02): protected Norn master and immutable platform release are exact `847c81741dd5b095d6833368ee8bb72dea6873d9` (release run `36936156456`). An independent [asset receipt](m8-platform-asset-verification-2026-10-02.md) downloaded all 16 assets, matched GitHub digests, and verified four Ed25519 manifest signatures; Mini's public trust anchor and `require-signed` policy matched in a separate read-only check, while import/preflight, promotion, and upgrade/rollback remain open. [Mini's read-only baseline](m8-mini-live-readback-2026-10-02.md) still reports legacy `a5da8ef`; API health, host doctor, and smoke checks passed with 46 services, zero active operations, and 20/20 recent deploys passed, while production readiness remains separately blocked. Protected Fleet main `5ead17e` passed exact-main validation and hosted qualification, but `pilot261002d` remains an offline HOLD packet with zero run-matching provider resources and no billable pilot resources. `pilot261001a` remains retired after partial management precreate without a Fleet. No live Fleet or M8 sign-off is proven. See the [current release evidence ledger](m8-client-version-matrix-2026-09-28.md).
 
 ## Release contract
 
@@ -147,7 +147,7 @@ General cross-backend conversion, local single-member etcd, Fleet-PG qualificati
 
 ## Execution status
 
-As of 2026-09-29, **0 of 10 M0–M9 gates are signed (0%)**. This is the release
+As of 2026-10-01, **0 of 10 M0–M9 gates are signed (0%)**. This is the release
 gate completion ratio, not an estimate of code completed. Norn PR #77 and its
 signed package are integrated. Fleet PRs #195/#196 corrected pre-create and
 paired runner admission. PR #197 passed 1,430 contract tests, merged as
@@ -159,17 +159,24 @@ bucket/key, five issued node keys, local controller/routes/watchdog and offline
 runner 217 are closed. Signed partial-precreate final-zero was verified at
 23:50:32Z; the full Tailscale policy was restored to its pre-pilot baseline.
 The cleanup is operational evidence, not live Fleet fitness or a milestone
-sign-off. The next paired HA run is a reviewable, unapproved $10/four-hour plan.
+sign-off. The later `pilot261001a` had a distinct
+[bounded envelope](fleet-pilot-approval-preflight-2026-10-01.md), now expired.
+Its partial management precreate was aborted and provider resources retired;
+Fleet was never created. The temporary Tailscale tag-owner delegation was
+subsequently restored; the two historical OAuth clients' current status was
+not rechecked for this checkpoint. No prior pilot
+keys, backends, approval or clock carry forward to a future run.
 
-For planning, the estimated implementation progress on 2026-09-28 is below.
+For planning, the estimated implementation progress on 2026-10-01 is below.
 These are judgment estimates rounded to 5%, based on the breadth of working
 implementation and evidence relative to each exit. They are not release
 sign-offs, schedule forecasts, or a substitute for the gate evidence below.
-The simple, equally weighted mean is about **32%**; later Fleet and adoption
+The simple, equally weighted mean is about **36%**; later Fleet and adoption
 milestones may require disproportionate time.
-The Mini backup policy changed on 2026-09-28; no additional runtime evidence
-was produced by that decision, so these estimates and gate dispositions stay
-unchanged.
+Since the September 28 estimate, M4 gained exact-source local three-client
+placement/drain and a signed candidate; M5 gained an actual-Mini-data signed
+private-copy shadow; and M8 gained complete signed-asset verification and a
+run-bound pilot packet. None proves a live Fleet, Mini switch, or gate sign-off.
 
 | Milestone | Estimated work complete | Main remaining boundary |
 | --- | ---: | --- |
@@ -177,11 +184,11 @@ unchanged.
 | M1 | 65% | Protected runtime and remaining effect recovery proof |
 | M2 | 55% | Real-provider retention and separate-node restore |
 | M3 | 50% | Protected multi-host bootstrap, faults and soak |
-| M4 | 40% | Normal app execution, ingress authority and loaded Fleet proof |
-| M5 | 25% | Representative Mini upgrade and rollback |
+| M4 | 45% | Normal app execution, ingress authority and loaded Fleet proof |
+| M5 | 40% | Isolated maintenance transition, rollback and preservation proof |
 | M6 | 10% | Rolling upgrade and app database cutover rehearsals |
 | M7 | 5% | Complete app mobility and traffic rollback rehearsal |
-| M8 | 10% | Remaining release qualification, version matrix and soak/fault evidence |
+| M8 | 25% | M3–M7 prerequisites, client parity, provider-backed Fleet qualification and operator sign-off |
 | M9 | 0% | Controlled adoption after qualification |
 
 | Gate | Current disposition | Evidence and next qualification boundary |
@@ -191,10 +198,10 @@ unchanged.
 | M2 | Open | Profile, database binding, MySQL and archive slices have local evidence. A read-only Mini check found different PostgreSQL roles for legacy apps, while the current `legacyPostgres` profile has one role and credential reference. Several app databases also share the `norn` control role, which the v3 purpose-separation guard correctly rejects; draft per-database legacy mapping now has resolver and transition tests, but reviewed app recredentialing, a populated private Mini catalog and runtime rehearsal are required before activation. Unchanged imported Mini behavior and complete retention/recovery gate remain. |
 | M3 | Open | [Three-member TLS/RBAC etcd catalog rehearsal](m3-etcd-catalog-three-member-qualification-2026-09-27.md) passed locally, including quorum loss and full restore. Host-supervised Fleet bootstrap/repair, multi-host faults, alarms, rotation, upgrades and soak remain. |
 | M4 | Open | [Private app admission](m4-etcd-app-admission-sequence-2026-09-26.md), the [normal release admission contract](m4-normal-release-admission-contract-2026-09-27.md), a [two-ingress local weighted-route and rollback fixture](m4-local-traefik-weighted-route-fixture-2026-09-27.md), and the [ingress publisher contract](m4-ingress-node-publisher-contract.md) exist. A first-route transaction reserves generation one against the signed deployment, pinned InfraSpec, control-owned Fleet target and active ingress inventory. A non-CI platform operator can now configure that target with revision fencing and a validated Fleet document; the create/read/stale-replace path passed disposable-etcd tests. A disposable-etcd test carries the route intent through a claimed private mTLS listener to a local node file and rejects later authorization after inventory replacement. The private terminal transaction now accepts positive active weight only with a stored, signed-source traffic proof, completed Nomad health effect and revision comparisons for route, acceptance, target and Fleet inventory; a synthetic disposable-etcd test covers success, invalid public proof and inventory replacement. The private acceptance-to-Nomad test passed against disposable local etcd and Docker-capable Nomad on 2026-09-27, including real healthy allocation readback and refusal to complete positive traffic without ingress proof. An opt-in normal etcd worker composes the claimed job and route steps. An independently opt-in staging release route now derives its signed `app.deploy` aggregate from verified CI identity, artifact admission, checked-out InfraSpec, control-owned Fleet target and active database catalog; a disposable-etcd HTTP test covers acceptance, scoped status, exact replay after token rotation, target replacement refusal during active work, and a claimed signed Nomad job plan. A separate opt-in test carried that normal HTTP acceptance through a claimed operation, managed input staging, a real healthy allocation on disposable local etcd/Consul/Nomad, and retained the nonterminal ingress gate; a successor claim reused the submitted job without a second Nomad registration. Its signature and vulnerability verifier hooks were synthetic. Signed artifact verification and authenticated ingress publication/traffic through the normal executor remain unqualified. An optional real public-registry digest check passed locally; signature and vulnerability policy were synthetic. An optional two-Traefik disposable rehearsal routes the accepted release's healthy Nomad allocation through both local ingresses, rejects partial publication and withdrawal, and observes HTTPS 404 after full withdrawal; it does not use protected publisher authority or a public load balancer. This is local control-path evidence, not a protected public traffic proof. Fleet draft [PR #177](https://github.com/antiartificial/norn-fleet/pull/177) stages a disabled publisher service with a separate account; 1,415 local Python tests at Fleet code head `5234aaf917bb631a2c03270306878c483533e481`, Ansible syntax, schema validation, action lint, and all six pinned OpenTofu validation roots passed ([receipt](m4-fleet-pr177-local-validation-2026-09-27.md)). Its exact-head GitHub `contract` check passed on the documented repository-scoped ephemeral Linux x64 fallback after GitHub-hosted jobs were blocked by account billing/spending limits; the temporary runner and routing variable were removed. This is protected CI evidence, not live Fleet qualification. Fleet now permits a reviewed third staging ingress client while holding desired capacity at two. Its isolated empty-state OpenTofu comparison adds only `ingress-03` for the proposed three-node shape; a local hook test emits all three private members with a matching snapshot digest, and Norn parses that exact membership while rejecting the prior two-node digest. These are configuration and local contract proofs, not a protected capacity plan or live 2→3→2 rehearsal ([Fleet readiness review](https://github.com/antiartificial/norn-fleet/blob/codex/fleet-ingress-readback/docs/runbooks/staging-v3-protected-rehearsal-readiness-2026-09-28.md)). Reviewed deployment admission, complete protected-node publication, public load-balancer proof, partial-publish recovery, placement, scaling and drain under load remain. |
-| M5 | Open | The [private Mini copy at code head d71359e8](m5-mini-private-copy-d71359e8-2026-09-28.md) preserved 28 original tables and 262,660 rows through schema 47 and passed passive startup without changing live jobs or routes. The [installed legacy binary](m5-mini-installed-legacy-rollback-boundary-2026-09-28.md) does not expose the v3 startup/schema contract, so its old-binary rollback is not qualified; the legacy-baseline fence is the relevant protected transition path. The CI upgrade fixture boots a passive candidate for schema-safe preflight, imports and verifies an ephemeral signed release before preflight, rejects an incomplete fetched release, and checks promotion-lock contention. The [protected maintenance composer](m5-protected-maintenance-transition.md) binds one protected backup to the successful signed shadow and records the irreversible transition plus stable workload-identity comparison; its hermetic tests are implementation evidence only. Fresh on-host control backup retrieval/private restore, the maintenance transition, representative current-state upgrade and operator review with a production-signed candidate remain. No Mini disaster-recovery claim is implied. |
+| M5 | Open | The [private Mini copy at code head d71359e8](m5-mini-private-copy-d71359e8-2026-09-28.md) preserved 28 original tables and 262,660 rows through schema 47 and passed passive startup without changing live jobs or routes. The [installed legacy binary](m5-mini-installed-legacy-rollback-boundary-2026-09-28.md) does not expose the v3 startup/schema contract, so its old-binary rollback is not qualified; the legacy-baseline fence is the relevant protected transition path. The CI upgrade fixture boots a passive candidate for schema-safe preflight, imports and verifies an ephemeral signed release before preflight, rejects an incomplete fetched release, and checks promotion-lock contention. The [protected maintenance composer](m5-protected-maintenance-transition.md) binds one protected backup to the successful signed shadow and records the irreversible transition plus stable workload-identity comparison; its hermetic tests are implementation evidence only. Signed exact-master candidate `8a291142` is published and [verified on Mini](m5-mini-signed-preflight-2026-10-01.md), but passive startup finds no legacy migration ledger or compatibility row. The [fresh protected backup/private restore and signed shadow bound to this candidate](m5-mini-signed-shadow-2026-10-01.md) passed against actual Mini data. A new transition-bound backup/shadow pair, the maintenance transition, representative current-state upgrade and operator review remain. No Mini disaster-recovery claim is implied. |
 | M6 | Open | The [application database cutover plan](m6-app-database-cutover-implementation-plan.md) defines the first PG path, authority generations and crash checkpoints. Private PG/etcd journals have disposable CAS, replay, active-resource uniqueness, migration and recovery-inspection evidence. Both backends require a signed exact-intent operation and live claim for private journal prepare/advance; etcd compares the fenced app lock. Claimed preparation binds the active catalog revision and exact source/target logical bindings, and claimed quiesce/final-sync writes refuse catalog drift. Claimed activation now refuses a well-formed reference without independently verified external proof and a generation-bound consumer switch; disposable PostgreSQL and etcd tests confirmed the journal stays at final-sync. Generic `database.cutover` success is refused. A catalog-bound private PG role fence passed disposable existing-session termination, exact-role readback, retry and verify-full TLS refusal with a wrong CA. The read-only preflight checks delegated authority, declared/observed server major, runtime login state, exact-role sessions and current database client sessions by role. A [read-only Nomad inventory](m6-m7-first-app-shape-review-2026-09-28.md) now reports regional jobs and live allocations from the stored app spec, including old desired-stop writers, but marks external writers unverified and promotion unready. A [local fixture transfer](m6-local-mobility-transfer-2026-09-28.md) passed a baseline restore, final full replacement and exact row/job/tick/file comparison between two disposable databases. The [first provider-pair review](m6-first-provider-pair-review-2026-09-28.md) recommends a separate managed PostgreSQL 17 application target for a Mini-hosted synthetic fixture; no provider or live app was selected or provisioned. External receipts, complete writer inventory, provider privileges, coordinator, selected-provider transfer lane, consumer switch, running upgrade, and PG/MySQL cutover/recovery rehearsals remain. |
 | M7 | Open | First complete Mini-to-Fleet application mobility rehearsal remains. |
-| M8 | Open | A prior signed Norn candidate exists. Fleet `ff246b1` passed protected validation and credential-free exact-main pilot qualification; neither is live Fleet fitness. The `pilot260930a` paired etcd/Norn HA proposal has a fresh cost and SSH preflight, while its $10/four-hour run-bound spend approval and billable creation remain pending. Version matrix, provider-backed soak/fault evidence, retirement proof and operator release sign-off remain. |
+| M8 | Open | The [release evidence ledger](m8-client-version-matrix-2026-09-28.md) and [independent asset receipt](m8-platform-asset-verification-2026-10-02.md) bind protected Norn source and immutable signed candidate to `847c817`; all 16 published assets and four Ed25519 manifest signatures passed verification, and Mini's configured public trust anchor matched. Mini still reports older `a5da8ef`, and the evidence separates exact-main Fleet source qualification at `5ead17e` from `pilot261002d` precreate run-matching zero. NornUI release/build, Mini import/preflight, promotion and upgrade/rollback preservation, M6/M7 live prerequisites, provider-backed Fleet soak/fault/reconciliation/retirement proof and operator sign-off remain. |
 | M9 | Open | Mini upgrade, clean Fleet deployment and selected app migrations require separate controlled adoption. |
 
 M2's per-database legacy binding map guards the first catalog override against
@@ -232,10 +239,13 @@ The [2026-09-28 read-only Mini refresh](m0-mini-baseline-refresh-2026-09-28.md)
 still identifies release `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`,
 an empty active operation queue at collection time, and PostgreSQL WAL
 archiving off. It does not alter the M0 or M5 estimates or sign either gate.
-The [latest candidate private Mini copy](m5-mini-private-copy-schema47-2026-09-28.md)
+The [September 28 candidate private Mini copy](m5-mini-private-copy-schema47-2026-09-28.md)
 passed schema 47 and passive startup against 28 original tables and 261,547
-rows, with unchanged live job and route-config fingerprints. Protected backup,
-fresh local backup/private restore and the maintenance transition remain M5 work.
+rows, with unchanged live job and route-config fingerprints. A later
+[signed 8a protected backup/private restore and shadow](m5-mini-signed-shadow-2026-10-01.md)
+passed against 275,168 original rows. A new transition-bound backup/shadow
+pair, isolated maintenance transition and rollback/preservation proof remain
+M5 work; the live switch remains M9.
 
 The [read-only first-app shape review](m6-m7-first-app-shape-review-2026-09-28.md)
 found a PostgreSQL 17 source-major observation for `turnkey-offer-intake`,

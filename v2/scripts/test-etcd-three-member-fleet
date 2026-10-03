@@ -89,6 +89,16 @@ endpoint_for() {
   port="$(docker port "$network-$1" 2379/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)"
   printf 'https://127.0.0.1:%s' "$port"
 }
+wait_for_health() {
+  local checked_endpoints="$1" attempt
+  for attempt in {1..30}; do
+    if ETCDCTL_ENDPOINTS="$checked_endpoints" etcdctl endpoint health >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  ETCDCTL_ENDPOINTS="$checked_endpoints" etcdctl endpoint health >/dev/null
+}
 endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
 export ETCDCTL_ENDPOINTS="$endpoints" ETCDCTL_CACERT="$work_dir/ca.crt"
 export ETCDCTL_CERT="$work_dir/client.crt" ETCDCTL_KEY="$work_dir/client.key"
@@ -130,7 +140,7 @@ if [ "$(docker inspect "$network-m3" --format '{{len .NetworkSettings.Networks}}
 fi
 NORN_TEST_ETCD_TLS_ENDPOINTS="$(endpoint_for m1),$(endpoint_for m2)"
 export NORN_TEST_ETCD_TLS_ENDPOINTS
-ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" etcdctl endpoint health >/dev/null
+wait_for_health "$NORN_TEST_ETCD_TLS_ENDPOINTS"
 run_process_test
 docker network connect --alias m3 "$network" "$network-m3"
 endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
@@ -145,7 +155,7 @@ echo 'One-member loss: quorum and normal runtime survive'
 docker stop "$network-m3" >/dev/null
 NORN_TEST_ETCD_TLS_ENDPOINTS="$(endpoint_for m1),$(endpoint_for m2)"
 export NORN_TEST_ETCD_TLS_ENDPOINTS
-ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" etcdctl endpoint health >/dev/null
+wait_for_health "$NORN_TEST_ETCD_TLS_ENDPOINTS"
 run_process_test
 
 echo 'Quorum loss: linearizable read and write refuse'
