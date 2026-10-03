@@ -37,9 +37,10 @@ typing them into a shared shell history. The script rejects a source-database
 URL alongside the backup input. Its only source-file operations are reads;
 after the rehearsal it verifies the protected artifact again to detect a
 change during the run. All migrations and passive candidate startup use the
-disposable database. The ordinary private-copy checks still require 28
-original public tables, unchanged original row counts and ordered primary-key
-fingerprints, two successful migrate-only runs, a complete schema ledger, and
+disposable database. The ordinary private-copy checks require a nonempty
+public-table inventory from the exact restored backup, unchanged row counts,
+ordered primary-key and full-row fingerprints for every original table, two
+successful migrate-only runs, a complete schema ledger, and
 passive health/version/schema responses from the exact candidate commit.
 
 The proof validator has disposable positive and negative fixture tests:
