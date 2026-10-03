@@ -37,6 +37,31 @@ func Connect(databaseURL string) (*DB, error) {
 	return &DB{Pool: pool}, nil
 }
 
+// ConnectMigration opens the single connection used by migrate-only.  It is
+// deliberately separate from the normal operation pool: quiescence must be
+// able to identify this backend exactly while proving no other client backend
+// is attached to this database.
+func ConnectMigration(databaseURL string) (*DB, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	poolConfig.MinConns = 0
+	poolConfig.MaxConns = 1
+	DeclareReaderContract(poolConfig, "migration")
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &DB{Pool: pool}, nil
+}
+
 func operationPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -559,6 +584,18 @@ func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
 		return nil, err
 	}
 	migrator.adoptUnversioned = adoptMiniControlSchema
+	return migrator, nil
+}
+
+// NewQuiescentControlSchemaMigrator is for the explicit migrate-only
+// maintenance lane. Its caller must use ConnectMigration so this process owns
+// exactly one pool connection while the transaction proves database quiescence.
+func NewQuiescentControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
+	migrator, err := NewControlSchemaMigrator(db)
+	if err != nil {
+		return nil, err
+	}
+	migrator.requireQuiescentControlDB = true
 	return migrator, nil
 }
 

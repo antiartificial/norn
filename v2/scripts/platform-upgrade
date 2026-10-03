@@ -7,6 +7,7 @@ Usage:
   platform-upgrade preflight [ref]
   platform-upgrade upgrade [ref]
   platform-upgrade legacy-baseline [ref] --legacy-release <full-sha> --backup-proof <path> --backup-artifact <path>
+  platform-upgrade legacy-baseline-finalize --transition-id <id>
   platform-upgrade rebuild <ref> --verify
   platform-upgrade releases
   platform-upgrade rollback <sha-prefix>
@@ -60,6 +61,7 @@ Environment:
   NORN_LEGACY_API_PATH     Legacy LaunchAgent executable. Defaults to NORN_BIN_DIR/norn-api.
   NORN_LEGACY_BACKUP_MAX_AGE_SECONDS Maximum permitted backup-proof age. Defaults to 3600.
   NORN_LEGACY_FENCE_STATE_PATH Persistent legacy-fence record. Defaults beside NORN_LEGACY_API_PATH.
+  NORN_HOST_AGENT_LABEL    LaunchAgent label for norn-host-agent. Defaults to com.norn.host-agent.
 USAGE
 }
 
@@ -84,7 +86,7 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|legacy-baseline|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch) ;;
+  preflight|upgrade|legacy-baseline|legacy-baseline-finalize|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -124,6 +126,7 @@ ref="${1:-HEAD}"
 legacy_release_sha=""
 legacy_backup_proof=""
 legacy_backup_artifact=""
+legacy_finalize_transition_id=""
 if [[ "$mode" == "legacy-baseline" ]]; then
   ref="HEAD"
   while [[ "$#" -gt 0 ]]; do
@@ -155,6 +158,17 @@ if [[ "$mode" == "legacy-baseline" ]]; then
   [[ -n "$legacy_backup_proof" ]] || fail "legacy-baseline requires --backup-proof"
   [[ -n "$legacy_backup_artifact" ]] || fail "legacy-baseline requires --backup-artifact"
 fi
+if [[ "$mode" == "legacy-baseline-finalize" ]]; then
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --transition-id)
+        [[ "$#" -ge 2 ]] || fail "legacy-baseline-finalize requires a value after --transition-id"
+        legacy_finalize_transition_id="$2"; shift 2 ;;
+      *) fail "unknown legacy-baseline-finalize option: $1" ;;
+    esac
+  done
+  [[ "$legacy_finalize_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "legacy-baseline-finalize requires a valid transition ID"
+fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_repo="$(cd "$script_dir/../.." && pwd)"
 repo="${NORN_PLATFORM_REPO:-}"
@@ -175,7 +189,31 @@ bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
 legacy_api_path="${NORN_LEGACY_API_PATH:-$bin_dir/norn-api}"
 legacy_backup_max_age_seconds="${NORN_LEGACY_BACKUP_MAX_AGE_SECONDS:-3600}"
 legacy_fence_state_path="${NORN_LEGACY_FENCE_STATE_PATH:-$(dirname "$legacy_api_path")/.norn-legacy-baseline-fence.json}"
+legacy_transition_id="${NORN_LEGACY_BASELINE_TRANSITION_ID:-}"
+if [[ -e "$legacy_fence_state_path" ]]; then
+  require_cmd python3
+  legacy_record_state="$(python3 - "$legacy_fence_state_path" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    record = json.load(source)
+if record.get("schema") != "norn.legacy-baseline-fence/v1":
+    raise SystemExit("unexpected legacy baseline transition state schema")
+state = record.get("state")
+if not isinstance(state, str) or not state:
+    raise SystemExit("missing legacy baseline transition state")
+print(state)
+PY
+)" || fail "cannot verify existing legacy baseline transition state"
+  if [[ "$legacy_record_state" != "candidate-promoted" ]]; then
+    case "$mode" in
+      legacy-baseline-finalize|releases|startup-contract|proxy-status|proxy-plan|smoke) ;;
+      *) fail "legacy baseline transition is pending; platform mutation requires its exact finalize or recovery path" ;;
+    esac
+  fi
+fi
 host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}"
+host_agent_label="${NORN_HOST_AGENT_LABEL:-com.norn.host-agent}"
+host_agent_direct_exec="${NORN_HOST_AGENT_DIRECT_EXEC:-false}"
 host_cli_bin="${NORN_HOST_CLI_BIN:-$HOME/.config/norn/host/bin/norn}"
 platform_script_bin="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
 host_runtime_bin="${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}"
@@ -974,7 +1012,10 @@ build_release_into() {
   go_arch="$(go env GOARCH)"
   cgo_enabled="${NORN_RELEASE_CGO_ENABLED:-0}"
   local go_flags=(-trimpath -buildvcs=false -mod=readonly)
-  local api_ldflags="-buildid= -X main.Version=$version"
+  # Bind the candidate API process to the exact signed source. The protected
+  # finalize lane checks this embedded identity before releasing its durable
+  # mutation fence.
+  local api_ldflags="-buildid= -X main.Version=$version -X main.SourceSHA=$sha"
   local cli_ldflags="-buildid= -X norn/v2/cli/cmd.Version=$version"
   local agent_ldflags="-buildid="
   (cd "$worktree/v2/api" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$api_ldflags" -o "$target/bin/norn-api" .)
@@ -1014,6 +1055,7 @@ EOF
     --go-flag=-mod=readonly \
     --go-ldflag=-buildid= \
     "--go-ldflag=-X main.Version=${version}" \
+    "--go-ldflag=-X main.SourceSHA=${sha}" \
     "--go-ldflag=-X norn/v2/cli/cmd.Version=${version}" \
     --go-environment=GOFLAGS= \
     --go-environment=GOWORK=off \
@@ -1069,9 +1111,12 @@ wait_health() {
   local base="$1"
   local tries="${2:-30}"
   local watched_pid="${3:-}"
+  local auth_token="${4:-}"
   local i
   for ((i = 1; i <= tries; i++)); do
-    if curl -fsS "$base/api/health" >/dev/null 2>&1; then
+    if [[ -n "$auth_token" ]]; then
+      if curl -fsS -H "Authorization: Bearer $auth_token" "$base/api/health" >/dev/null 2>&1; then return 0; fi
+    elif curl -fsS "$base/api/health" >/dev/null 2>&1; then
       return 0
     fi
     if [[ -n "$watched_pid" ]] && ! kill -0 "$watched_pid" >/dev/null 2>&1; then
@@ -1209,6 +1254,192 @@ legacy_baseline_require_drained() {
   log "legacy operation drain clear"
 }
 
+legacy_baseline_write_fence_state() {
+  local state="$1" pid="${2:-0}"
+  require_cmd python3
+  python3 - "$legacy_fence_state_path" "$legacy_release_sha" "$pid" "$state" <<'PY' || fail "could not atomically persist legacy fence state"
+import json, os, sys, tempfile
+path, sha, pid, state = sys.argv[1:]
+directory = os.path.dirname(path)
+os.makedirs(directory, mode=0o700, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=".norn-legacy-fence.", dir=directory)
+try:
+    os.fchmod(fd, 0o600)
+    record = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as source:
+            record = json.load(source)
+        if record.get("schema") != "norn.legacy-baseline-fence/v1":
+            raise SystemExit("existing legacy baseline state has an unexpected schema")
+        if sha and record.get("legacyReleaseSHA") and record["legacyReleaseSHA"] != sha:
+            raise SystemExit("legacy release provenance changed")
+    sha = sha or record.get("legacyReleaseSHA", "")
+    if not sha:
+        raise SystemExit("legacy release provenance is missing")
+    record.update({"schema":"norn.legacy-baseline-fence/v1", "legacyReleaseSHA":sha,
+                   "legacyPID":int(pid), "state":state})
+    transition = os.environ.get("NORN_LEGACY_BASELINE_TRANSITION_ID", "") or record.get("transitionID", "")
+    if transition: record["transitionID"] = transition
+    candidate = os.environ.get("NORN_LEGACY_BASELINE_CANDIDATE_SHA", "") or record.get("candidateReleaseSHA", "")
+    if candidate: record["candidateReleaseSHA"] = candidate
+    os.write(fd, (json.dumps(record, separators=(",", ":")) + "\n").encode())
+    os.fsync(fd)
+    os.close(fd); fd = None
+    os.replace(temporary, path)
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+finally:
+    if fd is not None: os.close(fd)
+    try: os.unlink(temporary)
+    except FileNotFoundError: pass
+PY
+}
+
+# A previous legacy-baseline attempt is never safely resumable by invoking a
+# fresh legacy-baseline command. Refuse before fetching/building artifacts or
+# applying a migration; the exact protected finalize path is the only way
+# forward once a state record exists.
+legacy_baseline_reject_pending_transition() {
+  [[ ! -e "$legacy_fence_state_path" ]] && return 0
+  require_cmd python3
+  python3 - "$legacy_fence_state_path" <<'PY' || fail "legacy baseline transition state is present; use legacy-baseline-finalize for its exact transition or recover explicitly"
+import json, re, sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+if record.get("schema") != "norn.legacy-baseline-fence/v1":
+    raise SystemExit("legacy baseline transition state has an unexpected schema")
+if not re.fullmatch(r"[0-9a-f]{40}", str(record.get("legacyReleaseSHA", ""))):
+    raise SystemExit("legacy baseline transition state has no exact legacy release")
+if record.get("state") not in {"host-agent-fencing", "legacy-fenced", "candidate-postflight-failed", "candidate-preservation-pending", "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent", "candidate-promoted"}:
+    raise SystemExit("legacy baseline transition state has an unexpected state")
+PY
+  fail "legacy baseline transition state is present; use legacy-baseline-finalize for its exact transition or recover explicitly"
+}
+
+legacy_baseline_install_fence_binary() {
+  local destination="$1"
+  require_cmd python3
+  python3 - "$destination" <<'PY' || fail "could not atomically install legacy fence binary"
+import os, sys, tempfile
+path = sys.argv[1]; directory = os.path.dirname(path)
+fd, temporary = tempfile.mkstemp(prefix=".norn-fence.", dir=directory)
+try:
+    os.fchmod(fd, 0o755)
+    os.write(fd, b'#!/usr/bin/env bash\nprintf "norn legacy baseline fence active; candidate recovery is required\\n" >&2\nexit 78\n')
+    os.fsync(fd); os.close(fd); fd = None
+    os.replace(temporary, path)
+    dfd = os.open(directory, os.O_RDONLY)
+    try: os.fsync(dfd)
+    finally: os.close(dfd)
+finally:
+    if fd is not None: os.close(fd)
+    try: os.unlink(temporary)
+    except FileNotFoundError: pass
+PY
+}
+
+legacy_baseline_fence_host_agent() {
+  [[ -L "$current_link" ]] || fail "legacy-baseline requires a current release link"
+  local legacy_release legacy_agent launch_state agent_pid child_pid child_command observed_pid
+  legacy_release="$(readlink "$current_link")"
+  legacy_agent="$legacy_release/bin/norn-host-agent"
+  [[ -x "$legacy_agent" && -x "$host_agent_bin" ]] || fail "legacy-baseline requires both release and managed norn-host-agent binaries"
+  if ! cmp -s "$legacy_agent" "$host_agent_bin"; then
+    fail "managed norn-host-agent does not exactly match the declared current release"
+  fi
+  require_cmd launchctl
+  if ! launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
+    fail "legacy-baseline cannot inspect launchd service $host_agent_label"
+  fi
+  agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || fail "legacy-baseline launchd host agent has no running PID"
+  require_cmd pgrep
+  child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+  if [[ -z "$child_pid" ]]; then
+    [[ "$host_agent_direct_exec" == "true" ]] || fail "legacy-baseline host-agent wrapper has no child; set NORN_HOST_AGENT_DIRECT_EXEC=true only for a proven direct-exec LaunchAgent"
+  else
+    [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || fail "legacy-baseline host-agent wrapper has ambiguous children"
+    kill -0 "$child_pid" >/dev/null 2>&1 || fail "legacy-baseline host-agent child is not running"
+    require_cmd ps
+    child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+    [[ "$child_command" == *"$host_agent_bin"* ]] || fail "legacy-baseline host-agent child does not execute the managed signed agent path"
+  fi
+  legacy_baseline_write_fence_state "host-agent-fencing" "$agent_pid"
+  legacy_baseline_install_fence_binary "$host_agent_bin"
+  if [[ -n "$child_pid" ]]; then /bin/kill -TERM "$child_pid"; fi
+  /bin/kill -TERM "$agent_pid" || fail "legacy host-agent fence is installed but wrapper termination failed"
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$agent_pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$agent_pid" >/dev/null 2>&1 || { [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1; }; then
+    fail "legacy host-agent fence is installed but the original wrapper or child PID did not exit"
+  fi
+  if launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
+    observed_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    [[ -z "$observed_pid" || "$observed_pid" == "0" ]] || fail "legacy host-agent respawned after its binary was fenced"
+  fi
+  log "legacy norn-host-agent fenced and stopped"
+}
+
+restart_fenced_host_agent() {
+  require_cmd launchctl
+  [[ -L "$current_link" ]] || fail "candidate API is healthy but current release identity is unavailable for norn-host-agent restart"
+  local candidate_release candidate_agent
+  candidate_release="$(readlink "$current_link")"
+  candidate_agent="$candidate_release/bin/norn-host-agent"
+  [[ -x "$candidate_agent" && -x "$host_agent_bin" ]] || fail "candidate API is healthy but candidate norn-host-agent binaries are unavailable"
+  # Recovery can arrive after the durable restart phase but before, or just
+  # after, copying the candidate over the fence. Accept only those two exact
+  # byte sequences; any third binary fails closed.
+  if cmp -s "$candidate_agent" "$host_agent_bin"; then
+    log "candidate norn-host-agent was already installed before restart recovery"
+  else
+    if "$host_agent_bin" >/dev/null 2>&1; then
+      fail "candidate API is healthy but the managed host-agent is neither the signed candidate nor the legacy fence"
+    else
+      local fence_status=$?
+      [[ "$fence_status" == "78" ]] || fail "candidate API is healthy but managed host-agent is neither the signed candidate nor the legacy fence"
+    fi
+    atomic_install_file "$candidate_agent" "$host_agent_bin" || fail "candidate API is healthy but could not install its signed norn-host-agent"
+  fi
+  cmp -s "$candidate_agent" "$host_agent_bin" || fail "candidate API is healthy but managed norn-host-agent does not match the signed candidate release"
+  if [[ "${NORN_M5_FINALIZE_CRASH_AFTER_HOST_AGENT_INSTALL:-}" == "1" ]]; then
+    fail "test hook: interrupted after candidate host-agent install before kickstart"
+  fi
+  launchctl kickstart -k "gui/$(id -u)/$host_agent_label" || fail "candidate API is healthy but norn-host-agent did not restart"
+  local launch_state agent_pid child_pid child_command stable_pid stable_child_pid stable_child_command
+  if ! launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
+    fail "candidate API is healthy but cannot inspect restarted norn-host-agent"
+  fi
+  agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || fail "candidate API is healthy but restarted norn-host-agent has no PID"
+  kill -0 "$agent_pid" >/dev/null 2>&1 || fail "candidate API is healthy but restarted norn-host-agent is not running"
+  child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+  if [[ -z "$child_pid" ]]; then
+    [[ "$host_agent_direct_exec" == "true" ]] || fail "candidate API is healthy but norn-host-agent wrapper has no child"
+  else
+    [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || fail "candidate API is healthy but norn-host-agent wrapper has ambiguous children"
+    kill -0 "$child_pid" >/dev/null 2>&1 || fail "candidate API is healthy but norn-host-agent child is not running"
+    child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+    [[ "$child_command" == *"$host_agent_bin"* ]] || fail "candidate API is healthy but norn-host-agent child does not execute the managed signed agent path"
+  fi
+  sleep 1
+  launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)" || fail "candidate API is healthy but restarted norn-host-agent disappeared"
+  stable_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  [[ "$stable_pid" == "$agent_pid" ]] || fail "candidate API is healthy but restarted norn-host-agent did not remain stable"
+  stable_child_pid="$(pgrep -P "$stable_pid" | sort -u || true)"
+  [[ "$stable_child_pid" == "$child_pid" ]] || fail "candidate API is healthy but restarted norn-host-agent child did not remain stable"
+  if [[ -n "$stable_child_pid" ]]; then
+    stable_child_command="$(ps -o command= -p "$stable_child_pid" 2>/dev/null | sed -n '1p')"
+    [[ "$stable_child_command" == *"$host_agent_bin"* ]] || fail "candidate API is healthy but stable norn-host-agent child changed executable"
+  fi
+  kill -0 "$stable_pid" >/dev/null 2>&1 || fail "candidate API is healthy but restarted norn-host-agent is not running"
+  log "candidate norn-host-agent restarted after candidate API health verification"
+}
+
 legacy_baseline_fence_service() {
   [[ -L "$current_link" ]] || fail "legacy-baseline requires a current release link"
   local legacy_release legacy_binary configured_sha launch_state legacy_pid listener_pids active_port
@@ -1235,20 +1466,24 @@ legacy_baseline_fence_service() {
   listener_pids="$(lsof -nP -iTCP:"$active_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
   [[ "$listener_pids" == "$legacy_pid" ]] || fail "legacy-baseline API listener is not owned solely by the launchd legacy PID"
 
-  local fence_dir staged
+  # The second authenticated drain is now complete. Freeze the exact verified
+  # serving PID before replacing its executable so it cannot admit work in the
+  # narrow interval before termination. A stopped process cannot handle TERM,
+  # so it is killed directly only after the durable fence is installed.
+  /bin/kill -STOP "$legacy_pid" || fail "legacy-baseline could not stop the verified legacy API PID"
+  kill -0 "$legacy_pid" >/dev/null 2>&1 || fail "legacy-baseline verified API PID exited before its executable was fenced"
+  require_cmd ps
+  local stopped_state
+  stopped_state="$(ps -o state= -p "$legacy_pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$stopped_state" == T* ]] || fail "legacy-baseline verified API PID did not enter the stopped state before fencing"
+
+  local fence_dir
   fence_dir="$(dirname "$legacy_api_path")"
   mkdir -p "$fence_dir"
   mkdir -p "$(dirname "$legacy_fence_state_path")"
-  staged="$fence_dir/.norn-api-legacy-fence.$$"
-  umask 077
-  printf '%s\n' '#!/usr/bin/env bash' 'printf "norn legacy baseline fence active; candidate recovery is required\n" >&2' 'exit 78' > "$staged"
-  chmod 0755 "$staged"
-  mv -f "$staged" "$legacy_api_path"
-  printf '{"schema":"norn.legacy-baseline-fence/v1","legacyReleaseSHA":"%s","legacyPID":%s,"state":"legacy-fenced"}\n' "$legacy_release_sha" "$legacy_pid" > "$legacy_fence_state_path"
-  chmod 0600 "$legacy_fence_state_path"
-  if ! launchctl kill SIGTERM "gui/$(id -u)/$launch_label"; then
-    fail "legacy baseline fence is installed but launchd did not accept termination; legacy binary remains fenced"
-  fi
+  legacy_baseline_write_fence_state "legacy-fenced" "$legacy_pid"
+  legacy_baseline_install_fence_binary "$legacy_api_path"
+  /bin/kill -KILL "$legacy_pid" || fail "legacy baseline fence is installed but the frozen legacy API PID could not be terminated"
   for _ in $(seq 1 30); do
     if ! kill -0 "$legacy_pid" >/dev/null 2>&1; then
       break
@@ -1260,6 +1495,11 @@ legacy_baseline_fence_service() {
   fi
   listener_pids="$(lsof -nP -iTCP:"$active_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
   [[ -z "$listener_pids" ]] || fail "legacy baseline fence is installed but a control API listener remains"
+  if launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+    local observed_pid
+    observed_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    [[ -z "$observed_pid" || "$observed_pid" == "0" ]] || fail "legacy API respawned after its binary was fenced"
+  fi
   log "legacy service fenced; its old binary cannot restart from $legacy_api_path"
 }
 
@@ -1267,16 +1507,145 @@ promote_legacy_baseline_release() {
   [[ -f "$legacy_fence_state_path" ]] || fail "legacy baseline fence state is missing; refusing candidate promotion"
   verify_release "$release" "$sha"
   log "promoting $release after legacy service fence"
-  activate_release_artifacts "$release" true || fail "signed candidate activation failed after the legacy service fence"
+  activate_release_artifacts "$release" true preserve-host-agent || fail "signed candidate activation failed after the legacy service fence"
+  if [[ -z "$legacy_transition_id" ]]; then
+    legacy_transition_id="$(python3 - <<'PY'
+import uuid
+print(uuid.uuid4())
+PY
+)" || fail "could not generate legacy baseline transition ID"
+  fi
+  export NORN_LEGACY_BASELINE_TRANSITION_ID="$legacy_transition_id"
+  export NORN_LEGACY_BASELINE_CANDIDATE_SHA="$sha"
   restart_api
   if ! postflight; then
-    printf '{"schema":"norn.legacy-baseline-fence/v1","legacyReleaseSHA":"%s","state":"candidate-postflight-failed"}\n' "$legacy_release_sha" > "$legacy_fence_state_path"
-    chmod 0600 "$legacy_fence_state_path"
+    legacy_baseline_write_fence_state "candidate-postflight-failed"
     fail "legacy baseline candidate postflight failed; legacy binary remains fenced and must not be restored after schema migration"
   fi
-  printf '{"schema":"norn.legacy-baseline-fence/v1","legacyReleaseSHA":"%s","state":"candidate-promoted"}\n' "$legacy_release_sha" > "$legacy_fence_state_path"
-  chmod 0600 "$legacy_fence_state_path"
-  log "legacy baseline upgrade complete: $version"
+  if [[ "${NORN_M5_TRANSITION_TEST_HOOKS:-}" == "1" ]]; then
+    # Hermetic launchctl shims predate the candidate maintenance endpoint and
+    # cannot model its durable fence. Production never sets this test hook.
+    restart_fenced_host_agent
+    legacy_baseline_write_fence_state "candidate-promoted"
+    log "legacy baseline test candidate promoted"
+  else
+    legacy_baseline_write_fence_state "candidate-preservation-pending"
+    log "legacy baseline candidate is write-fenced pending preservation verification: $version"
+  fi
+}
+
+legacy_baseline_pending_candidate_sha() {
+  require_cmd python3
+  python3 - "$legacy_fence_state_path" "$legacy_finalize_transition_id" <<'PY'
+import json, re, sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+if record.get("state") not in {"candidate-preservation-pending", "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart"} or record.get("transitionID") != sys.argv[2]:
+    raise SystemExit("candidate finalization is not pending for this transition")
+sha = record.get("candidateReleaseSHA")
+if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+    raise SystemExit("pending transition does not retain an exact candidate SHA")
+print(sha)
+PY
+}
+
+legacy_baseline_pending_provenance() {
+  require_cmd python3
+  python3 - "$legacy_fence_state_path" "$legacy_finalize_transition_id" <<'PY'
+import json, re, sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+if record.get("state") not in {"candidate-preservation-pending", "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart"} or record.get("transitionID") != sys.argv[2]:
+    raise SystemExit("candidate finalization is not pending for this transition")
+for key in ("legacyReleaseSHA", "candidateReleaseSHA"):
+    value = record.get(key)
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise SystemExit("pending transition does not retain exact release provenance")
+print(record["legacyReleaseSHA"])
+print(record["candidateReleaseSHA"])
+PY
+}
+
+legacy_baseline_pending_phase() {
+  require_cmd python3
+  python3 - "$legacy_fence_state_path" "$legacy_finalize_transition_id" <<'PY'
+import json, sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+state = record.get("state")
+if state not in {"candidate-preservation-pending", "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart"} or record.get("transitionID") != sys.argv[2]:
+    raise SystemExit("candidate finalization is not pending for this transition")
+print(state)
+PY
+}
+
+legacy_baseline_verify_candidate_release() {
+  local expected_sha="$1" active_release active_sha
+  require_cmd cmp
+  [[ -L "$current_link" ]] || fail "legacy baseline candidate current release link is missing"
+  active_release="$(readlink "$current_link")"
+  [[ -d "$active_release" ]] || fail "legacy baseline candidate current release path is invalid"
+  active_sha="$(release_sha "$active_release")"
+  [[ "$active_sha" == "$expected_sha" ]] || fail "legacy baseline candidate current release does not match the persisted exact candidate SHA"
+  verify_release "$active_release" "$expected_sha"
+  [[ -x "$active_release/bin/norn-api" && -x "$legacy_api_path" ]] || fail "legacy baseline candidate API binaries are unavailable"
+  cmp -s "$active_release/bin/norn-api" "$legacy_api_path" || fail "legacy baseline managed API does not exactly match the signed candidate release"
+}
+
+legacy_baseline_verify_pending_candidate() {
+  local expected_sha="$1" active_release candidate_agent
+  legacy_baseline_verify_candidate_release "$expected_sha"
+  active_release="$(readlink "$current_link")"
+  candidate_agent="$active_release/bin/norn-host-agent"
+  [[ -x "$candidate_agent" && -x "$host_agent_bin" ]] || fail "legacy baseline candidate host-agent binaries are unavailable"
+  # The managed path must still be the durable fence until the exact
+  # finalization has restarted and validated the normal candidate API.
+  if "$host_agent_bin" >/dev/null 2>&1; then
+    fail "legacy baseline host-agent fence is not installed"
+  else
+    local fence_status=$?
+    [[ "$fence_status" == "78" ]] || fail "legacy baseline managed host-agent is not the durable fence"
+  fi
+}
+
+legacy_baseline_verify_normal_candidate() {
+  local expected_version="$1" expected_sha="$2" token="$3"
+  wait_health "$api_base" 30 "" "$token" || fail "candidate API did not become healthy after legacy baseline finalize"
+  ensure_release_log_dir
+  curl -fsS -H "Authorization: Bearer $token" "$api_base/api/version" >"$release_log_dir/legacy-baseline-final-version.json" || fail "candidate API did not provide final version evidence"
+  curl -fsS -H "Authorization: Bearer $token" "$api_base/api/schema" >"$release_log_dir/legacy-baseline-final-schema.json" || fail "candidate API did not provide final schema evidence"
+  validate_active_responses "$expected_version" "$release_log_dir/legacy-baseline-final-version.json" "$release_log_dir/legacy-baseline-final-schema.json" "$expected_sha" || fail "candidate API remained in maintenance or failed normal runtime validation"
+}
+
+legacy_baseline_host_agent_is_running_candidate() {
+  [[ -L "$current_link" ]] || return 1
+  local candidate_release candidate_agent launch_state agent_pid child_pid child_command stable_pid stable_child_pid stable_child_command
+  candidate_release="$(readlink "$current_link")"
+  candidate_agent="$candidate_release/bin/norn-host-agent"
+  [[ -x "$candidate_agent" && -x "$host_agent_bin" ]] || return 1
+  cmp -s "$candidate_agent" "$host_agent_bin" || return 1
+  require_cmd launchctl
+  launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)" || return 1
+  agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || return 1
+  kill -0 "$agent_pid" >/dev/null 2>&1 || return 1
+  child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+  if [[ -z "$child_pid" ]]; then
+    [[ "$host_agent_direct_exec" == "true" ]] || return 1
+  else
+    [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    kill -0 "$child_pid" >/dev/null 2>&1 || return 1
+    child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+    [[ "$child_command" == *"$host_agent_bin"* ]] || return 1
+  fi
+  sleep 1
+  launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)" || return 1
+  stable_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  [[ "$stable_pid" == "$agent_pid" ]] || return 1
+  stable_child_pid="$(pgrep -P "$stable_pid" | sort -u || true)"
+  [[ "$stable_child_pid" == "$child_pid" ]] || return 1
+  if [[ -n "$stable_child_pid" ]]; then
+    stable_child_command="$(ps -o command= -p "$stable_child_pid" 2>/dev/null | sed -n '1p')"
+    [[ "$stable_child_command" == *"$host_agent_bin"* ]] || return 1
+  fi
+  kill -0 "$stable_pid" >/dev/null 2>&1
 }
 
 validate_prospective_schema_transition() {
@@ -1470,19 +1839,21 @@ PY
 }
 
 validate_active_responses() {
-  local expected_version="$1" version_file="$2" schema_file="$3"
+  local expected_version="$1" version_file="$2" schema_file="$3" expected_sha="${4:-}"
   require_cmd python3
-  python3 - "$expected_version" "$version_file" "$schema_file" <<'PY'
+  python3 - "$expected_version" "$version_file" "$schema_file" "$expected_sha" <<'PY'
 import json
 import sys
 
-expected, version_path, schema_path = sys.argv[1:]
+expected, version_path, schema_path, expected_sha = sys.argv[1:]
 with open(version_path, encoding="utf-8") as handle:
     version = json.load(handle)
 with open(schema_path, encoding="utf-8") as handle:
     schema = json.load(handle)
 if version.get("version") != expected:
     raise SystemExit(f"active version {version.get('version')!r} does not match expected {expected!r}")
+if expected_sha and version.get("sourceSha") != expected_sha:
+    raise SystemExit(f"active source SHA {version.get('sourceSha')!r} does not match expected {expected_sha!r}")
 if schema.get("startupMode") != "active" or schema.get("schemaMode") != "check":
     raise SystemExit(f"active startup contract is not active/check: {schema!r}")
 for field in ("operationRecoveryEnabled", "operationWorkerEnabled", "nomadWatcherEnabled"):
@@ -1559,14 +1930,26 @@ stop_candidate() {
 
 run_schema_migration() {
   log "applying the target release schema in migrate-only mode"
-  env \
-    -u NORN_SKIP_DEPLOYMENT_RECOVERY \
-    -u NORN_SKIP_OPERATION_RECOVERY \
-    -u NORN_SKIP_OPERATION_WORKER \
-    -u NORN_SKIP_NOMAD_WATCHER \
-    NORN_STARTUP_MODE=active \
-    NORN_SCHEMA_MODE=migrate-only \
-    "$release/bin/norn-api"
+  if [[ "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ]]; then
+    env \
+      -u NORN_SKIP_DEPLOYMENT_RECOVERY \
+      -u NORN_SKIP_OPERATION_RECOVERY \
+      -u NORN_SKIP_OPERATION_WORKER \
+      -u NORN_SKIP_NOMAD_WATCHER \
+      NORN_STARTUP_MODE=active \
+      NORN_SCHEMA_MODE=migrate-only \
+      NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
+      "$release/bin/norn-api"
+  else
+    env \
+      -u NORN_SKIP_DEPLOYMENT_RECOVERY \
+      -u NORN_SKIP_OPERATION_RECOVERY \
+      -u NORN_SKIP_OPERATION_WORKER \
+      -u NORN_SKIP_NOMAD_WATCHER \
+      NORN_STARTUP_MODE=active \
+      NORN_SCHEMA_MODE=migrate-only \
+      "$release/bin/norn-api"
+  fi
   log "target schema migration and compatibility check complete"
 }
 
@@ -1590,12 +1973,31 @@ validate_current_rollback_target() {
 postflight() {
   ensure_release_log_dir
   log "waiting for running API"
-  wait_health "$api_base" 30 || return 1
-  curl -fsS "$api_base/api/version" | tee "$release_log_dir/postflight-version.json"
-  printf '\n'
-  curl -fsS "$api_base/api/schema" | tee "$release_log_dir/postflight-schema.json"
-  printf '\n'
-  validate_active_responses "$version" "$release_log_dir/postflight-version.json" "$release_log_dir/postflight-schema.json"
+  if [[ "$mode" == "legacy-baseline" ]]; then
+    local token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
+    [[ -n "$token" ]] || fail "legacy baseline postflight requires an authenticated API token"
+    wait_health "$api_base" 30 "" "$token" || return 1
+    curl -fsS -H "Authorization: Bearer $token" "$api_base/api/version" | tee "$release_log_dir/postflight-version.json"
+    printf '\n'
+    curl -fsS -H "Authorization: Bearer $token" "$api_base/api/schema" | tee "$release_log_dir/postflight-schema.json"
+    printf '\n'
+  else
+    wait_health "$api_base" 30 || return 1
+    curl -fsS "$api_base/api/version" | tee "$release_log_dir/postflight-version.json"
+    printf '\n'
+    curl -fsS "$api_base/api/schema" | tee "$release_log_dir/postflight-schema.json"
+    printf '\n'
+  fi
+  if [[ "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ]]; then
+    python3 - "$release_log_dir/postflight-schema.json" "$legacy_transition_id" <<'PY' || return 1
+import json, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+if payload.get("maintenance") != "legacy-baseline-preservation" or payload.get("transitionId") != sys.argv[2] or payload.get("finalized") is not False:
+    raise SystemExit(f"candidate did not report the expected write-fenced maintenance state: {payload!r}")
+PY
+  else
+    validate_active_responses "$version" "$release_log_dir/postflight-version.json" "$release_log_dir/postflight-schema.json"
+  fi
 }
 
 restart_api() {
@@ -1605,7 +2007,102 @@ restart_api() {
   launchctl unsetenv NORN_SKIP_NOMAD_WATCHER >/dev/null 2>&1 || true
   launchctl setenv NORN_STARTUP_MODE active
   launchctl setenv NORN_SCHEMA_MODE check
+  if [[ "$mode" == "legacy-baseline" ]]; then
+    [[ -n "$legacy_transition_id" ]] || fail "legacy baseline maintenance restart requires a transition ID"
+    launchctl setenv NORN_LEGACY_BASELINE_MAINTENANCE true
+    launchctl setenv NORN_LEGACY_BASELINE_TRANSITION_ID "$legacy_transition_id"
+  else
+    launchctl unsetenv NORN_LEGACY_BASELINE_MAINTENANCE >/dev/null 2>&1 || true
+    launchctl unsetenv NORN_LEGACY_BASELINE_TRANSITION_ID >/dev/null 2>&1 || true
+  fi
   launchctl kickstart -k "gui/$(id -u)/$launch_label"
+}
+
+finalize_legacy_baseline_release() {
+  [[ -f "$legacy_fence_state_path" ]] || fail "legacy baseline fence state is missing"
+  require_cmd python3
+  require_cmd curl
+  # Serialize the handoff with all platform promotions.  The durable database
+  # fence protects writers; this host-local lock protects the release symlink,
+  # managed binaries, and launchd lifecycle while finalization validates them.
+  acquire_promotion_lock
+  local expected_sha expected_version legacy_sha provenance phase
+  provenance="$(legacy_baseline_pending_provenance)" || fail "legacy baseline transition state does not retain exact provenance"
+  legacy_sha="$(sed -n '1p' <<<"$provenance")"
+  expected_sha="$(sed -n '2p' <<<"$provenance")"
+  [[ "$expected_sha" == "$(legacy_baseline_pending_candidate_sha)" ]] || fail "legacy baseline transition candidate provenance changed"
+  phase="$(legacy_baseline_pending_phase)" || fail "legacy baseline transition phase is not resumable"
+  legacy_baseline_verify_candidate_release "$expected_sha"
+  expected_version="$(release_version "$(readlink "$current_link")")"
+  local token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
+  [[ -n "$token" ]] || fail "legacy-baseline-finalize requires NORN_TOKEN or NORN_API_TOKEN"
+  if [[ "$phase" == "candidate-preservation-pending" ]]; then
+    legacy_baseline_verify_pending_candidate "$expected_sha"
+    local status_file
+    status_file="$(mktemp "${TMPDIR:-/tmp}/norn-legacy-baseline-status.XXXXXX")"
+    chmod 0600 "$status_file"
+    trap 'rm -f "$status_file"' RETURN
+    curl -fsS -H "Authorization: Bearer $token" "$api_base/api/v1/platform/legacy-baseline/status" >"$status_file" || fail "could not read legacy baseline maintenance status"
+    python3 - "$status_file" "$legacy_finalize_transition_id" <<'PY' || fail "legacy baseline maintenance is not finalized for this exact transition"
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8")); transition = sys.argv[2]
+if value.get("maintenance") != "legacy-baseline-preservation" or value.get("transitionId") != transition or value.get("owner") != "legacy-baseline:" + transition or value.get("finalized") is not True or not isinstance(value.get("epoch"), int) or value["epoch"] < 1:
+    raise SystemExit("unexpected maintenance status")
+PY
+    # Persist this phase before consuming the one-process activation token. A
+    # process crash after launchd starts the normal candidate can then resume
+    # only by proving the same signed candidate is already serving normally.
+    legacy_baseline_write_fence_state "candidate-normal-activation-pending"
+    phase="candidate-normal-activation-pending"
+  fi
+  if [[ "$phase" == "candidate-normal-activation-pending" ]]; then
+    # This phase is durable before launchd consumes the one-process token. A
+    # crash here can restart only this signed candidate while its database
+    # fence is still held.
+    # The maintenance handler deliberately left the durable fence active. Clear
+    # all maintenance variables first, then grant this exact normal candidate a
+    # one-process activation token. The API consumes it at its worker-admission
+    # boundary and fails closed on any reboot without it.
+    launchctl unsetenv NORN_LEGACY_BASELINE_MAINTENANCE >/dev/null 2>&1 || true
+    launchctl unsetenv NORN_LEGACY_BASELINE_TRANSITION_ID >/dev/null 2>&1 || true
+    launchctl unsetenv NORN_LEGACY_BASELINE_ACTIVATE_TRANSITION_ID >/dev/null 2>&1 || true
+    launchctl setenv NORN_STARTUP_MODE active
+    launchctl setenv NORN_SCHEMA_MODE check
+    launchctl setenv NORN_LEGACY_BASELINE_ACTIVATE_TRANSITION_ID "$legacy_finalize_transition_id"
+    launchctl setenv NORN_LEGACY_BASELINE_LEGACY_RELEASE_SHA "$legacy_sha"
+    launchctl setenv NORN_LEGACY_BASELINE_CANDIDATE_SHA "$expected_sha"
+    launchctl kickstart -k "gui/$(id -u)/$launch_label" || fail "could not restart candidate API after legacy baseline finalize"
+    launchctl unsetenv NORN_LEGACY_BASELINE_ACTIVATE_TRANSITION_ID >/dev/null 2>&1 || true
+    launchctl unsetenv NORN_LEGACY_BASELINE_LEGACY_RELEASE_SHA >/dev/null 2>&1 || true
+    launchctl unsetenv NORN_LEGACY_BASELINE_CANDIDATE_SHA >/dev/null 2>&1 || true
+  fi
+  if [[ "$phase" == "candidate-preservation-pending" || "$phase" == "candidate-normal-activation-pending" ]]; then
+    legacy_baseline_verify_pending_candidate "$expected_sha"
+    legacy_baseline_verify_normal_candidate "$expected_version" "$expected_sha" "$token"
+    legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent"
+    if [[ "${NORN_M5_TRANSITION_TEST_HOOKS:-}" == "1" && "${NORN_M5_FINALIZE_CRASH_AFTER_NORMAL_CANDIDATE:-}" == "1" ]]; then
+      fail "test hook: interrupted after normal candidate verification before host-agent restart"
+    fi
+    phase="candidate-normal-active-pending-host-agent"
+  fi
+  if [[ "$phase" == "candidate-normal-active-pending-host-agent" || "$phase" == "candidate-normal-active-pending-host-agent-restart" ]]; then
+    legacy_baseline_verify_normal_candidate "$expected_version" "$expected_sha" "$token"
+    if legacy_baseline_host_agent_is_running_candidate; then
+      log "candidate norn-host-agent was already restarted before finalize recovery"
+    else
+      if [[ "$phase" == "candidate-normal-active-pending-host-agent" ]]; then
+        legacy_baseline_verify_pending_candidate "$expected_sha"
+        # Persist before changing the managed executable. A restart after the
+        # install but before kickstart must not demand a fence already replaced
+        # with the exact candidate.
+        legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent-restart"
+        phase="candidate-normal-active-pending-host-agent-restart"
+      fi
+      restart_fenced_host_agent
+    fi
+  fi
+  legacy_baseline_write_fence_state "candidate-promoted"
+  log "legacy baseline finalize completed: normal candidate API and host agent are running"
 }
 
 atomic_install_file() {
@@ -1652,10 +2149,13 @@ PY
 sync_managed_host_artifacts() {
   local target="$1"
   local strict="${2:-false}"
+  local preserve_host_agent="${3:-false}"
   mkdir -p "$(dirname "$host_agent_bin")" "$(dirname "$host_cli_bin")" \
     "$(dirname "$platform_script_bin")" "$(dirname "$host_runtime_bin")"
 
-  if [[ -f "$target/bin/norn-host-agent" ]]; then
+  if [[ "$preserve_host_agent" == "true" ]]; then
+    [[ -x "$host_agent_bin" ]] || fail "legacy host-agent fence is unavailable"
+  elif [[ -f "$target/bin/norn-host-agent" ]]; then
     atomic_install_file "$target/bin/norn-host-agent" "$host_agent_bin" || return 1
   elif [[ "$strict" == "true" ]]; then
     fail "release is missing norn-host-agent"
@@ -1695,7 +2195,9 @@ sync_managed_host_artifacts() {
   fi
 
   if [[ "$strict" == "true" ]]; then
-    cmp -s "$target/bin/norn-host-agent" "$host_agent_bin" || fail "managed host agent verification failed"
+    if [[ "$preserve_host_agent" != "true" ]]; then
+      cmp -s "$target/bin/norn-host-agent" "$host_agent_bin" || fail "managed host agent verification failed"
+    fi
     cmp -s "$target/bin/norn-effect-runner" "$bin_dir/norn-effect-runner" || fail "managed effect runner verification failed"
     cmp -s "$target/bin/norn" "$host_cli_bin" || fail "managed host CLI verification failed"
     cmp -s "$target/bin/platform-upgrade" "$platform_script_bin" || fail "managed platform script verification failed"
@@ -1710,9 +2212,14 @@ sync_managed_host_artifacts() {
 activate_release_artifacts() {
   local target="$1"
   local strict="${2:-true}"
+  local preservation_mode="${3:-}"
   atomic_install_file "$target/bin/norn-api" "$bin_dir/norn-api" || return 1
   atomic_install_file "$target/bin/norn" "$bin_dir/norn" || return 1
-  sync_managed_host_artifacts "$target" "$strict" || return 1
+  if [[ "$preservation_mode" == "preserve-host-agent" ]]; then
+    sync_managed_host_artifacts "$target" "$strict" true || return 1
+  else
+    sync_managed_host_artifacts "$target" "$strict" || return 1
+  fi
   atomic_symlink "$target" "$current_link" || return 1
 }
 
@@ -1888,8 +2395,14 @@ PY
   exit 0
 fi
 
+if [[ "$mode" == "legacy-baseline-finalize" ]]; then
+  finalize_legacy_baseline_release
+  exit 0
+fi
+
 if [[ "$mode" == "legacy-baseline" ]]; then
   legacy_baseline_validate_backup_proof
+  legacy_baseline_reject_pending_transition
 fi
 fetch_signed_release_if_needed
 build_or_reuse_release
@@ -1898,9 +2411,13 @@ target_startup_contract="$last_startup_contract"
 
 if [[ "$mode" == "legacy-baseline" ]]; then
   [[ "$upgrade_mode" == "restart" ]] || fail "legacy-baseline supports only the direct restart lane"
-  legacy_baseline_require_drained
   legacy_baseline_validate_backup_proof
   acquire_promotion_lock
+  legacy_baseline_require_drained
+  legacy_baseline_fence_host_agent
+  # Recheck only after the agent is fenced. The API remains the authenticated
+  # control surface until this second zero-drain proof completes.
+  legacy_baseline_require_drained
   legacy_baseline_fence_service
   run_schema_migration
   candidate_preflight

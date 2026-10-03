@@ -32,10 +32,18 @@ func TestPlatformReleaseLaneIncludesSignedV3Bundle(t *testing.T) {
 	for _, required := range []string{
 		"refs/heads/master", "git merge-base --is-ancestor", "platform-release",
 		"norn-effect-runner", "norn-ingress-observer", "norn-ingress-publisher", "platform-release-fetch-github", "platform-release-verify-github",
+		"-X main.SourceSHA=$REQUESTED_SHA",
 	} {
 		if !strings.Contains(string(workflow), required) {
 			t.Errorf("signed release workflow is missing %q", required)
 		}
+	}
+	upgrade, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatalf("platform upgrade script is missing: %v", err)
+	}
+	if !strings.Contains(string(upgrade), "-X main.SourceSHA=$sha") {
+		t.Fatal("local platform-upgrade build does not embed the exact candidate source SHA")
 	}
 	for _, helper := range []string{
 		"platform-release-artifact", "platform-release-fetch-github",
@@ -99,6 +107,32 @@ func TestPlatformUpgradeLegacyBaselineRequiresBackupProofBeforeBuild(t *testing.
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "requires --backup-proof") {
 		t.Fatalf("legacy baseline accepted a missing backup proof: err=%v\n%s", err, out)
+	}
+}
+
+func TestPlatformUpgradePendingLegacyTransitionRejectsOtherMutationsEarly(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "legacy-fence.json")
+	state := map[string]any{
+		"schema": "norn.legacy-baseline-fence/v1", "state": "candidate-preservation-pending",
+		"legacyReleaseSHA": strings.Repeat("a", 40), "candidateReleaseSHA": strings.Repeat("b", 40),
+		"transitionID": "test-transition",
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"upgrade", "rollback", "proxy-switch", "env-exec"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := exec.Command(platformUpgradePath(t), mode)
+			cmd.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+statePath)
+			out, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(out), "legacy baseline transition is pending") {
+				t.Fatalf("%s was not refused before mutation: err=%v output=%s", mode, err, out)
+			}
+		})
 	}
 }
 
@@ -183,6 +217,9 @@ func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegac
 	}
 	branch := text[strings.LastIndex(text, `if [[ "$mode" == "legacy-baseline" ]]`):]
 	sequence := []string{
+		"acquire_promotion_lock",
+		"legacy_baseline_require_drained",
+		"legacy_baseline_fence_host_agent",
 		"legacy_baseline_require_drained",
 		"legacy_baseline_fence_service",
 		"run_schema_migration",
@@ -205,6 +242,46 @@ func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegac
 	for _, required := range []string{"backup artifact must not be empty", "backup proof size does not match the backup artifact", "backup proof digest does not match the backup artifact", "legacy operation drain clear", "legacy service fenced", "candidate postflight failed; legacy binary remains fenced"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("legacy baseline is missing fail-closed guard %q", required)
+		}
+	}
+}
+
+func TestPlatformUpgradeLegacyBaselinePreservesFenceUntilExactFinalize(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	guard := strings.LastIndex(text, "legacy_baseline_reject_pending_transition")
+	fetch := strings.LastIndex(text, "fetch_signed_release_if_needed\nbuild_or_reuse_release")
+	if guard < 0 || fetch < 0 || guard > fetch {
+		t.Fatal("legacy baseline does not reject an existing transition before artifact preparation")
+	}
+	promoteStart := strings.Index(text, "promote_legacy_baseline_release()")
+	promoteEnd := strings.Index(text[promoteStart:], "legacy_baseline_pending_candidate_sha()")
+	if promoteStart < 0 || promoteEnd < 0 || !strings.Contains(text[promoteStart:promoteStart+promoteEnd], "activate_release_artifacts \"$release\" true preserve-host-agent") {
+		t.Fatal("legacy baseline promotion can replace the host-agent fence before preservation finalization")
+	}
+	restartStart := strings.Index(text, "restart_fenced_host_agent()")
+	restartEnd := strings.Index(text[restartStart:], "legacy_baseline_fence_service()")
+	if restartStart < 0 || restartEnd < 0 {
+		t.Fatal("legacy baseline host-agent restart helper is missing")
+	}
+	restart := text[restartStart : restartStart+restartEnd]
+	install := strings.Index(restart, "atomic_install_file \"$candidate_agent\" \"$host_agent_bin\"")
+	kickstart := strings.Index(restart, "launchctl kickstart -k")
+	if install < 0 || kickstart < 0 || install > kickstart || !strings.Contains(restart, "fence_status") {
+		t.Fatal("host-agent fence is not verified and replaced only for the exact validated kickstart")
+	}
+	finalizeStart := strings.Index(text, "finalize_legacy_baseline_release()")
+	finalizeEnd := strings.Index(text[finalizeStart:], "atomic_install_file()")
+	if finalizeStart < 0 || finalizeEnd < 0 {
+		t.Fatal("legacy baseline finalize helper is missing")
+	}
+	finalize := text[finalizeStart : finalizeStart+finalizeEnd]
+	for _, required := range []string{"legacy_baseline_pending_provenance", "NORN_LEGACY_BASELINE_LEGACY_RELEASE_SHA", "NORN_LEGACY_BASELINE_CANDIDATE_SHA"} {
+		if !strings.Contains(finalize, required) {
+			t.Fatalf("legacy baseline finalize loses exact provenance %q", required)
 		}
 	}
 }
@@ -238,6 +315,7 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 	}
 	fenceState := filepath.Join(fixture.root, "legacy-fence-state.json")
 	fenced := filepath.Join(fixture.root, "legacy-fenced")
+	agentFenced := filepath.Join(fixture.root, "legacy-agent-fenced")
 	legacyProcess := exec.Command("sleep", "300")
 	if err := legacyProcess.Start(); err != nil {
 		t.Fatal(err)
@@ -251,30 +329,68 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 		_ = legacyProcess.Process.Kill()
 		<-legacyExited
 	})
+	agentProcess := exec.Command("sleep", "300")
+	if err := agentProcess.Start(); err != nil {
+		t.Fatal(err)
+	}
+	agentExited := make(chan struct{})
+	go func() {
+		_ = agentProcess.Wait()
+		close(agentExited)
+	}()
+	t.Cleanup(func() {
+		_ = agentProcess.Process.Kill()
+		<-agentExited
+	})
+	restartedAgentPID := filepath.Join(fixture.root, "restarted-host-agent-pid")
+	restartedAgent := exec.Command("sleep", "300")
+	if err := restartedAgent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	restartedAgentExited := make(chan struct{})
+	go func() {
+		_ = restartedAgent.Wait()
+		close(restartedAgentExited)
+	}()
+	t.Cleanup(func() {
+		_ = restartedAgent.Process.Kill()
+		<-restartedAgentExited
+	})
 	writeTestScript(t, filepath.Join(fixture.shimDir, "launchctl"), `#!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
   setenv|unsetenv) exit 0 ;;
-  print) printf 'service = {\n\tpid = %s\n}\n' "$FAKE_LEGACY_PID"; exit 0 ;;
-  kill) : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; exit 0 ;;
+  print)
+    if [[ "${2:-}" == *com.norn.host-agent ]]; then
+      if [[ -f "$FAKE_RESTARTED_AGENT_PID" ]]; then pid="$(cat "$FAKE_RESTARTED_AGENT_PID")"; elif ! kill -0 "$FAKE_HOST_AGENT_PID" >/dev/null 2>&1; then exit 0; else pid="$FAKE_HOST_AGENT_PID"; fi
+    elif ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1 && [[ ! -f "$FAKE_ACTIVE_STATE" ]]; then exit 0
+    else pid="$FAKE_LEGACY_PID"; fi
+    printf 'service = {\n\tpid = %s\n}\n' "$pid"; exit 0 ;;
+  kill)
+    if [[ "${3:-}" == *com.norn.host-agent ]]; then : > "$FAKE_AGENT_FENCED"; /bin/kill -TERM "$FAKE_HOST_AGENT_PID"; else : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; fi
+    exit 0 ;;
   kickstart)
-    version="$($NORN_BIN_DIR/norn-api --fake-version)"
-    printf '%s 2\n' "$version" > "$FAKE_ACTIVE_STATE"
+    if [[ "${3:-}" == *com.norn.host-agent ]]; then printf '%s\n' "$FAKE_RESTART_AGENT_PID" > "$FAKE_RESTARTED_AGENT_PID";
+    else version="$($NORN_BIN_DIR/norn-api --fake-version)"; printf '%s 2\n' "$version" > "$FAKE_ACTIVE_STATE"; fi
     exit 0 ;;
 esac
 exit 2
 `)
 	writeTestScript(t, filepath.Join(fixture.shimDir, "lsof"), `#!/usr/bin/env bash
 set -euo pipefail
-if [[ -f "${FAKE_FENCED:-}" ]]; then exit 0; fi
-printf '%s\n' "$FAKE_LEGACY_PID"
+if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_PID"; fi
 `)
 	cmd := fixture.command(t)
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
 	cmd.Env = append(cmd.Env,
 		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
+		"FAKE_REQUIRE_AUTH_AFTER_PROMOTION=1",
 		"FAKE_FENCED="+fenced,
+		"FAKE_AGENT_FENCED="+agentFenced,
 		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid),
+		fmt.Sprintf("FAKE_HOST_AGENT_PID=%d", agentProcess.Process.Pid),
+		fmt.Sprintf("FAKE_RESTART_AGENT_PID=%d", restartedAgent.Process.Pid),
+		"FAKE_RESTARTED_AGENT_PID="+restartedAgentPID,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -283,8 +399,8 @@ printf '%s\n' "$FAKE_LEGACY_PID"
 	if _, err := os.Stat(fixture.migrationMarker); err != nil {
 		t.Fatalf("legacy baseline did not execute migration after fencing: %v\n%s", err, out)
 	}
-	if _, err := os.Stat(fenced); err != nil {
-		t.Fatalf("legacy service was not fenced: %v\n%s", err, out)
+	if err := exec.Command("kill", "-0", fmt.Sprintf("%d", legacyProcess.Process.Pid)).Run(); err == nil {
+		t.Fatalf("legacy service survived direct frozen-PID termination:\n%s", out)
 	}
 	linked, err := os.Readlink(fixture.currentLink)
 	if err != nil || linked == fixture.previousRelease {
@@ -293,6 +409,144 @@ printf '%s\n' "$FAKE_LEGACY_PID"
 	state, err := os.ReadFile(fenceState)
 	if err != nil || !strings.Contains(string(state), `"state":"candidate-promoted"`) {
 		t.Fatalf("legacy fence state was not retained as promoted: %v %s", err, state)
+	}
+}
+
+func TestPlatformUpgradeLegacyBaselineFinalizeResumesAfterNormalCandidateBeforeHostAgent(t *testing.T) {
+	fixture := newSchemaTransitionFixture(t, 2)
+	legacySHA := strings.Repeat("a", 40)
+	candidateSHA := strings.Repeat("b", 40)
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+candidateSHA+"\nNORN_RELEASE_VERSION=v2.21.0-platform\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(fixture.root, "target-api-template")
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "bin", "norn-api"), data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.binDir, "norn-api"), data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A durable host-agent fence is deliberately still in place when the API
+	// has consumed its one-process activation token. The first invocation
+	// models a crash after normal API verification; the retry must use the
+	// persisted phase and must not attempt to release the database fence again.
+	fenceState := filepath.Join(fixture.root, "legacy-fence-state.json")
+	state, err := json.Marshal(map[string]any{
+		"schema": "norn.legacy-baseline-fence/v1", "state": "candidate-normal-activation-pending",
+		"legacyReleaseSHA": legacySHA, "candidateReleaseSHA": candidateSHA, "transitionID": "resume-finalize",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fenceState, state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fence := "#!/usr/bin/env bash\nexit 78\n"
+	if err := os.WriteFile(filepath.Join(fixture.root, "host", "norn-host-agent"), []byte(fence), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No normal API is serving yet. This models a crash after the durable
+	// activation-pending phase but before launchctl received its kickstart.
+	hostAgent := exec.Command("sleep", "300")
+	if err := hostAgent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	hostAgentDone := make(chan struct{})
+	go func() {
+		_ = hostAgent.Wait()
+		close(hostAgentDone)
+	}()
+	t.Cleanup(func() {
+		_ = hostAgent.Process.Kill()
+		<-hostAgentDone
+	})
+	writeTestScript(t, filepath.Join(fixture.shimDir, "launchctl"), `#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  setenv|unsetenv) exit 0 ;;
+  kickstart)
+    if [[ "${*: -1}" == *com.norn.host-agent ]]; then
+      : > "$FAKE_RESUME_HOST_AGENT_KICKED"
+    else
+      version="$($NORN_BIN_DIR/norn-api --fake-version)"
+      printf '%s 2\n' "$version" > "$FAKE_ACTIVE_STATE"
+    fi
+    exit 0 ;;
+  print)
+    if [[ "${2:-}" == *com.norn.host-agent ]]; then
+      if [[ -f "$FAKE_RESUME_HOST_AGENT_KICKED" ]]; then
+        printf 'service = {\n\tpid = %s\n}\n' "$FAKE_RESUME_HOST_AGENT_PID"
+      else
+        printf 'service = {\n\tpid = 99999\n}\n'
+      fi
+    else
+      printf 'service = {\n\tpid = 4242\n}\n'
+    fi
+    exit 0 ;;
+esac
+exit 2
+`)
+	first := fixture.command(t)
+	first.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
+	hostKickMarker := filepath.Join(fixture.root, "host-agent-kicked")
+	first.Env = append(first.Env,
+		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
+		"NORN_M5_FINALIZE_CRASH_AFTER_NORMAL_CANDIDATE=1",
+		fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid),
+		"FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker,
+	)
+	out, err := first.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "interrupted after normal candidate verification") {
+		t.Fatalf("finalize crash point was not reached: err=%v\n%s", err, out)
+	}
+	state, err = os.ReadFile(fenceState)
+	if err != nil || !strings.Contains(string(state), `"state":"candidate-normal-active-pending-host-agent"`) {
+		t.Fatalf("normal candidate phase was not persisted before host-agent restart: %v %s", err, state)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.root, "host", "norn-host-agent")); err != nil || string(got) != fence {
+		t.Fatalf("host-agent fence was replaced before the simulated crash: %v %q", err, got)
+	}
+	wrongSource := fixture.command(t)
+	wrongSource.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
+	wrongSource.Env = append(wrongSource.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_ACTIVE_SOURCE_SHA="+strings.Repeat("c", 40), fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid), "FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker)
+	out, err = wrongSource.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "active source SHA") {
+		t.Fatalf("finalize accepted a normal API serving a different candidate source SHA: err=%v\n%s", err, out)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.root, "host", "norn-host-agent")); err != nil || string(got) != fence {
+		t.Fatalf("host-agent fence changed after source SHA mismatch: %v %q", err, got)
+	}
+	installCrash := fixture.command(t)
+	installCrash.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
+	installCrash.Env = append(installCrash.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "NORN_M5_FINALIZE_CRASH_AFTER_HOST_AGENT_INSTALL=1", fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid), "FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker)
+	out, err = installCrash.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "interrupted after candidate host-agent install before kickstart") {
+		t.Fatalf("host-agent install crash point was not reached: err=%v\n%s", err, out)
+	}
+	state, err = os.ReadFile(fenceState)
+	if err != nil || !strings.Contains(string(state), `"state":"candidate-normal-active-pending-host-agent-restart"`) {
+		t.Fatalf("host-agent restart phase was not persisted before install: %v %s", err, state)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.root, "host", "norn-host-agent")); err != nil || string(got) != "#!/usr/bin/env bash\nexit 0\n" {
+		t.Fatalf("candidate host-agent was not installed at the simulated pre-kickstart crash: %v %q", err, got)
+	}
+	retry := fixture.command(t)
+	retry.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
+	retry.Env = append(retry.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid), "FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker)
+	out, err = retry.CombinedOutput()
+	if err != nil {
+		t.Fatalf("finalize retry did not resume the exact normal candidate and host-agent restart: %v\n%s", err, out)
+	}
+	state, err = os.ReadFile(fenceState)
+	if err != nil || !strings.Contains(string(state), `"state":"candidate-promoted"`) {
+		t.Fatalf("finalize retry did not complete promotion: %v %s", err, state)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.root, "host", "norn-host-agent")); err != nil || string(got) != "#!/usr/bin/env bash\nexit 0\n" {
+		t.Fatalf("finalize retry did not install the exact candidate host agent: %v %q", err, got)
 	}
 }
 
@@ -322,6 +576,7 @@ func TestPlatformUpgradeLegacyBaselinePostflightFailureKeepsLegacyFenced(t *test
 	}
 	fenceState := filepath.Join(fixture.root, "legacy-fence-state.json")
 	fenced := filepath.Join(fixture.root, "legacy-fenced")
+	agentFenced := filepath.Join(fixture.root, "legacy-agent-fenced")
 	legacyProcess := exec.Command("sleep", "300")
 	if err := legacyProcess.Start(); err != nil {
 		t.Fatal(err)
@@ -335,25 +590,39 @@ func TestPlatformUpgradeLegacyBaselinePostflightFailureKeepsLegacyFenced(t *test
 		_ = legacyProcess.Process.Kill()
 		<-legacyExited
 	})
+	agentProcess := exec.Command("sleep", "300")
+	if err := agentProcess.Start(); err != nil {
+		t.Fatal(err)
+	}
+	agentExited := make(chan struct{})
+	go func() { _ = agentProcess.Wait(); close(agentExited) }()
+	t.Cleanup(func() { _ = agentProcess.Process.Kill(); <-agentExited })
 	writeTestScript(t, filepath.Join(fixture.shimDir, "launchctl"), `#!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
   setenv|unsetenv) exit 0 ;;
-  print) printf 'service = {\n\tpid = %s\n}\n' "$FAKE_LEGACY_PID"; exit 0 ;;
-  kill) : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; exit 0 ;;
+  print)
+    if [[ "${2:-}" == *com.norn.host-agent ]]; then
+      ! kill -0 "$FAKE_HOST_AGENT_PID" >/dev/null 2>&1 && exit 0
+      printf 'service = {\n\tpid = %s\n}\n' "$FAKE_HOST_AGENT_PID"; exit 0
+    fi
+    if ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then exit 0; fi
+    printf 'service = {\n\tpid = %s\n}\n' "$FAKE_LEGACY_PID"; exit 0 ;;
+  kill)
+    if [[ "${3:-}" == *com.norn.host-agent ]]; then : > "$FAKE_AGENT_FENCED"; else : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; fi
+    exit 0 ;;
   kickstart) printf 'v-broken-postflight 2\n' > "$FAKE_ACTIVE_STATE"; exit 0 ;;
 esac
 exit 2
 `)
 	writeTestScript(t, filepath.Join(fixture.shimDir, "lsof"), `#!/usr/bin/env bash
 set -euo pipefail
-if [[ -f "${FAKE_FENCED:-}" ]]; then exit 0; fi
-printf '%s\n' "$FAKE_LEGACY_PID"
+if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_PID"; fi
 `)
 	cmd := fixture.command(t)
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
-	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced,
-		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid))
+	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced, "FAKE_AGENT_FENCED="+agentFenced,
+		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid), fmt.Sprintf("FAKE_HOST_AGENT_PID=%d", agentProcess.Process.Pid))
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "candidate postflight failed") {
 		t.Fatalf("failed candidate postflight was not reported: err=%v\n%s", err, out)
@@ -361,8 +630,8 @@ printf '%s\n' "$FAKE_LEGACY_PID"
 	if _, err := os.Stat(fixture.migrationMarker); err != nil {
 		t.Fatalf("postflight failed before migration: %v\n%s", err, out)
 	}
-	if _, err := os.Stat(fenced); err != nil {
-		t.Fatalf("legacy process was not fenced: %v\n%s", err, out)
+	if err := exec.Command("kill", "-0", fmt.Sprintf("%d", legacyProcess.Process.Pid)).Run(); err == nil {
+		t.Fatalf("legacy process survived direct frozen-PID termination:\n%s", out)
 	}
 	state, err := os.ReadFile(fenceState)
 	if err != nil || !strings.Contains(string(state), `"state":"candidate-postflight-failed"`) {
@@ -508,7 +777,7 @@ read -r version mode < "$FAKE_STATE"
 url="${!#}"
 case "$url" in
   */api/health) printf '{"status":"%s"}\n' "$mode" ;;
-  */api/version) printf '{"version":"%s"}\n' "$version" ;;
+  */api/version) printf '{"version":"%s","sourceSha":"%s"}\n' "$version" "${FAKE_ACTIVE_SOURCE_SHA:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" ;;
   */api/schema)
     if [[ "$mode" == "passive" ]]; then
       printf '{"currentMigrationVersion":1,"startupMode":"passive","schemaMode":"check","operationRecoveryEnabled":false,"operationWorkerEnabled":false,"nomadWatcherEnabled":false}\n'
@@ -724,7 +993,9 @@ func newSchemaTransitionFixture(t *testing.T, liveWriter int) schemaTransitionFi
 	writeTestScript(t, targetTemplatePath, targetTemplate)
 	writeTestScript(t, filepath.Join(fixture.previousRelease, "bin", "norn-api"), rollbackBinary)
 	writeTestScript(t, filepath.Join(fixture.previousRelease, "bin", "norn"), "#!/usr/bin/env bash\nexit 0\n")
+	writeTestScript(t, filepath.Join(fixture.previousRelease, "bin", "norn-host-agent"), "#!/usr/bin/env bash\nexit 0\n")
 	writeTestScript(t, filepath.Join(fixture.binDir, "norn-api"), rollbackBinary)
+	writeTestScript(t, filepath.Join(root, "host", "norn-host-agent"), "#!/usr/bin/env bash\nexit 0\n")
 	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_VERSION=v2.20.0-platform\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -814,6 +1085,12 @@ if [[ "$url" == *":19998/"* ]]; then
   exit 0
 fi
 if [[ -f "$FAKE_ACTIVE_STATE" ]]; then
+  if [[ "${FAKE_REQUIRE_AUTH_AFTER_PROMOTION:-}" == "1" ]]; then
+    case "$url" in
+      */api/health|*/api/version|*/api/schema)
+        [[ "$*" == *"Authorization: Bearer "* ]] || exit 22 ;;
+    esac
+  fi
   read -r version writer < "$FAKE_ACTIVE_STATE"
   catalog=2
   minimum_writer=2
@@ -827,7 +1104,7 @@ else
 fi
 case "$url" in
   */api/health) printf '{"status":"ok"}\n' ;;
-  */api/version) printf '{"version":"%s"}\n' "$version" ;;
+  */api/version) printf '{"version":"%s","sourceSha":"%s"}\n' "$version" "${FAKE_ACTIVE_SOURCE_SHA:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" ;;
   */api/schema)
     printf '{"currentMigrationVersion":%s,"minimumReaderVersion":1,"minimumWriterVersion":%s,"version":"%s","startupContract":"norn.startup/v2","binarySchemaContract":{"readerVersion":1,"writerVersion":%s,"catalogMigrationVersion":%s,"catalogMinimumReaderVersion":1,"catalogMinimumWriterVersion":%s},"processId":4242,"processInstanceId":"11111111-1111-4111-8111-111111111111","databaseIdentity":"%s","startupMode":"active","schemaMode":"check","operationRecoveryEnabled":true,"operationWorkerEnabled":true,"nomadWatcherEnabled":true}\n' "$current_migration" "$minimum_writer" "$version" "$writer" "$catalog" "$minimum_writer" "$FAKE_DATABASE_IDENTITY"
     ;;
@@ -882,6 +1159,7 @@ func (f schemaTransitionFixture) command(t *testing.T) *exec.Cmd {
 		"NORN_CURRENT_LINK="+f.currentLink,
 		"NORN_BIN_DIR="+f.binDir,
 		"NORN_HOST_AGENT_BIN="+filepath.Join(f.root, "host", "norn-host-agent"),
+		"NORN_HOST_AGENT_DIRECT_EXEC=true",
 		"NORN_HOST_CLI_BIN="+filepath.Join(f.root, "host", "norn"),
 		"NORN_PLATFORM_SCRIPT_BIN="+filepath.Join(f.root, "host", "platform-upgrade"),
 		"NORN_HOST_RUNTIME_BIN="+filepath.Join(f.root, "host", "host-runtime"),
@@ -889,6 +1167,7 @@ func (f schemaTransitionFixture) command(t *testing.T) *exec.Cmd {
 		"FAKE_MANIFEST_HELPER="+filepath.Join(f.root, "manifest-helper.py"),
 		"NORN_RELEASE_LOGS_DIR="+filepath.Join(f.root, "release-logs"),
 		"NORN_ALLOW_LEGACY_RELEASES=true",
+		"NORN_M5_TRANSITION_TEST_HOOKS=1",
 		"NORN_DRAIN_MODE=fail",
 		"NORN_TOKEN=test-drain-token",
 		"NORN_API_BASE=http://127.0.0.1:19999",

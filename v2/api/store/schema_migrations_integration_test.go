@@ -214,6 +214,60 @@ func TestSchemaMigratorLockTimeoutAndRelease(t *testing.T) {
 	}
 }
 
+func TestSchemaMigratorQuiescentControlDatabaseGate(t *testing.T) {
+	pool := schemaMigrationTestPools(t, 1)[0]
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE operations (id TEXT PRIMARY KEY, status TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	definitions := []SchemaMigration{{Version: 1, Name: "quiescent marker", SQL: `CREATE TABLE quiescent_marker (id INTEGER PRIMARY KEY)`, MinimumReaderVersion: 1, MinimumWriterVersion: 1}}
+	migrator := newSchemaTestMigrator(t, pool, definitions, BinarySchemaCompatibility{ReaderVersion: 1, WriterVersion: 1}, SchemaMigratorOptions{RequireQuiescentControlDB: true})
+
+	if _, err := pool.Exec(ctx, `INSERT INTO operations(id, status) VALUES ('active', 'running')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrator.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "nonterminal control operations") {
+		t.Fatalf("nonterminal operation migration = %v, want quiescence refusal", err)
+	}
+	var markerPresent bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('quiescent_marker') IS NOT NULL`).Scan(&markerPresent); err != nil {
+		t.Fatal(err)
+	}
+	if markerPresent {
+		t.Fatal("quiescence refusal ran migration DDL")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE operations SET status = 'succeeded' WHERE id = 'active'`); err != nil {
+		t.Fatal(err)
+	}
+
+	other, err := pgxpool.New(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Ping(ctx); err != nil {
+		other.Close()
+		t.Fatal(err)
+	}
+	idleTransaction, err := other.Begin(ctx)
+	if err != nil {
+		other.Close()
+		t.Fatal(err)
+	}
+	if _, err := migrator.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "other client backends") {
+		_ = idleTransaction.Rollback(ctx)
+		other.Close()
+		t.Fatalf("extra client migration = %v, want quiescence refusal", err)
+	}
+	if err := idleTransaction.Rollback(ctx); err != nil {
+		other.Close()
+		t.Fatal(err)
+	}
+	other.Close()
+	if _, err := migrator.Migrate(ctx); err != nil {
+		t.Fatalf("quiescent migration after drain: %v", err)
+	}
+}
+
 func TestSchemaCheckIsReadOnlyAndRejectsAbsentCorruptAndIncompatibleMetadata(t *testing.T) {
 	t.Run("absent", func(t *testing.T) {
 		pool := schemaMigrationTestPools(t, 1)[0]
@@ -407,6 +461,7 @@ func schemaMigrationTestPools(t *testing.T, count int) []*pgxpool.Pool {
 		admin.Close()
 		t.Fatal(err)
 	}
+	admin.Close()
 	pools := make([]*pgxpool.Pool, 0, count)
 	for range count {
 		config, err := pgxpool.ParseConfig(databaseURL)
@@ -428,10 +483,15 @@ func schemaMigrationTestPools(t *testing.T, count int) []*pgxpool.Pool {
 		for _, pool := range pools {
 			pool.Close()
 		}
-		if _, err := admin.Exec(context.Background(), `DROP SCHEMA `+identifier+` CASCADE`); err != nil {
+		cleanupAdmin, err := pgxpool.New(context.Background(), databaseURL)
+		if err != nil {
+			t.Errorf("connect to drop test schema: %v", err)
+			return
+		}
+		defer cleanupAdmin.Close()
+		if _, err := cleanupAdmin.Exec(context.Background(), `DROP SCHEMA `+identifier+` CASCADE`); err != nil {
 			t.Errorf("drop test schema: %v", err)
 		}
-		admin.Close()
 	})
 	return pools
 }

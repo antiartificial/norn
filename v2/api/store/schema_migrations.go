@@ -63,6 +63,10 @@ type BinarySchemaCompatibility struct {
 type SchemaMigratorOptions struct {
 	LockKey     int64
 	LockTimeout time.Duration
+	// RequireQuiescentControlDB rejects migration unless this transaction is
+	// the only client backend for current_database() and every operation is
+	// terminal. It is intended only for an explicit maintenance migration.
+	RequireQuiescentControlDB bool
 }
 
 // SchemaAccess selects the compatibility promises a read-only check enforces.
@@ -202,12 +206,13 @@ func (e *MigrationApplyError) Unwrap() error { return e.Err }
 
 // SchemaMigrator owns an immutable migration catalog for one PostgreSQL pool.
 type SchemaMigrator struct {
-	pool             *pgxpool.Pool
-	migrations       []SchemaMigration
-	compatibility    BinarySchemaCompatibility
-	lockKey          int64
-	lockTimeout      time.Duration
-	adoptUnversioned func(context.Context, pgx.Tx) error
+	pool                      *pgxpool.Pool
+	migrations                []SchemaMigration
+	compatibility             BinarySchemaCompatibility
+	lockKey                   int64
+	lockTimeout               time.Duration
+	requireQuiescentControlDB bool
+	adoptUnversioned          func(context.Context, pgx.Tx) error
 }
 
 // NewSchemaMigrator validates and copies definitions before any database work.
@@ -232,11 +237,12 @@ func NewSchemaMigrator(pool *pgxpool.Pool, migrations []SchemaMigration, compati
 	}
 	catalog := append([]SchemaMigration(nil), migrations...)
 	return &SchemaMigrator{
-		pool:          pool,
-		migrations:    catalog,
-		compatibility: compatibility,
-		lockKey:       options.LockKey,
-		lockTimeout:   options.LockTimeout,
+		pool:                      pool,
+		migrations:                catalog,
+		compatibility:             compatibility,
+		lockKey:                   options.LockKey,
+		lockTimeout:               options.LockTimeout,
+		requireQuiescentControlDB: options.RequireQuiescentControlDB,
 	}, nil
 }
 
@@ -318,6 +324,11 @@ func (m *SchemaMigrator) Migrate(ctx context.Context) (SchemaStatus, error) {
 	}
 	if err := configureMigrationSession(ctx, tx); err != nil {
 		return SchemaStatus{}, &MigrationApplyError{Phase: "migration session", Err: err}
+	}
+	if m.requireQuiescentControlDB {
+		if err := requireQuiescentControlDatabase(ctx, tx); err != nil {
+			return SchemaStatus{}, err
+		}
 	}
 
 	hasMetadata, err := schemaMetadataPresence(ctx, tx)
@@ -421,6 +432,35 @@ func (m *SchemaMigrator) Migrate(ctx context.Context) (SchemaStatus, error) {
 	}
 	status.AppliedVersions = applied
 	return status, nil
+}
+
+// requireQuiescentControlDatabase is intentionally after the migration
+// advisory lock and before metadata setup or any migration DDL. The exact
+// transaction that owns the lock performs both observations, so a concurrent
+// migration cannot slip between the quiescence proof and DDL.
+func requireQuiescentControlDatabase(ctx context.Context, tx pgx.Tx) error {
+	var otherBackends int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*)
+		FROM pg_stat_activity
+		WHERE datname = current_database()
+		  AND backend_type = 'client backend'
+		  AND pid <> pg_backend_pid()`).Scan(&otherBackends); err != nil {
+		return &MigrationApplyError{Phase: "control database quiescence", Err: err}
+	}
+	if otherBackends != 0 {
+		return &MigrationApplyError{Phase: "control database quiescence", Err: fmt.Errorf("%d other client backends remain connected to the control database", otherBackends)}
+	}
+	var nonterminal int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM operations
+		WHERE status NOT IN ('succeeded', 'failed', 'canceled')`).Scan(&nonterminal); err != nil {
+		return &MigrationApplyError{Phase: "control database quiescence", Err: err}
+	}
+	if nonterminal != 0 {
+		return &MigrationApplyError{Phase: "control database quiescence", Err: fmt.Errorf("%d nonterminal control operations remain", nonterminal)}
+	}
+	return nil
 }
 
 func validateMigrationDefinitions(migrations []SchemaMigration) error {

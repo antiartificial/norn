@@ -35,6 +35,46 @@ func (db *DB) RuntimeMutationFenceActive(ctx context.Context) (bool, error) {
 	return active, err
 }
 
+// RuntimeMutationFenceState returns the complete durable singleton.  Startup
+// code uses this rather than treating a held fence as an opaque error: a
+// legacy-baseline transition must survive an API or host reboot without
+// accidentally starting ordinary writers.
+func (db *DB) RuntimeMutationFenceState(ctx context.Context) (RuntimeMutationFence, bool, error) {
+	if db == nil || db.Pool == nil {
+		return RuntimeMutationFence{}, false, fmt.Errorf("runtime mutation fence database is unavailable")
+	}
+	var fence RuntimeMutationFence
+	var active bool
+	var heldAt *time.Time
+	err := db.Pool.QueryRow(ctx, `SELECT epoch,owner,reason,held_at,active FROM runtime_mutation_fence WHERE singleton=true`).Scan(
+		&fence.Epoch, &fence.Owner, &fence.Reason, &heldAt, &active)
+	if heldAt != nil {
+		fence.HeldAt = *heldAt
+	}
+	return fence, active, err
+}
+
+// MarkRuntimeMutationFenceFinalizationRequested records an exact handoff
+// request but deliberately leaves the fence active.  The next normal
+// candidate process, not a maintenance HTTP request, owns the only release at
+// its controlled activation boundary.
+func (db *DB) MarkRuntimeMutationFenceFinalizationRequested(ctx context.Context, fence RuntimeMutationFence) error {
+	if db == nil || db.Pool == nil || fence.Epoch <= 0 || strings.TrimSpace(fence.Owner) == "" {
+		return ErrRuntimeMutationFenceOwnershipLost
+	}
+	var updated bool
+	err := db.Pool.QueryRow(ctx, `
+		UPDATE runtime_mutation_fence
+		SET reason='legacy baseline finalization requested'
+		WHERE singleton=true AND active=true AND epoch=$1 AND owner=$2
+		  AND reason='preserve legacy baseline until verified finalize'
+		RETURNING true`, fence.Epoch, fence.Owner).Scan(&updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrRuntimeMutationFenceOwnershipLost
+	}
+	return err
+}
+
 // AcquireRuntimeMutationFence installs the next durable epoch. Empty owner or
 // reason is rejected so an active stop is always attributable and explainable.
 func (db *DB) AcquireRuntimeMutationFence(ctx context.Context, owner, reason string) (RuntimeMutationFence, error) {
@@ -63,7 +103,7 @@ func (db *DB) AcquireRuntimeMutationFence(ctx context.Context, owner, reason str
 		SELECT 1 FROM operations WHERE status='running' AND kind IN
 		('app.deploy','app.rollback','app.restart','app.scale','app.canary-promote',
 		 'app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger',
-		 'app.cron-trigger-reconcile','app.function-invoke','host.assure'))`).Scan(&running); err != nil {
+		 'app.cron-trigger-reconcile','app.function-invoke','host.assure','database.cutover'))`).Scan(&running); err != nil {
 		return RuntimeMutationFence{}, err
 	}
 	if running {
