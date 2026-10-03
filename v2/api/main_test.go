@@ -49,6 +49,28 @@ func TestFileServerServesRootAndIndexFallback(t *testing.T) {
 	}
 }
 
+func TestLegacyBaselineActivationRequiresExactEmbeddedCandidateSHA(t *testing.T) {
+	exact := strings.Repeat("a", 40)
+	for name, input := range map[string]struct {
+		expected string
+		embedded string
+		wantErr  bool
+	}{
+		"exact signed candidate": {expected: exact, embedded: exact},
+		"missing embedded SHA":   {expected: exact, embedded: "", wantErr: true},
+		"different binary":       {expected: exact, embedded: strings.Repeat("b", 40), wantErr: true},
+		"uppercase input":        {expected: strings.Repeat("A", 40), embedded: exact, wantErr: true},
+		"short input":            {expected: "abc", embedded: exact, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateLegacyBaselineActivationBinary(input.expected, input.embedded)
+			if (err != nil) != input.wantErr {
+				t.Fatalf("validateLegacyBaselineActivationBinary(%q, %q) error = %v, wantErr %t", input.expected, input.embedded, err, input.wantErr)
+			}
+		})
+	}
+}
+
 func TestFileServerCannotEscapeUIRoot(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("index"), 0o644); err != nil {

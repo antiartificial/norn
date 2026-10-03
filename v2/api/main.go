@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -130,18 +131,66 @@ func main() {
 	// Establish schema compatibility before telemetry, runtime clients,
 	// recovery, watchers, or workers. Passive mode must remain a read-only
 	// database check and exposes only its three loopback status routes.
-	db, err := store.Connect(cfg.DatabaseURL)
+	requireQuiescentControlDB := os.Getenv("NORN_REQUIRE_QUIESCENT_CONTROL_DB") == "true"
+	var db *store.DB
+	if requireQuiescentControlDB {
+		if startupCfg.SchemaMode != startup.SchemaModeMigrateOnly {
+			log.Fatalf("NORN_REQUIRE_QUIESCENT_CONTROL_DB=true requires NORN_SCHEMA_MODE=migrate-only")
+		}
+		db, err = store.ConnectMigration(cfg.DatabaseURL)
+	} else {
+		db, err = store.Connect(cfg.DatabaseURL)
+	}
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
 	defer db.Close()
-	migrator, err := store.NewControlSchemaMigrator(db)
+	var migrator *store.SchemaMigrator
+	if requireQuiescentControlDB {
+		migrator, err = store.NewQuiescentControlSchemaMigrator(db)
+	} else {
+		migrator, err = store.NewControlSchemaMigrator(db)
+	}
 	if err != nil {
 		log.Fatalf("schema migration catalog: %v", err)
 	}
 	schemaStatus, err := startup.ApplySchemaMode(context.Background(), migrator, startupCfg)
 	if err != nil {
 		log.Fatalf("schema: %v", err)
+	}
+	// A legacy-baseline promotion starts the newly migrated API only to prove
+	// that the application inventory survived.  It owns the durable runtime
+	// fence before any recovery, runtime client, watcher, or worker can start.
+	// The process deliberately remains a small loopback maintenance server
+	// after its authenticated finalize call: only the controlled restart below
+	// can make the normal writer-bearing runtime available.
+	if os.Getenv("NORN_LEGACY_BASELINE_MAINTENANCE") == "true" {
+		serveLegacyBaselineMaintenance(cfg, db, databaseID, schemaStatus, startupCfg)
+		return
+	}
+	// A held legacy-baseline fence is a durable maintenance state.  A reboot or
+	// an accidentally cleared launchd environment must never turn it into a
+	// normal writer-bearing process.  Only the protected launcher supplies the
+	// exact transition ID after it has verified preservation.
+	var legacyActivationFence *store.RuntimeMutationFence
+	if fence, active, fenceErr := db.RuntimeMutationFenceState(context.Background()); fenceErr != nil {
+		log.Fatalf("legacy baseline fence state: %v", fenceErr)
+	} else if active && strings.HasPrefix(fence.Owner, "legacy-baseline:") {
+		transitionID := strings.TrimSpace(os.Getenv("NORN_LEGACY_BASELINE_ACTIVATE_TRANSITION_ID"))
+		if startupCfg.StartupMode != startup.ModeActive || startupCfg.SchemaMode != startup.SchemaModeCheck ||
+			!validLegacyBaselineTransitionID(transitionID) ||
+			fence.Owner != "legacy-baseline:"+transitionID ||
+			fence.Reason != "legacy baseline finalization requested" {
+			log.Fatalf("legacy baseline maintenance fence remains active (owner=%q epoch=%d); recover through the exact protected transition", fence.Owner, fence.Epoch)
+		}
+		legacyActivationFence = &fence
+	}
+	// Initializing the Apple runtime can start its VM. Preserve the durable
+	// handoff fence until its exact candidate is admitted; the Mini lane uses
+	// Nomad/Consul, so fail closed rather than permit an unproven local-runtime
+	// side effect before that release boundary.
+	if legacyActivationFence != nil && cfg.WorkloadConnector == connector.AppleContainer {
+		log.Fatal("legacy baseline activation does not permit apple-container before the exact fence release")
 	}
 	if startupCfg.SchemaMode == startup.SchemaModeMigrateOnly {
 		log.Printf("schema migration complete at version %d", schemaStatus.CurrentMigrationVersion)
@@ -218,23 +267,33 @@ func main() {
 	cloudflared.SetBinaryPath(cfg.CloudflaredBinary)
 	cloudflared.SetLaunchLabel(cfg.CloudflaredLaunchLabel)
 
-	if err := db.ReconcileExecSessions(context.Background()); err != nil {
-		log.Printf("WARNING: exec session lease recovery: %v", err)
+	// Recovery changes durable state. During a legacy-baseline activation the
+	// exact finalization fence is still held here, so defer every recovery write
+	// until the guarded admission boundary has released that exact fence.
+	// This keeps the preservation proof meaningful through activation.
+	recoverRuntimeState := func() {
+		if err := db.ReconcileExecSessions(context.Background()); err != nil {
+			log.Printf("WARNING: exec session lease recovery: %v", err)
+		}
+		if os.Getenv("NORN_SKIP_DEPLOYMENT_RECOVERY") == "true" {
+			log.Println("deployment recovery skipped")
+		} else if err := db.RecoverInFlightDeployments(context.Background()); err != nil {
+			log.Printf("WARNING: deployment recovery: %v", err)
+		}
+		if os.Getenv("NORN_SKIP_OPERATION_RECOVERY") == "true" {
+			log.Println("operation recovery skipped")
+		} else if err := db.RecoverExpiredOperations(context.Background()); err != nil {
+			log.Printf("WARNING: operation recovery: %v", err)
+		}
+	}
+	if legacyActivationFence == nil {
+		recoverRuntimeState()
+	} else {
+		log.Println("legacy baseline recovery deferred until exact activation fence release")
 	}
 	if cfg.IsFleetAuthorityOnly() {
 		serveFleetAuthorityOnly(cfg, db)
 		return
-	}
-	if os.Getenv("NORN_SKIP_DEPLOYMENT_RECOVERY") == "true" {
-		log.Println("deployment recovery skipped")
-	} else if err := db.RecoverInFlightDeployments(context.Background()); err != nil {
-		log.Printf("WARNING: deployment recovery: %v", err)
-	}
-
-	if os.Getenv("NORN_SKIP_OPERATION_RECOVERY") == "true" {
-		log.Println("operation recovery skipped")
-	} else if err := db.RecoverExpiredOperations(context.Background()); err != nil {
-		log.Printf("WARNING: operation recovery: %v", err)
 	}
 
 	// Nomad
@@ -329,9 +388,6 @@ func main() {
 	historyStore, evidenceArchiver, err := configureEvidenceArchive(cfg, db, saga.NewPostgresStore(db.Pool))
 	if err != nil {
 		log.Fatalf("evidence archive: %v", err)
-	}
-	if err := applyEvidenceReservePolicy(context.Background(), cfg, db, evidenceArchiver != nil); err != nil {
-		log.Fatalf("evidence reserve: %v", err)
 	}
 	sagaStore := historyStore
 
@@ -516,6 +572,29 @@ func main() {
 		log.Fatal("function v3 requires an evidence archiver")
 	}
 
+	// This is the final normal-startup boundary before any worker, watcher, or
+	// effect executor can admit work.  A legacy maintenance POST never clears
+	// the durable fence; this exact candidate process does, only after its
+	// dependencies and full route graph have been constructed successfully.
+	if legacyActivationFence != nil {
+		if err := validateLegacyBaselineActivationBinary(strings.TrimSpace(os.Getenv("NORN_LEGACY_BASELINE_CANDIDATE_SHA")), SourceSHA); err != nil {
+			log.Fatalf("legacy baseline activation binary identity: %v", err)
+		}
+		if err := db.ReleaseRuntimeMutationFence(context.Background(), *legacyActivationFence); err != nil {
+			log.Fatalf("legacy baseline activation fence: %v", err)
+		}
+		if active, err := db.RuntimeMutationFenceActive(context.Background()); err != nil || active {
+			log.Fatalf("legacy baseline activation fence did not clear: active=%t err=%v", active, err)
+		}
+		log.Printf("legacy baseline transition %q activated at runtime admission boundary", strings.TrimSpace(os.Getenv("NORN_LEGACY_BASELINE_ACTIVATE_TRANSITION_ID")))
+		recoverRuntimeState()
+	}
+	// This writes the durable evidence reserve policy. A legacy-baseline
+	// candidate may write it only after its exact binary identity released the
+	// held fence, leaving the preservation comparison free of candidate writes.
+	if err := applyEvidenceReservePolicy(context.Background(), cfg, db, evidenceArchiver != nil); err != nil {
+		log.Fatalf("evidence reserve: %v", err)
+	}
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 	if localEngine != nil {
@@ -602,7 +681,7 @@ func main() {
 		r.Get("/runtime", h.RuntimeInfo)
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"version": Version})
+			json.NewEncoder(w).Encode(map[string]string{"version": Version, "sourceSha": SourceSHA})
 		})
 		r.Get("/schema", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -858,6 +937,190 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	srv.Shutdown(shutdownCtx)
+}
+
+type legacyBaselineFinalizeRequest struct {
+	TransitionID string `json:"transitionId"`
+	Owner        string `json:"owner"`
+	Epoch        int64  `json:"epoch"`
+}
+
+func serveLegacyBaselineMaintenance(cfg *config.Config, db *store.DB, databaseID string, schemaStatus store.SchemaStatus, startupCfg startup.Config) {
+	r, err := newLegacyBaselineMaintenanceHandler(cfg, db, databaseID, schemaStatus, startupCfg, strings.TrimSpace(os.Getenv("NORN_LEGACY_BASELINE_TRANSITION_ID")))
+	if err != nil {
+		log.Fatalf("legacy baseline maintenance: %v", err)
+	}
+	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: r, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+	go func() {
+		log.Printf("norn %s legacy baseline preservation listening on %s", Version, srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("legacy baseline maintenance server: %v", err)
+		}
+	}()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	_ = srv.Shutdown(shutdownCtx)
+}
+
+// newLegacyBaselineMaintenanceHandler is split from the process lifecycle so
+// the exact read/finalize boundary can be exercised against a disposable
+// PostgreSQL database. A finalize request is durable but intentionally does
+// not release the fence; only a verified normal candidate startup can do that.
+func newLegacyBaselineMaintenanceHandler(cfg *config.Config, db *store.DB, databaseID string, schemaStatus store.SchemaStatus, startupCfg startup.Config, transitionID string) (http.Handler, error) {
+	if startupCfg.StartupMode != startup.ModeActive || startupCfg.SchemaMode != startup.SchemaModeCheck {
+		return nil, fmt.Errorf("legacy baseline maintenance requires active/check startup")
+	}
+	if err := validatePassiveBind(cfg.BindAddr); err != nil {
+		return nil, fmt.Errorf("legacy baseline maintenance requires a loopback bind: %w", err)
+	}
+	if len(cfg.APIToken) < 32 {
+		return nil, fmt.Errorf("legacy baseline maintenance requires a 32-byte NORN_API_TOKEN")
+	}
+	if !validLegacyBaselineTransitionID(transitionID) {
+		return nil, fmt.Errorf("legacy baseline maintenance requires a valid transition ID")
+	}
+	owner := "legacy-baseline:" + transitionID
+	fence, active, err := db.RuntimeMutationFenceState(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("legacy baseline maintenance fence state: %w", err)
+	}
+	if !active {
+		fence, err = db.AcquireRuntimeMutationFence(context.Background(), owner, "preserve legacy baseline until verified finalize")
+		if err != nil {
+			return nil, fmt.Errorf("legacy baseline maintenance fence: %w", err)
+		}
+	} else if fence.Owner != owner || (fence.Reason != "preserve legacy baseline until verified finalize" && fence.Reason != "legacy baseline finalization requested") {
+		return nil, fmt.Errorf("legacy baseline maintenance fence belongs to %q at epoch %d", fence.Owner, fence.Epoch)
+	}
+	// These clients are read-only observers.  They back the same authenticated
+	// preservation surfaces the protected wrapper compares, without starting a
+	// recovery loop, effect executor, watcher, or worker.
+	nomadClient, err := nomad.NewClient(cfg.NomadAddr)
+	if err != nil {
+		return nil, fmt.Errorf("legacy baseline maintenance nomad client: %w", err)
+	}
+	consulClient, err := consul.NewClient(cfg.ConsulAddr)
+	if err != nil {
+		return nil, fmt.Errorf("legacy baseline maintenance consul client: %w", err)
+	}
+	readHandler := handler.New(db, nomadClient, consulClient, nil, cfg, nil, nil, nil, nil, nil, nil)
+	readHandler.ConfigureWorkloads(connector.NewNomadConsul(nomadClient, consulClient), nil, nil)
+	var finalizedMu sync.Mutex
+	finalized := fence.Reason == "legacy baseline finalization requested"
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.Method != http.MethodGet && req.Method != http.MethodHead && req.Method != http.MethodOptions && !(req.Method == http.MethodPost && req.URL.Path == "/api/v1/platform/legacy-baseline/finalize") {
+				http.Error(w, "legacy baseline preservation maintenance is active", http.StatusServiceUnavailable)
+				return
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			authorization := req.Header.Get("Authorization")
+			if !strings.HasPrefix(authorization, "Bearer ") || subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authorization, "Bearer ")), []byte(cfg.APIToken)) != 1 {
+				http.Error(w, "a valid bearer token is required", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	status := func(w http.ResponseWriter, _ *http.Request) {
+		finalizedMu.Lock()
+		isFinalized := finalized
+		finalizedMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "maintenance": "legacy-baseline-preservation", "transitionId": transitionID, "owner": owner, "epoch": fence.Epoch, "finalized": isFinalized, "schema": schemaPayload(Version, databaseID, schemaStatus, startupCfg)})
+	}
+	r.Get("/api/health", readHandler.Health)
+	r.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": Version, "sourceSha": SourceSHA})
+	})
+	r.Get("/api/schema", status)
+	r.Get("/api/v1/platform/legacy-baseline/status", status)
+	r.Get("/api/apps", readHandler.ListApps)
+	r.Get("/api/services/manifest", readHandler.ServiceManifest)
+	r.Post("/api/v1/platform/legacy-baseline/finalize", func(w http.ResponseWriter, req *http.Request) {
+		authorization := req.Header.Get("Authorization")
+		if !strings.HasPrefix(authorization, "Bearer ") || subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authorization, "Bearer ")), []byte(cfg.APIToken)) != 1 {
+			http.Error(w, "a valid bearer token is required", http.StatusUnauthorized)
+			return
+		}
+		finalizedMu.Lock()
+		if finalized {
+			finalizedMu.Unlock()
+			http.Error(w, "legacy baseline maintenance was already finalized", http.StatusConflict)
+			return
+		}
+		var request legacyBaselineFinalizeRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 8<<10)).Decode(&request); err != nil || request.TransitionID != transitionID || request.Owner != owner || request.Epoch != fence.Epoch {
+			finalizedMu.Unlock()
+			http.Error(w, "exact transition ID, owner, and fence epoch are required", http.StatusBadRequest)
+			return
+		}
+		if err := db.MarkRuntimeMutationFenceFinalizationRequested(req.Context(), fence); err != nil {
+			finalizedMu.Unlock()
+			http.Error(w, "legacy baseline fence ownership was lost", http.StatusConflict)
+			return
+		}
+		finalized = true
+		finalizedMu.Unlock()
+		status(w, req)
+	})
+	return r, nil
+}
+
+func validLegacyBaselineTransitionID(value string) bool {
+	if value == "" || len(value) > 200 {
+		return false
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._/@:+-", r) {
+			if i == 0 && !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// validateLegacyBaselineActivationBinary binds the one-shot launchd
+// activation to the source identity compiled into this API process.  The
+// wrapper has already verified the release manifest and managed executable;
+// this is the final independent check immediately before its durable fence is
+// released.
+func validateLegacyBaselineActivationBinary(expected, embedded string) error {
+	if !validLegacyBaselineSourceSHA(expected) {
+		return fmt.Errorf("candidate source SHA is not an exact lowercase commit")
+	}
+	if !validLegacyBaselineSourceSHA(embedded) {
+		return fmt.Errorf("API binary has no exact embedded source SHA")
+	}
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(embedded)) != 1 {
+		return fmt.Errorf("API binary source SHA does not match the exact candidate")
+	}
+	return nil
+}
+
+func validLegacyBaselineSourceSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validateControlSecurity(cfg *config.Config) error {
@@ -1868,7 +2131,7 @@ func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler)
 	r.Get("/api/health", h.FleetAuthorityHealth)
 	r.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"version": Version})
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": Version, "sourceSha": SourceSHA})
 	})
 	r.Get("/api/operations", h.ListOperations)
 	r.Get("/api/operations/active", h.ActiveOperations)

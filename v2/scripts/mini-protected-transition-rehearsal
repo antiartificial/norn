@@ -78,6 +78,19 @@ def fetch_json(base: str, path: str, token: str) -> object:
         return json.load(response)
 
 
+def post_json(base: str, path: str, token: str, value: dict) -> object:
+    request = urllib.request.Request(
+        base.rstrip("/") + path,
+        data=json.dumps(value, sort_keys=True, separators=(",", ":")).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response)
+
+
 def stable_state(base: str, token: str) -> dict:
     health = fetch_json(base, "/api/health", token)
     apps = fetch_json(base, "/api/apps", token)
@@ -223,12 +236,40 @@ def main() -> int:
         ledger["failedAt"] = now()
         atomic_private_json(args.ledger, ledger, replace=True)
         return result.returncode
+    maintenance = fetch_json(args.api, "/api/v1/platform/legacy-baseline/status", token)
+    if not isinstance(maintenance, dict):
+        fail("candidate preservation status returned unsupported JSON")
+    transition_id = maintenance.get("transitionId")
+    owner = maintenance.get("owner")
+    epoch = maintenance.get("epoch")
+    if (maintenance.get("maintenance") != "legacy-baseline-preservation"
+            or not isinstance(transition_id, str) or not transition_id
+            or owner != f"legacy-baseline:{transition_id}"
+            or not isinstance(epoch, int) or epoch < 1
+            or maintenance.get("finalized") is not False):
+        fail("candidate is not holding the exact legacy preservation fence")
+    ledger.update({"transitionId": transition_id, "fenceOwner": owner, "fenceEpoch": epoch,
+                   "state": "candidate-preservation-verifying"})
+    atomic_private_json(args.ledger, ledger, replace=True)
     after = stable_state(args.api, token)
     ledger["afterDigest"] = digest(after)
     if before != after:
         ledger.update({"state": "postflight-preservation-failed", "failedAt": now()})
         atomic_private_json(args.ledger, ledger, replace=True)
         fail("Mini app, allocation, route, secret-reference, or schedule identity changed during transition")
+    finalized = post_json(args.api, "/api/v1/platform/legacy-baseline/finalize", token,
+                          {"transitionId": transition_id, "owner": owner, "epoch": epoch})
+    if (not isinstance(finalized, dict) or finalized.get("transitionId") != transition_id
+            or finalized.get("owner") != owner or finalized.get("epoch") != epoch
+            or finalized.get("finalized") is not True):
+        fail("candidate did not confirm exact legacy preservation-fence finalization")
+    ledger.update({"state": "candidate-finalized-restart-required", "finalizedAt": now()})
+    atomic_private_json(args.ledger, ledger, replace=True)
+    result = subprocess.run([str(upgrade), "legacy-baseline-finalize", "--transition-id", transition_id], env=upgrade_environment)
+    if result.returncode:
+        ledger.update({"state": "candidate-finalize-restart-failed", "failedAt": now(), "finalizeExitCode": result.returncode})
+        atomic_private_json(args.ledger, ledger, replace=True)
+        return result.returncode
     ledger.update({"state": "complete", "completedAt": now()})
     atomic_private_json(args.ledger, ledger, replace=True)
     receipt = dict(ledger)

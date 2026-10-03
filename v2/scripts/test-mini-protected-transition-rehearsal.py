@@ -23,10 +23,25 @@ class Handler(BaseHTTPRequestHandler):
                        "allocations": [{"id": "alloc-1"}]}],
         "/api/services/manifest": {"generatedAt": "ignored", "services": [
             {"name": "fixture-cron", "app": "fixture", "process": "cron", "type": "cron"}]},
+        "/api/v1/platform/legacy-baseline/status": {"maintenance": "legacy-baseline-preservation",
+            "transitionId": "test-transition", "owner": "legacy-baseline:test-transition", "epoch": 1,
+            "finalized": False},
     }
 
     def do_GET(self):
         body = json.dumps(self.state[self.path]).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def do_POST(self):
+        if self.path != "/api/v1/platform/legacy-baseline/finalize":
+            self.send_error(404); return
+        value = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        status = self.state["/api/v1/platform/legacy-baseline/status"]
+        if any(value.get(key) != status.get(key) for key in ("transitionId", "owner", "epoch")):
+            self.send_error(400); return
+        status["finalized"] = True
+        body = json.dumps(status).encode()
         self.send_response(200); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
@@ -53,6 +68,7 @@ class TransitionTests(unittest.TestCase):
         self.upgrade.chmod(0o700)
         Handler.state["/api/apps"][0]["spec"]["deploy"] = True
         Handler.state["/api/health"]["status"] = "ok"
+        Handler.state["/api/v1/platform/legacy-baseline/status"]["finalized"] = False
 
     def tearDown(self):
         self.server.shutdown(); self.server.server_close(); self.temporary.cleanup()
