@@ -56,7 +56,10 @@ var (
 	ErrRerunIneligible   = errors.New("protected workflow rerun is not eligible")
 )
 
-const applyRunDisplayTitleFormat = "Apply %s Norn plan %s nonce %s"
+const (
+	applyRunDisplayTitleFormat      = "Apply %s Norn plan %s nonce %s"
+	pilotApplyRunDisplayTitleFormat = "Apply %s pilot %s Norn plan %s nonce %s"
+)
 
 // RunBoundFleetRoot returns the protected workflow lane for an explicitly
 // allowlisted disposable Fleet document. These routes are intentionally
@@ -807,7 +810,7 @@ func (c *Client) verifyApplyRun(run *applyRun, planID, fleetEnvironment string, 
 	if err := c.verifyApplyRunIdentity(run, approved, appActor); err != nil {
 		return err
 	}
-	if run.DisplayTitle != fmt.Sprintf(applyRunDisplayTitleFormat, fleetEnvironment, planID, nonce) {
+	if run.DisplayTitle != applyRunDisplayTitle(fleetEnvironment, c.cfg.PilotRunID, planID, nonce) {
 		return fmt.Errorf("GitHub apply run does not carry the dispatch nonce")
 	}
 	return nil
@@ -817,7 +820,7 @@ func (c *Client) verifyApplyRunByNonceHash(run *applyRun, planID, fleetEnvironme
 	if err := c.verifyApplyRunIdentity(run, approved, appActor); err != nil {
 		return err
 	}
-	environment, candidatePlanID, candidateNonce, ok := parseApplyRunDisplayTitle(run.DisplayTitle)
+	environment, candidatePlanID, candidateNonce, ok := parseApplyRunDisplayTitle(run.DisplayTitle, c.cfg.PilotRunID)
 	if !ok || environment != fleetEnvironment || candidatePlanID != planID {
 		return fmt.Errorf("GitHub apply run does not carry the protected dispatch identity")
 	}
@@ -829,20 +832,31 @@ func (c *Client) verifyApplyRunByNonceHash(run *applyRun, planID, fleetEnvironme
 }
 
 func (c *Client) verifyApplyRunIdentity(run *applyRun, approved *Dispatch, appActor string) error {
-	if run == nil || approved == nil || !canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadSHA != approved.ApprovedHeadSHA || !workflowPathMatches(run.Path, c.cfg.ApplyWorkflow, c.cfg.DefaultBranch) || (run.Name != "apply" && run.Name != run.DisplayTitle) || run.Actor.Type != "Bot" || run.Actor.Login != appActor {
+	if run == nil || approved == nil || approved.PilotRunID != c.cfg.PilotRunID || !canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadSHA != approved.ApprovedHeadSHA || !workflowPathMatches(run.Path, c.cfg.ApplyWorkflow, c.cfg.DefaultBranch) || (run.Name != "apply" && run.Name != run.DisplayTitle) || run.Actor.Type != "Bot" || run.Actor.Login != appActor {
 		return fmt.Errorf("GitHub apply run does not match the protected dispatch identity")
 	}
 	return nil
 }
 
-func parseApplyRunDisplayTitle(value string) (environment, planID, nonce string, ok bool) {
+func applyRunDisplayTitle(fleetEnvironment, pilotRunID, planID, nonce string) string {
+	if pilotRunID != "" {
+		return fmt.Sprintf(pilotApplyRunDisplayTitleFormat, fleetEnvironment, pilotRunID, planID, nonce)
+	}
+	return fmt.Sprintf(applyRunDisplayTitleFormat, fleetEnvironment, planID, nonce)
+}
+
+func parseApplyRunDisplayTitle(value, pilotRunID string) (environment, planID, nonce string, ok bool) {
 	const planMarker = " Norn plan "
 	const nonceMarker = " nonce "
-	value = strings.TrimSpace(value)
 	if !strings.HasPrefix(value, "Apply ") {
 		return "", "", "", false
 	}
-	environment, rest, found := strings.Cut(strings.TrimPrefix(value, "Apply "), planMarker)
+	value = strings.TrimPrefix(value, "Apply ")
+	marker := planMarker
+	if pilotRunID != "" {
+		marker = " pilot " + pilotRunID + planMarker
+	}
+	environment, rest, found := strings.Cut(value, marker)
 	if !found || environment == "" {
 		return "", "", "", false
 	}

@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,6 +20,52 @@ import (
 func TestApplyRunDisplayTitleUsesNonceContract(t *testing.T) {
 	if got := fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", "plan", strings.Repeat("a", 64)); got != "Apply production/nyc3 Norn plan plan nonce "+strings.Repeat("a", 64) {
 		t.Fatalf("server run-name format=%q", got)
+	}
+	if got := applyRunDisplayTitle("disposable/external-mac/nyc3", "pilot20260907", "plan", strings.Repeat("a", 64)); got != "Apply disposable/external-mac/nyc3 pilot pilot20260907 Norn plan plan nonce "+strings.Repeat("a", 64) {
+		t.Fatalf("pilot run-name format=%q", got)
+	}
+}
+
+func TestVerifyPilotApplyRunRequiresExactConfiguredTitleInRawAndNonceHashModes(t *testing.T) {
+	planID := "11111111-1111-4111-8111-111111111111"
+	nonce := strings.Repeat("a", 64)
+	nonceSum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(nonceSum[:])
+	headSHA := strings.Repeat("b", 40)
+	environment := "disposable/external-mac/nyc3"
+	pilotRunID := "pilot20260907"
+	approved := &Dispatch{ApprovedHeadSHA: headSHA, PilotRunID: pilotRunID}
+	client := testClient(t, http.NotFoundHandler())
+	client.cfg.PilotRunID = pilotRunID
+	validTitle := applyRunDisplayTitle(environment, pilotRunID, planID, nonce)
+	validRun := func(title string) *applyRun {
+		run := &applyRun{ID: 93, HTMLURL: "https://github.com/acme/norn-fleet/actions/runs/93", Event: "workflow_dispatch", HeadSHA: headSHA, HeadBranch: "main", Path: ".github/workflows/apply.yml@main", Name: title, DisplayTitle: title}
+		run.Actor.Login, run.Actor.Type = "norn[bot]", "Bot"
+		return run
+	}
+	if err := client.verifyApplyRun(validRun(validTitle), planID, environment, approved, nonce, "norn[bot]"); err != nil {
+		t.Fatalf("raw verification rejected correct pilot title: %v", err)
+	}
+	if err := client.verifyApplyRunByNonceHash(validRun(validTitle), planID, environment, approved, nonceHash, "norn[bot]"); err != nil {
+		t.Fatalf("nonce-hash verification rejected correct pilot title: %v", err)
+	}
+
+	for name, title := range map[string]string{
+		"wrong pilot":   applyRunDisplayTitle(environment, "pilot20260908", planID, nonce),
+		"missing pilot": applyRunDisplayTitle(environment, "", planID, nonce),
+		"extra pilot":   applyRunDisplayTitle(environment, pilotRunID+" extra", planID, nonce),
+		"environment":   applyRunDisplayTitle("disposable/fleet/nyc3", pilotRunID, planID, nonce),
+		"plan":          applyRunDisplayTitle(environment, pilotRunID, "other-plan", nonce),
+		"nonce":         applyRunDisplayTitle(environment, pilotRunID, planID, strings.Repeat("c", 64)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := client.verifyApplyRun(validRun(title), planID, environment, approved, nonce, "norn[bot]"); err == nil {
+				t.Fatal("raw verification accepted tampered pilot title")
+			}
+			if err := client.verifyApplyRunByNonceHash(validRun(title), planID, environment, approved, nonceHash, "norn[bot]"); err == nil {
+				t.Fatal("nonce-hash verification accepted tampered pilot title")
+			}
+		})
 	}
 }
 
