@@ -85,10 +85,25 @@ func PG(t *testing.T) *store.DB {
 // this test; both are torn down in cleanup.
 func Etcd(t *testing.T) (*clientv3.Client, string) {
 	t.Helper()
-	backend, prefixBase, ok := etcdBackend()
+	client := EtcdClient(t)
+	if client == nil {
+		return nil, ""
+	}
+	_, prefixBase, _ := etcdBackend()
+	prefix := strings.TrimSuffix(prefixBase, "/") + "/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	return client, prefix
+}
+
+// EtcdClient returns one more independent client to the same etcd as Etcd,
+// with the same TLS and RBAC settings, closed in cleanup. Suites that stand in
+// for several API processes use it instead of dialing plain endpoints.
+func EtcdClient(t *testing.T) *clientv3.Client {
+	t.Helper()
+	backend, _, ok := etcdBackend()
 	if !ok {
 		missing(t, "neither NORN_TEST_ETCD_TLS_ENDPOINTS nor NORN_TEST_ETCD_ENDPOINTS is set")
-		return nil, ""
+		return nil
 	}
 	tlsConfig, err := backend.EtcdTLSConfig()
 	if err != nil {
@@ -102,9 +117,7 @@ func Etcd(t *testing.T) (*clientv3.Client, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	prefix := strings.TrimSuffix(prefixBase, "/") + "/" + uuid.NewString()
-	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
-	return client, prefix
+	return client
 }
 
 func etcdBackend() (startup.ControlBackendConfig, string, bool) {

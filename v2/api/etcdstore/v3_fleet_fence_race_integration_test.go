@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/lifecycle"
@@ -32,13 +31,9 @@ import (
 // its own etcd client connection, but the same prefix and authority as
 // every other adapter the caller builds this way, so they contend over the
 // same durable fence state the way two API processes would.
-func newFleetFenceRaceAdapter(t *testing.T, endpoints []string, prefix, authority string, signer store.AcceptanceSigner) *V3OperationStore {
+func newFleetFenceRaceAdapter(t *testing.T, prefix, authority string, signer store.AcceptanceSigner) *V3OperationStore {
 	t.Helper()
-	client, err := clientv3.New(clientv3.Config{Endpoints: endpoints, DialTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
+	client := integrationtest.EtcdClient(t)
 	adapter, err := NewV3OperationStore(client, prefix, authority, signer)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +103,6 @@ func fleetFenceRaceDispatchAcceptance(authority, planID, planDigest, sourceDiges
 
 func TestFleetFenceTwoAdapterAcquireRaceEtcd(t *testing.T) {
 	client, prefix := integrationtest.Etcd(t)
-	endpoints := client.Endpoints()
 	authority := uuid.NewString()
 	signer, err := store.NewHMACAcceptanceSigner("norn-fleet-fence-race-signing-key")
 	if err != nil {
@@ -127,8 +121,8 @@ func TestFleetFenceTwoAdapterAcquireRaceEtcd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adapterA := newFleetFenceRaceAdapter(t, endpoints, prefix, authority, signer)
-	adapterB := newFleetFenceRaceAdapter(t, endpoints, prefix, authority, signer)
+	adapterA := newFleetFenceRaceAdapter(t, prefix, authority, signer)
+	adapterB := newFleetFenceRaceAdapter(t, prefix, authority, signer)
 	planA, digestA, sourceDigestA := fleetFenceRaceSeedPlan(t, adapterA, "fence-race-a")
 	planB, digestB, sourceDigestB := fleetFenceRaceSeedPlan(t, adapterB, "fence-race-b")
 
