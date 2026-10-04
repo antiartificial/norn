@@ -2121,18 +2121,21 @@ run_schema_migration() {
 
 validate_current_rollback_target() {
   [[ -L "$current_link" ]] || return 0
-  local previous_release saved_release saved_version
+  local previous_release saved_release saved_version saved_sha
   previous_release="$(readlink "$current_link")"
   [[ -d "$previous_release" ]] || fail "current release link does not identify a rollback-capable release: $previous_release"
   saved_release="$release"
   saved_version="$version"
+  saved_sha="$sha"
   release="$previous_release"
+  sha="$(basename "$previous_release")"
   version="$(release_version "$previous_release")"
   probe_startup_contract "$previous_release/bin/norn-api"
   candidate_preflight
   stop_candidate
   release="$saved_release"
   version="$saved_version"
+  sha="$saved_sha"
   log "rollback target supports the startup contract and current schema"
 }
 

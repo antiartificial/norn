@@ -1229,6 +1229,9 @@ if mode == 'create':
 elif mode == 'verify':
     target = option('--release')
     if not (target/'release.json').is_file(): sys.exit(1)
+    # The rollback release has its own source identity. A candidate SHA must
+    # never be passed while verifying the current rollback target.
+    if target.name == 'previous' and '--expected-sha' in sys.argv and option('--expected-sha').name != 'previous': sys.exit(1)
     print('unsigned')
 elif mode == 'install':
     shutil.copytree(option('--staging'), option('--destination'))
