@@ -89,5 +89,22 @@ export NORN_M7_RELEASE_PUBLIC_KEY=/private/norn-release.pub
 The runner intentionally does not activate the catalog, create credentials,
 create a database, deploy the fixture, or provision a host volume. Those are
 separate reviewable changes. Before fixture scheduling, provision the declared
-host-volume path with UID/GID `65532` and mode `0700`, then use the
+host-volume path so the container sees UID/GID `65532` and mode `0700`, then use the
 fixture-specific volume name `m7-mobility-files` and exact signed image digest.
+On Docker Desktop for Mac, the Mac host may still report the path as owned by
+the login user after ownership is changed through the Linux bind mount. Test
+write access from a container running as UID/GID `65532`; host `stat` alone is
+not an adequate check.
+
+The controlled shell must include the PostgreSQL client tools and Docker
+credential helper on `PATH` for deploy snapshots and image pulls. A source
+test command executed by the API's clean environment must set its own Go
+cache paths, rather than relying on inherited `GOPATH` or `GOCACHE`.
+
+When fencing a source, changing its InfraSpec to web-only does not stop
+previously registered Nomad periodic jobs. Explicitly stop its worker and tick
+jobs, confirm neither has a next launch or running child allocation, and then
+verify the new web allocation rejects `POST /items` with HTTP `423`. Record
+the exact quiescent `/state`, database dump, and file inventory after the jobs
+are stopped. Do not treat a completed web deploy as proof that old writers
+have stopped.
