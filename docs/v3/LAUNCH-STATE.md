@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-04 19:07 UTC. This is the current handoff for the pragmatic
+Observed 2026-10-04 19:25 UTC. This is the current handoff for the pragmatic
 deployment objective. Recheck each external observation before a mutation;
 links below distinguish live state, protected workflow evidence, and historical
 local work. The [milestone contract](execution-milestones.md) remains the exit
@@ -52,16 +52,17 @@ the exact repository installation. These later owner observations supersede
 the 09:18 incident-status access snapshot. Technical zero remains an emergency
 unprotected result, not a protected final-zero receipt.
 
-**Prepared successor:** Owner-only readiness observations through 18:58 UTC
+**Prepared successor:** Owner-only readiness observations through 19:16 UTC
 record `pilot261004a`, its exact-SAN public certificate, a replacement GitHub
 App key verified against the repository installation, a replacement Tailscale
 OAuth client that read the live ACL/auth-key list, and saved temporary ownership
 for the authority, runner and node tags. No one-use machine keys or devices
-were issued at that observation. The certificate's provisional proof binds an
-expired 14:00 UTC retirement time, and the local cost record explicitly says
-`billableCreateAllowed=false`. Its earlier price and provider-zero reads must
-be refreshed for the actual launch window. This is preparation, not a Fleet
-resource or authorization to create billable compute.
+were issued at that observation. A newer owner-only TLS check at 19:16 UTC
+verified the same exact-SAN certificate for a proposed
+`retireBy=2026-10-05T01:00:00Z`. This supersedes the expired 14:00 UTC TLS
+proof, but does not extend the old price quote or authorize billable creation:
+the local cost record still says `billableCreateAllowed=false`. Refresh price,
+provider-zero and protected run approvals for the actual launch window.
 
 **Source:** Protected Norn `master` and the Mini both resolve to `26147c39`.
 Protected Fleet `main` resolves to
@@ -71,6 +72,16 @@ failed apply's source. The local `codex/v3-release-integration` branch at
 that branch, the old run, or its plan artifact as moving release authority.
 The main `/Users/arti/Desktop/Claude/norn` checkout has unrelated local
 changes and must be preserved.
+
+**Exact-main no-cloud qualification:** Protected Fleet
+[run 37228131232](https://github.com/antiartificial/norn-fleet/actions/runs/37228131232)
+completed successfully at 19:25 UTC on exact `f8d1814`. Its hosted receipt
+records 286 bounded tests and `cloudMutationAllowed=false`,
+`tailscaleMutationAllowed=false`, and `oidcUsed=false`. The owner-only receipt
+is retained under `qualification-pilot261004a-f8-37228131232/` with SHA-256
+`6d75fbf10a1dc24476b30b5da298467c6fd2a2b21e1a167dee89fbd8fd565c1f`.
+This closes the exact-source no-cloud qualification gate; it does not create a
+runner, plan, Fleet attempt or resource.
 
 ## Milestone reconciliation
 
@@ -110,9 +121,11 @@ cover every M3/M4/M8 exit.
 2. **Rebind prepared successor `pilot261004a` to a real launch window.** Its
    exact-hostname public certificate, new GitHub App key, replacement Tailscale
    OAuth client and three temporary tag-owner delegations already exist.
-   Its provisional `retireBy=2026-10-04T14:00:00Z` is expired. Refresh the
-   run-bound price, cutoff/retirement, TLS verification and provider-zero
-   observations before dispatch. The broader user pilot ceiling is USD 20;
+   A 19:16 UTC check verified its public certificate through a proposed
+   `retireBy=2026-10-05T01:00:00Z`; confirm this remains enough time for four
+   run hours and the one-hour teardown reserve at actual dispatch. Refresh the
+   run-bound price, cutoff/retirement and provider-zero observations before
+   dispatch. The broader user pilot ceiling is USD 20;
    the protected workflow ceiling is USD 10. The retained local cost record
    still says `billableCreateAllowed=false`; obtain the fresh protected
    owner-dispatch and plan approvals for the actual window.
@@ -150,6 +163,8 @@ cover every M3/M4/M8 exit.
   its failed step log, and protected
   [`apply.yml`](https://github.com/antiartificial/norn-fleet/blob/a3883f59f3b8dfa67161003cb130666871a67b77/.github/workflows/apply.yml)
   / [`pilot_ingress_tls.py`](https://github.com/antiartificial/norn-fleet/blob/a3883f59f3b8dfa67161003cb130666871a67b77/scripts/pilot_ingress_tls.py).
+- Exact-main hosted qualification: [run 37228131232](https://github.com/antiartificial/norn-fleet/actions/runs/37228131232)
+  and owner-only `qualification-pilot261004a-f8-37228131232/pre-release-pilot-qualification.json`.
 - `pilot261003d` emergency retirement: owner-only local incident record at
   `/Users/arti/.config/norn/fleet-next-full-e2e/incident-retirement-pilot261003d/`,
   especially `status-20261004T0918Z.json`, management state/provider-zero
@@ -158,7 +173,7 @@ cover every M3/M4/M8 exit.
 - `pilot261004a` preparation and old-access retirement: owner-only
   `/Users/arti/.config/norn/fleet-next-full-e2e/next-pilot-readiness-20261004.md`,
   `old-access-retirement-pilot261004a.json`,
-  `pilot-ingress-tls-pilot261004a.json`, and
+  `pilot-ingress-tls-pilot261004a-20261005T0100Z.json`, and
   `cost-approval-pilot261004a.json`. The readiness note is an operator log,
   not a protected plan, owner-dispatch audit or live Fleet proof.
 - Historical management pilot results:
