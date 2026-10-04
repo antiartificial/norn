@@ -88,3 +88,23 @@ The full `startup` package passed locally. This fixture uses simulated launchd
 and API responses; it does not qualify a Mini deployment on its own. The remaining M5 gate is a
 scheduled Mini rehearsal using a fresh read-only copy, a verified restore of
 the actual protected backup, and the complete maintenance/fencing procedure.
+
+## Release-only disposable CI rehearsal
+
+`.github/workflows/m5-legacy-baseline-transition-rehearsal.yml` is manually
+dispatched from protected `master` for an exact commit already reachable from
+`master`; it is intentionally absent from routine push and pull-request CI.
+Before enabling it for a production release, configure the
+`m5-mini-release-rehearsal` GitHub environment with the required release
+reviewers. The job uses a runner-owned loopback PostgreSQL database named
+`norn_m5_legacy_baseline`, never Mini credentials or production secrets.
+
+It invokes `test-mini-legacy-baseline-transition-rehearsal.sh`, which includes
+the postflight-failure case, then fails closed unless its receipt is a regular
+mode-`0600` file with a matching SHA-256 sidecar; an exact clean source commit;
+the expected source-file digests; both focused test groups; and recorded
+scratch cleanup. The sidecar records only the receipt filename, so it can be
+checked after downloading with `sha256sum --check` from the same directory.
+The workflow uploads both files for 30 days. The SHA identifies the uploaded
+receipt bytes only. Neither it nor the fixture receipt is signed-release,
+protected-backup, real-Mini, or production-maintenance evidence.

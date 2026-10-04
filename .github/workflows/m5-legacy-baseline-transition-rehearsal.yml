@@ -1,0 +1,164 @@
+name: M5 legacy baseline transition rehearsal
+
+# This is deliberately a release-only gate. It is not part of pull-request or
+# push CI because it runs an isolated PostgreSQL transition rehearsal.
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact 40-character commit SHA already merged to protected master
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m5-legacy-baseline-transition-${{ inputs.commit_sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require protected master and exact commit
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/master" ]] || {
+            echo "Run this workflow from master." >&2
+            exit 1
+          }
+          [[ "$REF_PROTECTED" == "true" ]] || {
+            echo "master must be protected before the M5 rehearsal is enabled." >&2
+            exit 1
+          }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "commit_sha must be an exact lowercase 40-character SHA." >&2
+            exit 1
+          }
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - name: Require a commit merged to master
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$REQUESTED_SHA" ]]
+          git fetch --no-tags origin master
+          git merge-base --is-ancestor "$REQUESTED_SHA" origin/master || {
+            echo "The requested commit is not reachable from master." >&2
+            exit 1
+          }
+
+  rehearsal:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    # Configure this environment with required reviewers before enabling the
+    # gate for a production release. The workflow itself never has production
+    # credentials: it uses only this runner-owned disposable PostgreSQL DB.
+    environment: m5-mini-release-rehearsal
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: norn_m5_ci
+          POSTGRES_PASSWORD: norn_m5_ci
+          POSTGRES_DB: norn_m5_legacy_baseline
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U norn_m5_ci -d norn_m5_legacy_baseline"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Rehearse legacy baseline transition on disposable PostgreSQL
+        env:
+          NORN_M5_LEGACY_BASELINE_REHEARSAL: '1'
+          NORN_M5_LEGACY_BASELINE_DB_OWNED: '1'
+          NORN_TEST_DATABASE_URL: postgres://norn_m5_ci:norn_m5_ci@127.0.0.1:5432/norn_m5_legacy_baseline?sslmode=disable
+          NORN_M5_LEGACY_BASELINE_RECEIPT: ${{ runner.temp }}/m5-legacy-baseline-rehearsal-receipt.json
+        run: bash v2/scripts/test-mini-legacy-baseline-transition-rehearsal.sh
+      - name: Verify receipt, source identity, tests, and cleanup
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          RECEIPT: ${{ runner.temp }}/m5-legacy-baseline-rehearsal-receipt.json
+        run: |
+          set -euo pipefail
+          test -f "$RECEIPT"
+          test "$(stat -c '%a' "$RECEIPT")" = 600
+          receipt_dir="$(dirname "$RECEIPT")"
+          receipt_name="$(basename "$RECEIPT")"
+          (
+            cd "$receipt_dir"
+            sha256sum "$receipt_name" >"$receipt_name.sha256"
+            sha256sum --check "$receipt_name.sha256"
+          )
+          RECEIPT_SHA256="$(sha256sum "$RECEIPT" | awk '{print $1}')"
+          RECEIPT="$RECEIPT" REQUESTED_SHA="$REQUESTED_SHA" python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          receipt_path = Path(os.environ['RECEIPT'])
+          receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+          expected_files = [
+              'v2/scripts/test-mini-legacy-baseline-transition-rehearsal.sh',
+              'v2/scripts/platform-upgrade',
+              'v2/api/startup/platform_upgrade_test.go',
+              'v2/api/store/mini_synthetic_upgrade_integration_test.go',
+          ]
+          expected_tests = {
+              'store/TestSyntheticMiniControlUpgradeAndReaderBoundary',
+              'startup/TestPlatformUpgradeLegacyBaseline{FencesExactLegacyBeforeMigrationAndPromotesCandidate,PostflightFailureKeepsLegacyFenced,RejectsActiveOperationsBeforeFence}',
+          }
+          assert receipt['schema'] == 'norn.m5-legacy-baseline-rehearsal/v1'
+          assert receipt['exitCode'] == 0 and receipt['failureStage'] is None
+          assert receipt['source']['commit'] == os.environ['REQUESTED_SHA']
+          assert receipt['source']['dirty'] is False
+          assert set(receipt['source']['filesSHA256']) == set(expected_files)
+          for path in expected_files:
+              actual = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+              assert receipt['source']['filesSHA256'][path] == actual, path
+          assert set(receipt['passedTests']) == expected_tests
+          assert receipt['cleanup']['scratchRemoved'] is True
+          assert receipt['simulation'] == {
+              'launchd': True,
+              'apiResponses': True,
+              'candidateRelease': 'unsigned fixture',
+          }
+          PY
+          {
+            echo "### M5 disposable rehearsal receipt"
+            echo
+            echo "- SHA-256: \`$RECEIPT_SHA256\`"
+            echo "- Source: \`$REQUESTED_SHA\` (clean)"
+            echo "- Receipt mode: \`0600\`"
+            echo "- Result: fixture tests passed and scratch cleanup was recorded"
+            echo "- Scope: simulated launchd/API and an unsigned candidate fixture; this is not Mini or signed-release proof."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: m5-legacy-baseline-rehearsal-receipt-${{ inputs.commit_sha }}
+          path: |
+            ${{ runner.temp }}/m5-legacy-baseline-rehearsal-receipt.json
+            ${{ runner.temp }}/m5-legacy-baseline-rehearsal-receipt.json.sha256
+          if-no-files-found: warn
+          retention-days: 30
