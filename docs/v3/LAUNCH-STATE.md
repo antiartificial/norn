@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-04 21:09 UTC. This is the current handoff for the pragmatic
+Observed 2026-10-04 21:26 UTC. This is the current handoff for the pragmatic
 deployment objective. Recheck each external observation before a mutation;
 links below distinguish live state, protected workflow evidence, and historical
 local work. The [milestone contract](execution-milestones.md) remains the exit
@@ -27,7 +27,7 @@ incidents. Those counts include discovered/inactive apps and services; they do
 not prove workload identity preservation across the earlier one-way transition.
 
 **Fleet:** The last live Mini inventory returned `fleet_configured=false`, zero
-node pools, and zero Fleet plans. The most recent protected disposable Fleet
+node pools, and zero Fleet plans. A prior protected disposable Fleet
 [apply run 37184229667](https://github.com/antiartificial/norn-fleet/actions/runs/37184229667)
 failed at the pre-provider public ingress TLS gate on 2026-10-04 06:55:59 UTC.
 Its durable attempt and provider mutation steps were skipped, so this run is
@@ -52,23 +52,21 @@ the exact repository installation. These later owner observations supersede
 the 09:18 incident-status access snapshot. Technical zero remains an emergency
 unprotected result, not a protected final-zero receipt.
 
-**Prepared successor:** Owner-only readiness observations through 19:52 UTC
-record `pilot261004a`, its exact-SAN public certificate, a replacement GitHub
-App key verified against the repository installation, a replacement Tailscale
-OAuth client that read the live ACL/auth-key list, and saved temporary ownership
-for the authority, runner and node tags. Fresh one-use authority and runner
-machine keys have now been issued; neither machine is enrolled yet. A newer
-owner-only TLS check at 19:16 UTC
-verified the same exact-SAN certificate for a proposed
-`retireBy=2026-10-05T01:00:00Z`. This supersedes the expired 14:00 UTC TLS
-proof. The actual protected backend precreate audit uses
-`retireBy=2026-10-04T23:30:00Z`; recheck certificate validity and the remaining
-execution window before protected Fleet dispatch.
+**Disposable successor:** `pilot261004a` used a verified exact-SAN certificate,
+replacement GitHub App key, and fresh Tailscale credentials. It created the
+management authority and runner, completed private handoff and protected Fleet
+planning, then stopped before Fleet creation. The approved complete abort has
+since destroyed management and both state backends. The two one-use Tailscale
+auth keys and run-specific GitHub staging configuration are retired. Two
+Tailscale device identities still await dashboard removal; this is not an
+overall external final-zero claim. The retained retirement deadline is
+`2026-10-04T23:30:00Z`.
 
-**Source:** Protected Norn `master` and the Mini both resolve to `26147c39`.
-Protected Fleet `main` resolves to
-`f8d181482578e5fef72f4f3529f4e6e782f410a4`, two commits after the
-failed apply's source. The local `codex/v3-release-integration` branch at
+**Source:** The Mini still runs `26147c39`; protected Norn `master` now resolves
+to `c56fa0cbef322d44abf905a423bea72df26292b2`, including the pilot apply
+title correction. Protected Fleet `main` resolves to
+`daf7bf3fb759f7603c8d08941187a09d907f37f7`, including the exact empty
+backend bucket abort proof. The local `codex/v3-release-integration` branch at
 `88b52e1f` is not merged and is behind newer protected Norn work. Do not use
 that branch, the old run, or its plan artifact as moving release authority.
 The main `/Users/arti/Desktop/Claude/norn` checkout has unrelated local
@@ -84,7 +82,7 @@ is retained under `qualification-pilot261004a-f8-37228131232/` with SHA-256
 This closes the exact-source no-cloud qualification gate; it does not create a
 runner, plan, Fleet attempt or resource.
 
-**Current pilot precreate and management:** A 19:32 UTC provider-name inventory found zero
+**Pilot precreate and management history:** A 19:32 UTC provider-name inventory found zero
 `pilot261004a` matches before creation. The refreshed conservative quote is
 USD 8.97 for a four-hour run, one-hour teardown reserve and full USD 5 Spaces
 base, within the protected USD 10 ceiling. The updated local operator budget
@@ -102,7 +100,7 @@ machine keys are staged. It explicitly defers provider-generated values until
 after management creation. Protected exact-main management owner-dispatch
 [run 37230120622](https://github.com/antiartificial/norn-fleet/actions/runs/37230120622)
 then approved the create subject. The run-bound management create receipt is
-complete, and the authority and repository runner are now live on Tailscale.
+complete, and the authority and repository runner came online on Tailscale.
 The runner has a private authority route and a successful scoped `api:read`
 probe. DigitalOcean public SSH firewalls were closed after bootstrap. The
 strict OpenTofu refresh drift was reconciled, and the firewall closure receipt
@@ -116,24 +114,27 @@ failed at the pre-provider recovery-inventory gate. Its check rejected historic
 Fleet state-lock history because the observed precreate inventory did not prove
 the required single paired empty retained Fleet bucket. The `apply` job stopped
 before provider apply and no runner attempt or Fleet resource was created. This
-is measured workflow evidence, not a provider-zero proof for the still-live
-management scope.
+is measured workflow evidence; the later abort receipt supplies the distinct
+provider-zero proof for management.
 
-**Current abort boundary:** The 21:01 UTC management state snapshot enumerates
-17 live management resources. Its checked-in management state has no live
-Fleet-root resources, but that is not an account inventory. A complete-abort
-approval was prepared; canonical management abort remains gated on a fresh
-paired empty-bucket proof in the Fleet zero inventory. Until that proof exists,
-do not destroy management or call the resulting state a final zero. The
-run-bound retirement deadline remains `2026-10-04T23:30:00Z`.
+**Abort and backend retirement:** [Fleet PR #243](https://github.com/antiartificial/norn-fleet/pull/243)
+passed its protected contract check and merged as `daf7bf3`. It admits only the
+declared empty Fleet backend bucket while still rejecting Fleet state, locks,
+uploads and other provider resources. The refreshed management snapshot found
+17 state-accounted resources. Protected owner [approval run 37235481822](https://github.com/antiartificial/norn-fleet/actions/runs/37235481822)
+bound the complete abort. The fence removed runner 225 and powered off both
+management droplets; the exact saved destroy plan then completed. The abort
+receipt records empty management OpenTofu state and two independent management
+provider-zero observations. A separate typed cleanup removed both Spaces state
+buckets, their retained versions, and scoped keys, with `backendFinalZero=true`.
+This proves the pilot cloud and backend teardown, while Tailscale device
+removal and final external cleanup remain separate.
 
 **Norn bridge correction:** Norn [PR #115](https://github.com/antiartificial/norn/pull/115)
-fixes exact pilot-apply title verification. Its first v3 CI run passed, but the
-PR remained blocked because branch protection still required the legacy
-`Repository CI` context names rather than v3 job names. At 21:09 UTC, a
-Repository CI run had started to produce those required contexts; only its
-terminal results can clear that protection. This source fix is not evidence of
-Fleet recovery or provider mutation.
+passed both v3 CI and the protected legacy Repository CI checks, then merged as
+`c56fa0c`. The two workflows were returned to their earlier disabled setting.
+The correction is in source, but has not been deployed to Mini or used in a
+successful Fleet run. It is not Fleet fitness evidence.
 
 ## Milestone reconciliation
 
@@ -149,12 +150,12 @@ snapshots remain in Git history.
 | M0 baseline | 55% | Mini source and current service counts are observed; historical before/after identity equality is incomplete. | Review catalog/owner decisions and a fresh baseline bound to the current signed release. |
 | M1 control semantics | 65% | Signed v3 code is running on Mini; local ownership/fencing tests exist. | Cross-process and downstream-effect recovery proof on the protected path. |
 | M2 profiles and retention | 50% | Mini uses development/PostgreSQL; profile, binding and archive work has local evidence. | Real provider retention and separate-node restore, plus reviewed legacy app binding behavior. |
-| M3 etcd Fleet | 40% | Three-member local TLS/RBAC/restore rehearsals, paired disposable state backends, live management runner and protected 24-create Fleet plan exist; no live etcd Fleet. | Protected five-node bootstrap, actual membership/quorum, fault/restore, alarms, rotation and soak. |
+| M3 etcd Fleet | 40% | Three-member local TLS/RBAC/restore rehearsals and a protected 24-create Fleet plan exist; the disposable management and state backends were retired before Fleet creation. No live etcd Fleet exists. | Protected five-node bootstrap, actual membership/quorum, fault/restore, alarms, rotation and soak. |
 | M4 capacity and ingress | 40% | Local admission, replica and two-ingress fixtures exist; no provider-backed route or loaded scale/drain proof. | Live placement, public ingress, workload write/read, 2→3→2 and drain under load. |
 | M5 Mini upgrade rehearsal | 35% | Mini now runs the v3 source, but the original one-way transition's before snapshot was not retained. Later signed private-copy restore/shadow evidence does not repair that missing comparison. | Protected isolated transition rehearsal from a representative current backup, workload identity/route comparison, and operator review. Do not replay the consumed live fence. |
 | M6 running upgrades and app DB | 25% | Journals, authority checks and local transfer fixtures exist. | Protected running-upgrade and actual app DB cutover/interruption recovery. |
 | M7 mobility | 30% | An isolated Mini fixture source ran web, worker and tick; it wrote three items, acknowledged three jobs and recorded seven ticks. Web was fenced read-only, worker/tick stopped, and a five-dimensional private restore/transfer comparison passed. No Fleet target or complete move exists. | Reverify the source fence, perform final `NOLOGIN`/zero-session role fence at target-ready cutover, then prove target data/files/work, traffic and rollback/recovery. |
-| M8 release qualification | 20% | Signed Mini source, exact-source no-cloud checks, management closure receipts and a protected Fleet plan exist; the prior disposable Fleet apply stopped before provider mutation. | Version matrix, provider-backed fitness, soak/fault results, client parity and owner sign-off. |
+| M8 release qualification | 20% | Signed Mini source, exact-source no-cloud checks, protected Fleet plan and complete pilot abort receipts exist; the disposable Fleet apply stopped before provider mutation. | Version matrix, provider-backed fitness, soak/fault results, client parity and owner sign-off. |
 | M9 adoption | 10% | Mini API runs v3 code, but controlled adoption is not signed; Fleet is absent. | Independently verified Fleet deployment, Mini preservation and selected app adoption under the reviewed rollout scope. |
 
 The latest detailed implementation notes on the unmerged integration branch
@@ -170,29 +171,24 @@ cover every M3/M4/M8 exit.
    owner-only action-time receipts with the emergency management-retirement
    packet. Recheck provider/account billing independently; never label this a
    protected final-zero.
-2. **Treat the failed apply as pre-provider and choose the bounded recovery.**
-   Run 37233379210 failed while proving its precreate inventory, before provider
-   apply. Reconcile the historic lock evidence and produce the required paired
-   empty-bucket Fleet-zero proof before choosing a reviewed retry or the
-   canonical complete abort. Do not infer provider zero from the failed run or
-   from the management state file.
-3. **Preserve the completed management handoff.** The protected firewall
-   closure, two host receipts, private `api:read` probe, exact-SAN TLS transfer
-   and run-bound Fleet handoff are complete. Keep the runner's verified path
-   variables and certificate validity current through apply. Restore original
-   tag owners after enrollment or abort.
-4. **If recovery is approved, bind a fresh protected plan/apply and measure the
-   actual Fleet.** Reconcile the exact protected Fleet SHA, 24-create artifact,
-   Norn plan and recovery binding before dispatch.
-   Watch the numbered attempt and checkpoints through terminal state; verify
-   provider inventory, three etcd members, Consul/Nomad enrollment, both
-   ingresses and public TLS, then run the bounded workload/fault matrix.
-   Reserve the retirement window; retire Fleet before management and
-   independently prove provider and backend final zero. Fleet retirement is
-   targeted by 23:15 UTC so management and backend retirement can finish by the
-   23:30 UTC deadline. Keep cost/billing verification distinct from technical
-   zero.
-5. **Then finish Mini/release qualification.** Rehearse M5 on a private current
+2. **Finish pilot261004a external cleanup.** The complete abort and paired
+   backend cleanup are evidenced. The two one-use Tailscale auth keys are
+   deleted, the pilot GitHub runner and staging configuration are removed, and
+   shared GitHub entries are preserved. Remove only the two recorded Tailscale
+   devices when the dashboard's deletion confirmation is given. Recheck the
+   exact devices and original tag ownership, then retain final external
+   cleanup evidence. Technical zero does not settle the final invoice.
+3. **Start a new bounded Fleet pilot.** The title verifier fix is merged but
+   not deployed to the management authority. A new pilot needs fresh cost and
+   expiry approval, exact protected source qualification, credentials, backend
+   and management bootstrap, a fresh signed Norn release, a protected plan,
+   and a guarded apply. Do not reuse this destroyed state, runner or expired
+   approvals. Watch the numbered attempt and checkpoints; verify three etcd
+   members, Consul/Nomad enrollment, both ingresses and public TLS, then run
+   the bounded workload/fault matrix and retire it within its own envelope.
+   The attempted apply run 37233379210 is evidence of a pre-provider failure,
+   not a resumable Fleet deployment.
+4. **Then finish Mini/release qualification.** Rehearse M5 on a private current
    backup without mutating live applications, complete the remaining M3–M8
    faults, upgrades, database and mobility proofs, and record explicit M0–M9
    decisions. The Mini's current healthy API is useful runtime evidence, not
@@ -211,20 +207,19 @@ cover every M3/M4/M8 exit.
   / [`pilot_ingress_tls.py`](https://github.com/antiartificial/norn-fleet/blob/a3883f59f3b8dfa67161003cb130666871a67b77/scripts/pilot_ingress_tls.py).
 - Exact-main hosted qualification: [run 37228131232](https://github.com/antiartificial/norn-fleet/actions/runs/37228131232)
   and owner-only `qualification-pilot261004a-f8-37228131232/pre-release-pilot-qualification.json`.
-- Current pilot precreate: [protected backend owner-dispatch run 37229166242](https://github.com/antiartificial/norn-fleet/actions/runs/37229166242);
+- Pilot precreate: [protected backend owner-dispatch run 37229166242](https://github.com/antiartificial/norn-fleet/actions/runs/37229166242);
   owner-only `provider-zero-check-pilot261004a-20261004T193244Z-refresh.json`,
   `price-quote-pilot261004a-20261004T193244Z-refresh.json`,
   `cost-approval-pilot261004a-20261004T1932Z-refresh.json`,
   `backend-precreate-pilot261004a/backend-bootstrap-receipt-{fleet,management}.json`,
-  and `management-bootstrap-precreate-pilot261004a.json`. The backends are
-  actual provider resources and require protected retirement and final-zero
-  verification even if management or Fleet deployment is abandoned.
+  and `management-bootstrap-precreate-pilot261004a.json`. The backends were
+  actual provider resources and are covered by the later typed cleanup receipt.
 - Management create: [protected owner-dispatch run 37230120622](https://github.com/antiartificial/norn-fleet/actions/runs/37230120622),
   owner-only `management-create-evidence-pilot261004a/` create receipt and
   postcreate inventory, Tailscale enrollment and runner readiness observations,
   private authority `api:read` probe, completed OpenTofu firewall closure and
-  two host receipts. The runner holds verified TLS files and the run-bound
-  Fleet handoff is complete.
+  two host receipts. The runner held verified TLS files and the run-bound
+  Fleet handoff completed before it was fenced and retired.
 - Protected Fleet plan and failed apply: [plan run 37233323499](https://github.com/antiartificial/norn-fleet/actions/runs/37233323499),
   24 planned creates and Norn plan `575207c9-efcf-483c-992d-fd6957308ef8`,
   then failed [apply run 37233379210](https://github.com/antiartificial/norn-fleet/actions/runs/37233379210).
@@ -232,15 +227,21 @@ cover every M3/M4/M8 exit.
   observed inventory did not prove exactly the required retained empty Fleet
   bucket. [PR #242](https://github.com/antiartificial/norn-fleet/pull/242)
   merged; neither the plan, PR, nor failed apply proves Fleet deployment.
-- Current abort state: owner-only `abort-pilot261004a/abort-snapshot.json` at
-  21:01 UTC identifies 17 management resources and a 23:30 UTC retirement
-  deadline. The canonical abort approval remains contingent on a paired
-  empty-bucket proof in a fresh Fleet zero inventory; it is not final-zero
-  evidence.
+- Complete abort: owner-only `abort-pilot261004a/abort-snapshot-daf7.json`,
+  protected [approval run 37235481822](https://github.com/antiartificial/norn-fleet/actions/runs/37235481822),
+  `abort-prepared-daf7.json`, and `abort-receipt-daf7.json`. The receipt reopens
+  the fenced 17-resource destroy and proves management state empty with two
+  independent provider-zero observations. [Fleet PR #243](https://github.com/antiartificial/norn-fleet/pull/243)
+  supplied the exact retained-empty-bucket validator required for this path.
+- Backend and external cleanup: owner-only `abort-pilot261004a/backend-cleanup-plan.json`,
+  `backend-cleanup-receipt.json` (`backendFinalZero=true`), and
+  `external-cleanup/{github-cleanup-receipt,tailscale-cleanup}.json`. The
+  Tailscale receipt records both auth keys deleted and two devices pending
+  dashboard removal. Neither the abort nor backend receipt claims overall
+  external final zero or settled billing.
 - Norn bridge title correction: [PR #115](https://github.com/antiartificial/norn/pull/115)
-  had green v3 CI, while the required legacy Repository CI context names were
-  absent. Repository CI began on the PR at 21:09 UTC; preserve its terminal
-  outcome separately from the earlier v3 result.
+  passed the v3 and legacy protected checks and merged as `c56fa0c`. It is not
+  yet deployed on Mini or a new management authority.
 - `pilot261003d` emergency retirement: owner-only local incident record at
   `/Users/arti/.config/norn/fleet-next-full-e2e/incident-retirement-pilot261003d/`,
   especially `status-20261004T0918Z.json`, management state/provider-zero
