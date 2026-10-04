@@ -1,9 +1,10 @@
 # Norn v3 / Fleet release handoff — 2026-09-29
 
-This is the current resume point. Recheck repository heads, signed artifacts,
-Mini health, provider inventory, prices, and credentials before mutation. Git
-history retains the 2026-09-28 handoff and earlier snapshots. The release
-contract and full exit gates remain in [execution milestones](execution-milestones.md).
+This is a historical snapshot. For current observations, milestone disposition,
+and next actions use [Norn v3 launch state](LAUNCH-STATE.md). Recheck repository
+heads, signed artifacts, Mini health, provider inventory, prices, and
+credentials before mutation. The release contract and full exit gates remain
+in [execution milestones](execution-milestones.md).
 
 ## Release target and gate status
 
