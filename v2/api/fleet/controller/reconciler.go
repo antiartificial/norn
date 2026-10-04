@@ -234,6 +234,20 @@ func (r *Reconciler) Dropped() int64 {
 	return r.dropped
 }
 
+// LastRescan reports when the most recent rescan finished listing every
+// resource (the zero time before the first one completes) and the interval
+// between rescans. WP13's read API reports it as controller liveness, since
+// an unchanged status is no longer rewritten (WP12 review).
+func (r *Reconciler) LastRescan() (at time.Time, interval time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	interval = r.RescanInterval
+	if interval <= 0 {
+		interval = DefaultRescanInterval
+	}
+	return r.lastRescanEnd, interval
+}
+
 // Pending reports the number of queued or in-flight names.
 func (r *Reconciler) Pending() int {
 	r.mu.Lock()

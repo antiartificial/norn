@@ -983,25 +983,34 @@ func newFleetDispatchNonce() (string, string, error) {
 }
 
 func (h *Handler) requireMatchingFleetEnvironment(w http.ResponseWriter, r *http.Request) (string, bool) {
+	fleetEnvironment, problem := h.matchingFleetEnvironment()
+	if problem != nil {
+		WriteControlProblem(w, r, problem.status, problem.code, problem.detail)
+		return "", false
+	}
+	return fleetEnvironment, true
+}
+
+// matchingFleetEnvironment is requireMatchingFleetEnvironment without the
+// response, for callers (Fleet resource routes) that fold the refusal into
+// their own flow.
+func (h *Handler) matchingFleetEnvironment() (string, *routeProblem) {
 	inventory, err := h.loadFleetInventory()
 	if err != nil || inventory.Document == nil {
-		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_config_read_failed", "configured fleet root is unavailable for protected GitHub operations")
-		return "", false
+		return "", &routeProblem{http.StatusServiceUnavailable, "fleet_config_read_failed", "configured fleet root is unavailable for protected GitHub operations"}
 	}
 	fleetEnvironment, err := configuredFleetEnvironment(inventory.Document, h.cfg)
 	if err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_config_invalid", "configured fleet root does not map to an allowed protected workflow environment")
-		return "", false
+		return "", &routeProblem{http.StatusConflict, "fleet_config_invalid", "configured fleet root does not map to an allowed protected workflow environment"}
 	}
 	controlEnvironment := "development"
 	if h.cfg != nil {
 		controlEnvironment = h.cfg.EnvironmentID()
 	}
 	if !fleetEnvironmentMatchesControlPlane(controlEnvironment, fleetEnvironment, h.cfg) {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_environment_mismatch", "configured fleet root does not match this Norn control-plane environment")
-		return "", false
+		return "", &routeProblem{http.StatusConflict, "fleet_environment_mismatch", "configured fleet root does not match this Norn control-plane environment"}
 	}
-	return fleetEnvironment, true
+	return fleetEnvironment, nil
 }
 
 func fleetEnvironmentMatchesControlPlane(controlEnvironment, fleetEnvironment string, cfg *config.Config) bool {

@@ -52,6 +52,9 @@ var ErrFleetObservationOutOfBounds = fmt.Errorf("fleet observation is out of bou
 // ErrFleetResourceDesiredInvalid mirrors store.ErrFleetResourceDesiredInvalid.
 var ErrFleetResourceDesiredInvalid = fmt.Errorf("fleet resource desired revision is invalid")
 
+// ErrFleetResourceRevisionConflict mirrors store.ErrFleetResourceRevisionConflict.
+var ErrFleetResourceRevisionConflict = fmt.Errorf("fleet resource revision does not match expectedRevision")
+
 // ErrFleetResourceReconcileConflict is returned by ReconcileFleetResource
 // once every retry has lost its commit race (plan.md §2.3: "retry up to 3
 // times, then ErrStatusPreconditionFailed").
@@ -169,6 +172,18 @@ func (s *V3OperationStore) ListFleetResourceNames(ctx context.Context, after str
 // only this resource's own key: no fence, dispatch-preparation/binding or
 // attempt key is read or written (DesiredChangeDuringExecutionKeepsBindings).
 func (s *V3OperationStore) SetDesiredFleetResource(ctx context.Context, name string, next controller.DesiredRevision) (*controller.Resource, error) {
+	return s.setDesiredFleetResource(ctx, name, nil, next)
+}
+
+// SetDesiredFleetResourceIf is SetDesiredFleetResource with the operator's
+// expectedRevision CAS (WP13), mirroring store.DB.SetDesiredFleetResourceIf:
+// ErrFleetResourceRevisionConflict unless Revision is exactly
+// expectedRevision, and a successful write bumps Revision by one.
+func (s *V3OperationStore) SetDesiredFleetResourceIf(ctx context.Context, name string, expectedRevision int64, next controller.DesiredRevision) (*controller.Resource, error) {
+	return s.setDesiredFleetResource(ctx, name, &expectedRevision, next)
+}
+
+func (s *V3OperationStore) setDesiredFleetResource(ctx context.Context, name string, expectedRevision *int64, next controller.DesiredRevision) (*controller.Resource, error) {
 	if err := controller.ValidateDesired(next); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFleetResourceDesiredInvalid, err)
 	}
@@ -176,6 +191,9 @@ func (s *V3OperationStore) SetDesiredFleetResource(ctx context.Context, name str
 		resource, revision, err := s.getFleetResourceWithRevision(ctx, name)
 		if err != nil {
 			return nil, err
+		}
+		if expectedRevision != nil && resource.Revision != *expectedRevision {
+			return nil, ErrFleetResourceRevisionConflict
 		}
 		if resource.Desired.Generation > 0 {
 			resource.DesiredHistory = append([]controller.DesiredRevision{resource.Desired}, resource.DesiredHistory...)
@@ -186,6 +204,9 @@ func (s *V3OperationStore) SetDesiredFleetResource(ctx context.Context, name str
 		next.Generation = resource.Desired.Generation + 1
 		resource.Desired = next
 		resource.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
+		if expectedRevision != nil {
+			resource.Revision++
+		}
 
 		encoded, err := json.Marshal(resource)
 		if err != nil {

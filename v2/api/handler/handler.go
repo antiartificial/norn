@@ -89,6 +89,9 @@ type Handler struct {
 	accessTokenLineage              accessTokenLineageResolver
 	operationStore                  store.OperationStore
 	operationStoreError             error
+	// fleetControllerLiveness is the in-process Fleet reconciler, when this
+	// process runs one; resource reads report its liveness.
+	fleetControllerLiveness FleetControllerLiveness
 }
 
 // ConfigurePrivateReleaseSigner installs the staging-only signer after startup

@@ -79,6 +79,10 @@ var ErrFleetObservationOutOfBounds = fmt.Errorf("fleet observation is out of bou
 // EnsureFleetResource for an unusable name.
 var ErrFleetResourceDesiredInvalid = fmt.Errorf("fleet resource desired revision is invalid")
 
+// ErrFleetResourceRevisionConflict is returned by SetDesiredFleetResourceIf
+// when the resource's Revision is not the caller's expectedRevision.
+var ErrFleetResourceRevisionConflict = fmt.Errorf("fleet resource revision does not match expectedRevision")
+
 // ErrFleetResourceReconcileConflict is returned by ReconcileFleetResource
 // once every attempt has hit a serialization failure (plan.md §2.3: "retry
 // up to 3 times, then ErrStatusPreconditionFailed").
@@ -200,6 +204,19 @@ func (db *DB) ListFleetResourceNames(ctx context.Context, after string, limit in
 // no fence, dispatch or attempt row is read or written
 // (DesiredChangeDuringExecutionKeepsBindings).
 func (db *DB) SetDesiredFleetResource(ctx context.Context, name string, next controller.DesiredRevision) (*controller.Resource, error) {
+	return db.setDesiredFleetResource(ctx, name, nil, next)
+}
+
+// SetDesiredFleetResourceIf is SetDesiredFleetResource with the operator's
+// expectedRevision CAS (WP13): it is refused with
+// ErrFleetResourceRevisionConflict unless the resource's Revision is exactly
+// expectedRevision, and a successful write bumps Revision by one so two
+// writers holding the same expectedRevision can never both win.
+func (db *DB) SetDesiredFleetResourceIf(ctx context.Context, name string, expectedRevision int64, next controller.DesiredRevision) (*controller.Resource, error) {
+	return db.setDesiredFleetResource(ctx, name, &expectedRevision, next)
+}
+
+func (db *DB) setDesiredFleetResource(ctx context.Context, name string, expectedRevision *int64, next controller.DesiredRevision) (*controller.Resource, error) {
 	if err := controller.ValidateDesired(next); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFleetResourceDesiredInvalid, err)
 	}
@@ -215,6 +232,9 @@ func (db *DB) SetDesiredFleetResource(ctx context.Context, name string, next con
 	}
 	if err != nil {
 		return nil, err
+	}
+	if expectedRevision != nil && resource.Revision != *expectedRevision {
+		return nil, ErrFleetResourceRevisionConflict
 	}
 
 	if resource.Desired.Generation > 0 {
@@ -232,7 +252,12 @@ func (db *DB) SetDesiredFleetResource(ctx context.Context, name string, next con
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE fleet_resources SET document=$2, updated_at=$3 WHERE name=$1`, name, document, now); err != nil {
+	if expectedRevision != nil {
+		resource.Revision++
+		if _, err := tx.Exec(ctx, `UPDATE fleet_resources SET document=$2, revision=$4, updated_at=$3 WHERE name=$1`, name, document, now, resource.Revision); err != nil {
+			return nil, err
+		}
+	} else if _, err := tx.Exec(ctx, `UPDATE fleet_resources SET document=$2, updated_at=$3 WHERE name=$1`, name, document, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
