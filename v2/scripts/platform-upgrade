@@ -225,6 +225,43 @@ if not isinstance(state, str) or not state:
 print(state)
 PY
 )" || fail "cannot verify existing legacy baseline transition state"
+recovered_baseline_receipt_validate() {
+  local receipt_path="$HOME/.config/norn/.norn-recovered-baseline-adoption.json"
+  [[ -n "$receipt_path" ]] || return 1
+  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" <<'PY'
+import hashlib, hmac, json, os, stat, sys
+path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+if not key:
+    raise SystemExit("audit signing key is unavailable")
+info = os.lstat(path)
+if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+    raise SystemExit("recovered baseline receipt must be an owner-only mode-0600 regular file")
+value = json.load(open(path, encoding="utf-8"))
+signature = value.pop("signature", None)
+required = {"schema", "candidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}
+if set(value) | {"signature"} != required or value.get("schema") != "norn.recovered-baseline-adoption/v1" or value.get("preservationProven") is not False:
+    raise SystemExit("recovered baseline receipt has an unexpected schema")
+if not isinstance(signature, str) or not signature.startswith("hmac-sha256:"):
+    raise SystemExit("recovered baseline receipt signature is missing")
+canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+expected = "hmac-sha256:" + hmac.new(key, b"norn.recovered-baseline-adoption/v1\0" + canonical, hashlib.sha256).hexdigest()
+if not hmac.compare_digest(signature, expected):
+    raise SystemExit("recovered baseline receipt signature does not verify")
+for name in ("legacyFence", "ledger", "reconciliation"):
+    item = value.get(name)
+    if not isinstance(item, dict) or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not isinstance(item["sha256"], str):
+        raise SystemExit("recovered baseline receipt evidence is malformed")
+    target = os.path.abspath(os.path.expanduser(item["path"]))
+    meta = os.lstat(target)
+    if not stat.S_ISREG(meta.st_mode) or stat.S_ISLNK(meta.st_mode) or meta.st_uid != os.geteuid():
+        raise SystemExit("recovered baseline evidence is no longer an owned regular file")
+    digest = hashlib.sha256(open(target, "rb").read()).hexdigest()
+    if not hmac.compare_digest(digest, item["sha256"]):
+        raise SystemExit("recovered baseline evidence bytes changed")
+PY
+}
+
   if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
     # The exact recovered-baseline gate below validates the owner-only receipt
     # before any release preparation. Keep this early parser gate narrow so a
@@ -232,6 +269,7 @@ PY
     case "$mode" in
       legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
       proxy-switch) fail "recovered baseline blocks proxy switching while the failed fence is retained" ;;
+      preflight|upgrade) recovered_baseline_receipt_validate || fail "recovered baseline adoption receipt is required and must validate before ordinary forward mutation" ;;
       env-exec)
         recovered_early_args=("$@")
         [[ "${recovered_early_args[0]:-}" == "--" ]] && recovered_early_args=("${recovered_early_args[@]:1}")
@@ -2522,43 +2560,6 @@ PY
   log "rebuild verified manifest-content equivalence with retained release: $sha"
   exit 0
 fi
-
-recovered_baseline_receipt_validate() {
-  local receipt_path="$HOME/.config/norn/.norn-recovered-baseline-adoption.json"
-  [[ -n "$receipt_path" ]] || return 1
-  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" <<'PY'
-import hashlib, hmac, json, os, stat, sys
-path = os.path.abspath(os.path.expanduser(sys.argv[1]))
-key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
-if not key:
-    raise SystemExit("audit signing key is unavailable")
-info = os.lstat(path)
-if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
-    raise SystemExit("recovered baseline receipt must be an owner-only mode-0600 regular file")
-value = json.load(open(path, encoding="utf-8"))
-signature = value.pop("signature", None)
-required = {"schema", "candidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}
-if set(value) | {"signature"} != required or value.get("schema") != "norn.recovered-baseline-adoption/v1" or value.get("preservationProven") is not False:
-    raise SystemExit("recovered baseline receipt has an unexpected schema")
-if not isinstance(signature, str) or not signature.startswith("hmac-sha256:"):
-    raise SystemExit("recovered baseline receipt signature is missing")
-canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-expected = "hmac-sha256:" + hmac.new(key, b"norn.recovered-baseline-adoption/v1\0" + canonical, hashlib.sha256).hexdigest()
-if not hmac.compare_digest(signature, expected):
-    raise SystemExit("recovered baseline receipt signature does not verify")
-for name in ("legacyFence", "ledger", "reconciliation"):
-    item = value.get(name)
-    if not isinstance(item, dict) or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not isinstance(item["sha256"], str):
-        raise SystemExit("recovered baseline receipt evidence is malformed")
-    target = os.path.abspath(os.path.expanduser(item["path"]))
-    meta = os.lstat(target)
-    if not stat.S_ISREG(meta.st_mode) or stat.S_ISLNK(meta.st_mode) or meta.st_uid != os.geteuid():
-        raise SystemExit("recovered baseline evidence is no longer an owned regular file")
-    digest = hashlib.sha256(open(target, "rb").read()).hexdigest()
-    if not hmac.compare_digest(digest, item["sha256"]):
-        raise SystemExit("recovered baseline evidence bytes changed")
-PY
-}
 
 recovered_baseline_adopt() {
   [[ "$legacy_record_state" == "candidate-postflight-failed" ]] || fail "recovered-baseline-adopt is only valid for the retained candidate-postflight-failed fence"
