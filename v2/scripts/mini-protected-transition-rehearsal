@@ -15,6 +15,7 @@ import urllib.parse
 from pathlib import Path
 
 SCHEMA = "norn.m5-protected-transition/v1"
+MAX_FUTURE_SKEW_SECONDS = 300
 
 
 def fail(message: str) -> None:
@@ -31,6 +32,32 @@ def load_private(path: Path, label: str) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         fail(f"{label} is not readable JSON: {error}")
+
+
+def parse_utc_timestamp(value: object, label: str) -> dt.datetime:
+    if not isinstance(value, str) or not (value.endswith("Z") or value.endswith("+00:00")):
+        fail(f"{label} timestamp must be a parseable UTC RFC3339 timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        fail(f"{label} timestamp must be a parseable UTC RFC3339 timestamp")
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        fail(f"{label} timestamp must be UTC")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def verify_protected_backup(proof: Path, artifact: Path, legacy_release: str) -> None:
+    verifier = Path(__file__).with_name("mini-verify-protected-backup")
+    result = subprocess.run([str(verifier), str(proof), str(artifact), legacy_release],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode:
+        detail = result.stderr.strip()
+        fail(f"protected backup proof verification failed{': ' + detail if detail else ''}")
+
+
+def proof_consumption_path(ledger: Path, backup: dict, shadow: dict) -> Path:
+    identity = {"backupProofSHA256": digest(backup), "shadowReceiptSHA256": digest(shadow)}
+    return ledger.parent / f".m5-transition-proof-{digest(identity)}.json"
 
 
 def atomic_private_json(path: Path, value: dict, *, replace: bool) -> None:
@@ -72,6 +99,19 @@ def validate_output(path: Path, label: str) -> None:
 
 def fetch_json(base: str, path: str, token: str) -> object:
     request = urllib.request.Request(base.rstrip("/") + path)
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response)
+
+
+def post_json(base: str, path: str, token: str, value: dict) -> object:
+    request = urllib.request.Request(
+        base.rstrip("/") + path,
+        data=json.dumps(value, sort_keys=True, separators=(",", ":")).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
     if token:
         request.add_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -191,6 +231,14 @@ def main() -> int:
         fail("shadow receipt does not bind the declared candidate")
     if shadow.get("backupSHA256") != backup.get("backupSHA256") or shadow.get("backupBytes") != backup.get("backupBytes"):
         fail("shadow receipt does not bind the protected backup proof")
+    backup_created_at = parse_utc_timestamp(backup.get("createdAt"), "backup proof")
+    verify_protected_backup(args.backup_proof, args.backup_artifact, args.legacy_release)
+    shadow_completed_at = parse_utc_timestamp(shadow.get("completedAt"), "shadow receipt")
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    if shadow_completed_at > now_utc + dt.timedelta(seconds=MAX_FUTURE_SKEW_SECONDS):
+        fail("shadow receipt timestamp is outside the permitted future skew")
+    if shadow_completed_at <= backup_created_at:
+        fail("shadow receipt must complete after protected backup creation")
     artifact = args.backup_artifact
     if not artifact.is_absolute() or artifact.is_symlink() or not artifact.is_file():
         fail("backup artifact must be an absolute regular non-symlink file")
@@ -202,9 +250,21 @@ def main() -> int:
         fail("transition ledger already exists; inspect it and use the documented recovery path")
     token = os.environ.get("NORN_TOKEN") or os.environ.get("NORN_API_TOKEN", "")
     before = stable_state(args.api, token)
+    consumption = proof_consumption_path(args.ledger, backup, shadow)
+    consumption_value = {
+        "schema": "norn.m5-protected-transition-proof-consumption/v1",
+        "consumedAt": now(),
+        "backupProofSHA256": digest(backup),
+        "shadowReceiptSHA256": digest(shadow),
+        "backupSHA256": backup["backupSHA256"],
+        "candidateSHA": args.candidate_sha,
+    }
+    atomic_private_json(consumption, consumption_value, replace=False)
     ledger = {"schema": SCHEMA, "state": "prepared", "preparedAt": now(),
               "legacyReleaseSHA": args.legacy_release, "candidateSHA": args.candidate_sha,
-              "backupSHA256": backup["backupSHA256"], "beforeDigest": digest(before)}
+              "backupSHA256": backup["backupSHA256"], "backupCreatedAt": backup["createdAt"],
+              "shadowCompletedAt": shadow["completedAt"], "proofConsumption": str(consumption),
+              "beforeDigest": digest(before)}
     atomic_private_json(args.ledger, ledger, replace=False)
     upgrade = args.upgrade_script or Path(__file__).with_name("platform-upgrade")
     if args.upgrade_script and os.environ.get("NORN_M5_TRANSITION_TEST_HOOKS") != "1":
@@ -223,12 +283,40 @@ def main() -> int:
         ledger["failedAt"] = now()
         atomic_private_json(args.ledger, ledger, replace=True)
         return result.returncode
+    maintenance = fetch_json(args.api, "/api/v1/platform/legacy-baseline/status", token)
+    if not isinstance(maintenance, dict):
+        fail("candidate preservation status returned unsupported JSON")
+    transition_id = maintenance.get("transitionId")
+    owner = maintenance.get("owner")
+    epoch = maintenance.get("epoch")
+    if (maintenance.get("maintenance") != "legacy-baseline-preservation"
+            or not isinstance(transition_id, str) or not transition_id
+            or owner != f"legacy-baseline:{transition_id}"
+            or not isinstance(epoch, int) or epoch < 1
+            or maintenance.get("finalized") is not False):
+        fail("candidate is not holding the exact legacy preservation fence")
+    ledger.update({"transitionId": transition_id, "fenceOwner": owner, "fenceEpoch": epoch,
+                   "state": "candidate-preservation-verifying"})
+    atomic_private_json(args.ledger, ledger, replace=True)
     after = stable_state(args.api, token)
     ledger["afterDigest"] = digest(after)
     if before != after:
         ledger.update({"state": "postflight-preservation-failed", "failedAt": now()})
         atomic_private_json(args.ledger, ledger, replace=True)
         fail("Mini app, allocation, route, secret-reference, or schedule identity changed during transition")
+    finalized = post_json(args.api, "/api/v1/platform/legacy-baseline/finalize", token,
+                          {"transitionId": transition_id, "owner": owner, "epoch": epoch})
+    if (not isinstance(finalized, dict) or finalized.get("transitionId") != transition_id
+            or finalized.get("owner") != owner or finalized.get("epoch") != epoch
+            or finalized.get("finalized") is not True):
+        fail("candidate did not confirm exact legacy preservation-fence finalization")
+    ledger.update({"state": "candidate-finalized-restart-required", "finalizedAt": now()})
+    atomic_private_json(args.ledger, ledger, replace=True)
+    result = subprocess.run([str(upgrade), "legacy-baseline-finalize", "--transition-id", transition_id], env=upgrade_environment)
+    if result.returncode:
+        ledger.update({"state": "candidate-finalize-restart-failed", "failedAt": now(), "finalizeExitCode": result.returncode})
+        atomic_private_json(args.ledger, ledger, replace=True)
+        return result.returncode
     ledger.update({"state": "complete", "completedAt": now()})
     atomic_private_json(args.ledger, ledger, replace=True)
     receipt = dict(ledger)

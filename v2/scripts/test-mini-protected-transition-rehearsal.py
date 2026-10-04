@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import hashlib
+import hmac
 import json
 import os
 import subprocess
 import tempfile
 import threading
 import unittest
+import datetime as dt
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -23,10 +25,25 @@ class Handler(BaseHTTPRequestHandler):
                        "allocations": [{"id": "alloc-1"}]}],
         "/api/services/manifest": {"generatedAt": "ignored", "services": [
             {"name": "fixture-cron", "app": "fixture", "process": "cron", "type": "cron"}]},
+        "/api/v1/platform/legacy-baseline/status": {"maintenance": "legacy-baseline-preservation",
+            "transitionId": "test-transition", "owner": "legacy-baseline:test-transition", "epoch": 1,
+            "finalized": False},
     }
 
     def do_GET(self):
         body = json.dumps(self.state[self.path]).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def do_POST(self):
+        if self.path != "/api/v1/platform/legacy-baseline/finalize":
+            self.send_error(404); return
+        value = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        status = self.state["/api/v1/platform/legacy-baseline/status"]
+        if any(value.get(key) != status.get(key) for key in ("transitionId", "owner", "epoch")):
+            self.send_error(400); return
+        status["finalized"] = True
+        body = json.dumps(status).encode()
         self.send_response(200); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
@@ -42,17 +59,27 @@ class TransitionTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
         self.artifact = self.private("backup.dump", b"protected-backup")
         digest = hashlib.sha256(self.artifact.read_bytes()).hexdigest()
+        self.database_url = "postgresql://fixture/norn"
+        self.audit_key = "k" * 32
+        identity = "hmac-sha256:" + hmac.new(
+            self.audit_key.encode(), b"norn.database-identity/v1\0" + self.database_url.encode(), hashlib.sha256,
+        ).hexdigest()
+        self.backup_created_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=2)
+        self.shadow_completed_at = self.backup_created_at + dt.timedelta(seconds=1)
         self.proof = self.private_json("proof.json", {"schema": "norn.legacy-control-backup/v1",
-            "sourceReleaseSHA": LEGACY, "backupSHA256": digest, "backupBytes": self.artifact.stat().st_size})
+            "sourceReleaseSHA": LEGACY, "databaseIdentity": identity, "backupSHA256": digest,
+            "backupBytes": self.artifact.stat().st_size, "createdAt": self.backup_created_at.isoformat()})
         self.shadow = self.private_json("shadow.json", {"schema": "norn.m5-signed-shadow-launchagent-rehearsal/v2",
             "candidateSHA": CANDIDATE, "runtimeClaim": "passed", "privateRestoreClaim": "passed",
-            "backupSHA256": digest, "backupBytes": self.artifact.stat().st_size})
+            "backupSHA256": digest, "backupBytes": self.artifact.stat().st_size,
+            "completedAt": self.shadow_completed_at.isoformat()})
         self.called = self.root / "called"
         self.upgrade = self.root / "upgrade"
         self.upgrade.write_text(f'#!/bin/sh\nprintf %s "$NORN_API_BASE" > {self.called}\nexit ${{FAKE_UPGRADE_STATUS:-0}}\n', encoding="utf-8")
         self.upgrade.chmod(0o700)
         Handler.state["/api/apps"][0]["spec"]["deploy"] = True
         Handler.state["/api/health"]["status"] = "ok"
+        Handler.state["/api/v1/platform/legacy-baseline/status"]["finalized"] = False
 
     def tearDown(self):
         self.server.shutdown(); self.server.server_close(); self.temporary.cleanup()
@@ -64,12 +91,15 @@ class TransitionTests(unittest.TestCase):
         return self.private(name, (json.dumps(value) + "\n").encode())
 
     def invoke(self, **extra):
-        env = os.environ.copy(); env.update({"NORN_M5_PROTECTED_TRANSITION": "1", "NORN_M5_TRANSITION_TEST_HOOKS": "1"})
+        env = os.environ.copy(); env.update({"NORN_M5_PROTECTED_TRANSITION": "1", "NORN_M5_TRANSITION_TEST_HOOKS": "1",
+                                             "NORN_DATABASE_URL": self.database_url, "NORN_AUDIT_SIGNING_KEY": self.audit_key})
         env.update(extra.pop("env", {}))
+        ledger = extra.pop("ledger", self.root / "ledger.json")
+        receipt = extra.pop("receipt", self.root / "receipt.json")
         command = [str(SCRIPT), "--candidate-ref", CANDIDATE, "--candidate-sha", CANDIDATE,
                    "--legacy-release", LEGACY, "--backup-proof", str(self.proof),
                    "--backup-artifact", str(self.artifact), "--shadow-receipt", str(self.shadow),
-                   "--ledger", str(self.root / "ledger.json"), "--receipt", str(self.root / "receipt.json"),
+                   "--ledger", str(ledger), "--receipt", str(receipt),
                    "--api", f"http://127.0.0.1:{self.server.server_port}", "--upgrade-script", str(self.upgrade)]
         return subprocess.run(command, env=env, text=True, capture_output=True)
 
@@ -90,6 +120,52 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(self.called.exists())
         self.assertFalse((self.root / "ledger.json").exists())
+
+    def test_stale_backup_refuses_before_observation_or_fence(self):
+        value = json.loads(self.proof.read_text())
+        value["createdAt"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).isoformat()
+        self.proof.write_text(json.dumps(value)); self.proof.chmod(0o600)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("outside the permitted age", result.stderr)
+        self.assertFalse(self.called.exists())
+        self.assertFalse((self.root / "ledger.json").exists())
+
+    def test_future_backup_refuses_before_upgrade(self):
+        value = json.loads(self.proof.read_text())
+        value["createdAt"] = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=6)).isoformat()
+        self.proof.write_text(json.dumps(value)); self.proof.chmod(0o600)
+        value = json.loads(self.shadow.read_text())
+        value["completedAt"] = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=7)).isoformat()
+        self.shadow.write_text(json.dumps(value)); self.shadow.chmod(0o600)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("outside the permitted age", result.stderr)
+        self.assertFalse(self.called.exists())
+        self.assertFalse((self.root / "ledger.json").exists())
+
+    def test_non_utc_or_pre_backup_shadow_refuses_before_upgrade(self):
+        value = json.loads(self.shadow.read_text()); value["completedAt"] = "2026-10-01T00:00:00-05:00"
+        self.shadow.write_text(json.dumps(value)); self.shadow.chmod(0o600)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must be a parseable UTC", result.stderr)
+        self.assertFalse(self.called.exists())
+        self.assertFalse((self.root / "ledger.json").exists())
+        value["completedAt"] = (self.backup_created_at - dt.timedelta(seconds=1)).isoformat()
+        self.shadow.write_text(json.dumps(value)); self.shadow.chmod(0o600)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must complete after", result.stderr)
+        self.assertFalse(self.called.exists())
+
+    def test_replayed_proof_pair_refuses_before_second_upgrade(self):
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        Handler.state["/api/v1/platform/legacy-baseline/status"]["finalized"] = False
+        result = self.invoke(ledger=self.root / "other-ledger.json", receipt=self.root / "other-receipt.json")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("output already exists", result.stderr)
 
     def test_existing_receipt_refuses_before_upgrade(self):
         self.private_json("receipt.json", {"state": "unrelated"})

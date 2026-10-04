@@ -161,7 +161,7 @@ jobs:
                 go build -trimpath -buildvcs=false -mod=readonly -ldflags "$ldflags" -o "$output" "$package"
             )
           }
-          build_go v2/api "$release/bin/norn-api" . "-buildid= -X main.Version=$version"
+          build_go v2/api "$release/bin/norn-api" . "-buildid= -X main.Version=$version -X main.SourceSHA=$REQUESTED_SHA"
           build_go v2/api "$release/bin/norn-host-agent" ./cmd/norn-host-agent "-buildid="
           build_go v2/api "$release/bin/norn-ingress-observer" ./cmd/norn-ingress-observer "-buildid="
           build_go v2/api "$release/bin/norn-ingress-publisher" ./cmd/norn-ingress-publisher "-buildid="
@@ -201,6 +201,7 @@ jobs:
             --go-flag=-mod=readonly \
             --go-ldflag=-buildid= \
             "--go-ldflag=-X main.Version=$version" \
+            "--go-ldflag=-X main.SourceSHA=$REQUESTED_SHA" \
             "--go-ldflag=-X norn/v2/cli/cmd.Version=$version" \
             --go-environment=GOFLAGS= \
             --go-environment=GOWORK=off \
