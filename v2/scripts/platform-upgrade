@@ -8,6 +8,7 @@ Usage:
   platform-upgrade upgrade [ref]
   platform-upgrade legacy-baseline [ref] --legacy-release <full-sha> --backup-proof <path> --backup-artifact <path>
   platform-upgrade legacy-baseline-finalize --transition-id <id>
+  platform-upgrade recovered-baseline-adopt --incident-binding <path> --receipt <path> --expected-current-sha <full-sha>
   platform-upgrade rebuild <ref> --verify
   platform-upgrade releases
   platform-upgrade rollback <sha-prefix>
@@ -86,7 +87,7 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|legacy-baseline|legacy-baseline-finalize|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch) ;;
+  preflight|upgrade|legacy-baseline|legacy-baseline-finalize|recovered-baseline-adopt|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -127,6 +128,11 @@ legacy_release_sha=""
 legacy_backup_proof=""
 legacy_backup_artifact=""
 legacy_finalize_transition_id=""
+recovered_incident_binding=""
+recovered_receipt=""
+recovered_expected_current_sha=""
+recovered_accept_preservation_unproven=false
+recovered_reason_file=""
 if [[ "$mode" == "legacy-baseline" ]]; then
   ref="HEAD"
   while [[ "$#" -gt 0 ]]; do
@@ -169,6 +175,20 @@ if [[ "$mode" == "legacy-baseline-finalize" ]]; then
   done
   [[ "$legacy_finalize_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "legacy-baseline-finalize requires a valid transition ID"
 fi
+if [[ "$mode" == "recovered-baseline-adopt" ]]; then
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --incident-binding) [[ "$#" -ge 2 ]] || fail "recovered-baseline-adopt requires a value after --incident-binding"; recovered_incident_binding="$2"; shift 2 ;;
+      --receipt) [[ "$#" -ge 2 ]] || fail "recovered-baseline-adopt requires a value after --receipt"; recovered_receipt="$2"; shift 2 ;;
+      --expected-current-sha) [[ "$#" -ge 2 ]] || fail "recovered-baseline-adopt requires a value after --expected-current-sha"; recovered_expected_current_sha="$2"; shift 2 ;;
+      --accept-preservation-unproven) recovered_accept_preservation_unproven=true; shift ;;
+      --reason-file) [[ "$#" -ge 2 ]] || fail "recovered-baseline-adopt requires a value after --reason-file"; recovered_reason_file="$2"; shift 2 ;;
+      *) fail "unknown recovered-baseline-adopt option: $1" ;;
+    esac
+  done
+  [[ -n "$recovered_incident_binding" && -n "$recovered_receipt" && -n "$recovered_expected_current_sha" && "$recovered_accept_preservation_unproven" == true && -n "$recovered_reason_file" ]] || fail "recovered-baseline-adopt requires incident binding, receipt, expected current SHA, explicit preservation-unproven acknowledgement, and reason file"
+  [[ "$recovered_expected_current_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-baseline-adopt requires a 40-character lowercase expected current SHA"
+fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_repo="$(cd "$script_dir/../.." && pwd)"
 repo="${NORN_PLATFORM_REPO:-}"
@@ -190,6 +210,7 @@ legacy_api_path="${NORN_LEGACY_API_PATH:-$bin_dir/norn-api}"
 legacy_backup_max_age_seconds="${NORN_LEGACY_BACKUP_MAX_AGE_SECONDS:-3600}"
 legacy_fence_state_path="${NORN_LEGACY_FENCE_STATE_PATH:-$(dirname "$legacy_api_path")/.norn-legacy-baseline-fence.json}"
 legacy_transition_id="${NORN_LEGACY_BASELINE_TRANSITION_ID:-}"
+legacy_record_state=""
 if [[ -e "$legacy_fence_state_path" ]]; then
   require_cmd python3
   legacy_record_state="$(python3 - "$legacy_fence_state_path" <<'PY'
@@ -204,9 +225,58 @@ if not isinstance(state, str) or not state:
 print(state)
 PY
 )" || fail "cannot verify existing legacy baseline transition state"
-  if [[ "$legacy_record_state" != "candidate-promoted" ]]; then
+  if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
+    # The exact recovered-baseline gate below validates the owner-only receipt
+    # before any release preparation. Keep this early parser gate narrow so a
+    # valid receipt can unlock only the ordinary forward lane.
     case "$mode" in
-      legacy-baseline-finalize|releases|startup-contract|proxy-status|proxy-plan|smoke) ;;
+      legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
+      proxy-switch) fail "recovered baseline blocks proxy switching while the failed fence is retained" ;;
+      env-exec)
+        recovered_early_args=("$@")
+        [[ "${recovered_early_args[0]:-}" == "--" ]] && recovered_early_args=("${recovered_early_args[@]:1}")
+        if [[ "${recovered_early_args[0]:-}" == "${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}" ]]; then
+          recovered_agent_args=("${recovered_early_args[@]:1}")
+          if [[ "${recovered_agent_args[0]:-}" == "--repo" ]]; then
+            [[ "${recovered_agent_args[1]:-}" == "$repo" ]] || fail "recovered baseline host-agent repo differs from the configured checkout"
+            recovered_agent_args=("${recovered_agent_args[@]:2}")
+          fi
+          [[ "${#recovered_agent_args[@]}" -eq 4 && "${recovered_agent_args[0]}" == "--platform-script" && "${recovered_agent_args[1]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" && "${recovered_agent_args[2]}" == "--host-script" && "${recovered_agent_args[3]}" == "${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}" ]] || fail "recovered baseline rejects noncanonical host-agent startup"
+        else
+          [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
+          case "${recovered_early_args[1]}" in
+            preflight|upgrade) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+            recovered-baseline-adopt)
+              recovered_adopter_release="$(python3 - "${recovered_early_args[0]}" "$releases" <<'PY'
+import os, sys
+child = os.path.realpath(sys.argv[1]); root = os.path.realpath(sys.argv[2])
+release = os.path.dirname(os.path.dirname(child))
+if os.path.basename(child) != "platform-upgrade" or os.path.basename(os.path.dirname(child)) != "bin" or os.path.dirname(release) != root or not os.path.isfile(child):
+    raise SystemExit(1)
+print(release)
+PY
+)" || fail "recovered baseline adoption child is not directly inside immutable releases"
+              recovered_adopter_sha="$(python3 - "$recovered_adopter_release/release.env" <<'PY'
+import re, sys
+values = dict(line.strip().split("=", 1) for line in open(sys.argv[1]) if "=" in line)
+sha = values.get("NORN_RELEASE_SHA", "")
+if not re.fullmatch("[0-9a-f]{40}", sha): raise SystemExit(1)
+print(sha)
+PY
+)" || fail "recovered baseline adoption release has no exact SHA"
+              [[ "$(python3 "${NORN_RELEASE_MANIFEST_HELPER:-$script_dir/platform-release-manifest}" verify --release "$recovered_adopter_release" --expected-sha "$recovered_adopter_sha")" == "signed" ]] || fail "recovered baseline adoption child is not a signed release"
+              [[ -n "${NORN_RELEASE_VERIFY_HOOK:-}" && -x "${NORN_RELEASE_VERIFY_HOOK}" ]] || fail "recovered baseline adoption requires an external release verifier"
+              "${NORN_RELEASE_VERIFY_HOOK}" "$recovered_adopter_release" "$recovered_adopter_release/release.json" || fail "recovered baseline adoption external verification failed"
+              ;;
+            *) fail "recovered baseline rejects env-exec child mode ${recovered_early_args[1]}" ;;
+          esac
+        fi
+        ;;
+      *) : ;;
+    esac
+  elif [[ "$legacy_record_state" != "candidate-promoted" ]]; then
+    case "$mode" in
+      recovered-baseline-adopt|legacy-baseline-finalize|releases|startup-contract|proxy-status|proxy-plan|smoke) ;;
       *) fail "legacy baseline transition is pending; platform mutation requires its exact finalize or recovery path" ;;
     esac
   fi
@@ -801,7 +871,7 @@ if [[ "$mode" == "rebuild" ]]; then
   [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || fail "rebuild requires an exact 40-character lowercase commit SHA"
 fi
 
-if [[ "$mode" != "rollback" ]]; then
+if [[ "$mode" != "rollback" && "$mode" != "recovered-baseline-adopt" ]]; then
   if [[ "$ref" != "HEAD" ]]; then
     git -C "$repo" fetch --tags --prune origin >/dev/null 2>&1 || log "warning: git fetch failed; using local refs"
   fi
@@ -2450,6 +2520,159 @@ PY
   verify_rebuild_stage "$build_stage" "$sha"
   python3 "$manifest_helper" compare --retained "$release" --rebuilt "$build_stage" || fail "rebuild verification failed"
   log "rebuild verified manifest-content equivalence with retained release: $sha"
+  exit 0
+fi
+
+recovered_baseline_receipt_validate() {
+  local receipt_path="$HOME/.config/norn/.norn-recovered-baseline-adoption.json"
+  [[ -n "$receipt_path" ]] || return 1
+  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" <<'PY'
+import hashlib, hmac, json, os, stat, sys
+path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+if not key:
+    raise SystemExit("audit signing key is unavailable")
+info = os.lstat(path)
+if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+    raise SystemExit("recovered baseline receipt must be an owner-only mode-0600 regular file")
+value = json.load(open(path, encoding="utf-8"))
+signature = value.pop("signature", None)
+required = {"schema", "candidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}
+if set(value) | {"signature"} != required or value.get("schema") != "norn.recovered-baseline-adoption/v1" or value.get("preservationProven") is not False:
+    raise SystemExit("recovered baseline receipt has an unexpected schema")
+if not isinstance(signature, str) or not signature.startswith("hmac-sha256:"):
+    raise SystemExit("recovered baseline receipt signature is missing")
+canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+expected = "hmac-sha256:" + hmac.new(key, b"norn.recovered-baseline-adoption/v1\0" + canonical, hashlib.sha256).hexdigest()
+if not hmac.compare_digest(signature, expected):
+    raise SystemExit("recovered baseline receipt signature does not verify")
+for name in ("legacyFence", "ledger", "reconciliation"):
+    item = value.get(name)
+    if not isinstance(item, dict) or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not isinstance(item["sha256"], str):
+        raise SystemExit("recovered baseline receipt evidence is malformed")
+    target = os.path.abspath(os.path.expanduser(item["path"]))
+    meta = os.lstat(target)
+    if not stat.S_ISREG(meta.st_mode) or stat.S_ISLNK(meta.st_mode) or meta.st_uid != os.geteuid():
+        raise SystemExit("recovered baseline evidence is no longer an owned regular file")
+    digest = hashlib.sha256(open(target, "rb").read()).hexdigest()
+    if not hmac.compare_digest(digest, item["sha256"]):
+        raise SystemExit("recovered baseline evidence bytes changed")
+PY
+}
+
+recovered_baseline_adopt() {
+  [[ "$legacy_record_state" == "candidate-postflight-failed" ]] || fail "recovered-baseline-adopt is only valid for the retained candidate-postflight-failed fence"
+  [[ -L "$current_link" ]] || fail "recovered-baseline-adopt requires a current release symlink"
+  local self_release self_sha signature_status current_release current_sha current_signature_status active_version active_source launch_state serving_pid listener_pids active_port
+  self_release="$(cd "$script_dir/.." && pwd)"
+  [[ "$(cd "$self_release/.." && pwd)" == "$(cd "$releases" && pwd)" ]] || fail "recovered-baseline-adopt must run from an immutable release under NORN_RELEASES_DIR"
+  self_sha="$(release_sha "$self_release")"
+  [[ "$self_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-baseline-adopt release lacks an exact source SHA"
+  signature_status="$(python3 "$manifest_helper" verify --release "$self_release" --expected-sha "$self_sha")" || fail "recovered-baseline-adopt cannot verify its immutable release manifest"
+  [[ "$signature_status" == "signed" ]] || fail "recovered-baseline-adopt requires a signed immutable release"
+  [[ -n "$release_verify_hook" && -x "$release_verify_hook" ]] || fail "recovered-baseline-adopt requires NORN_RELEASE_VERIFY_HOOK"
+  "$release_verify_hook" "$self_release" "$self_release/release.json" || fail "recovered-baseline-adopt external release verification failed"
+  current_release="$(cd "$(dirname "$current_link")" && cd "$(readlink "$current_link")" && pwd)"
+  current_sha="$(release_sha "$current_release")"
+  [[ "$current_sha" == "$recovered_expected_current_sha" ]] || fail "recovered-baseline-adopt current release SHA does not match --expected-current-sha"
+  current_signature_status="$(python3 "$manifest_helper" verify --release "$current_release" --expected-sha "$recovered_expected_current_sha")" || fail "recovered-baseline-adopt cannot verify the signed current release manifest"
+  [[ "$current_signature_status" == "signed" ]] || fail "recovered-baseline-adopt requires a signed current release"
+  "$release_verify_hook" "$current_release" "$current_release/release.json" || fail "recovered-baseline-adopt current release external verification failed"
+  cmp -s "$current_release/bin/norn-api" "$legacy_api_path" || fail "recovered-baseline-adopt managed API does not match the signed current release"
+  cmp -s "$current_release/bin/norn-host-agent" "$host_agent_bin" || fail "recovered-baseline-adopt managed host agent does not match the signed current release"
+  require_cmd launchctl
+  require_cmd lsof
+  launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)" || fail "recovered-baseline-adopt cannot inspect the live LaunchAgent"
+  serving_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  [[ "$serving_pid" =~ ^[1-9][0-9]*$ ]] || fail "recovered-baseline-adopt live LaunchAgent has no serving PID"
+  active_port="$(direct_loopback_api_port)" || fail "recovered-baseline-adopt requires a direct numeric-loopback API"
+  listener_pids="$(lsof -nP -iTCP:"$active_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+  [[ "$listener_pids" == "$serving_pid" ]] || fail "recovered-baseline-adopt API listener is not owned solely by the LaunchAgent PID"
+  read -r active_version active_source < <(api_get /api/version | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value.get("version", ""), value.get("sourceSha", ""))') || fail "recovered-baseline-adopt cannot verify the live API identity"
+  [[ "$active_version" == "$(release_version "$current_release")" ]] || fail "recovered-baseline-adopt live API version does not match the signed current release"
+  if [[ -n "$active_source" ]]; then
+    [[ "$active_source" == "$recovered_expected_current_sha" ]] || fail "recovered-baseline-adopt live API source SHA does not match --expected-current-sha"
+  fi
+  [[ "$recovered_receipt" == "$HOME/.config/norn/.norn-recovered-baseline-adoption.json" ]] || fail "recovered-baseline-adopt receipt path must use the fixed owner-only Norn configuration location"
+  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$recovered_incident_binding" "$recovered_receipt" "$recovered_expected_current_sha" "$self_sha" "$recovered_reason_file" <<'PY' || fail "recovered-baseline-adopt incident binding or receipt validation failed"
+import hashlib, hmac, json, os, stat, sys, tempfile
+binding_path, receipt_path = (os.path.abspath(os.path.expanduser(sys.argv[1])), os.path.abspath(os.path.expanduser(sys.argv[2])))
+expected_current, adopter_sha = sys.argv[3], sys.argv[4]
+reason_path = os.path.abspath(os.path.expanduser(sys.argv[5]))
+key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+if not key: raise SystemExit("audit signing key is unavailable")
+def private(path, label):
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600: raise SystemExit(label + " must be owner-only mode-0600 regular file")
+    return json.load(open(path, encoding="utf-8"))
+binding = private(binding_path, "incident binding")
+reason = private(reason_path, "preservation-unproven reason")
+if set(reason) != {"reason"} or not isinstance(reason["reason"], str) or not reason["reason"].strip(): raise SystemExit("preservation-unproven reason must contain one nonempty reason")
+if set(binding) != {"schema", "candidateSHA", "legacyFence", "ledger", "reconciliation"} or binding["schema"] != "norn.recovered-baseline-incident-binding/v1" or binding["candidateSHA"] != expected_current: raise SystemExit("incident binding does not name the exact recovered current SHA")
+evidence = {}
+for name, key_name in (("legacyFence", "legacyFence"), ("ledger", "ledger"), ("reconciliation", "reconciliation")):
+    item = binding.get(key_name)
+    if not isinstance(item, dict) or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not isinstance(item["sha256"], str) or len(item["sha256"]) != 64: raise SystemExit("incident binding evidence is malformed")
+    path = os.path.abspath(os.path.expanduser(item["path"])); meta = os.lstat(path)
+    if not stat.S_ISREG(meta.st_mode) or stat.S_ISLNK(meta.st_mode) or meta.st_uid != os.geteuid(): raise SystemExit("incident evidence is not an owned regular file")
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    if not hmac.compare_digest(digest, item["sha256"]): raise SystemExit("incident evidence bytes do not match the bound hash")
+    evidence[name] = {"path": path, "sha256": digest}
+fence = json.load(open(evidence["legacyFence"]["path"], encoding="utf-8"))
+ledger = json.load(open(evidence["ledger"]["path"], encoding="utf-8"))
+reconciliation = json.load(open(evidence["reconciliation"]["path"], encoding="utf-8"))
+if fence.get("schema") != "norn.legacy-baseline-fence/v1" or fence.get("state") != "candidate-postflight-failed" or fence.get("legacyReleaseSHA") != "a5da8ef15d12e9eca7561e90b90d96f6dc652a21": raise SystemExit("failed legacy fence semantic binding is invalid")
+if ledger.get("schema") != "norn.m5-protected-transition/v1" or ledger.get("state") != "candidate-recovery-required" or ledger.get("legacyReleaseSHA") != fence["legacyReleaseSHA"] or ledger.get("candidateSHA") != expected_current or ledger.get("upgradeExitCode") != 1 or not isinstance(ledger.get("beforeDigest"), str): raise SystemExit("failed transition ledger semantic binding is invalid")
+release, transition = reconciliation.get("release"), reconciliation.get("transition")
+if reconciliation.get("schema") != "norn.m5-post-transition-reconciliation/v1" or not isinstance(release, dict) or not isinstance(transition, dict) or release.get("sha") != expected_current or release.get("verified") is not True or transition.get("beforeDigest") != ledger["beforeDigest"] or transition.get("ledgerState") != "candidate-recovery-required" or transition.get("matchesBefore") is not False or transition.get("upgradeExitCode") != 1: raise SystemExit("failed reconciliation semantic binding is invalid")
+binding_digest = hashlib.sha256(open(binding_path, "rb").read()).hexdigest()
+payload = {"schema":"norn.recovered-baseline-adoption/v1", "candidateSHA":expected_current, "adopterSHA":adopter_sha, "incidentBindingSHA256":binding_digest, "preservationUnprovenReasonSHA256":hashlib.sha256(open(reason_path, "rb").read()).hexdigest(), **evidence, "preservationProven":False}
+canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(); payload["signature"] = "hmac-sha256:" + hmac.new(key, b"norn.recovered-baseline-adoption/v1\0" + canonical, hashlib.sha256).hexdigest()
+parent = os.path.dirname(receipt_path); parent_info = os.stat(parent)
+if not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != os.geteuid() or stat.S_IMODE(parent_info.st_mode) != 0o700: raise SystemExit("receipt parent must be owner-only mode-0700")
+if os.path.exists(receipt_path):
+    existing = private(receipt_path, "recovered baseline receipt")
+    if existing != payload: raise SystemExit("existing recovered baseline receipt conflicts with this adoption")
+    raise SystemExit(0)
+fd, temporary = tempfile.mkstemp(prefix=".norn-recovered-baseline-", dir=parent)
+try:
+    os.fchmod(fd, 0o600); os.write(fd, (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()); os.fsync(fd)
+    try: os.link(temporary, receipt_path)
+    except FileExistsError: raise SystemExit("receipt was claimed concurrently")
+    directory = os.open(parent, os.O_RDONLY)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+finally:
+    os.close(fd)
+    try: os.unlink(temporary)
+    except FileNotFoundError: pass
+PY
+  log "recovered baseline adoption receipt recorded; preservation remains unproven"
+}
+
+if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
+  case "$mode" in
+    recovered-baseline-adopt|releases|startup-contract|proxy-status|proxy-plan|smoke) ;;
+    env-exec)
+      recovered_env_args=("$@")
+      [[ "${recovered_env_args[0]:-}" == "--" ]] && recovered_env_args=("${recovered_env_args[@]:1}")
+      [[ "${#recovered_env_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
+      recovered_env_command="${recovered_env_args[0]}"; recovered_env_mode="${recovered_env_args[1]}"
+      [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
+      case "$recovered_env_mode" in
+        preflight|upgrade) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+        recovered-baseline-adopt) [[ "$recovered_env_command" == "$platform_script_bin" || "$recovered_env_command" == "$releases"/*/bin/platform-upgrade ]] || fail "recovered baseline adoption child is not an immutable release script" ;;
+        *) fail "recovered baseline rejects env-exec child mode $recovered_env_mode" ;;
+      esac
+      ;;
+    legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
+    rollback|rebuild|proxy-switch) fail "recovered baseline permits only ordinary signed forward maintenance" ;;
+    *) recovered_baseline_receipt_validate || fail "recovered baseline adoption receipt is required and must validate before ordinary forward mutation" ;;
+  esac
+fi
+
+if [[ "$mode" == "recovered-baseline-adopt" ]]; then
+  recovered_baseline_adopt
   exit 0
 fi
 
