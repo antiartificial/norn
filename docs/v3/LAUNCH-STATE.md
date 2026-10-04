@@ -59,8 +59,8 @@ planning, then stopped before Fleet creation. The approved complete abort has
 since destroyed management and both state backends. The two one-use Tailscale
 auth keys and run-specific GitHub staging configuration are retired. Two
 Tailscale device identities still await dashboard removal; this is not an
-overall external final-zero claim. The retained retirement deadline is
-`2026-10-04T23:30:00Z`.
+overall external final-zero claim. Cloud and backend teardown finished before
+the approved `2026-10-04T23:30:00Z` retirement deadline.
 
 **Source:** The Mini still runs `26147c39`; protected Norn `master` now resolves
 to `c56fa0cbef322d44abf905a423bea72df26292b2`, including the pilot apply
@@ -127,8 +127,9 @@ management droplets; the exact saved destroy plan then completed. The abort
 receipt records empty management OpenTofu state and two independent management
 provider-zero observations. A separate typed cleanup removed both Spaces state
 buckets, their retained versions, and scoped keys, with `backendFinalZero=true`.
-This proves the pilot cloud and backend teardown, while Tailscale device
-removal and final external cleanup remain separate.
+The cloud and backend teardown finished before the 23:30 UTC retirement
+deadline. Two Tailscale device identities still await removal; final external
+cleanup remains separate.
 
 **Norn bridge correction:** Norn [PR #115](https://github.com/antiartificial/norn/pull/115)
 passed both v3 CI and the protected legacy Repository CI checks, then merged as
@@ -261,8 +262,7 @@ cover every M3/M4/M8 exit.
 - The [2026-09-29 handoff](session-resume-2026-09-29.md) is historical; its
   Mini version, spend approval status and next run ID are superseded here.
 
-The failed Fleet apply alone proves no Fleet provider mutation; the separate
-management-retirement receipts and independent provider observations support
-the management resource-zero claim. Billing finalization requires separate
-verification. The old pilot identities were subsequently retired; the new
-pilot OAuth and temporary tag delegation need their own end-of-run cleanup.
+The failed Fleet apply alone proves no Fleet provider mutation. The separate
+management abort and backend receipts prove cloud and backend zero for
+`pilot261004a`. Its two recorded Tailscale devices still await dashboard
+removal; overall external final zero and final billing are not yet claimed.
