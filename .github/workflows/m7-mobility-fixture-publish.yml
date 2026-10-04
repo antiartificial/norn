@@ -1,7 +1,9 @@
 name: Publish M7 mobility fixture image
 
-# This is an artifact-only lane for the deploy-disabled M7 fixture. It never
-# calls Norn, joins a private network, or applies an InfraSpec.
+# This is a manual artifact-only publication lane for the deploy-disabled M7
+# fixture. It never calls Norn, joins a private network, or applies an
+# InfraSpec. Repository CI separately builds this Dockerfile on pull requests
+# and master pushes whenever GitHub Actions workflows are enabled.
 on:
   workflow_dispatch:
     inputs:
@@ -222,7 +224,7 @@ jobs:
             --arg sbomBundleSha256 "$sbom_sha256" \
             --arg provenanceURL "$PROVENANCE_URL" \
             --arg sbomURL "$SBOM_URL" \
-            '{schemaVersion: "norn.m7.mobility-fixture.publication-handoff/v1", sourceSha: $sourceSha, artifact: $artifact, repository: $repository, signerWorkflow: $signerWorkflow, reportedWorkflowSha: $reviewedWorkflowSha, platforms: ["linux/amd64", "linux/arm64"], signature: {verification: ("cosign verify --certificate-identity-regexp \"https://github.com/" + $repository + "/.github/workflows/m7-mobility-fixture-publish.yml@.*\" --certificate-oidc-issuer https://token.actions.githubusercontent.com " + $artifact)}, attestationBundleSha256: $provenanceBundleSha256, sbomBundleSha256: $sbomBundleSha256, attestationUrl: $provenanceURL, sbomUrl: $sbomURL}' \
+            '{schemaVersion: "norn.m7.mobility-fixture.publication-handoff/v1", sourceSha: $sourceSha, artifact: $artifact, repository: $repository, signerWorkflow: $signerWorkflow, reportedWorkflowSha: $reviewedWorkflowSha, platforms: ["linux/amd64", "linux/arm64"], signature: {verification: ("cosign verify --certificate-identity-regexp \"https://github.com/" + $repository + "/.github/workflows/m7-mobility-fixture-publish.yml@.*\" --certificate-oidc-issuer https://token.actions.githubusercontent.com " + $artifact)}, attestationBundleSha256: $provenanceBundleSha256, sbomBundleSha256: $sbomBundleSha256, attestationUrl: $provenanceURL, sbomUrl: $sbomURL, verification: {requiredInputs: ["REVIEWED_SOURCE_SHA", "REVIEWED_WORKFLOW_SHA"], provenance: ("gh attestation verify oci://" + $artifact + " --repo " + $repository + " --signer-workflow " + $signerWorkflow + " --signer-digest ${REVIEWED_WORKFLOW_SHA:?set from independently reviewed policy} --source-digest ${REVIEWED_SOURCE_SHA:?set from independently reviewed policy} --source-ref refs/heads/master --predicate-type https://slsa.dev/provenance/v1 --deny-self-hosted-runners"), sbom: ("gh attestation verify oci://" + $artifact + " --repo " + $repository + " --signer-workflow " + $signerWorkflow + " --signer-digest ${REVIEWED_WORKFLOW_SHA:?set from independently reviewed policy} --source-digest ${REVIEWED_SOURCE_SHA:?set from independently reviewed policy} --source-ref refs/heads/master --predicate-type https://spdx.dev/Document/v2.3 --deny-self-hosted-runners")}}' \
             > publication-evidence/handoff.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
