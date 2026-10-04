@@ -411,7 +411,7 @@ There is no automatic repair.
 
 - `Notify(name)` coalesces only *pending* names. A notify during an in-progress reconcile of the same name re-enqueues it (m12).
 - A periodic rescan lists up to `MaxBatch` resources and enqueues them.
-- `reconcileOne` calls `ReconcileFleetResource` and writes only when the derived status differs, or when `EvaluatedAt` is older than `RescanInterval`.
+- `reconcileOne` calls `ReconcileFleetResource` and writes only when the derived status differs (`controller.StatusEquivalent`, ignoring `EvaluatedAt` and the `ReconciliationRequired` timestamp) or the epoch changed. **Amended in the WP12 review:** no periodic refresh write, to avoid a revision bump (and spurious `expectedRevision` conflicts) every rescan. Freshness is enforced at read time by `DowngradeStale` (M9). Because `EvaluatedAt` no longer proves the controller is alive, WP13's read response reports controller liveness separately (the in-process reconciler's last completed rescan time, or `unknown` when the reading process runs no reconciler).
 - Handlers call an optional `FleetNotifier` after commits.
 - It runs **only** in the PG Fleet authority-only process and in `runEtcdFleetRuntime` (Q6).
 - There is no leader lease.
@@ -812,6 +812,7 @@ Other target-route problems are `fleet_target_not_found` (404), `invalid_fleet_t
 ### WP13: Resource routes
 
 - **From the WP11 review:** the read route must call `controller.DowngradeStale(status, now)` before returning.
+- **From the WP12 review:** expose controller liveness in the read response (last completed rescan time from the in-process reconciler, or `unknown`), since unchanged status is no longer rewritten. Resource routes should go under `/api/v1/fleet/resources/{name}/...` so the WP12 notify middleware calls `Notify(name)`.
 - **Create:**
   - `handler/fleet_resources.go`
   - `etcd_fleet_resources.go`

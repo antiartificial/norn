@@ -63,6 +63,11 @@ type ResourceHarness interface {
 	AddHolderAttempt(ctx context.Context) error
 }
 
+// SeedDispatchRunID is the GitHub run ID SeedHolderBinding binds the holder
+// plan's dispatch to on both backends, so reconcile tests can assert the
+// dispatch run reaches derive (Input.HolderDispatchRunID).
+const SeedDispatchRunID int64 = 4242
+
 // validDesired is a well-formed operator-declared desired revision.
 func validDesired() controller.DesiredRevision {
 	return controller.DesiredRevision{
@@ -290,7 +295,12 @@ func RunFleetResourceConformance(t *testing.T, h ResourceHarness) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		derive := func(in controller.Input) controller.Status { return controller.Status{EvaluatedAt: in.Now} }
+		// Each derive depends on the status it read, so every reconcile has a
+		// real change to write (an unchanged status is not written) and a
+		// lost update would show as a short count.
+		derive := func(in controller.Input) controller.Status {
+			return controller.Status{ObservedGeneration: in.Resource.Status.ObservedGeneration + 1, EvaluatedAt: in.Now}
+		}
 		const writers = 3
 		errs := make(chan error, writers)
 		for i := 0; i < writers; i++ {
@@ -308,8 +318,9 @@ func RunFleetResourceConformance(t *testing.T, h ResourceHarness) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if after.Revision != before.Revision+int64(writers) {
-			t.Fatalf("every concurrent reconcile must be reflected exactly once with none lost, got revision %d -> %d (want +%d)", before.Revision, after.Revision, writers)
+		if after.Revision != before.Revision+int64(writers) || after.Status.ObservedGeneration != before.Status.ObservedGeneration+int64(writers) {
+			t.Fatalf("every concurrent reconcile must be reflected exactly once with none lost, got revision %d -> %d, counter %d -> %d (want +%d)",
+				before.Revision, after.Revision, before.Status.ObservedGeneration, after.Status.ObservedGeneration, writers)
 		}
 	})
 
@@ -361,6 +372,33 @@ func RunFleetResourceConformance(t *testing.T, h ResourceHarness) {
 		}
 		if before != after {
 			t.Fatalf("PUT desired must not touch any fence, dispatch or attempt row, got\nbefore=%s\nafter=%s", before, after)
+		}
+		// A reconcile after the desired change must report the same bound
+		// plan, dispatch and attempt, and still write nothing to them.
+		pre, err := h.Reconcile(ctx, name, controller.DeriveStatus, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pre.Status.Active == nil || pre.Status.Active.DispatchRunID != "4242" || len(pre.Status.Active.AttemptIDs) != 1 || pre.Status.ObservedGeneration != 1 {
+			t.Fatalf("a desired change mid-execution must not rebind the active plan, dispatch or attempt, got %+v", pre.Status)
+		}
+		if _, err := h.SetDesired(ctx, name, validDesired()); err != nil {
+			t.Fatal(err)
+		}
+		post, err := h.Reconcile(ctx, name, controller.DeriveStatus, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if post.Status.ObservedGeneration != 2 || post.Status.Active == nil || post.Status.Active.PlanID != pre.Status.Active.PlanID ||
+			post.Status.Active.DispatchRunID != pre.Status.Active.DispatchRunID || len(post.Status.Active.AttemptIDs) != 1 || post.Status.Active.AttemptIDs[0] != pre.Status.Active.AttemptIDs[0] {
+			t.Fatalf("bindings changed across a second desired revision: before %+v after %+v", pre.Status.Active, post.Status.Active)
+		}
+		final, err := h.SnapshotHolderBinding(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final != before {
+			t.Fatalf("reconcile must not touch any fence, dispatch or attempt row, got\nbefore=%s\nafter=%s", before, final)
 		}
 	})
 	t.Run("DesiredRevisionValidated", func(t *testing.T) {

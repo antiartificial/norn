@@ -146,6 +146,25 @@ func (s *V3OperationStore) GetFleetResource(ctx context.Context, name string) (*
 	return &resource, nil
 }
 
+// ListFleetResourceNames returns up to limit resource names strictly after
+// `after`, in name order: the reconciler's paged rescan cursor.
+func (s *V3OperationStore) ListFleetResourceNames(ctx context.Context, after string, limit int) ([]string, error) {
+	prefix := s.fleetResourceKey("")
+	start := prefix
+	if after != "" {
+		start = s.fleetResourceKey(after) + "\x00"
+	}
+	response, err := s.kv.Get(ctx, start, clientv3.WithRange(clientv3.GetPrefixRangeEnd(prefix)), clientv3.WithKeysOnly(), clientv3.WithLimit(int64(limit)), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		names = append(names, string(kv.Key)[len(prefix):])
+	}
+	return names, nil
+}
+
 // SetDesiredFleetResource accepts a new desired revision (Q8). It touches
 // only this resource's own key: no fence, dispatch-preparation/binding or
 // attempt key is read or written (DesiredChangeDuringExecutionKeepsBindings).
@@ -334,9 +353,10 @@ func (s *V3OperationStore) pruneFleetObservations(ctx context.Context, name stri
 // for the single keys and every listed attempt (so a delete fails it), plus
 // a prefix compare bounded by the attempt list's own read revision, so an
 // attempt created after that read fails it too.
-func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID string) (lifecycle.HolderFacts, []clientv3.Cmp, error) {
+func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID string) (lifecycle.HolderFacts, int64, []clientv3.Cmp, error) {
 	var holder lifecycle.HolderFacts
 	var compares []clientv3.Cmp
+	var runID int64
 	exact := func(key string, response *clientv3.GetResponse) {
 		var revision int64
 		if len(response.Kvs) == 1 {
@@ -348,13 +368,13 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 	preparationKey := s.fleetGitHubDispatchPreparationKey(planID)
 	preparationResponse, err := s.kv.Get(ctx, preparationKey)
 	if err != nil {
-		return holder, nil, err
+		return holder, 0, nil, err
 	}
 	exact(preparationKey, preparationResponse)
 	if len(preparationResponse.Kvs) == 1 {
 		var preparation v3FleetGitHubDispatchPreparation
 		if err := decodeV3Record(preparationResponse.Kvs[0].Value, &preparation); err != nil {
-			return holder, nil, fmt.Errorf("fleet GitHub dispatch preparation is corrupt: %w", err)
+			return holder, 0, nil, fmt.Errorf("fleet GitHub dispatch preparation is corrupt: %w", err)
 		}
 		holder.DispatchState = "prepared"
 		holder.DispatchCreatedAt = preparation.CreatedAt
@@ -362,46 +382,63 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 	bindingKey := s.fleetRunnerDispatchKey(planID)
 	bindingResponse, err := s.kv.Get(ctx, bindingKey)
 	if err != nil {
-		return holder, nil, err
+		return holder, 0, nil, err
 	}
 	exact(bindingKey, bindingResponse)
 	if len(bindingResponse.Kvs) == 1 {
 		var binding v3FleetRunnerDispatch
 		if err := decodeV3Record(bindingResponse.Kvs[0].Value, &binding); err != nil {
-			return holder, nil, fmt.Errorf("fleet runner dispatch binding is corrupt: %w", err)
+			return holder, 0, nil, fmt.Errorf("fleet runner dispatch binding is corrupt: %w", err)
 		}
 		holder.DispatchState = "bound"
+		runID = binding.RunID
 		holder.SubmissionStartedAt = binding.CreatedAt
 	}
 
+	attempts, attemptCompares, err := s.fleetResourceAttemptFacts(ctx, planID)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	holder.Attempts = attempts
+	compares = append(compares, attemptCompares...)
+
+	abandonedKey := s.fleetTargetAbandonedKey(planID)
+	abandonedResponse, err := s.kv.Get(ctx, abandonedKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(abandonedKey, abandonedResponse)
+	holder.Abandoned = len(abandonedResponse.Kvs) == 1
+	return holder, runID, compares, nil
+}
+
+// fleetResourceAttemptFacts reads planID's runner attempts (oldest first)
+// and returns the compares that fail the reconcile Txn if any of them
+// changed, was deleted, or if one was created after this read.
+func (s *V3OperationStore) fleetResourceAttemptFacts(ctx context.Context, planID string) ([]fleet.RunnerAttempt, []clientv3.Cmp, error) {
+	var attempts []fleet.RunnerAttempt
+	var compares []clientv3.Cmp
 	attemptPrefix := s.fleetRunnerAttemptPrefix(planID)
 	attemptResponse, err := s.kv.Get(ctx, attemptPrefix, clientv3.WithPrefix())
 	if err != nil {
-		return holder, nil, err
+		return nil, nil, err
 	}
 	compares = append(compares, clientv3.Compare(clientv3.ModRevision(attemptPrefix).WithPrefix(), "<", attemptResponse.Header.Revision+1))
 	for _, kv := range attemptResponse.Kvs {
 		var item fleet.RunnerAttempt
 		if err := decodeV3Record(kv.Value, &item); err != nil {
-			return holder, nil, err
+			return nil, nil, err
 		}
 		if item.PlanID != planID || item.ID == "" {
-			return holder, nil, fmt.Errorf("fleet runner attempt is corrupt")
+			return nil, nil, fmt.Errorf("fleet runner attempt is corrupt")
 		}
 		item.SchemaVersion = fleet.RunnerAttemptSchemaVersion
-		holder.Attempts = append(holder.Attempts, item)
+		attempts = append(attempts, item)
 		compares = append(compares, clientv3.Compare(clientv3.ModRevision(string(kv.Key)), "=", kv.ModRevision))
 	}
-	sort.Slice(holder.Attempts, func(i, j int) bool { return holder.Attempts[i].Attempt < holder.Attempts[j].Attempt })
+	sort.Slice(attempts, func(i, j int) bool { return attempts[i].Attempt < attempts[j].Attempt })
 
-	abandonedKey := s.fleetTargetAbandonedKey(planID)
-	abandonedResponse, err := s.kv.Get(ctx, abandonedKey)
-	if err != nil {
-		return holder, nil, err
-	}
-	exact(abandonedKey, abandonedResponse)
-	holder.Abandoned = len(abandonedResponse.Kvs) == 1
-	return holder, compares, nil
+	return attempts, compares, nil
 }
 
 // ReconcileFleetResource mirrors store.DB.ReconcileFleetResource: it gathers
@@ -442,6 +479,8 @@ func (s *V3OperationStore) ReconcileFleetResource(ctx context.Context, name stri
 
 		var fence lifecycle.FenceFacts
 		var holder lifecycle.HolderFacts
+		var holderRunID int64
+		var releasedAttempts []fleet.RunnerAttempt
 		if resource.TargetID != "" {
 			var fenceRevision int64
 			fence, fenceRevision, err = s.GetFleetTargetFence(ctx, resource.TargetID)
@@ -451,11 +490,21 @@ func (s *V3OperationStore) ReconcileFleetResource(ctx context.Context, name stri
 			compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(resource.TargetID)), "=", fenceRevision))
 			if fence.Held {
 				var holderCompares []clientv3.Cmp
-				holder, holderCompares, err = s.fleetResourceHolderFacts(ctx, fence.HolderPlanID)
+				holder, holderRunID, holderCompares, err = s.fleetResourceHolderFacts(ctx, fence.HolderPlanID)
 				if err != nil {
 					return nil, err
 				}
 				compares = append(compares, holderCompares...)
+			}
+			// The released plan's attempts feed derive's LastApplied (M11);
+			// their keys are compared so a late attempt write retries us.
+			if fence.LastRelease != nil && fence.LastRelease.Reason == "succeeded" {
+				var releasedCompares []clientv3.Cmp
+				releasedAttempts, releasedCompares, err = s.fleetResourceAttemptFacts(ctx, fence.LastRelease.PlanID)
+				if err != nil {
+					return nil, err
+				}
+				compares = append(compares, releasedCompares...)
 			}
 		}
 
@@ -494,7 +543,22 @@ func (s *V3OperationStore) ReconcileFleetResource(ctx context.Context, name stri
 		}
 
 		now := time.Now().UTC().Truncate(time.Microsecond)
-		status := derive(controller.Input{Resource: resource, Fence: fence, Holder: holder, AuthorityEpoch: epoch, LatestObservations: latest, TiedObservations: tied, Now: now})
+		status := derive(controller.Input{Resource: resource, Fence: fence, Holder: holder, HolderDispatchRunID: holderRunID, LastReleaseAttempts: releasedAttempts, AuthorityEpoch: epoch, LatestObservations: latest, TiedObservations: tied, Now: now})
+		if resource.AuthorityEpoch == epoch && controller.StatusEquivalent(resource.Status, status) {
+			// Unchanged (see controller.StatusEquivalent): skip the write so
+			// the revision and etcd history do not grow, but still confirm
+			// the inputs were one consistent snapshot with a write-free Txn
+			// over the same compares; a torn read retries.
+			txn, err := s.kv.Txn(ctx).If(compares...).Commit()
+			if err != nil {
+				return nil, err
+			}
+			if txn.Succeeded {
+				return &resource, nil
+			}
+			lastErr = ErrFleetResourceReconcileConflict
+			continue
+		}
 
 		resource.Status = status
 		resource.Revision++

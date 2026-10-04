@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -116,7 +117,7 @@ func (h *fleetResourceTestHarness) SeedHolderBinding(ctx context.Context, name s
 	}
 
 	binding := v3FleetRunnerDispatch{
-		FleetRunnerDispatchBinding: FleetRunnerDispatchBinding{PlanID: planID, PlanSHA256: "sha-" + id, ApprovedHeadSHA: "head-" + id, DispatchNonceSHA256: "nonce-" + id},
+		FleetRunnerDispatchBinding: FleetRunnerDispatchBinding{PlanID: planID, PlanSHA256: "sha-" + id, ApprovedHeadSHA: "head-" + id, DispatchNonceSHA256: "nonce-" + id, RunID: fleettest.SeedDispatchRunID},
 		CreatedAt:                  now,
 	}
 	encodedBinding, err := json.Marshal(binding)
@@ -127,7 +128,7 @@ func (h *fleetResourceTestHarness) SeedHolderBinding(ctx context.Context, name s
 		return "", err
 	}
 
-	attempt := fleet.RunnerAttempt{ID: "attempt-" + id, PlanID: planID, Attempt: 1, RunnerAttemptID: "runner-" + id, Status: "running", CurrentPhase: "prechange_verified", StartedAt: now, HeartbeatAt: now, UpdatedAt: now}
+	attempt := fleet.RunnerAttempt{ID: "attempt-" + id, PlanID: planID, Attempt: 1, RunnerAttemptID: "runner-" + id, Status: "running", CurrentPhase: "prechange_verified", StartedAt: now, HeartbeatAt: now, HeartbeatTimeoutSeconds: 600, HeartbeatExpiresAt: now.Add(10 * time.Minute), UpdatedAt: now}
 	encodedAttempt, err := json.Marshal(attempt)
 	if err != nil {
 		return "", err
@@ -138,6 +139,49 @@ func (h *fleetResourceTestHarness) SeedHolderBinding(ctx context.Context, name s
 
 	h.holderTargetID, h.holderPlanID = resource.TargetID, planID
 	return h.SnapshotHolderBinding(ctx)
+}
+
+func (h *fleetResourceTestHarness) ReconcilerStore() controller.ReconcilerStore { return h.store }
+
+func (h *fleetResourceTestHarness) IsNotFound(err error) bool {
+	return errors.Is(err, ErrFleetResourceNotFound)
+}
+
+// SucceedHolder completes the seeded holder's attempt at commitSHA and frees
+// the fence with a succeeded release.
+func (h *fleetResourceTestHarness) SucceedHolder(ctx context.Context, commitSHA string) error {
+	attempts, _, err := h.store.listFleetRunnerAttempts(ctx, h.holderPlanID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, attempt := range attempts {
+		attempt.Status, attempt.CommitSHA, attempt.FinishedAt, attempt.UpdatedAt = "succeeded", commitSHA, &now, now
+		encoded, err := json.Marshal(attempt)
+		if err != nil {
+			return err
+		}
+		if _, err := h.store.kv.Put(ctx, h.store.fleetRunnerAttemptKey(h.holderPlanID, attempt.ID), string(encoded)); err != nil {
+			return err
+		}
+	}
+	response, err := h.store.kv.Get(ctx, h.store.fleetTargetFenceKey(h.holderTargetID))
+	if err != nil || len(response.Kvs) != 1 {
+		return fmt.Errorf("fence read: %v", err)
+	}
+	var fence v3FleetTargetFence
+	if err := json.Unmarshal(response.Kvs[0].Value, &fence); err != nil {
+		return err
+	}
+	fence.Held, fence.HolderPlanID, fence.HolderNonceSHA256 = false, "", ""
+	fence.LastReleasePlanID, fence.LastReleaseReason, fence.LastReleaseAt = h.holderPlanID, "succeeded", &now
+	fence.Revision++
+	encoded, err := json.Marshal(fence)
+	if err != nil {
+		return err
+	}
+	_, err = h.store.kv.Put(ctx, h.store.fleetTargetFenceKey(h.holderTargetID), string(encoded))
+	return err
 }
 
 func (h *fleetResourceTestHarness) AddHolderAttempt(ctx context.Context) error {

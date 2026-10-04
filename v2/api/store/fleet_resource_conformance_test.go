@@ -107,7 +107,7 @@ func (h *fleetResourceTestHarness) SeedHolderBinding(ctx context.Context, name s
 	}
 	if _, err := h.db.CreateFleetGitHubDispatch(ctx, FleetGitHubDispatch{
 		PlanID: planID, PlanRunID: 1, PlanSHA256: "sha-" + id, ApprovedHeadSHA: "head-" + id,
-		DispatchNonceSHA256: "nonce-" + id, DispatchState: "dispatched",
+		DispatchNonceSHA256: "nonce-" + id, DispatchState: "dispatched", RunID: fleettest.SeedDispatchRunID,
 	}); err != nil {
 		return "", err
 	}
@@ -120,6 +120,33 @@ func (h *fleetResourceTestHarness) SeedHolderBinding(ctx context.Context, name s
 	}
 	h.holderTargetID, h.holderPlanID = resource.TargetID, planID
 	return h.SnapshotHolderBinding(ctx)
+}
+
+func (h *fleetResourceTestHarness) ReconcilerStore() controller.ReconcilerStore { return h.db }
+
+func (h *fleetResourceTestHarness) IsNotFound(err error) bool {
+	return errors.Is(err, ErrFleetResourceNotFound)
+}
+
+// SucceedHolder completes the seeded holder's attempt at commitSHA and frees
+// the fence with a succeeded release, as one transaction like the real path.
+func (h *fleetResourceTestHarness) SucceedHolder(ctx context.Context, commitSHA string) error {
+	tx, err := h.db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `UPDATE fleet_runner_attempts SET status='succeeded', commit_sha=$2, finished_at=now(), updated_at=now() WHERE plan_id=$1`, h.holderPlanID, commitSHA); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE fleet_target_fences SET held=false, holder_plan_id='', holder_nonce_sha256='',
+		       last_release_plan_id=$2, last_release_reason='succeeded', last_release_at=now(), revision=revision+1
+		WHERE target_id=$1
+	`, h.holderTargetID, h.holderPlanID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (h *fleetResourceTestHarness) AddHolderAttempt(ctx context.Context) error {

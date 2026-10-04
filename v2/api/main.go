@@ -2229,8 +2229,16 @@ func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
 	if err != nil {
 		log.Fatalf("Fleet authority-only startup: %v", err)
 	}
+	var routes http.Handler = fleetAuthorityOnlyRouterWithHandler(cfg, h)
+	stopReconciler := func() {}
+	if fleetReconcilerEnabled(os.Getenv) {
+		reconciler := newFleetReconciler(db, func(err error) bool { return errors.Is(err, store.ErrFleetResourceNotFound) })
+		routes = fleetReconcilerNotify(reconciler)(routes)
+		stopReconciler = startFleetReconciler(context.Background(), reconciler)
+		log.Print("Fleet resource reconciler enabled (observe-only; writes Fleet status only)")
+	}
 	srv := &http.Server{
-		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(fleetAuthorityOnlyRouterWithHandler(cfg, h), "norn.fleet-authority"),
+		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(routes, "norn.fleet-authority"),
 		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20,
 	}
 	go func() {
@@ -2242,6 +2250,7 @@ func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	stopReconciler()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)

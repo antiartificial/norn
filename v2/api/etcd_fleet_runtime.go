@@ -33,6 +33,7 @@ import (
 	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/controller"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
@@ -128,6 +129,11 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer)
+	var reconciler *controller.Reconciler
+	if fleetReconcilerEnabled(os.Getenv) {
+		reconciler = newFleetReconciler(operations, func(err error) bool { return errors.Is(err, etcdstore.ErrFleetResourceNotFound) })
+		router.Use(fleetReconcilerNotify(reconciler))
+	}
 	router.Get("/api/health", sourceValidationHealthHandler(client, backend.EtcdPrefix))
 	router.Get("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
@@ -222,6 +228,14 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if deploy != nil {
 		runWorker(deploy.worker)
 		log.Print("etcd Fleet app.deploy worker enabled for signed claimed operations")
+	}
+	if reconciler != nil {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			reconciler.Run(workerCtx)
+		}()
+		log.Print("etcd Fleet resource reconciler enabled (observe-only; writes Fleet status only)")
 	}
 	errCh := make(chan error, 1)
 	go func() {

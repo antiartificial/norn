@@ -368,7 +368,13 @@ func enforceFleetTargetMutation(ctx context.Context, tx pgx.Tx, acceptance Opera
 	if admission == nil {
 		return nil
 	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	// T2: release and abandon age checks use database time, read inside the
+	// same transaction, never this process's clock.
+	var now time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return err
+	}
+	now = now.UTC().Truncate(time.Microsecond)
 	operationID := acceptance.Operation.ID
 	switch admission.Kind {
 	case FleetTargetMutationRegister:

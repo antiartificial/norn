@@ -14,6 +14,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"time"
@@ -53,6 +54,7 @@ const (
 	ReasonProviderFresh          = "Fresh"
 	ReasonProviderError          = "ProviderError"
 	ReasonTargetIdentityMismatch = "TargetIdentityMismatch"
+	ReasonTargetIdentityMissing  = "TargetIdentityMissing"
 )
 
 // NodesEnrolled reasons.
@@ -238,6 +240,10 @@ func factNumber(o Observation, key string) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case json.Number:
+		// etcd decodes stored records with UseNumber.
+		f, err := n.Float64()
+		return f, err == nil
 	}
 	return 0, false
 }
@@ -311,6 +317,14 @@ func deriveProviderStateKnown(in Input) Condition {
 			if reported != "" && reported != in.Resource.TargetID {
 				c.Status, c.Reason = StatusFalse, ReasonTargetIdentityMismatch
 				c.Message = "observed target " + reported + " does not match resource target " + in.Resource.TargetID
+				cite(&c, row)
+				return c
+			}
+		}
+		// An observation that names no target cannot prove identity (§2).
+		for _, row := range rows {
+			if factString(row, factTargetID) == "" {
+				c.Status, c.Reason = StatusUnknown, ReasonTargetIdentityMissing
 				cite(&c, row)
 				return c
 			}

@@ -33,7 +33,7 @@ func mustCondition(t *testing.T, status Status, conditionType string) Condition 
 // `now` for the three sources, plus matching watermarks.
 func healthyObservations(now time.Time) (map[string]Watermark, map[string]Observation) {
 	provider := Observation{Sequence: 1, Source: SourceProvider, ObservedAt: now, ReceivedAt: now,
-		Facts: ObservationFacts{factEnrolledNodes: 3.0, factExpectedNodes: 3.0}}
+		Facts: ObservationFacts{factTargetID: "tgt_1", factEnrolledNodes: 3.0, factExpectedNodes: 3.0}}
 	state := Observation{Sequence: 2, Source: SourceState, ObservedAt: now, ReceivedAt: now,
 		Facts: ObservationFacts{factDrift: false}}
 	runtime := Observation{Sequence: 3, Source: SourceRuntime, ObservedAt: now, ReceivedAt: now,
@@ -607,5 +607,33 @@ func TestDeriveControllerRestart(t *testing.T) {
 	}
 	if after.LastAppliedGeneration != 3 {
 		t.Fatalf("LastAppliedGeneration = %d, want 3", after.LastAppliedGeneration)
+	}
+}
+
+func TestDeriveTargetIdentityMissing(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	in := baseInput(now)
+	provider := in.LatestObservations[SourceProvider]
+	provider.Facts = ObservationFacts{factEnrolledNodes: 3.0, factExpectedNodes: 3.0}
+	in.LatestObservations[SourceProvider] = provider
+
+	c := mustCondition(t, DeriveStatus(in), ConditionProviderStateKnown)
+	if c.Status != StatusUnknown || c.Reason != ReasonTargetIdentityMissing {
+		t.Fatalf("ProviderStateKnown = %s/%s, want Unknown/TargetIdentityMissing", c.Status, c.Reason)
+	}
+}
+
+func TestDeriveAcceptsJSONNumberFacts(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	in := baseInput(now)
+	provider := in.LatestObservations[SourceProvider]
+	provider.Facts = ObservationFacts{factTargetID: "tgt_1", factEnrolledNodes: json.Number("3"), factExpectedNodes: json.Number("3")}
+	in.LatestObservations[SourceProvider] = provider
+
+	c := mustCondition(t, DeriveStatus(in), ConditionNodesEnrolled)
+	if c.Status != StatusTrue || c.Reason != ReasonEnrolledMatchesExpected {
+		t.Fatalf("NodesEnrolled = %s/%s, want True/EnrolledMatchesExpected (etcd decodes numbers as json.Number)", c.Status, c.Reason)
 	}
 }

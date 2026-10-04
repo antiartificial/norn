@@ -54,6 +54,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/controller"
 	"norn/v2/api/fleet/lifecycle"
 )
@@ -170,6 +171,25 @@ func (db *DB) GetFleetResource(ctx context.Context, name string) (*controller.Re
 		return nil, ErrFleetResourceNotFound
 	}
 	return resource, err
+}
+
+// ListFleetResourceNames returns up to limit resource names strictly after
+// `after`, in name order: the reconciler's paged rescan cursor.
+func (db *DB) ListFleetResourceNames(ctx context.Context, after string, limit int) ([]string, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT name FROM fleet_resources WHERE name > $1 ORDER BY name LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
 }
 
 // SetDesiredFleetResource accepts a new desired revision (Q8): the caller
@@ -391,7 +411,9 @@ func pruneFleetObservationsTx(ctx context.Context, tx pgx.Tx, resource string, w
 // epoch, the target fence (if any) and its holder's dispatch/attempts, and
 // every watermark's own observation, all inside one transaction (plan.md
 // §2.3's lock order), then calls derive and writes the result with
-// revision+1 and the freshly read authority_epoch.
+// revision+1 and the freshly read authority_epoch -- unless the result is
+// controller.StatusEquivalent to the stored status under the same epoch, in
+// which case nothing is written and the stored resource is returned.
 //
 // afterRead, when non-nil, runs once, synchronously, after every input above
 // has been read but before derive is called -- it exists only so the shared
@@ -447,13 +469,24 @@ func (db *DB) reconcileFleetResourceOnce(ctx context.Context, name string, deriv
 
 	var fence lifecycle.FenceFacts
 	var holder lifecycle.HolderFacts
+	var holderRunID int64
+	var releasedAttempts []fleet.RunnerAttempt
 	if resource.TargetID != "" {
 		fence, err = GetFleetTargetFence(ctx, tx, resource.TargetID, false)
 		if err != nil {
 			return nil, err
 		}
 		if fence.Held {
-			holder, err = readFleetTargetHolderFactsTx(ctx, tx, fence.HolderPlanID)
+			holder, holderRunID, err = readFleetTargetHolderFactsTx(ctx, tx, fence.HolderPlanID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// A succeeded release frees the fence in the transaction that
+		// completes the attempt, so the released plan's attempts are read
+		// separately: derive's LastApplied (M11) needs them.
+		if fence.LastRelease != nil && fence.LastRelease.Reason == "succeeded" {
+			releasedAttempts, err = readFleetPlanAttemptsTx(ctx, tx, fence.LastRelease.PlanID)
 			if err != nil {
 				return nil, err
 			}
@@ -484,7 +517,13 @@ func (db *DB) reconcileFleetResourceOnce(ctx context.Context, name string, deriv
 	}
 
 	now := time.Now().UTC()
-	status := derive(controller.Input{Resource: *resource, Fence: fence, Holder: holder, AuthorityEpoch: epoch, LatestObservations: latest, TiedObservations: tied, Now: now})
+	status := derive(controller.Input{Resource: *resource, Fence: fence, Holder: holder, HolderDispatchRunID: holderRunID, LastReleaseAttempts: releasedAttempts, AuthorityEpoch: epoch, LatestObservations: latest, TiedObservations: tied, Now: now})
+	if resource.AuthorityEpoch == epoch && controller.StatusEquivalent(resource.Status, status) {
+		// Unchanged: no write, so no revision bump (WP12; see
+		// controller.StatusEquivalent). The deferred rollback ends the
+		// read-only transaction.
+		return resource, nil
+	}
 
 	resource.Status = status
 	resource.Revision++
@@ -508,15 +547,17 @@ func (db *DB) reconcileFleetResourceOnce(ctx context.Context, name string, deriv
 // readFleetTargetHolderFactsTx re-derives HolderFacts for planID inside tx:
 // its dispatch state/timestamps and its runner attempts, projected through
 // lifecycle.FromLegacy exactly as the PG legacy lifecycle helpers already
-// do. It writes nothing (T5: reads never write fence or attempt state) --
+// do. It also returns the dispatch's bound GitHub run ID (0 when unbound).
+// It writes nothing (T5: reads never write fence or attempt state) --
 // unlike ListFleetRunnerAttempts, it never abandons a stale attempt as a
 // side effect; expiry is only ever projected in memory by the caller's
 // derive function via lifecycle.ProjectExpiry.
-func readFleetTargetHolderFactsTx(ctx context.Context, tx pgx.Tx, planID string) (lifecycle.HolderFacts, error) {
+func readFleetTargetHolderFactsTx(ctx context.Context, tx pgx.Tx, planID string) (lifecycle.HolderFacts, int64, error) {
 	var holder lifecycle.HolderFacts
+	var runID int64
 	dispatch, err := scanFleetGitHubDispatch(tx.QueryRow(ctx, `SELECT `+fleetGitHubDispatchColumns+` FROM fleet_github_dispatches WHERE plan_id=$1`, planID))
 	if err != nil && err != pgx.ErrNoRows {
-		return holder, err
+		return holder, 0, err
 	}
 	if dispatch != nil {
 		holder.DispatchState = dispatch.DispatchState
@@ -524,13 +565,22 @@ func readFleetTargetHolderFactsTx(ctx context.Context, tx pgx.Tx, planID string)
 		if dispatch.SubmissionStartedAt != nil {
 			holder.SubmissionStartedAt = *dispatch.SubmissionStartedAt
 		}
+		runID = dispatch.RunID
 	}
 	var abandoned bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM fleet_target_abandoned_plans WHERE plan_id=$1)`, planID).Scan(&abandoned); err != nil {
-		return holder, err
+		return holder, 0, err
 	}
 	holder.Abandoned = abandoned
+	holder.Attempts, err = readFleetPlanAttemptsTx(ctx, tx, planID)
+	if err != nil {
+		return holder, 0, err
+	}
+	return holder, runID, nil
+}
 
+// readFleetPlanAttemptsTx reads planID's runner attempts, oldest first.
+func readFleetPlanAttemptsTx(ctx context.Context, tx pgx.Tx, planID string) ([]fleet.RunnerAttempt, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
 		       commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
@@ -539,18 +589,16 @@ func readFleetTargetHolderFactsTx(ctx context.Context, tx pgx.Tx, planID string)
 		FROM fleet_runner_attempts WHERE plan_id=$1 ORDER BY attempt ASC
 	`, planID)
 	if err != nil {
-		return holder, err
+		return nil, err
 	}
 	defer rows.Close()
+	var attempts []fleet.RunnerAttempt
 	for rows.Next() {
 		attempt, err := scanFleetRunnerAttempt(rows)
 		if err != nil {
-			return holder, err
+			return nil, err
 		}
-		holder.Attempts = append(holder.Attempts, lifecycle.FromLegacy(attempt))
+		attempts = append(attempts, lifecycle.FromLegacy(attempt))
 	}
-	if err := rows.Err(); err != nil {
-		return holder, err
-	}
-	return holder, nil
+	return attempts, rows.Err()
 }
