@@ -8,13 +8,24 @@ transition.
 `v2/scripts/mini-protected-transition-rehearsal` composes the next scheduled
 maintenance action. It requires a fresh legacy backup proof, the exact backup
 artifact, and a successful version-2 signed-shadow receipt for the same bytes
-and exact candidate SHA. Before invoking `platform-upgrade legacy-baseline`, it
+and exact candidate SHA. The wrapper delegates backup identity, artifact,
+future-skew, and age validation to `mini-verify-protected-backup`; its maximum
+age is one hour unless the reviewed `NORN_LEGACY_BACKUP_MAX_AGE_SECONDS`
+configuration sets a different positive bound. Both producer timestamps must
+be parseable UTC RFC3339 values, and the successful shadow receipt must finish
+after the backup was created. The verifier requires the owner-supplied
+`NORN_DATABASE_URL` and `NORN_AUDIT_SIGNING_KEY` used by the backup producer;
+load them from the owner-only runtime secret source without placing them in the
+command line or ledger. Before invoking `platform-upgrade legacy-baseline`, it
 requires healthy Nomad and Consul observations, then captures a stable digest
 of every app spec plus allocation identities, routes, secret-reference names,
 service state, and periodic schedules from the live API and service manifest.
 Credential-bearing endpoint URLs are refused rather than persisted.
 
-The composer writes an owner-only ledger before the irreversible command. Its
+The composer writes an owner-only proof-consumption record and ledger before
+the irreversible command. The consumption record is derived from the full
+backup proof and shadow receipt, so the same pair cannot be reused with a new
+ledger filename in the same owner-only directory. Its
 state changes to `candidate-recovery-required` before the legacy fence can be
 installed. An interrupted or failed invocation must not be replayed: inspect
 that ledger and the legacy fence state, then repair or roll forward with the
