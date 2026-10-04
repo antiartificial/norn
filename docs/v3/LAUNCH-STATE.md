@@ -58,9 +58,10 @@ management authority and runner, completed private handoff and protected Fleet
 planning, then stopped before Fleet creation. The approved complete abort has
 since destroyed management and both state backends. The two one-use Tailscale
 auth keys and run-specific GitHub staging configuration are retired. Two
-Tailscale device identities still await dashboard removal; this is not an
-overall external final-zero claim. Cloud and backend teardown finished before
-the approved `2026-10-04T23:30:00Z` retirement deadline.
+Tailscale device identities still await dashboard removal, and the pilot
+replacement OAuth client awaits revocation. This is not an overall external
+final-zero claim. Cloud and backend teardown finished before the approved
+`2026-10-04T23:30:00Z` retirement deadline.
 
 **Source:** The Mini still runs `26147c39`; protected Norn `master` now resolves
 to `c56fa0cbef322d44abf905a423bea72df26292b2`, including the pilot apply
@@ -128,8 +129,8 @@ receipt records empty management OpenTofu state and two independent management
 provider-zero observations. A separate typed cleanup removed both Spaces state
 buckets, their retained versions, and scoped keys, with `backendFinalZero=true`.
 The cloud and backend teardown finished before the 23:30 UTC retirement
-deadline. Two Tailscale device identities still await removal; final external
-cleanup remains separate.
+deadline. Two Tailscale device identities and the replacement OAuth client
+still await removal; final external cleanup remains separate.
 
 **Norn bridge correction:** Norn [PR #115](https://github.com/antiartificial/norn/pull/115)
 passed both v3 CI and the protected legacy Repository CI checks, then merged as
@@ -176,8 +177,9 @@ cover every M3/M4/M8 exit.
    backend cleanup are evidenced. The two one-use Tailscale auth keys are
    deleted, the pilot GitHub runner and staging configuration are removed, and
    shared GitHub entries are preserved. Remove only the two recorded Tailscale
-   devices when the dashboard's deletion confirmation is given. Recheck the
-   exact devices and original tag ownership, then retain final external
+   devices and revoke the pilot replacement OAuth client when their dashboard
+   confirmations are given. Recheck those identities and original tag ownership,
+   then retain final external
    cleanup evidence. Technical zero does not settle the final invoice.
 3. **Start a new bounded Fleet pilot.** The title verifier fix is merged but
    not deployed to the management authority. A new pilot needs fresh cost and
@@ -236,9 +238,10 @@ cover every M3/M4/M8 exit.
   supplied the exact retained-empty-bucket validator required for this path.
 - Backend and external cleanup: owner-only `abort-pilot261004a/backend-cleanup-plan.json`,
   `backend-cleanup-receipt.json` (`backendFinalZero=true`), and
-  `external-cleanup/{github-cleanup-receipt,tailscale-cleanup}.json`. The
-  Tailscale receipt records both auth keys deleted and two devices pending
-  dashboard removal. Neither the abort nor backend receipt claims overall
+  `external-cleanup/{github-cleanup-receipt,tailscale-cleanup,tailscale-oauth-policy-audit}.json`.
+  The Tailscale receipts record both auth keys deleted, two devices pending
+  removal, the original OAuth client revoked, and the pilot replacement OAuth
+  client still active. Neither the abort nor backend receipt claims overall
   external final zero or settled billing.
 - Norn bridge title correction: [PR #115](https://github.com/antiartificial/norn/pull/115)
   passed the v3 and legacy protected checks and merged as `c56fa0c`. It is not
@@ -264,5 +267,6 @@ cover every M3/M4/M8 exit.
 
 The failed Fleet apply alone proves no Fleet provider mutation. The separate
 management abort and backend receipts prove cloud and backend zero for
-`pilot261004a`. Its two recorded Tailscale devices still await dashboard
-removal; overall external final zero and final billing are not yet claimed.
+`pilot261004a`. Its two recorded Tailscale devices await dashboard removal and
+its pilot replacement OAuth client awaits revocation; overall external final
+zero and final billing are not yet claimed.
