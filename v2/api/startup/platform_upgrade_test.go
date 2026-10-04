@@ -137,6 +137,70 @@ func TestPlatformUpgradePendingLegacyTransitionRejectsOtherMutationsEarly(t *tes
 	}
 }
 
+func TestPlatformUpgradeRecoveredBaselineAdoptionIsNarrowAndEarlyGated(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	adopt := strings.Index(text, "recovered-baseline-adopt")
+	if adopt < 0 {
+		t.Fatal("recovered baseline adoption lane is missing")
+	}
+	gate := strings.Index(text, "recovered baseline adoption receipt is required and must validate before ordinary forward mutation")
+	fetch := strings.LastIndex(text, "fetch_signed_release_if_needed\nbuild_or_reuse_release")
+	if gate < 0 || fetch < 0 || gate > fetch {
+		t.Fatal("recovered baseline receipt is not validated before ordinary release preparation")
+	}
+	for _, required := range []string{
+		"recovered-baseline-adopt must run from an immutable release under NORN_RELEASES_DIR",
+		"recovered-baseline-adopt requires a signed immutable release",
+		"recovered-baseline-adopt requires a signed current release",
+		"recovered-baseline-adopt requires NORN_RELEASE_VERIFY_HOOK",
+		"managed API does not match the signed current release",
+		"managed host agent does not match the signed current release",
+		"live API source SHA does not match --expected-current-sha",
+		"API listener is not owned solely by the LaunchAgent PID",
+		"preservationProven\":False",
+		"norn.recovered-baseline-adoption/v1\\0",
+		"recovered baseline permanently rejects legacy-baseline replay",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("recovered baseline adoption misses guard %q", required)
+		}
+	}
+	legacyGate := text[strings.Index(text, "if [[ \"$legacy_record_state\" == \"candidate-postflight-failed\" ]]"):]
+	if !strings.Contains(legacyGate, "recovered_baseline_receipt_validate || fail") || !strings.Contains(legacyGate, "legacy-baseline|legacy-baseline-finalize") {
+		t.Fatal("failed legacy fence can bypass the receipt gate or replay the legacy lane")
+	}
+}
+
+func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t *testing.T) {
+	root := t.TempDir()
+	fence := filepath.Join(root, "fence.json")
+	ledger := filepath.Join(root, "ledger.json")
+	reconciliation := filepath.Join(root, "reconciliation.json")
+	for path, value := range map[string]map[string]any{
+		fence: {"schema": "norn.legacy-baseline-fence/v1", "state": "candidate-postflight-failed"},
+		ledger: {"schema": "norn.m5-protected-transition/v1", "state": "candidate-recovery-required"},
+		reconciliation: {"schema": "norn.m5-post-transition-reconciliation/v1"},
+	} {
+		data, err := json.Marshal(value)
+		if err != nil || os.WriteFile(path, data, 0o600) != nil { t.Fatal(err) }
+	}
+	missing := exec.Command(platformUpgradePath(t), "upgrade", "HEAD")
+	repo := filepath.Clean(filepath.Join(filepath.Dir(platformUpgradePath(t)), "..", ".."))
+	missing.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
+	out, err := missing.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "adoption receipt is required") || strings.Contains(string(out), "building") {
+		t.Fatalf("missing receipt did not fail before release preparation: %v %s", err, out)
+	}
+	legacy := exec.Command(platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "x")
+	legacy.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence)
+	out, err = legacy.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "permanently rejects legacy-baseline replay") { t.Fatalf("legacy replay escaped failed fence: %v %s", err, out) }
+}
+
 func TestPlatformUpgradeLegacyBaselineRequiresBackupArtifactBeforeBuild(t *testing.T) {
 	cmd := exec.Command(platformUpgradePath(t), "legacy-baseline", "--legacy-release", strings.Repeat("a", 40), "--backup-proof", "/private/proof.json")
 	out, err := cmd.CombinedOutput()
