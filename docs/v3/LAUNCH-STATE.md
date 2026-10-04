@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-04 22:21 UTC. This is the current handoff for the pragmatic
+Observed 2026-10-04 22:27 UTC. This is the current handoff for the pragmatic
 deployment objective. Recheck each external observation before a mutation;
 links below distinguish live state, protected workflow evidence, and historical
 local work. The [milestone contract](execution-milestones.md) remains the exit
@@ -145,9 +145,14 @@ Tailscale mutation. Its owner-only artifact is retained under
 `pilot261004b` resources across nine DigitalOcean compute categories; it does
 not prove Spaces or DNS zero. A later GET-only inventory listed all three
 account-visible DigitalOcean DNS domains and 13 records with no literal
-`pilot261004b` match. Spaces absence remains unproven: five retained keys
-could not list account buckets, and the token API exposes no bucket-list route.
-Current unit prices yield a provisional $8.97
+`pilot261004b` match. Five retained Spaces keys could not list account buckets,
+and the token API exposes no bucket-list route. In the logged-in DigitalOcean
+Spaces page for account selector `05fe61`, nine buckets were visible and an
+exact `pilot261004b` search returned no matches. Older pilot `261003c`,
+`261001c` and `261001b` state buckets remain visible; do not treat this as
+their cleanup proof. The dashboard observation is point in time and does not
+replace a fresh signed pre-create provider inventory. Current unit prices
+yield a provisional $8.97
 conservative quote for a four-hour maximum shape plus one teardown hour,
 including the full $5 Spaces base. This is not billable approval. Official
 [DigitalOcean Droplet](https://www.digitalocean.com/pricing/droplets),
@@ -279,7 +284,10 @@ cover every M3/M4/M8 exit.
   (286 tests), `successor-pilot261004b/{provider-name-preflight,provisional-price-quote}.json`,
   and `successor-pilot261004b/spaces-dns-get-inventory-20261004T221706Z.json`.
   DNS was listed completely, but current Spaces keys lack account bucket-list
-  access; no complete provider-zero claim follows from these receipts.
+  access. The owner-only
+  `successor-pilot261004b/spaces-dashboard-observation-20261004T2225Z.json`
+  records nine visible buckets and the empty exact-ID search; it is not a
+  signed or create-time provider-zero receipt.
   The provisional quote keeps `billableCreateAllowed=false`; a fresh token and
   run-specific protected approval are still required. Norn signed
   [release run 37237574000](https://github.com/antiartificial/norn/actions/runs/37237574000)
