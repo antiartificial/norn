@@ -426,7 +426,9 @@ general router (Q6). All are POST or GET, so CORS is unchanged (M17).
 |---|---|---|
 | `POST targets` | `platform:operate` (Q7) | Signed op `fleet.target.register` in the existing ledger (m17). Idempotent if identical. |
 | `GET targets/{id}` | `api:read` | Identity, aliases, fence, derived occupancy and reason. |
-| `POST targets/{id}/fence/release` | `admin` (Q7; no step-up, see H3) | Signed op `fleet.target.fence-release`, `{mode: terminal\|abandon, expectedGeneration, reason}`. |
+| `GET targets/{id}/fence` | `api:read` | The fence and derived occupancy only (WP9b). |
+| `POST targets/{id}/fence/release` | `admin` (Q7; no step-up, see H3) | Signed op `fleet.target.fence-release`, `{mode: terminal\|abandon, expectedGeneration, reason}`. The body is intent only; the server gathers the GitHub proof after the scope check (WP9b). |
+| `POST targets/abandon-plan` | `admin` (H7; no step-up) | Signed op `fleet.target.abandon-plan`, `{planId, reason}`; works on plans of unregistered clusters (WP9b). |
 | `GET resources`, `GET resources/{name}` | `api:read` | Freshness re-applied at read time. |
 | `POST resources/{name}/desired` | `api:write` | See 2.3. |
 | `GET resources/{name}/observations` | `api:read` | `limit ≤ 100`. |
@@ -440,6 +442,17 @@ general router (Q6). All are POST or GET, so CORS is unchanged (M17).
 - Every new handler checks scope itself, as the existing Fleet handlers do (`handler/fleet.go:156`).
 - `controlScopeForRequest`'s `/attempts` matcher is narrowed to `strings.HasPrefix(path, "/api/v1/fleet/plans/")`. All current matches are already under that prefix, so existing behavior is unchanged.
 - The capability feature `fleet-resource-v1` is additive.
+
+**Target and release error codes (WP9b).** The target routes return these as 409 `application/problem+json`, with the code in `code`. Each is a `*lifecycle.FenceError` (the generation-mismatch code is defined in `store`). The OpenAPI problem-code enum lists them:
+- `fleet_target_expected_generation_mismatch`: a stale `expectedGeneration`, or a holder that changed while the release was decided.
+- `fleet_target_fence_not_held`
+- `fleet_target_has_live_attempt`
+- `fleet_target_terminal_proof_incomplete`
+- `fleet_target_abandon_too_soon`
+- `fleet_target_abandon_snapshot_required`
+- `fleet_target_release_evidence_mismatch`
+
+Other target-route problems are `fleet_target_not_found` (404), `invalid_fleet_target_id` and `invalid_fleet_target_request` (400), `fleet_github_not_configured` (503, release evidence needs the GitHub App) and `fleet_target_observation_failed` (502, the run listing could not be observed).
 
 **New error codes on existing routes.** All are 409, and they occur only when the registry is non-empty:
 - `fleet_target_execution_occupied`
@@ -777,6 +790,7 @@ general router (Q6). All are POST or GET, so CORS is unchanged (M17).
 
 - **From the WP7 review:** add `DesiredChangeDuringExecutionKeepsBindings` (a desired-revision change mid-execution must not rebind the active plan/dispatch/attempt).
 - **From the WP11 review:** storage (`store/fleet_resources.go`, `etcdstore/v3_fleet_resources.go`) must fill `Input.HolderDispatchRunID` from the dispatch/binding `RunID`, and, when `fence.LastRelease.Reason == "succeeded"`, fill `Input.LastReleaseAttempts` with that plan's attempts (etcd: also compare those attempt keys). Otherwise M11 `lastApplied` never advances. Also: `ProviderStateKnown` must be `Unknown` (reason `TargetIdentityMissing`) when a provider observation carries no `targetId`, per the §2 table (orchestrator decision; adjust `derive.go` and its test).
+- **From the WP9b review:** PG release `now` in `store/fleet_target_mutation.go` (~:371) uses process time; T2 requires DB time (`clock_timestamp()`). Switch it to DB time in the same transaction.
 - **Create:** `fleet/controller/reconciler.go` and tests:
   - `TestReconcilerRetriesThenGivesUp`
   - `TestReconcilerRescanFindsMissedEvent`

@@ -79,7 +79,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return fmt.Errorf("private invocation startup preflight: %w", err)
 	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
-	githubConfig := githubapp.Config{AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID, PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository, Environment: cfg.FleetGitHubEnvironment, PilotRunID: cfg.FleetGitHubPilotRunID, DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath, PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow, APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production()}
+	githubConfig := githubapp.Config{AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID, PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository, Environment: cfg.FleetGitHubEnvironment, PilotRunID: cfg.FleetGitHubPilotRunID, DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath, PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow, RecoverWorkflow: cfg.FleetGitHubRecoverWorkflow, APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production()}
 	var fleetGitHub *githubapp.Client
 	if githubapp.Configured(githubConfig) {
 		fleetGitHub, err = githubapp.New(githubConfig, nil)
@@ -159,6 +159,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if releaseHTTPEnabled {
 		operationRead = etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead, handler.ScopeReleaseStage)
 	}
+	registerEtcdFleetTargetRoutes(router, cfg, identities, operations, fleetGitHub)
 	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
 		fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations, fleetGitHub)
@@ -250,8 +251,8 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 }
 
 func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
-	features := []string{"etcd-normal-router-v1", "fleet-authority-only-v1", "fleet-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "fleet-app-target-configuration", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation"}
-	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetAppTarget": "/api/v1/apps/{id}/fleet-target", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
+	features := []string{"etcd-normal-router-v1", "fleet-authority-only-v1", "fleet-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "fleet-app-target-configuration", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation", "fleet-target-fence-v1"}
+	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetAppTarget": "/api/v1/apps/{id}/fleet-target", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange", "fleetTargets": "/api/v1/fleet/targets"}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
 		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")

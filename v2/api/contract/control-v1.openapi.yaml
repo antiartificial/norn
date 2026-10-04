@@ -345,6 +345,91 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets:
+    post:
+      operationId: registerFleetTarget
+      description: Registers a Fleet target identity with immutable aliases as the signed operation fleet.target.register. Idempotent for an identical target. The body is intent only. Served by the Fleet authority-only router and the etcd Fleet runtime. Requires platform:operate.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetTargetRegisterRequest' }
+      responses:
+        '200': { description: Replay of the same request; the original operation receipt, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201':
+          description: Target registered; the operation ref is the target ID.
+          headers:
+            Location: { schema: { type: string } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/{targetID}:
+    parameters:
+      - { name: targetID, in: path, required: true, schema: { type: string, pattern: '^tgt_[0-9a-f]{64}$' } }
+    get:
+      operationId: getFleetTarget
+      description: Target identity, aliases, mutation fence and derived occupancy. Requires api:read.
+      responses:
+        '200': { description: Target, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTarget' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/{targetID}/fence:
+    parameters:
+      - { name: targetID, in: path, required: true, schema: { type: string, pattern: '^tgt_[0-9a-f]{64}$' } }
+    get:
+      operationId: getFleetTargetFence
+      description: The target's mutation fence and derived occupancy (Free, Active or Uncertain with a reason). Requires api:read.
+      responses:
+        '200': { description: Fence, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTargetFence' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/{targetID}/fence/release:
+    parameters:
+      - { name: targetID, in: path, required: true, schema: { type: string, pattern: '^tgt_[0-9a-f]{64}$' } }
+    post:
+      operationId: releaseFleetTargetFence
+      description: Releases a held fence as the signed operation fleet.target.fence-release. Mode terminal requires the server to observe the bound apply run and every run that hosted an attempt as completed; mode abandon requires the minimum age and a server-observed GitHub run listing snapshot. Either mode also permanently abandons the holder plan. The body carries intent only; proof is never accepted from the client. Requires admin, with no step-up.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetTargetReleaseRequest' }
+      responses:
+        '200': { description: Replay of the same request; the original operation receipt, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Fence released, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/abandon-plan:
+    post:
+      operationId: abandonFleetPlan
+      description: Permanently abandons a plan as the signed operation fleet.target.abandon-plan, whether or not its cluster is registered (H7). Requires the minimum age and a server-observed GitHub run listing snapshot; releases the plan's fence when it holds one. Requires admin, with no step-up.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetTargetAbandonPlanRequest' }
+      responses:
+        '200': { description: Replay of the same request; the original operation receipt, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Plan abandoned, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -1705,6 +1790,62 @@ components:
         requestId: { type: string }
         error: { type: string, deprecated: true }
         eventBounds: { $ref: '#/components/schemas/EventBounds' }
+    FleetTargetRegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, providerAccount, stateBackend, aliases]
+      properties:
+        provider: { type: string }
+        providerAccount: { type: string }
+        stateBackend: { type: string, format: uri, description: Absolute URI without query, fragment or userinfo. }
+        aliases: { type: array, minItems: 1, maxItems: 64, items: { type: string, description: 'cluster:<name> or environment:<lane>' } }
+    FleetTargetReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [mode, expectedGeneration]
+      properties:
+        mode: { type: string, enum: [terminal, abandon] }
+        expectedGeneration: { type: integer, format: int64, minimum: 0 }
+        reason: { type: string, maxLength: 1024 }
+    FleetTargetAbandonPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [planId]
+      properties:
+        planId: { type: string, format: uuid }
+        reason: { type: string, maxLength: 1024 }
+    FleetTargetFence:
+      type: object
+      required: [targetId, generation, held, authorityEpoch, currentAuthorityEpoch, revision, occupancy]
+      properties:
+        targetId: { type: string }
+        generation: { type: integer, format: int64 }
+        held: { type: boolean }
+        holderPlanId: { type: string }
+        authorityEpoch: { type: integer, format: int64 }
+        currentAuthorityEpoch: { type: integer, format: int64 }
+        revision: { type: integer, format: int64 }
+        lastRelease:
+          type: object
+          required: [planId, reason, at]
+          properties:
+            planId: { type: string }
+            reason: { type: string, enum: [succeeded, dispatch_not_submitted, released_terminal, abandoned] }
+            at: { type: string, format: date-time }
+        occupancy: { type: string, enum: [Free, Active, Uncertain] }
+        occupancyReason: { type: string, enum: [DispatchSubmissionUnresolved, NoLiveAttempt, AttemptTerminalWithoutSuccess, AuthoritySuperseded] }
+    FleetTarget:
+      type: object
+      required: [targetId, provider, providerAccount, stateBackend, createdAt, registrationOperationId, aliases, fence]
+      properties:
+        targetId: { type: string }
+        provider: { type: string }
+        providerAccount: { type: string }
+        stateBackend: { type: string }
+        createdAt: { type: string, format: date-time }
+        registrationOperationId: { type: string }
+        aliases: { type: array, items: { type: string } }
+        fence: { $ref: '#/components/schemas/FleetTargetFence' }
     ErrorCode:
       type: string
       description: Stable machine-readable code. Clients must preserve unknown future values.
@@ -1876,6 +2017,26 @@ components:
         - fleet_github_dispatch_failed
         - fleet_github_dispatch_in_progress
         - fleet_github_dispatch_ambiguous
+        - fleet_target_execution_occupied
+        - fleet_target_unregistered
+        - fleet_target_alias_conflict
+        - fleet_target_authority_superseded
+        - fleet_plan_revalidation_required
+        - fleet_target_holder_abandoned
+        - fleet_target_recovery_requires_stopped_source
+        - fleet_target_registration_in_flight
+        - fleet_target_expected_generation_mismatch
+        - fleet_target_fence_not_held
+        - fleet_target_has_live_attempt
+        - fleet_target_terminal_proof_incomplete
+        - fleet_target_abandon_too_soon
+        - fleet_target_abandon_snapshot_required
+        - fleet_target_release_evidence_mismatch
+        - fleet_target_not_found
+        - fleet_target_read_failed
+        - fleet_target_observation_failed
+        - invalid_fleet_target_id
+        - invalid_fleet_target_request
         - fleet_github_receipt_failed
         - fleet_plan_invalid
         - invalid_fleet_github_dispatch

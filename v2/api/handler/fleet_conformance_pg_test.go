@@ -209,6 +209,7 @@ nodePools:
 	}
 	p.h.cfg.FleetConfig = fleetConfig
 	p.router.Post("/api/v1/fleet/plans/{planID}/github/dispatch", p.h.DispatchFleetGitHubApply)
+	mountFleetTargetRoutes(p.router, p.h.FleetTargetRoutes())
 	return p
 }
 
@@ -572,21 +573,14 @@ nodePools:
 }
 
 // The FenceHarness methods below are WP8a's real bodies. RegisterTarget,
-// Release and AbandonPlan call the store primitives directly (there is no
-// signed HTTP target/release route yet: WP9a/b land after WP8a per plan.md
-// §3's order) rather than a route; Dispatch and Start/Recover (inherited
-// from LifecycleHarness) drive the real HTTP dispatch/attempt routes.
+// Release and AbandonPlan drive the real signed WP9b routes, so the server
+// gathers its own release evidence through the WP5 observers against the
+// fake GitHub server; Dispatch and Start/Recover (inherited from
+// LifecycleHarness) drive the real HTTP dispatch/attempt routes.
 
 func (p *pgLifecycleHarness) RegisterTarget(identity lifecycle.TargetIdentity, aliases []string) fleettest.TargetResp {
 	p.t.Helper()
-	target, err := p.db.RegisterFleetTarget(context.Background(), identity, aliases, "op-register-"+uuid.NewString())
-	if err != nil {
-		if fe, ok := err.(*lifecycle.FenceError); ok {
-			return fleettest.TargetResp{HTTPStatus: http.StatusConflict, Code: fe.Code}
-		}
-		p.t.Fatalf("register target: %v", err)
-	}
-	return fleettest.TargetResp{HTTPStatus: http.StatusCreated, TargetID: target.TargetID}
+	return fleetTargetRegisterResp(p.router, identity, aliases)
 }
 
 // Dispatch is the fence Acquire transition (plan.md §2.2). It writes plan's
@@ -757,164 +751,18 @@ func (p *pgLifecycleHarness) AdvanceEpoch(expected int64, reason string) (int64,
 	return p.db.AdvanceFleetAuthorityEpoch(context.Background(), expected, reason)
 }
 
-// buildTerminalProof gathers release evidence server-side through the WP5
-// observers (never trusted from a caller): it never reads anything the
-// suite supplied directly, only what SetRunTerminal configured on the fake
-// GitHub server and what the durable dispatch/attempt rows already record.
-func (p *pgLifecycleHarness) buildTerminalProof(ctx context.Context, fence lifecycle.FenceFacts, holder lifecycle.HolderFacts) *lifecycle.TerminalProof {
-	proof := &lifecycle.TerminalProof{CompletedRunnerAttemptIDs: map[string]bool{}}
-	dispatch, err := p.db.GetFleetGitHubDispatch(ctx, fence.HolderPlanID)
-	if err == nil && dispatch.RunID > 0 {
-		approved := &githubapp.Dispatch{RunID: dispatch.RunID, PlanRunID: dispatch.PlanRunID, PlanSHA: dispatch.PlanSHA256, ApprovedHeadSHA: dispatch.ApprovedHeadSHA, PilotRunID: dispatch.PilotRunID}
-		if obs, obsErr := p.h.fleetGitHub.ObserveApplyRunByNonceHash(ctx, fence.HolderPlanID, dispatch.FleetEnvironment, approved, dispatch.DispatchNonceSHA256, int64(dispatch.RunAttempt)); obsErr == nil && obs.Status == "completed" {
-			proof.BoundApplyRunCompleted = true
-		}
-		for _, a := range holder.Attempts {
-			if a.RunnerAttemptID == "" {
-				continue
-			}
-			_, runID, runAttempt, ok := parseFleetRunnerAttemptID(a.RunnerAttemptID)
-			if !ok {
-				continue
-			}
-			if a.RetryOf == "" {
-				if obs, obsErr := p.h.fleetGitHub.ObserveApplyRunByNonceHash(ctx, fence.HolderPlanID, dispatch.FleetEnvironment, approved, dispatch.DispatchNonceSHA256, runAttempt); obsErr == nil && obs.Status == "completed" {
-					proof.CompletedRunnerAttemptIDs[a.RunnerAttemptID] = true
-				}
-				continue
-			}
-			if obs, obsErr := p.h.fleetGitHub.ObserveRecoverRun(ctx, dispatch.RunID, dispatch.DispatchNonceSHA256, runID, runAttempt, a.CommitSHA); obsErr == nil && obs.Status == "completed" {
-				proof.CompletedRunnerAttemptIDs[a.RunnerAttemptID] = true
-			}
-		}
-	}
-	runs, err := p.h.fleetGitHub.ListPlanRuns(ctx, fence.HolderPlanID)
-	if err != nil {
-		p.t.Fatalf("list plan runs for the release snapshot: %v", err)
-	}
-	encoded, err := json.Marshal(runs)
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	sum := sha256.Sum256(encoded)
-	proof.ListingSnapshotSHA256 = hex.EncodeToString(sum[:])
-	return proof
-}
-
-// Release calls the signed fence-release route's intended behavior directly
-// against the store (plan.md §2.5's route lands in WP9b, after WP8a per
-// plan.md §3's order): it re-derives fence and holder facts under the fence
-// FOR UPDATE and runs the exact lifecycle.DecideRelease transition a real
-// route would, with no proof accepted from the caller.
+// Release drives POST targets/{id}/fence/release. The request carries intent
+// only; the server gathers the proof (plan.md WP9b, B2).
 func (p *pgLifecycleHarness) Release(targetID string, mode lifecycle.ReleaseMode, expectedGeneration int64) fleettest.Resp {
 	p.t.Helper()
-	ctx := context.Background()
-	tx, err := p.db.Pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	fence, err := store.GetFleetTargetFence(ctx, tx, targetID, true)
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	if fence.Generation != expectedGeneration {
-		return fleettest.Resp{HTTPStatus: http.StatusConflict, Code: "fleet_target_expected_generation_mismatch"}
-	}
-	holder, err := store.FleetTargetHolderFacts(ctx, tx, fence.HolderPlanID)
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	// A free fence has no holder to observe; DecideRelease refuses it as
-	// not held before it would ever read a proof.
-	var proof *lifecycle.TerminalProof
-	if fence.Held {
-		proof = p.buildTerminalProof(ctx, fence, holder)
-	}
-	var now time.Time
-	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
-		p.t.Fatal(err)
-	}
-	next, relErr := lifecycle.DecideRelease(fence, holder, mode, proof, now)
-	if relErr != nil {
-		fe, _ := relErr.(*lifecycle.FenceError)
-		code := ""
-		if fe != nil {
-			code = fe.Code
-		}
-		return fleettest.Resp{HTTPStatus: http.StatusConflict, Code: code}
-	}
-	// Terminal and abandon both permanently abandon the holder plan (m16/B1).
-	if mode == lifecycle.ReleaseModeAbandon || mode == lifecycle.ReleaseModeTerminal {
-		if err := store.AbandonFleetPlan(ctx, tx, fence.HolderPlanID, fence.HolderNonceSHA256, targetID, "op-release-abandon-"+uuid.NewString(), now); err != nil {
-			p.t.Fatal(err)
-		}
-	}
-	if err := store.PutFleetTargetFence(ctx, tx, next); err != nil {
-		p.t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		p.t.Fatal(err)
-	}
-	return fleettest.Resp{HTTPStatus: http.StatusCreated}
+	return fleetTargetReleaseResp(p.router, targetID, mode, expectedGeneration)
 }
 
-// AbandonPlan is H7's plan-keyed break-glass abandon, which works whether
-// or not plan's cluster is registered. When a target is currently held by
-// plan it is released exactly as Release(mode=abandon) would (no caller-
-// supplied generation to check, since this route is keyed by plan); when no
-// target is held (including "never registered"), it only writes the
-// abandoned-plans record.
+// AbandonPlan drives POST targets/abandon-plan (H7), which works whether or
+// not the plan's cluster is registered.
 func (p *pgLifecycleHarness) AbandonPlan(plan fleettest.PlanRef) fleettest.Resp {
 	p.t.Helper()
-	ctx := context.Background()
-	nonce := ""
-	if dispatch, err := p.db.GetFleetGitHubDispatch(ctx, plan.ID); err == nil {
-		nonce = dispatch.DispatchNonceSHA256
-	}
-	tx, err := p.db.Pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	targetID, fence, _, err := store.LockHeldFleetTargetFenceForPlan(ctx, tx, plan.ID, true)
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	synthetic := fence
-	if targetID == "" {
-		synthetic = lifecycle.FenceFacts{Held: true, HolderPlanID: plan.ID, HolderNonceSHA256: nonce}
-	}
-	holder, err := store.FleetTargetHolderFacts(ctx, tx, plan.ID)
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	proof := p.buildTerminalProof(ctx, synthetic, holder)
-	var now time.Time
-	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
-		p.t.Fatal(err)
-	}
-	next, relErr := lifecycle.DecideRelease(synthetic, holder, lifecycle.ReleaseModeAbandon, proof, now)
-	if relErr != nil {
-		fe, _ := relErr.(*lifecycle.FenceError)
-		code := ""
-		if fe != nil {
-			code = fe.Code
-		}
-		return fleettest.Resp{HTTPStatus: http.StatusConflict, Code: code}
-	}
-	if err := store.AbandonFleetPlan(ctx, tx, plan.ID, nonce, targetID, "op-abandon-plan-"+uuid.NewString(), now); err != nil {
-		p.t.Fatal(err)
-	}
-	if targetID != "" {
-		if err := store.PutFleetTargetFence(ctx, tx, next); err != nil {
-			p.t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		p.t.Fatal(err)
-	}
-	return fleettest.Resp{HTTPStatus: http.StatusCreated}
+	return fleetTargetAbandonPlanResp(p.router, plan.ID)
 }
 
 // AgeHolder backdates every timestamp DecideRelease's abandon baseline
@@ -983,6 +831,9 @@ func (p *pgLifecycleHarness) SetRunTerminal(run fleettest.RunRef, completed bool
 // per-case harness factory (newPGFenceHarness), matching
 // RunFleetFenceConformance's "fresh backend per case" contract.
 func TestFleetFenceConformancePostgres(t *testing.T) {
+	requireRoutesRegistered(t, "../main.go", pgFleetTargetRoutes, func(route [3]string) string {
+		return fmt.Sprintf("r.%s(%q, fleetTargets.%s)", route[0], route[1], route[2])
+	})
 	fleettest.RunFleetFenceConformance(t, func(t *testing.T) fleettest.FenceHarness {
 		return newPGFenceHarness(t)
 	})

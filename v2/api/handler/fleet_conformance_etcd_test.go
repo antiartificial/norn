@@ -152,12 +152,41 @@ func newEtcdLifecycleHarness(t *testing.T, client *clientv3.Client, prefix strin
 	for _, route := range etcdFleetRunnerRoutes {
 		router.MethodFunc(strings.ToUpper(route[0]), route[1], handlers[route[2]])
 	}
-	return &etcdLifecycleHarness{
+	harness := &etcdLifecycleHarness{
 		t: t, operations: operations, fleetHandler: fleetHandler, router: router,
 		auditKey: auditKey, authority: authority,
 		dispatch: map[string]*etcdConformanceDispatch{}, planDigest: map[string]string{}, ciForAttempt: map[string]*CIIdentity{},
 		fenceFixtures: map[string]*etcdFenceFixture{}, runTerminal: map[string]bool{},
 	}
+	// etcd_fleet_targets.go (package main) mounts the same routes behind
+	// etcdManagedTokenAuth; the harness injects the principal it would attach.
+	mountFleetTargetRoutes(router, NewEtcdFleetTargetRoutes(cfg, operations, etcdConformanceObserver{harness}))
+	return harness
+}
+
+// etcdConformanceObserver is the fake WP5 observer behind the etcd target
+// routes: a run is completed exactly when SetRunTerminal marked it so, and
+// the run listing is always empty (an "absent" snapshot).
+type etcdConformanceObserver struct{ e *etcdLifecycleHarness }
+
+func (o etcdConformanceObserver) observation(runID, runAttempt int64) (*githubapp.ApplyRunObservation, error) {
+	status := "in_progress"
+	if o.e.runTerminal[runKey(runID, int(runAttempt))] {
+		status = "completed"
+	}
+	return &githubapp.ApplyRunObservation{RunID: runID, RunAttempt: runAttempt, Status: status}, nil
+}
+
+func (o etcdConformanceObserver) ObserveApplyRunByNonceHash(_ context.Context, _, _ string, approved *githubapp.Dispatch, _ string, runAttempt int64) (*githubapp.ApplyRunObservation, error) {
+	return o.observation(approved.RunID, runAttempt)
+}
+
+func (o etcdConformanceObserver) ObserveRecoverRun(_ context.Context, _ int64, _ string, runID, runAttempt int64, _ string) (*githubapp.ApplyRunObservation, error) {
+	return o.observation(runID, runAttempt)
+}
+
+func (o etcdConformanceObserver) ListPlanRuns(context.Context, string) ([]githubapp.RunSummary, error) {
+	return nil, nil
 }
 
 func (e *etcdLifecycleHarness) Profile() lifecycle.Profile { return lifecycle.V3 }
@@ -402,16 +431,12 @@ func etcdAttemptResp(rec *httptest.ResponseRecorder) fleettest.Resp {
 	return fleettest.Resp{HTTPStatus: rec.Code, Attempt: &attempt}
 }
 
-// The FenceHarness methods below are WP8b's real bodies. There is no signed
-// `fleet.target.fence-release`/registration operation or HTTP route yet
-// (those are WP9a/b, which land after WP8a/WP8b per plan.md §3's order), so
-// RegisterTarget/Release/AbandonPlan call the storage-level transitions this
-// WP adds directly (etcdstore/v3_fleet_fence.go), the same way SeedDispatch
-// above already calls AcceptFleetGitHubDispatch/FinishFleetGitHubDispatch
-// directly rather than through etcd_fleet_github_dispatch.go's HTTP handler
-// (package main, which this test package cannot import). Dispatch exercises
-// that same real acquire transition for real: it is the one FenceHarness
-// method that must observe the fence's actual behavior, not a shortcut.
+// The FenceHarness methods below are WP8b's real bodies. RegisterTarget,
+// Release and AbandonPlan drive the real signed WP9b routes (with a fake WP5
+// observer, since the server gathers its own proof). Dispatch still calls
+// AcceptFleetGitHubDispatch/FinishFleetGitHubDispatch directly rather than
+// etcd_fleet_github_dispatch.go's HTTP handler (package main, which this test
+// package cannot import); it exercises the real acquire transition.
 
 // fenceErrResp maps a fence-domain error to a backend-neutral Resp. Every
 // refusal this WP's storage functions return is either a *lifecycle.FenceError
@@ -433,11 +458,6 @@ func fenceErrResp(err error, successStatus int) fleettest.Resp {
 	return fleettest.Resp{HTTPStatus: http.StatusInternalServerError, Code: "fleet_target_fence_failed"}
 }
 
-// etcdConformanceListingSnapshotSHA256 stands in for the fake GitHub run
-// listing snapshot digest a real abandon release stores as evidence
-// (DecideRelease's ListingSnapshotSHA256).
-var etcdConformanceListingSnapshotSHA256 = "sha256:" + strings.Repeat("9", 64)
-
 func (e *etcdLifecycleHarness) RegisterTarget(identity lifecycle.TargetIdentity, aliases []string) fleettest.TargetResp {
 	e.t.Helper()
 	mapped := make([]string, len(aliases))
@@ -447,13 +467,7 @@ func (e *etcdLifecycleHarness) RegisterTarget(identity lifecycle.TargetIdentity,
 		}
 		mapped[i] = alias
 	}
-	target, err := e.operations.RegisterFleetTarget(context.Background(), identity, mapped, uuid.NewString())
-	resp := fenceErrResp(err, http.StatusCreated)
-	out := fleettest.TargetResp{HTTPStatus: resp.HTTPStatus, Code: resp.Code}
-	if err == nil {
-		out.TargetID = target.TargetID
-	}
-	return out
+	return fleetTargetRegisterResp(e.router, identity, mapped)
 }
 
 func runKey(runID int64, runAttempt int) string { return fmt.Sprintf("%d:%d", runID, runAttempt) }
@@ -478,30 +492,6 @@ func runIDAttemptFromRunnerID(runnerID string) (int64, int, bool) {
 
 func (e *etcdLifecycleHarness) SetRunTerminal(run fleettest.RunRef, completed bool) {
 	e.runTerminal[runKey(run.RunID, run.RunAttempt)] = completed
-}
-
-// buildTerminalProof assembles lifecycle.TerminalProof for a terminal
-// release from the fake observer state SetRunTerminal configured: the bound
-// apply run (dispatch, if any) plus every one of holderPlanID's attempts
-// whose own (runID, runAttempt) was marked terminal.
-func (e *etcdLifecycleHarness) buildTerminalProof(ctx context.Context, holderPlanID string) (*lifecycle.TerminalProof, error) {
-	proof := &lifecycle.TerminalProof{CompletedRunnerAttemptIDs: map[string]bool{}}
-	if dispatch, ok := e.dispatch[holderPlanID]; ok {
-		proof.BoundApplyRunCompleted = e.runTerminal[runKey(dispatch.runID, 1)]
-	}
-	if holderPlanID == "" {
-		return proof, nil
-	}
-	attempts, err := e.operations.ListFleetRunnerAttempts(ctx, holderPlanID)
-	if err != nil {
-		return nil, err
-	}
-	for _, a := range attempts {
-		if runID, runAttempt, ok := runIDAttemptFromRunnerID(a.RunnerAttemptID); ok && e.runTerminal[runKey(runID, runAttempt)] {
-			proof.CompletedRunnerAttemptIDs[a.RunnerAttemptID] = true
-		}
-	}
-	return proof, nil
 }
 
 func (e *etcdLifecycleHarness) Dispatch(plan fleettest.PlanRef, startedAt time.Time, outcome fleettest.GitHubOutcome) (fleettest.Resp, fleettest.DispatchRef) {
@@ -591,34 +581,12 @@ func (e *etcdLifecycleHarness) AdvanceEpoch(expected int64, reason string) (int6
 
 func (e *etcdLifecycleHarness) Release(targetID string, mode lifecycle.ReleaseMode, expectedGeneration int64) fleettest.Resp {
 	e.t.Helper()
-	ctx := context.Background()
-	fence, _, err := e.operations.GetFleetTargetFence(ctx, targetID)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	var proof *lifecycle.TerminalProof
-	switch mode {
-	case lifecycle.ReleaseModeTerminal:
-		proof, err = e.buildTerminalProof(ctx, fence.HolderPlanID)
-		if err != nil {
-			e.t.Fatal(err)
-		}
-	case lifecycle.ReleaseModeAbandon:
-		proof = &lifecycle.TerminalProof{ListingSnapshotSHA256: etcdConformanceListingSnapshotSHA256}
-	}
-	_, releaseErr := e.operations.ReleaseFleetTargetFence(ctx, targetID, expectedGeneration, mode, proof, uuid.NewString(), time.Now().UTC())
-	return fenceErrResp(releaseErr, http.StatusOK)
+	return fleetTargetReleaseResp(e.router, targetID, mode, expectedGeneration)
 }
 
 func (e *etcdLifecycleHarness) AbandonPlan(plan fleettest.PlanRef) fleettest.Resp {
 	e.t.Helper()
-	fixture := e.fenceFixtures[plan.ID]
-	cluster, environment, nonceSHA256 := "", "", ""
-	if fixture != nil {
-		cluster, environment, nonceSHA256 = fixture.cluster, fixture.environment, fixture.nonceSHA256
-	}
-	err := e.operations.AbandonFleetTargetPlan(context.Background(), plan.ID, nonceSHA256, cluster, environment, uuid.NewString(), etcdConformanceListingSnapshotSHA256, time.Now().UTC())
-	return fenceErrResp(err, http.StatusOK)
+	return fleetTargetAbandonPlanResp(e.router, plan.ID)
 }
 
 func (e *etcdLifecycleHarness) AgeHolder(plan fleettest.PlanRef, by time.Duration) {
@@ -649,6 +617,10 @@ func (e *etcdLifecycleHarness) FenceFacts(targetID string) lifecycle.FenceFacts 
 // (plan.md §3's "Depends: WP4, WP6" and WP7's FenceHarness contract: "newHarness
 // must sit on a fresh, isolated backend... for every case").
 func TestFleetFenceConformanceEtcd(t *testing.T) {
+	requireRoutesRegistered(t, "../etcd_fleet_targets.go", etcdFleetTargetRoutes, func(route [4]string) string {
+		return fmt.Sprintf("router.With(%s).%s(%q, fleetTargets.%s)", route[3], route[0], route[1], route[2])
+	})
+	requireRoutesRegistered(t, "../etcd_fleet_runtime.go", []string{"registerEtcdFleetTargetRoutes(router, cfg, identities, operations, fleetGitHub)"}, func(line string) string { return line })
 	fleettest.RunFleetFenceConformance(t, func(t *testing.T) fleettest.FenceHarness {
 		client, prefix := integrationtest.Etcd(t)
 		return newEtcdLifecycleHarness(t, client, prefix)

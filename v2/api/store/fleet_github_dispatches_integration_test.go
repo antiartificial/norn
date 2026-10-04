@@ -338,3 +338,75 @@ func TestFleetGitHubDispatchRerunGenerationsAndPreparedResetAreFenced(t *testing
 		t.Fatalf("pre-submit retry reset = %+v, %v", prepared, err)
 	}
 }
+
+// TestFleetGitHubDispatchAcquireConcurrentAbandonNeverLeavesAbandonedHolder
+// pins the WP9b acquire lock order: a plan-keyed abandon of a plan that does
+// not hold the (free) fence locks no fence row, so acquire must serialize
+// with it on the plan advisory lock. The abandon transaction is held open
+// while acquire runs; acquire must wait, then refuse as abandoned, and the
+// fence must end free.
+func TestFleetGitHubDispatchAcquireConcurrentAbandonNeverLeavesAbandonedHolder(t *testing.T) {
+	db := isolatedMigrationDB(t)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	identity := lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "abandon-race", StateBackend: "s3://abandon-race/state"}
+	target, err := db.RegisterFleetTarget(ctx, identity, []string{"cluster:abandon-race"}, "op-abandon-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := fleetFenceTestPlan(t, db, ctx, "abandon-race")
+	nonce := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if _, err := db.CreateFleetGitHubDispatch(ctx, FleetGitHubDispatch{
+		PlanID: planID, PlanRunID: 1, PlanSHA256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ApprovedHeadSHA: "dddddddddddddddddddddddddddddddddddddddd", FleetEnvironment: "staging", DispatchNonceSHA256: nonce,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	abandonTx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = abandonTx.Rollback(ctx) }()
+	proof := &lifecycle.TerminalProof{ListingSnapshotSHA256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+	// now is past AbandonMinimumAge from the dispatch's creation.
+	if err := abandonFleetPlanTx(ctx, abandonTx, planID, proof, "op-abandon-race-release", time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("abandon: %v", err)
+	}
+
+	type result struct {
+		dispatch *FleetGitHubDispatch
+		err      error
+	}
+	acquired := make(chan result, 1)
+	go func() {
+		dispatch, err := db.MarkFleetGitHubDispatchSubmittingFenced(ctx, planID, nonce, "abandon-race", "", time.Now().UTC())
+		acquired <- result{dispatch, err}
+	}()
+	select {
+	case got := <-acquired:
+		t.Fatalf("acquire did not wait for the uncommitted abandon: %+v, %v", got.dispatch, got.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := abandonTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var got result
+	select {
+	case got = <-acquired:
+	case <-time.After(30 * time.Second):
+		t.Fatal("acquire did not finish after the abandon committed")
+	}
+	if fe, ok := got.err.(*lifecycle.FenceError); !ok || fe.Code != lifecycle.CodeFleetTargetHolderAbandoned {
+		t.Fatalf("acquire after a concurrent abandon = %+v, %v; want %s", got.dispatch, got.err, lifecycle.CodeFleetTargetHolderAbandoned)
+	}
+	if fence := mustGetFleetTargetFenceRow(t, db, target.TargetID); fence.Held {
+		t.Fatalf("fence is held after a concurrent abandon: %+v", fence)
+	}
+	dispatch, err := db.GetFleetGitHubDispatch(ctx, planID)
+	if err != nil || dispatch.DispatchState != "prepared" {
+		t.Fatalf("refused acquire changed the dispatch row: %+v, %v", dispatch, err)
+	}
+}

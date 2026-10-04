@@ -119,27 +119,39 @@ func (db *DB) MarkFleetGitHubDispatchSubmitting(ctx context.Context, planID, non
 
 // MarkFleetGitHubDispatchSubmittingFenced is MarkFleetGitHubDispatchSubmitting
 // plus the target mutation fence's Acquire transition (plan.md §2.2): inside
-// one transaction, it refuses an abandoned plan, then (when the registry is
-// non-empty) locks cluster/environment's fence FOR UPDATE and runs
-// lifecycle.DecideAcquire before the dispatch row's own fence transitions to
-// submitting. When the registry is empty this is byte-identical to
-// MarkFleetGitHubDispatchSubmitting (Q1).
+// one transaction, it takes the plan advisory lock, (when the registry is
+// non-empty) locks cluster/environment's fence FOR UPDATE, refuses an
+// abandoned plan, and runs lifecycle.DecideAcquire before the dispatch row's
+// own fence transitions to submitting. When the registry is empty its
+// dispatch-row effect is identical to MarkFleetGitHubDispatchSubmitting (Q1).
 func (db *DB) MarkFleetGitHubDispatchSubmittingFenced(ctx context.Context, planID, nonceHash, cluster, environment string, planStartedAt time.Time) (*FleetGitHubDispatch, error) {
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Lock order position 1: the plan advisory lock serializes acquire with
+	// the plan-keyed abandon (abandonFleetPlanTx), which takes the same lock
+	// but does not lock a fence its plan does not hold. Without it, an acquire
+	// of a free fence could read "not abandoned" before a concurrent abandon
+	// commits and leave the fence held by an abandoned plan.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "norn:fleet-attempt:"+planID); err != nil {
+		return nil, err
+	}
+	_, fence, epoch, registryEmpty, err := LockFleetTargetFenceForPlan(ctx, tx, cluster, environment, true)
+	if err != nil {
+		return nil, err
+	}
+	// The abandoned check follows the advisory lock and the fence FOR UPDATE
+	// (lock order positions 1 and 4), so a concurrent abandon of this plan or
+	// release of this fence has either committed (and is visible here) or not
+	// started: the fence can never be left held by an abandoned plan.
 	abandoned, err := IsFleetPlanAbandoned(ctx, tx, planID)
 	if err != nil {
 		return nil, err
 	}
 	if abandoned {
 		return nil, &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetHolderAbandoned}
-	}
-	_, fence, epoch, registryEmpty, err := LockFleetTargetFenceForPlan(ctx, tx, cluster, environment, true)
-	if err != nil {
-		return nil, err
 	}
 	if !registryEmpty {
 		next, decErr := lifecycle.DecideAcquire(fence, planID, nonceHash, planStartedAt, epoch)
@@ -174,16 +186,19 @@ func (db *DB) MarkFleetGitHubDispatchRerunSubmittingFenced(ctx context.Context, 
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	_, fence, epoch, registryEmpty, err := LockFleetTargetFenceForPlan(ctx, tx, cluster, environment, true)
+	if err != nil {
+		return nil, err
+	}
+	// The abandoned check follows the fence FOR UPDATE (lock order position 4),
+	// so a concurrent abandon that already holds or has committed this fence
+	// is always visible: the fence can never be left held by an abandoned plan.
 	abandoned, err := IsFleetPlanAbandoned(ctx, tx, planID)
 	if err != nil {
 		return nil, err
 	}
 	if abandoned {
 		return nil, &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetHolderAbandoned}
-	}
-	_, fence, epoch, registryEmpty, err := LockFleetTargetFenceForPlan(ctx, tx, cluster, environment, true)
-	if err != nil {
-		return nil, err
 	}
 	if !registryEmpty {
 		// M5: a rerun never acquires a free fence; it only re-asserts one
