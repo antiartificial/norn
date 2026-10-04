@@ -13,6 +13,13 @@ with reviewed immutable identities, configure the destination database and
 persistent file volume, then explicitly admit writes only for the current
 owner. The web, worker, and tick commands all refuse writes when fenced.
 Never set `WRITE_ENABLED=true` on source and target at the same time.
+The `norn.app/v2` named `primary` database requires an active catalog with a
+binding for the selected `NORN_DATABASE_PROFILE` on each control plane, plus a
+private `NORN_DATABASE_SECRET_DIR` for its referenced credentials. Verify these
+at Mini and Fleet separately before submitting the fixture InfraSpec; an
+unset profile refuses v2 app admission rather than falling back to the Mini's
+legacy ambient PostgreSQL connection. Keep the source and target database
+identities distinct.
 The image seeds `/data` as mode `0700`, owned by the distroless `nonroot`
 identity (UID/GID `65532`), so an empty Docker named volume receives usable
 ownership on first mount. A Nomad host volume is a bind mount and replaces
