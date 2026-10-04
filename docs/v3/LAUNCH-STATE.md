@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-04 21:55 UTC. This is the current handoff for the pragmatic
+Observed 2026-10-04 22:21 UTC. This is the current handoff for the pragmatic
 deployment objective. Recheck each external observation before a mutation;
 links below distinguish live state, protected workflow evidence, and historical
 local work. The [milestone contract](execution-milestones.md) remains the exit
@@ -143,7 +143,11 @@ passed on current `daf7bf3` with 286 bounded tests and no cloud, OIDC or
 Tailscale mutation. Its owner-only artifact is retained under
 `qualification-daf7-37237586889/`. A read-only name inventory found no
 `pilot261004b` resources across nine DigitalOcean compute categories; it does
-not prove Spaces or DNS zero. Current unit prices yield a provisional $8.97
+not prove Spaces or DNS zero. A later GET-only inventory listed all three
+account-visible DigitalOcean DNS domains and 13 records with no literal
+`pilot261004b` match. Spaces absence remains unproven: five retained keys
+could not list account buckets, and the token API exposes no bucket-list route.
+Current unit prices yield a provisional $8.97
 conservative quote for a four-hour maximum shape plus one teardown hour,
 including the full $5 Spaces base. This is not billable approval. Official
 [DigitalOcean Droplet](https://www.digitalocean.com/pricing/droplets),
@@ -152,9 +156,13 @@ including the full $5 Spaces base. This is not billable approval. Official
 and [Spaces](https://docs.digitalocean.com/products/spaces/details/pricing/)
 rates were checked on 2026-10-04. Norn
 [release run 37237574000](https://github.com/antiartificial/norn/actions/runs/37237574000)
-built all four platform bundles for exact source `c56fa0c` and is waiting for
-the protected publish review. No signed `c56fa0c` release has been published
-or promoted yet.
+passed its protected publish review and completed successfully. The immutable
+[platform-c56fa0c release](https://github.com/antiartificial/norn/releases/tag/platform-c56fa0cbef322d44abf905a423bea72df26292b2)
+targets the exact bridge-fix commit and contains four bundles, each with a
+manifest, signature and SBOM. All four archives passed the exact release
+verifier using the Mini's pinned Ed25519 public key. It has not been promoted
+to Mini or a new management authority; publication alone is not Fleet
+fitness evidence.
 
 ## Milestone reconciliation
 
@@ -205,7 +213,8 @@ cover every M3/M4/M8 exit.
    credentials, backend and management bootstrap, a fresh signed Norn release,
    a protected plan,
    and a guarded apply. Do not reuse this destroyed state, runner or expired
-   approvals. Watch the numbered attempt and checkpoints; verify three etcd
+   approvals. The exact `c56fa0c` signed release is now published for the new
+   authority. Watch the numbered attempt and checkpoints; verify three etcd
    members, Consul/Nomad enrollment, both ingresses and public TLS, then run
    the bounded workload/fault matrix and retire it within its own envelope.
    The attempted apply run 37233379210 is evidence of a pre-provider failure,
@@ -267,11 +276,18 @@ cover every M3/M4/M8 exit.
   yet deployed on Mini or a new management authority.
 - Successor preflight: protected [qualification run 37237586889](https://github.com/antiartificial/norn-fleet/actions/runs/37237586889),
   owner-only `qualification-daf7-37237586889/pre-release-pilot-qualification.json`
-  (286 tests), and `successor-pilot261004b/{provider-name-preflight,provisional-price-quote}.json`.
+  (286 tests), `successor-pilot261004b/{provider-name-preflight,provisional-price-quote}.json`,
+  and `successor-pilot261004b/spaces-dns-get-inventory-20261004T221706Z.json`.
+  DNS was listed completely, but current Spaces keys lack account bucket-list
+  access; no complete provider-zero claim follows from these receipts.
   The provisional quote keeps `billableCreateAllowed=false`; a fresh token and
   run-specific protected approval are still required. Norn signed
   [release run 37237574000](https://github.com/antiartificial/norn/actions/runs/37237574000)
-  is waiting at its protected publish gate after four successful bundle jobs.
+  completed after protected review and published the exact `c56fa0c` release;
+  all four downloaded bundles passed verification with Mini's pinned release
+  public key. The owner-only
+  `successor-pilot261004b/platform-c56fa0cb-release-verification.txt` records
+  the digests and checks; runtime promotion is still pending.
 - `pilot261003d` emergency retirement: owner-only local incident record at
   `/Users/arti/.config/norn/fleet-next-full-e2e/incident-retirement-pilot261003d/`,
   especially `status-20261004T0918Z.json`, management state/provider-zero
