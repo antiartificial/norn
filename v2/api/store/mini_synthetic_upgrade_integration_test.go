@@ -144,8 +144,9 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 		t.Fatalf("publish successor migration blocked previous stage-successor binary: %v", err)
 	}
 	// Migration 45 accounts for private release attestations in a database
-	// trigger, including inserts by an older writer. The writer-31 rollback
-	// contract must therefore remain valid after the additive migration.
+	// trigger, including inserts by an older writer. Migration 48 then raises
+	// the writer floor to the Fleet target fence writer (H1), so the writer-31
+	// rollback contract ends once the latest migrations apply.
 	migrator, err = NewControlSchemaMigrator(&DB{Pool: pool})
 	if err != nil {
 		t.Fatal(err)
@@ -155,8 +156,9 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if status, err = migrator.Migrate(ctx); err != nil || status.CurrentMigrationVersion != latestVersion || len(status.AppliedVersions) != remainingMigrations {
 		t.Fatalf("additive migrations 45-%d status=%+v err=%v", latestVersion, status, err)
 	}
-	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); err != nil {
-		t.Fatalf("additive attestation reserve blocked previous writer: %v", err)
+	var fencedWriter *SchemaCompatibilityError
+	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); !errors.As(err, &fencedWriter) || fencedWriter.Contract != "writer" || fencedWriter.Required != FleetTargetFenceWriterVersion {
+		t.Fatalf("previous writer after migration 48 = %T %v, want writer %d refusal", err, err, FleetTargetFenceWriterVersion)
 	}
 	// Migration 21 retires the preceding reader contract because it cannot
 	// decode function evidence bundles. A rollback to that reader must refuse
@@ -188,7 +190,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = oldWriter.Check(ctx, SchemaAccessReadWrite)
-	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != SnapshotExportIntentWriterVersion {
+	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != FleetTargetFenceWriterVersion {
 		t.Fatalf("old writer check = %T %v, want writer compatibility refusal", err, err)
 	}
 	if _, err := migrator.Check(ctx, SchemaAccessReadWrite); err != nil {
