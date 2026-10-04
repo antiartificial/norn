@@ -1254,6 +1254,64 @@ legacy_baseline_require_drained() {
   log "legacy operation drain clear"
 }
 
+legacy_baseline_require_durable_startup_mode() {
+  local launch_state
+  require_cmd launchctl
+  if ! launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+    fail "legacy-baseline cannot inspect launchd service $launch_label"
+  fi
+  NORN_LEGACY_LAUNCH_STATE="$launch_state" python3 - "$api_env_file" "$sops_bin" <<'PY' || fail "legacy-baseline requires durable launcher configuration for NORN_STARTUP_MODE=active and NORN_SCHEMA_MODE=check before fencing"
+import ast
+import json
+import os
+import plistlib
+import re
+import subprocess
+import sys
+
+text = os.environ["NORN_LEGACY_LAUNCH_STATE"]
+env_file, sops_bin = sys.argv[1:]
+path_matches = re.findall(r"^\s*path\s*=\s*(.+?)\s*$", text, re.MULTILINE)
+if len(path_matches) != 1:
+    raise SystemExit("loaded LaunchAgent does not expose one durable plist path")
+with open(path_matches[0], "rb") as source:
+    plist = plistlib.load(source)
+durable = {str(k): str(v) for k, v in plist.get("EnvironmentVariables", {}).items()}
+arguments = plist.get("ProgramArguments")
+if not isinstance(arguments, list) or not arguments or not isinstance(arguments[0], str):
+    raise SystemExit("LaunchAgent plist has no durable launcher program")
+with open(arguments[0], encoding="utf-8") as source:
+    tree = ast.parse(source.read())
+launcher_env = None
+has_decrypt = False
+has_execve = False
+for node in ast.walk(tree):
+    if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "env_file" for target in node.targets):
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            launcher_env = value.value
+        elif isinstance(value, ast.Call) and value.args and isinstance(value.args[0], ast.Constant) and isinstance(value.args[0].value, str):
+            launcher_env = value.args[0].value
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr == "check_output":
+            has_decrypt = any(isinstance(item, ast.Constant) and item.value == "--decrypt" for arg in node.args if isinstance(arg, (ast.List, ast.Tuple)) for item in arg.elts)
+        if node.func.attr == "execve":
+            has_execve = True
+if not launcher_env or not has_decrypt or not has_execve:
+    raise SystemExit("launcher durable environment overlay contract is not recognized")
+launcher_env = os.path.realpath(os.path.expanduser(launcher_env))
+if launcher_env != os.path.realpath(os.path.expanduser(env_file)):
+    raise SystemExit("launcher durable environment path differs from platform configuration")
+overlay = json.loads(subprocess.check_output([sops_bin, "--decrypt", "--output-type", "json", launcher_env]))
+for key in ("NORN_STARTUP_MODE", "NORN_SCHEMA_MODE"):
+    if key in overlay:
+        durable[key] = str(overlay[key])
+for key, expected in (("NORN_STARTUP_MODE", "active"), ("NORN_SCHEMA_MODE", "check")):
+    if durable.get(key) != expected:
+        raise SystemExit(f"durable launcher configuration does not resolve to {key}={expected}")
+PY
+}
+
 legacy_baseline_write_fence_state() {
   local state="$1" pid="${2:-0}"
   require_cmd python3
@@ -2414,6 +2472,7 @@ if [[ "$mode" == "legacy-baseline" ]]; then
   legacy_baseline_validate_backup_proof
   acquire_promotion_lock
   legacy_baseline_require_drained
+  legacy_baseline_require_durable_startup_mode
   legacy_baseline_fence_host_agent
   # Recheck only after the agent is fenced. The API remains the authenticated
   # control surface until this second zero-drain proof completes.

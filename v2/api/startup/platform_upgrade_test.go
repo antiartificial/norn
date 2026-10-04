@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -219,6 +220,7 @@ func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegac
 	sequence := []string{
 		"acquire_promotion_lock",
 		"legacy_baseline_require_drained",
+		"legacy_baseline_require_durable_startup_mode",
 		"legacy_baseline_fence_host_agent",
 		"legacy_baseline_require_drained",
 		"legacy_baseline_fence_service",
@@ -316,6 +318,14 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 	fenceState := filepath.Join(fixture.root, "legacy-fence-state.json")
 	fenced := filepath.Join(fixture.root, "legacy-fenced")
 	agentFenced := filepath.Join(fixture.root, "legacy-agent-fenced")
+	apiEnv := filepath.Join(fixture.root, "api.env.enc.json")
+	if err := os.WriteFile(apiEnv, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sopsPath := filepath.Join(fixture.shimDir, "sops")
+	writeTestScript(t, sopsPath, "#!/bin/sh\nprintf '%s\\n' '{\"NORN_STARTUP_MODE\":\"active\",\"NORN_SCHEMA_MODE\":\"check\"}'\n")
+	launcher := writeLauncherContract(t, fixture.root, apiEnv)
+	launchPlist := writeLaunchPlist(t, fixture.root, launcher, "active", "auto")
 	legacyProcess := exec.Command("sleep", "300")
 	if err := legacyProcess.Start(); err != nil {
 		t.Fatal(err)
@@ -365,7 +375,9 @@ case "${1:-}" in
       if [[ -f "$FAKE_RESTARTED_AGENT_PID" ]]; then pid="$(cat "$FAKE_RESTARTED_AGENT_PID")"; elif ! kill -0 "$FAKE_HOST_AGENT_PID" >/dev/null 2>&1; then exit 0; else pid="$FAKE_HOST_AGENT_PID"; fi
     elif ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1 && [[ ! -f "$FAKE_ACTIVE_STATE" ]]; then exit 0
     else pid="$FAKE_LEGACY_PID"; fi
-    printf 'service = {\n\tpid = %s\n}\n' "$pid"; exit 0 ;;
+    if [[ "${2:-}" == *com.norn.api ]]; then printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_PLIST" "$pid";
+    else printf 'service = {\n\tpid = %s\n}\n' "$pid"; fi
+    exit 0 ;;
   kill)
     if [[ "${3:-}" == *com.norn.host-agent ]]; then : > "$FAKE_AGENT_FENCED"; /bin/kill -TERM "$FAKE_HOST_AGENT_PID"; else : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; fi
     exit 0 ;;
@@ -387,6 +399,9 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 		"FAKE_REQUIRE_AUTH_AFTER_PROMOTION=1",
 		"FAKE_FENCED="+fenced,
 		"FAKE_AGENT_FENCED="+agentFenced,
+		"FAKE_PLIST="+launchPlist,
+		"NORN_API_ENV_FILE="+apiEnv,
+		"NORN_SOPS_BIN="+sopsPath,
 		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid),
 		fmt.Sprintf("FAKE_HOST_AGENT_PID=%d", agentProcess.Process.Pid),
 		fmt.Sprintf("FAKE_RESTART_AGENT_PID=%d", restartedAgent.Process.Pid),
@@ -409,6 +424,58 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	state, err := os.ReadFile(fenceState)
 	if err != nil || !strings.Contains(string(state), `"state":"candidate-promoted"`) {
 		t.Fatalf("legacy fence state was not retained as promoted: %v %s", err, state)
+	}
+}
+
+func TestPlatformUpgradeLegacyBaselineRejectsSessionOnlyStartupModeBeforeAnyFence(t *testing.T) {
+	fixture := newSchemaTransitionFixture(t, 2)
+	legacySHA := strings.Repeat("a", 40)
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+legacySHA+"\nNORN_RELEASE_VERSION=v2.20.0-platform\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifact := []byte("private fixture backup artifact\n")
+	artifactPath := filepath.Join(fixture.root, "legacy-backup.dump")
+	if err := os.WriteFile(artifactPath, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(artifact)
+	proof, err := json.Marshal(map[string]any{"schema": "norn.legacy-control-backup/v1", "sourceReleaseSHA": legacySHA, "databaseIdentity": fixture.databaseID, "backupSHA256": fmt.Sprintf("%x", digest), "backupBytes": len(artifact), "createdAt": time.Now().UTC().Format(time.RFC3339)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofPath := filepath.Join(fixture.root, "legacy-backup-proof.json")
+	if err := os.WriteFile(proofPath, proof, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	apiEnv := filepath.Join(fixture.root, "api.env.enc.json")
+	if err := os.WriteFile(apiEnv, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sopsPath := filepath.Join(fixture.shimDir, "sops")
+	writeTestScript(t, sopsPath, "#!/bin/sh\nprintf '{}\\n'\n")
+	launcher := writeLauncherContract(t, fixture.root, apiEnv)
+	launchPlist := writeLaunchPlist(t, fixture.root, launcher, "active", "auto")
+	apiFenced := filepath.Join(fixture.root, "api-fenced")
+	agentFenced := filepath.Join(fixture.root, "agent-fenced")
+	writeTestScript(t, filepath.Join(fixture.shimDir, "launchctl"), `#!/usr/bin/env bash
+case "${1:-}" in
+  print) printf 'service = {\n\tpath = %s\n\tpid = 4242\n\tenvironment = {\n\t\tNORN_STARTUP_MODE => active\n\t\tNORN_SCHEMA_MODE => check\n\t}\n}\n' "$FAKE_PLIST"; exit 0 ;;
+  kill) if [[ "${3:-}" == *host-agent ]]; then : > "$FAKE_AGENT_FENCED"; else : > "$FAKE_API_FENCED"; fi; exit 0 ;;
+  setenv|unsetenv) exit 0 ;;
+esac
+exit 2
+`)
+	cmd := fixture.command(t)
+	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
+	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+filepath.Join(fixture.root, "legacy-fence-state.json"), "FAKE_PLIST="+launchPlist, "FAKE_API_FENCED="+apiFenced, "FAKE_AGENT_FENCED="+agentFenced, "NORN_API_ENV_FILE="+apiEnv, "NORN_SOPS_BIN="+sopsPath)
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "requires durable launcher configuration") {
+		t.Fatalf("session-only mode was not rejected: err=%v\n%s", err, out)
+	}
+	for _, path := range []string{apiFenced, agentFenced, filepath.Join(fixture.root, "legacy-fence-state.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("pre-fence rejection mutated %s: %v", path, err)
+		}
 	}
 }
 
@@ -577,6 +644,14 @@ func TestPlatformUpgradeLegacyBaselinePostflightFailureKeepsLegacyFenced(t *test
 	fenceState := filepath.Join(fixture.root, "legacy-fence-state.json")
 	fenced := filepath.Join(fixture.root, "legacy-fenced")
 	agentFenced := filepath.Join(fixture.root, "legacy-agent-fenced")
+	apiEnv := filepath.Join(fixture.root, "api.env.enc.json")
+	if err := os.WriteFile(apiEnv, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sopsPath := filepath.Join(fixture.shimDir, "sops")
+	writeTestScript(t, sopsPath, "#!/bin/sh\nprintf '{}\\n'\n")
+	launcher := writeLauncherContract(t, fixture.root, apiEnv)
+	launchPlist := writeLaunchPlist(t, fixture.root, launcher, "active", "check")
 	legacyProcess := exec.Command("sleep", "300")
 	if err := legacyProcess.Start(); err != nil {
 		t.Fatal(err)
@@ -607,7 +682,7 @@ case "${1:-}" in
       printf 'service = {\n\tpid = %s\n}\n' "$FAKE_HOST_AGENT_PID"; exit 0
     fi
     if ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then exit 0; fi
-    printf 'service = {\n\tpid = %s\n}\n' "$FAKE_LEGACY_PID"; exit 0 ;;
+    printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_PLIST" "$FAKE_LEGACY_PID"; exit 0 ;;
   kill)
     if [[ "${3:-}" == *com.norn.host-agent ]]; then : > "$FAKE_AGENT_FENCED"; else : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; fi
     exit 0 ;;
@@ -621,7 +696,7 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 `)
 	cmd := fixture.command(t)
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
-	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced, "FAKE_AGENT_FENCED="+agentFenced,
+	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced, "FAKE_AGENT_FENCED="+agentFenced, "FAKE_PLIST="+launchPlist, "NORN_API_ENV_FILE="+apiEnv, "NORN_SOPS_BIN="+sopsPath,
 		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid), fmt.Sprintf("FAKE_HOST_AGENT_PID=%d", agentProcess.Process.Pid))
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "candidate postflight failed") {
@@ -835,6 +910,35 @@ func writeTestScript(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeLauncherContract(t *testing.T, root, envFile string) string {
+	t.Helper()
+	path := filepath.Join(root, "norn-api-sops-launcher")
+	body := "#!/usr/bin/python3\nimport os, subprocess\nenv_file = " + strconv.Quote(envFile) + "\nsubprocess.check_output(['sops', '--decrypt', env_file])\nos.execve('/bin/false', ['/bin/false'], os.environ.copy())\n"
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeLaunchPlist(t *testing.T, root, launcher, startupMode, schemaMode string) string {
+	t.Helper()
+	path := filepath.Join(root, "com.norn.api.plist")
+	environment := ""
+	if startupMode != "" {
+		environment += "<key>NORN_STARTUP_MODE</key><string>" + startupMode + "</string>"
+	}
+	if schemaMode != "" {
+		environment += "<key>NORN_SCHEMA_MODE</key><string>" + schemaMode + "</string>"
+	}
+	value := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.norn.api</string><key>ProgramArguments</key><array><string>` + launcher + `</string></array><key>EnvironmentVariables</key><dict>` + environment + `</dict></dict></plist>`
+	if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestPlatformUpgradeOrdersMigrationBeforePassiveCheckAndRestart(t *testing.T) {
