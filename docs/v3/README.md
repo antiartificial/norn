@@ -1,8 +1,10 @@
 # Norn v3 planning package
 
-**Current release work:** start with the [2026-09-29 release handoff](session-resume-2026-09-29.md)
-for the latest checked-in state, open gates, and next sequence. It is the only
-handoff in this tree; Git history retains earlier session and topic handoffs.
+**Current release work:** start with [Norn v3 launch state](LAUNCH-STATE.md)
+for the current Mini and Fleet observations, M0–M9 disposition, findings and
+next sequence. The [2026-09-29 handoff](session-resume-2026-09-29.md) is a
+historical snapshot. The milestone exit criteria remain in
+[execution milestones](execution-milestones.md).
 
 The architecture below began as a proposal on 2026-09-22. Use the current
 handoff and execution milestones to distinguish later implementation from
