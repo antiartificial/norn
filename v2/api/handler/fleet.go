@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
@@ -32,17 +33,7 @@ var (
 	fleetEvidenceDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
-var fleetReconciliationPhases = []string{
-	"prechange_verified",
-	"provider_applying",
-	"infrastructure_applied",
-	"inventory_generated",
-	"nodes_configured",
-	"nodes_enrolled",
-	"readiness_verified",
-	"old_nodes_drained",
-	"complete",
-}
+var fleetReconciliationPhases = lifecycle.Phases(lifecycle.V3, true)
 
 type documentValidationRequest struct {
 	Document      string `json:"document"`
@@ -632,14 +623,11 @@ func fleetPlanRequiresDrain(plan *model.Operation) bool {
 		return false
 	}
 	action, _ := plan.Payload["action"].(string)
-	if action == "replace" {
-		return true
-	}
 	current, _ := plan.Payload["current"].(map[string]interface{})
 	proposed, _ := plan.Payload["proposed"].(map[string]interface{})
 	currentDesired := numberAsFloat64(current["desired"])
 	proposedDesired := numberAsFloat64(proposed["desired"])
-	return action == "scale" && proposedDesired < currentDesired
+	return lifecycle.RequiresDrain(action, currentDesired, proposedDesired)
 }
 
 func numberAsFloat64(value interface{}) float64 {

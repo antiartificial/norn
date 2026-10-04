@@ -21,6 +21,7 @@ import (
 
 	"norn/v2/api/config"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
@@ -346,6 +347,9 @@ func (h *Handler) PrepareFleetGitHubApply(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if !h.refuseAbandonedFleetPlan(w, r, plan.ID) {
+		return
+	}
 	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
@@ -414,6 +418,9 @@ func (h *Handler) ResetFleetGitHubPreparation(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
+	if !h.refuseAbandonedFleetPlan(w, r, plan.ID) {
+		return
+	}
 	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
@@ -473,6 +480,9 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if !h.refuseAbandonedFleetPlan(w, r, plan.ID) {
+		return
+	}
 	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
@@ -528,7 +538,7 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if _, err := h.db.FinishFleetGitHubDispatch(r.Context(), plan.ID, binding.DispatchNonceSHA256, result.RunID, result.RunAttempt, result.URL); err != nil {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "workflow dispatch exists but its protected binding could not be completed; retry safely")
+			h.writeFleetGitHubFinishError(w, r, plan.ID, err)
 			return
 		}
 		h.recordCompletedFleetGitHubDispatch(w, r, principal, plan.ID, fleetEnvironment, request.AllowDestructive, result)
@@ -538,6 +548,14 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_ambiguous", "the protected dispatch outcome is ambiguous")
 		return
 	}
+	// m11: the non-locking occupancy pre-check runs after every replay
+	// branch above and before the signed reservation is queued.
+	if preflightErr := h.db.CheckFleetTargetAcquirePreflight(r.Context(), typed.Cluster, fleetEnvironment, plan.ID, binding.DispatchNonceSHA256, plan.StartedAt); preflightErr != nil {
+		if !writeFleetFenceError(w, r, preflightErr) {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "failed to pre-check the protected fleet target fence")
+		}
+		return
+	}
 	if _, err := h.ensureFleetGitHubReservation(r, principal, plan.ID, "fleet.github.apply-dispatch", map[string]interface{}{
 		"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest,
 		"pool": typed.Pool, "action": typed.Action, "allowDestructive": request.AllowDestructive,
@@ -545,8 +563,10 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	if _, err := h.db.MarkFleetGitHubDispatchSubmitting(r.Context(), plan.ID, binding.DispatchNonceSHA256); err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the protected dispatch submission fence could not be acquired")
+	if _, err := h.db.MarkFleetGitHubDispatchSubmittingFenced(r.Context(), plan.ID, binding.DispatchNonceSHA256, typed.Cluster, fleetEnvironment, plan.StartedAt); err != nil {
+		if !writeFleetFenceError(w, r, err) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the protected dispatch submission fence could not be acquired")
+		}
 		return
 	}
 	result, dispatchErr := h.fleetGitHub.DispatchBoundExternalMacPlan(r.Context(), plan.ID, fleetEnvironment, request.AllowDestructive, approved, request.DispatchNonce, request.ApprovalEnvelopeSHA256)
@@ -561,7 +581,7 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if _, err := h.db.FinishFleetGitHubDispatch(r.Context(), plan.ID, binding.DispatchNonceSHA256, result.RunID, result.RunAttempt, result.URL); err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "workflow dispatch exists but its protected binding could not be completed; retry safely")
+		h.writeFleetGitHubFinishError(w, r, plan.ID, err)
 		return
 	}
 	h.recordCompletedFleetGitHubDispatch(w, r, principal, plan.ID, fleetEnvironment, request.AllowDestructive, result)
@@ -598,6 +618,9 @@ func (h *Handler) RerunFleetGitHubApply(w http.ResponseWriter, r *http.Request) 
 	}
 	fleetEnvironment, ok := h.requireMatchingFleetEnvironment(w, r)
 	if !ok {
+		return
+	}
+	if !h.refuseAbandonedFleetPlan(w, r, plan.ID) {
 		return
 	}
 	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
@@ -666,8 +689,10 @@ func (h *Handler) RerunFleetGitHubApply(w http.ResponseWriter, r *http.Request) 
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	if _, err := h.db.MarkFleetGitHubDispatchRerunSubmitting(r.Context(), plan.ID, binding.DispatchNonceSHA256, binding.RunID, binding.RunAttempt); err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the one permitted same-run retry fence could not be acquired")
+	if _, err := h.db.MarkFleetGitHubDispatchRerunSubmittingFenced(r.Context(), plan.ID, binding.DispatchNonceSHA256, binding.RunID, binding.RunAttempt, typed.Cluster, fleetEnvironment); err != nil {
+		if !writeFleetFenceError(w, r, err) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the one permitted same-run retry fence could not be acquired")
+		}
 		return
 	}
 	result, rerunErr := h.fleetGitHub.RerunBoundExternalMacPlan(r.Context(), plan.ID, fleetEnvironment, request.AllowDestructive, approved, binding.DispatchNonceSHA256, binding.ApprovalEnvelopeSHA256, binding.RunID, binding.RunAttempt)
@@ -745,6 +770,9 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	}
 	fleetEnvironment, ok := h.requireMatchingFleetEnvironment(w, r)
 	if !ok {
+		return
+	}
+	if !h.refuseAbandonedFleetPlan(w, r, plan.ID) {
 		return
 	}
 	// A completed operation is replay-safe only within the same current lane.
@@ -837,7 +865,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if _, finishErr := h.db.FinishFleetGitHubDispatch(r.Context(), plan.ID, binding.DispatchNonceSHA256, result.RunID, result.RunAttempt, result.URL); finishErr != nil {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "workflow dispatch exists but its protected binding could not be completed; retry safely")
+			h.writeFleetGitHubFinishError(w, r, plan.ID, finishErr)
 			return
 		}
 		h.recordCompletedFleetGitHubDispatch(w, r, principal, plan.ID, fleetEnvironment, request.AllowDestructive, result)
@@ -847,6 +875,15 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_ambiguous", "the protected dispatch outcome is ambiguous; inspect the bound GitHub run before retrying")
 		return
 	}
+	// m11: a non-locking pre-check runs before the signed reservation is
+	// queued, so a request the authoritative FOR UPDATE acquire below would
+	// refuse anyway never leaves a queued reservation behind it.
+	if preflightErr := h.db.CheckFleetTargetAcquirePreflight(r.Context(), typed.Cluster, fleetEnvironment, plan.ID, binding.DispatchNonceSHA256, plan.StartedAt); preflightErr != nil {
+		if !writeFleetFenceError(w, r, preflightErr) {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "failed to pre-check the protected fleet target fence")
+		}
+		return
+	}
 	if _, err := h.ensureFleetGitHubReservation(r, principal, plan.ID, "fleet.github.apply-dispatch", map[string]interface{}{
 		"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest,
 		"pool": typed.Pool, "action": typed.Action, "allowDestructive": request.AllowDestructive,
@@ -854,8 +891,10 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	if _, err := h.db.MarkFleetGitHubDispatchSubmitting(r.Context(), plan.ID, binding.DispatchNonceSHA256); err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the protected dispatch submission fence could not be acquired")
+	if _, err := h.db.MarkFleetGitHubDispatchSubmittingFenced(r.Context(), plan.ID, binding.DispatchNonceSHA256, typed.Cluster, fleetEnvironment, plan.StartedAt); err != nil {
+		if !writeFleetFenceError(w, r, err) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "the protected dispatch submission fence could not be acquired")
+		}
 		return
 	}
 	result, err := h.fleetGitHub.DispatchBoundPlan(r.Context(), plan.ID, fleetEnvironment, request.AllowDestructive, approved, nonce)
@@ -871,7 +910,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if _, err := h.db.FinishFleetGitHubDispatch(r.Context(), plan.ID, binding.DispatchNonceSHA256, result.RunID, result.RunAttempt, result.URL); err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "workflow dispatch exists but its protected binding could not be completed; retry safely")
+		h.writeFleetGitHubFinishError(w, r, plan.ID, err)
 		return
 	}
 	h.recordCompletedFleetGitHubDispatch(w, r, principal, plan.ID, fleetEnvironment, request.AllowDestructive, result)
@@ -899,6 +938,38 @@ func (h *Handler) recordCompletedFleetGitHubDispatch(w http.ResponseWriter, r *h
 	op.AttachReceipt()
 	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
 	writeJSONStatus(w, http.StatusCreated, op)
+}
+
+// refuseAbandonedFleetPlan reports false (after writing the response) when
+// planID is break-glass abandoned (B1/H7) or its abandonment state cannot be
+// read. It runs before every replay branch: abandonment refuses every
+// dispatch and execute call, replays included (plan.md §2.2, matching the
+// etcd route). A plan that was never abandoned is unaffected.
+func (h *Handler) refuseAbandonedFleetPlan(w http.ResponseWriter, r *http.Request, planID string) bool {
+	abandoned, err := h.db.IsFleetPlanAbandonedForPlan(r.Context(), planID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not read the fleet target abandonment state")
+		return false
+	}
+	if abandoned {
+		WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetHolderAbandoned, "fleet target holder plan is permanently abandoned")
+		return false
+	}
+	return true
+}
+
+// writeFleetGitHubFinishError reports why FinishFleetGitHubDispatch
+// refused: a break-glass-abandoned plan (B1/H7) is 409
+// fleet_target_holder_abandoned; any other cause keeps the existing 500
+// fleet_github_receipt_failed. FinishFleetGitHubDispatch's own predicate
+// (store/fleet_github_dispatches.go) costs no lock, so this diagnostic read
+// is the only way to tell the two apart without weakening that predicate.
+func (h *Handler) writeFleetGitHubFinishError(w http.ResponseWriter, r *http.Request, planID string, err error) {
+	if abandoned, checkErr := h.db.IsFleetPlanAbandonedForPlan(r.Context(), planID); checkErr == nil && abandoned {
+		WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetHolderAbandoned, "fleet target holder plan is permanently abandoned")
+		return
+	}
+	WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "workflow dispatch exists but its protected binding could not be completed; retry safely")
 }
 
 func newFleetDispatchNonce() (string, string, error) {

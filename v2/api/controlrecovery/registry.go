@@ -105,6 +105,18 @@ func InspectionRegistry() []Table {
 		{Name: "runtime_mutation_fence", OrderBy: []string{"singleton"}, Columns: classified(include("singleton", "epoch", "active", "held_at", "released_at"), "owner", "reason")},
 		{Name: "snapshot_export_intents", OrderBy: []string{"operation_id", "object_key"}, Columns: classified(include("operation_id", "dump_sha256", "dump_size", "manifest_sha256", "origin_claim_generation", "state", "created_at", "published_at"), "object_key", "bucket")},
 		{Name: "control_event_retention", OrderBy: []string{"id"}, Columns: include("id", "pruned_through_cursor", "updated_at")},
+		{Name: "fleet_target_registry", OrderBy: []string{"singleton"}, Columns: include("singleton", "generation")},
+		{Name: "fleet_targets", OrderBy: []string{"target_id"}, Columns: include("target_id", "provider", "provider_account", "state_backend", "created_at", "registration_operation_id")},
+		{Name: "fleet_target_aliases", OrderBy: []string{"alias"}, Columns: include("alias", "target_id")},
+		{Name: "fleet_target_fences", OrderBy: []string{"target_id"}, Columns: include("target_id", "generation", "held", "holder_plan_id", "holder_nonce_sha256", "authority_epoch", "last_release_plan_id", "last_release_reason", "last_release_at", "revision")},
+		{Name: "fleet_target_abandoned_plans", OrderBy: []string{"plan_id"}, Columns: include("plan_id", "nonce_sha256", "target_id", "cluster", "operation_id", "abandoned_at")},
+		{Name: "fleet_authority_epoch", OrderBy: []string{"singleton"}, Columns: include("singleton", "epoch", "activated_at", "reason")},
+		// document carries desired/history/policy/watermarks/status; none of
+		// it is credential or free-form diagnostic material, but it is kept
+		// out of inspection for the same bulky-payload reason operations.payload
+		// and fleet_runner_attempts.metadata are.
+		{Name: "fleet_resources", OrderBy: []string{"name"}, Columns: classified(include("name", "target_id", "revision", "authority_epoch", "observation_sequence", "created_at", "updated_at"), "document")},
+		{Name: "fleet_observations", OrderBy: []string{"resource", "sequence"}, Columns: classified(include("resource", "sequence", "source", "observed_at", "received_at", "applied", "reporter"), "facts", "evidence_refs")},
 	}
 
 	result := make([]Table, len(tables))

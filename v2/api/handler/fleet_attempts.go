@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
@@ -392,12 +393,11 @@ func canonicalRunnerAttemptID(ci *CIIdentity) string {
 	return "github-actions:" + ci.Repository + ":" + ci.RunID + ":" + ci.RunAttempt
 }
 func nextFleetReconciliationPhase(current string) string {
-	for i, phase := range fleetReconciliationPhases {
-		if phase == current && i+1 < len(fleetReconciliationPhases) {
-			return fleetReconciliationPhases[i+1]
-		}
+	next, terminal, err := lifecycle.NextPhase(lifecycle.V3, current, true)
+	if err != nil || terminal {
+		return ""
 	}
-	return ""
+	return next
 }
 func (h *Handler) hasRunnerEvidence(ctx context.Context, item *fleet.RunnerAttempt) bool {
 	ops, err := h.db.ListOperations(ctx, store.OperationFilter{Kind: "fleet.reconciliation", Ref: item.PlanID, Status: string(model.OperationSucceeded), Limit: 100})

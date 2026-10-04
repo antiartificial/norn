@@ -18,6 +18,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -89,6 +90,33 @@ func (s *V3OperationStore) acceptFleetReconciliation(ctx context.Context, input 
 	if err := store.ValidateFleetReconciliationAdmissionTransition(&plan.Operation, history, request); err != nil {
 		return store.AcceptedOperation{}, fleetReconciliationError("fleet_reconciliation_out_of_order", err.Error())
 	}
+	// B1/H7: an abandoned plan can never append new checkpoint evidence.
+	if abandoned, err := s.checkFleetTargetPlanAbandoned(ctx, admission.PlanID); err != nil {
+		return store.AcceptedOperation{}, err
+	} else if abandoned {
+		return store.AcceptedOperation{}, fleetReconciliationError(lifecycle.CodeFleetTargetHolderAbandoned, "fleet target holder plan is permanently abandoned")
+	}
+	// Epoch compare (Q10; plan.md §2.2 "Evidence writes"): a succeeded
+	// checkpoint is refused once the fence's recorded authority epoch falls
+	// behind current; a failed checkpoint stays allowed. strict=false: a
+	// plan already admitted stays ungated if its cluster/environment no
+	// longer resolve the same way.
+	cluster, _ := plan.Operation.Payload["cluster"].(string)
+	var environment string
+	if preparation, prepErr := s.GetFleetGitHubDispatchPreparation(ctx, admission.PlanID); prepErr == nil {
+		environment = preparation.FleetEnvironment
+	}
+	fenceCtx, err := s.loadFleetTargetFenceContext(ctx, cluster, environment, false)
+	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
+	evidenceKind := lifecycle.EvidenceFailedCheckpoint
+	if request.Status == "succeeded" {
+		evidenceKind = lifecycle.EvidenceSuccessCheckpoint
+	}
+	if err := lifecycle.DecideEvidenceWrite(fenceCtx.Fence, admission.PlanID, fenceCtx.Epoch, evidenceKind); err != nil {
+		return store.AcceptedOperation{}, wrapFleetFenceReconciliationError(err)
+	}
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	identityID, intentID := uuid.NewString(), uuid.NewString()
@@ -116,6 +144,13 @@ func (s *V3OperationStore) acceptFleetReconciliation(ctx context.Context, input 
 		clientv3.Compare(clientv3.CreateRevision(key), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(reconciliationKey), "=", 0),
+	}
+	compares = append(compares, s.abandonedCompare(admission.PlanID))
+	if fenceCtx.TargetID != "" {
+		compares = append(compares,
+			clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(fenceCtx.TargetID)), "=", fenceCtx.FenceRevision),
+			clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", fenceCtx.EpochRevision),
+		)
 	}
 	for attemptID, revision := range attemptRevisions {
 		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetRunnerAttemptKey(admission.PlanID, attemptID)), "=", revision))
@@ -238,4 +273,17 @@ func (s *V3OperationStore) ListFleetReconciliations(ctx context.Context, planID 
 
 func fleetReconciliationError(code, reason string) error {
 	return &store.FleetReconciliationAdmissionError{Code: code, Reason: strings.TrimSpace(reason)}
+}
+
+// wrapFleetFenceReconciliationError rewraps a *lifecycle.FenceError as the
+// same store.FleetReconciliationAdmissionError shape every other checkpoint
+// refusal in this file already uses, so it reaches
+// handler/control_protocol.go's existing generic admission-error mapping
+// instead of falling through to a 500. Any other error is returned as-is.
+func wrapFleetFenceReconciliationError(err error) error {
+	var fenceErr *lifecycle.FenceError
+	if errors.As(err, &fenceErr) {
+		return fleetReconciliationError(fenceErr.Code, fenceErr.Error())
+	}
+	return err
 }

@@ -6,6 +6,19 @@ This status applies only to the local development branch `codex/v3-foundations`,
 
 ## Current stage
 
+The Fleet controller work (target fence, authority epoch, resource status;
+changes 1-4) proceeds separately on branch `feature/v3-fleet-controller`,
+worktree `norn-v3-fleet-controller`, module root `v2/api`. See
+[`fleet-controller/plan.md`](fleet-controller/plan.md) and
+[ADR 0009](adrs/0009-fleet-controller.md) for that plan's scope and decisions.
+WP1 (contract doc, ADR, `v2/scripts/go-test-strict`, the
+`internal/integrationtest` and `fleet/fleettest` test helpers, and the
+safety-net regression tests in
+[`fleet-controller/lifecycle-contract.md`](fleet-controller/lifecycle-contract.md))
+has landed in that worktree; it changes no runtime behavior. This section and
+the rest of this document otherwise track the separate `codex/v3-foundations`
+branch below and are not updated by that work.
+
 For the current release state and next sequence, see the
 [2026-09-29 release handoff](session-resume-2026-09-29.md). This document
 contains implementation detail accumulated across earlier slices. Sections
