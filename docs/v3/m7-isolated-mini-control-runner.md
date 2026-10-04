@@ -102,9 +102,12 @@ test command executed by the API's clean environment must set its own Go
 cache paths, rather than relying on inherited `GOPATH` or `GOCACHE`.
 
 When fencing a source, changing its InfraSpec to web-only does not stop
-previously registered Nomad periodic jobs. Explicitly stop its worker and tick
-jobs, confirm neither has a next launch or running child allocation, and then
-verify the new web allocation rejects `POST /items` with HTTP `423`. Record
-the exact quiescent `/state`, database dump, and file inventory after the jobs
-are stopped. Do not treat a completed web deploy as proof that old writers
-have stopped.
+previously registered Nomad periodic jobs. While `worker` and `tick` are still
+present in the catalog, queue and wait for their durable cron-pause operations.
+Require both terminal pause receipts, each parent's stopped state and absent
+next launch, and no running child allocations before replacing the catalog
+entry with web-only. Then deploy and verify the new web allocation rejects
+`POST /items` with HTTP `423`. Record the exact quiescent `/state`, database
+dump, and file inventory. The cron-pause API cannot admit a process after it
+has disappeared from the catalog; a completed web deploy alone does not prove
+that old writers have stopped.
