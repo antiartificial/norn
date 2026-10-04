@@ -417,7 +417,7 @@ func TestExternalMacDispatchCarriesAndPinsPilotRunID(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&dispatched)
 			fmt.Fprint(w, `{"workflow_run_id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93"}`)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, applyRunDisplayTitle("disposable/external-mac/nyc3", pilotRunID, planID, nonce))
 		default:
 			http.NotFound(w, r)
 		}
@@ -464,7 +464,7 @@ func TestExternalMacRerunRequiresTerminalFailureAndObservedAttemptIncrement(t *t
 			if postCount > 0 {
 				attempt, status, conclusion = 2, "queued", ""
 			}
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":%q,"conclusion":%q,"run_attempt":%d,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce, status, conclusion, attempt)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":%q,"conclusion":%q,"run_attempt":%d,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, applyRunDisplayTitle("disposable/external-mac/nyc3", pilotRunID, planID, nonce), status, conclusion, attempt)
 			return
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93/rerun" {
@@ -488,6 +488,7 @@ func TestExternalMacRerunNeverPostsForNonterminalOrWrongAttempt(t *testing.T) {
 	planSHA := strings.Repeat("a", 64)
 	headSHA := strings.Repeat("b", 40)
 	nonce := strings.Repeat("c", 64)
+	pilotRunID := "pilot20260907"
 	nonceSum := sha256.Sum256([]byte(nonce))
 	nonceHash := hex.EncodeToString(nonceSum[:])
 	postCount := 0
@@ -500,7 +501,7 @@ func TestExternalMacRerunNeverPostsForNonterminalOrWrongAttempt(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93" {
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"in_progress","conclusion":"","run_attempt":1,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"in_progress","conclusion":"","run_attempt":1,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, applyRunDisplayTitle("disposable/external-mac/nyc3", pilotRunID, planID, nonce))
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -510,7 +511,7 @@ func TestExternalMacRerunNeverPostsForNonterminalOrWrongAttempt(t *testing.T) {
 		}
 		http.NotFound(w, r)
 	}))
-	client.cfg.PilotRunID = "pilot20260907"
+	client.cfg.PilotRunID = pilotRunID
 	client.cfg.ConfigPath = "environments/disposable/external-mac/nyc3/cluster.yaml"
 	approved := &Dispatch{PlanRunID: 91, PlanSHA: planSHA, ApprovedHeadSHA: headSHA, PilotRunID: client.cfg.PilotRunID}
 	if _, err := client.RerunBoundExternalMacPlan(context.Background(), planID, "disposable/external-mac/nyc3", false, approved, nonceHash, strings.Repeat("d", 64), 93, 1); !errors.Is(err, ErrRerunIneligible) || postCount != 0 {
@@ -523,6 +524,7 @@ func TestExternalMacRerunTreatsSkippedGenerationAsAmbiguous(t *testing.T) {
 	planSHA := strings.Repeat("a", 64)
 	headSHA := strings.Repeat("b", 40)
 	nonce := strings.Repeat("c", 64)
+	pilotRunID := "pilot20260907"
 	nonceSum := sha256.Sum256([]byte(nonce))
 	nonceHash := hex.EncodeToString(nonceSum[:])
 	postCount := 0
@@ -542,7 +544,7 @@ func TestExternalMacRerunTreatsSkippedGenerationAsAmbiguous(t *testing.T) {
 				// generation Norn submitted.  It must not be adopted.
 				attempt, status, conclusion = 3, "queued", ""
 			}
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":%q,"conclusion":%q,"run_attempt":%d,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce, status, conclusion, attempt)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":%q,"conclusion":%q,"run_attempt":%d,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, applyRunDisplayTitle("disposable/external-mac/nyc3", pilotRunID, planID, nonce), status, conclusion, attempt)
 			return
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93/rerun" {
@@ -552,7 +554,7 @@ func TestExternalMacRerunTreatsSkippedGenerationAsAmbiguous(t *testing.T) {
 		}
 		http.NotFound(w, r)
 	}))
-	client.cfg.PilotRunID = "pilot20260907"
+	client.cfg.PilotRunID = pilotRunID
 	client.cfg.ConfigPath = "environments/disposable/external-mac/nyc3/cluster.yaml"
 	approved := &Dispatch{PlanRunID: 91, PlanSHA: planSHA, ApprovedHeadSHA: headSHA, PilotRunID: client.cfg.PilotRunID}
 	if _, err := client.RerunBoundExternalMacPlan(context.Background(), planID, "disposable/external-mac/nyc3", false, approved, nonceHash, strings.Repeat("d", 64), 93, 1); !errors.Is(err, ErrDispatchAmbiguous) || postCount != 1 {
