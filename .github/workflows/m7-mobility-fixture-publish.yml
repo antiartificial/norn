@@ -1,0 +1,249 @@
+name: Publish M7 mobility fixture image
+
+# This is an artifact-only lane for the deploy-disabled M7 fixture. It never
+# calls Norn, joins a private network, or applies an InfraSpec.
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact lowercase 40-character SHA at protected master
+        required: true
+        type: string
+      reviewed_workflow_sha:
+        description: Exact reviewed SHA containing this workflow; must equal the dispatch workflow SHA
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: m7-mobility-fixture-publish-${{ inputs.commit_sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Require protected master and exact selected commit
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          REVIEWED_WORKFLOW_SHA: ${{ inputs.reviewed_workflow_sha }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/master" ]] || {
+            echo "Run this publication only from master." >&2
+            exit 1
+          }
+          [[ "$REF_PROTECTED" == "true" ]] || {
+            echo "master must be protected before image publication is enabled." >&2
+            exit 1
+          }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "commit_sha must be an exact lowercase 40-character SHA." >&2
+            exit 1
+          }
+          [[ "$REVIEWED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "reviewed_workflow_sha must be an exact lowercase 40-character SHA." >&2
+            exit 1
+          }
+          [[ "$REQUESTED_SHA" == "$GITHUB_SHA" ]] || {
+            echo "commit_sha must equal the protected master SHA that dispatched this run." >&2
+            exit 1
+          }
+          [[ "$REVIEWED_WORKFLOW_SHA" == "$GITHUB_WORKFLOW_SHA" ]] || {
+            echo "reviewed_workflow_sha must equal the actual workflow SHA." >&2
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Verify exact source identity and public attestation availability
+        id: source
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$REQUESTED_SHA" ]] || {
+            echo "checked-out source differs from commit_sha" >&2
+            exit 1
+          }
+          git fetch --no-tags origin master
+          [[ "$(git rev-parse origin/master)" == "$REQUESTED_SHA" ]] || {
+            echo "commit_sha is no longer the exact master tip." >&2
+            exit 1
+          }
+          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)"
+          [[ "$visibility" == public ]] || {
+            echo "This artifact-only lane uses public GitHub OIDC evidence and refuses $visibility repositories." >&2
+            exit 1
+          }
+          printf 'source_sha=%s\n' "$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Recheck the exact build source
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+
+      - name: Recheck public attestation availability
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)"
+          [[ "$visibility" == public ]] || {
+            echo "Repository visibility changed to $visibility; refusing publication." >&2
+            exit 1
+          }
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish the exact source image by digest only
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: v2/infra/mobility-fixture
+          file: v2/infra/mobility-fixture/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          outputs: type=image,name=ghcr.io/antiartificial/mobility-fixture,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Bind the immutable multi-architecture artifact digest
+        id: artifact
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "build did not produce an OCI sha256 digest" >&2
+            exit 1
+          }
+          printf 'artifact=ghcr.io/antiartificial/mobility-fixture@%s\n' "$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          cosign-release: v2.6.5
+
+      - name: Sign the exact immutable multi-architecture digest
+        env:
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes -a "norn.git.sha=$SOURCE_SHA" "$ARTIFACT"
+
+      - name: Prepare publication evidence directory
+        run: mkdir -p publication-evidence
+
+      - name: Generate SPDX SBOM for the immutable artifact
+        uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
+        with:
+          image: ${{ steps.artifact.outputs.artifact }}
+          format: spdx-json
+          output-file: publication-evidence/sbom.spdx.json
+          upload-artifact: false
+
+      - name: Attest GitHub build provenance for the immutable artifact
+        id: provenance-attestation
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ghcr.io/antiartificial/mobility-fixture
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest SPDX SBOM for the immutable artifact
+        id: sbom-attestation
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ghcr.io/antiartificial/mobility-fixture
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: publication-evidence/sbom.spdx.json
+          push-to-registry: true
+
+      - name: Write immutable digest handoff
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+          REVIEWED_WORKFLOW_SHA: ${{ inputs.reviewed_workflow_sha }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance-attestation.outputs.bundle-path }}
+          SBOM_BUNDLE: ${{ steps.sbom-attestation.outputs.bundle-path }}
+          PROVENANCE_URL: ${{ steps.provenance-attestation.outputs.attestation-url }}
+          SBOM_URL: ${{ steps.sbom-attestation.outputs.attestation-url }}
+        run: |
+          set -euo pipefail
+          [[ -n "$PROVENANCE_BUNDLE" && -n "$SBOM_BUNDLE" && -f "$PROVENANCE_BUNDLE" && -f "$SBOM_BUNDLE" ]]
+          provenance_sha256="$(python3 v2/scripts/canonical-sigstore-bundle-digest "$PROVENANCE_BUNDLE")"
+          sbom_sha256="$(python3 v2/scripts/canonical-sigstore-bundle-digest "$SBOM_BUNDLE")"
+          cp "$PROVENANCE_BUNDLE" publication-evidence/provenance.sigstore.json
+          cp "$SBOM_BUNDLE" publication-evidence/sbom.sigstore.json
+          jq -n \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg artifact "$ARTIFACT" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg signerWorkflow "$GITHUB_REPOSITORY/.github/workflows/m7-mobility-fixture-publish.yml" \
+            --arg reviewedWorkflowSha "$REVIEWED_WORKFLOW_SHA" \
+            --arg provenanceBundleSha256 "$provenance_sha256" \
+            --arg sbomBundleSha256 "$sbom_sha256" \
+            --arg provenanceURL "$PROVENANCE_URL" \
+            --arg sbomURL "$SBOM_URL" \
+            '{schemaVersion: "norn.m7.mobility-fixture.publication-handoff/v1", sourceSha: $sourceSha, artifact: $artifact, repository: $repository, signerWorkflow: $signerWorkflow, reportedWorkflowSha: $reviewedWorkflowSha, platforms: ["linux/amd64", "linux/arm64"], signature: {verification: ("cosign verify --certificate-identity-regexp \"https://github.com/" + $repository + "/.github/workflows/m7-mobility-fixture-publish.yml@.*\" --certificate-oidc-issuer https://token.actions.githubusercontent.com " + $artifact)}, attestationBundleSha256: $provenanceBundleSha256, sbomBundleSha256: $sbomBundleSha256, attestationUrl: $provenanceURL, sbomUrl: $sbomURL}' \
+            > publication-evidence/handoff.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: m7-mobility-fixture-publication-${{ needs.authorize.outputs.source_sha }}
+          path: publication-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish digest handoff summary
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## M7 mobility fixture image'
+            echo
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Immutable multi-architecture artifact: \`$ARTIFACT\`"
+            echo 'Platforms: linux/amd64 (DigitalOcean) and linux/arm64 (Mini).'
+            echo '- Evidence: keyless Cosign signature plus GitHub provenance and SPDX attestations.'
+            echo '- This workflow publishes an image only; it cannot contact a fleet or control plane.'
+          } >> "$GITHUB_STEP_SUMMARY"
