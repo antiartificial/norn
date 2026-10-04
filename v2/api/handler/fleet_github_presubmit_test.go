@@ -128,3 +128,41 @@ func TestDispatchAmbiguousOrdinaryLaneOccupiesTarget(t *testing.T) {
 		t.Fatalf("a refused plan left %d reservations (err %v)", reservations, err)
 	}
 }
+
+// TestReconcileAbandonedPlanIsConflictNotServerError drives the real
+// github/reconcile route for an ordinary-lane dispatch left ambiguous and then
+// break-glass abandoned: the recovered run can no longer be bound, and that is
+// 409 fleet_target_holder_abandoned (consistent with the dispatch, execute and
+// rerun routes), not a 500 fleet_github_receipt_failed.
+func TestReconcileAbandonedPlanIsConflictNotServerError(t *testing.T) {
+	p := newPGFenceHarness(t)
+	reg := p.RegisterTarget(lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "reconcile-abandoned", StateBackend: "s3://reconcile-abandoned/state"}, []string{"cluster:reconcile-abandoned"})
+	if reg.HTTPStatus != http.StatusCreated {
+		t.Fatalf("register: %+v", reg)
+	}
+	post := func(path string, body interface{}) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", TokenID: "token-reconcile-abandoned", DeviceID: "device-reconcile-abandoned", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeAPIWrite}})
+		rec := httptest.NewRecorder()
+		p.router.ServeHTTP(rec, req)
+		return rec
+	}
+	plan := p.SeedPlanOnCluster("scale", "reconcile-abandoned", "")
+	p.github.configure(plan.ID, "", fleettest.GitHubOutcomeAmbiguous)
+	if rec := post("/api/v1/fleet/plans/"+plan.ID+"/github/dispatch", fleetGitHubDispatchRequest{}); rec.Code != http.StatusBadGateway {
+		t.Fatalf("ambiguous dispatch = %d %s", rec.Code, rec.Body.String())
+	}
+	p.AgeHolder(plan, lifecycle.AbandonMinimumAge+time.Hour)
+	if resp := p.AbandonPlan(plan); resp.HTTPStatus != http.StatusOK && resp.HTTPStatus != http.StatusCreated {
+		t.Fatalf("abandon: %+v", resp)
+	}
+	// The workflow run now exists, so reconcile can recover it; binding it is
+	// what abandonment refuses.
+	p.github.configure(plan.ID, "", fleettest.GitHubOutcomeSubmitted)
+	rec := post("/api/v1/fleet/plans/"+plan.ID+"/github/reconcile", fleetGitHubReconcileRequest{Kind: "apply-dispatch"})
+	if rec.Code != http.StatusConflict || decodeProblemCode(rec) != lifecycle.CodeFleetTargetHolderAbandoned {
+		t.Fatalf("reconcile of an abandoned plan = %d %s", rec.Code, rec.Body.String())
+	}
+}

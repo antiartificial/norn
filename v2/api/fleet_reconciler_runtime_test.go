@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,9 +65,15 @@ func TestFleetReconcilerNotifyMiddlewareImplicitOK(t *testing.T) {
 }
 
 func TestFleetReconcilerEnabledFlag(t *testing.T) {
-	for value, want := range map[string]bool{"": false, "false": false, "true": true, " TRUE ": true} {
-		if got := fleetReconcilerEnabled(func(string) string { return value }); got != want {
-			t.Fatalf("%s=%q enabled=%t, want %t", fleetReconcilerEnv, value, got, want)
+	for value, want := range map[string]bool{"": true, "  ": true, "true": true, " TRUE ": true, "1": true, "false": false, " False ": false, "0": false} {
+		got, err := fleetReconcilerEnabled(func(string) string { return value })
+		if err != nil || got != want {
+			t.Fatalf("%s=%q enabled=%t err=%v, want %t", fleetReconcilerEnv, value, got, err, want)
+		}
+	}
+	for _, value := range []string{"flase", "yes", "off", "enabled"} {
+		if _, err := fleetReconcilerEnabled(func(string) string { return value }); err == nil || !strings.Contains(err.Error(), fleetReconcilerEnv) {
+			t.Fatalf("%s=%q must fail startup, err=%v", fleetReconcilerEnv, value, err)
 		}
 	}
 }

@@ -45,7 +45,7 @@ func (h *fleetResourceTestHarness) NewResource(ctx context.Context) (string, err
 }
 
 func (h *fleetResourceTestHarness) SetDesired(ctx context.Context, name string, next controller.DesiredRevision) (*controller.Resource, error) {
-	return h.store.SetDesiredFleetResource(ctx, name, next)
+	return h.store.setDesiredFleetResource(ctx, name, nil, next)
 }
 
 func (h *fleetResourceTestHarness) IsDesiredInvalid(err error) bool {

@@ -168,14 +168,7 @@ func (s *V3OperationStore) ListFleetResourceNames(ctx context.Context, after str
 	return names, nil
 }
 
-// SetDesiredFleetResource accepts a new desired revision (Q8). It touches
-// only this resource's own key: no fence, dispatch-preparation/binding or
-// attempt key is read or written (DesiredChangeDuringExecutionKeepsBindings).
-func (s *V3OperationStore) SetDesiredFleetResource(ctx context.Context, name string, next controller.DesiredRevision) (*controller.Resource, error) {
-	return s.setDesiredFleetResource(ctx, name, nil, next)
-}
-
-// SetDesiredFleetResourceIf is SetDesiredFleetResource with the operator's
+// SetDesiredFleetResourceIf accepts a new desired revision (Q8) with the operator's
 // expectedRevision CAS (WP13), mirroring store.DB.SetDesiredFleetResourceIf:
 // ErrFleetResourceRevisionConflict unless Revision is exactly
 // expectedRevision, and a successful write bumps Revision by one.

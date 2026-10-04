@@ -87,13 +87,16 @@ In authority-only mode Norn now:
 5. Advertises the restricted mode and supported routes through capabilities so
    clients do not present application or host actions.
 
-The Fleet resource reconciler (docs/v3/fleet-controller, WP12) is opt-in
-behind `NORN_FLEET_RECONCILER=true` and runs only in this authority-only
-process and in the normal etcd Fleet runtime; the general router never starts
-it. It observes only: its sole write is Fleet resource status through the
-store's reconcile CAS, and it skips the write when the derived status is
-unchanged. It reconciles after accepted Fleet mutations and on a 60-second
-periodic rescan.
+The Fleet resource reconciler (docs/v3/fleet-controller, WP12) is on by
+default; `NORN_FLEET_RECONCILER=false` disables it. It runs only in this
+authority-only process and in the normal etcd Fleet runtime; the general
+router never starts it, and a process that runs no reconciler reports
+`controller.state=unknown`. It observes only: its sole write is Fleet resource
+status through the store's reconcile CAS, and it skips the write when the
+derived status is unchanged. It reconciles after accepted Fleet mutations and
+on a 60-second periodic rescan. See the
+[Fleet controller operator runbook](../../v3/fleet-controller/operator-runbook.md)
+for target registration, status, release and restore procedures.
 
 When the complete, separately credentialed direct-workload bridge below is
 configured, this allowlist adds only its six v4 external-admission routes and

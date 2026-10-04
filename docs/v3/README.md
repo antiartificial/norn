@@ -23,7 +23,7 @@ An Architecture Decision Record (ADR) captures a consequential choice, its alter
 9. [Execution milestones](execution-milestones.md): delivery sequence, parallel work, exit gates and release evidence.
 10. [Implementation status](implementation-status.md): branch-specific local progress and qualification boundary.
 11. [Foundation review](foundation-review.md): source-backed safety findings, bounded implementation slices and review acceptance tests.
-12. [Fleet controller plan](fleet-controller/plan.md) and [ADR 0009 — Fleet controller](adrs/0009-fleet-controller.md): the target fence, authority epoch and resource-status work for changes 1-4, plus its [lifecycle contract](fleet-controller/lifecycle-contract.md) and [review](fleet-controller/plan-review.md).
+12. [Fleet controller plan](fleet-controller/plan.md) and [ADR 0009 — Fleet controller](adrs/0009-fleet-controller.md): the target fence, authority epoch and resource-status work for changes 1-4, plus its [lifecycle contract](fleet-controller/lifecycle-contract.md), [review](fleet-controller/plan-review.md) and [operator runbook](fleet-controller/operator-runbook.md).
 
 The older session and topic handoffs are available in Git history. Use the
 current release handoff above for next actions and the status and review

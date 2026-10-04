@@ -77,28 +77,6 @@ const fleetTargetInFlightSQL = `
 		      ) <> 'succeeded'
 	)`
 
-// RegisterFleetTarget opens its own transaction and registers identity with
-// aliases, attributed to operationID. It is idempotent: replaying the same
-// identity (and any alias already bound to it) returns the existing target
-// without bumping the registry generation again. See registerFleetTargetTx
-// for the tx-internal core WP9a's signed-operation guard reuses directly so
-// registration participates in that larger transaction instead of its own.
-func (db *DB) RegisterFleetTarget(ctx context.Context, identity lifecycle.TargetIdentity, aliases []string, operationID string) (*FleetTarget, error) {
-	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	target, err := registerFleetTargetTx(ctx, tx, identity, aliases, operationID, time.Now().UTC())
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return target, nil
-}
-
 // registerFleetTargetTx is the lock-order position-2 core: it takes
 // fleet_target_registry FOR UPDATE (the one exception to the FOR SHARE rule,
 // since this is registration), runs the M1 in-flight scan and the alias
@@ -338,23 +316,6 @@ func GetFleetTargetFence(ctx context.Context, tx pgx.Tx, targetID string, forUpd
 func FleetAuthorityEpoch(ctx context.Context, tx pgx.Tx) (int64, error) {
 	var epoch int64
 	err := tx.QueryRow(ctx, `SELECT epoch FROM fleet_authority_epoch WHERE singleton FOR SHARE`).Scan(&epoch)
-	return epoch, err
-}
-
-// AdvanceFleetAuthorityEpoch CASes the singleton epoch forward from expected,
-// recording reason and the server clock. It touches no fence or attempt
-// row: old-epoch fences become Uncertain/AuthoritySuperseded until they are
-// re-bound or released (plan.md §2.2), not rewritten here.
-func (db *DB) AdvanceFleetAuthorityEpoch(ctx context.Context, expected int64, reason string) (int64, error) {
-	var epoch int64
-	err := db.Pool.QueryRow(ctx, `
-		UPDATE fleet_authority_epoch SET epoch = epoch + 1, activated_at = now(), reason = $2
-		WHERE singleton AND epoch = $1
-		RETURNING epoch
-	`, expected, reason).Scan(&epoch)
-	if err == pgx.ErrNoRows {
-		return 0, ErrFleetAuthorityEpochConflict
-	}
 	return epoch, err
 }
 

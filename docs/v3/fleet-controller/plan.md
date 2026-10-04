@@ -3,6 +3,7 @@
 Status: revised draft. It addresses the review in [`plan-review.md`](./plan-review.md);
 see §6 for the disposition of each finding.
 Input: [`proposal.md`](./proposal.md).
+Operators: [`operator-runbook.md`](./operator-runbook.md).
 Branch: `feature/v3-fleet-controller` (from `codex/v3-m5-forward-recovery` @ `7ea5895f`).
 Go module root: `v2/api` (module `norn/v2/api`). Paths are relative to `v2/api/`
 unless they start with `docs/` or `v2/`.

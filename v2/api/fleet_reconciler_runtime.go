@@ -7,8 +7,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -17,13 +19,23 @@ import (
 	"norn/v2/api/fleet/controller"
 )
 
-// fleetReconcilerEnv opts a Fleet process into running the reconciler, using
-// the same "true" environment-flag convention as the etcd runtime's other
-// optional workers (etcdCanaryWorkerEnv, etcdFleetReleaseHTTPEnv).
+// fleetReconcilerEnv switches the Fleet resource reconciler. It is on by
+// default in a Fleet process: unset or empty enables it, and a false value
+// ("false", "0", "f", any case) disables it. The value is parsed with
+// strconv.ParseBool (as config.envBoolOr does); an unparseable value is a
+// startup error rather than silently leaving a kill switch ignored.
 const fleetReconcilerEnv = "NORN_FLEET_RECONCILER"
 
-func fleetReconcilerEnabled(getenv func(string) string) bool {
-	return strings.EqualFold(strings.TrimSpace(getenv(fleetReconcilerEnv)), "true")
+func fleetReconcilerEnabled(getenv func(string) string) (bool, error) {
+	raw := strings.TrimSpace(getenv(fleetReconcilerEnv))
+	if raw == "" {
+		return true, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean (true or false), got %q", fleetReconcilerEnv, raw)
+	}
+	return enabled, nil
 }
 
 func newFleetReconciler(store controller.ReconcilerStore, isNotFound func(error) bool) *controller.Reconciler {

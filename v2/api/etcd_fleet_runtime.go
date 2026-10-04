@@ -130,7 +130,11 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer)
 	var reconciler *controller.Reconciler
-	if fleetReconcilerEnabled(os.Getenv) {
+	reconcilerEnabled, err := fleetReconcilerEnabled(os.Getenv)
+	if err != nil {
+		return err
+	}
+	if reconcilerEnabled {
 		reconciler = newFleetReconciler(operations, func(err error) bool { return errors.Is(err, etcdstore.ErrFleetResourceNotFound) })
 		router.Use(fleetReconcilerNotify(reconciler))
 	}

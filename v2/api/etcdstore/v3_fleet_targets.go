@@ -682,32 +682,3 @@ func (s *V3OperationStore) FleetAuthorityEpoch(ctx context.Context) (int64, erro
 	epoch, _, err := s.fleetAuthorityEpochWithRevision(ctx)
 	return epoch, err
 }
-
-// AdvanceFleetAuthorityEpoch CASes the singleton epoch forward from
-// expected. Advancing touches no fence or attempt row: old-epoch fences
-// become Uncertain/AuthoritySuperseded until they are re-bound or released
-// (plan.md §2.2), not rewritten here. reason is accepted for parity with
-// PG's AdvanceFleetAuthorityEpoch, but the etcd value is a bare decimal
-// string with nowhere to record it (m8's key layout).
-func (s *V3OperationStore) AdvanceFleetAuthorityEpoch(ctx context.Context, expected int64, reason string) (int64, error) {
-	_ = reason
-	epoch, revision, err := s.fleetAuthorityEpochWithRevision(ctx)
-	if err != nil {
-		return 0, err
-	}
-	if epoch != expected {
-		return 0, ErrFleetAuthorityEpochConflict
-	}
-	next := epoch + 1
-	txn, err := s.kv.Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", revision)).
-		Then(clientv3.OpPut(s.fleetAuthorityEpochKey(), strconv.FormatInt(next, 10))).
-		Commit()
-	if err != nil {
-		return 0, err
-	}
-	if !txn.Succeeded {
-		return 0, ErrFleetAuthorityEpochConflict
-	}
-	return next, nil
-}

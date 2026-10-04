@@ -8,14 +8,17 @@ package etcdstore
 // (norn_test_crash_hooks) would require -tags on the mandated go-test-strict
 // commands, so they live here instead. They bypass signing and every fence,
 // lineage and CAS rule: no production package may call them (verify with
-// `grep -rn 'AgeFleetTargetHolder\|SetFleetCapacityPlanStartedAt\|ReleaseFleetTargetFence\|AbandonFleetTargetPlan' --include='*.go' . | grep -v _test.go`,
+// `grep -rn 'AgeFleetTargetHolder\|SetFleetCapacityPlanStartedAt\|ReleaseFleetTargetFence\|AbandonFleetTargetPlan\|AdvanceFleetAuthorityEpoch' --include='*.go' . | grep -v _test.go`,
 // which must list only this file).
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet/lifecycle"
 )
@@ -130,4 +133,33 @@ func (s *V3OperationStore) commitFleetTargetMutationPlanForTest(ctx context.Cont
 		return fmt.Errorf("fleet target mutation changed concurrently")
 	}
 	return nil
+}
+
+// AdvanceFleetAuthorityEpoch CASes the singleton epoch forward from
+// expected. Advancing touches no fence or attempt row: old-epoch fences
+// become Uncertain/AuthoritySuperseded until they are re-bound or released
+// (plan.md §2.2), not rewritten here. reason is accepted for parity with
+// PG's AdvanceFleetAuthorityEpoch, but the etcd value is a bare decimal
+// string with nowhere to record it (m8's key layout).
+func (s *V3OperationStore) AdvanceFleetAuthorityEpoch(ctx context.Context, expected int64, reason string) (int64, error) {
+	_ = reason
+	epoch, revision, err := s.fleetAuthorityEpochWithRevision(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if epoch != expected {
+		return 0, ErrFleetAuthorityEpochConflict
+	}
+	next := epoch + 1
+	txn, err := s.kv.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", revision)).
+		Then(clientv3.OpPut(s.fleetAuthorityEpochKey(), strconv.FormatInt(next, 10))).
+		Commit()
+	if err != nil {
+		return 0, err
+	}
+	if !txn.Succeeded {
+		return 0, ErrFleetAuthorityEpochConflict
+	}
+	return next, nil
 }

@@ -239,6 +239,10 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 			return
 		}
 		if _, bindErr = h.db.FinishFleetGitHubDispatch(r.Context(), plan.ID, binding.DispatchNonceSHA256, observed.Dispatch.RunID, observed.Dispatch.RunAttempt, observed.Dispatch.URL); bindErr != nil {
+			if abandoned, checkErr := h.db.IsFleetPlanAbandonedForPlan(r.Context(), plan.ID); checkErr == nil && abandoned {
+				WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetHolderAbandoned, "fleet target holder plan is permanently abandoned")
+				return
+			}
 			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "verified workflow run could not be bound to its durable dispatch")
 			return
 		}

@@ -196,18 +196,7 @@ func (db *DB) ListFleetResourceNames(ctx context.Context, after string, limit in
 	return names, rows.Err()
 }
 
-// SetDesiredFleetResource accepts a new desired revision (Q8): the caller
-// resolves PlanID/CommitSHA/Verification before calling (github-merged-plan
-// via ResolveApprovedPlan, or operator-declared). The previous Desired is
-// pushed onto DesiredHistory (newest first), bounded to
-// controller.DesiredHistoryLimit. It touches only this resource's own row:
-// no fence, dispatch or attempt row is read or written
-// (DesiredChangeDuringExecutionKeepsBindings).
-func (db *DB) SetDesiredFleetResource(ctx context.Context, name string, next controller.DesiredRevision) (*controller.Resource, error) {
-	return db.setDesiredFleetResource(ctx, name, nil, next)
-}
-
-// SetDesiredFleetResourceIf is SetDesiredFleetResource with the operator's
+// SetDesiredFleetResourceIf accepts a new desired revision (Q8) with the operator's
 // expectedRevision CAS (WP13): it is refused with
 // ErrFleetResourceRevisionConflict unless the resource's Revision is exactly
 // expectedRevision, and a successful write bumps Revision by one so two

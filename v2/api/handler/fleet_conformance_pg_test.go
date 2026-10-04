@@ -209,6 +209,7 @@ nodePools:
 	}
 	p.h.cfg.FleetConfig = fleetConfig
 	p.router.Post("/api/v1/fleet/plans/{planID}/github/dispatch", p.h.DispatchFleetGitHubApply)
+	p.router.Post("/api/v1/fleet/plans/{planID}/github/reconcile", p.h.ReconcileFleetGitHubReservation)
 	mountFleetTargetRoutes(p.router, p.h.FleetTargetRoutes())
 	return p
 }

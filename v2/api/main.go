@@ -2262,7 +2262,11 @@ func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
 		log.Fatalf("Fleet authority-only startup: %v", err)
 	}
 	var reconciler *controller.Reconciler
-	if fleetReconcilerEnabled(os.Getenv) {
+	reconcilerEnabled, err := fleetReconcilerEnabled(os.Getenv)
+	if err != nil {
+		log.Fatalf("Fleet authority-only startup: %v", err)
+	}
+	if reconcilerEnabled {
 		reconciler = newFleetReconciler(db, func(err error) bool { return errors.Is(err, store.ErrFleetResourceNotFound) })
 		// Resource reads report this reconciler's liveness (WP13).
 		h.SetFleetControllerLiveness(reconciler)
