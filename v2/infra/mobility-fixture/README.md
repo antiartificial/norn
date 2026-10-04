@@ -13,6 +13,12 @@ with reviewed immutable identities, configure the destination database and
 persistent file volume, then explicitly admit writes only for the current
 owner. The web, worker, and tick commands all refuse writes when fenced.
 Never set `WRITE_ENABLED=true` on source and target at the same time.
+The image seeds `/data` as mode `0700`, owned by the distroless `nonroot`
+identity (UID/GID `65532`), so an empty Docker named volume receives usable
+ownership on first mount. A Nomad host volume is a bind mount and replaces
+that directory: provision its host path as UID/GID `65532`, mode `0700`,
+before scheduling this non-root image. Do not relax the container user or
+directory mode to compensate for an unprepared host volume.
 CI builds the Dockerfile to catch packaging failures; that build is not a
 signed or published release image.
 The [local transfer rehearsal](../../scripts/test-mobility-local-transfer.sh)
