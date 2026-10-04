@@ -75,22 +75,24 @@ changes and must be preserved.
 ## Milestone reconciliation
 
 No M0–M9 gate has a recorded owner sign-off. “Running” below describes runtime
-state, not a signed milestone. The historical percentage estimates and dated
-status snapshots have been removed from the current milestone document; Git
-history retains them.
+state, not a signed milestone. The percentages are rounded engineering judgment
+of work completed against each gate's full exit criteria, based on evidence
+available at this observation cutoff. They are not release sign-offs, schedule
+forecasts, or weights for an overall launch percentage. The older dated status
+snapshots remain in Git history.
 
-| Gate | Current finding | Next proof that changes the disposition |
-| --- | --- | --- |
-| M0 baseline | Mini source and current service counts are observed; historical before/after identity equality is incomplete. | Review catalog/owner decisions and a fresh baseline bound to the current signed release. |
-| M1 control semantics | Signed v3 code is running on Mini; local ownership/fencing tests exist. | Cross-process and downstream-effect recovery proof on the protected path. |
-| M2 profiles and retention | Mini uses development/PostgreSQL; profile, binding and archive work has local evidence. | Real provider retention and separate-node restore, plus reviewed legacy app binding behavior. |
-| M3 etcd Fleet | Three-member local TLS/RBAC/restore rehearsals exist; no live etcd Fleet. | Protected five-node bootstrap, actual membership/quorum, fault/restore, alarms, rotation and soak. |
-| M4 capacity and ingress | Local admission, replica and two-ingress fixtures exist; no provider-backed route or loaded scale/drain proof. | Live placement, public ingress, workload write/read, 2→3→2 and drain under load. |
-| M5 Mini upgrade rehearsal | Mini now runs the v3 source, but the original one-way transition's before snapshot was not retained. Later signed private-copy restore/shadow evidence does not repair that missing comparison. | Protected isolated transition rehearsal from a representative current backup, workload identity/route comparison, and operator review. Do not replay the consumed live fence. |
-| M6 running upgrades and app DB | Journals, authority checks and local transfer fixtures exist. | Protected running-upgrade and actual app DB cutover/interruption recovery. |
-| M7 mobility | An isolated Mini fixture source ran web, worker and tick; it wrote three items, acknowledged three jobs and recorded seven ticks. Web was fenced read-only, worker/tick stopped, and a five-dimensional private restore/transfer comparison passed. No Fleet target or complete move exists. | Reverify the source fence, perform final `NOLOGIN`/zero-session role fence at target-ready cutover, then prove target data/files/work, traffic and rollback/recovery. |
-| M8 release qualification | Signed Mini source and exact-source no-cloud checks exist; the disposable Fleet apply stopped before provider mutation. | Version matrix, provider-backed fitness, soak/fault results, client parity and owner sign-off. |
-| M9 adoption | Mini API runs v3 code, but controlled adoption is not signed; Fleet is absent. | Independently verified Fleet deployment, Mini preservation and selected app adoption under the reviewed rollout scope. |
+| Gate | Estimated complete | Current finding | Next proof that changes the disposition |
+| --- | ---: | --- | --- |
+| M0 baseline | 55% | Mini source and current service counts are observed; historical before/after identity equality is incomplete. | Review catalog/owner decisions and a fresh baseline bound to the current signed release. |
+| M1 control semantics | 65% | Signed v3 code is running on Mini; local ownership/fencing tests exist. | Cross-process and downstream-effect recovery proof on the protected path. |
+| M2 profiles and retention | 50% | Mini uses development/PostgreSQL; profile, binding and archive work has local evidence. | Real provider retention and separate-node restore, plus reviewed legacy app binding behavior. |
+| M3 etcd Fleet | 40% | Three-member local TLS/RBAC/restore rehearsals exist; no live etcd Fleet. | Protected five-node bootstrap, actual membership/quorum, fault/restore, alarms, rotation and soak. |
+| M4 capacity and ingress | 40% | Local admission, replica and two-ingress fixtures exist; no provider-backed route or loaded scale/drain proof. | Live placement, public ingress, workload write/read, 2→3→2 and drain under load. |
+| M5 Mini upgrade rehearsal | 35% | Mini now runs the v3 source, but the original one-way transition's before snapshot was not retained. Later signed private-copy restore/shadow evidence does not repair that missing comparison. | Protected isolated transition rehearsal from a representative current backup, workload identity/route comparison, and operator review. Do not replay the consumed live fence. |
+| M6 running upgrades and app DB | 25% | Journals, authority checks and local transfer fixtures exist. | Protected running-upgrade and actual app DB cutover/interruption recovery. |
+| M7 mobility | 30% | An isolated Mini fixture source ran web, worker and tick; it wrote three items, acknowledged three jobs and recorded seven ticks. Web was fenced read-only, worker/tick stopped, and a five-dimensional private restore/transfer comparison passed. No Fleet target or complete move exists. | Reverify the source fence, perform final `NOLOGIN`/zero-session role fence at target-ready cutover, then prove target data/files/work, traffic and rollback/recovery. |
+| M8 release qualification | 20% | Signed Mini source and exact-source no-cloud checks exist; the disposable Fleet apply stopped before provider mutation. | Version matrix, provider-backed fitness, soak/fault results, client parity and owner sign-off. |
+| M9 adoption | 10% | Mini API runs v3 code, but controlled adoption is not signed; Fleet is absent. | Independently verified Fleet deployment, Mini preservation and selected app adoption under the reviewed rollout scope. |
 
 The latest detailed implementation notes on the unmerged integration branch
 remain useful leads, but do not supersede this live inventory or protected
