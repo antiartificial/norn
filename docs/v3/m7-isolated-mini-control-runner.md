@@ -111,3 +111,13 @@ entry with web-only. Then deploy and verify the new web allocation rejects
 dump, and file inventory. The cron-pause API cannot admit a process after it
 has disappeared from the catalog; a completed web deploy alone does not prove
 that old writers have stopped.
+
+This app and scheduler fence is a source rehearsal checkpoint, not the final
+database writer fence for a cross-control-plane cutover. At final sync, use a
+separately authorized account to set the exact dedicated source runtime role
+`NOLOGIN`, terminate its remaining sessions, and read back both disabled login
+and zero sessions before exporting the final database snapshot. Account for
+every other writer in the source inventory. Keep the source fenced while the
+target is restored and compared, and admit target writes only after that proof.
+The initial Mini source dump is useful for restore rehearsal but cannot stand
+in for a final dump taken after this role fence.
