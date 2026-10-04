@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-04 21:26 UTC. This is the current handoff for the pragmatic
+Observed 2026-10-04 21:55 UTC. This is the current handoff for the pragmatic
 deployment objective. Recheck each external observation before a mutation;
 links below distinguish live state, protected workflow evidence, and historical
 local work. The [milestone contract](execution-milestones.md) remains the exit
@@ -138,6 +138,24 @@ passed both v3 CI and the protected legacy Repository CI checks, then merged as
 The correction is in source, but has not been deployed to Mini or used in a
 successful Fleet run. It is not Fleet fitness evidence.
 
+**Successor readiness:** Protected Fleet [qualification run 37237586889](https://github.com/antiartificial/norn-fleet/actions/runs/37237586889)
+passed on current `daf7bf3` with 286 bounded tests and no cloud, OIDC or
+Tailscale mutation. Its owner-only artifact is retained under
+`qualification-daf7-37237586889/`. A read-only name inventory found no
+`pilot261004b` resources across nine DigitalOcean compute categories; it does
+not prove Spaces or DNS zero. Current unit prices yield a provisional $8.97
+conservative quote for a four-hour maximum shape plus one teardown hour,
+including the full $5 Spaces base. This is not billable approval. Official
+[DigitalOcean Droplet](https://www.digitalocean.com/pricing/droplets),
+[managed database](https://www.digitalocean.com/pricing/managed-databases),
+[load balancer](https://docs.digitalocean.com/products/networking/load-balancers/details/pricing/)
+and [Spaces](https://docs.digitalocean.com/products/spaces/details/pricing/)
+rates were checked on 2026-10-04. Norn
+[release run 37237574000](https://github.com/antiartificial/norn/actions/runs/37237574000)
+built all four platform bundles for exact source `c56fa0c` and is waiting for
+the protected publish review. No signed `c56fa0c` release has been published
+or promoted yet.
+
 ## Milestone reconciliation
 
 No M0–M9 gate has a recorded owner sign-off. “Running” below describes runtime
@@ -182,9 +200,10 @@ cover every M3/M4/M8 exit.
    then retain final external
    cleanup evidence. Technical zero does not settle the final invoice.
 3. **Start a new bounded Fleet pilot.** The title verifier fix is merged but
-   not deployed to the management authority. A new pilot needs fresh cost and
-   expiry approval, exact protected source qualification, credentials, backend
-   and management bootstrap, a fresh signed Norn release, a protected plan,
+   not deployed to a management authority. Exact-main no-cloud qualification
+   passed for `daf7bf3`. A new pilot needs fresh cost and expiry approval,
+   credentials, backend and management bootstrap, a fresh signed Norn release,
+   a protected plan,
    and a guarded apply. Do not reuse this destroyed state, runner or expired
    approvals. Watch the numbered attempt and checkpoints; verify three etcd
    members, Consul/Nomad enrollment, both ingresses and public TLS, then run
@@ -246,6 +265,13 @@ cover every M3/M4/M8 exit.
 - Norn bridge title correction: [PR #115](https://github.com/antiartificial/norn/pull/115)
   passed the v3 and legacy protected checks and merged as `c56fa0c`. It is not
   yet deployed on Mini or a new management authority.
+- Successor preflight: protected [qualification run 37237586889](https://github.com/antiartificial/norn-fleet/actions/runs/37237586889),
+  owner-only `qualification-daf7-37237586889/pre-release-pilot-qualification.json`
+  (286 tests), and `successor-pilot261004b/{provider-name-preflight,provisional-price-quote}.json`.
+  The provisional quote keeps `billableCreateAllowed=false`; a fresh token and
+  run-specific protected approval are still required. Norn signed
+  [release run 37237574000](https://github.com/antiartificial/norn/actions/runs/37237574000)
+  is waiting at its protected publish gate after four successful bundle jobs.
 - `pilot261003d` emergency retirement: owner-only local incident record at
   `/Users/arti/.config/norn/fleet-next-full-e2e/incident-retirement-pilot261003d/`,
   especially `status-20261004T0918Z.json`, management state/provider-zero
