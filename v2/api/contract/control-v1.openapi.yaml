@@ -284,10 +284,15 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
     post:
       operationId: startFleetRunnerAttempt
-      description: Starts or recovers an external protected-runner attempt bound to one plan, reviewed commit, and Terraform plan digest. A protected runner may also bind a sanitized reviewed-plan timing classification; timing is advisory only. Requires the exact bound GitHub Actions fleet:operate identity.
+      description: Starts or recovers an external protected-runner attempt bound to one plan, reviewed commit, and Terraform plan digest. A protected runner may also bind a sanitized reviewed-plan timing classification; timing is advisory only. Requires the exact bound GitHub Actions fleet:operate identity, whose body is FleetRunnerAttemptStartRequest. Executor lane (ADR 0010, not yet served) - the executor principal (managed token, exact fleet:execute, not CI) sends FleetExecutorAttemptStartRequest instead; the lane is chosen by the principal, never by the body.
       requestBody:
         required: true
-        content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptStartRequest' } } }
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - { $ref: '#/components/schemas/FleetRunnerAttemptStartRequest' }
+                - { $ref: '#/components/schemas/FleetExecutorAttemptStartRequest' }
       responses:
         '200': { description: Existing runner identity recovered, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
         '201': { description: Durable runner attempt started, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
@@ -521,6 +526,90 @@ paths:
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/resources/{name}/converge:
+    parameters:
+      - { $ref: '#/components/parameters/FleetResourceName' }
+    post:
+      operationId: rescanFleetResourceConverge
+      description: Executor lane (ADR 0010). Rescans the protected main tip and records a converge plan (a fleet.capacity-plan with action converge) only when the verified tip has no admissible converge plan yet (newer than the last applied commit, or the newest plan for it was refused with fleet_plan_revalidation_required). Otherwise it records nothing. No request body; an Idempotency-Key is required because it may write a ledger operation, and a replay returns the first response. Allowed for a non-CI platform:operate principal or the executor principal (exact fleet:execute). Never starts an attempt.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      responses:
+        '200': { description: Rescan result, content: { application/json: { schema: { $ref: '#/components/schemas/FleetResource' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/resources/{name}/execution-mode:
+    parameters:
+      - { $ref: '#/components/parameters/FleetResourceName' }
+    post:
+      operationId: setFleetResourceExecutionMode
+      description: Executor lane (ADR 0010). Sets executionMode (github or controller) as the signed operation fleet.resource.execution-mode. The mode is stored only in the resource document and requires the target fence to be Free (fleet_execution_mode_fence_held otherwise). Requires admin, not available to workload identities, and an Idempotency-Key.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetExecutionModeRequest' } } }
+      responses:
+        '200': { description: Replay of the same request, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Mode set, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/converge/approve:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: approveFleetConverge
+      description: Executor lane (ADR 0010). Records the signed operation fleet.converge.approve for exactly one converge plan commit. With resume true and sourceAttemptId it authorizes one recovery attempt instead. Requires platform:operate, a non-CI caller and an Idempotency-Key. Refused with fleet_converge_commit_mismatch when commitSha is not the plan's commit.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetConvergeApproveRequest' } } }
+      responses:
+        '200': { description: Replay of the same request, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Approved, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/credential-grants:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: createFleetCredentialGrant
+      description: Executor lane (ADR 0010). Records the signed operation fleet.credential-grant and returns its ID. Requires the executor principal (managed token, exact scope fleet:execute, not CI) and an Idempotency-Key. For every phase except plan the attempt must be live and owned by this executor; recover needs a recovery attempt, and every other phase must equal the attempt's currentPhase exactly (no alias). Each type must be allowed for the phase on the attempt's backend profile (PG legacy no-drain or canonical V3). Grants expire after 2 hours.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetCredentialGrantRequest' } } }
+      responses:
+        '200': { description: Replay of the same request, content: { application/json: { schema: { $ref: '#/components/schemas/FleetCredentialGrant' } } } }
+        '201': { description: Grant recorded, content: { application/json: { schema: { $ref: '#/components/schemas/FleetCredentialGrant' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/executor/stop-attestations:
+    post:
+      operationId: createFleetExecutorStopAttestation
+      description: Executor lane (ADR 0010). Records the signed operation fleet.executor.stop-attestation for a source attempt. Requires the executor principal (exact fleet:execute, not CI) and an Idempotency-Key. The body carries the attesting loop's own identity. Valid only when the caller is the source attempt's device, dropletId and machineId equal the source attempt's, invocationId differs from the source invocation, observedAt is within 5 minutes, and either bootId differs from the source attempt's boot or the same-boot facts (phaseUidEmpty, phaseProcessGroupReaped, sourceCgroupEmpty) are all true; otherwise fleet_executor_stop_attestation_invalid. This is self-attestation inside one administrative domain.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetExecutorStopAttestationRequest' } } }
+      responses:
+        '200': { description: Replay of the same request, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Attestation recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
@@ -1900,6 +1989,106 @@ components:
         mode: { type: string, enum: [terminal, abandon] }
         expectedGeneration: { type: integer, format: int64, minimum: 0 }
         reason: { type: string, maxLength: 1024 }
+        providerEvidence: { $ref: '#/components/schemas/FleetProviderEvidence' }
+    FleetProviderEvidence:
+      type: object
+      additionalProperties: false
+      required: [provider, dropletId, status, observedAt]
+      description: Executor-lane only (ADR 0010). Not proof - Norn holds no provider credential and cannot check it. It is the submitting admin's signed assertion that the old executor droplet is not running, carried in the signed admission, with its sha256 digest stored in operation metadata (fleetProviderEvidenceDigest). The server additionally requires dropletId equal to the holder's latest executor attempt metadata dropletId, the holder's executor device revoked (fleet_executor_device_active otherwise) and the 30 minute age gate. observedAt must be within the last hour. Accepted only for plans whose holder is on the executor lane; it never satisfies GitHub-lane proof.
+      properties:
+        provider: { const: digitalocean }
+        dropletId: { type: string, pattern: '^[0-9]{1,20}$' }
+        status: { type: string, enum: [off, archive, not_found] }
+        observedAt: { type: string, format: date-time }
+        reference: { type: string, maxLength: 512 }
+    FleetExecutionModeRequest:
+      type: object
+      additionalProperties: false
+      required: [mode, expectedRevision]
+      properties:
+        mode: { type: string, enum: [github, controller] }
+        expectedRevision: { type: integer, format: int64, minimum: 0 }
+    FleetConvergeApproveRequest:
+      type: object
+      additionalProperties: false
+      required: [commitSha]
+      properties:
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        resume: { type: boolean, description: When true the approval authorizes one recovery attempt of sourceAttemptId and is consumed by it. }
+        sourceAttemptId: { type: string, format: uuid, description: Required with resume, forbidden without. }
+    FleetCredentialGrantRequest:
+      type: object
+      additionalProperties: false
+      required: [phase, types]
+      properties:
+        attemptId: { type: string, format: uuid, description: Required for every phase except plan; forbidden for plan. }
+        phase: { type: string, enum: [plan, prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, recover] }
+        types:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [do-read, do-write, spaces-rw, spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt] }
+    FleetCredentialGrant:
+      type: object
+      required: [grantId, expiresAt]
+      properties:
+        grantId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+    FleetExecutorStopAttestationRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceAttemptId, dropletId, machineId, bootId, invocationId, phaseUidEmpty, phaseProcessGroupReaped, sourceCgroupEmpty, observedAt]
+      properties:
+        sourceAttemptId: { type: string, format: uuid }
+        dropletId: { type: string, pattern: '^[0-9]{1,20}$', description: The attesting host's droplet ID. }
+        machineId: { type: string, minLength: 1, maxLength: 128, description: The attesting host's /etc/machine-id. }
+        bootId: { type: string, minLength: 1, maxLength: 128, description: The attesting host's current boot_id. }
+        invocationId: { type: string, pattern: '^[0-9a-f]{32}$', description: The attesting loop's own INVOCATION_ID; must differ from the source attempt's. }
+        phaseUidEmpty: { type: boolean, description: No process owned by the norn-phase uid exists. }
+        phaseProcessGroupReaped: { type: boolean, description: The source phase process group no longer exists. }
+        sourceCgroupEmpty: { type: boolean, description: The source invocation's cgroup.events reads populated 0 (or the cgroup is gone). }
+        observedAt: { type: string, format: date-time }
+        tofuLock: { $ref: '#/components/schemas/FleetExecutorTofuLock' }
+    FleetExecutorTofuLock:
+      type: object
+      additionalProperties: false
+      required: [id, operation, who, created]
+      description: The OpenTofu state lock seen before any force-unlock (M5).
+      properties:
+        id: { type: string }
+        operation: { type: string }
+        who: { type: string }
+        created: { type: string, format: date-time }
+    FleetExecutorAttemptStartRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, runnerAttemptId, commitSha, planSha256, workflowUrl, executor]
+      description: Executor lane only (ADR 0010). GitHub-lane fields (dispatchNonce, sourceDispatchRunId, pilotRunId, external-Mac digests) are refused; the server stores sourceDispatchRunId 0 and pilotRunId empty.
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        runnerAttemptId: { type: string, pattern: '^executor:[0-9]{1,20}:[0-9a-f]{32}:[0-9a-f-]{36}$', description: 'executor:<dropletId>:<invocationId>:<planId>, planId equal to the path plan.' }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workflowUrl: { type: string, pattern: '^norn-executor://[0-9]{1,20}/[0-9a-f]{32}$' }
+        resume: { type: boolean, default: false }
+        heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900, default: 120 }
+        operationClass: { type: string, enum: [cold_start, unknown] }
+        createdNodeCount: { type: integer, minimum: 0, maximum: 1000 }
+        executor: { $ref: '#/components/schemas/FleetExecutorAttemptMetadata' }
+    FleetExecutorAttemptMetadata:
+      type: object
+      additionalProperties: false
+      required: [lane, dropletId, machineId, bootId, invocationId, loopRelease, commitSha, wheelhouseSha256, tofuVersion]
+      description: Stored as the attempt's metadata. dropletId and invocationId must match runnerAttemptId and workflowUrl; commitSha must equal the attempt commit.
+      properties:
+        lane: { const: executor }
+        dropletId: { type: string, pattern: '^[0-9]{1,20}$' }
+        machineId: { type: string, minLength: 1, maxLength: 128 }
+        bootId: { type: string, minLength: 1, maxLength: 128 }
+        invocationId: { type: string, pattern: '^[0-9a-f]{32}$' }
+        loopRelease: { type: string, minLength: 1 }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        wheelhouseSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        tofuVersion: { type: string, minLength: 1 }
     FleetTargetAbandonPlanRequest:
       type: object
       additionalProperties: false
@@ -1907,6 +2096,7 @@ components:
       properties:
         planId: { type: string, format: uuid }
         reason: { type: string, maxLength: 1024 }
+        providerEvidence: { $ref: '#/components/schemas/FleetProviderEvidence' }
     FleetTargetFence:
       type: object
       required: [targetId, generation, held, authorityEpoch, currentAuthorityEpoch, revision, occupancy]
@@ -1961,7 +2151,7 @@ components:
         planId: { type: string }
         commitSha: { type: string }
         repository: { type: string }
-        verification: { type: string, enum: [github-merged-plan, operator-declared] }
+        verification: { type: string, enum: [github-merged-plan, operator-declared, github-protected-main] }
         acceptedAt: { type: string, format: date-time }
         acceptedBy: { type: string }
     FleetResourceCondition:
@@ -2006,7 +2196,7 @@ components:
       type: object
       required: [kind, reason]
       properties:
-        kind: { type: string, enum: [execution, condition, reconciliation, observation] }
+        kind: { type: string, enum: [execution, condition, reconciliation, observation, trigger, approval] }
         reason: { type: string }
         message: { type: string }
         condition: { type: string }
@@ -2016,7 +2206,7 @@ components:
       description: The approval policy Norn actually enforces, as data. basis is the desired revision's verification (none before one is declared).
       required: [basis, protectedBranch, mergedPullRequest, planWorkflowSucceeded, boundPlanDigest, authorizedDispatch, ownerApprovalEnvelope, environmentReviewers, independentReview]
       properties:
-        basis: { type: string, enum: [github-merged-plan, operator-declared, none] }
+        basis: { type: string, enum: [github-merged-plan, operator-declared, github-protected-main, none] }
         protectedBranch: { type: boolean }
         mergedPullRequest: { type: boolean }
         planWorkflowSucceeded: { type: boolean }
@@ -2025,6 +2215,12 @@ components:
         ownerApprovalEnvelope: { type: boolean }
         environmentReviewers: { type: string, enum: [not_enforced] }
         independentReview: { type: string, enum: [not_enforced] }
+        protectedBranchVerified: { type: boolean, description: Executor lane only; omitted otherwise. }
+        validateWorkflowSucceeded: { type: boolean, description: Executor lane only; omitted otherwise. }
+        mergeGate: { type: string, enum: [config_auto_executable_approve], description: Executor lane only; omitted otherwise. }
+        destructiveApproval: { type: string, enum: [github_lane_dispatch], description: Executor lane only; omitted otherwise. }
+        approvedBy: { type: string, description: Executor lane only; the actor of the matching fleet.converge.approve. }
+        requiredReviews: { type: string, enum: [not_verified], description: Executor lane only; omitted otherwise. }
     FleetControllerLiveness:
       type: object
       description: running when the in-process reconciler completed a rescan within three intervals, stale when it did not, unknown when this process runs no reconciler or none has completed yet.
@@ -2058,6 +2254,7 @@ components:
               observedAt: { type: string, format: date-time }
               sequence: { type: integer, format: int64 }
         approvalPolicy: { $ref: '#/components/schemas/FleetApprovalPolicy' }
+        executionMode: { type: string, enum: [github, controller], description: Omitted until set; absent means github. }
         controller: { $ref: '#/components/schemas/FleetControllerLiveness' }
         readAt: { type: string, format: date-time }
     FleetResourceList:
@@ -2298,6 +2495,22 @@ components:
         - fleet_resource_revision_conflict
         - fleet_resource_target_mismatch
         - fleet_resource_plan_target_mismatch
+        - invalid_fleet_executor_request
+        - fleet_converge_approval_required
+        - fleet_converge_commit_mismatch
+        - fleet_converge_approval_consumed
+        - fleet_plan_not_converge
+        - fleet_execution_mode_not_controller
+        - fleet_execution_mode_fence_held
+        - fleet_executor_trigger_unverified
+        - fleet_executor_plan_not_newest
+        - fleet_executor_stop_attestation_invalid
+        - fleet_credential_grant_attempt_required
+        - fleet_credential_grant_phase_mismatch
+        - fleet_credential_type_not_allowed
+        - fleet_provider_evidence_invalid
+        - fleet_provider_evidence_required
+        - fleet_executor_device_active
         - fleet_resource_store_failed
         - fleet_observation_out_of_bounds
         - fleet_observation_identity_denied

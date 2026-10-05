@@ -204,3 +204,89 @@ GitHub run is proven `completed` via the WP5 observers
 (`fleet_target_recovery_requires_stopped_source`). Unregistered targets keep
 today's unchecked behavior; this contract records that gap so later work
 does not treat it as newly introduced.
+
+## 7. Executor lane (ADR 0010, plan-5-7.md, WP E0)
+
+This section is the contract for the controller-run executor lane. Nothing here
+describes shipped behavior yet: each row names the work package that makes it
+true, and the pinned shapes live in `fleet/executor/shapes.go` and
+`contract/control-v1.openapi.yaml` (cross-checked by
+`contract/executor_contract_test.go`). Existing rows in sections 1-6 are
+unchanged. Baselines A and C of section 1b apply to every route below.
+
+### 7a. New routes
+
+| Route | Backends | Scope / principal | Phases | Ledger kind | Owner WP |
+|---|---|---|---|---|---|
+| `POST resources/{name}/converge` (rescan; no body, `Idempotency-Key`) | PG authority-only, etcd | non-CI `platform:operate`, or executor (exact `fleet:execute`) | none; never starts an attempt; records a plan only when the verified tip has no admissible converge plan | `fleet.capacity-plan` (`action: converge`) | E4a, E6 |
+| `POST plans/{id}/converge/approve` | both | `platform:operate`, non-CI, `Idempotency-Key` | none | `fleet.converge.approve` | E4a (route), E2 (fixtures) |
+| `POST resources/{name}/execution-mode` | both | `admin`, non-CI, `Idempotency-Key`, fence Free | none | `fleet.resource.execution-mode` | E4b |
+| `POST plans/{id}/credential-grants` | both | executor principal: managed token, exact `fleet:execute`, `CI==nil` | `plan`; `recover` with a live recovery attempt; else `phase == currentPhase` exactly (7b) | `fleet.credential-grant` | E5 |
+| `POST executor/stop-attestations` | both | executor principal, same device as the source attempt | source attempt non-terminal or expired | `fleet.executor.stop-attestation` | E5 |
+
+Existing routes with executor-lane behavior:
+
+| Route | Change | Owner WP |
+|---|---|---|
+| `POST plans/{id}/attempts` and heartbeat/advance/checkpoint/cancel | Lane chosen by principal (ADR 0010, "Validators and lanes"). The executor principal sends `FleetExecutorAttemptStartRequest` (`executor.AttemptStartRequest`), owns attempts whose `principal_subject` is `managed-device:<deviceId>` and `runnerAttemptId` is `executor:<dropletId>:<invocationId>:<planId>`, through a separate branch of `fleetRunnerPrincipalOwnsAttempt`. Start acquires and binds the fence and inserts the attempt in one transaction (`CreateFleetExecutorAttempt`; etcd equivalent). Every GitHub-lane validator and the CI branch are unchanged. | E2, E2e |
+| `POST targets/{id}/fence/release`, `POST targets/abandon-plan` | Optional admin `providerEvidence`: an admin assertion, not proof; the server also requires the holder's executor device revoked and the matching `dropletId`. For executor-lane holders a valid stop attestation or `providerEvidence` replaces GitHub observers, which can never prove an executor attempt; the 30 minute age gate (H5) still applies. | E5 |
+| `GET resources[/{name}]` | `executionMode`, extended `approvalPolicy`, new blockers, `approve_converge`, `resumeApproved`. | E4b |
+
+New scope: `fleet:execute`. It is granted only alone, only to platform
+`fleet-executor` (7 day token), never via OIDC. The router's generic scope matcher
+must not widen it: `FleetPlanRunnerScopedPath` keeps matching only attempt and
+reconciliation paths, and the new routes face the generic check (E6).
+
+### 7b. Phases
+
+Grant phases are the pseudo-phases `plan` (before any attempt) and `recover`
+(live recovery attempt, union of types), and otherwise real lifecycle phase
+names equal to the attempt's `currentPhase`; there is no alias. Executor plans
+never drain, so PG executor attempts walk the legacy no-drain list (section 2,
+D3/D4: `infrastructure_applied` first, and the provider apply runs inside it)
+and etcd executor attempts walk the canonical list (`prechange_verified`, then
+`provider_applying`, where the provider apply runs). The per-backend type table
+is `executor.GrantTypes` and ADR 0010. Advance and checkpoint rules of section
+1c are unchanged.
+
+### 7c. Error codes
+
+| Status | Code | Raised by |
+|---|---|---|
+| 400 | `invalid_fleet_executor_request` | all new routes, malformed body |
+| 409 | `fleet_converge_approval_required` | attempt start, plan needs approve and none matches |
+| 409 | `fleet_converge_commit_mismatch` | approve for a commit other than the plan's |
+| 409 | `fleet_converge_approval_consumed` | second recovery against one resume approve |
+| 409 | `fleet_plan_not_converge` | approve or executor start on a non-converge plan |
+| 409 | `fleet_execution_mode_not_controller` | executor start on a `github` resource |
+| 409 | `fleet_execution_mode_fence_held` | mode switch while the fence is held |
+| 409 | `fleet_executor_trigger_unverified` | `VerifyProtectedCommit` failed at attempt start |
+| 409 | `fleet_executor_plan_not_newest` | plan is not the newest desired revision |
+| 409 | `fleet_executor_stop_attestation_invalid` | other device, droplet or machine; same invocation; stale; or same-boot facts not all true |
+| 409 | `fleet_credential_grant_attempt_required` | attempt-scoped phase without a live owned attempt |
+| 409 | `fleet_credential_grant_phase_mismatch` | `phase` is not the attempt's current phase |
+| 403 | `fleet_credential_type_not_allowed` | type not in the phase table |
+| 400 | `fleet_provider_evidence_invalid` | malformed or stale `providerEvidence` |
+| 409 | `fleet_executor_device_active` | `providerEvidence` while the holder's executor device is not revoked |
+| 409 | `fleet_provider_evidence_required` | executor-lane release or abandon without attestation or evidence |
+
+Reused unchanged: `fleet_target_execution_occupied` (the loop treats it as "busy,
+retry"), `fleet_plan_revalidation_required` (the loop rescans),
+`fleet_target_unregistered`, `fleet_target_holder_abandoned`,
+`fleet_target_recovery_requires_stopped_source`, `insufficient_scope` (403, wrong or
+non-exact principal) and baselines A and C.
+
+### 7d. D13-D18: executor-lane differences (extends section 3)
+
+| # | Difference | Owning test |
+|---|---|---|
+| D13 | Attempt identity: `github-actions:<repo>:<run>:<attempt>` vs `executor:<dropletId>:<invocationId>:<planId>`; `workflowUrl` is `norn-executor://...`, not https; `sourceDispatchRunId` 0; `principal_subject` `managed-device:<deviceId>` | `fleet/executor` `TestAttemptIdentityRoundTripAndMetadata`, `TestLaneIdentifiersAreDisjoint`; E2 `CIBranchUnchanged` |
+| D14 | Fence holder nonce: GitHub dispatch nonce hash vs `sha256("executor-lane:" + planID)`; no dispatch row, nonce, claim or submit | `fleet/executor` `TestHolderNonceIsStableHex`; E2 `LanesShareFence` |
+| D15 | Stop proof: GitHub run completed (observers) vs stop attestation (self-attestation) or admin `providerEvidence` (assertion) | `fleet/executor` `TestStopAttestationDecision`; E2 `RecoveryRequiresAttestationOrEvidence`, `CloneDropletAttestationRejected`; E5 `AttestationSameDropletOnly` |
+| D16 | Principal: bound GitHub Actions identity with `fleet:operate` vs managed token with exact `fleet:execute` and `CI==nil` | E1 `TestExecutorPrincipalRequiresManagedTokenAndExactScope` |
+| D18 | Grant phase table: PG legacy no-drain grants the provider apply at `infrastructure_applied`; etcd at `provider_applying` | `fleet/executor` `TestGrantPhasesAreRealLifecyclePhases`, `TestGrantTypeTable` |
+| D17 | Trigger check: OIDC `ref_protected` vs `VerifyProtectedCommit` (protected flag, successful `validate.yml` push run, descendant of last applied) at the watcher and at attempt start | E3 `RequiresProtectedFlag`, `RequiresValidatePushSuccessAtSHA` |
+
+Same-plan concurrent executors remain a section 6 concern: the executor lane takes
+the fence row `FOR UPDATE` in the same transaction as the attempt insert, so Q11
+does not apply to it.

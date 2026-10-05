@@ -451,3 +451,26 @@ and only when the registry is non-empty.
 One mapping gap: on the PG general router `POST plans/{id}/github/reconcile`,
 a refusal for an abandoned plan surfaces as 500 `fleet_github_receipt_failed`,
 not `fleet_target_holder_abandoned` (final-review m2).
+
+## Executor lane operations (ADR 0010, not yet shipped)
+
+These commands become real as WPs E1-E6 and C1 land; shapes are pinned in
+[`lifecycle-contract.md`](./lifecycle-contract.md) section 7.
+
+- Enroll the executor: the host calls `POST /api/v1/enrollments` with platform
+  `fleet-executor`; an admin approves with scope exactly `fleet:execute`. The token
+  lives 7 days and self-rotates when idle. After a host rebuild or retirement,
+  delete the old device immediately (`DELETE /api/v1/devices/{id}`).
+- Opt a target in or out: `norn fleet mode <name> controller|github` (admin, fence
+  must be Free).
+- Executable changes wait for `norn fleet approve <plan-id>` (status shows
+  `approve_converge`). Destructive and contraction plans stay on the GitHub lane
+  with an ephemeral runner.
+- After an executor stop (power loss, kill), the loop attests on restart. Resume
+  with `norn fleet converge <name> --resume`. A rebuilt or different host cannot
+  attest. First delete the old executor device (`DELETE /api/v1/devices/{id}`);
+  then use `norn fleet release|abandon ... --provider-evidence <file>` with the
+  DigitalOcean droplet status `off`, `archive` or `not_found` that you observed
+  within the last hour. Norn cannot check that status: the evidence is your
+  signed assertion, so look at the droplet yourself. Every attestation and
+  `providerEvidence` use should alert.
