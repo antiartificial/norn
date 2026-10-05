@@ -295,6 +295,11 @@ func (p *PGConvergePlanRecorder) RecordConvergePlan(ctx context.Context, plan *c
 		Semantics: map[string]interface{}{
 			"action": "fleet.capacity-plan", "resource": plan.Converge.Resource, "commitSha": plan.Converge.CommitSHA, "baseCommitSha": plan.Converge.BaseCommitSHA,
 		},
+		// The watcher read executionMode before getting here; a switch to
+		// github may have landed since. The acceptance transaction re-checks
+		// the mode under the resource row lock, so the plan is either recorded
+		// before the switch (which then abandons it) or not at all.
+		RequireFleetResourceMode: executor.ModeController,
 	}
 	// A replayed key returns the first plan: the accepted intent covers the
 	// operation's identity, so a second plan object under the same key would

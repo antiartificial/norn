@@ -188,6 +188,42 @@ func DecideFleetExecutorStateLockRefusal(sourceAttemptID string, attempts []Flee
 	return nil
 }
 
+// DecideFleetExecutorRefusalBinding binds a converge refusal to its caller:
+// deviceID must hold a fleet.credential-grant ledger row for the plan
+// (grants, read by plan; the plan-phase grant the loop requests before it
+// refuses, or the grant of any phase) or own an executor-lane attempt on it.
+// Any executor device could otherwise refuse any plan.
+func DecideFleetExecutorRefusalBinding(deviceID string, attempts []FleetExecutorAttemptFact, grants []FleetExecutorLedgerRow) error {
+	if deviceID != "" {
+		for _, attempt := range attempts {
+			if attempt.Executor && FleetExecutorDeviceID(attempt.PrincipalSubject) == deviceID {
+				return nil
+			}
+		}
+		for _, row := range grants {
+			var grant executor.CredentialGrantPayload
+			if decodeLedgerValue(row.Payload, &grant) && grant.DeviceID == deviceID {
+				return nil
+			}
+		}
+	}
+	return executorRefusal(executor.CodeFleetConvergeRefusalRejected, "the device has neither a credential grant nor an attempt for this plan")
+}
+
+// DecideFleetExecutorStartRefusal is the fresh-start gate: a plan whose
+// commit has a destructive_requires_github_lane refusal (refusals, the plan's
+// fleet.converge.refusal rows) is never started. A recovery is exempt: a live
+// holder's destructive remainder is handled by abandon.
+func DecideFleetExecutorStartRefusal(refusals []FleetExecutorLedgerRow, commitSHA string) error {
+	for _, row := range refusals {
+		var payload executor.ConvergeRefusalPayload
+		if decodeLedgerValue(row.Payload, &payload) && payload.Code == executor.RefusalDestructive && payload.CommitSHA == commitSHA {
+			return executorRefusal(executor.CodeFleetConvergeRefusalRejected, "the plan was refused as %s; use the GitHub lane", executor.RefusalDestructive)
+		}
+	}
+	return nil
+}
+
 // DecideFleetExecutorStopAttestation validates an attestation by the device
 // attesterSubject against the source attempt (executor.ValidStopAttestation).
 // source nil (an unknown attempt) is refused.

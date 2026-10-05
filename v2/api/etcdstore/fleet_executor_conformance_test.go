@@ -131,6 +131,14 @@ func etcdToMap(t *testing.T, value interface{}) map[string]interface{} {
 	return out
 }
 
+func (h *etcdExecutorHarness) SeedRefusal(plan fleettest.ExecutorPlanRef, code, commitSHA string) {
+	h.t.Helper()
+	h.putOp(model.Operation{
+		ID: uuid.NewString(), Kind: executor.KindConvergeRefusal, Ref: plan.ID,
+		Payload: etcdToMap(h.t, executor.ConvergeRefusalPayload{PlanID: plan.ID, ConvergeRefusalRequest: executor.ConvergeRefusalRequest{Code: code, CommitSHA: commitSHA, PlanSHA256: plan.PlanSHA256}}),
+	})
+}
+
 func (h *etcdExecutorHarness) SeedStopAttestation(plan fleettest.ExecutorPlanRef, attesterDeviceID string, request executor.StopAttestationRequest) {
 	h.t.Helper()
 	h.putOp(model.Operation{

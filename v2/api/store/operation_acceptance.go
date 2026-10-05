@@ -175,6 +175,11 @@ func (s *PGOperationStore) acceptWithGuard(ctx context.Context, input OperationA
 			return AcceptedOperation{}, err
 		}
 	}
+	if acceptance.RequireFleetResourceMode != "" {
+		if err := enforceFleetResourceModeRequired(ctx, tx, &acceptance); err != nil {
+			return AcceptedOperation{}, err
+		}
+	}
 	if acceptance.FleetRunnerAttempt != nil {
 		attempt, err := acceptFleetRunnerAttempt(ctx, tx, acceptance)
 		if err != nil {

@@ -101,6 +101,14 @@ func (h *pgExecutorHarness) SeedApprove(plan fleettest.ExecutorPlanRef, commitSH
 	h.insertOp(&model.Operation{ID: uuid.NewString(), Kind: executor.KindConvergeApprove, Ref: plan.ID, Payload: payload})
 }
 
+func (h *pgExecutorHarness) SeedRefusal(plan fleettest.ExecutorPlanRef, code, commitSHA string) {
+	h.t.Helper()
+	h.insertOp(&model.Operation{
+		ID: uuid.NewString(), Kind: executor.KindConvergeRefusal, Ref: plan.ID,
+		Payload: toMap(h.t, executor.ConvergeRefusalPayload{PlanID: plan.ID, ConvergeRefusalRequest: executor.ConvergeRefusalRequest{Code: code, CommitSHA: commitSHA, PlanSHA256: plan.PlanSHA256}}),
+	})
+}
+
 func (h *pgExecutorHarness) SeedStopAttestation(plan fleettest.ExecutorPlanRef, attesterDeviceID string, request executor.StopAttestationRequest) {
 	h.t.Helper()
 	payload := toMap(h.t, executor.StopAttestationPayload{PlanID: plan.ID, StopAttestationRequest: request})

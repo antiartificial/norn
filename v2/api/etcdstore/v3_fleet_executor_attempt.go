@@ -19,7 +19,7 @@ package etcdstore
 //   - the plan's runner plan-state key (ModRevision, 0 when absent);
 //   - the recovery source's executor metadata key (ModRevision);
 //   - the operation kind-index prefix of each ledger kind that was read
-//     (approve, stop attestation, provider evidence), bounded by the read
+//     (approve, converge refusal, stop attestation, provider evidence), bounded by the read
 //     revision, so a row recorded after the read fails the Txn;
 //   - for a first start, the whole capacity-plan kind index (bounded by the
 //     read revision) and the operation key of each of the resource's plans,
@@ -397,6 +397,21 @@ func (s *V3OperationStore) tryFleetExecutorStart(ctx context.Context, in store.F
 		if len(attempts) > 0 {
 			return nil, false, fleetExecutorRefusal(store.CodeFleetExecutorRetryRequired, "this plan already has runner history; recover the latest attempt")
 		}
+		// A destructive refusal recorded for this commit ends the plan on this
+		// lane; the refusal kind index is compared, so one recorded after the
+		// read fails the Txn.
+		refusals, refusalCompare, err := s.fleetExecutorLedgerRows(ctx, executor.KindConvergeRefusal, planID)
+		if err != nil {
+			return nil, false, err
+		}
+		refusalRows := make([]store.FleetExecutorLedgerRow, 0, len(refusals))
+		for _, row := range refusals {
+			refusalRows = append(refusalRows, store.FleetExecutorLedgerRow{ID: row.ID, Payload: row.Payload, Metadata: row.Metadata, StartedAt: row.StartedAt})
+		}
+		if err := store.DecideFleetExecutorStartRefusal(refusalRows, converge.CommitSHA); err != nil {
+			return nil, false, err
+		}
+		compares = append(compares, refusalCompare)
 		// D5 "never older": a first start must be the resource's newest
 		// recorded converge plan. Recovery is exempt.
 		newest, newestCompares, err := s.fleetNewestConvergePlan(ctx, converge.Resource)

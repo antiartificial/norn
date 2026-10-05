@@ -358,6 +358,15 @@ func (db *DB) CreateFleetExecutorAttempt(ctx context.Context, in FleetExecutorSt
 		if len(attempts) > 0 {
 			return nil, executorRefusal(CodeFleetExecutorRetryRequired, "this plan already has runner history; recover the latest attempt")
 		}
+		// A destructive refusal recorded for this commit ends the plan on this
+		// lane. Read inside the tx, like the approve below.
+		refusals, err := fleetLedgerRowsTx(ctx, tx, executor.KindConvergeRefusal, in.PlanID)
+		if err != nil {
+			return nil, err
+		}
+		if err := DecideFleetExecutorStartRefusal(refusals, converge.CommitSHA); err != nil {
+			return nil, err
+		}
 		// D5 "never older": a first start must be the resource's newest
 		// recorded converge plan. Recovery is exempt: its plan already holds
 		// the fence, and a newer plan waits for it.

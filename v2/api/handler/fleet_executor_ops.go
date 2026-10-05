@@ -742,9 +742,11 @@ func (s *FleetExecutorOpsRoutes) ProviderEvidence(w http.ResponseWriter, r *http
 //
 // A replay of an accepted key answers from the ledger before any fact is
 // re-read (the attempt may have moved on since the lost response); the same
-// key with another body is idempotency_key_reused. The principal is not
-// matched to the source attempt's device: a rebuilt host's new device reports
-// the old device's attempt after the provider evidence.
+// key with another body is idempotency_key_reused. The principal is bound to
+// the plan (a credential grant for it or an attempt on it,
+// store.DecideFleetExecutorRefusalBinding) but not matched to the source
+// attempt's device: a rebuilt host's new device reports the old device's
+// attempt after the provider evidence, and holds its own plan-phase grant.
 func (s *FleetExecutorOpsRoutes) Refuse(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requireExecutor(w, r)
 	if !ok {
@@ -810,12 +812,24 @@ func (s *FleetExecutorOpsRoutes) Refuse(w http.ResponseWriter, r *http.Request) 
 		writeExecutorError(w, r, &executor.Error{Code: executor.CodeFleetConvergeRefusalRejected, Reason: "planSha256 does not match the plan"})
 		return
 	}
+	// Binding: only a device that holds a grant for the plan (P2 requests the
+	// plan-phase grant before refusing, P3 one for its probe) or ran an
+	// attempt on it may refuse it.
+	attempts, err := s.backend.FleetExecutorAttempts(ctx, planID)
+	if err != nil {
+		writeFleetExecutorOpsError(w, r, err)
+		return
+	}
+	grants, err := s.backend.FleetExecutorLedgerRows(ctx, executor.KindCredentialGrant, planID)
+	if err != nil {
+		writeFleetExecutorOpsError(w, r, err)
+		return
+	}
+	if err := store.DecideFleetExecutorRefusalBinding(principal.DeviceID, attempts, grants); err != nil {
+		writeFleetExecutorOpsError(w, r, err)
+		return
+	}
 	if request.Code == executor.RefusalStateLockForeign {
-		attempts, err := s.backend.FleetExecutorAttempts(ctx, planID)
-		if err != nil {
-			writeFleetExecutorOpsError(w, r, err)
-			return
-		}
 		if err := store.DecideFleetExecutorStateLockRefusal(request.SourceAttemptID, attempts); err != nil {
 			writeFleetExecutorOpsError(w, r, err)
 			return

@@ -103,6 +103,9 @@ type ExecutorHarness interface {
 	SeedConvergePlan(spec ExecutorPlanSpec) ExecutorPlanRef
 	// SeedApprove records a fleet.converge.approve ledger operation.
 	SeedApprove(plan ExecutorPlanRef, commitSHA string, resume bool, sourceAttemptID string)
+	// SeedRefusal records a fleet.converge.refusal ledger operation (Ref =
+	// plan ID) with the given code for commitSHA.
+	SeedRefusal(plan ExecutorPlanRef, code, commitSHA string)
 	// SeedStopAttestation records a fleet.executor.stop-attestation ledger
 	// operation attributed to attesterDeviceID.
 	SeedStopAttestation(plan ExecutorPlanRef, attesterDeviceID string, request executor.StopAttestationRequest)
@@ -193,6 +196,7 @@ func RunFleetExecutorConformance(t *testing.T, newHarness func(t *testing.T) Exe
 		{"EpochAdvanceRefusesHeartbeat", testExecutorEpochAdvanceRefusesHeartbeat},
 		{"LastAppliedFromConvergePlan", testExecutorLastAppliedFromConvergePlan},
 		{"CIBranchUnchanged", testExecutorCIBranchUnchanged},
+		{"DestructiveRefusalBlocksFreshStart", testExecutorDestructiveRefusalBlocksFreshStart},
 	}
 	for _, c := range cases {
 		c := c
@@ -656,4 +660,41 @@ func testExecutorCIBranchUnchanged(t *testing.T, h ExecutorHarness) {
 	plain := h.SeedConvergePlan(ExecutorPlanSpec{Cluster: "ci", NotConverge: true})
 	host := NewExecutorHost()
 	requireExecRefused(t, h.Start(plain, host.DeviceID, ExecutorStartRequest(plain, host, false)), executor.CodeFleetPlanNotConverge)
+}
+
+// testExecutorDestructiveRefusalBlocksFreshStart: a fleet.converge.refusal with
+// code destructive_requires_github_lane for the plan's commit refuses a fresh
+// start and leaves the fence untouched. A refusal of another commit or code
+// does not, and a recovery of an already-started plan is exempt.
+func testExecutorDestructiveRefusalBlocksFreshStart(t *testing.T, h ExecutorHarness) {
+	target := h.RegisterTarget("refused")
+	plan := h.SeedConvergePlan(ExecutorPlanSpec{Cluster: "refused"})
+	host := NewExecutorHost()
+	request := ExecutorStartRequest(plan, host, false)
+	fence := h.FenceFacts(target)
+
+	h.SeedRefusal(plan, executor.RefusalDestructive, strings.Repeat("9", 40))
+	h.SeedRefusal(plan, executor.RefusalStateLockForeign, plan.CommitSHA)
+	h.SeedRefusal(plan, executor.RefusalDestructive, plan.CommitSHA)
+	requireExecRefused(t, h.Start(plan, host.DeviceID, request), executor.CodeFleetConvergeRefusalRejected)
+	if got := h.FenceFacts(target); got != fence {
+		t.Fatalf("a refused start must leave the fence untouched: %+v then %+v", fence, got)
+	}
+
+	// Only the matching refusal blocks: the other plan has the other two.
+	h.RegisterTarget("refused-others")
+	other := h.SeedConvergePlan(ExecutorPlanSpec{Cluster: "refused-others"})
+	otherHost := NewExecutorHost()
+	h.SeedRefusal(other, executor.RefusalDestructive, strings.Repeat("9", 40))
+	h.SeedRefusal(other, executor.RefusalStateLockForeign, other.CommitSHA)
+	started := requireExecStarted(t, h.Start(other, otherHost.DeviceID, ExecutorStartRequest(other, otherHost, false)))
+
+	// Recovery is exempt: the plan holds the fence, a destructive remainder is
+	// handled by abandon.
+	h.SeedRefusal(other, executor.RefusalDestructive, other.CommitSHA)
+	h.ExpireAttempt(started)
+	next := otherHost.NextInvocation()
+	h.SeedApprove(other, other.CommitSHA, true, started.ID)
+	h.SeedStopAttestation(other, next.DeviceID, ExecutorAttestation(started, next))
+	requireExecStarted(t, h.Start(other, next.DeviceID, ExecutorStartRequest(other, next, true)))
 }

@@ -892,3 +892,49 @@ func (s *V3OperationStore) planAbandonUnstartedConvergePlans(ctx context.Context
 	compares = append(compares, clientv3.Compare(clientv3.ModRevision(prefix).WithPrefix(), "<", firstRevision+1))
 	return compares, puts, nil
 }
+
+// ErrFleetResourceModeChanged means the resource key changed between the mode
+// read and the commit of AcceptFleetConvergePlan; the mode may still match, so
+// the caller retries (AcceptFleetConvergePlan does, a bounded number of times).
+var ErrFleetResourceModeChanged = errors.New("fleet resource changed while its execution mode was checked")
+
+// fleetResourceModeCompare reads the resource named by a.Operation.Ref and
+// returns the compare that pins its ModRevision, or controller.ErrNotWatched
+// when its effective execution mode is not a.RequireFleetResourceMode (a
+// missing resource included).
+func (s *V3OperationStore) fleetResourceModeCompare(ctx context.Context, a store.OperationAcceptance) (clientv3.Cmp, error) {
+	resource, revision, err := s.getFleetResourceWithRevision(ctx, a.Operation.Ref)
+	if errors.Is(err, ErrFleetResourceNotFound) {
+		return clientv3.Cmp{}, controller.ErrNotWatched
+	}
+	if err != nil {
+		return clientv3.Cmp{}, err
+	}
+	if controller.EffectiveExecutionMode(resource.ExecutionMode) != a.RequireFleetResourceMode {
+		return clientv3.Cmp{}, controller.ErrNotWatched
+	}
+	return clientv3.Compare(clientv3.ModRevision(s.fleetResourceKey(a.Operation.Ref)), "=", revision), nil
+}
+
+// AcceptFleetConvergePlan is the etcd converge-plan recorder's commit (E6
+// calls it from its controller.ConvergePlanRecorder). It accepts a
+// fleet.capacity-plan operation only while the resource named by a.Operation.Ref
+// is in controller mode, in the same Txn: the resource key's ModRevision is
+// compared, so a switch to github that lands after the watcher's read either
+// fails this Txn (the next round sees github and refuses with
+// controller.ErrNotWatched) or commits after it, and then abandons the plan
+// (SetFleetResourceExecutionMode compares the capacity-plan index). A replay
+// of an accepted key is answered before the mode is read. The resource key
+// also changes on every reconcile write, so a lost compare is retried.
+func (s *V3OperationStore) AcceptFleetConvergePlan(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
+	if a.Operation.Kind != "fleet.capacity-plan" || a.Identity.Kind != "fleet.capacity-plan" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "converge plan recording requires a fleet.capacity-plan operation"}
+	}
+	a.RequireFleetResourceMode = executor.ModeController
+	for round := 0; ; round++ {
+		accepted, err := s.Accept(ctx, a)
+		if !errors.Is(err, ErrFleetResourceModeChanged) || round+1 >= fleetExecutorStartRounds {
+			return accepted, err
+		}
+	}
+}

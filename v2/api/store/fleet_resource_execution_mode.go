@@ -201,6 +201,27 @@ func enforceFleetResourceExecutionMode(ctx context.Context, tx pgx.Tx, acceptanc
 	return nil
 }
 
+// enforceFleetResourceModeRequired is the recording-path gate behind
+// OperationAcceptance.RequireFleetResourceMode. It takes the resource row FOR
+// SHARE first (the lock order of the mode switch, which locks FOR UPDATE and
+// then abandons the plans it finds), so a record that passes the check
+// commits before a concurrent switch to github can look for plans to
+// abandon, and a switch that committed first is seen here. A resource that is
+// missing or in another mode is controller.ErrNotWatched.
+func enforceFleetResourceModeRequired(ctx context.Context, tx pgx.Tx, acceptance *OperationAcceptance) error {
+	resource, err := scanFleetResource(tx.QueryRow(ctx, `SELECT `+fleetResourceColumns+` FROM fleet_resources WHERE name=$1 FOR SHARE`, acceptance.Operation.Ref))
+	if err == pgx.ErrNoRows {
+		return controller.ErrNotWatched
+	}
+	if err != nil {
+		return err
+	}
+	if controller.EffectiveExecutionMode(resource.ExecutionMode) != acceptance.RequireFleetResourceMode {
+		return controller.ErrNotWatched
+	}
+	return nil
+}
+
 // unstartedConvergePlansTx lists resource's recorded converge plans that have
 // no attempt and are not abandoned, oldest first.
 func unstartedConvergePlansTx(ctx context.Context, tx pgx.Tx, resource string) ([]string, error) {

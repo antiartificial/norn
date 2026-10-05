@@ -212,6 +212,50 @@ func TestConvergeRefusalChecksPrincipalAndPlan(t *testing.T) {
 	}
 }
 
+// TestConvergeRefusalIsBoundToThePlan: only a device with a credential-grant
+// ledger row for the plan, or an executor attempt on it, may refuse it. P2
+// requests the plan-phase grant before it refuses, so that grant binds.
+func TestConvergeRefusalIsBoundToThePlan(t *testing.T) {
+	f := newRefusalFixture(t)
+	// Another device's attempt is the plan's only history.
+	f.backend.attempts[0].PrincipalSubject = executor.PrincipalSubject("dev-other")
+	routes := NewFleetExecutorOpsRoutes(f.backend, opsTestSecret)
+	router := chi.NewRouter()
+	router.Post("/api/v1/fleet/plans/{planID}/credential-grants", routes.Grant)
+	router.Post("/api/v1/fleet/plans/{planID}/converge-refusals", routes.Refuse)
+	f.router = router
+	f.backend.converge = true
+	key := "executor-refusal:" + f.planID
+
+	requireProblem(t, f.refuse(opsExecutorPrincipal(), key, f.destructive()), http.StatusConflict, executor.CodeFleetConvergeRefusalRejected)
+	other := f.destructive()
+	other["code"] = executor.RefusalStateLockForeign
+	delete(other, "planTextSha256")
+	delete(other, "changes")
+	other["sourceAttemptId"], other["tofuLock"] = f.attempt.ID, map[string]interface{}{"id": "l"}
+	requireProblem(t, f.refuse(opsExecutorPrincipal(), "lock-x", other), http.StatusConflict, executor.CodeFleetConvergeRefusalRejected)
+	if f.backend.ops.count(executor.KindConvergeRefusal) != 0 {
+		t.Fatal("an unbound device recorded a refusal")
+	}
+
+	// A grant for ANOTHER plan does not bind this one.
+	otherPlan := uuid.NewString()
+	rec := fleetTargetDo(router, http.MethodPost, "/api/v1/fleet/plans/"+otherPlan+"/credential-grants", opsExecutorPrincipal(), "g-other", f.grantBody(executor.GrantPhasePlan, executor.CredDORead))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("grant for another plan: %d %s", rec.Code, rec.Body.String())
+	}
+	requireProblem(t, f.refuse(opsExecutorPrincipal(), key, f.destructive()), http.StatusConflict, executor.CodeFleetConvergeRefusalRejected)
+
+	// The plan-phase grant for this plan binds the device.
+	rec = fleetTargetDo(router, http.MethodPost, "/api/v1/fleet/plans/"+f.planID+"/credential-grants", opsExecutorPrincipal(), "g-plan", f.grantBody(executor.GrantPhasePlan, executor.CredDORead))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("plan grant: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.refuse(opsExecutorPrincipal(), key, f.destructive()); rec.Code != http.StatusCreated {
+		t.Fatalf("a granted device refuses its plan: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestConvergeRefusalRouteIsAnExecutorRoute: the route is in the executor's
 // route table, so E6's scope matcher admits exactly it.
 func TestConvergeRefusalRouteIsAnExecutorRoute(t *testing.T) {
