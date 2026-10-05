@@ -322,6 +322,30 @@ secret attention. This read-only inventory made no provider or control-plane
 mutation. The local observation files are in
 `/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T191507Z`.
 
+At 20:38 UTC, a new authenticated owner-host inventory again found source
+`26147c39a554b73b6761a371edee5a9591c81d3f`, host status `ok`, Fleet
+`configured=false` with zero pools, zero active operations, 25 active incidents,
+and production readiness **blocked** at 6 pass, 19 fail, and 1 warn. It listed
+28 app entries and 45 services. The snapshot is in
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T203815Z`.
+
+The authenticated `doctl` context still resolves to the intended DigitalOcean
+account. Fresh read-only name-filtered lists found no `pilot261004b`,
+`pilot261005a`, `pilot261005c`, `norn-staging`, or `norn-management` matches in
+Droplets, managed databases, load balancers, firewalls, VPCs, volumes,
+snapshots, reserved IPs, or projects. `doctl` does not inventory Spaces buckets;
+this is not complete account-zero evidence. Staging Fleet's offline
+`scripts/sanity.py` validation passed. Its setup doctor still reports missing
+staging provider/state secrets and runner configuration. The protected squash
+defaults were aligned with policy, but the doctor remains blocked by current
+`main` commit metadata as well as those missing secrets and runner inputs.
+No cloud resource was created or changed.
+
+The exact `pilot261004b` protected apply log confirms its pre-issued public
+ingress TLS check passed before provider apply. The apply then remained in
+managed database creation until exit 143 at 06:50:30 UTC. The signal sender is
+unproven; do not attribute this interruption to the TLS gate.
+
 These app and service counts include discovered and inactive entries; they do
 not prove identity preservation through the earlier one-way transition or
 health for every app.
