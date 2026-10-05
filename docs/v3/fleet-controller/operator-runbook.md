@@ -225,8 +225,9 @@ recover, rerun or checkpoint (`fleet_target_holder_abandoned`).
 
 Both modes need no live attempt (`fleet_target_has_live_attempt`) and a free
 fence is refused (`fleet_target_fence_not_held`). First read the fence:
-`GET targets/{id}/fence` gives `generation`, `held`, `holderPlanId` and
-`occupancy`.
+`norn fleet fence <target-id>` (`GET targets/{id}/fence`) gives `generation`,
+`held`, `holderPlanId` and `occupancy`; `norn fleet status <name>` also shows the
+held fence generation.
 
 `POST /api/v1/fleet/targets/{id}/fence/release`, scope `admin` (no step-up):
 
@@ -236,6 +237,9 @@ fence is refused (`fleet_target_fence_not_held`). First read the fence:
 
 `expectedGeneration` is required; a stale value, or a holder that changed
 while the request ran, returns `fleet_target_expected_generation_mismatch`.
+CLI: `norn fleet release <target-id> --mode terminal|abandon
+--expected-generation <n> [--reason <text>] [--provider-evidence <file>]`. The CLI
+never fills in the generation for you; pass the one you inspected.
 
 | | `terminal` | `abandon` |
 |---|---|---|
@@ -256,6 +260,8 @@ bound run).
 ```json
 {"planId": "<capacity plan UUID>", "reason": "failed plan blocking registration"}
 ```
+
+CLI: `norn fleet abandon <plan-id> [--reason <text>] [--provider-evidence <file>]`.
 
 Same age gate and run-listing snapshot as `abandon`. If the plan holds a
 target's fence, the fence is freed; either way the plan is recorded abandoned,
@@ -452,25 +458,49 @@ One mapping gap: on the PG general router `POST plans/{id}/github/reconcile`,
 a refusal for an abandoned plan surfaces as 500 `fleet_github_receipt_failed`,
 not `fleet_target_holder_abandoned` (final-review m2).
 
-## Executor lane operations (ADR 0010, not yet shipped)
+## Executor lane operations (ADR 0010)
 
-These commands become real as WPs E1-E6 and C1 land; shapes are pinned in
-[`lifecycle-contract.md`](./lifecycle-contract.md) section 7.
+Shapes are pinned in [`lifecycle-contract.md`](./lifecycle-contract.md)
+section 7. Every mutating `norn fleet` command takes `--idempotency-key`; when
+omitted, one is generated and printed to stderr. To retry an ambiguous failure,
+re-run the same command with that key and the same inputs (the printed
+`--expected-revision` for `mode`; the printed `norn fleet approve ...` line for
+`converge --resume`). Add `--json` for the raw response.
 
-- Enroll the executor: the host calls `POST /api/v1/enrollments` with platform
-  `fleet-executor`; an admin approves with scope exactly `fleet:execute`. The token
-  lives 7 days and self-rotates when idle. After a host rebuild or retirement,
-  delete the old device immediately (`DELETE /api/v1/devices/{id}`).
-- Opt a target in or out: `norn fleet mode <name> controller|github` (admin, fence
-  must be Free).
-- Executable changes wait for `norn fleet approve <plan-id>` (status shows
-  `approve_converge`). Destructive and contraction plans stay on the GitHub lane
-  with an ephemeral runner.
-- After an executor stop (power loss, kill), the loop attests on restart. Resume
-  with `norn fleet converge <name> --resume`. A rebuilt or different host cannot
-  attest. First delete the old executor device (`DELETE /api/v1/devices/{id}`);
-  then use `norn fleet release|abandon ... --provider-evidence <file>` with the
-  DigitalOcean droplet status `off`, `archive` or `not_found` that you observed
-  within the last hour. Norn cannot check that status: the evidence is your
-  signed assertion, so look at the droplet yourself. Every attestation and
-  `providerEvidence` use should alert.
+- **Read.** `norn fleet status [name]` (desired vs applied, `status.active` with
+  the fence generation, blocker, `nextAction`, policy); `norn fleet targets
+  [target-id]`; `norn fleet fence <target-id>`. Scope `api:read`.
+- **Enroll the executor.** The host calls `POST /api/v1/enrollments` with
+  platform `fleet-executor` and requested scopes `[fleet:execute]`, and shows a
+  pairing code. An admin approves it against the PG authority (the etcd runtime
+  serves no enrollment routes) with
+  `norn access approve <pairing-code> --scope fleet:execute`. The server grants
+  `fleet:execute` only on its own and only to a `fleet-executor` device. The
+  token lives 7 days and self-rotates when idle. After a host rebuild or
+  retirement, revoke the old device immediately:
+  `norn access devices`, then `norn access revoke-device <device-id> --confirm`.
+- **Opt a target in or out.** `norn fleet mode <name> controller|github`
+  (admin, non-CI; the fence must be Free). A stale revision returns
+  `fleet_resource_revision_conflict`; check status and run it again with a new key.
+- **Trigger.** The watcher polls; `norn fleet converge <name>` rescans now
+  (platform:operate, non-CI). It records a plan at most; it never starts an attempt.
+- **Approve.** Executable changes wait for `norn fleet approve <plan-id>`
+  (platform:operate, non-CI; status shows `approve_converge`). The commit is
+  read from the resource unless `--commit` is given. Destructive and
+  contraction plans stay on the GitHub lane with an ephemeral runner.
+- **Resume after an executor stop** (power loss, kill). The loop attests on
+  restart; status then shows the blocker `attempt <id> stopped ...; run: norn
+  fleet converge <name> --resume`. That command approves one recovery of exactly
+  that attempt, for the holder plan's commit.
+- **Rebuilt or different host.** It cannot attest. Revoke the old executor
+  device first. Then either record evidence so the new host may recover,
+  `norn fleet provider-evidence <plan-id> --source-attempt <attempt-id>
+  --provider-evidence <file>` (admin, non-releasing) followed by
+  `norn fleet converge <name> --resume`, or give up on the plan with
+  `norn fleet release <target-id> --mode abandon --expected-generation <n>
+  --provider-evidence <file>` or `norn fleet abandon <plan-id> --provider-evidence
+  <file>` (admin). The file is
+  `{"provider":"digitalocean","dropletId":"...","status":"off|archive|not_found","observedAt":"<RFC 3339>","reference":"..."}`
+  with a status you observed within the last hour. Norn cannot check that
+  status: the evidence is your signed assertion, so look at the droplet
+  yourself. Every attestation and `providerEvidence` use should alert.

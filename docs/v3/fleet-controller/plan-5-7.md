@@ -704,9 +704,16 @@ Resource conditions stay honestly `Unknown`, as today.
 | `norn fleet converge <name> [--resume]` | rescan, or the resume approve |
 | `norn fleet approve <plan-id>` | `fleet.converge.approve` |
 | `norn fleet mode <name> controller\|github` | `fleet.resource.execution-mode` |
-| `norn fleet targets [id]`, `norn fleet fence <id>` | existing |
-| `norn fleet release … [--provider-evidence <file>]`, `norn fleet abandon … [--provider-evidence <file>]` | existing, with the new field |
-| `norn fleet executor approve <enrollment-id>` | the existing enrollment approve, with scope `fleet:execute` |
+| `norn fleet targets [id]`, `norn fleet fence <id>` | `GET targets/{id}`, `GET targets/{id}/fence` (no id: targets bound to resources) |
+| `norn fleet provider-evidence <plan-id> --source-attempt <id> --provider-evidence <file>` | `fleet.executor.provider-evidence` |
+| `norn fleet release <target-id> --mode … --expected-generation <n> [--provider-evidence <file>]`, `norn fleet abandon <plan-id> [--provider-evidence <file>]` | existing, with the new field; `--expected-generation` is required, never read for the operator |
+| `norn access approve <pairing-code> --scope fleet:execute` | the existing enrollment approve (PG authority); E1 grants `fleet:execute` only alone and only to a `fleet-executor` device, so no separate command |
+
+`converge --resume` takes the source attempt from the `approval_required`
+blocker (`status.active.attemptIds` is sorted by ID, not attempt number) and
+the holder plan's commit from `desired` or `desiredHistory`. The rescan
+response is the watcher decision (`controller.WatchDecision`), not a
+`FleetResource`; the OpenAPI entry still says `FleetResource`.
 
 **NornUI** (branch `feature/fleet-controller-ui`):
 - a `FleetResourceCard` showing status, blocker, `nextAction`, last applied

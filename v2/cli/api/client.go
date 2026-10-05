@@ -2800,3 +2800,279 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+// Fleet resource (controller) views and mutations. Shapes are pinned by
+// api/contract/control-v1.openapi.yaml.
+
+type FleetConvergeView struct {
+	PlanSHA256       string `json:"planSha256"`
+	RequiresApproval bool   `json:"requiresApproval"`
+	Approved         bool   `json:"approved"`
+	Refused          bool   `json:"refused,omitempty"`
+}
+
+type FleetResourceDesired struct {
+	Generation   int64              `json:"generation"`
+	PlanID       string             `json:"planId,omitempty"`
+	CommitSHA    string             `json:"commitSha,omitempty"`
+	Repository   string             `json:"repository,omitempty"`
+	Verification string             `json:"verification,omitempty"`
+	AcceptedAt   string             `json:"acceptedAt,omitempty"`
+	AcceptedBy   string             `json:"acceptedBy,omitempty"`
+	Converge     *FleetConvergeView `json:"converge,omitempty"`
+}
+
+type FleetResourceCondition struct {
+	Type         string   `json:"type"`
+	Status       string   `json:"status"`
+	Reason       string   `json:"reason,omitempty"`
+	Message      string   `json:"message,omitempty"`
+	ObservedAt   string   `json:"observedAt,omitempty"`
+	EvidenceRefs []string `json:"evidenceRefs"`
+}
+
+type FleetResourceActive struct {
+	PlanID          string   `json:"planId"`
+	DispatchRunID   string   `json:"dispatchRunId,omitempty"`
+	AttemptIDs      []string `json:"attemptIds"`
+	FenceGeneration int64    `json:"fenceGeneration"`
+	Occupancy       string   `json:"occupancy"`
+	OccupancyReason string   `json:"occupancyReason,omitempty"`
+	ResumeApproved  bool     `json:"resumeApproved,omitempty"`
+}
+
+type FleetResourceLastApplied struct {
+	Generation int64  `json:"generation"`
+	CommitSHA  string `json:"commitSha"`
+	PlanID     string `json:"planId"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+type FleetResourceStatus struct {
+	ObservedGeneration    int64                     `json:"observedGeneration"`
+	LastAppliedGeneration int64                     `json:"lastAppliedGeneration"`
+	LastApplied           *FleetResourceLastApplied `json:"lastApplied,omitempty"`
+	Active                *FleetResourceActive      `json:"active,omitempty"`
+	Conditions            []FleetResourceCondition  `json:"conditions"`
+	NextAction            string                    `json:"nextAction,omitempty"`
+	EvaluatedAt           string                    `json:"evaluatedAt,omitempty"`
+}
+
+type FleetResourceBlocker struct {
+	Kind      string `json:"kind"`
+	Reason    string `json:"reason"`
+	Message   string `json:"message,omitempty"`
+	Condition string `json:"condition,omitempty"`
+	PlanID    string `json:"planId,omitempty"`
+}
+
+type FleetApprovalPolicy struct {
+	Basis                   string `json:"basis"`
+	ProtectedBranch         bool   `json:"protectedBranch"`
+	MergedPullRequest       bool   `json:"mergedPullRequest"`
+	PlanWorkflowSucceeded   bool   `json:"planWorkflowSucceeded"`
+	BoundPlanDigest         bool   `json:"boundPlanDigest"`
+	AuthorizedDispatch      bool   `json:"authorizedDispatch"`
+	OwnerApprovalEnvelope   bool   `json:"ownerApprovalEnvelope"`
+	EnvironmentReviewers    string `json:"environmentReviewers"`
+	IndependentReview       string `json:"independentReview"`
+	ProtectedBranchVerified *bool  `json:"protectedBranchVerified,omitempty"`
+	ValidateWorkflowSucceed *bool  `json:"validateWorkflowSucceeded,omitempty"`
+	MergeGate               string `json:"mergeGate,omitempty"`
+	DestructiveApproval     string `json:"destructiveApproval,omitempty"`
+	ApprovedBy              string `json:"approvedBy,omitempty"`
+	RequiredReviews         string `json:"requiredReviews,omitempty"`
+}
+
+type FleetControllerLiveness struct {
+	State                 string `json:"state"`
+	LastRescanAt          string `json:"lastRescanAt,omitempty"`
+	RescanIntervalSeconds int64  `json:"rescanIntervalSeconds,omitempty"`
+}
+
+type FleetResource struct {
+	Name           string                  `json:"name"`
+	TargetID       string                  `json:"targetId"`
+	Revision       int64                   `json:"revision"`
+	AuthorityEpoch int64                   `json:"authorityEpoch"`
+	CreatedAt      string                  `json:"createdAt"`
+	UpdatedAt      string                  `json:"updatedAt"`
+	Desired        FleetResourceDesired    `json:"desired"`
+	DesiredHistory []FleetResourceDesired  `json:"desiredHistory"`
+	Status         FleetResourceStatus     `json:"status"`
+	Blocker        *FleetResourceBlocker   `json:"blocker,omitempty"`
+	ApprovalPolicy FleetApprovalPolicy     `json:"approvalPolicy"`
+	ExecutionMode  string                  `json:"executionMode,omitempty"`
+	Controller     FleetControllerLiveness `json:"controller"`
+	ReadAt         string                  `json:"readAt"`
+}
+
+type FleetResourceList struct {
+	Items      []FleetResource         `json:"items"`
+	Next       string                  `json:"next,omitempty"`
+	Controller FleetControllerLiveness `json:"controller"`
+}
+
+// FleetProviderEvidence is the admin's signed assertion about the old executor
+// droplet (ADR 0010). It is not proof; the server cannot check it.
+type FleetProviderEvidence struct {
+	Provider   string `json:"provider"`
+	DropletID  string `json:"dropletId"`
+	Status     string `json:"status"`
+	ObservedAt string `json:"observedAt"`
+	Reference  string `json:"reference,omitempty"`
+}
+
+type FleetTargetLastRelease struct {
+	PlanID string `json:"planId"`
+	Reason string `json:"reason"`
+	At     string `json:"at"`
+}
+
+// FleetTargetFence is GET targets/{id}/fence.
+type FleetTargetFence struct {
+	TargetID              string                  `json:"targetId"`
+	Generation            int64                   `json:"generation"`
+	Held                  bool                    `json:"held"`
+	HolderPlanID          string                  `json:"holderPlanId,omitempty"`
+	AuthorityEpoch        int64                   `json:"authorityEpoch"`
+	CurrentAuthorityEpoch int64                   `json:"currentAuthorityEpoch"`
+	Revision              int64                   `json:"revision"`
+	LastRelease           *FleetTargetLastRelease `json:"lastRelease,omitempty"`
+	Occupancy             string                  `json:"occupancy"`
+	OccupancyReason       string                  `json:"occupancyReason,omitempty"`
+}
+
+// FleetTarget is GET targets/{id}: identity, aliases and the fence.
+type FleetTarget struct {
+	TargetID                string           `json:"targetId"`
+	Provider                string           `json:"provider"`
+	ProviderAccount         string           `json:"providerAccount"`
+	StateBackend            string           `json:"stateBackend"`
+	CreatedAt               string           `json:"createdAt"`
+	RegistrationOperationID string           `json:"registrationOperationId"`
+	Aliases                 []string         `json:"aliases"`
+	Fence                   FleetTargetFence `json:"fence"`
+}
+
+// FleetWatchDecision is the rescan response (controller.WatchDecision).
+type FleetWatchDecision struct {
+	Resource  string `json:"resource"`
+	TipSHA    string `json:"tipSha"`
+	Action    string `json:"action"`
+	PathClass string `json:"pathClass,omitempty"`
+	PlanID    string `json:"planId,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+func (c *Client) FleetResources(limit int, after string) (*FleetResourceList, error) {
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprint(limit))
+	}
+	if after != "" {
+		q.Set("after", after)
+	}
+	path := "/api/v1/fleet/resources"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var out FleetResourceList
+	if err := c.get(path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) FleetResource(name string) (*FleetResource, error) {
+	var out FleetResource
+	if err := c.get("/api/v1/fleet/resources/"+url.PathEscape(name), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RescanFleetResourceConverge requires platform:operate (non-CI). The server
+// answers with the watcher's decision, not the resource view.
+func (c *Client) RescanFleetResourceConverge(name, idempotencyKey string) (*FleetWatchDecision, error) {
+	var out FleetWatchDecision
+	if err := c.postJSONWithIdempotency("/api/v1/fleet/resources/"+url.PathEscape(name)+"/converge", "", idempotencyKey, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) fleetOperation(path string, body any, idempotencyKey string) (*Operation, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	var op Operation
+	if err := c.postJSONWithIdempotency(path, string(raw), idempotencyKey, &op); err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
+// SetFleetResourceExecutionMode requires admin.
+func (c *Client) SetFleetResourceExecutionMode(name, mode string, expectedRevision int64, idempotencyKey string) (*Operation, error) {
+	return c.fleetOperation("/api/v1/fleet/resources/"+url.PathEscape(name)+"/execution-mode",
+		map[string]any{"mode": mode, "expectedRevision": expectedRevision}, idempotencyKey)
+}
+
+// ApproveFleetConverge requires platform:operate (non-CI). resume needs sourceAttemptID.
+func (c *Client) ApproveFleetConverge(planID, commitSHA string, resume bool, sourceAttemptID, idempotencyKey string) (*Operation, error) {
+	body := map[string]any{"commitSha": commitSHA}
+	if resume {
+		body["resume"] = true
+		body["sourceAttemptId"] = sourceAttemptID
+	}
+	return c.fleetOperation("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/converge/approve", body, idempotencyKey)
+}
+
+// RecordFleetProviderEvidence requires admin (non-CI, no step-up).
+func (c *Client) RecordFleetProviderEvidence(planID, sourceAttemptID string, evidence FleetProviderEvidence, idempotencyKey string) (*Operation, error) {
+	return c.fleetOperation("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/provider-evidence",
+		map[string]any{"sourceAttemptId": sourceAttemptID, "providerEvidence": evidence}, idempotencyKey)
+}
+
+func (c *Client) FleetTarget(targetID string) (*FleetTarget, error) {
+	var out FleetTarget
+	if err := c.get("/api/v1/fleet/targets/"+url.PathEscape(targetID), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) FleetTargetFence(targetID string) (*FleetTargetFence, error) {
+	var out FleetTargetFence
+	if err := c.get("/api/v1/fleet/targets/"+url.PathEscape(targetID)+"/fence", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ReleaseFleetTargetFence requires admin (no step-up).
+func (c *Client) ReleaseFleetTargetFence(targetID, mode string, expectedGeneration int64, reason string, evidence *FleetProviderEvidence, idempotencyKey string) (*Operation, error) {
+	body := map[string]any{"mode": mode, "expectedGeneration": expectedGeneration}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	if evidence != nil {
+		body["providerEvidence"] = evidence
+	}
+	return c.fleetOperation("/api/v1/fleet/targets/"+url.PathEscape(targetID)+"/fence/release", body, idempotencyKey)
+}
+
+// AbandonFleetPlan requires admin (no step-up).
+func (c *Client) AbandonFleetPlan(planID, reason string, evidence *FleetProviderEvidence, idempotencyKey string) (*Operation, error) {
+	body := map[string]any{"planId": planID}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	if evidence != nil {
+		body["providerEvidence"] = evidence
+	}
+	return c.fleetOperation("/api/v1/fleet/targets/abandon-plan", body, idempotencyKey)
+}
