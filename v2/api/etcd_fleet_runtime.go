@@ -717,7 +717,7 @@ func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, id
 	if watcher != nil {
 		rescanner = watcher
 	}
-	registerEtcdFleetExecutorRoutes(router, cfg, identities, operations, rescanner)
+	registerEtcdFleetExecutorRoutes(router, cfg, identities, operations, rescanner, fleetGitHub)
 	return watcher
 }
 

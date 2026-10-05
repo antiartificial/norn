@@ -434,9 +434,9 @@ type etcdFleetExecutorLane struct {
 // device is enrolled and revoked only through the PG authority; until the v3
 // executor phase profile exists (P2/P3 hand-off) the etcd executor lane has no
 // enrolled principal and answers 401/403 to every executor call.
-func registerEtcdFleetExecutorRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, operations *etcdstore.V3OperationStore, rescanner handler.ConvergeRescanner) {
+func registerEtcdFleetExecutorRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, operations *etcdstore.V3OperationStore, rescanner handler.ConvergeRescanner, repoTokens handler.FleetRepoTokenIssuer) {
 	converge := handler.NewEtcdFleetConvergeRoutes(cfg, operations, rescanner)
-	ops := handler.NewEtcdFleetExecutorOpsRoutes(cfg, operations, identities)
+	ops := handler.NewEtcdFleetExecutorOpsRoutes(cfg, operations, identities, repoTokens)
 	operate := etcdFleetLaneAuth(cfg, identities, handler.ScopePlatformOperate)
 	execute := etcdFleetLaneAuth(cfg, identities, handler.ScopeFleetExecute)
 	admin := etcdFleetLaneAuth(cfg, identities, handler.ScopeAdmin)

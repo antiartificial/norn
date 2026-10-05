@@ -27,6 +27,7 @@ type fakeOpsStore struct {
 	mu       sync.Mutex
 	accepted map[string]store.OperationAcceptance
 	order    []string
+	failNext error
 }
 
 func opsIdentityKey(i store.OperationRequestIdentity) string {
@@ -40,6 +41,10 @@ func (f *fakeOpsStore) Authority(context.Context) (string, error) {
 func (f *fakeOpsStore) Accept(_ context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.failNext; err != nil {
+		f.failNext = nil
+		return store.AcceptedOperation{}, err
+	}
 	key := opsIdentityKey(a.Identity)
 	if prior, ok := f.accepted[key]; ok {
 		if prior.Fingerprint != a.Fingerprint {
@@ -184,6 +189,7 @@ func (b *fakeOpsBackend) FleetExecutorLedgerRows(_ context.Context, kind, planID
 type opsFixture struct {
 	t       *testing.T
 	router  http.Handler
+	routes  *FleetExecutorOpsRoutes
 	backend *fakeOpsBackend
 	planID  string
 	attempt store.FleetExecutorAttemptFact
@@ -213,7 +219,7 @@ func newOpsFixture(t *testing.T, profile executor.GrantProfile, phase string) *o
 	router.Post("/api/v1/fleet/plans/{planID}/credential-grants", routes.Grant)
 	router.Post("/api/v1/fleet/executor/stop-attestations", routes.StopAttestation)
 	router.Post("/api/v1/fleet/plans/{planID}/provider-evidence", routes.ProviderEvidence)
-	return &opsFixture{t: t, router: router, backend: backend, planID: planID, attempt: attempt, secret: opsTestSecret}
+	return &opsFixture{t: t, router: router, routes: routes, backend: backend, planID: planID, attempt: attempt, secret: opsTestSecret}
 }
 
 func opsExecutorPrincipal() *AccessPrincipal {

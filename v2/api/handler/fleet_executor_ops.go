@@ -33,8 +33,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -58,7 +60,25 @@ const (
 
 	grantMetadataTokenID  = "attemptTokenId"
 	grantMetadataIssuedAt = "attemptTokenIssuedAt"
+
+	// The ledger records only that a repo-read token was issued and when
+	// GitHub says it expires; never the token.
+	grantMetadataRepoIssuedAt  = "repoTokenIssuedAt"
+	grantMetadataRepoExpiresAt = "repoTokenExpiresAt"
 )
+
+// FleetRepoTokenIssuer mints the repo-read credential: a GitHub App
+// installation token for the configured repository, contents:read only
+// (*githubapp.Client). A nil issuer means the App is not configured.
+type FleetRepoTokenIssuer interface {
+	IssueRepoReadToken(ctx context.Context) (token string, expiresAt time.Time, err error)
+	RevokeRepoReadToken(ctx context.Context, token string) error
+}
+
+type repoTokenEntry struct {
+	token     string
+	expiresAt time.Time
+}
 
 // FleetAttemptCredentialRegistry is the token registry the attempt-bound
 // credential is recorded in and revoked from (*store.DB and
@@ -86,6 +106,25 @@ type FleetExecutorOpsRoutes struct {
 	backend FleetExecutorOpsBackend
 	secret  string
 	now     func() time.Time
+
+	repoTokens FleetRepoTokenIssuer
+	// repoCache holds each issued repo-read token in memory, by grant ID, only
+	// until it expires, so a lost response can be replayed without minting a
+	// second token. It is never persisted: after a restart or expiry a replay
+	// is refused (CodeFleetRepoTokenReplayExpired).
+	repoMu    sync.Mutex
+	repoCache map[string]repoTokenEntry
+}
+
+// WithRepoTokenIssuer enables the repo-read credential type. A nil issuer
+// (including a nil pointer) leaves it disabled: such grants answer 503.
+func (s *FleetExecutorOpsRoutes) WithRepoTokenIssuer(issuer FleetRepoTokenIssuer) *FleetExecutorOpsRoutes {
+	if v := reflect.ValueOf(issuer); issuer == nil || (v.Kind() == reflect.Ptr && v.IsNil()) {
+		s.repoTokens = nil
+	} else {
+		s.repoTokens = issuer
+	}
+	return s
 }
 
 // NewFleetExecutorOpsRoutes builds the routes. secret signs the
@@ -100,16 +139,21 @@ func (h *Handler) FleetExecutorOpsRoutes() *FleetExecutorOpsRoutes {
 	if h.cfg != nil {
 		secret = h.cfg.APIToken
 	}
-	return NewFleetExecutorOpsRoutes(&pgFleetExecutorOpsBackend{targets: pgFleetTargetBackend{h: h}, h: h}, secret)
+	routes := NewFleetExecutorOpsRoutes(&pgFleetExecutorOpsBackend{targets: pgFleetTargetBackend{h: h}, h: h}, secret)
+	if h.fleetGitHub != nil {
+		routes.WithRepoTokenIssuer(h.fleetGitHub)
+	}
+	return routes
 }
 
 // NewEtcdFleetExecutorOpsRoutes returns the etcd routes.
-func NewEtcdFleetExecutorOpsRoutes(cfg *config.Config, operations *etcdstore.V3OperationStore, auth *etcdstore.AuthStore) *FleetExecutorOpsRoutes {
+func NewEtcdFleetExecutorOpsRoutes(cfg *config.Config, operations *etcdstore.V3OperationStore, auth *etcdstore.AuthStore, repoTokens FleetRepoTokenIssuer) *FleetExecutorOpsRoutes {
 	secret := ""
 	if cfg != nil {
 		secret = cfg.APIToken
 	}
-	return NewFleetExecutorOpsRoutes(&etcdFleetExecutorOpsBackend{targets: etcdFleetTargetBackend{cfg: cfg, operations: operations}, operations: operations, auth: auth}, secret)
+	return NewFleetExecutorOpsRoutes(&etcdFleetExecutorOpsBackend{targets: etcdFleetTargetBackend{cfg: cfg, operations: operations}, operations: operations, auth: auth}, secret).
+		WithRepoTokenIssuer(repoTokens)
 }
 
 // --- backend adapters ---
@@ -342,13 +386,17 @@ func ledgerMap(value interface{}) map[string]interface{} {
 
 // --- credential grants ---
 
-func grantIncludesAttemptCredential(types []string) bool {
+func grantIncludesType(types []string, want string) bool {
 	for _, t := range types {
-		if t == executor.CredNornAttempt {
+		if t == want {
 			return true
 		}
 	}
 	return false
+}
+
+func grantIncludesAttemptCredential(types []string) bool {
+	return grantIncludesType(types, executor.CredNornAttempt)
 }
 
 func newFleetAttemptToken(deviceID, attemptID string, issuedAt, expiresAt time.Time) *store.AccessToken {
@@ -517,6 +565,13 @@ func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
 		DeviceID: principal.DeviceID, TokenID: principal.TokenID, ExpiresAt: now.Add(executor.GrantTTL),
 	}
 	metadata := map[string]interface{}{"grantId": grant.GrantID}
+	// repo-read is minted last, just before the ledger write, so that only a
+	// failed ledger write can orphan it (and that revokes it).
+	wantsRepoRead := grantIncludesType(request.Types, executor.CredRepoRead)
+	if wantsRepoRead && s.repoTokens == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, executor.CodeFleetRepoTokenUnavailable, "the GitHub App is not configured, so no repo-read token can be issued")
+		return
+	}
 	var token *store.AccessToken
 	var registry FleetAttemptCredentialRegistry
 	if attempt != nil {
@@ -544,19 +599,71 @@ func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
 		}
 		metadata[grantMetadataTokenID], metadata[grantMetadataIssuedAt] = token.JTI, now.Format(time.RFC3339)
 	}
+	// The token never enters the ledger, the metadata or a log line.
+	repoToken, repoExpiry := "", time.Time{}
+	if wantsRepoRead {
+		minted, githubExpiry, err := s.repoTokens.IssueRepoReadToken(ctx)
+		if err != nil || minted == "" {
+			if token != nil {
+				_, _ = registry.RevokeAccessToken(ctx, token.JTI)
+			}
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, executor.CodeFleetRepoTokenUnavailable, "the GitHub App could not issue a repo-read token")
+			return
+		}
+		repoToken = minted
+		expiry := githubExpiry.UTC().Truncate(time.Second)
+		if expiry.After(grant.ExpiresAt) {
+			expiry = grant.ExpiresAt
+		}
+		metadata[grantMetadataRepoIssuedAt], metadata[grantMetadataRepoExpiresAt] = now.Format(time.RFC3339), expiry.Format(time.RFC3339)
+		repoExpiry = expiry
+	}
 	accepted, err := s.acceptLedger(ctx, identity, audit, "credential grant recorded", ledgerMap(grant), metadata)
 	if err != nil {
 		if token != nil {
 			_, _ = registry.RevokeAccessToken(ctx, token.JTI)
 		}
+		if repoToken != "" {
+			_ = s.repoTokens.RevokeRepoReadToken(context.WithoutCancel(ctx), repoToken)
+		}
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	s.writeGrant(w, r, accepted, grant, token)
+	if repoToken != "" {
+		// Remembered only for a replay of this grant; dropped at expiry.
+		s.rememberRepoToken(grant.GrantID, repoTokenEntry{token: repoToken, expiresAt: repoExpiry})
+	}
+	s.writeGrant(w, r, accepted, grant, token, repoToken)
 }
 
-func (s *FleetExecutorOpsRoutes) writeGrant(w http.ResponseWriter, r *http.Request, accepted store.AcceptedOperation, grant executor.CredentialGrantPayload, token *store.AccessToken) {
-	response := executor.CredentialGrantResponse{GrantID: grant.GrantID, ExpiresAt: grant.ExpiresAt}
+func (s *FleetExecutorOpsRoutes) rememberRepoToken(grantID string, entry repoTokenEntry) {
+	s.repoMu.Lock()
+	defer s.repoMu.Unlock()
+	if s.repoCache == nil {
+		s.repoCache = map[string]repoTokenEntry{}
+	}
+	now := s.now()
+	for id, e := range s.repoCache {
+		if !e.expiresAt.After(now) {
+			delete(s.repoCache, id)
+		}
+	}
+	s.repoCache[grantID] = entry
+}
+
+func (s *FleetExecutorOpsRoutes) cachedRepoToken(grantID string) (string, bool) {
+	s.repoMu.Lock()
+	defer s.repoMu.Unlock()
+	e, ok := s.repoCache[grantID]
+	if !ok || !e.expiresAt.After(s.now()) {
+		delete(s.repoCache, grantID)
+		return "", false
+	}
+	return e.token, true
+}
+
+func (s *FleetExecutorOpsRoutes) writeGrant(w http.ResponseWriter, r *http.Request, accepted store.AcceptedOperation, grant executor.CredentialGrantPayload, token *store.AccessToken, repoToken string) {
+	response := executor.CredentialGrantResponse{GrantID: grant.GrantID, ExpiresAt: grant.ExpiresAt, RepoToken: repoToken}
 	if token != nil {
 		bearer, err := signFleetAttemptToken(s.secret, token)
 		if err != nil {
@@ -591,8 +698,19 @@ func (s *FleetExecutorOpsRoutes) replayGrant(w http.ResponseWriter, r *http.Requ
 		}
 		token = &store.AccessToken{JTI: jti, Subject: fleetAttemptSubjectPrefix + grant.AttemptID, Scopes: []string{ScopeFleetAttempt}, IssuedAt: issued.UTC(), ExpiresAt: grant.ExpiresAt}
 	}
+	// A repo-read token is never re-minted on replay: the same unexpired
+	// token from memory, or a refusal asking for a new grant key.
+	repoToken := ""
+	if grantIncludesType(grant.Types, executor.CredRepoRead) {
+		cached, ok := s.cachedRepoToken(grant.GrantID)
+		if !ok {
+			WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetRepoTokenReplayExpired, "the repo-read token of this grant has expired or is no longer held; request a new grant with a new Idempotency-Key")
+			return
+		}
+		repoToken = cached
+	}
 	prior.Replayed = true
-	s.writeGrant(w, r, prior, grant, token)
+	s.writeGrant(w, r, prior, grant, token, repoToken)
 }
 
 // --- stop attestations ---

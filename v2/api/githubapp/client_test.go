@@ -1305,3 +1305,37 @@ func TestPilotPlanArtifactRefusesSameHeadDifferentRunBinding(t *testing.T) {
 func errorsIs(err, target error) bool {
 	return err == target || (err != nil && strings.Contains(err.Error(), target.Error()))
 }
+
+func TestIssueRepoReadTokenIsOneRepoContentsReadAndNeverCached(t *testing.T) {
+	mints := 0
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(w, r, map[string]string{"contents": "read"}) {
+			mints++
+			return
+		}
+		t.Errorf("unexpected request %s", r.URL.Path)
+	}))
+	for i := 0; i < 2; i++ {
+		token, expires, err := client.IssueRepoReadToken(context.Background())
+		if err != nil || token != "installation-token" || !expires.Equal(time.Date(2027, 1, 15, 9, 0, 0, 0, time.UTC)) {
+			t.Fatalf("token %q %v err %v", token, expires, err)
+		}
+	}
+	if mints != 2 {
+		t.Fatalf("each repo-read token is a fresh mint, got %d", mints)
+	}
+}
+
+func TestRevokeRepoReadTokenDeletesWithTheTokenItself(t *testing.T) {
+	var got string
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/installation/token" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		got = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err := client.RevokeRepoReadToken(context.Background(), "ghs_x"); err != nil || got != "Bearer ghs_x" {
+		t.Fatalf("auth %q err %v", got, err)
+	}
+}

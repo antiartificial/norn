@@ -228,7 +228,7 @@ attester's. Ledger payload adds `planId` (server-derived from the attempt),
 
 **`fleet.credential-grant`.** Route `POST /api/v1/fleet/plans/{planID}/credential-grants`,
 executor principal. Body `{attemptId?, phase, types[]}`; response
-`{grantId, expiresAt}`. Ledger payload `{grantId, planId, attemptId?, phase,
+`{grantId, expiresAt, attemptToken?, repoToken?}`. Ledger payload `{grantId, planId, attemptId?, phase,
 types (sorted, unique), deviceId, tokenId, expiresAt}`, expiry 2 hours. Grant
 phases are the pseudo-phases `plan` (no attempt) and `recover` (a live recovery
 attempt; the union of all types), and otherwise **real lifecycle phase names**
@@ -237,13 +237,28 @@ depends on the attempt's backend, because executor plans never drain:
 
 | Phase | PG (legacy no-drain list) | etcd (canonical list) |
 |---|---|---|
-| `plan` | do-read, spaces-rw | same |
+| `plan` | do-read, spaces-rw, repo-read | same |
 | `prechange_verified` | — (not in the list) | norn-attempt |
 | `provider_applying` | — (not in the list) | do-write, spaces-rw, norn-attempt |
 | `infrastructure_applied` | do-write, spaces-rw, norn-attempt (tofu apply runs here; its checkpoint follows the apply) | spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt |
 | `inventory_generated` … `readiness_verified` | spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt | same |
 | `old_nodes_drained` | — | norn-attempt (evidence only) |
-| `recover` | union | union |
+| `recover` | union (including repo-read) | union (including repo-read) |
+
+**`repo-read` (no GitHub credential on the host).** `norn-fleet` is private, so
+the executor must read it, but no deploy key or token is stored on the host. The
+`plan` grant (the loop's `git fetch` before planning) and `recover` (at the start)
+may include `repo-read`; no other phase may (`fleet_credential_type_not_allowed`).
+Norn mints a GitHub App installation token restricted to the single configured
+repository with `contents: read` only, valid until GitHub's expiry (about 1 h) or
+the grant expiry, whichever is earlier, and returns it as `repoToken`. It is never
+stored in the ledger, logs or operation metadata: the ledger records only that it
+was issued and its expiry. A replay of the same Idempotency-Key does not mint a
+second token. It returns the same token from the route's memory while unexpired,
+otherwise 409 `fleet_repo_token_replay_expired` and the loop asks for a new grant
+(memory is not persisted, so a Norn restart also refuses; chosen over persisting a
+secret). Without a configured GitHub App the grant fails with 503
+`fleet_repo_token_unavailable`.
 
 This refines plan §2.3's `provider_applying` row, which named a phase the PG list
 does not have.

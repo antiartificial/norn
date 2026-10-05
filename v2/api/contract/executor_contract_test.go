@@ -104,6 +104,13 @@ func TestExecutorPinnedShapesMatchOpenAPI(t *testing.T) {
 	if !reflect.DeepEqual(gotTypes, wantTypes) {
 		t.Errorf("grant type enum = %v, GrantTypes types = %v", gotTypes, wantTypes)
 	}
+	if !gotTypes[executor.CredRepoRead] {
+		t.Error("grant type enum omits repo-read")
+	}
+	responseProps, _ := executorSchemaProps(t, doc, "FleetCredentialGrant")
+	if _, ok := responseProps["repoToken"]; !ok {
+		t.Error("FleetCredentialGrant omits repoToken")
+	}
 }
 
 func enumSet(raw interface{}) map[string]bool {

@@ -306,7 +306,7 @@ class CredentialProvider(Protocol):
     def issue(self, grant: Grant, types: list[CredentialType]) -> dict[str, str]
     def revoke(self, grant: Grant) -> None   # SOPS: no-op; OpenBao: revoke lease
 CredentialType = Literal["do-read", "do-write", "spaces-rw", "spaces-read", "ssh-node",
-                         "bootstrap-dir", "release-github", "norn-attempt"]
+                         "bootstrap-dir", "release-github", "norn-attempt", "repo-read"]
 ```
 
 `SopsProvider` decrypts `/etc/norn-fleet-executor/staging.sops.yaml` once
@@ -348,10 +348,10 @@ grant ID.
 
 | Phase | Allowed types |
 |---|---|
-| plan | do-read, spaces-rw (the lockfile needs write; `plan.yml:292` uses `use_lockfile=true`) |
+| plan | do-read, spaces-rw (the lockfile needs write; `plan.yml:292` uses `use_lockfile=true`), repo-read (the loop's own `git fetch`) |
 | provider_applying | do-write, spaces-rw, norn-attempt |
 | `infrastructure_applied` … `readiness_verified` | spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt; do-read only if P2 measures that `fleet_hooks.py` needs it (apply.yml passes it at :987) |
-| recover | union of the rows above |
+| recover | union of the rows above, plus repo-read (fetch at the start) |
 
 The observe grant is deferred with observation (§2.8).
 
@@ -378,7 +378,19 @@ The observe grant is deferred with observation (§2.8).
    material with no restart. A running phase keeps its grant until it
    exits.
 
-No pull credential lives on the host.
+**No GitHub credential is stored on the host.** `norn-fleet` is private, so the
+loop's `git fetch` (the `plan` grant, before planning) and recovery's fetch (the
+`recover` grant, at the start) use `repo-read`: Norn mints a **short-lived GitHub
+App installation token** restricted to the one configured repository with
+`contents: read` only, and returns it as `repoToken` beside `attemptToken`. It
+expires at GitHub's expiry (about 1 h) or the grant expiry, whichever is
+earlier. It is never written to the ledger, logs or operation metadata (only that
+it was issued, and its expiry). A replay of the same grant key returns the same
+token while it is unexpired and otherwise answers 409
+`fleet_repo_token_replay_expired` (the loop requests a new grant); no second token
+is minted. Without a configured GitHub App the grant answers 503
+`fleet_repo_token_unavailable`. No other phase may request `repo-read`. There is
+no deploy key on the host and nothing to rotate there.
 
 #### Norn identity (D1, D8)
 
@@ -786,7 +798,7 @@ on the executor host. Phase code from a merged commit runs with them.
 |---|---|---|
 | GitHub org, or a merge to protected `main` | `plan.yml` exposes DO and Spaces to merged code on every push (`plan.yml:176-181`). Mutation still needs a human dispatch. | **Config** merges auto-apply through reviewed code. **Executable** merges run with standing credentials only after an operator `approve` (D2). GitHub environment secrets remain for `plan.yml`, `drift.yml` and the GitHub lane. **There is no net reduction on the GitHub side; the mitigation is the D2 gate.** Nothing GitHub-executed runs on the executor host (D7). |
 | Authority host | dispatches reviewed plans | It can record desired state and approvals. The executor still requires the `origin/main` tip, the last-applied descendant and the non-destructive policy, so the authority cannot roll back or contract. It **can** approve an executable change that already merged. |
-| Executor host (`norn-exec` or root) | — (there is no resident host today; the GitHub runner holds files only during jobs) | **All staging credentials, standing.** Management is safe because it is a separate DO team. A 7-day Norn token. |
+| Executor host (`norn-exec` or root) | — (there is no resident host today; the GitHub runner holds files only during jobs) | **All staging credentials, standing, except GitHub: no GitHub credential is stored on the host.** Repository reads use a short-lived, repo-scoped, `contents: read` GitHub App token that Norn issues per grant (`repo-read`). Management is safe because it is a separate DO team. A 7-day Norn token. |
 | Phase code (`norn-phase`) | full job environment | its own grant only; no capabilities, so it cannot read the age key (R1). Hygiene, not containment. |
 
 **Lost:**

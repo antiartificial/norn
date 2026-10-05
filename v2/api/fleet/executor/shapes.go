@@ -111,9 +111,13 @@ const (
 	CodeFleetCredentialGrantAttemptRequired = "fleet_credential_grant_attempt_required"
 	CodeFleetCredentialGrantPhaseMismatch   = "fleet_credential_grant_phase_mismatch"
 	CodeFleetCredentialTypeNotAllowed       = "fleet_credential_type_not_allowed"
-	CodeFleetProviderEvidenceInvalid        = "fleet_provider_evidence_invalid"
-	CodeFleetProviderEvidenceRequired       = "fleet_provider_evidence_required"
-	CodeFleetExecutorDeviceActive           = "fleet_executor_device_active"
+	// repo-read (ADR 0010): 503 when the GitHub App cannot mint the token;
+	// 409 when a replayed grant's token has expired or is no longer held.
+	CodeFleetRepoTokenUnavailable     = "fleet_repo_token_unavailable"
+	CodeFleetRepoTokenReplayExpired   = "fleet_repo_token_replay_expired"
+	CodeFleetProviderEvidenceInvalid  = "fleet_provider_evidence_invalid"
+	CodeFleetProviderEvidenceRequired = "fleet_provider_evidence_required"
+	CodeFleetExecutorDeviceActive     = "fleet_executor_device_active"
 	// The two 503s of the resource routes (E4b): the store cannot set the
 	// mode atomically with its ledger operation (the route fails closed), and
 	// the executor-lane facts of the resource view could not be read.
@@ -141,6 +145,8 @@ var CodeStatus = map[string]int{
 	CodeFleetCredentialGrantAttemptRequired: 409,
 	CodeFleetCredentialGrantPhaseMismatch:   409,
 	CodeFleetCredentialTypeNotAllowed:       403,
+	CodeFleetRepoTokenUnavailable:           503,
+	CodeFleetRepoTokenReplayExpired:         409,
 	CodeFleetProviderEvidenceInvalid:        400,
 	CodeFleetProviderEvidenceRequired:       409,
 	CodeFleetExecutorDeviceActive:           409,
@@ -494,6 +500,11 @@ const (
 	CredBootstrapDir  = "bootstrap-dir"
 	CredReleaseGitHub = "release-github"
 	CredNornAttempt   = "norn-attempt"
+	// CredRepoRead is a short-lived GitHub App installation token restricted
+	// to the configured repository and contents:read. It lets the loop fetch
+	// the private repository without any GitHub credential at rest on the
+	// host. Only the plan and recover grants may carry it.
+	CredRepoRead = "repo-read"
 )
 
 // Grant pseudo-phases. Every other grant phase is a real lifecycle phase and
@@ -517,14 +528,14 @@ const (
 )
 
 var (
-	planTypes          = []string{CredDORead, CredSpacesRW}
+	planTypes          = []string{CredDORead, CredSpacesRW, CredRepoRead}
 	providerApplyTypes = []string{CredDOWrite, CredSpacesRW, CredNornAttempt}
 	// do-read in the post-apply phases is deliberately absent until P2 measures
 	// that fleet_hooks.py needs it (plan-5-7 section 2.3).
 	postApplyTypes  = []string{CredSpacesRead, CredSSHNode, CredBootstrapDir, CredReleaseGitHub, CredNornAttempt}
 	checkpointTypes = []string{CredNornAttempt}
 	recoverTypes    = []string{CredDORead, CredDOWrite, CredSpacesRW, CredSpacesRead, CredSSHNode,
-		CredBootstrapDir, CredReleaseGitHub, CredNornAttempt}
+		CredBootstrapDir, CredReleaseGitHub, CredNornAttempt, CredRepoRead}
 )
 
 // GrantTypes is the admission table: the types allowed per grant phase, per
@@ -572,10 +583,20 @@ type CredentialGrantRequest struct {
 // (scope AttemptScope), a bearer secret that is never stored in the ledger
 // (only its token ID is). A replay of the same Idempotency-Key re-signs the
 // same token ID; a newer grant for the plan revokes it.
+//
+// RepoToken is present only for a grant that includes CredRepoRead: a GitHub
+// App installation token for the configured repository, contents:read only,
+// expiring at GitHub's expiry (about 1 h), never after the grant. It is never
+// stored in the ledger or logged (the ledger records only that it was issued
+// and its expiry). A replay of the same Idempotency-Key returns the same
+// token from the route's memory while it is unexpired; otherwise the replay
+// is refused with CodeFleetRepoTokenReplayExpired and the caller must request
+// a new grant under a new key.
 type CredentialGrantResponse struct {
 	GrantID      string    `json:"grantId"`
 	ExpiresAt    time.Time `json:"expiresAt"`
 	AttemptToken string    `json:"attemptToken,omitempty"`
+	RepoToken    string    `json:"repoToken,omitempty"`
 }
 
 // AttemptScope is the only scope of the attempt-bound credential the

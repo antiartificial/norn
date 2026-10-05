@@ -582,7 +582,7 @@ paths:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
     post:
       operationId: createFleetCredentialGrant
-      description: Executor lane (ADR 0010). Records the signed operation fleet.credential-grant and returns its ID. Requires the executor principal (managed token, exact scope fleet:execute, not CI) and an Idempotency-Key. For every phase except plan the attempt must be live and owned by this executor; recover needs a recovery attempt, and every other phase must equal the attempt's currentPhase exactly (no alias). Each type must be allowed for the phase on the attempt's backend profile (PG legacy no-drain or canonical V3). Grants expire after 2 hours. A grant that includes norn-attempt also returns attemptToken, the attempt-bound credential (internal scope fleet:attempt, never requestable, not in the capabilities scope list) that the phase uses instead of the executor's device token; it reaches only its own attempt's GET, heartbeat and advance and the plan's reconciliations, expires with the grant, is revoked by the plan's next grant or by revoking the executor device, and is never stored in the ledger (only its token ID). A replay returns the same token ID re-signed.
+      description: Executor lane (ADR 0010). Records the signed operation fleet.credential-grant and returns its ID. Requires the executor principal (managed token, exact scope fleet:execute, not CI) and an Idempotency-Key. For every phase except plan the attempt must be live and owned by this executor; recover needs a recovery attempt, and every other phase must equal the attempt's currentPhase exactly (no alias). Each type must be allowed for the phase on the attempt's backend profile (PG legacy no-drain or canonical V3). Grants expire after 2 hours. A grant that includes norn-attempt also returns attemptToken, the attempt-bound credential (internal scope fleet:attempt, never requestable, not in the capabilities scope list) that the phase uses instead of the executor's device token; it reaches only its own attempt's GET, heartbeat and advance and the plan's reconciliations, expires with the grant, is revoked by the plan's next grant or by revoking the executor device, and is never stored in the ledger (only its token ID). A replay returns the same token ID re-signed. repo-read is allowed only for the plan and recover phases, and it returns repoToken, a short-lived GitHub App installation token restricted to the single configured repository with contents:read only, so the host holds no standing GitHub credential. It expires at GitHub's expiry (about 1 hour), never after the grant; the ledger records only that it was issued and its expiry. If the GitHub App is not configured or cannot mint, the grant answers 503 fleet_repo_token_unavailable. A replay of the same Idempotency-Key never mints a second token and returns the same token while unexpired, else 409 fleet_repo_token_replay_expired, so request a new grant with a new key
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -2061,13 +2061,14 @@ components:
         types:
           type: array
           minItems: 1
-          items: { type: string, enum: [do-read, do-write, spaces-rw, spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt] }
+          items: { type: string, enum: [do-read, do-write, spaces-rw, spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt, repo-read] }
     FleetCredentialGrant:
       type: object
       required: [grantId, expiresAt]
       properties:
         grantId: { type: string, format: uuid }
         expiresAt: { type: string, format: date-time }
+        repoToken: { type: string, description: 'Present only when types includes repo-read (plan and recover phases only). Bearer secret of a GitHub App installation token restricted to the configured repository with contents:read only; expires at GitHub''s expiry (about 1 hour) or the grant expiry, whichever is earlier. Never logged or stored in the ledger.' }
         attemptToken: { type: string, description: 'Present only when types includes norn-attempt. Bearer secret of the attempt-bound credential (managed token, single internal scope fleet:attempt, subject fleet-attempt:<attemptId>, no device claim, expires at expiresAt). Internal-only: it may call only the bound attempt''s GET, heartbeat and advance and the plan''s reconciliations, and cannot rotate. Never logged or stored in the ledger.' }
     FleetProviderEvidenceRequest:
       type: object
@@ -2597,6 +2598,8 @@ components:
         - fleet_credential_grant_attempt_required
         - fleet_credential_grant_phase_mismatch
         - fleet_credential_type_not_allowed
+        - fleet_repo_token_unavailable
+        - fleet_repo_token_replay_expired
         - fleet_provider_evidence_invalid
         - fleet_provider_evidence_required
         - fleet_executor_device_active

@@ -164,6 +164,13 @@ func TestGrantTypeTable(t *testing.T) {
 		{v3, CredentialGrantRequest{Phase: "complete", AttemptID: id, Types: []string{"norn-attempt"}}, CodeInvalidFleetExecutorRequest},
 		{legacy, CredentialGrantRequest{Phase: "recover", AttemptID: id, Types: []string{"do-write", "ssh-node"}}, ""},
 		{legacy, CredentialGrantRequest{Phase: "plan"}, CodeInvalidFleetExecutorRequest},
+		{legacy, CredentialGrantRequest{Phase: "plan", Types: []string{"do-read", "repo-read"}}, ""},
+		{v3, CredentialGrantRequest{Phase: "plan", Types: []string{"repo-read"}}, ""},
+		{v3, CredentialGrantRequest{Phase: "recover", AttemptID: id, Types: []string{"repo-read", "norn-attempt"}}, ""},
+		{v3, CredentialGrantRequest{Phase: "nodes_configured", AttemptID: id, Types: []string{"repo-read"}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: "provider_applying", AttemptID: id, Types: []string{"repo-read"}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: "prechange_verified", AttemptID: id, Types: []string{"repo-read"}}, CodeFleetCredentialTypeNotAllowed},
+		{legacy, CredentialGrantRequest{Phase: "infrastructure_applied", AttemptID: id, Types: []string{"repo-read"}}, CodeFleetCredentialTypeNotAllowed},
 	}
 	for i, c := range cases {
 		if got := code(c.req.Validate(c.profile)); got != c.code {
@@ -295,5 +302,27 @@ func TestConvergeExtensionKeepsCapacityPlanDigest(t *testing.T) {
 	const golden = "8261b6e37a3bdd3cbf1db505e920cbbc276eb0a13f89086703cc87aae4b5ccc2"
 	if got := hex.EncodeToString(sum[:]); got != golden {
 		t.Fatalf("capacity-plan canonical digest = %s, golden %s", got, golden)
+	}
+}
+
+// TestRepoReadOnlyForPlanAndRecover pins ADR 0010: repo-read is carried only
+// by the plan and recover grants, on both backend profiles.
+func TestRepoReadOnlyForPlanAndRecover(t *testing.T) {
+	if CredRepoRead != "repo-read" {
+		t.Fatalf("CredRepoRead = %q", CredRepoRead)
+	}
+	for profile, table := range GrantTypes {
+		for phase, types := range table {
+			has := false
+			for _, ty := range types {
+				has = has || ty == CredRepoRead
+			}
+			if want := phase == GrantPhasePlan || phase == GrantPhaseRecover; has != want {
+				t.Errorf("%s/%s: repo-read allowed = %v, want %v", profile, phase, has, want)
+			}
+		}
+	}
+	if CodeStatus[CodeFleetRepoTokenUnavailable] != 503 || CodeStatus[CodeFleetRepoTokenReplayExpired] != 409 {
+		t.Fatal("repo token codes are 503 and 409")
 	}
 }
