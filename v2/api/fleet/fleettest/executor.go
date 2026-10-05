@@ -189,6 +189,7 @@ func RunFleetExecutorConformance(t *testing.T, newHarness func(t *testing.T) Exe
 		{"ResumeApproveConsumedOnce", testExecutorResumeApproveConsumedOnce},
 		{"RefusesUnregisteredTarget", testExecutorRefusesUnregisteredTarget},
 		{"RefusesOlderConvergePlan", testExecutorRefusesOlderConvergePlan},
+		{"NewestPlanOrder", testExecutorNewestPlanOrder},
 		{"EpochAdvanceRefusesHeartbeat", testExecutorEpochAdvanceRefusesHeartbeat},
 		{"LastAppliedFromConvergePlan", testExecutorLastAppliedFromConvergePlan},
 		{"CIBranchUnchanged", testExecutorCIBranchUnchanged},
@@ -556,6 +557,22 @@ func testExecutorRefusesOlderConvergePlan(t *testing.T, h ExecutorHarness) {
 	if got := h.FenceFacts(target); got != fence {
 		t.Fatalf("a refused older plan touched the fence: %+v then %+v", fence, got)
 	}
+	requireExecStarted(t, h.Start(newer, host.DeviceID, ExecutorStartRequest(newer, host, false)))
+}
+
+// testExecutorNewestPlanOrder pins the one "newest converge plan" order both
+// backends implement: started_at descending, then plan ID descending. Two
+// plans recorded at the same instant are ordered by ID alone.
+func testExecutorNewestPlanOrder(t *testing.T, h ExecutorHarness) {
+	h.RegisterTarget("tie")
+	at := time.Now().UTC().Add(-15 * time.Minute).Truncate(time.Microsecond)
+	newer := h.SeedConvergePlan(ExecutorPlanSpec{Cluster: "tie", StartedAt: at})
+	older := h.SeedConvergePlan(ExecutorPlanSpec{Cluster: "tie", StartedAt: at})
+	if older.ID > newer.ID {
+		newer, older = older, newer
+	}
+	host := NewExecutorHost()
+	requireExecRefused(t, h.Start(older, host.DeviceID, ExecutorStartRequest(older, host, false)), executor.CodeFleetExecutorPlanNotNewest)
 	requireExecStarted(t, h.Start(newer, host.DeviceID, ExecutorStartRequest(newer, host, false)))
 }
 

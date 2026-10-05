@@ -92,7 +92,7 @@ type Resource struct {
 	// ExecutionMode is executor.ModeGitHub or executor.ModeController, stored
 	// once in the resource document and changed only by the admin-signed
 	// fleet.resource.execution-mode. Empty means github.
-	ExecutionMode       string
+	ExecutionMode       string `json:",omitempty"`
 	Revision            int64
 	AuthorityEpoch      int64
 	ObservationSequence int64

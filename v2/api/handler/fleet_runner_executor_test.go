@@ -39,8 +39,10 @@ func newExecutorLaneRig(t *testing.T, platform string) *executorLaneRig {
 		t.Fatal(err)
 	}
 	built, err := controller.BuildConvergePlan(controller.ConvergePlanInput{
+		// A config range from an applied base auto-applies; a first converge
+		// (no LastApplied) would require an approve (E4b).
 		Resource: "lane", Cluster: "lane", Repository: "acme/norn-fleet", CommitSHA: strings.Repeat("a", 40),
-		PathClass: executor.PathClassConfig, Generation: 1, SigningKey: p.h.cfg.AuditSigningKey,
+		LastApplied: strings.Repeat("b", 40), PathClass: executor.PathClassConfig, Generation: 1, SigningKey: p.h.cfg.AuditSigningKey,
 	})
 	if err != nil {
 		t.Fatal(err)

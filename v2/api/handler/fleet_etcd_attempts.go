@@ -16,6 +16,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
@@ -31,6 +32,21 @@ type EtcdFleetRunnerHandler struct {
 	operations *etcdstore.V3OperationStore
 	control    *Handler
 	github     fleetApplyRunObserver
+	devices    fleetExecutorDeviceLookup
+}
+
+// fleetExecutorDeviceLookup is the live-device read behind the executor lane's
+// platform check (the PG handler's ActiveAccessDevice).
+type fleetExecutorDeviceLookup interface {
+	ActiveAccessDevice(ctx context.Context, id string) (*store.AccessDevice, error)
+}
+
+// WithDeviceLookup wires the device lookup the executor lane needs. Without it
+// every executor principal is refused (fail closed), so the GitHub lane is
+// unaffected.
+func (h *EtcdFleetRunnerHandler) WithDeviceLookup(devices fleetExecutorDeviceLookup) *EtcdFleetRunnerHandler {
+	h.devices = devices
+	return h
 }
 
 type fleetApplyRunObserver interface {
@@ -96,6 +112,14 @@ func (h *EtcdFleetRunnerHandler) enqueue(r *http.Request, principal AccessPrinci
 }
 
 func (h *EtcdFleetRunnerHandler) Create(w http.ResponseWriter, r *http.Request) {
+	// The lane is chosen by principal (and, for the executor lane, the live
+	// device's platform) before anything else is read. The executor lane never
+	// reaches the GitHub-lane code below, and skips its dispatch preparation
+	// read (final-review m1).
+	if executorPrincipal, ok := AccessPrincipalFromRequest(r); ok && IsFleetExecutorPrincipal(executorPrincipal) {
+		h.startExecutorAttempt(w, r, executorPrincipal)
+		return
+	}
 	principal, ok := h.workload(w, r)
 	if !ok {
 		return
@@ -492,4 +516,72 @@ func (h *EtcdFleetRunnerHandler) ListReconciliations(w http.ResponseWriter, r *h
 	}
 	preventSensitiveResponseCaching(w)
 	writeJSON(w, map[string]interface{}{"schemaVersion": fleet.ReconciliationSchemaVersion, "planId": plan.ID, "reconciliations": owned, "count": len(owned)})
+}
+
+// startExecutorAttempt is the executor lane of Create: decode
+// (DisallowUnknownFields), validate, verify the converge plan, then one etcd
+// Txn acquires the fence, binds it and puts the attempt (or admits one
+// recovery with resume).
+func (h *EtcdFleetRunnerHandler) startExecutorAttempt(w http.ResponseWriter, r *http.Request, principal AccessPrincipal) {
+	preventSensitiveResponseCaching(w)
+	if h == nil || h.operations == nil || h.control == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_store_unavailable", "durable Fleet runner storage is unavailable")
+		return
+	}
+	if h.devices == nil {
+		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
+		return
+	}
+	if device, err := h.devices.ActiveAccessDevice(r.Context(), principal.DeviceID); err != nil || device == nil || !isFleetExecutorPlatform(device.Platform) {
+		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
+		return
+	}
+	planID := chi.URLParam(r, "planID")
+	if _, err := uuid.Parse(planID); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_id", "plan ID must be a UUID")
+		return
+	}
+	plan, err := h.operations.GetOperation(r.Context(), planID)
+	if errors.Is(err, etcdstore.ErrNotFound) || (err == nil && plan.Kind != "fleet.capacity-plan") {
+		WriteControlProblem(w, r, http.StatusNotFound, "fleet_plan_not_found", "fleet capacity plan not found")
+		return
+	}
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_plan_read_failed", "fleet capacity plan could not be read")
+		return
+	}
+	var request executor.AttemptStartRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, err.Error())
+		return
+	}
+	if _, err := validateFleetExecutorStart(plan.ID, request); err != nil {
+		writeFleetExecutorError(w, r, err)
+		return
+	}
+	if _, decoded := decodeConvergePlan(plan); !decoded {
+		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetPlanNotConverge, "the plan is not a converge plan")
+		return
+	}
+	if !h.control.fleetConvergePlanVerified(plan) {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "converge plan failed integrity verification")
+		return
+	}
+	request.HeartbeatTimeoutSeconds = normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds)
+	result, err := h.operations.CreateFleetExecutorAttempt(r.Context(), store.FleetExecutorStart{
+		PlanID: plan.ID, Request: request, PrincipalSubject: executor.PrincipalSubject(principal.DeviceID),
+	})
+	if err != nil {
+		if writeFleetExecutorError(w, r, err) {
+			return
+		}
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_store_failed", "failed to durably start executor runner attempt")
+		return
+	}
+	if result.Replayed {
+		writeJSON(w, result.Attempt)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/fleet/plans/"+plan.ID+"/attempts/"+result.Attempt.ID)
+	writeJSONStatus(w, http.StatusCreated, result.Attempt)
 }
