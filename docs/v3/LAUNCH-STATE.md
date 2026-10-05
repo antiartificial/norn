@@ -103,11 +103,19 @@ most recent and exposed the material partial-apply failure. A fresh pilot
 should be based on the repaired contracts, not resumed from `a` or `b`.
 
 `pilot261005a` is a **proposed** fresh run ID, not an approved or active pilot.
-At 15:20 UTC on 2026-10-05, read-only `doctl` calls against the intended
+At 15:36 UTC on 2026-10-05, read-only `doctl` calls against the intended
 `theartificial@hotmail.com` account found no matching droplets, databases,
-projects, load balancers, VPCs, firewalls or tags. This is a name-collision
-check, not a full provider-zero or Spaces-bucket proof. New signed spend,
-backend and access material must be generated for this run ID before create.
+projects, load balancers or VPCs; no registered GitHub runner carries its Fleet
+label. This is a name-collision check, not a full provider-zero or
+Spaces-bucket proof. Fleet source branch `codex/fresh-pilot-budget` now has
+commit `42ea088` wiring the signed c budget, plan, apply, recovery and exact
+topology gates, and explicitly rejecting retired `pilot261004b`; it is not
+merged or live proof. The independent deadline retirement path remains
+unimplemented. Existing approvals require post-create state and expire within
+an hour, so signed budget expiry alone cannot guarantee teardown. Do not
+start a new billable run until a restartable, run-scoped owner-Mac controller
+can perform Fleet → management → backend cleanup automatically from T0+4 and
+continue retrying until final zero.
 
 ## Milestone estimates
 
@@ -149,11 +157,13 @@ running Fleet qualification.
    a new pilot sourced from the merged helper can exercise it. A partial
    five-child remainder apply still requires manual reconciliation from the
    retained saved plan and provider evidence.
-3. Obtain a new bounded pilot envelope and fresh credentials. Verify the
-   exact source, signed release, budget, backend and management handoff before
-   a new protected plan/apply. Keep the issuing Tailscale OAuth client active
-   until the five node keys have actually enrolled; revocation invalidated
-   unused keys in `b`.
+3. Review and merge the `pilot261005a` signed budget and workflow gates, then
+   implement and review an independently armed, restartable retirement path.
+   It must fence active workflows, retire Fleet before management, retain both
+   root-zero proofs, and clean both state buckets and scoped keys. Only then
+   prepare fresh credentials and an owner-approved bounded window. Keep the
+   issuing Tailscale OAuth client active until the five node keys enroll;
+   revocation invalidated unused keys in `b`.
 4. Prove live Fleet state: three etcd members/quorum, Consul/Nomad enrollment,
    two ingresses and trusted public TLS, a staging workload with write/read,
    fault and restore, and loaded 2→3→2 scaling and drain. Retire the disposable
