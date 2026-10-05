@@ -3,6 +3,7 @@ package contract
 import (
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -56,6 +57,7 @@ func TestExecutorPinnedShapesMatchOpenAPI(t *testing.T) {
 		"FleetExecutorTofuLock":               reflect.TypeOf(executor.TofuLock{}),
 		"FleetExecutorAttemptStartRequest":    reflect.TypeOf(executor.AttemptStartRequest{}),
 		"FleetExecutorAttemptMetadata":        reflect.TypeOf(executor.AttemptMetadata{}),
+		"FleetConvergeView":                   reflect.TypeOf(executor.ConvergeView{}),
 	} {
 		props, required := executorSchemaProps(t, doc, schema)
 		var got, req []string
@@ -174,5 +176,66 @@ func TestExecutorRoutesCodesAndReleaseEvidenceArePublished(t *testing.T) {
 		if containsRequiredField(required, "providerEvidence") {
 			t.Errorf("%s must keep providerEvidence optional so existing requests are unchanged", schema)
 		}
+	}
+}
+
+// TestExecutorWorkViewAndEnrollmentArePinned pins what the P1 loop reads: the
+// executor route list, the converge work view on the desired revision, the
+// derived resumeApproved, and the enrollment exchange's pending answer.
+func TestExecutorWorkViewAndEnrollmentArePinned(t *testing.T) {
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal(controlV1, &doc); err != nil {
+		t.Fatal(err)
+	}
+	paths := doc["paths"].(map[string]interface{})
+	seen := map[string]bool{}
+	for _, route := range executor.ExecutorRoutes {
+		method, path, _ := strings.Cut(route, " ")
+		if seen[route] {
+			t.Errorf("duplicate executor route %s", route)
+		}
+		seen[route] = true
+		item, _ := paths[path].(map[string]interface{})
+		if _, ok := item[strings.ToLower(method)].(map[string]interface{}); !ok {
+			t.Errorf("executor route %s is not in the OpenAPI document", route)
+		}
+	}
+	if !seen["GET /api/v1/fleet/resources/{name}"] || seen["GET /api/v1/fleet/resources"] {
+		t.Error("the executor reads exactly the single-resource view, never the list")
+	}
+
+	desired, _ := executorSchemaProps(t, doc, "FleetResourceDesired")
+	if ref, _ := desired["converge"].(map[string]interface{})["$ref"].(string); ref != "#/components/schemas/FleetConvergeView" {
+		t.Error("FleetResourceDesired.converge must reference FleetConvergeView")
+	}
+	_, desiredRequired := executorSchemaProps(t, doc, "FleetResourceDesired")
+	if containsRequiredField(desiredRequired, "converge") {
+		t.Error("FleetResourceDesired.converge must stay optional")
+	}
+	status, _ := executorSchemaProps(t, doc, "FleetResourceStatus")
+	active := status["active"].(map[string]interface{})
+	resume, _ := active["properties"].(map[string]interface{})["resumeApproved"].(map[string]interface{})
+	if resume["type"] != "boolean" {
+		t.Error("status.active.resumeApproved must be a boolean")
+	}
+	activeRequired, _ := active["required"].([]interface{})
+	if containsRequiredField(activeRequired, "resumeApproved") {
+		t.Error("status.active.resumeApproved must stay optional")
+	}
+
+	exchange := paths["/api/v1/enrollments/{id}/exchange"].(map[string]interface{})["post"].(map[string]interface{})
+	if _, ok := exchange["responses"].(map[string]interface{})[strconv.Itoa(executor.EnrollmentPendingStatus)]; !ok {
+		t.Errorf("exchange must document the %d pending answer", executor.EnrollmentPendingStatus)
+	}
+	if desc, _ := exchange["description"].(string); !strings.Contains(desc, executor.EnrollmentPendingCode) {
+		t.Errorf("exchange description must name %s", executor.EnrollmentPendingCode)
+	}
+	errorCode, _ := resolveRef(doc, "#/components/schemas/ErrorCode")
+	found := false
+	for _, v := range errorCode.(map[string]interface{})["x-extensible-enum"].([]interface{}) {
+		found = found || v == executor.EnrollmentPendingCode
+	}
+	if !found {
+		t.Errorf("ErrorCode omits %s", executor.EnrollmentPendingCode)
 	}
 }

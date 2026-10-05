@@ -201,8 +201,10 @@ flowchart LR
    - a converge plan: a `fleet.capacity-plan` with `action: converge`,
      `commitSha`, `pathClass`, `requiresApproval`, merge actor and PR
      number.
-3. The **loop** polls the existing `GET resources/{name}`. It acts when all
-   of these hold:
+3. The **loop** polls the existing `GET resources/{name}` (the only read
+   the executor principal has; it reads `desired.converge {planSha256,
+   requiresApproval, approved}`, pinned as `executor.ConvergeView`). It
+   acts when all of these hold:
    - the desired generation is newer than the applied one;
    - `executionMode=controller`;
    - any required approval is present;
@@ -253,10 +255,18 @@ flowchart LR
   `scripts/executor.py` at a reviewed commit, installed by Ansible into
   `/opt/norn-fleet-executor/<sha>/` with a verified tree hash.
 - It owns the age key (`0400`) and the Norn device token.
-- The unit grants `AmbientCapabilities=CAP_SETUID CAP_SETGID` **to the
-  loop only**. It also sets `CapabilityBoundingSet=CAP_SETUID CAP_SETGID`,
-  `KillMode=control-group`, `ProtectSystem=strict`, and restricted
-  `ReadWritePaths`.
+- The unit grants `AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_SETPCAP`
+  **to the loop only**. It also sets
+  `CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP`,
+  `KillMode=control-group`, `ProtectSystem=strict`, `PrivateTmp=yes`,
+  restricted `ReadWritePaths`, and **no `Delegate=`**. `CAP_SETPCAP` is
+  required: `setpriv --bounding-set=-all` drops the bounding set with
+  `PR_CAPBSET_DROP`, which fails without it (P1 review). It adds nothing
+  beyond the bounding set the unit already allows.
+- Ambient capabilities reach every child of the loop, not only `setpriv`.
+  The loop therefore starts `sops` through `setpriv` with every set
+  dropped and its own uid; `git` and `tofu version` still inherit
+  `CAP_SETUID`/`CAP_SETGID` (P2 or P5 should wrap them the same way).
 
 **`norn-phase` runs each phase.**
 - It runs the converged commit's work tree.
@@ -267,10 +277,21 @@ flowchart LR
 - The phase therefore has empty effective, permitted, inheritable, ambient
   and bounding sets. It cannot `setuid` back to `norn-exec`, and it cannot
   read `/etc/norn-fleet-executor/` or `/var/lib/norn-fleet-executor/`.
-- `sudo`, `su` and `systemd-run` are never used, because a PAM session
-  would leave the unit cgroup.
+- `sudo`, `su` and `systemd-run` are never used, because a PAM session,
+  a transient scope or a transient unit would leave the unit cgroup and
+  escape `KillMode=control-group`.
+- The loop cannot signal phase processes (different uid, no `CAP_KILL`).
+  After every phase, and on timeout or interruption, it runs a one-shot
+  `kill(-1, SIGKILL)` **as `norn-phase`** through the same `setpriv` line.
+  That kills every `norn-phase` process, including one that left the
+  phase's process group with `setsid`, so no phase process outlives its
+  grant and none can read or rewrite the next phase's grant files.
+- P5 denies `cron` and `at` to `norn-phase`, so no phase process can be
+  started later outside the unit.
 - P1 tests all of this (`PhaseHasNoCapabilities`,
-  `PhaseCannotReadAgeKey`).
+  `PhaseCannotReadAgeKey`). The VM test spawns the phase from a
+  `norn-exec` process holding exactly the unit's capabilities, not from
+  root, because root hides a missing `CAP_SETPCAP`.
 
 **Limits.** Per-phase scoping is hygiene, not containment. Phase code from
 the converged commit runs with its grant's real credentials. The control
@@ -292,7 +313,21 @@ CredentialType = Literal["do-read", "do-write", "spaces-rw", "spaces-read", "ssh
 per grant. It returns only the requested types. File-shaped types (SSH key,
 bootstrap dir) are written under `/run/norn-fleet-executor/grants/<id>/`,
 owned by `norn-phase` with mode `0600`. That directory is tmpfs, so a power
-loss erases it. The provider deletes the directory when the phase exits.
+loss erases it. The provider deletes the directory when the phase exits,
+and the loop removes every leftover grant directory when it starts.
+
+**Grant layout (P1 review, kept).** `grants/` is `norn-exec:norn-phase
+0750`: a phase can traverse it but not create, rename or delete entries.
+Each `<id>/` is `norn-exec:norn-phase 0770` and its files belong to
+`norn-phase`, written by a one-shot helper run as `norn-phase` (so the loop
+needs no `CAP_CHOWN`; `norn-exec` is in the `norn-phase` group only to set
+the directory group). A phase can reach nothing of `norn-exec`. Because
+every phase has the same uid, the file layout cannot separate one phase
+from the next; that separation comes from one phase at a time, the
+uid-wide kill after each phase, and revocation before the next grant.
+Files a phase leaves in places it can write (its home, the work tree,
+`/tmp`) are not covered: P2 gives each phase `HOME` and `TMPDIR` inside its
+grant directory and keeps the work tree read-only to `norn-phase`.
 
 #### Norn-issued grants (audit from day one)
 
@@ -357,7 +392,11 @@ authority-only process already serves enrollment, approval, exchange,
 1. On first start, the loop generates its device key and calls
    `POST /api/v1/enrollments` with `platform: "fleet-executor"`.
 2. An admin approves with scopes exactly `["fleet:execute"]`.
-3. The loop exchanges the approval for a token.
+3. The loop exchanges the approval for a token. It polls the exchange
+   every 5 s while the answer is `409 enrollment_not_approved` and stops at
+   the start response's `expiresAt`. Any other refusal is terminal; `401
+   invalid_enrollment_verifier` counts toward the lockout and is never
+   retried (`executor.EnrollmentPendingCode`).
 
 No token is shipped in SOPS.
 
@@ -378,7 +417,9 @@ No token is shipped in SOPS.
 - The loop self-rotates once **3.5 days or less remain**, and only while no
   phase is running for it. Plenty of idle windows exist at a 7-day lifetime.
 - It writes the new token to `/var/lib/norn-fleet-executor/token` (temp
-  file, fsync, rename) before using it.
+  file, fsync, rename) before using it. A missing or unreadable expiry
+  record counts as due, so a crash between the token and its expiry
+  record heals at the next idle tick.
 - Phases read the token through their `norn-attempt` grant file, which the
   loop rewrites atomically. They re-read it on every request, as
   `reconcile.py` already does (`reconcile.py:204-241`).
@@ -537,8 +578,17 @@ when all three hold:
 1. It comes from the executor principal.
 2. Its `dropletId` and `machineId` equal the source attempt's.
 3. Either `bootId` differs, or the same boot shows the phase process group
-   reaped, **no process owned by `norn-phase`**, and the old invocation's
-   `cgroup.events` reads `populated 0`.
+   reaped, **no process owned by `norn-phase`**, and the unit's cgroup
+   subtree holding no process but the attesting loop (`sourceCgroupEmpty`).
+   systemd reuses one cgroup for every invocation of the unit, so the old
+   invocation's cgroup is the new loop's own and never reads `populated 0`.
+   The loop reads `cgroup.procs` of the unit cgroup and every descendant
+   before it starts any child. This is sound because the unit has no
+   `Delegate=` and phases have no capabilities: a phase can neither leave
+   the unit cgroup nor create a sub-cgroup. Decided against: running
+   phases in a transient `systemd-run --scope` or `--unit`, which would
+   make emptiness directly readable but moves phases out of the unit's
+   `KillMode`, needs a privileged D-Bus call, and contradicts §2.3.
 
 R1 is what makes the uid check sound: phases cannot change uid.
 
@@ -574,7 +624,8 @@ remains the provider-side backstop.
 3. The reconciler derives `status.active.resumeApproved=true` when the
    approve's `sourceAttemptId` is the holder plan's latest attempt and a
    valid attestation exists.
-4. The loop sees it on its next `GET resources/{name}`. It starts **one**
+4. The loop sees it on its next `GET resources/{name}` (allowed to the
+   executor principal, `executor.ExecutorRoutes`). It starts **one**
    recovery attempt (`resume:true`, `retryOf`) through the executor
    branch.
 5. That branch admits the attempt only if all of these hold:
@@ -808,8 +859,8 @@ on `169.254.169.254`, using a VM-local alias.
 | **E2** PG executor admission | `handler/fleet_runner.go`, `store/fleet_executor_attempts.go` (new), `store/fleet_targets.go`, `store/fleet_resources.go` (folds in E4c), `fleet/fleettest/executor.go` (new) | `RunFleetExecutorConformance`: `AcquireBindInsertAtomic`, `LostResponseReplays`, `LanesShareFence`, `ExpiryDoesNotRelease`, `RecoveryRequiresAttestationOrEvidence`, `CloneDropletAttestationRejected`, `ApprovalRequiredForExecutable`, `ResumeApproveConsumedOnce`, `RefusesUnregisteredTarget`, `EpochAdvanceRefusesHeartbeat`, `LastAppliedFromConvergePlan`, `CIBranchUnchanged`. Approve and attestation fixtures are **seeded directly as ledger operations in E0's pinned shapes**, so E2 does not depend on E4b or E5. `TestFleetExecutorConformancePostgres` | yes (PG) |
 | **E2e** etcd executor admission | `etcdstore/v3_fleet_executor_attempt.go` (new), `etcdstore/v3_fleet_fence.go` (holder facts at :174-190), `etcdstore/v3_fleet_resources.go` (last applied), `handler/fleet_etcd_attempts.go` (executor branch; skips the preparation read noted in final-review m1), `etcdstore/fleet_executor_conformance_test.go` | `TestFleetExecutorConformanceEtcd` | yes (etcd) |
 | **E5** Grants, attestations, release evidence | `handler/fleet_executor_ops.go` (new: grant route, stop-attestation route), `handler/fleet_targets.go` (`providerEvidence`; executor-lane evidence for release and abandon) | `GrantRequiresLiveAttemptAndCurrentPhase`, `GrantTypeTable`, `AttestationSameDropletOnly`, `ProviderEvidenceAdminOnly`, `AbandonExecutorLaneNeedsEvidence`, existing release tests unchanged | yes |
-| **E4b** Approve, mode, policy | `handler/fleet_resources.go`, `fleet/controller/types.go`, `fleet/controller/derive.go` (`approve_converge`, `resumeApproved`, the new blockers) | `TestApprovalPolicyReportsMergeGate`, `TestModeSwitchAdminAndFreeFence`, `TestDeriveApproveConverge`, `TestDeriveResumeApproved` | yes |
-| **E6** Wiring | `main.go` (allowlist, scope matcher, watcher start, `fleet-executor-v1`), `etcd_fleet_runtime.go` (routes, watcher, **etcd `ConvergePlanRecorder`** reusing the plan recording at `:480-530`) | `TestFleetExecutorRoutesAuthorityOnlyAndEtcd`, `TestExecutorRoutesAbsentFromGeneralRouter`, `TestEtcdConvergePlanRecorded`, `TestWatcherStartsOnlyWithReconciler` | yes |
+| **E4b** Approve, mode, policy | `handler/fleet_resources.go`, `fleet/controller/types.go`, `fleet/controller/derive.go` (`approve_converge`, `resumeApproved`, the new blockers, `desired.converge` as `executor.ConvergeView`) | `TestApprovalPolicyReportsMergeGate`, `TestModeSwitchAdminAndFreeFence`, `TestDeriveApproveConverge`, `TestDeriveResumeApproved` | yes |
+| **E6** Wiring | `main.go` (allowlist, scope matcher admitting the executor principal to exactly `executor.ExecutorRoutes`, including `GET /api/v1/fleet/resources/{name}` but not the list route, watcher start, `fleet-executor-v1`), `etcd_fleet_runtime.go` (routes, watcher, **etcd `ConvergePlanRecorder`** reusing the plan recording at `:480-530`) | `TestFleetExecutorRoutesAuthorityOnlyAndEtcd`, `TestExecutorRoutesAbsentFromGeneralRouter`, `TestExecutorPrincipalReachesExactlyExecutorRoutes`, `TestEtcdConvergePlanRecorded`, `TestWatcherStartsOnlyWithReconciler` | yes |
 | **P1** Entrypoint, loop, identity, credentials, intent, VM | `fleet:scripts/executor.py` (entrypoint: `loop`, `converge`, `recover`), `scripts/executor/{loop,identity,credentials,grants,intent}.py`, `test_executor_loop.py`; `norn:v2/scripts/norn-exec-vm` | `SopsProviderOnlyRequestedTypes`, **`PhaseHasNoCapabilities`** (reads `/proc/self/status` CapEff/CapPrm/CapInh/CapAmb/CapBnd = 0), **`PhaseCannotReadAgeKey`**, `NoSecretInArgv`, `RefusesShaNotTipOrNotDescendant`, `AttestationRequiresEmptyPhaseUid`, `IntentFsyncedBeforeCalls`, `BusyFenceIsRetry`, `TokenSelfRotateIdleOnlyAtomic`. Host tests run in the VM | yes (VM) |
 | **P2** Converge | `fleet:scripts/executor/converge.py` (staging-lane port of apply.yml :256-1209, without external-Mac, disposable or contraction branches); `runner_attempt.py`/`reconcile.py` executor IDs | `test_executor_converge.py`; a **step-equivalence test** that parses `apply.yml` and maps every step whose `if:` admits staging non-destructive to a `converge.py` function or an explicit "replaced by"; it also measures whether hooks need DO. Existing `test_runner_attempt.py` and `test_reconcile.py` stay green | yes |
 | **P3** Recover + lock | `fleet:scripts/executor/recover.py` (reuses P2 functions) | resume from each phase; `force-unlock` only for an attested matching lock; a foreign lock gives `state_lock_foreign` | yes |
@@ -819,6 +870,19 @@ on `169.254.169.254`, using a VM-local alias.
 | **C2** NornUI | `ui:` `FleetResourceCard.swift` (new), `FleetFeatureView.swift`, `NornClient.swift`, `NornClientProtocol.swift`, on branch `feature/fleet-controller-ui` | `NornClientTests`, view-model tests | yes |
 | **Q1** Local end-to-end | `v2/scripts/test-fleet-executor-local` (new) | Real authority-only router on PG **and** the etcd runtime on the Mac; loop in the VM; fake GitHub and DO; real `tofu` against **MinIO with `use_lockfile=true`**. Rows: (1) merge then auto converge; (2) executable diff then approve; (3) kill a phase mid-apply → attestation → `--resume`; (4) `systemctl restart` mid-configure; (5) **VM power-off mid-apply → boot → attestation (new `boot_id`) → resume**; (6) lost attempt-start response replays; (7) authority restart mid-run; (8) GitHub-lane dispatch racing the executor on the same fence; (9) force-push gives `history_rewritten`; (10) **stale MinIO `.tflock` left by killed real `tofu apply`: owned lock unlocked, foreign lock refused**; (11) token self-rotation mid-idle; (12) the cloned-VM disk (new droplet ID fake) cannot attest | **yes** |
 | **Q2** Staging qualification | `docs/v3/fleet-controller/qualification-executor-<date>.md` | **Precondition (D4):** the management plane exists (authority, executor host, management PG, Tailscale, separate DO team, P5 applied, executor device approved). Rows: (1) cold create; (2) scale-up; (3) kill the child mid-apply → attest + unlock + resume; (4) power-off mid-configure; (5) rebuilt host refused without `providerEvidence`; (6) executable approve; (7) contraction on an ephemeral GitHub runner under the fence; (8) mode back to `github`. After rows 3–5: set `autoRecoveryBudget=1` and repeat row 3 without `--resume` | **real staging only** |
+
+### Hand-offs from the E1 and P1 reviews (orchestrator, 2026-10-04)
+
+- **E5:** the `norn-attempt` grant must NOT hand the phase the executor's device token, which carries `fleet:execute` and can call `/auth/rotate`. Norn issues a short-lived, attempt-bound credential for the phase's attempt/checkpoint calls only; it is revoked with the grant. If the existing token model cannot express this, E5 adds the smallest scoped credential and reports.
+- **P2:** run `git`, `tofu version`, and every other loop-spawned helper through the same capability-dropping `setpriv` wrapper; give each phase its own `HOME`/`TMPDIR` and a read-only work tree.
+- **P3:** when a phase dies while the loop survives, the loop exits non-zero so systemd (`Restart=always`) starts a new invocation that can attest; no in-process self-attestation.
+- **P5:** unit capabilities per §2.3 (ambient/bounding `CAP_SETUID CAP_SETGID CAP_SETPCAP`), deny cron and `at` to `norn-phase`, `Restart=always`.
+- **E6:**
+  - The etcd runtime serves no enrollment or `DELETE /devices/{id}` routes, so it cannot enroll or revoke an executor. Add them, or state that executor devices are managed only through the PG authority.
+  - Authority capabilities advertise `enrollmentScopes: [api:read, api:write]` (`main.go:~1950`); include `fleet:execute` for the `fleet-executor` platform.
+  - List `fleet:execute` in `AccessTokenScopeNames()` with the one-line update to `testdata/client-contract/v1/signed-staging-capabilities.json`.
+  - The scope matcher admits exactly `executor.ExecutorRoutes` for the executor principal (`TestExecutorPrincipalReachesExactlyExecutorRoutes`).
+- **E2/E5 (defence in depth):** check the device platform (`fleet-executor`) in addition to `IsFleetExecutorPrincipal`.
 
 ### Order and parallel groups
 

@@ -247,6 +247,18 @@ type AttemptMetadata struct {
 // fact, so a missing field decodes to false and fails closed. The server
 // resolves the plan from SourceAttemptID and records PlanID in the ledger
 // payload; Ref = plan ID. ValidStopAttestation is the decision.
+//
+// SourceCgroupEmpty: systemd reuses one cgroup for every invocation of the
+// executor unit, so the source invocation's cgroup is the attester's own and
+// can never read "populated 0". The fact is therefore: the unit's cgroup
+// subtree (cgroup.procs of the unit cgroup and of every descendant) holds no
+// process other than the attesting loop, read before that loop has started
+// any child. It is sound because the unit uses KillMode=control-group and no
+// Delegate=, and phases have no capabilities (R1): a phase can neither leave
+// the unit cgroup nor create a sub-cgroup. Phases never run in a transient
+// unit or scope (systemd-run), which would move them out of the unit and out
+// of KillMode. A process outside the cgroup (cron, at) still has the
+// norn-phase uid and is caught by PhaseUIDEmpty.
 type StopAttestationRequest struct {
 	SourceAttemptID         string    `json:"sourceAttemptId"`
 	DropletID               string    `json:"dropletId"`
@@ -255,7 +267,7 @@ type StopAttestationRequest struct {
 	InvocationID            string    `json:"invocationId"`
 	PhaseUIDEmpty           bool      `json:"phaseUidEmpty"`           // no process owned by norn-phase
 	PhaseProcessGroupReaped bool      `json:"phaseProcessGroupReaped"` // the source phase process group is gone
-	SourceCgroupEmpty       bool      `json:"sourceCgroupEmpty"`       // source invocation's cgroup.events reads populated 0
+	SourceCgroupEmpty       bool      `json:"sourceCgroupEmpty"`       // see below
 	ObservedAt              time.Time `json:"observedAt"`
 	TofuLock                *TofuLock `json:"tofuLock,omitempty"`
 }
@@ -268,6 +280,59 @@ type TofuLock struct {
 	Who       string    `json:"who"`
 	Created   time.Time `json:"created"`
 }
+
+// ConvergeView is the executor's work view of a converge plan, served as the
+// additive omitempty object "converge" on FleetResourceDesired (E4b, both
+// backends). It is present only when the desired revision's plan is a
+// converge plan, so an absent object means "nothing to converge" and fails
+// closed. The executor reads it with GET /api/v1/fleet/resources/{name} and
+// needs no plan read.
+type ConvergeView struct {
+	// PlanSHA256 is the hex part of the plan's digest ("sha256:<hex>"), the
+	// value AttemptStartRequest.PlanSHA256 must carry.
+	PlanSHA256 string `json:"planSha256"`
+	// RequiresApproval is ConvergePlan.RequiresApproval.
+	RequiresApproval bool `json:"requiresApproval"`
+	// Approved is true when a non-resume fleet.converge.approve for this plan
+	// and its commitSha exists. The executor starts a requiresApproval plan
+	// only when Approved is true; admission still enforces it
+	// (CodeFleetConvergeApprovalRequired).
+	Approved bool `json:"approved"`
+}
+
+// ExecutorRoutes are the only routes the executor principal (exact
+// fleet:execute) may call; every other route refuses it with
+// insufficient_scope (E6 wires the scope matcher). The resource read is the
+// single-name GET only, never the list, and returns the ordinary resource
+// view (ConvergeView and status.active.resumeApproved included). No other
+// read is granted: the executor needs no plan read.
+var ExecutorRoutes = []string{
+	"GET /api/v1/fleet/resources/{name}",
+	"POST /api/v1/fleet/resources/{name}/converge",
+	"POST /api/v1/fleet/plans/{planID}/attempts",
+	"GET /api/v1/fleet/plans/{planID}/attempts/{attemptID}",
+	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat",
+	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance",
+	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
+	"GET /api/v1/fleet/plans/{planID}/reconciliations",
+	"POST /api/v1/fleet/plans/{planID}/reconciliations",
+	"POST /api/v1/fleet/plans/{planID}/credential-grants",
+	"POST /api/v1/fleet/executor/stop-attestations",
+	"POST /api/v1/auth/rotate",
+}
+
+// Enrollment exchange while the admin has not approved yet. E1 keeps the
+// existing response unchanged: POST /api/v1/enrollments/{id}/exchange answers
+// 409 with problem code EnrollmentPendingCode, for a pending and an expired
+// enrollment alike. The loop polls every EnrollmentPollInterval until the
+// start response's expiresAt and then stops. Every other refusal is terminal;
+// above all 401 invalid_enrollment_verifier, which counts toward the
+// enrollment lockout and must never be retried.
+const (
+	EnrollmentPendingCode   = "enrollment_not_approved"
+	EnrollmentPendingStatus = 409
+	EnrollmentPollInterval  = 5 * time.Second
+)
 
 // StopAttestationPayload is the ledger payload: the request plus PlanID.
 type StopAttestationPayload struct {
@@ -570,8 +635,8 @@ func (r StopAttestationRequest) Validate() error {
 //     host is a new device);
 //   - the attester is a different systemd invocation than the source;
 //   - either the boot changed, or on the same boot no norn-phase process
-//     exists, the source phase process group is reaped and the source
-//     invocation's cgroup is empty;
+//     exists, the source phase process group is reaped and the unit cgroup
+//     subtree holds only the attester (SourceCgroupEmpty);
 //   - observedAt is within AttestationMaxAge (and at most a minute ahead).
 //
 // A different host can never attest; it needs admin ProviderEvidence.

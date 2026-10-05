@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# norn-exec-vm manages the local Linux VM that host tests for the Fleet
+# controller executor need (docs/v3/fleet-controller/plan-5-7.md, "Linux VM for
+# host tests"; WP P1, used by Q1). A container cannot change boot_id or
+# reproduce systemd KillMode, and this Mac is darwin, so the tests that touch
+# setpriv, capabilities, uids, cgroups and power-off run only here.
+#
+# Usage: norn-exec-vm <command> [args]
+#   up                 create the VM (if absent) and provision it
+#   create             limactl start --name norn-exec template://ubuntu-24.04
+#   provision          users, python + wheelhouse, sops, age, tofu, MinIO, fake metadata
+#   test [module...]   run the VM-only executor tests as root (default: the three P1 modules)
+#   shell [cmd...]     open a shell (or run a command) in the VM
+#   droplet-id <id>    change the droplet ID the fake metadata service reports
+#   stop | destroy | status
+#
+# Environment:
+#   NORN_FLEET_DIR     norn-fleet checkout holding scripts/ (default: a sibling directory named
+#                      norn-fleet-controller-executor)
+#   NORN_EXEC_VM_NAME  VM name (default norn-exec)
+#   TOFU_VERSION, SOPS_VERSION, AGE_VERSION  pinned tool versions (defaults below)
+#
+# limactl is required (brew install lima) and is never installed by this script.
+# The fake DigitalOcean metadata service answers on 169.254.169.254:80 through a
+# VM-local alias on lo, so nothing leaves the VM. Lima mounts the home directory
+# read-only by default, which is enough: the tests only read the fleet scripts.
+
+NAME="${NORN_EXEC_VM_NAME:-norn-exec}"
+TOFU_VERSION="${TOFU_VERSION:-1.9.0}"
+SOPS_VERSION="${SOPS_VERSION:-3.9.4}"
+AGE_VERSION="${AGE_VERSION:-1.2.1}"
+MINIO_BUCKET="${MINIO_BUCKET:-norn-exec-state}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FLEET_DIR="${NORN_FLEET_DIR:-$(cd "$here/../../.." && pwd)/norn-fleet-controller-executor}"
+
+die() { printf 'norn-exec-vm: %s\n' "$*" >&2; exit 1; }
+
+need_lima() {
+  command -v limactl >/dev/null 2>&1 || die "limactl not found; install Lima (brew install lima) first"
+}
+
+vm_exists() { limactl list --quiet 2>/dev/null | grep -qx "$NAME"; }
+
+in_vm() { limactl shell "$NAME" -- "$@"; }
+
+cmd_create() {
+  need_lima
+  if vm_exists; then
+    printf 'VM %s already exists\n' "$NAME"
+    return 0
+  fi
+  limactl start --name "$NAME" --tty=false template://ubuntu-24.04
+}
+
+# The script below runs inside the VM as root. It is idempotent, so `provision` can be repeated.
+provision_script() {
+  cat <<'PROVISION'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+arch="$(dpkg --print-architecture)"   # arm64 on Apple silicon
+apt-get update -qq
+apt-get install -y -qq python3 python3-venv python3-pip git curl ca-certificates util-linux unzip
+
+# Users (plan-5-7 section 2.3, R1): norn-exec runs the loop, norn-phase runs phases.
+# norn-exec is a member of the norn-phase group so it can create and remove grant
+# directories without CAP_CHOWN; phases use --clear-groups and never get it back.
+getent group norn-phase >/dev/null || groupadd --system norn-phase
+id norn-phase >/dev/null 2>&1 || useradd --system --gid norn-phase --create-home --shell /usr/sbin/nologin norn-phase
+id norn-exec >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin norn-exec
+usermod -aG norn-phase norn-exec
+install -d -o norn-exec -g norn-exec -m 0750 /etc/norn-fleet-executor
+install -d -o norn-exec -g norn-exec -m 0700 /var/lib/norn-fleet-executor
+printf '%s\n' \
+  'd /run/norn-fleet-executor 0755 norn-exec norn-exec -' \
+  'd /run/norn-fleet-executor/grants 0750 norn-exec norn-phase -' \
+  >/etc/tmpfiles.d/norn-fleet-executor.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/norn-fleet-executor.conf
+
+# fetch_checked URL SUMS-URL FILE: download, verify against the published checksum list, print the path.
+fetch_checked() {
+  local url="$1" sums="$2" file="$3" dir
+  dir="$(mktemp -d)"
+  curl -fsSL -o "$dir/$file" "$url"
+  curl -fsSL -o "$dir/SUMS" "$sums"
+  (cd "$dir" && grep -F " $file" SUMS | sha256sum -c -) >&2
+  printf '%s\n' "$dir/$file"
+}
+
+if ! command -v tofu >/dev/null || ! tofu version | head -1 | grep -qF "v${TOFU_VERSION}"; then
+  base="https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}"
+  zip="$(fetch_checked "$base/tofu_${TOFU_VERSION}_linux_${arch}.zip" "$base/tofu_${TOFU_VERSION}_SHA256SUMS" "tofu_${TOFU_VERSION}_linux_${arch}.zip")"
+  unzip -oq "$zip" tofu -d /usr/local/bin
+  chmod 0755 /usr/local/bin/tofu
+fi
+if ! command -v sops >/dev/null || ! sops --version 2>/dev/null | grep -qF "${SOPS_VERSION}"; then
+  base="https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}"
+  bin="$(fetch_checked "$base/sops-v${SOPS_VERSION}.linux.${arch}" "$base/sops-v${SOPS_VERSION}.checksums.txt" "sops-v${SOPS_VERSION}.linux.${arch}")"
+  install -m 0755 "$bin" /usr/local/bin/sops
+fi
+if ! command -v age >/dev/null; then
+  tmp="$(mktemp -d)"
+  curl -fsSL "https://github.com/FiloSottile/age/releases/download/v${AGE_VERSION}/age-v${AGE_VERSION}-linux-${arch}.tar.gz" | tar -xz -C "$tmp"
+  install -m 0755 "$tmp/age/age" "$tmp/age/age-keygen" /usr/local/bin/
+fi
+
+# The age key is owned by norn-exec and 0400: PhaseCannotReadAgeKey depends on it.
+if [ ! -f /etc/norn-fleet-executor/age.key ]; then
+  age-keygen -o /etc/norn-fleet-executor/age.key 2>/dev/null
+  chown norn-exec:norn-exec /etc/norn-fleet-executor/age.key
+  chmod 0400 /etc/norn-fleet-executor/age.key
+fi
+
+# Offline wheelhouse from the fleet's hashed pilot requirements, then an install that can only use it.
+# Its digest is what attempt metadata calls wheelhouseSha256.
+req="${FLEET_SCRIPTS}/requirements-pilot.txt"
+if [ -f "$req" ]; then
+  wheels=/opt/norn-fleet-executor/wheelhouse
+  install -d -m 0755 "$wheels"
+  python3 -m pip download -q --require-hashes -r "$req" -d "$wheels"
+  python3 -m venv /opt/norn-fleet-executor/venv
+  /opt/norn-fleet-executor/venv/bin/pip install -q --no-index --find-links "$wheels" --require-hashes -r "$req"
+  (cd "$wheels" && sha256sum -- * | sha256sum | cut -d' ' -f1) >/opt/norn-fleet-executor/WHEELHOUSE_SHA256
+fi
+
+# MinIO (S3) for the OpenTofu lockfile tests (use_lockfile=true); single drive, the bucket is a directory.
+if [ ! -x /usr/local/bin/minio ]; then
+  curl -fsSL -o /usr/local/bin/minio "https://dl.min.io/server/minio/release/linux-${arch}/minio"
+  (cd /usr/local/bin && curl -fsSL "https://dl.min.io/server/minio/release/linux-${arch}/minio.sha256sum" | sha256sum -c -)
+  chmod 0755 /usr/local/bin/minio
+fi
+id minio >/dev/null 2>&1 || useradd --system --home-dir /var/lib/minio --shell /usr/sbin/nologin minio
+install -d -o minio -g minio -m 0750 /var/lib/minio "/var/lib/minio/${MINIO_BUCKET}"
+printf '%s\n' \
+  'MINIO_ROOT_USER=norn-exec-test' \
+  'MINIO_ROOT_PASSWORD=norn-exec-test-secret' \
+  'MINIO_VOLUMES=/var/lib/minio' \
+  'MINIO_OPTS=--address 127.0.0.1:9000 --console-address 127.0.0.1:9001' \
+  >/etc/default/minio
+cat >/etc/systemd/system/minio.service <<'UNIT'
+[Unit]
+Description=MinIO (local S3 for executor lockfile tests)
+After=network.target
+[Service]
+User=minio
+EnvironmentFile=/etc/default/minio
+ExecStart=/usr/local/bin/minio server $MINIO_OPTS $MINIO_VOLUMES
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# Fake DigitalOcean metadata service on a VM-local alias of the real address.
+install -d /etc/norn-exec
+[ -f /etc/norn-exec/droplet-id ] || echo 4242 >/etc/norn-exec/droplet-id
+cat >/usr/local/bin/fake-do-metadata <<'PY'
+#!/usr/bin/env python3
+import http.server
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/metadata/v1/id":
+            body = open("/etc/norn-exec/droplet-id").read().strip().encode()
+            self.send_response(200)
+        else:
+            body = b"not found"
+            self.send_response(404)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+http.server.HTTPServer(("169.254.169.254", 80), Handler).serve_forever()
+PY
+chmod 0755 /usr/local/bin/fake-do-metadata
+cat >/etc/systemd/system/fake-do-metadata.service <<'UNIT'
+[Unit]
+Description=Fake DigitalOcean metadata service (169.254.169.254)
+After=network.target
+[Service]
+ExecStartPre=/bin/sh -c 'ip addr show dev lo | grep -q 169.254.169.254 || ip addr add 169.254.169.254/32 dev lo'
+ExecStart=/usr/local/bin/fake-do-metadata
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now minio.service fake-do-metadata.service
+PROVISION
+}
+
+cmd_provision() {
+  need_lima
+  vm_exists || die "VM $NAME does not exist; run '$0 create' first"
+  [ -d "$FLEET_DIR/scripts" ] || die "norn-fleet checkout not found at $FLEET_DIR (set NORN_FLEET_DIR)"
+  provision_script | in_vm sudo env "TOFU_VERSION=$TOFU_VERSION" "SOPS_VERSION=$SOPS_VERSION" \
+    "AGE_VERSION=$AGE_VERSION" "MINIO_BUCKET=$MINIO_BUCKET" "FLEET_SCRIPTS=$FLEET_DIR/scripts" bash -s
+}
+
+cmd_test() {
+  need_lima
+  vm_exists || die "VM $NAME does not exist; run '$0 up' first"
+  local modules=("$@")
+  [ "${#modules[@]}" -gt 0 ] || modules=(test_executor_credentials test_executor_identity test_executor_loop)
+  # Root, so the tests can switch to norn-phase through setpriv. NORN_EXEC_VM=1 un-skips the VM-only tests:
+  # PhaseHasNoCapabilities, PhaseHasNoCapabilitiesFromTheLoopUser (spawns from norn-exec with the
+  # unit's exact capabilities through systemd-run), PhaseCannotReadAgeKey and
+  # AttestationRequiresEmptyPhaseUidRealCgroup.
+  in_vm sudo env NORN_EXEC_VM=1 PYTHONDONTWRITEBYTECODE=1 \
+    sh -c 'cd "$1" && shift && exec python3 -m unittest -v "$@"' sh "$FLEET_DIR/scripts" "${modules[@]}"
+}
+
+cmd_droplet_id() {
+  need_lima
+  [[ "${1:-}" =~ ^[0-9]{1,20}$ ]] || die "usage: $0 droplet-id <decimal id>"
+  printf '%s\n' "$1" | in_vm sudo tee /etc/norn-exec/droplet-id >/dev/null
+}
+
+cmd="${1:-}"
+[ "$#" -gt 0 ] && shift
+case "$cmd" in
+  up) cmd_create; cmd_provision ;;
+  create) cmd_create ;;
+  provision) cmd_provision ;;
+  test) cmd_test "$@" ;;
+  shell) need_lima; if [ "$#" -gt 0 ]; then in_vm "$@"; else limactl shell "$NAME"; fi ;;
+  droplet-id) cmd_droplet_id "$@" ;;
+  stop) need_lima; limactl stop "$NAME" ;;
+  destroy) need_lima; limactl delete --force "$NAME" ;;
+  status) need_lima; limactl list "$NAME" ;;
+  *) sed -n '5,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

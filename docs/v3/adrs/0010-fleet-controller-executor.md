@@ -90,8 +90,22 @@ comes only from its stored metadata. It is valid only when:
    kernel that ran the phase is gone), or, on the same boot, `phaseUidEmpty`,
    `phaseProcessGroupReaped` and `sourceCgroupEmpty` are all true
    (**same-boot proof**: no `norn-phase` process, the phase group reaped, and the
-   source invocation's `cgroup.events` reads `populated 0`). Each fact is a
-   positive boolean, so an omitted field decodes to false and fails closed.
+   executor unit's cgroup subtree holds no process but the attesting loop). Each
+   fact is a positive boolean, so an omitted field decodes to false and fails
+   closed.
+
+`sourceCgroupEmpty` is not "the old invocation's `cgroup.events` reads
+`populated 0`": systemd reuses one cgroup for every invocation of a unit, so
+that cgroup is the attester's own. The loop instead reads `cgroup.procs` of the
+unit cgroup and of every descendant before it starts any child, and the fact is
+true only when the attester's pid is the sole entry. This is a sound stop proof
+because the unit runs `KillMode=control-group` with no `Delegate=`, and phases
+have no capabilities (R1): a phase can neither move itself out of the unit
+cgroup nor create a sub-cgroup. A process started outside it (cron, at; P5
+denies both to `norn-phase`) still has the phase uid and fails `phaseUidEmpty`.
+Phases do not run in a transient `systemd-run --scope` or `--unit`: that would
+make emptiness directly readable, but it moves phases out of the unit's
+`KillMode`, needs a privileged D-Bus call, and was rejected in plan §2.3.
 
 This is not third-party evidence. It adds no capability beyond what root on the
 host already has, and the uid check is sound only because phases cannot change
@@ -260,6 +274,24 @@ fence must be Free (`fleet_execution_mode_fence_held`). Stored only in
 `fleet_resources.document`; never read inside execution transactions (T7). Default
 `github`.
 
+**Executor work view.** The executor principal reads the ordinary
+`GET /api/v1/fleet/resources/{name}` (single resource, never the list) and no
+plan route. `desired` gains the additive omitempty object `converge` =
+`executor.ConvergeView {planSha256, requiresApproval, approved}`, present only
+when the desired revision's plan is a converge plan. `planSha256` is the value
+the attempt start carries; `approved` is true when a non-resume
+`fleet.converge.approve` for that plan and commit exists. The loop starts a
+`requiresApproval` plan only when `approved` is true, and admission still
+enforces it. `status.active.resumeApproved` (omitempty boolean) is true when an
+unconsumed resume approve names the holder plan's latest attempt and a valid
+attestation or `providerEvidence` exists for it. The routes the executor
+principal may call are exactly `executor.ExecutorRoutes` (E6).
+
+**Enrollment.** The exchange's pending answer is unchanged and pinned:
+`409 enrollment_not_approved` (pending or expired). The loop polls every 5 s
+until the start response's `expiresAt`; any other refusal is terminal, and
+`401 invalid_enrollment_verifier` (it counts toward lockout) is never retried.
+
 **Resource status additions** (pinned in OpenAPI; E4b adds the constants beside
 their siblings in `fleet/controller`, not in `fleet/executor`). `executionMode`
 on the resource view; `approvalPolicy` gains `protectedBranchVerified`,
@@ -271,8 +303,9 @@ reasons `trigger_unverified`, `history_rewritten`,
 `destructive_requires_github_lane`, `state_lock_foreign`; next action
 `approve_converge`; derived `status.active.resumeApproved`.
 
-**Scopes.** `fleet:execute` alone (D8) reaches only the attempt routes, the grant
-and attestation routes and the rescan. Approve needs `platform:operate`, non-CI
+**Scopes.** `fleet:execute` alone (D8) reaches only `executor.ExecutorRoutes`: the
+attempt and checkpoint routes, the grant and attestation routes, the rescan, the
+single-resource read and token rotation. Approve needs `platform:operate`, non-CI
 (D2). Execution mode, release and abandon need `admin`. No new route accepts a CI
 principal.
 

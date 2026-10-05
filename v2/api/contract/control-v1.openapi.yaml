@@ -472,7 +472,7 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
     get:
       operationId: getFleetResource
-      description: One record that explains what was requested (desired), what exists (status.conditions and observed), what is running (status.active), what blocks progress (blocker) and which supported action comes next (status.nextAction), plus the approval policy Norn actually enforces and controller liveness. The stored status is re-evaluated against the read time, so a condition whose observation is older than 15 minutes reads Unknown/ObservationStale. Requires api:read.
+      description: One record that explains what was requested (desired), what exists (status.conditions and observed), what is running (status.active), what blocks progress (blocker) and which supported action comes next (status.nextAction), plus the approval policy Norn actually enforces and controller liveness. The stored status is re-evaluated against the read time, so a condition whose observation is older than 15 minutes reads Unknown/ObservationStale. Requires api:read, or the executor principal (exact fleet:execute, ADR 0010), which reads this single-resource view as its work view (desired.converge, status.active.resumeApproved) and may not call listFleetResources.
       responses:
         '200': { description: Resource, content: { application/json: { schema: { $ref: '#/components/schemas/FleetResource' } } } }
         '400': { $ref: '#/components/responses/Problem' }
@@ -1235,6 +1235,7 @@ paths:
   /api/v1/enrollments/{id}/exchange:
     post:
       operationId: exchangeDeviceEnrollment
+      description: Exchanges an approved enrollment for its device token, once. While the enrollment is pending (and after it expires) the answer is 409 enrollment_not_approved; a polling device retries only that, every 5 seconds, until the start response's expiresAt. 401 invalid_enrollment_verifier counts toward the enrollment lockout and is never retried.
       security: []
       parameters:
         - $ref: '#/components/parameters/EnrollmentID'
@@ -2045,7 +2046,7 @@ components:
         invocationId: { type: string, pattern: '^[0-9a-f]{32}$', description: The attesting loop's own INVOCATION_ID; must differ from the source attempt's. }
         phaseUidEmpty: { type: boolean, description: No process owned by the norn-phase uid exists. }
         phaseProcessGroupReaped: { type: boolean, description: The source phase process group no longer exists. }
-        sourceCgroupEmpty: { type: boolean, description: The source invocation's cgroup.events reads populated 0 (or the cgroup is gone). }
+        sourceCgroupEmpty: { type: boolean, description: 'The executor unit''s cgroup subtree (the unit cgroup and every descendant) holds no process other than the attesting loop, read before it started any child. systemd reuses the unit cgroup across invocations, and phases can neither leave it nor create sub-cgroups (no Delegate=, no capabilities, never systemd-run).' }
         observedAt: { type: string, format: date-time }
         tofuLock: { $ref: '#/components/schemas/FleetExecutorTofuLock' }
     FleetExecutorTofuLock:
@@ -2154,6 +2155,15 @@ components:
         verification: { type: string, enum: [github-merged-plan, operator-declared, github-protected-main] }
         acceptedAt: { type: string, format: date-time }
         acceptedBy: { type: string }
+        converge: { $ref: '#/components/schemas/FleetConvergeView' }
+    FleetConvergeView:
+      type: object
+      description: Executor lane (ADR 0010). Present only when the desired revision's plan is a converge plan; absent means nothing to converge.
+      required: [planSha256, requiresApproval, approved]
+      properties:
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: Hex part of the converge plan's digest; the attempt start's planSha256. }
+        requiresApproval: { type: boolean, description: The converge plan's requiresApproval. }
+        approved: { type: boolean, description: A non-resume fleet.converge.approve exists for this plan and its commitSha. }
     FleetResourceCondition:
       type: object
       required: [type, status, evidenceRefs]
@@ -2189,6 +2199,7 @@ components:
             fenceGeneration: { type: integer, format: int64 }
             occupancy: { type: string, enum: [Free, Active, Uncertain] }
             occupancyReason: { type: string }
+            resumeApproved: { type: boolean, description: 'Executor lane only, omitted otherwise. True when an unconsumed fleet.converge.approve with resume true names the holder plan''s latest attempt (attemptIds last) as sourceAttemptId and a valid stop attestation or providerEvidence exists for it.' }
         conditions: { type: array, items: { $ref: '#/components/schemas/FleetResourceCondition' } }
         nextAction: { type: string, enum: [resolve_uncertain_outcome, await_runner, refresh_observations, investigate_drift, none] }
         evaluatedAt: { type: string, format: date-time, description: When the status was last derived; absent before the first evaluation. }
