@@ -290,6 +290,10 @@ type FleetActiveView struct {
 	OccupancyReason string   `json:"occupancyReason,omitempty"`
 	// ResumeApproved is executor lane only (omitted otherwise).
 	ResumeApproved bool `json:"resumeApproved,omitempty"`
+	// ResumeNeededAttemptID is the attempt a resume approve must name.
+	ResumeNeededAttemptID string `json:"resumeNeededAttemptId,omitempty"`
+	// CommitSHA is the holder converge plan's commit.
+	CommitSHA string `json:"commitSha,omitempty"`
 }
 
 // FleetStatusView is the stored status with the freshness rule re-applied at
@@ -519,7 +523,8 @@ func statusView(s controller.Status) FleetStatusView {
 		}
 		view.Active = &FleetActiveView{PlanID: s.Active.PlanID, DispatchRunID: s.Active.DispatchRunID, AttemptIDs: ids,
 			FenceGeneration: s.Active.FenceGeneration, Occupancy: s.Active.Occupancy, OccupancyReason: s.Active.OccupancyReason,
-			ResumeApproved: s.Active.ResumeApproved}
+			ResumeApproved:        s.Active.ResumeApproved,
+			ResumeNeededAttemptID: s.Active.ResumeNeededAttemptID, CommitSHA: s.Active.CommitSHA}
 	}
 	for _, c := range s.Conditions {
 		view.Conditions = append(view.Conditions, FleetConditionView{Type: c.Type, Status: c.Status, Reason: c.Reason, Message: c.Message,
@@ -1265,6 +1270,7 @@ func (f *pgConvergeFacts) ConvergeFacts(ctx context.Context, resource *controlle
 		}
 		facts.ResumeApproved, facts.ResumeNeededAttemptID, facts.StateLock = state.resumeApproved, state.resumeNeededAttemptID, state.stateLock
 		facts.HolderRefused = state.refused
+		facts.HolderCommitSHA = state.commitSHA
 	}
 	return facts, nil
 }
@@ -1305,6 +1311,8 @@ type pgHolderState struct {
 	stateLock *controller.StateLockFacts
 	// refused: a destructive refusal names the holder plan's own commit.
 	refused bool
+	// commitSHA: the holder converge plan's own commit.
+	commitSHA string
 }
 
 // holderState mirrors the store's recovery admission without starting
@@ -1323,6 +1331,7 @@ func (f *pgConvergeFacts) holderState(ctx context.Context, recorder *PGConvergeP
 	if err != nil {
 		return state, err
 	}
+	state.commitSHA = converge.Converge.CommitSHA
 	attempts, err := f.h.db.ListFleetRunnerAttempts(ctx, planID, 100)
 	if err != nil || len(attempts) == 0 {
 		return state, err

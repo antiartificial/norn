@@ -158,6 +158,13 @@ func TestDeriveResumeApproved(t *testing.T) {
 	if s := DeriveStatus(held(false)); s.Active == nil || s.Active.ResumeApproved {
 		t.Fatalf("Active = %+v, want resumeApproved false", s.Active)
 	}
+	// The holder's commit is exposed whenever the fence is held; the resume
+	// attempt only while an approve for it is needed.
+	in2 := held(false)
+	in2.Converge.HolderCommitSHA = "abc123"
+	if s := DeriveStatus(in2); s.Active == nil || s.Active.CommitSHA != "abc123" || s.Active.ResumeNeededAttemptID != "" {
+		t.Fatalf("Active = %+v, want commitSha only", s.Active)
+	}
 	// Free fence: there is nothing to resume, whatever the facts say.
 	in := convergeInput(now, executor.ModeController, executablePlan())
 	in.Converge.ResumeApproved = true

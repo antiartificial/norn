@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"norn/v2/api/fleet/controller"
 	"norn/v2/api/fleet/executor"
 )
 
@@ -258,6 +259,12 @@ func TestExecutorWorkViewAndEnrollmentArePinned(t *testing.T) {
 		t.Error("status.active.resumeApproved must be a boolean")
 	}
 	activeRequired, _ := active["required"].([]interface{})
+	for _, field := range []string{executor.ActiveResumeNeededAttemptIDField, executor.ActiveCommitSHAField} {
+		prop, _ := active["properties"].(map[string]interface{})[field].(map[string]interface{})
+		if prop["type"] != "string" || containsRequiredField(activeRequired, field) {
+			t.Errorf("status.active.%s must be an optional string", field)
+		}
+	}
 	if containsRequiredField(activeRequired, "resumeApproved") {
 		t.Error("status.active.resumeApproved must stay optional")
 	}
@@ -276,5 +283,45 @@ func TestExecutorWorkViewAndEnrollmentArePinned(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("ErrorCode omits %s", executor.EnrollmentPendingCode)
+	}
+}
+
+// TestRescanResponseIsTheWatchDecision pins that the rescan route documents
+// the watcher's WatchDecision (not the resource view) field by field.
+func TestRescanResponseIsTheWatchDecision(t *testing.T) {
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal(controlV1, &doc); err != nil {
+		t.Fatal(err)
+	}
+	post := doc["paths"].(map[string]interface{})["/api/v1/fleet/resources/{name}/converge"].(map[string]interface{})["post"].(map[string]interface{})
+	ok := post["responses"].(map[string]interface{})["200"].(map[string]interface{})
+	schema := ok["content"].(map[string]interface{})["application/json"].(map[string]interface{})["schema"].(map[string]interface{})
+	if schema["$ref"] != "#/components/schemas/FleetWatchDecision" {
+		t.Fatalf("rescan 200 schema = %v, want FleetWatchDecision", schema["$ref"])
+	}
+	props, required := executorSchemaProps(t, doc, "FleetWatchDecision")
+	all, wantRequired := jsonFields(reflect.TypeOf(controller.WatchDecision{}))
+	var got, gotRequired []string
+	for name := range props {
+		got = append(got, name)
+	}
+	for _, r := range required {
+		gotRequired = append(gotRequired, r.(string))
+	}
+	for _, list := range [][]string{all, got, wantRequired, gotRequired} {
+		sort.Strings(list)
+	}
+	if !reflect.DeepEqual(all, got) || !reflect.DeepEqual(wantRequired, gotRequired) {
+		t.Errorf("FleetWatchDecision properties %v required %v, want %v required %v", got, gotRequired, all, wantRequired)
+	}
+	actions := enumSet(props["action"].(map[string]interface{})["enum"])
+	for _, a := range []controller.WatchAction{controller.WatchRecorded, controller.WatchExists, controller.WatchNone, controller.WatchPending,
+		controller.WatchUnverified, controller.WatchHistoryRewritten, controller.WatchError} {
+		if !actions[string(a)] {
+			t.Errorf("FleetWatchDecision.action enum omits %s", a)
+		}
+	}
+	if len(actions) != 7 {
+		t.Errorf("FleetWatchDecision.action enum has %d values, want 7", len(actions))
 	}
 }

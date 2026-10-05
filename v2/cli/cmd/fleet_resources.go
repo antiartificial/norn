@@ -42,9 +42,9 @@ func init() {
 	}
 	fleetConvergeCmd.Flags().BoolVar(&fleetResResume, "resume", false, "Approve one recovery attempt after an executor stop instead of rescanning")
 	fleetApproveCmd.Flags().BoolVar(&fleetResResume, "resume", false, "Authorize one recovery attempt of --source-attempt")
-	fleetApproveCmd.Flags().StringVar(&fleetResSourceAttempt, "source-attempt", "", "Attempt ID to recover (required with --resume)")
+	fleetApproveCmd.Flags().StringVar(&fleetResSourceAttempt, "source-attempt", "", "Attempt ID to recover (with --resume; --resource takes it from status.active instead)")
 	fleetApproveCmd.Flags().StringVar(&fleetResCommit, "commit", "", "Plan commit SHA (looked up from the resource when omitted)")
-	fleetApproveCmd.Flags().StringVar(&fleetResResource, "resource", "", "Resource name to look the commit up from (scans all resources when omitted)")
+	fleetApproveCmd.Flags().StringVar(&fleetResResource, "resource", "", "Resource name to look the commit (or, with --resume, the attempt and commit) up from (scans all resources for the commit when omitted)")
 	fleetProviderEvidenceCmd.Flags().StringVar(&fleetResProviderAttempt, "source-attempt", "", "The plan's latest executor attempt ID")
 	fleetProviderEvidenceCmd.Flags().StringVar(&fleetResEvidenceFile, "provider-evidence", "", "JSON file with the provider evidence")
 	_ = fleetProviderEvidenceCmd.MarkFlagRequired("source-attempt")
@@ -135,6 +135,9 @@ func printFleetResource(cmd *cobra.Command, r *api.FleetResource) {
 		if a.ResumeApproved {
 			fmt.Fprint(out, "  resumeApproved")
 		}
+		if a.ResumeNeededAttemptID != "" {
+			fmt.Fprintf(out, "  resumeNeeded %s", a.ResumeNeededAttemptID)
+		}
 		fmt.Fprintln(out)
 	}
 	if b := r.Blocker; b != nil {
@@ -221,26 +224,24 @@ func fleetPlanCommit(r *api.FleetResource, planID string) string {
 }
 
 // fleetResumeSource is the stopped holder attempt the server says needs a
-// resume approve. Active.AttemptIDs is sorted by ID, not by attempt number, so
-// the latest attempt is taken from the approval_required blocker that the
-// controller derives from the holder's latest attempt (ResumeNeededAttemptID).
-func fleetResumeSource(r *api.FleetResource) (string, error) {
-	a, b := r.Status.Active, r.Blocker
+// resume approve (status.active.resumeNeededAttemptId) and the holder plan's
+// commit (status.active.commitSha). Both are structured server fields; the
+// blocker message is never parsed.
+func fleetResumeSource(r *api.FleetResource) (attempt, commit string, err error) {
+	a := r.Status.Active
 	if a == nil {
-		return "", fmt.Errorf("%s holds no fence; nothing to resume", r.Name)
+		return "", "", fmt.Errorf("%s holds no fence; nothing to resume", r.Name)
 	}
-	if b != nil && b.Kind == "approval" && b.Reason == "approval_required" && b.PlanID == a.PlanID && strings.HasPrefix(b.Message, "attempt ") {
-		id := strings.Fields(b.Message)[1]
-		for _, known := range a.AttemptIDs {
-			if known == id {
-				return id, nil
-			}
+	if a.ResumeNeededAttemptID == "" {
+		if a.ResumeApproved {
+			return "", "", fmt.Errorf("%s already has an unconsumed resume approve for plan %s", r.Name, a.PlanID)
 		}
+		return "", "", fmt.Errorf("%s has no stopped attempt awaiting a resume approve (it needs a stop attestation or provider evidence first); see `norn fleet status %s`", r.Name, r.Name)
 	}
-	if a.ResumeApproved {
-		return "", fmt.Errorf("%s already has an unconsumed resume approve for plan %s", r.Name, a.PlanID)
+	if a.CommitSHA == "" {
+		return "", "", fmt.Errorf("the server did not report holder plan %s's commit for %s; use `norn fleet approve %s --resume --source-attempt %s --commit <sha>`", a.PlanID, r.Name, a.PlanID, a.ResumeNeededAttemptID)
 	}
-	return "", fmt.Errorf("%s has no stopped attempt awaiting a resume approve (it needs a stop attestation or provider evidence first); see `norn fleet status %s`", r.Name, r.Name)
+	return a.ResumeNeededAttemptID, a.CommitSHA, nil
 }
 
 func fleetResolveCommit(planID, resource string) (string, error) {
@@ -282,7 +283,7 @@ Permission: platform:operate (non-CI).
 
 With --resume: after an executor stop, approve one recovery attempt of the holder
 plan's latest attempt (fleet.converge.approve with resume). The plan, commit and
-source attempt come from the approval_required blocker and the desired history.
+source attempt come from status.active (planId, commitSha, resumeNeededAttemptId).
 Permission: platform:operate (non-CI).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -305,15 +306,11 @@ Permission: platform:operate (non-CI).`,
 		if err != nil {
 			return fmt.Errorf("fleet converge --resume: %w", err)
 		}
-		source, err := fleetResumeSource(r)
+		source, commit, err := fleetResumeSource(r)
 		if err != nil {
 			return fmt.Errorf("fleet converge --resume: %w", err)
 		}
 		plan := r.Status.Active.PlanID
-		commit := fleetPlanCommit(r, plan)
-		if commit == "" {
-			return fmt.Errorf("fleet converge --resume: holder plan %s is not in %s's desired history; use `norn fleet approve %s --resume --source-attempt %s --commit <sha>`", plan, args[0], plan, source)
-		}
 		// The retry must send the same body: name it so a re-run cannot
 		// pick up a later attempt under the same key.
 		fmt.Fprintf(cmd.ErrOrStderr(), "retry with: norn fleet approve %s --resume --source-attempt %s --commit %s --idempotency-key %s\n", plan, source, commit, key)
@@ -330,14 +327,34 @@ var fleetApproveCmd = &cobra.Command{
 	Short: "Approve one converge plan commit (fleet.converge.approve)",
 	Long: `Approve exactly one converge plan commit for the executor lane. The commit is
 looked up from the resource whose desired plan is <plan-id> unless --commit is given.
-With --resume and --source-attempt it authorizes one recovery attempt instead.
+With --resume it authorizes one recovery attempt instead: give --source-attempt
+(and --commit), or --resource to take both from status.active.
 Permission: platform:operate (non-CI).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if fleetResResume != (fleetResSourceAttempt != "") {
-			return fmt.Errorf("--resume and --source-attempt must be given together")
+		if fleetResSourceAttempt != "" && !fleetResResume {
+			return fmt.Errorf("--source-attempt requires --resume")
 		}
-		commit := fleetResCommit
+		source, commit := fleetResSourceAttempt, fleetResCommit
+		if fleetResResume && source == "" {
+			if fleetResResource == "" {
+				return fmt.Errorf("--resume needs --source-attempt, or --resource to take the attempt from status.active.resumeNeededAttemptId")
+			}
+			r, err := client.FleetResource(fleetResResource)
+			if err != nil {
+				return fmt.Errorf("fleet approve: %w", err)
+			}
+			if r.Status.Active == nil || r.Status.Active.PlanID != args[0] {
+				return fmt.Errorf("fleet approve: %s does not hold plan %s; nothing to resume", fleetResResource, args[0])
+			}
+			var viewCommit string
+			if source, viewCommit, err = fleetResumeSource(r); err != nil {
+				return fmt.Errorf("fleet approve: %w", err)
+			}
+			if commit == "" {
+				commit = viewCommit
+			}
+		}
 		if commit == "" {
 			var err error
 			if commit, err = fleetResolveCommit(args[0], fleetResResource); err != nil {
@@ -348,7 +365,7 @@ Permission: platform:operate (non-CI).`,
 		if err != nil {
 			return err
 		}
-		op, err := client.ApproveFleetConverge(args[0], commit, fleetResResume, fleetResSourceAttempt, key)
+		op, err := client.ApproveFleetConverge(args[0], commit, fleetResResume, source, key)
 		if err != nil {
 			return fmt.Errorf("fleet approve: %w", err)
 		}

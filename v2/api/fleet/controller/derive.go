@@ -752,9 +752,13 @@ func triggerMessage(facts *ConvergeFacts, base string) string {
 // return status unchanged.
 func ApplyConverge(status Status, resource Resource, facts *ConvergeFacts) Status {
 	d := DeriveConverge(resource, status, facts)
-	if status.Active != nil && d.ResumeApproved {
+	if status.Active != nil && facts != nil {
 		active := *status.Active
-		active.ResumeApproved = true
+		active.ResumeApproved = d.ResumeApproved
+		if d.ResumeNeeded {
+			active.ResumeNeededAttemptID = facts.ResumeNeededAttemptID
+		}
+		active.CommitSHA = facts.HolderCommitSHA
 		status.Active = &active
 	}
 	if d.NextAction == NextActionApproveConverge && (d.ResumeNeeded || (status.NextAction != NextActionResolveUncertainOutcome && status.NextAction != NextActionAwaitRunner)) {

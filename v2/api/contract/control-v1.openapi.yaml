@@ -535,7 +535,7 @@ paths:
       description: Executor lane (ADR 0010). Rescans the protected main tip and records a converge plan (a fleet.capacity-plan with action converge) only when the verified tip has no admissible converge plan yet (newer than the last applied commit, or the newest plan for it was refused with fleet_plan_revalidation_required). Otherwise it records nothing. No request body; an Idempotency-Key is required because it may write a ledger operation, and a replay returns the first response. Allowed for a non-CI platform:operate principal or the executor principal (exact fleet:execute). Never starts an attempt.
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       responses:
-        '200': { description: Rescan result, content: { application/json: { schema: { $ref: '#/components/schemas/FleetResource' } } } }
+        '200': { description: Rescan decision (the watcher's outcome, not the resource view), content: { application/json: { schema: { $ref: '#/components/schemas/FleetWatchDecision' } } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
@@ -2263,6 +2263,8 @@ components:
             fenceGeneration: { type: integer, format: int64 }
             occupancy: { type: string, enum: [Free, Active, Uncertain] }
             occupancyReason: { type: string }
+            resumeNeededAttemptId: { type: string, description: 'Executor lane only, omitted otherwise. The stopped holder attempt a resume approve (fleet.converge.approve with resume true) must name as sourceAttemptId: a stop attestation or providerEvidence exists for it and no unconsumed resume approve names it. Present exactly when nextAction is approve_converge for that attempt.' }
+            commitSha: { type: string, description: 'Executor lane only, omitted otherwise. The holder converge plan''s own commit, read from the plan; it may differ from desired.converge.commitSha and is the commitSha a resume approve must carry.' }
             resumeApproved: { type: boolean, description: 'Executor lane only, omitted otherwise. True when an unconsumed fleet.converge.approve with resume true names the holder plan''s latest attempt (attemptIds last) as sourceAttemptId and a valid stop attestation or providerEvidence exists for it.' }
         conditions: { type: array, items: { $ref: '#/components/schemas/FleetResourceCondition' } }
         nextAction: { type: string, enum: [resolve_uncertain_outcome, await_runner, approve_converge, refresh_observations, investigate_drift, none], description: 'approve_converge is executor lane only: the desired converge plan needs a fleet.converge.approve (executable change or first converge) and the fence is free.' }
@@ -2304,6 +2306,18 @@ components:
         state: { type: string, enum: [running, stale, unknown] }
         lastRescanAt: { type: string, format: date-time }
         rescanIntervalSeconds: { type: integer, format: int64 }
+    FleetWatchDecision:
+      type: object
+      description: The watcher's outcome for one resource, returned by the rescan route.
+      required: [resource, tipSha, action]
+      properties:
+        resource: { type: string }
+        tipSha: { type: string }
+        action: { type: string, enum: [recorded, exists, none, pending, trigger_unverified, history_rewritten, error] }
+        pathClass: { type: string }
+        planId: { type: string }
+        code: { type: string }
+        reason: { type: string }
     FleetResource:
       type: object
       required: [name, targetId, revision, authorityEpoch, observationSequence, createdAt, updatedAt, desired, desiredHistory, status, observed, approvalPolicy, controller, readAt]

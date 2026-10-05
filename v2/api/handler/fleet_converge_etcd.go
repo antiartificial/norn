@@ -336,6 +336,7 @@ func (f *etcdConvergeFacts) ConvergeFacts(ctx context.Context, resource *control
 		}
 		facts.ResumeApproved, facts.ResumeNeededAttemptID, facts.StateLock = state.resumeApproved, state.resumeNeededAttemptID, state.stateLock
 		facts.HolderRefused = state.refused
+		facts.HolderCommitSHA = state.commitSHA
 	}
 	return facts, nil
 }
@@ -365,6 +366,7 @@ func (f *etcdConvergeFacts) holderState(ctx context.Context, planID string) (pgH
 	if err != nil {
 		return state, err
 	}
+	state.commitSHA = converge.Converge.CommitSHA
 	attempts, err := f.operations.FleetExecutorAttempts(ctx, planID)
 	if err != nil || len(attempts) == 0 {
 		return state, err

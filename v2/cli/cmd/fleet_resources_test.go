@@ -75,9 +75,9 @@ func frResource() string {
 	return `{"name":"staging","targetId":"` + frTarget + `","revision":4,"authorityEpoch":1,"createdAt":"t","updatedAt":"t",
 "desired":{"generation":3,"planId":"` + frPlan + `","commitSha":"` + frSHA + `","converge":{"planSha256":"` + strings.Repeat("a", 64) + `","requiresApproval":true,"approved":false}},
 "status":{"observedGeneration":3,"lastAppliedGeneration":2,"lastApplied":{"generation":2,"commitSha":"bbbb","planId":"p0"},
-"active":{"planId":"` + frPlan + `","attemptIds":["` + frAttempt + `","` + frOlder + `"],"fenceGeneration":7,"occupancy":"Uncertain"},
+"active":{"planId":"` + frPlan + `","attemptIds":["` + frAttempt + `","` + frOlder + `"],"fenceGeneration":7,"occupancy":"Uncertain","resumeNeededAttemptId":"` + frAttempt + `","commitSha":"` + frSHA + `"},
 "conditions":[{"type":"RuntimeReady","status":"Unknown","reason":"ObservationStale","evidenceRefs":[]}],"nextAction":"approve_converge"},
-"blocker":{"kind":"approval","reason":"approval_required","planId":"` + frPlan + `","message":"attempt ` + frAttempt + ` stopped and its resume approval is spent or absent; run: norn fleet converge staging --resume"},
+"blocker":{"kind":"approval","reason":"approval_required","planId":"` + frPlan + `","message":"stopped; run: norn fleet converge staging --resume"},
 "approvalPolicy":{"basis":"github-protected-main","protectedBranch":true,"mergedPullRequest":false,"planWorkflowSucceeded":false,"boundPlanDigest":true,"authorizedDispatch":false,"ownerApprovalEnvelope":false,"environmentReviewers":"not_enforced","independentReview":"not_enforced"},
 "executionMode":"controller","controller":{"state":"running"},"readAt":"t"}`
 }
@@ -148,10 +148,10 @@ func TestFleetConvergeRescanAndResume(t *testing.T) {
 		t.Fatalf("out %q err %q", out, errb)
 	}
 
-	// The desired revision moved on while the fence is held: the holder's
-	// commit comes from desiredHistory.
+	// The desired revision moved on while the fence is held and the holder
+	// plan is in no desired revision: the commit is status.active.commitSha.
 	f.resource = strings.Replace(frResource(), `"desired":{"generation":3,"planId":"`+frPlan+`","commitSha":"`+frSHA+`"`,
-		`"desiredHistory":[{"generation":3,"planId":"`+frPlan+`","commitSha":"`+frSHA+`"}],"desired":{"generation":4,"planId":"p-new","commitSha":"cccc"`, 1)
+		`"desired":{"generation":4,"planId":"p-new","commitSha":"cccc"`, 1)
 	f.calls = nil
 	if _, _, err := frRun(t, fleetConvergeCmd, "staging", "--resume"); err != nil {
 		t.Fatal(err)
@@ -160,8 +160,8 @@ func TestFleetConvergeRescanAndResume(t *testing.T) {
 		t.Fatalf("history resume %+v", c)
 	}
 
-	// No resume-needed blocker: refuse rather than guess an attempt.
-	f.resource = strings.Replace(frResource(), `"reason":"approval_required"`, `"reason":"destructive_requires_github_lane"`, 1)
+	// No structured resume fields: refuse rather than guess an attempt.
+	f.resource = strings.Replace(frResource(), `"resumeNeededAttemptId":"`+frAttempt+`",`, ``, 1)
 	f.calls = nil
 	if _, _, err := frRun(t, fleetConvergeCmd, "staging", "--resume"); err == nil || len(f.calls) != 1 {
 		t.Fatalf("resume without blocker: err=%v calls=%+v", err, f.calls)
@@ -179,7 +179,14 @@ func TestFleetApproveLooksUpCommitAndSendsPinnedBody(t *testing.T) {
 		t.Fatalf("approve call %+v", c)
 	}
 	if _, _, err := frRun(t, fleetApproveCmd, frPlan, "--resume", "--commit", frSHA); err == nil {
-		t.Fatal("--resume without --source-attempt accepted")
+		t.Fatal("--resume without --source-attempt or --resource accepted")
+	}
+	f.calls = nil
+	if _, _, err := frRun(t, fleetApproveCmd, frPlan, "--resume", "--resource", "staging"); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.calls[len(f.calls)-1]; c.Body["commitSha"] != frSHA || c.Body["resume"] != true || c.Body["sourceAttemptId"] != frAttempt || len(c.Body) != 3 {
+		t.Fatalf("approve --resume --resource call %+v", c)
 	}
 }
 

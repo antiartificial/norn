@@ -343,6 +343,14 @@ type ConvergeView struct {
 	Refused bool `json:"refused,omitempty"`
 }
 
+// JSON names of the structured resume fields in status.active (omitted when
+// empty): the stopped attempt a resume approve must name, and the holder
+// converge plan's commit.
+const (
+	ActiveResumeNeededAttemptIDField = "resumeNeededAttemptId"
+	ActiveCommitSHAField             = "commitSha"
+)
+
 // ExecutorRoutes are the only routes the executor principal (exact
 // fleet:execute) may call; every other route refuses it with
 // insufficient_scope (E6 wires the scope matcher). The resource read is the

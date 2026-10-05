@@ -1222,6 +1222,7 @@ func TestConvergeFactsReaderParity(t *testing.T) {
 		Trigger, TriggerReason         string
 		ResumeApproved, HolderRefused  bool
 		ResumeNeededAttempt, StateLock string
+		HolderCommit                   string
 	}
 	run := func(t *testing.T, e *laneEnv, facts func(ctx context.Context) (*controller.ConvergeFacts, error)) []string {
 		var snapshots []string
@@ -1232,7 +1233,10 @@ func TestConvergeFactsReaderParity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v", step, err)
 			}
-			n := normalized{Trigger: got.Trigger, TriggerReason: got.TriggerReason, ResumeApproved: got.ResumeApproved, HolderRefused: got.HolderRefused}
+			if got.HolderCommitSHA != e.commit {
+				t.Fatalf("%s: HolderCommitSHA = %q, want %q", step, got.HolderCommitSHA, e.commit)
+			}
+			n := normalized{HolderCommit: "commit", Trigger: got.Trigger, TriggerReason: got.TriggerReason, ResumeApproved: got.ResumeApproved, HolderRefused: got.HolderRefused}
 			if got.Plan != nil {
 				plan := *got.Plan
 				if plan.PlanID != e.planID || plan.PlanSHA256 != e.planSHA {

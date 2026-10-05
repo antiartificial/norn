@@ -2839,6 +2839,10 @@ type FleetResourceActive struct {
 	Occupancy       string   `json:"occupancy"`
 	OccupancyReason string   `json:"occupancyReason,omitempty"`
 	ResumeApproved  bool     `json:"resumeApproved,omitempty"`
+	// ResumeNeededAttemptID is the attempt a resume approve must name;
+	// CommitSHA is the holder converge plan's commit.
+	ResumeNeededAttemptID string `json:"resumeNeededAttemptId,omitempty"`
+	CommitSHA             string `json:"commitSha,omitempty"`
 }
 
 type FleetResourceLastApplied struct {

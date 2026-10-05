@@ -272,6 +272,12 @@ type ActiveRefs struct {
 	// names the holder plan's latest attempt and a valid stop attestation or
 	// providerEvidence exists for it (ADR 0010).
 	ResumeApproved bool `json:",omitempty"`
+	// ResumeNeededAttemptID is the stopped holder attempt a resume approve
+	// must name (ConvergeFacts.ResumeNeededAttemptID); executor lane only.
+	ResumeNeededAttemptID string `json:",omitempty"`
+	// CommitSHA is the holder's converge plan commit (ConvergeFacts.HolderCommitSHA);
+	// executor lane only.
+	CommitSHA string `json:",omitempty"`
 }
 
 // Status is the resource's derived cache. Never read by admission.
@@ -398,6 +404,10 @@ type ConvergeFacts struct {
 	// from Plan, which follows the desired revision and may already name a
 	// newer plan.
 	HolderRefused bool
+	// HolderCommitSHA is, while the fence is held, the holder converge plan's
+	// own commit, read from the plan (Plan follows the desired revision and
+	// may name a newer one). "" when the holder is not a converge plan.
+	HolderCommitSHA string
 }
 
 // StateLockFacts describes a foreign OpenTofu state lock the executor refused

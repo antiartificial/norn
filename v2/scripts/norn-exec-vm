@@ -28,7 +28,7 @@ set -euo pipefail
 # read-only by default, which is enough: the tests only read the fleet scripts.
 
 NAME="${NORN_EXEC_VM_NAME:-norn-exec}"
-TOFU_VERSION="${TOFU_VERSION:-1.9.0}"
+TOFU_VERSION="${TOFU_VERSION:-1.10.6}"   # staging pin; use_lockfile needs >= 1.10
 SOPS_VERSION="${SOPS_VERSION:-3.9.4}"
 AGE_VERSION="${AGE_VERSION:-1.2.1}"
 MINIO_BUCKET="${MINIO_BUCKET:-norn-exec-state}"
@@ -67,11 +67,14 @@ apt-get install -y -qq python3 python3-venv python3-pip git curl ca-certificates
 # norn-exec is a member of the norn-phase group so it can create and remove grant
 # directories without CAP_CHOWN; phases use --clear-groups and never get it back.
 getent group norn-phase >/dev/null || groupadd --system norn-phase
-id norn-phase >/dev/null 2>&1 || useradd --system --gid norn-phase --create-home --shell /usr/sbin/nologin norn-phase
+# Same accounts as the fleet_executor role: norn-phase has no home and no other group.
+id norn-phase >/dev/null 2>&1 || useradd --system --gid norn-phase --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin norn-phase
+usermod --home /nonexistent norn-phase
 id norn-exec >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin norn-exec
 usermod -aG norn-phase norn-exec
 install -d -o norn-exec -g norn-exec -m 0750 /etc/norn-fleet-executor
 install -d -o norn-exec -g norn-exec -m 0700 /var/lib/norn-fleet-executor
+install -d -o norn-exec -g norn-phase -m 0750 /var/lib/norn-fleet-phase
 printf '%s\n' \
   'd /run/norn-fleet-executor 0755 norn-exec norn-exec -' \
   'd /run/norn-fleet-executor/grants 0750 norn-exec norn-phase -' \
@@ -121,7 +124,8 @@ if [ -f "$req" ]; then
   python3 -m pip download -q --require-hashes -r "$req" -d "$wheels"
   python3 -m venv /opt/norn-fleet-executor/venv
   /opt/norn-fleet-executor/venv/bin/pip install -q --no-index --find-links "$wheels" --require-hashes -r "$req"
-  (cd "$wheels" && sha256sum -- * | sha256sum | cut -d' ' -f1) >/opt/norn-fleet-executor/WHEELHOUSE_SHA256
+  # The role's recipe: C collation set in the shell that expands the glob.
+  (export LC_ALL=C; cd "$wheels" && sha256sum -- * | sha256sum | cut -d' ' -f1) >/opt/norn-fleet-executor/WHEELHOUSE_SHA256
 fi
 
 # MinIO (S3) for the OpenTofu lockfile tests (use_lockfile=true); single drive, the bucket is a directory.
