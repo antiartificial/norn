@@ -51,7 +51,7 @@ func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_device_name", "deviceName is required and must not exceed 120 characters")
 		return
 	}
-	scopes, err := h.deviceEnrollmentScopes(req.RequestedScopes)
+	scopes, err := h.deviceEnrollmentScopesForPlatform(req.Platform, req.RequestedScopes)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
@@ -148,7 +148,7 @@ func (h *Handler) ApproveDeviceEnrollment(w http.ResponseWriter, r *http.Request
 	if len(scopes) == 0 {
 		scopes = enrollment.RequestedScopes
 	}
-	scopes, err = h.deviceEnrollmentScopes(scopes)
+	scopes, err = h.deviceEnrollmentScopesForPlatform(enrollment.Platform, scopes)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
@@ -208,12 +208,12 @@ func (h *Handler) ExchangeDeviceEnrollment(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusConflict, "enrollment_not_approved", "enrollment is not approved or has expired")
 		return
 	}
-	scopes, err := h.deviceEnrollmentScopes(enrollment.ApprovedScopes)
+	scopes, err := h.deviceEnrollmentScopesForPlatform(enrollment.Platform, enrollment.ApprovedScopes)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusForbidden, "invalid_scope", "approved device scopes are unavailable on this authority")
 		return
 	}
-	token, record, err := h.issueDeviceTokenWithTTL(enrollment.DeviceID, enrollment.DeviceName, scopes, "", deviceTokenLifetimeForPlatform(enrollment.Platform))
+	token, record, err := issueDeviceTokenForPlatform(h.cfg, enrollment.Platform, enrollment.DeviceID, enrollment.DeviceName, scopes, "", deviceTokenLifetimeForPlatform(enrollment.Platform))
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to issue device token")
 		return
@@ -278,7 +278,7 @@ func RotateManagedToken(cfg *config.Config, auth store.AuthStore, closeConnectio
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "device_lookup_failed", "device token lifetime could not be determined")
 		return
 	}
-	token, record, err := issueDeviceTokenWithTTL(cfg, principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID, deviceTokenLifetimeForPlatform(device.Platform))
+	token, record, err := issueDeviceTokenForPlatform(cfg, device.Platform, principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID, deviceTokenLifetimeForPlatform(device.Platform))
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to rotate token")
 		return
@@ -335,9 +335,15 @@ func (h *Handler) issueDeviceTokenWithTTL(deviceID, subject string, scopes []str
 }
 
 func issueDeviceTokenWithTTL(cfg *config.Config, deviceID, subject string, scopes []string, rotatedFrom string, lifetime time.Duration) (string, *store.AccessToken, error) {
-	if cfg != nil && cfg.IsFleetAuthorityOnly() {
+	return issueDeviceTokenForPlatform(cfg, "", deviceID, subject, scopes, rotatedFrom, lifetime)
+}
+
+// issueDeviceTokenForPlatform is issueDeviceTokenWithTTL with the device's
+// persisted platform, which fleet:execute validation needs.
+func issueDeviceTokenForPlatform(cfg *config.Config, platform, deviceID, subject string, scopes []string, rotatedFrom string, lifetime time.Duration) (string, *store.AccessToken, error) {
+	if cfg != nil && cfg.IsFleetAuthorityOnly() || containsScope(scopes, ScopeFleetExecute) {
 		var err error
-		scopes, err = (&Handler{cfg: cfg}).deviceEnrollmentScopes(scopes)
+		scopes, err = (&Handler{cfg: cfg}).deviceEnrollmentScopesForPlatform(platform, scopes)
 		if err != nil {
 			return "", nil, err
 		}
@@ -357,6 +363,9 @@ func issueDeviceTokenWithTTL(cfg *config.Config, deviceID, subject string, scope
 func deviceTokenLifetimeForPlatform(platform string) time.Duration {
 	if strings.EqualFold(strings.TrimSpace(platform), "web") {
 		return browserDeviceTokenTTL
+	}
+	if isFleetExecutorPlatform(platform) {
+		return fleetExecutorTokenTTL
 	}
 	return deviceTokenTTL
 }
