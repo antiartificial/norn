@@ -27,6 +27,10 @@ set -euo pipefail
 #                      publishes binaries (dl.min.io answers 410 Gone), so provision installs a
 #                      binary built on this Mac by build-minio (needs go) and cached in
 #                      NORN_EXEC_VM_CACHE (default ~/.cache/norn-exec-vm), or one named by MINIO_BIN.
+#                      The cache file is keyed on MINIO_REF and the architecture. MINIO_BIN must
+#                      be a path the VM can read, so under a Lima-mounted directory such as ~;
+#                      when it is set, `up` skips build-minio. provision reinstalls MinIO
+#                      whenever the binary differs (by checksum) from /usr/local/bin/minio.
 #
 # limactl is required (brew install lima) and is never installed by this script.
 # The fake DigitalOcean metadata service answers on 169.254.169.254:80 through a
@@ -138,9 +142,10 @@ fi
 
 # MinIO (S3) for the OpenTofu lockfile tests (use_lockfile=true); single drive, the bucket is a directory.
 # dl.min.io no longer serves binaries (410 Gone), so the host builds one (build-minio) and passes its path.
-if [ ! -x /usr/local/bin/minio ]; then
-  [ -n "${MINIO_BIN:-}" ] && [ -f "$MINIO_BIN" ] || { echo "no MinIO binary: run 'norn-exec-vm build-minio' first or set MINIO_BIN" >&2; exit 1; }
+[ -n "${MINIO_BIN:-}" ] && [ -f "$MINIO_BIN" ] || { echo "no MinIO binary: run 'norn-exec-vm build-minio' first or set MINIO_BIN (a path under a Lima-mounted directory such as ~)" >&2; exit 1; }
+if [ ! -x /usr/local/bin/minio ] || [ "$(sha256sum <"$MINIO_BIN" | cut -d' ' -f1)" != "$(sha256sum </usr/local/bin/minio | cut -d' ' -f1)" ]; then
   install -m 0755 "$MINIO_BIN" /usr/local/bin/minio
+  systemctl restart minio.service 2>/dev/null || true
 fi
 id minio >/dev/null 2>&1 || useradd --system --home-dir /var/lib/minio --shell /usr/sbin/nologin minio
 install -d -o minio -g minio -m 0750 /var/lib/minio "/var/lib/minio/${MINIO_BUCKET}"
@@ -207,20 +212,22 @@ PROVISION
 }
 
 minio_cache_path() {
-  case "$(uname -m)" in arm64|aarch64) printf '%s/minio-linux-arm64\n' "$CACHE_DIR" ;; *) printf '%s/minio-linux-amd64\n' "$CACHE_DIR" ;; esac
+  case "$(uname -m)" in arm64|aarch64) printf '%s/minio-%s-linux-arm64\n' "$CACHE_DIR" "$MINIO_REF" ;; *) printf '%s/minio-%s-linux-amd64\n' "$CACHE_DIR" "$MINIO_REF" ;; esac
 }
 
 # The VM matches the host architecture (Lima vz), so the host cross-builds the pinned source tag.
 cmd_build_minio() {
   command -v go >/dev/null 2>&1 || die "go not found; build-minio compiles MinIO ${MINIO_REF} from source"
-  local out goarch
+  local out goarch gopath
   out="$(minio_cache_path)"
   [ ! -x "$out" ] || { printf 'MinIO already built: %s\n' "$out"; return 0; }
   case "$out" in *arm64) goarch=arm64 ;; *) goarch=amd64 ;; esac
   install -d "$CACHE_DIR"
   # go install refuses a cross-compiled target when GOBIN is set; it writes $GOPATH/bin/linux_<arch>/minio.
-  GOOS=linux GOARCH="$goarch" GOFLAGS=-buildvcs=false go install "github.com/minio/minio@${MINIO_REF}"
-  mv "$(go env GOPATH)/bin/linux_${goarch}/minio" "$out"
+  env -u GOBIN GOOS=linux GOARCH="$goarch" GOFLAGS=-buildvcs=false go install "github.com/minio/minio@${MINIO_REF}"
+  gopath="$(env -u GOBIN go env GOPATH)"
+  gopath="${gopath%%:*}"   # GOPATH may list several entries; install writes to the first
+  mv "$gopath/bin/linux_${goarch}/minio" "$out"
   printf 'built %s\n' "$out"
 }
 
@@ -258,7 +265,7 @@ cmd_droplet_id() {
 cmd="${1:-}"
 [ "$#" -gt 0 ] && shift
 case "$cmd" in
-  up) cmd_create; cmd_build_minio; cmd_provision ;;
+  up) cmd_create; [ -n "${MINIO_BIN:-}" ] || cmd_build_minio; cmd_provision ;;
   build-minio) cmd_build_minio ;;
   create) cmd_create ;;
   provision) cmd_provision ;;

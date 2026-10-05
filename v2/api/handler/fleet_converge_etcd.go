@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +37,8 @@ import (
 type EtcdConvergePlanRecorder struct {
 	cfg        *config.Config
 	operations *etcdstore.V3OperationStore
+	// now is the clock revalidationStale reads; nil means time.Now (tests set it).
+	now func() time.Time
 }
 
 // NewEtcdConvergePlanRecorder returns the etcd recorder.
@@ -54,32 +57,62 @@ func (p *EtcdConvergePlanRecorder) recorded(ctx context.Context, plan *controlle
 	}
 	admissible := !abandoned
 	if admissible {
+		// A staleness read error fails toward admissible (not stale) and is
+		// logged, exactly as the PG Admissible in main.go does.
 		stale, err := p.revalidationStale(ctx, plan)
 		if err != nil {
-			return nil, err
+			log.Printf("fleet converge: revalidation staleness of plan %s: %v", plan.ID, err)
+			stale = false
 		}
 		admissible = !stale
 	}
 	return &controller.RecordedConverge{PlanID: plan.ID, Digest: plan.Digest, Converge: *plan.Converge, Admissible: admissible}, nil
 }
 
+func (p *EtcdConvergePlanRecorder) clock() time.Time {
+	if p.now != nil {
+		return p.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
 // revalidationStale is the etcd form of store.DB.IsFleetPlanRevalidationStale:
 // the plan's revalidation window (M4) closed with the plan still older than
-// its end, so only a freshly recorded plan can be admitted.
+// its end, so only a freshly recorded plan can be admitted. A plan with any
+// runner attempt or dispatch row is never stale. An unresolvable cluster is
+// not stale; any other read error is returned.
 func (p *EtcdConvergePlanRecorder) revalidationStale(ctx context.Context, plan *controller.ConvergeCapacityPlan) (bool, error) {
 	op, err := p.operations.GetOperation(ctx, plan.ID)
 	if err != nil || op == nil {
 		return false, err
 	}
 	targetID, registryEmpty, _, err := p.operations.ResolveFleetTargetForPlan(ctx, plan.Cluster, "")
-	if err != nil || registryEmpty || targetID == "" {
+	var fenceErr *lifecycle.FenceError
+	if errors.As(err, &fenceErr) || (err == nil && (registryEmpty || targetID == "")) {
 		return false, nil
+	}
+	if err != nil {
+		return false, err
 	}
 	fence, _, err := p.operations.GetFleetTargetFence(ctx, targetID)
 	if err != nil {
 		return false, err
 	}
-	return lifecycle.RevalidationStale(fence, plan.ID, op.StartedAt, time.Now().UTC()), nil
+	// A plan with any runner attempt or dispatch row has run and is never
+	// stale (see lifecycle.RevalidationStale).
+	attempts, err := p.operations.ListFleetRunnerAttempts(ctx, plan.ID)
+	if err != nil {
+		return false, err
+	}
+	hasHistory := len(attempts) > 0
+	if !hasHistory {
+		if _, err := p.operations.GetFleetGitHubDispatchPreparation(ctx, plan.ID); err == nil {
+			hasHistory = true
+		} else if !errors.Is(err, etcdstore.ErrNotFound) {
+			return false, err
+		}
+	}
+	return lifecycle.RevalidationStale(fence, plan.ID, op.StartedAt, p.clock(), hasHistory), nil
 }
 
 // NewestConvergePlan implements controller.ConvergePlanRecorder. Newest is

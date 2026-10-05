@@ -577,24 +577,27 @@ func TestDeriveDeterministic(t *testing.T) {
 	}
 }
 
-// TestDeriveAttemptIDsOldestToNewest: attemptIds is ordered by start time, so
-// the last entry is the newest attempt even when IDs sort the other way, and
-// equal start times fall back to the attempt number, then the ID.
-func TestDeriveAttemptIDsOldestToNewest(t *testing.T) {
+// TestDeriveAttemptIDsAscendingByAttemptNumber: attemptIds is ascending by the
+// per-plan attempt number, so the last entry is the server's latest attempt
+// even when StartedAt and the ID sort disagree with it; equal attempt numbers
+// fall back to the ID.
+func TestDeriveAttemptIDsAscendingByAttemptNumber(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	in := baseInput(now)
 	in.Resource.Desired = DesiredRevision{Generation: 0}
 	in.Fence = heldFence()
+	// StartedAt runs opposite to Attempt, so only the attempt number can
+	// produce the expected order.
 	in.Holder = lifecycle.HolderFacts{DispatchState: "dispatched", Attempts: []fleet.RunnerAttempt{
-		{ID: "0973f018", PlanID: "plan-1", Attempt: 3, StartedAt: now, Status: "running", HeartbeatExpiresAt: now.Add(time.Hour)},
-		{ID: "8febeb9e", PlanID: "plan-1", Attempt: 1, StartedAt: now.Add(-2 * time.Hour), Status: "canceled"},
-		{ID: "aaaaaaaa", PlanID: "plan-1", Attempt: 2, StartedAt: now.Add(-time.Hour), Status: "failed"},
+		{ID: "0973f018", PlanID: "plan-1", Attempt: 3, StartedAt: now.Add(-2 * time.Hour), Status: "running", HeartbeatExpiresAt: now.Add(time.Hour)},
+		{ID: "8febeb9e", PlanID: "plan-1", Attempt: 1, StartedAt: now, Status: "canceled"},
 		{ID: "bbbbbbbb", PlanID: "plan-1", Attempt: 2, StartedAt: now.Add(-time.Hour), Status: "failed"},
+		{ID: "aaaaaaaa", PlanID: "plan-1", Attempt: 2, StartedAt: now.Add(-time.Hour), Status: "failed"},
 	}}
 	want := []string{"8febeb9e", "aaaaaaaa", "bbbbbbbb", "0973f018"}
 	if got := DeriveStatus(in).Active.AttemptIDs; !reflect.DeepEqual(got, want) {
-		t.Fatalf("AttemptIDs = %v, want oldest to newest %v", got, want)
+		t.Fatalf("AttemptIDs = %v, want ascending by attempt number %v", got, want)
 	}
 }
 

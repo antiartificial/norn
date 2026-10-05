@@ -557,7 +557,12 @@ func (db *DB) IsFleetPlanAbandonedForPlan(ctx context.Context, planID string) (b
 // recorder's Admissible: true when the plan was started inside a release's
 // revalidation window that has since closed, so admission refuses it forever
 // (fleet_plan_revalidation_required) and only a freshly recorded plan can
-// proceed. It takes no lock beyond FOR SHARE on the fence and changes nothing.
+// proceed. A plan with any runner attempt or dispatch row is never stale (see
+// lifecycle.RevalidationStale). It takes no lock beyond FOR SHARE on the fence
+// and changes nothing. A missing plan, an empty registry and an unresolvable
+// cluster (a *lifecycle.FenceError) are "not stale"; any other error is a real
+// database error and is returned, as the etcd form does. Callers treat an
+// error as not stale (admissible) and log it.
 func (db *DB) IsFleetPlanRevalidationStale(ctx context.Context, planID string, now time.Time) (bool, error) {
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -572,10 +577,18 @@ func (db *DB) IsFleetPlanRevalidationStale(ctx context.Context, planID string, n
 		return false, err
 	}
 	_, fence, _, registryEmpty, err := LockFleetTargetFenceForPlan(ctx, tx, cluster, "", false)
-	if err != nil || registryEmpty {
+	var fenceErr *lifecycle.FenceError
+	if errors.As(err, &fenceErr) || (err == nil && registryEmpty) {
 		return false, nil
 	}
-	return lifecycle.RevalidationStale(fence, planID, startedAt, now), nil
+	if err != nil {
+		return false, err
+	}
+	var hasHistory bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM fleet_runner_attempts WHERE plan_id=$1) OR EXISTS (SELECT 1 FROM fleet_github_dispatches WHERE plan_id=$1)`, planID).Scan(&hasHistory); err != nil {
+		return false, err
+	}
+	return lifecycle.RevalidationStale(fence, planID, startedAt, now, hasHistory), nil
 }
 
 // ResolveFleetTargetForCluster is the read-only wrapper handlers use for a

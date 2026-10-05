@@ -264,10 +264,10 @@ type AppliedRef struct {
 type ActiveRefs struct {
 	PlanID        string
 	DispatchRunID string
-	// AttemptIDs is ordered oldest to newest: by attempt StartedAt, then the
-	// per-plan attempt number, then ID. The last entry is the newest attempt
-	// (clients, such as the executor loop, rely on that); it is never an ID
-	// sort, since attempt IDs are random.
+	// AttemptIDs is ascending by attempt number (the per-plan Attempt, ID as
+	// the tiebreak); the last entry is the latest attempt, the same definition
+	// admission uses (clients, such as the executor loop, rely on that). It is
+	// never an ID or StartedAt sort.
 	AttemptIDs      []string
 	FenceGeneration int64
 	Occupancy       string

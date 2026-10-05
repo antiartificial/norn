@@ -165,7 +165,8 @@ type RecordedConverge struct {
 	Converge executor.ConvergePlan
 	// Admissible is false when the newest plan was refused at admission with
 	// fleet_plan_revalidation_required; only then may a rescan record a new
-	// plan for the same commit.
+	// plan for the same commit. Only Rescan sees this for a settled resource:
+	// a poll that decided "exists" skips the resource until the tip moves.
 	Admissible bool
 }
 

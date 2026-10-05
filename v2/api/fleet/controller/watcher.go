@@ -16,6 +16,11 @@ package controller
 //	verified           config/executable  commit == T, admissible none ("exists"; idempotent)
 //	verified           config/executable  none, older, refused    record plan for T over L..T
 //
+// An "exists" decision settles the resource for (tip, last applied, protected):
+// later polls skip it, so a plan that turns inadmissible afterwards (for
+// example a stale revalidation window) is superseded only by Rescan, which
+// always evaluates, or when the tip or last applied commit moves.
+//
 // When an unapplied plan for another commit P exists, T must also descend from
 // P (otherwise history_rewritten): the watcher never moves a resource backwards.
 //

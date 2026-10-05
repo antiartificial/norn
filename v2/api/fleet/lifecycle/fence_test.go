@@ -282,9 +282,18 @@ func TestRevalidationStale(t *testing.T) {
 			r := *fence.LastRelease
 			f.LastRelease = &r
 			tc.mod(&f)
-			if got := RevalidationStale(f, "p", tc.start, tc.now); got != tc.want {
+			if got := RevalidationStale(f, "p", tc.start, tc.now, false); got != tc.want {
 				t.Fatalf("RevalidationStale = %v, want %v", got, tc.want)
 			}
 		})
+	}
+	// M1: a plan that has run (attempt or dispatch row) is never stale, even
+	// when another plan's later release overwrote LastRelease and the window
+	// of that release has closed over the plan.
+	if RevalidationStale(fence, "p", started, windowEnd.Add(time.Hour), true) {
+		t.Fatal("a plan with attempt history must never be stale")
+	}
+	if !RevalidationStale(fence, "p", started, windowEnd.Add(time.Hour), false) {
+		t.Fatal("control: the same plan without history is stale")
 	}
 }

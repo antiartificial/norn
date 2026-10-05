@@ -439,15 +439,14 @@ func deriveActive(in Input) (*ActiveRefs, lifecycle.Occupancy) {
 	if !in.Fence.Held {
 		return nil, occupancy
 	}
-	// Oldest to newest (the AttemptIDs contract): by start time, then the
-	// per-plan attempt number, then ID, so ties are deterministic. Attempt IDs
-	// are random UUIDs, so sorting by ID would not order them in time.
+	// Ascending by the per-plan attempt number, then ID as a deterministic
+	// tiebreak (the AttemptIDs contract): the server's "latest attempt" is the
+	// highest attempt number (lifecycle.latestAttempt, latestFleetExecutorAttempt),
+	// never the latest StartedAt. Attempt IDs are random UUIDs, so an ID sort
+	// would not order them.
 	ordered := append([]fleet.RunnerAttempt(nil), in.Holder.Attempts...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
-		if !a.StartedAt.Equal(b.StartedAt) {
-			return a.StartedAt.Before(b.StartedAt)
-		}
 		if a.Attempt != b.Attempt {
 			return a.Attempt < b.Attempt
 		}

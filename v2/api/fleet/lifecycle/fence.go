@@ -184,12 +184,17 @@ func DecideAcquire(f FenceFacts, planID, nonceSHA256 string, planStartedAt time.
 // fully elapsed at now, yet planStartedAt still precedes its end, so
 // DecideAcquire refuses this plan forever. Inside the window the plan is not
 // stale (waiting cures it only for a plan recorded after the window, so a
-// re-record then would be refused too). A plan that holds the fence, or whose
-// own release set it, is never stale: only a plan that has not acquired
-// anything is superseded. It is advisory (callers read the fence without the
-// acquire's lock) and never changes a fence.
-func RevalidationStale(f FenceFacts, planID string, planStartedAt, now time.Time) bool {
-	if f.Held && f.HolderPlanID == planID {
+// re-record then would be refused too). A plan that holds the fence, whose
+// own release set it, or that has any history (hasHistory: a runner attempt
+// or dispatch row exists for it) is never stale. History matters because a
+// plan that has run is no longer a plan that acquired nothing: a fresh
+// replacement would fresh-start and bypass the resume-approve gate its
+// attempt history requires, even when another plan's later release is the
+// one that overwrote LastRelease. Only a plan with no history that has not
+// acquired anything is superseded. It is advisory (callers read the fence
+// without the acquire's lock) and never changes a fence.
+func RevalidationStale(f FenceFacts, planID string, planStartedAt, now time.Time, hasHistory bool) bool {
+	if hasHistory || (f.Held && f.HolderPlanID == planID) {
 		return false
 	}
 	if f.LastRelease == nil || f.LastRelease.Reason == "dispatch_not_submitted" || f.LastRelease.PlanID == planID {

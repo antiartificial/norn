@@ -2303,9 +2303,10 @@ func fleetAuthorityOnlyRouterWithWatcher(cfg *config.Config, h *handler.Handler,
 // The recorder's Admissible is false for an abandoned plan (so a rescan after
 // a mode round-trip records a fresh plan) and true for a refused one (so a
 // rescan never records the same commit again). It is also false for a plan
-// whose fence revalidation window (M4) has closed with the plan still older
-// than the window's end: admission would refuse it forever, so the next
-// rescan or poll supersedes it with a fresh plan.
+// that has no runner attempt or dispatch row and whose fence revalidation
+// window (M4) has closed with the plan still older than the window's end:
+// admission would refuse it forever, so the next Rescan supersedes it with a
+// fresh plan (a poll's exists decision settles the resource and does not).
 func wireFleetAuthorityExecutorLane(cfg *config.Config, h *handler.Handler, db *store.DB, reconciler *controller.Reconciler, github controller.CommitSource) *controller.Watcher {
 	h.SetFleetExecutorStartVerifier(newFleetStartVerifier(cfg.FleetGitHubRepository, github))
 	recorder := h.ConvergePlanRecorder()
@@ -2315,7 +2316,12 @@ func wireFleetAuthorityExecutorLane(cfg *config.Config, h *handler.Handler, db *
 			return false, err
 		}
 		stale, err := db.IsFleetPlanRevalidationStale(ctx, planID, time.Now().UTC())
-		return !stale, err
+		if err != nil {
+			// Fail toward admissible: a read error must not supersede a plan.
+			log.Printf("fleet converge: revalidation staleness of plan %s: %v", planID, err)
+			return true, nil
+		}
+		return !stale, nil
 	}
 	return newFleetConvergeWatcher(reconciler, cfg, github, db, recorder, db)
 }

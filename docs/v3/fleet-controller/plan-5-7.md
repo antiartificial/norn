@@ -722,7 +722,7 @@ Resource conditions stay honestly `Unknown`, as today.
 | `norn access approve <pairing-code> --scope fleet:execute` | the existing enrollment approve (PG authority); E1 grants `fleet:execute` only alone and only to a `fleet-executor` device, so no separate command |
 
 `converge --resume` takes the source attempt from the `approval_required`
-blocker (`status.active.attemptIds` is sorted by ID, not attempt number) and
+blocker (`status.active.attemptIds` is ascending by attempt number, the last entry being the latest attempt) and
 the holder plan's commit from `desired` or `desiredHistory`. The rescan
 response is the watcher decision (`controller.WatchDecision`), not a
 `FleetResource`; the OpenAPI entry still says `FleetResource`.
@@ -1187,6 +1187,27 @@ attempt-bound credential (`fleet:attempt`, `executor.AttemptScope`) passes no
     covers that gap.
   - Provider evidence checks that the source is the plan's latest attempt,
     not that the plan still holds the fence; recovery admission re-checks.
+
+### Hand-offs from the Q1 review (orchestrator, 2026-10-05)
+
+- A converge plan with any runner attempt or dispatch row is never
+  revalidation-stale (`lifecycle.RevalidationStale`, `hasHistory`). Without
+  that, another plan's release overwrote `LastRelease`, the old plan went
+  stale, and its replacement fresh-started past the resume-approve gate that
+  the old plan's attempt history requires.
+- Known gap, not fixed: a plan that was terminal-released (its own release is
+  `LastRelease`) with no newer merge stays wedged. Its own release exempts it
+  from staleness, but a retry still needs a recovery or resume path, and a
+  rescan finds the commit already planned. Only a newer merge (a new commit)
+  supersedes it.
+- Only `Rescan` supersedes a stale plan. A poll that decided `exists` settles
+  the resource for (tip, last applied, protected) and skips it afterwards.
+- An approval-gated stale plan can cost a second approve: approve, start, a
+  revalidation refusal, rescan (records a fresh plan), approve again.
+- `IsFleetPlanRevalidationStale` returns real database errors (only a missing
+  plan, an empty registry or an unresolvable cluster mean "not stale"). Both
+  recorders log the error and treat the plan as admissible (not stale), so a
+  read failure never supersedes a plan.
 
 ### Order and parallel groups
 

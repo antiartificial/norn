@@ -284,8 +284,8 @@ type FleetAppliedView struct {
 type FleetActiveView struct {
 	PlanID        string `json:"planId"`
 	DispatchRunID string `json:"dispatchRunId,omitempty"`
-	// AttemptIDs is ordered oldest to newest (attempt start time, then attempt
-	// number, then ID): the last entry is the newest attempt.
+	// AttemptIDs is ascending by attempt number (ID as the tiebreak); the last
+	// entry is the latest attempt.
 	AttemptIDs      []string `json:"attemptIds"`
 	FenceGeneration int64    `json:"fenceGeneration"`
 	Occupancy       string   `json:"occupancy"`
