@@ -884,6 +884,40 @@ on `169.254.169.254`, using a VM-local alias.
   - The scope matcher admits exactly `executor.ExecutorRoutes` for the executor principal (`TestExecutorPrincipalReachesExactlyExecutorRoutes`).
 - **E2/E5 (defence in depth):** check the device platform (`fleet-executor`) in addition to `IsFleetExecutorPrincipal`.
 
+### Hand-offs from the P2 review (orchestrator, 2026-10-05)
+
+- **E4a/E4b/E6 (destructive refusal):** on a destructive plan the executor POSTs `POST /api/v1/fleet/plans/{planID}/converge-refusals` `{code: "destructive_requires_github_lane", commitSha, planSha256, planTextSha256, changes}` with `Idempotency-Key: executor-refusal:<planID>`, retrying each tick until it gets a 2xx. It also keeps a local refusal so it never plans that plan again. Norn adds:
+  - the route to `executor.ExecutorRoutes` (executor principal, the plan must resolve to the executor's target);
+  - a ledger operation `fleet.converge.refusal`;
+  - `desired.converge.refused` in `ConvergeView`, and `blocker=destructive_requires_github_lane` in derive.
+  
+  The refusal leaves `Admissible` true, so a rescan never records the same commit again. Only a new tip records a new plan. The GitHub-lane dispatch for that change clears the blocker.
+- **P1 (loop):** `decide()` returns `wait` when `desired.converge.refused` is set, so the loop stops fetching and journaling for a refused plan.
+- **E2e/P3 (v3 profile):** the executor lane is pinned to the PG legacy no-drain list. `converge.py` fails before any provider call when an attempt starts anywhere but `infrastructure_applied`. An etcd/v3 attempt (`prechange_verified` → `provider_applying`) needs these first:
+  - a `prechange_verified` checkpoint and advance;
+  - tofu apply under the `provider_applying` grant;
+  - `reconcile.py` admitting `prechange_verified`, which today is outside its `allowed` set.
+
+  Until then E6 must not route executor attempts to the etcd runtime.
+- **P5 (secrets and host):**
+  - The `do-read` SOPS entry also carries `SSH_PUBLIC_KEY`, the non-secret public half of `ssh-node/id_ed25519`, so the SSH key preflight runs before apply. After apply, the unchanged `ssh_key_preflight.py` proves the private key.
+  - Create `work_root` `/var/lib/norn-fleet-phase` as `norn-exec:norn-phase 0750` and list it in `ReadWritePaths`.
+  - The loop release under `/opt/norn-fleet-executor/` must be readable by `norn-phase`, because the runner-attempt and reconcile adapters run from it.
+  - `NORN_FLEET_PRIVATE_MANAGEMENT_TOKEN_FILE`, when private management is enabled, is a host path outside the grant system and must be readable by `norn-phase`.
+- **P3 (recovery):** a stop between `tofu apply` and the `infrastructure_applied` checkpoint leaves a live attempt with no checkpoint. Recovery re-plans and re-applies the empty remainder under the lock, then runs reconcile from `infrastructure_applied` without timing evidence. On SIGTERM, P2 copies the timing evidence to `state_dir/evidence/<plan>/`. On SIGKILL it remains in the stale scratch directory, which `prepare_worktree` deletes.
+- **Grant table:** P2 measured that the staging post-apply path uses no DigitalOcean credential and no Spaces credential. It requests per phase:
+  - `inventory_generated`: norn-attempt;
+  - `nodes_configured`: ssh-node, bootstrap-dir, release-github, norn-attempt;
+  - `nodes_enrolled` and `readiness_verified`: ssh-node, norn-attempt.
+
+  `spaces-read` stays in the table for P3 recovery's state reads, and `do-read` stays out.
+
+### Hand-offs from the E4a review (orchestrator, 2026-10-05)
+
+- **E6:** the etcd converge-plan recorder must sign with `controller.CanonicalConvergePlan`; `refreshEtcdCapacityPlanSignature` (`etcd_fleet_runtime.go:~652`) would drop `converge`. Wire `PGConvergePlanRecorder.Admissible`, `ConvergeDesiredSetter` and `WatchedResourceSource`, and fill `MergeActor` and `PullRequest` if available.
+- **E4b:** an admin approve for a `history_rewritten` tip has no route; add one (admin only) or document the operator path (revert on main).
+- **E4b/E6:** the watcher must record converge plans only for resources whose `executionMode` is `controller`. Mode is enforced at plan recording, never in the execution transaction (T7).
+
 ### Order and parallel groups
 
 ```
