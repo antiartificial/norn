@@ -56,8 +56,6 @@ const (
 	ScopeAdmin                  = "admin"
 	// ScopeFleetExecute is the Fleet executor lane. It is grantable only alone
 	// and only to a fleet-executor device (see fleet_executor_principal.go).
-	// It is not yet in AccessTokenScopeNames because that list is pinned by the
-	// signed-staging client-contract capability fixture.
 	ScopeFleetExecute = "fleet:execute"
 )
 
@@ -71,7 +69,7 @@ var accessTokenScopes = map[string]struct{}{
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own

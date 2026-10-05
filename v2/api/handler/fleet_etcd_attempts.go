@@ -33,6 +33,8 @@ type EtcdFleetRunnerHandler struct {
 	control    *Handler
 	github     fleetApplyRunObserver
 	devices    fleetExecutorDeviceLookup
+	// startVerifier re-verifies a fresh executor start's commit (nil: none).
+	startVerifier FleetExecutorStartVerifier
 }
 
 // fleetExecutorDeviceLookup is the live-device read behind the executor lane's
@@ -262,6 +264,21 @@ func fleetRunAttemptFromRunnerID(runnerID, sourceRunID string) int64 {
 }
 
 func (h *EtcdFleetRunnerHandler) ownAttempt(w http.ResponseWriter, r *http.Request) (*fleet.RunnerAttempt, bool) {
+	return h.ownAttemptAs(w, r, true, true)
+}
+
+// ownAttemptAs resolves the attempt a route names for the caller's lane. The
+// executor principal and the attempt-bound credential (plan-5-7 E6) take the
+// executor lane, which checks the sibling executor metadata instead of a
+// GitHub workload token; allowCredential and live are described there.
+func (h *EtcdFleetRunnerHandler) ownAttemptAs(w http.ResponseWriter, r *http.Request, allowCredential, live bool) (*fleet.RunnerAttempt, bool) {
+	if executorPrincipal, ok := h.executorLane(r); ok {
+		plan, ok := h.executorPlan(w, r)
+		if !ok {
+			return nil, false
+		}
+		return h.ownExecutorAttempt(w, r, executorPrincipal, plan, chi.URLParam(r, "attemptID"), allowCredential, live)
+	}
 	principal, ok := h.workload(w, r)
 	if !ok {
 		return nil, false
@@ -339,7 +356,7 @@ func (h *EtcdFleetRunnerHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *EtcdFleetRunnerHandler) Get(w http.ResponseWriter, r *http.Request) {
-	item, ok := h.ownAttempt(w, r)
+	item, ok := h.ownAttemptAs(w, r, true, false)
 	if ok {
 		writeJSON(w, item)
 	}
@@ -378,7 +395,7 @@ func (h *EtcdFleetRunnerHandler) Advance(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *EtcdFleetRunnerHandler) Cancel(w http.ResponseWriter, r *http.Request) {
-	item, ok := h.ownAttempt(w, r)
+	item, ok := h.ownAttemptAs(w, r, false, true)
 	if !ok {
 		return
 	}
@@ -420,6 +437,10 @@ func fleetReconciliationPayload(request fleet.ReconciliationRequest) map[string]
 }
 
 func (h *EtcdFleetRunnerHandler) Reconcile(w http.ResponseWriter, r *http.Request) {
+	if executorPrincipal, ok := h.executorLane(r); ok {
+		h.reconcileExecutor(w, r, executorPrincipal)
+		return
+	}
 	principal, ok := h.workload(w, r)
 	if !ok {
 		return
@@ -450,6 +471,11 @@ func (h *EtcdFleetRunnerHandler) Reconcile(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	enqueue.FleetReconciliation = &store.FleetReconciliationAdmission{PlanID: plan.ID, AttemptID: request.AttemptID, RequireActiveAttempt: true, RunnerAttemptID: canonicalRunnerAttemptID(principal.CI), WorkflowURL: canonicalWorkflowRunURL(principal.CI.Repository, principal.CI.RunID)}
+	h.finishReconcile(w, r, plan, request, enqueue)
+}
+
+// finishReconcile records one admitted checkpoint (both lanes).
+func (h *EtcdFleetRunnerHandler) finishReconcile(w http.ResponseWriter, r *http.Request, plan *model.Operation, request fleet.ReconciliationRequest, enqueue pipeline.EnqueueRequest) {
 	if replay, err := h.control.pipeline.ResolveEnqueue(r.Context(), enqueue, "fleet.reconciliation", plan.ID); err == nil {
 		if !acceptedRequestMatches(replay, enqueue) {
 			WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for another checkpoint")
@@ -493,6 +519,10 @@ func (h *EtcdFleetRunnerHandler) Reconcile(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *EtcdFleetRunnerHandler) ListReconciliations(w http.ResponseWriter, r *http.Request) {
+	if executorPrincipal, ok := h.executorLane(r); ok {
+		h.listReconciliationsExecutor(w, r, executorPrincipal)
+		return
+	}
 	plan, principal, ok := h.readablePlan(w, r)
 	if !ok {
 		return
@@ -528,12 +558,7 @@ func (h *EtcdFleetRunnerHandler) startExecutorAttempt(w http.ResponseWriter, r *
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_store_unavailable", "durable Fleet runner storage is unavailable")
 		return
 	}
-	if h.devices == nil {
-		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
-		return
-	}
-	if device, err := h.devices.ActiveAccessDevice(r.Context(), principal.DeviceID); err != nil || device == nil || !isFleetExecutorPlatform(device.Platform) {
-		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
+	if !h.requireExecutorDevice(w, r, principal) {
 		return
 	}
 	planID := chi.URLParam(r, "planID")
@@ -559,13 +584,28 @@ func (h *EtcdFleetRunnerHandler) startExecutorAttempt(w http.ResponseWriter, r *
 		writeFleetExecutorError(w, r, err)
 		return
 	}
-	if _, decoded := decodeConvergePlan(plan); !decoded {
+	convergePlan, decoded := decodeConvergePlan(plan)
+	if !decoded {
 		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetPlanNotConverge, "the plan is not a converge plan")
 		return
 	}
 	if !h.control.fleetConvergePlanVerified(plan) {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "converge plan failed integrity verification")
 		return
+	}
+	if h.startVerifier != nil && !request.Resume {
+		existing, listErr := h.operations.ListFleetRunnerAttempts(r.Context(), plan.ID)
+		if listErr != nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_read_failed", "existing runner attempts could not be read")
+			return
+		}
+		replay := false
+		for _, item := range existing {
+			replay = replay || item.RunnerAttemptID == request.RunnerAttemptID
+		}
+		if !verifyFleetExecutorStart(w, r, h.startVerifier, *convergePlan.Converge, request, replay) {
+			return
+		}
 	}
 	request.HeartbeatTimeoutSeconds = normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds)
 	result, err := h.operations.CreateFleetExecutorAttempt(r.Context(), store.FleetExecutorStart{

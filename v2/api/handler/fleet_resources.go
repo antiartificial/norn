@@ -184,6 +184,9 @@ type FleetResourceRoutes struct {
 	now         func() time.Time
 	facts       FleetConvergeFactsReader
 	modes       FleetExecutionModeRecorder
+	// executorDevices is the live-device read behind the executor
+	// principal's resource read; without it that read is refused.
+	executorDevices fleetExecutorDeviceLookup
 }
 
 // NewFleetResourceRoutes builds the shared routes. resolver is nil only when
@@ -199,6 +202,13 @@ func NewFleetResourceRoutes(backend FleetResourceBackend, cfg *config.Config, re
 // converge object. Call it before serving.
 func (s *FleetResourceRoutes) SetConvergeFacts(reader FleetConvergeFactsReader) {
 	s.facts = reader
+}
+
+// SetExecutorDeviceLookup wires the device read the executor principal's
+// GET resources/{name} needs (its device must be a live fleet-executor
+// device). Without it the executor principal is refused (fail closed).
+func (s *FleetResourceRoutes) SetExecutorDeviceLookup(devices fleetExecutorDeviceLookup) {
+	s.executorDevices = devices
 }
 
 // SetExecutionModeRecorder wires the ledger recorder of the execution-mode
@@ -222,6 +232,9 @@ func (h *Handler) FleetResourceRoutes() *FleetResourceRoutes {
 	}
 	routes := NewFleetResourceRoutes(&pgFleetResourceBackend{h: h}, h.cfg, resolver, h.fleetGitHubConfigError, h.fleetControllerLiveness)
 	routes.modes = &pgExecutionModeRecorder{h: h}
+	if h.db != nil {
+		routes.executorDevices = h.db
+	}
 	return routes
 }
 
@@ -707,9 +720,21 @@ func (s *FleetResourceRoutes) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSONStatus(w, status, view)
 }
 
-// Get is GET resources/{name} (api:read).
+// Get is GET resources/{name} (api:read, or the executor principal on a live
+// fleet-executor device: it reads the work view of its resource, never the
+// list).
 func (s *FleetResourceRoutes) Get(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireTargetScope(w, r, ScopeAPIRead, false); !ok {
+	if executorPrincipal, present := AccessPrincipalFromRequest(r); present && IsFleetExecutorPrincipal(executorPrincipal) {
+		var device *store.AccessDevice
+		var err error
+		if s.executorDevices != nil {
+			device, err = s.executorDevices.ActiveAccessDevice(r.Context(), executorPrincipal.DeviceID)
+		}
+		if s.executorDevices == nil || err != nil || device == nil || !isFleetExecutorPlatform(device.Platform) {
+			WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
+			return
+		}
+	} else if _, ok := requireTargetScope(w, r, ScopeAPIRead, false); !ok {
 		return
 	}
 	name, ok := resourceName(w, r)

@@ -293,8 +293,8 @@ func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Reques
 	// the device platform; every other principal keeps requireFleetReadScope.
 	var principal AccessPrincipal
 	var ok bool
-	if candidate, present := AccessPrincipalFromRequest(r); present && IsFleetExecutorPrincipal(candidate) {
-		principal, ok = h.requireFleetRunnerPrincipal(w, r)
+	if candidate, present := AccessPrincipalFromRequest(r); present && (IsFleetExecutorPrincipal(candidate) || isFleetAttemptCredential(candidate)) {
+		principal, ok = h.requireFleetRunnerOrAttemptPrincipal(w, r)
 	} else {
 		principal, ok = requireFleetReadScope(w, r)
 	}
@@ -322,7 +322,7 @@ func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Reques
 	// An executor principal has no plan read: it may read only the evidence
 	// of an attempt it owns (runnerBoundRead below, executor branch of
 	// fleetRunnerPrincipalOwnsAttempt).
-	if !IsFleetExecutorPrincipal(principal) && !h.fleetPlanReadable(r, plan) {
+	if !IsFleetExecutorPrincipal(principal) && !isFleetAttemptCredential(principal) && !h.fleetPlanReadable(r, plan) {
 		WriteControlProblem(w, r, http.StatusForbidden, "fleet_plan_read_forbidden", "workload token may read only its own approved fleet plan")
 		return
 	}
@@ -346,7 +346,7 @@ func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Reques
 			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read fleet runner attempt")
 			return
 		}
-		if !fleetRunnerPrincipalOwnsAttempt(principal, attempt) {
+		if !fleetRunnerCanReadAttemptEvidence(principal, attempt) {
 			WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_binding_conflict", "only the bound GitHub Actions runner may read this attempt's reconciliation evidence")
 			return
 		}
@@ -384,11 +384,11 @@ func fleetRunnerReconciliationReadNeedsAttemptID(principal AccessPrincipal) bool
 func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Request) {
 	// Lane by principal (plan-5-7 E2): an executor principal on a
 	// fleet-executor device, or exactly the GitHub lane's requireFleetOperateScope.
-	principal, ok := h.requireFleetRunnerPrincipal(w, r)
+	principal, ok := h.requireFleetRunnerOrAttemptPrincipal(w, r)
 	if !ok {
 		return
 	}
-	executorLane := IsFleetExecutorPrincipal(principal)
+	executorLane := IsFleetExecutorPrincipal(principal) || isFleetAttemptCredential(principal)
 	if h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_reconciliation_store_unavailable", "durable operation storage is unavailable")
 		return

@@ -25,7 +25,7 @@ func TestFleetResourceRoutesRegistered(t *testing.T) {
 	requireRoutesRegistered(t, "../etcd_fleet_resources.go", etcdFleetResourceRoutes, func(route [4]string) string {
 		return fmt.Sprintf("router.With(%s).%s(%q, fleetResources.%s)", route[3], route[0], route[1], route[2])
 	})
-	requireRoutesRegistered(t, "../etcd_fleet_runtime.go", []string{"registerEtcdFleetResourceRoutes(router, cfg, identities, operations, fleetGitHub, liveness)"}, func(line string) string { return line })
+	requireRoutesRegistered(t, "../etcd_fleet_runtime.go", []string{"registerEtcdFleetResourceRoutes(router, cfg, identities, operations, fleetGitHub, liveness, lane)"}, func(line string) string { return line })
 }
 
 // TestFleetResourceRoutesPostgres drives the real PG route mount

@@ -92,6 +92,9 @@ type Handler struct {
 	// fleetControllerLiveness is the in-process Fleet reconciler, when this
 	// process runs one; resource reads report its liveness.
 	fleetControllerLiveness FleetControllerLiveness
+	// executorStartVerifier re-verifies a plan's commit at executor attempt
+	// start (nil: no re-check).
+	executorStartVerifier FleetExecutorStartVerifier
 }
 
 // ConfigurePrivateReleaseSigner installs the staging-only signer after startup

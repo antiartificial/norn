@@ -357,7 +357,7 @@ func (h *Handler) GetFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) HeartbeatFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
-	principal, ok := h.requireFleetRunnerPrincipal(w, r)
+	principal, ok := h.requireFleetRunnerOrAttemptPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -416,7 +416,7 @@ func (h *Handler) HeartbeatFleetRunnerAttempt(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) AdvanceFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
-	principal, ok := h.requireFleetRunnerPrincipal(w, r)
+	principal, ok := h.requireFleetRunnerOrAttemptPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -844,6 +844,10 @@ func fleetRunnerPrincipalOwnsAttempt(principal AccessPrincipal, attempt *model.F
 	if IsFleetExecutorPrincipal(principal) {
 		return fleetExecutorPrincipalOwnsAttempt(principal, attempt)
 	}
+	// Attempt-bound credential (plan-5-7 E5/E6): its own live attempt only.
+	if isFleetAttemptCredential(principal) {
+		return fleetAttemptCredentialOwnsAttempt(principal, attempt, true)
+	}
 	if attempt == nil || principal.CI == nil || principal.CI.Provider != "github-actions" || !principalHasExactScope(principal, ScopeFleetOperate) {
 		return false
 	}
@@ -861,6 +865,9 @@ func fleetRunnerPrincipalOwnsAttempt(principal AccessPrincipal, attempt *model.F
 }
 
 func fleetRunnerCanReadAttempt(principal AccessPrincipal, attempt *model.FleetRunnerAttempt) bool {
+	if isFleetAttemptCredential(principal) {
+		return fleetAttemptCredentialOwnsAttempt(principal, attempt, false)
+	}
 	return principal.Allows(ScopeAPIRead) || fleetRunnerPrincipalOwnsAttempt(principal, attempt)
 }
 
@@ -935,14 +942,56 @@ func (h *Handler) fleetExecutorDeviceHasPlatform(ctx context.Context, principal 
 // owned by this device (principal_subject managed-device:<deviceId>) whose
 // identifiers are internally consistent.
 func fleetExecutorPrincipalOwnsAttempt(principal AccessPrincipal, attempt *model.FleetRunnerAttempt) bool {
+	return fleetExecutorAttemptConsistent(attempt) && attempt.PrincipalSubject == executor.PrincipalSubject(principal.DeviceID)
+}
+
+// fleetExecutorAttemptConsistent reports an executor-lane attempt whose
+// identifiers agree with each other (no owner check).
+func fleetExecutorAttemptConsistent(attempt *model.FleetRunnerAttempt) bool {
 	if attempt == nil || attempt.SourceDispatchRunID != 0 {
 		return false
 	}
 	metadata, ok := store.FleetExecutorAttemptMetadata(attempt)
 	droplet, invocation, planID, idOK := executor.ParseRunnerAttemptID(attempt.RunnerAttemptID)
-	return ok && idOK && attempt.PrincipalSubject == executor.PrincipalSubject(principal.DeviceID) &&
-		attempt.PlanID == planID && attempt.WorkflowURL == executor.WorkflowURL(droplet, invocation) &&
+	return ok && idOK && attempt.PlanID == planID && attempt.WorkflowURL == executor.WorkflowURL(droplet, invocation) &&
 		metadata.DropletID == droplet && metadata.InvocationID == invocation
+}
+
+func isFleetAttemptCredential(p AccessPrincipal) bool {
+	_, ok := FleetAttemptCredentialAttemptID(p)
+	return ok
+}
+
+// fleetAttemptCredentialOwnsAttempt admits the attempt-bound credential for
+// exactly its bound attempt: an executor-lane attempt of the path plan (the
+// caller resolved the attempt under that plan). live additionally requires a
+// queued or running attempt, so a finished attempt's credential, which stays
+// valid until its grant expires, can no longer write.
+func fleetAttemptCredentialOwnsAttempt(principal AccessPrincipal, attempt *model.FleetRunnerAttempt, live bool) bool {
+	if attempt == nil || !FleetAttemptCredentialMayActOn(principal, attempt.ID) || !fleetExecutorAttemptConsistent(attempt) {
+		return false
+	}
+	return !live || attempt.Status == model.FleetRunnerAttemptQueued || attempt.Status == model.FleetRunnerAttemptRunning
+}
+
+// requireFleetRunnerOrAttemptPrincipal is requireFleetRunnerPrincipal plus the
+// attempt-bound credential as a third lane. Attempt start and cancel keep
+// requireFleetRunnerPrincipal, which refuses the credential.
+func (h *Handler) requireFleetRunnerOrAttemptPrincipal(w http.ResponseWriter, r *http.Request) (AccessPrincipal, bool) {
+	if principal, ok := AccessPrincipalFromRequest(r); ok && isFleetAttemptCredential(principal) {
+		return principal, true
+	}
+	return h.requireFleetRunnerPrincipal(w, r)
+}
+
+// fleetRunnerCanReadAttemptEvidence is the reconciliation-read ownership
+// check: the attempt-bound credential may read its own attempt's evidence
+// whatever the attempt's status.
+func fleetRunnerCanReadAttemptEvidence(principal AccessPrincipal, attempt *model.FleetRunnerAttempt) bool {
+	if isFleetAttemptCredential(principal) {
+		return fleetAttemptCredentialOwnsAttempt(principal, attempt, false)
+	}
+	return fleetRunnerPrincipalOwnsAttempt(principal, attempt)
 }
 
 // fleetConvergePlanVerified reports whether plan is a converge plan whose
@@ -1005,13 +1054,28 @@ func (h *Handler) startFleetExecutorAttempt(w http.ResponseWriter, r *http.Reque
 	// The plan must be a converge plan whose digest and signature verify under
 	// the converge-aware verifier (the GitHub-lane verifier rejects it).
 	// Replays of an already admitted attempt skip nothing: the plan is immutable.
-	if _, decoded := decodeConvergePlan(plan); !decoded {
+	convergePlan, decoded := decodeConvergePlan(plan)
+	if !decoded {
 		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetPlanNotConverge, "the plan is not a converge plan")
 		return
 	}
 	if !h.fleetConvergePlanVerified(plan) {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "converge plan failed integrity verification")
 		return
+	}
+	if h.executorStartVerifier != nil && !request.Resume {
+		existing, listErr := h.db.ListFleetRunnerAttempts(r.Context(), plan.ID, 100)
+		if listErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to inspect prior runner attempts")
+			return
+		}
+		replay := false
+		for index := range existing {
+			replay = replay || existing[index].RunnerAttemptID == request.RunnerAttemptID
+		}
+		if !verifyFleetExecutorStart(w, r, h.executorStartVerifier, *convergePlan.Converge, request, replay) {
+			return
+		}
 	}
 	request.HeartbeatTimeoutSeconds = normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds)
 	result, err := h.db.CreateFleetExecutorAttempt(r.Context(), store.FleetExecutorStart{
