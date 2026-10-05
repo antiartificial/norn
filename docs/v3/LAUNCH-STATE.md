@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 15:18 UTC. This is the single current handoff for the
+Observed 2026-10-05 16:20 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -13,6 +13,15 @@ or complete the release. Fleet remains the first launch track. The next Fleet
 attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
+
+At 16:20 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
+validation (`37336272528`) and planning (`37336272298`) were successful. The
+Fleet branch has no fresh pilot resources or runner. Norn launch-state PR #120
+remains open against protected `master`; only the two Socket checks pass, while
+the required API/CLI, Fleet workload, OpenAPI, workflow lint, Web UI and M4
+replica checks have no successful result. Fleet issuer PR #210 is conflicting
+with main; lifecycle PR #175 has a failed contract check. Neither is a current
+deployment gate result.
 
 The approved `pilot261004b` window was $20 maximum, four hours active plus one
 hour for teardown, ending **2026-10-05 08:30 UTC**. The protected
@@ -58,16 +67,19 @@ returned HTTP 401. Its local token file was removed after a hash-only receipt
 was saved. Technical external cleanup is now observed, but the final pilot
 bill and a signed protected final-zero receipt remain unavailable.
 
-**Reusable DigitalOcean cleanup note:** A pilot personal access token can
-self-revoke without a new dashboard sign-in while its local token file is still
+**Reusable DigitalOcean capability:** An already-issued pilot personal access
+token can revoke itself through DigitalOcean’s API, so cleanup of that token
+does not require a second dashboard sign-in when its local token file is still
 available. For `pilot261004b`, `POST` to DigitalOcean’s
 [OAuth revocation endpoint](https://docs.digitalocean.com/reference/api/oauth/)
 with that token as both Bearer authorization and the `token` form parameter
 returned HTTP 200; a subsequent `/v2/account` call with the same token returned
-401. Record only a hash and response statuses, then remove the local file.
-DigitalOcean documents the endpoint for OAuth tokens; support for this
-dashboard-issued personal access token is a live observation to recheck before
-future use.
+401. This can eliminate a dashboard sign-in specifically for revoking an
+existing token; it does not create a token, restore expired access, or prove
+provider resources are gone. Record only a hash and response statuses, then
+remove the local file. DigitalOcean documents the endpoint for OAuth tokens;
+support for a dashboard-issued personal access token is a live observation to
+recheck before relying on it in another pilot.
 
 ## Mini and source
 
@@ -103,7 +115,7 @@ most recent and exposed the material partial-apply failure. A fresh pilot
 should be based on the repaired contracts, not resumed from `a` or `b`.
 
 `pilot261005a` is a **proposed** fresh run ID, not an approved or active pilot.
-At 15:36 UTC on 2026-10-05, read-only `doctl` calls against the intended
+At 16:03 UTC on 2026-10-05, read-only `doctl` calls against the intended
 `theartificial@hotmail.com` account found no matching droplets, databases,
 projects, load balancers or VPCs; no registered GitHub runner carries its Fleet
 label. This is a name-collision check, not a full provider-zero or
@@ -112,13 +124,18 @@ merged the signed c budget, plan, apply, recovery and exact topology gates as
 `abb0b00`; it rejects reuse of retired `pilot261004b`. The PR contract check
 and merge-main plan and validation passed (`37335410031`, `37336272298`,
 `37336272528`). This is code validation, not live proof. Read-only checks at
-15:35 found no c-named DigitalOcean droplets, databases, load balancers,
+16:03 found no c-named DigitalOcean droplets, databases, load balancers,
 projects or VPCs and no registered c runner. The independent deadline
-retirement path remains unimplemented. Existing approvals require post-create state and expire within
-an hour, so signed budget expiry alone cannot guarantee teardown. Do not
+retirement path remains unimplemented. Existing approvals require post-create
+state and expire within an hour, so signed budget expiry alone cannot guarantee
+teardown. The existing owner-Mac retire-by watchdog performs only a local
+finalizer; it has no provider, GitHub, Spaces or token-exchange capability. The
+paired cloud-retirement controller remains under implementation/review. Do not
 start a new billable run until a restartable, run-scoped owner-Mac controller
-can perform Fleet → management → backend cleanup automatically from T0+4 and
-continue retrying until final zero.
+can fence the runner, perform Fleet → management → backend cleanup automatically
+from T0+4, retain each stage's receipts, and continue retrying through and beyond
+T0+5 until final zero. A timer alone is not a hard spend cap when the owner host
+or provider access is unavailable.
 
 ## Milestone estimates
 
@@ -157,7 +174,7 @@ running Fleet qualification.
    remainder apply still needs manual reconciliation from the retained saved
    plan and provider evidence.
 3. The signed budget and workflow gates merged as Fleet PR #255 (`abb0b00`)
-   and passed main CI. Implement and review an independently armed,
+   and passed main CI. Finish and review an independently armed,
    restartable retirement path before generating credentials or approving a
    billable window. It must fence active workflows, retire Fleet before
    management, retain both root-zero proofs, and clean both state buckets and
