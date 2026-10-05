@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 16:56 UTC. This is the single current handoff for the
+Observed 2026-10-05 17:02 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -14,13 +14,14 @@ attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
 
-At 16:56 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
+At 17:02 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
 validation (`37336272528`) and planning (`37336272298`) were successful. Fleet
 PR #256 (`abaabc4`) is an open draft. Preceding commit `1fcaeb7` passed
 contract validation run `37343349906`, including the full Python unittest
 suite, local retirement qualification, workflow validation and OpenTofu checks.
-The current head clarifies retirement CLI help text; its validation rerun is
-pending. PR #256 also corrects the disposable README's stale `pilot261004b`
+Current head `abaabc4` clarifies retirement CLI help text; validation run
+`37344577776` passed the same contract suite at 17:01 UTC. PR #256 also
+corrects the disposable README's stale `pilot261004b`
 label to the actual `pilot261005a` budget-gate ID, adds a non-executable
 descriptor checker, and makes an already-authorized backend cleanup retryable
 after its approval expires. It records deadline-controller design requirements
@@ -161,9 +162,9 @@ validation-only descriptor checker, not a controller. Its runbook records that
 root destroy plans must be built after resources exist. Fleet PR #256 commit
 `1fcaeb7` adds a same-lock, ledgered backend cleanup start: a retry can
 continue after the short approval expires only if the first start event bound
-the complete exact authority while that approval was live. The full contract
-suite passed on `1fcaeb7`; head `abaabc4` changes only CLI help text and awaits
-validation. This does not authorize a new start after expiry or provide
+the complete exact authority while that approval was live. Full contract
+validation passed on both `1fcaeb7` and `abaabc4`. This does not authorize a
+new start after expiry or provide
 Fleet/management deadline-time approvals. A read-only workflow audit confirmed
 no existing workflow can mint post-create retirement approvals or execute the
 ordered retirement chain. There is no executable
