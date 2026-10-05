@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 17:31 UTC. This is the single current handoff for the
+Observed 2026-10-05 17:46 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -14,9 +14,13 @@ attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
 
-At 17:31 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
-validation (`37336272528`) and planning (`37336272298`) were successful. Fleet
-PR #256 (`3f41503`) is an open draft. Preceding commit `1fcaeb7` passed
+At 17:42 UTC, Fleet PR #256 merged to `main` as `5210307`. Merged-main plan
+`37350374522` and contract validation `37350374566` both succeeded. The change
+binds resumable paired backend cleanup to the exact locked run and adds a
+validation-only deadline descriptor checker. It does not implement or qualify
+an unattended deadline controller. Fleet PR #255 remains merged at `abb0b00`;
+its merged-main validation (`37336272528`) and planning (`37336272298`) passed.
+Preceding commit `1fcaeb7` passed
 contract validation run `37343349906`, including the full Python unittest
 suite, local retirement qualification, workflow validation and OpenTofu checks.
 Commit `abaabc4` clarifies retirement CLI help text; validation run
@@ -116,7 +120,13 @@ dashboard sign-in. It does not supply fresh run-scoped credentials or approval,
 and `doctl` cannot enumerate Spaces buckets in this workflow; retain the
 separate Spaces API/S3 inventory for that proof. Read-only CLI checks found no
 `pilot261005a` name matches among droplets, databases, load balancers, projects,
-or VPCs. These name checks are not complete provider-zero evidence.
+or VPCs. At 17:44 UTC, corrected read-only `doctl` name checks also found no
+`pilot261004b`, `pilot261005a`, or `pilot261005c` matches among droplets,
+databases, load balancers, firewalls, VPCs, or projects. These name checks are
+not complete provider-zero evidence and did not inspect Spaces buckets. A live
+Mini `norn fleet pools` request at 17:45 returned HTTP 401
+`authenticated_principal_required`; no authenticated Fleet inventory or plan
+was obtained.
 
 ## Mini and source
 
@@ -232,7 +242,9 @@ running Fleet qualification.
    remainder apply still needs manual reconciliation from the retained saved
    plan and provider evidence.
 3. The signed budget and workflow gates merged as Fleet PR #255 (`abb0b00`)
-   and passed main CI. Finish and review an independently armed,
+   and passed main CI. Fleet PR #256 merged as `5210307` and its merged-main
+   validation and plan passed, but the deadline checker remains explicitly
+   non-executable. Finish and review an independently armed,
    restartable retirement path before generating credentials or approving a
    billable window. It must fence active workflows, retire Fleet before
    management, retain both root-zero proofs, and clean both state buckets and
