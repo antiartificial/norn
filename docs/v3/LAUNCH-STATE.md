@@ -288,6 +288,15 @@ path then authenticated successfully at 17:50. It confirmed Fleet
 `configured=false`, zero node pools and zero plans. No Fleet plan or provider
 mutation was made in this turn.
 
+**Operational follow-up:** Use the authenticated `doctl` context first for
+supported DigitalOcean account, resource, and token operations. This avoids
+re-entering the dashboard for routine API-capable tasks and may allow a known
+active token to be revoked through the API during cleanup. Use the dashboard
+only for actions that require interactive UI authentication or are not exposed
+by the API. Before a future pilot, verify the selected context/account and
+required scopes with a read-only request; this convenience does not replace a
+fresh run-scoped credential, bounded approval, or a separate Spaces inventory.
+
 ## Mini and source
 
 On 2026-10-05 at 17:50 UTC, a fresh authenticated owner-host inventory showed
