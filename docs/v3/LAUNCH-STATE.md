@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 16:24 UTC. This is the single current handoff for the
+Observed 2026-10-05 16:48 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -14,10 +14,10 @@ attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
 
-At 16:24 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
+At 16:48 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
 validation (`37336272528`) and planning (`37336272298`) were successful. Fleet
-PR #256 (`28b808f`) is an open draft; its descriptor-checker contract check
-passed on the prior head (`37339322590`) and must rerun for the latest head. It
+PR #256 (`1fcaeb7`) is an open draft; validation run `37343349906` is in
+progress. It
 also corrects the disposable README's stale `pilot261004b` label to the actual
 `pilot261005a` budget-gate ID. It adds only a non-executable descriptor checker
 and records deadline-controller design requirements. It does not provide a
@@ -89,6 +89,16 @@ remove the local file. DigitalOcean documents the endpoint for OAuth tokens;
 support for a dashboard-issued personal access token is a live observation to
 recheck before relying on it in another pilot.
 
+At 16:44 UTC, the local `doctl` default context authenticated successfully to
+the intended `theartificial@hotmail.com` account (UUID
+`05fe610a42b6d50c65344dd87bd842ce35ab036d`). Supported DigitalOcean API
+inspection and operations can use this existing CLI session without a new
+dashboard sign-in. It does not supply fresh run-scoped credentials or approval,
+and `doctl` cannot enumerate Spaces buckets in this workflow; retain the
+separate Spaces API/S3 inventory for that proof. Read-only CLI checks found no
+`pilot261005a` name matches among droplets, databases, load balancers, projects,
+or VPCs. These name checks are not complete provider-zero evidence.
+
 ## Mini and source
 
 On 2026-10-05 at 15:35 UTC, the Mini's loopback v3 API returned healthy with
@@ -144,11 +154,13 @@ an hour, so signed budget expiry alone cannot guarantee teardown. The existing
 owner-Mac retire-by watchdog performs only a local finalizer; it has no
 provider, GitHub, Spaces or token-exchange capability. Fleet PR #256 contains a
 validation-only descriptor checker, not a controller. Its runbook records that
-root destroy plans must be built after resources exist, and backend approval
-must still be valid on retry. Specifically, backend cleanup requires a
-currently live approval on every invocation, with `expiresAt` no later than
-`retireBy`, so a restart after T0+5 cannot continue under that approval. There
-is no executable deadline controller. Do not start a new billable run until a
+root destroy plans must be built after resources exist. Fleet PR #256 commit
+`1fcaeb7` adds a same-lock, ledgered backend cleanup start: a retry can
+continue after the short approval expires only if the first start event bound
+the complete exact authority while that approval was live. This is not yet
+CI-verified, and it does not authorize a new start after expiry or provide
+Fleet/management deadline-time approvals. There is no executable
+deadline controller. Do not start a new billable run until a
 restartable, run-scoped owner-Mac controller
 can fence the runner, perform Fleet → management → backend cleanup automatically
 from T0+4, retain each stage's receipts, and continue retrying through and beyond
