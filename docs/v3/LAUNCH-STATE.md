@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 14:00 UTC. This is the single current handoff for the
+Observed 2026-10-05 14:15 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -47,15 +47,16 @@ protected final-zero receipt. The final pilot-specific DigitalOcean bill is not
 yet available. The account's month-to-date balance cannot be attributed to
 this pilot, so compliance with the $20 cap remains unproven.
 
-Two **offline Tailscale records remain** for the retired management authority
-(100.120.209.89) and runner (100.122.147.29). The console shows no Fleet
-machines from this pilot, and the five one-use Fleet auth keys are invalidated.
-The broad OAuth client that issued those keys was revoked; a replacement
-scoped client was requested but not generated. Exact device deletion is awaiting
-required action-time user confirmation. The `pilot261004b` DigitalOcean API
-token also remains active pending UI revocation after the dashboard session
-expired; its local copy is still owner-only. Do not call this overall external
-final zero until these access items and billing are reconciled.
+The two offline `pilot261004b` Tailscale management records (100.120.209.89
+and 100.122.147.29) were removed after action-time user confirmation; the
+console then showed 14 machines and no `pilot261004b` machines. The five
+one-use Fleet auth keys are invalidated. The broad OAuth client that issued
+them was previously revoked; a replacement scoped client was requested but
+not generated. The `pilot261004b` DigitalOcean API token was revoked through
+DigitalOcean’s token revocation endpoint, and a follow-up account request
+returned HTTP 401. Its local token file was removed after a hash-only receipt
+was saved. Technical external cleanup is now observed, but the final pilot
+bill and a signed protected final-zero receipt remain unavailable.
 
 ## Mini and source
 
@@ -84,7 +85,7 @@ unrelated local changes that must be preserved.
 | --- | --- | --- |
 | `pilot261003c` / `pilot261003d` | `c` and `d` exposed earlier gaps in provider evidence, TLS handoff and emergency cleanup. The `d` Fleet apply stopped before provider mutation; management was retired by emergency unprotected cleanup. | Historical failure evidence, not launch proof. Old `c`/`d` access items were retired in the later owner observation. |
 | `pilot261004a` | Exact-SAN TLS and replacement GitHub App key supported complete management handoff and protected Fleet planning. Its apply stopped at the pre-provider retained-bucket inventory gate. Management and both backends were retired before its approved deadline. | Clean cloud/backend abort; two Tailscale device records and replacement OAuth client were still pending at the last observation. Recheck them separately. |
-| `pilot261004b` | Protected plan `37273380169`, Norn plan `a25b25fa-c0b0-47e0-b9ec-836ce6cde3ed`, and apply `37273763546` reached live provider creation. State missed both databases. | Fleet never bootstrapped; emergency technical teardown occurred after the 08:30 UTC deadline. Access and billing closure remain open. |
+| `pilot261004b` | Protected plan `37273380169`, Norn plan `a25b25fa-c0b0-47e0-b9ec-836ce6cde3ed`, and apply `37273763546` reached live provider creation. State missed both databases. | Fleet never bootstrapped; emergency technical teardown occurred after the 08:30 UTC deadline. Technical access cleanup is observed; billing closure remains open. |
 
 Pilot `a` was the first complete management-to-Fleet handoff, but `b` was the
 most recent and exposed the material partial-apply failure. A fresh pilot
@@ -112,12 +113,11 @@ running Fleet qualification.
 
 ## Next actions
 
-1. Complete `pilot261004b` external closure: remove only the two named offline
-   Tailscale management device records after action-time confirmation, revoke
-   the exact DigitalOcean pilot token after sign-in/confirmation, verify no
-   active pilot auth keys or OAuth client, and retain second independent
-   provider-zero and billing observations. Keep the private state snapshots and
-   deletion receipts; never call the emergency cleanup a protected final-zero.
+1. Close `pilot261004b` billing and audit: retain the two Tailscale device
+   removals, revoked OAuth client and DigitalOcean token, two independent
+   paginated provider-zero observations, private state snapshots and deletion
+   receipts. Recheck the final itemized invoice when posted. Never call the
+   emergency cleanup a protected final-zero.
 2. Fix the protected partial-apply path before another create. Reproduce the
    exit-143 interruption, make state/provider reconciliation account for
    provider-only databases, and qualify an exact reviewed cleanup/recovery
@@ -148,5 +148,6 @@ running Fleet qualification.
   `/Users/arti/.config/norn/fleet-next-full-e2e/successor-pilot261004b/` and
   older pilot evidence under `/Users/arti/.config/norn/fleet-next-full-e2e/`.
 
-The final invoice and retained access cleanup are independent of the current
-DigitalOcean resource-zero observation.
+The final invoice remains independent of the current technical zero
+observation. The emergency cleanup did not produce a protected final-zero
+receipt.
