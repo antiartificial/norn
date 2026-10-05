@@ -36,6 +36,7 @@ import (
 	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/engine"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/controller"
 	"norn/v2/api/githubattestation"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
@@ -1449,8 +1450,8 @@ func validateFleetAuthorityOnly(cfg *config.Config, profile, environment string)
 	if strings.TrimSpace(cfg.FleetConfig) == "" || strings.TrimSpace(cfg.FleetGitHubAppID) == "" || cfg.FleetGitHubInstallationID <= 0 || strings.TrimSpace(cfg.FleetGitHubPrivateKeyFile) == "" || strings.TrimSpace(cfg.FleetGitHubRepository) == "" || strings.TrimSpace(cfg.FleetGitHubConfigPath) == "" || cfg.FleetGitHubEnvironment != "staging" || strings.TrimRight(strings.TrimSpace(cfg.FleetGitHubAPIBaseURL), "/") != "https://api.github.com" {
 		return fmt.Errorf("Fleet authority-only mode requires a complete staging Fleet GitHub App and NORN_FLEET_CONFIG")
 	}
-	if strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || strings.TrimSpace(cfg.GitHubActionsOIDCJWKSURL) != "https://token.actions.githubusercontent.com/.well-known/jwks" || strings.TrimSpace(cfg.GitHubActionsFleetAllowedRepository) == "" || len(cfg.GitHubActionsFleetAllowedWorkflowRefs) == 0 || !exactStringSet(cfg.GitHubActionsAllowedRefs, "refs/heads/main") || !exactStringSet(cfg.GitHubActionsAllowedEvents, "push", "workflow_dispatch") || !exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "staging") || !exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover") {
-		return fmt.Errorf("Fleet authority-only mode requires exact GitHub Actions Fleet OIDC repository/workflow, protected main ref, push/workflow_dispatch events, staging environment, and apply/recover intents")
+	if strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || strings.TrimSpace(cfg.GitHubActionsOIDCJWKSURL) != "https://token.actions.githubusercontent.com/.well-known/jwks" || strings.TrimSpace(cfg.GitHubActionsFleetAllowedRepository) == "" || len(cfg.GitHubActionsFleetAllowedWorkflowRefs) == 0 || !exactStringSet(cfg.GitHubActionsAllowedRefs, "refs/heads/main") || !exactStringSet(cfg.GitHubActionsAllowedEvents, "push", "workflow_dispatch") || !exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "staging") || !(exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover") || exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover", handler.FleetObserveIntent)) {
+		return fmt.Errorf("Fleet authority-only mode requires exact GitHub Actions Fleet OIDC repository/workflow, protected main ref, push/workflow_dispatch events, staging environment, and apply/recover intents (plus the optional observe intent)")
 	}
 	fleetDocument, err := os.ReadFile(cfg.FleetConfig)
 	if err != nil {
@@ -1736,7 +1737,7 @@ func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(htt
 			}
 			if strings.HasPrefix(authorization, "Bearer ") && h != nil {
 				if principal, ok := h.VerifyAccessToken(authorization[7:]); ok {
-					if !principal.Allows(requiredScope) && !allowsScopedRead(principal, r, requiredScope) && !allowsReleaseOperatorWrite(principal, r, requiredScope) && !allowsFleetOperatorWrite(principal, r, requiredScope) {
+					if !principal.Allows(requiredScope) && !allowsScopedRead(principal, r, requiredScope) && !allowsReleaseOperatorWrite(principal, r, requiredScope) && !allowsFleetOperatorWrite(principal, r, requiredScope) && !allowsFleetObservationIngest(principal, r) {
 						handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+requiredScope)
 						return
 					}
@@ -1835,7 +1836,19 @@ func controlScopeForRequest(r *http.Request) string {
 		return handler.ScopeAdmin
 	case path == "/api/v1/validate/infraspec" || path == "/api/v1/fleet/validate":
 		return handler.ScopeAPIRead
-	case r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(path, "/api/v1/fleet/") && (strings.Contains(path, "/attempts") || strings.HasSuffix(path, "/reconciliations")):
+	case r.Method == http.MethodPost && path == "/api/v1/fleet/targets":
+		// Registration needs platform:operate (Q7); the handler re-checks it.
+		return handler.ScopePlatformOperate
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/fleet/targets/") && (path == "/api/v1/fleet/targets/abandon-plan" || strings.HasSuffix(path, "/fence/release")):
+		// Release and abandon-plan need admin, with no step-up (H3, Q7).
+		return handler.ScopeAdmin
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/fleet/resources/") && !strings.Contains(strings.TrimPrefix(path, "/api/v1/fleet/resources/"), "/"):
+		// Creating a resource binds it to a target: platform:operate, as
+		// registration (Q7); the handler re-checks it.
+		return handler.ScopePlatformOperate
+	case r.Method != http.MethodGet && r.Method != http.MethodHead && handler.FleetPlanRunnerScopedPath(path):
+		// M17: only plan-scoped paths defer to the handler; a resource or
+		// target named attempts-* must not skip the scope check.
 		// Fleet handlers require the dedicated fleet:operate scope and exact
 		// bound GitHub Actions identity. Authentication still happens here; the
 		// handler performs the final ownership authorization decision.
@@ -1869,6 +1882,26 @@ func allowsFleetOperatorWrite(principal *handler.AccessPrincipal, r *http.Reques
 	return principal != nil && r.Method != http.MethodGet && principal.CI == nil && principal.Allows(handler.ScopeAPIWrite) && requiredScope == handler.ScopeFleetOperate
 }
 
+// allowsFleetObservationIngest lets a fleet:operate CI token reach exactly
+// POST /api/v1/fleet/resources/{name}/observations. The generic check
+// (api:write for a POST under /fleet/resources) stays as is for every other
+// resource path; the handler then requires the observe intent, a protected
+// ref, the Fleet repository and an environment alias bound to the target.
+func allowsFleetObservationIngest(principal *handler.AccessPrincipal, r *http.Request) bool {
+	// RawPath must be empty: an escaped path (for example %2F) routes on its
+	// raw form in chi, so the decoded path checked here would not be the
+	// route that serves the request.
+	if principal == nil || r.Method != http.MethodPost || principal.CI == nil || r.URL.RawPath != "" || !handler.FleetObservationPath(r.URL.Path) {
+		return false
+	}
+	for _, scope := range principal.Scopes {
+		if scope == handler.ScopeFleetOperate {
+			return true
+		}
+	}
+	return false
+}
+
 func exactOperationPath(path string) bool {
 	id := strings.TrimPrefix(path, "/api/v1/operations/")
 	return id != path && id != "" && !strings.Contains(id, "/")
@@ -1899,11 +1932,11 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		}
 	}
 	if cfg != nil && cfg.IsFleetAuthorityOnly() {
-		features := []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "github-actions-oidc-exchange-v1"}
+		features := []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "github-actions-oidc-exchange-v1", "fleet-target-fence-v1", "fleet-resource-v1"}
 		endpoints := map[string]string{
 			"operationList": "/api/operations", "activeOperations": "/api/operations/active",
 			"enrollments": "/api/v1/enrollments", "devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
-			"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+			"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch", "fleetTargets": "/api/v1/fleet/targets", "fleetResources": "/api/v1/fleet/resources",
 		}
 		features, endpoints = withExternalFleetAdmissionCapabilities(cfg, features, endpoints)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2169,6 +2202,19 @@ func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler)
 		r.Post("/fleet/plans/{planID}/github/rerun", h.RerunFleetGitHubApply)
 		r.Post("/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
 		r.Post("/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
+		fleetTargets := h.FleetTargetRoutes()
+		r.Post("/fleet/targets", fleetTargets.Register)
+		r.Post("/fleet/targets/abandon-plan", fleetTargets.AbandonPlan)
+		r.Get("/fleet/targets/{targetID}", fleetTargets.Get)
+		r.Get("/fleet/targets/{targetID}/fence", fleetTargets.Fence)
+		r.Post("/fleet/targets/{targetID}/fence/release", fleetTargets.Release)
+		fleetResources := h.FleetResourceRoutes()
+		r.Get("/fleet/resources", fleetResources.List)
+		r.Post("/fleet/resources/{name}", fleetResources.Create)
+		r.Get("/fleet/resources/{name}", fleetResources.Get)
+		r.Post("/fleet/resources/{name}/desired", fleetResources.SetDesired)
+		r.Get("/fleet/resources/{name}/observations", fleetResources.ListObservations)
+		r.Post("/fleet/resources/{name}/observations", fleetResources.AppendObservation)
 		if externalFleetAdmissionCapabilityConfigured(cfg) {
 			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/begin", h.BeginExternalFleetDeploymentAdmission)
 			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/resume", h.ResumeExternalFleetDeploymentAdmission)
@@ -2215,8 +2261,25 @@ func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
 	if err != nil {
 		log.Fatalf("Fleet authority-only startup: %v", err)
 	}
+	var reconciler *controller.Reconciler
+	reconcilerEnabled, err := fleetReconcilerEnabled(os.Getenv)
+	if err != nil {
+		log.Fatalf("Fleet authority-only startup: %v", err)
+	}
+	if reconcilerEnabled {
+		reconciler = newFleetReconciler(db, func(err error) bool { return errors.Is(err, store.ErrFleetResourceNotFound) })
+		// Resource reads report this reconciler's liveness (WP13).
+		h.SetFleetControllerLiveness(reconciler)
+	}
+	var routes http.Handler = fleetAuthorityOnlyRouterWithHandler(cfg, h)
+	stopReconciler := func() {}
+	if reconciler != nil {
+		routes = fleetReconcilerNotify(reconciler)(routes)
+		stopReconciler = startFleetReconciler(context.Background(), reconciler)
+		log.Print("Fleet resource reconciler enabled (observe-only; writes Fleet status only)")
+	}
 	srv := &http.Server{
-		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(fleetAuthorityOnlyRouterWithHandler(cfg, h), "norn.fleet-authority"),
+		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(routes, "norn.fleet-authority"),
 		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20,
 	}
 	go func() {
@@ -2228,6 +2291,7 @@ func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	stopReconciler()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)

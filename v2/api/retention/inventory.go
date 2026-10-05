@@ -88,4 +88,12 @@ var PayloadInventory = []PayloadRetention{
 	{"evidence_reserve", ClassCurrentState, nil, "admission policy and capacity observation"},
 	{"control_event_retention", ClassCurrentState, nil, "singleton replay-compaction watermark; retained so expired cursors can require resynchronization"},
 	{"runtime_mutation_fence", ClassCurrentState, nil, "singleton writer mutation epoch and owner; retained across restarts to fence stale restore workers"},
+	{"fleet_target_registry", ClassCurrentState, nil, "singleton registry generation consulted at every fence-relevant admission"},
+	{"fleet_targets", ClassCurrentState, nil, "registered target identity; aliases are immutable in this pass"},
+	{"fleet_target_aliases", ClassCurrentState, nil, "immutable cluster/environment alias to target binding"},
+	{"fleet_target_fences", ClassCurrentState, nil, "current mutual-exclusion lock, holder and authority epoch per target; never an attempt ledger"},
+	{"fleet_target_abandoned_plans", ClassCurrentState, nil, "permanent break-glass abandonment record; refuses the plan and nonce forever"},
+	{"fleet_authority_epoch", ClassCurrentState, nil, "singleton authority epoch; survives restarts and restores so stale fences supersede rather than silently continue"},
+	{"fleet_resources", ClassHotEvidence, nil, "current desired revision, history, policy, watermarks and derived status; document is the controller's only durable state"},
+	{"fleet_observations", ClassHotEvidence, nil, "bounded per-resource observation stream; pruning never deletes a row a current watermark references"},
 }

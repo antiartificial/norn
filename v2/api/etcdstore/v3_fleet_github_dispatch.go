@@ -21,6 +21,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -67,6 +68,14 @@ func (s *V3OperationStore) AcceptFleetGitHubDispatch(ctx context.Context, input 
 	if err := validateFleetGitHubDispatchAcceptance(input, prepared); err != nil {
 		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
 	}
+	// B1/H7: a plan the operator has permanently abandoned can never
+	// re-acquire a dispatch reservation, including a replay of an identity
+	// this call already accepted before the abandon.
+	if abandoned, err := s.checkFleetTargetPlanAbandoned(ctx, prepared.PlanID); err != nil {
+		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
+	} else if abandoned {
+		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, fleetHolderAbandonedError()
+	}
 	acceptance, err := s.normalize(input)
 	if err != nil {
 		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
@@ -95,6 +104,14 @@ func (s *V3OperationStore) AcceptFleetGitHubDispatch(ctx context.Context, input 
 	if err := validateFleetGitHubDispatchPlanBinding(plan.Operation, acceptance.Operation, prepared); err != nil {
 		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
 	}
+	// Acquire the per-target mutation fence atomically with this reservation
+	// (plan.md §2.2 "Acquire"; WP8b). A resolution refusal (unregistered
+	// cluster, alias conflict) is propagated as-is: strict=true.
+	cluster, _ := plan.Operation.Payload["cluster"].(string)
+	fenceCtx, err := s.loadFleetTargetFenceContext(ctx, cluster, prepared.FleetEnvironment, true)
+	if err != nil {
+		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
+	}
 	nonce, err := fleetGitHubDispatchNonce()
 	if err != nil {
 		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
@@ -103,6 +120,23 @@ func (s *V3OperationStore) AcceptFleetGitHubDispatch(ctx context.Context, input 
 	digest := sha256.Sum256([]byte(nonce))
 	prepared.DispatchNonceSHA256 = hex.EncodeToString(digest[:])
 	prepared.OperationID = acceptance.Operation.ID
+	var fenceCompares []clientv3.Cmp
+	var fencePuts []clientv3.Op
+	if fenceCtx.TargetID != "" {
+		nextFence, decideErr := lifecycle.DecideAcquire(fenceCtx.Fence, prepared.PlanID, prepared.DispatchNonceSHA256, plan.Operation.StartedAt, fenceCtx.Epoch)
+		if decideErr != nil {
+			return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, decideErr
+		}
+		fenceRecord, marshalErr := json.Marshal(fleetTargetFenceRecord(nextFence))
+		if marshalErr != nil {
+			return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, marshalErr
+		}
+		fenceCompares = append(fenceCompares,
+			clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(fenceCtx.TargetID)), "=", fenceCtx.FenceRevision),
+			clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", fenceCtx.EpochRevision),
+		)
+		fencePuts = append(fencePuts, clientv3.OpPut(s.fleetTargetFenceKey(fenceCtx.TargetID), string(fenceRecord)))
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	identityID, intentID := uuid.NewString(), uuid.NewString()
 	intent, err := store.SealOperationAcceptance(ctx, s.signer, acceptance, identityID, intentID, now)
@@ -123,7 +157,25 @@ func (s *V3OperationStore) AcceptFleetGitHubDispatch(ctx context.Context, input 
 		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
 	}
 	key := s.fleetGitHubDispatchPreparationKey(prepared.PlanID)
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.PlanID)), "=", planRevision), clientv3.Compare(clientv3.CreateRevision(acceptanceKey), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0)).Then(clientv3.OpPut(acceptanceKey, string(acceptanceRecord)), clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(opRecord)), clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, now, acceptance.Operation.ID), acceptance.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(acceptance.Operation.ID), acceptanceKey), clientv3.OpPut(key, string(prepRecord))).Commit()
+	compares := []clientv3.Cmp{
+		clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.PlanID)), "=", planRevision),
+		clientv3.Compare(clientv3.CreateRevision(acceptanceKey), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(key), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0),
+		s.registryCompare(fenceCtx),
+		s.abandonedCompare(prepared.PlanID),
+	}
+	compares = append(compares, fenceCompares...)
+	puts := []clientv3.Op{
+		clientv3.OpPut(acceptanceKey, string(acceptanceRecord)),
+		clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(opRecord)),
+		clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, now, acceptance.Operation.ID), acceptance.Operation.ID),
+		clientv3.OpPut(s.operationAcceptanceIndexKey(acceptance.Operation.ID), acceptanceKey),
+		clientv3.OpPut(key, string(prepRecord)),
+	}
+	puts = append(puts, fencePuts...)
+	txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
 	if err != nil {
 		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, &store.AcceptanceIndeterminateError{Err: err}
 	}
@@ -132,6 +184,16 @@ func (s *V3OperationStore) AcceptFleetGitHubDispatch(ctx context.Context, input 
 	}
 	existing, loadErr := s.loadAcceptance(ctx, acceptanceKey)
 	if loadErr != nil {
+		// m10: the Txn's compares can fail because another plan concurrently
+		// acquired the same target's fence, not only because this identity
+		// raced itself. Re-read the fence fresh and report that specific,
+		// actionable refusal instead of the generic ambiguous message.
+		if s.fleetTargetOccupiedByOther(ctx, fenceCtx.TargetID, prepared.PlanID) {
+			return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetExecutionOccupied}
+		}
+		if abandoned, abandonErr := s.checkFleetTargetPlanAbandoned(ctx, prepared.PlanID); abandonErr == nil && abandoned {
+			return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, fleetHolderAbandonedError()
+		}
 		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, fmt.Errorf("fleet GitHub dispatch reservation already exists or fleet plan changed")
 	}
 	accepted, replayErr := s.replay(ctx, acceptanceKey, existing, acceptance.Identity, acceptance.Fingerprint)
@@ -179,6 +241,13 @@ func (s *V3OperationStore) GetFleetGitHubDispatchPreparation(ctx context.Context
 // a signed terminal completion whose canonical result names that recovered run.
 // A bound dispatch without this terminal receipt is never reported as complete.
 func (s *V3OperationStore) FinishFleetGitHubDispatch(ctx context.Context, planID, nonceSHA256 string, runID int64, workflowURL string) error {
+	// B1/H7: once a plan is abandoned, a GitHub result that finally arrives
+	// can never finish its dispatch.
+	if abandoned, err := s.checkFleetTargetPlanAbandoned(ctx, planID); err != nil {
+		return err
+	} else if abandoned {
+		return fleetHolderAbandonedError()
+	}
 	prepared, err := s.GetFleetGitHubDispatchPreparation(ctx, planID)
 	if err != nil {
 		return err
@@ -248,7 +317,7 @@ func (s *V3OperationStore) FinishFleetGitHubDispatch(ctx context.Context, planID
 	if err != nil {
 		return err
 	}
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.PlanID)), "!=", 0), clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.OperationID)), "=", opRevision), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerPlanStateKey(prepared.PlanID)), "=", 0)).Then(clientv3.OpPut(s.opKey(prepared.OperationID), string(opRecord)), clientv3.OpPut(s.fleetRunnerDispatchKey(prepared.PlanID), string(bindingRecord)), clientv3.OpPut(s.fleetRunnerPlanStateKey(prepared.PlanID), string(state))).Commit()
+	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.PlanID)), "!=", 0), clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.OperationID)), "=", opRevision), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerPlanStateKey(prepared.PlanID)), "=", 0), s.abandonedCompare(prepared.PlanID)).Then(clientv3.OpPut(s.opKey(prepared.OperationID), string(opRecord)), clientv3.OpPut(s.fleetRunnerDispatchKey(prepared.PlanID), string(bindingRecord)), clientv3.OpPut(s.fleetRunnerPlanStateKey(prepared.PlanID), string(state))).Commit()
 	if err != nil {
 		return err
 	}

@@ -16,6 +16,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
@@ -369,6 +370,15 @@ func (h *EtcdFleetRunnerHandler) Cancel(w http.ResponseWriter, r *http.Request) 
 func (h *EtcdFleetRunnerHandler) writeUpdate(w http.ResponseWriter, r *http.Request, item *fleet.RunnerAttempt, err error) {
 	if err == nil {
 		writeJSON(w, item)
+		return
+	}
+	// WP8b: the per-target mutation fence's own refusals (epoch superseded,
+	// occupied, abandoned, ...) carry their own stable code from
+	// fleet/lifecycle/fence.go and must not collapse into the generic
+	// staleness code below.
+	var fenceErr *lifecycle.FenceError
+	if errors.As(err, &fenceErr) {
+		WriteControlProblem(w, r, http.StatusConflict, fenceErr.Code, fenceErr.Error())
 		return
 	}
 	if errors.Is(err, etcdstore.ErrNotFound) || errors.Is(err, store.ErrFleetRunnerAttemptAdmission) || errors.Is(err, store.ErrFleetReconciliationAdmission) {
