@@ -109,8 +109,11 @@ projects, load balancers or VPCs; no registered GitHub runner carries its Fleet
 label. This is a name-collision check, not a full provider-zero or
 Spaces-bucket proof. Fleet source branch `codex/fresh-pilot-budget` now has
 commit `42ea088` wiring the signed c budget, plan, apply, recovery and exact
-topology gates, and explicitly rejecting retired `pilot261004b`; it is not
-merged or live proof. The independent deadline retirement path remains
+topology gates, and explicitly rejecting retired `pilot261004b`. It is open as
+[Fleet PR #255](https://github.com/antiartificial/norn-fleet/pull/255); the
+latest cleanup commit is `2f63748`. The required `contract` check has not
+reported a run, so merge is blocked. This is not merged or live proof. The
+independent deadline retirement path remains
 unimplemented. Existing approvals require post-create state and expire within
 an hour, so signed budget expiry alone cannot guarantee teardown. Do not
 start a new billable run until a restartable, run-scoped owner-Mac controller
