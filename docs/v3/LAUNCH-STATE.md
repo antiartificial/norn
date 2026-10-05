@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 14:15 UTC. This is the single current handoff for the
+Observed 2026-10-05 15:00 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -129,12 +129,18 @@ running Fleet qualification.
    paginated provider-zero observations, private state snapshots and deletion
    receipts. Recheck the final itemized invoice when posted. Never call the
    emergency cleanup a protected final-zero.
-2. Fix the protected partial-apply path before another create. Reproduce the
-   exit-143 interruption, make state/provider reconciliation account for
-   provider-only databases, and qualify an exact reviewed cleanup/recovery
-   mechanism. The source-run name check was corrected by merged
-   [Fleet PR #252](https://github.com/antiartificial/norn-fleet/pull/252); it
-   has not yet been exercised in a live recovery.
+2. Finish and merge the protected partial-apply repairs before another create.
+   The source-run name check was corrected by merged
+   [Fleet PR #252](https://github.com/antiartificial/norn-fleet/pull/252).
+   [Fleet PR #253](https://github.com/antiartificial/norn-fleet/pull/253)
+   carries graceful process-group interruption and a local failure receipt;
+   its latest protected validation is pending. [Fleet PR #254](https://github.com/antiartificial/norn-fleet/pull/254)
+   carries a forward-only, exact two-cluster adoption path for provider-created
+   databases missing from state; its protected validation is pending. Neither
+   PR is live recovery proof. The retired `b` source predates PR #254, so only
+   a new pilot sourced from the merged helper can exercise it. A partial
+   five-child remainder apply still requires manual reconciliation from the
+   retained saved plan and provider evidence.
 3. Obtain a new bounded pilot envelope and fresh credentials. Verify the
    exact source, signed release, budget, backend and management handoff before
    a new protected plan/apply. Keep the issuing Tailscale OAuth client active
