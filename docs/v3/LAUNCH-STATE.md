@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 17:46 UTC. This is the single current handoff for the
+Observed 2026-10-05 17:50 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -123,17 +123,20 @@ separate Spaces API/S3 inventory for that proof. Read-only CLI checks found no
 or VPCs. At 17:44 UTC, corrected read-only `doctl` name checks also found no
 `pilot261004b`, `pilot261005a`, or `pilot261005c` matches among droplets,
 databases, load balancers, firewalls, VPCs, or projects. These name checks are
-not complete provider-zero evidence and did not inspect Spaces buckets. A live
-Mini `norn fleet pools` request at 17:45 returned HTTP 401
-`authenticated_principal_required`; no authenticated Fleet inventory or plan
-was obtained.
+not complete provider-zero evidence and did not inspect Spaces buckets. A
+plain Mini `norn fleet pools` CLI request at 17:45 returned HTTP 401
+`authenticated_principal_required`; the documented owner-host SOPS inventory
+path then authenticated successfully at 17:50. It confirmed Fleet
+`configured=false`, zero node pools and zero plans. No Fleet plan or provider
+mutation was made in this turn.
 
 ## Mini and source
 
-On 2026-10-05 at 17:04 UTC, a fresh owner-host inventory showed the Mini loopback
-API healthy on source `26147c39a554b73b6761a371edee5a9591c81d3f`, displayed as
-`v2.20.0-platform-72-g26147c39`. The platform version label's source includes
-v3 work. Authenticated production-readiness returned **blocked**: 6 of 26 checks
+On 2026-10-05 at 17:50 UTC, a fresh authenticated owner-host inventory showed
+the Mini loopback API healthy on source `26147c39a554b73b6761a371edee5a9591c81d3f`,
+displayed as `v2.20.0-platform-72-g26147c39`. The platform version label's
+source includes v3 work. Authenticated production-readiness returned
+**blocked**: 6 of 26 checks
 passed, 19 failed, and 1 warned. Current failures include the development
 profile and compatibility auth, single-member Nomad/Consul, disabled ACLs and
 incomplete TLS, local control database without PITR/replica, application
