@@ -132,7 +132,9 @@ running Fleet qualification.
 2. Fix the protected partial-apply path before another create. Reproduce the
    exit-143 interruption, make state/provider reconciliation account for
    provider-only databases, and qualify an exact reviewed cleanup/recovery
-   mechanism. The recovery source-run name check also requires correction.
+   mechanism. The source-run name check was corrected by merged
+   [Fleet PR #252](https://github.com/antiartificial/norn-fleet/pull/252); it
+   has not yet been exercised in a live recovery.
 3. Obtain a new bounded pilot envelope and fresh credentials. Verify the
    exact source, signed release, budget, backend and management handoff before
    a new protected plan/apply. Keep the issuing Tailscale OAuth client active
