@@ -106,16 +106,22 @@ or VPCs. These name checks are not complete provider-zero evidence.
 
 ## Mini and source
 
-On 2026-10-05 at 15:35 UTC, the Mini's loopback v3 API returned healthy with
-running source of `26147c39a554b73b6761a371edee5a9591c81d3f`, displayed
-as `v2.20.0-platform-72-g26147c39`. The prefix is a platform version label;
-the source includes v3 work. Authenticated inventory showed 28 app entries,
-45 service entries, zero active operations and 25 active incidents. Those counts
-include discovered and inactive entries and do not prove identity preservation
-through the earlier one-way transition. The Mini reported
-`fleet_configured=false`, zero node pools and zero Fleet plans at that cutoff.
-These counts are an inventory, not Fleet readiness or a claim that each
-application is healthy.
+On 2026-10-05 at 17:04 UTC, a fresh owner-host inventory showed the Mini loopback
+API healthy on source `26147c39a554b73b6761a371edee5a9591c81d3f`, displayed as
+`v2.20.0-platform-72-g26147c39`. The platform version label's source includes
+v3 work. Authenticated production-readiness returned **blocked**: 6 of 26 checks
+passed, 19 failed, and 1 warned. Current failures include the development
+profile and compatibility auth, single-member Nomad/Consul, disabled ACLs and
+incomplete TLS, local control database without PITR/replica, application
+deployment provenance, snapshot/restore posture, and missing recovery drills.
+The host status is `ok`; this does not override production readiness.
+
+The same inventory showed 28 app entries, 45 service entries, zero active
+operations, and 25 active incidents. The counts include discovered and inactive
+entries and do not prove identity preservation through the earlier one-way
+transition or health for every app. Fleet remains `configured=false` with zero
+node pools and zero plans. Snapshot-retention warnings remain for field-harbor
+and turnkey-offer-intake; mail-mcp and signal-sideband need secret attention.
 
 Norn [PR #115](https://github.com/antiartificial/norn/pull/115) merged the bridge
 title correction as `c56fa0c`. The signed
