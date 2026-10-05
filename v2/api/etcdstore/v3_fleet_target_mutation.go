@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/store"
 )
@@ -100,7 +101,17 @@ func (s *V3OperationStore) planFleetTargetMutation(ctx context.Context, acceptan
 		return plan, err
 	case store.FleetTargetMutationRelease:
 		release := admission.Release
-		return s.planFleetTargetRelease(ctx, admission.TargetID, release.ExpectedGeneration, release.ReleaseMode(), acceptance.FleetTargetReleaseEvidence.TerminalProof(), operationID, now)
+		proof := acceptance.FleetTargetReleaseEvidence.TerminalProof()
+		// An executor-lane holder has no GitHub run to observe: its proof is a
+		// stop attestation or the admin's providerEvidence (E5).
+		if fence, _, err := s.GetFleetTargetFence(ctx, admission.TargetID); err != nil {
+			return fleetTargetMutationPlan{}, err
+		} else if fence.Held {
+			if proof, _, err = s.fleetExecutorLaneProof(ctx, fence.HolderPlanID, release.ProviderEvidence, proof, now); err != nil {
+				return fleetTargetMutationPlan{}, err
+			}
+		}
+		return s.planFleetTargetRelease(ctx, admission.TargetID, release.ExpectedGeneration, release.ReleaseMode(), proof, operationID, now)
 	case store.FleetTargetMutationAbandonPlan:
 		// The server derives cluster, environment and nonce from the plan's
 		// own records; the caller claims none of them.
@@ -120,10 +131,19 @@ func (s *V3OperationStore) planFleetTargetMutation(ctx context.Context, acceptan
 			}
 			environment, nonceSHA256 = preparation.FleetEnvironment, preparation.DispatchNonceSHA256
 		}
+		proof, executorLane, err := s.fleetExecutorLaneProof(ctx, admission.PlanID, admission.Release.ProviderEvidence, acceptance.FleetTargetReleaseEvidence.TerminalProof(), now)
+		if err != nil {
+			return fleetTargetMutationPlan{}, err
+		}
+		// Executor-lane plans have no dispatch preparation: their holder nonce
+		// is derived (E2).
+		if nonceSHA256 == "" && executorLane {
+			nonceSHA256 = executor.HolderNonceSHA256(admission.PlanID)
+		}
 		if nonceSHA256 == "" {
 			return fleetTargetMutationPlan{}, lifecycle.ErrFleetTargetReleaseEvidenceMismatch
 		}
-		return s.planFleetTargetAbandon(ctx, admission.PlanID, nonceSHA256, cluster, environment, operationID, acceptance.FleetTargetReleaseEvidence.TerminalProof().ListingSnapshotSHA256, now)
+		return s.planFleetTargetAbandon(ctx, admission.PlanID, nonceSHA256, cluster, environment, operationID, proof.ListingSnapshotSHA256, now)
 	}
 	return fleetTargetMutationPlan{}, &store.AcceptanceValidationError{Reason: "fleet target mutation kind is invalid"}
 }

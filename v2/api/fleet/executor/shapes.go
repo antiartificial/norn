@@ -457,10 +457,36 @@ type CredentialGrantRequest struct {
 	Types     []string `json:"types"`
 }
 
-// CredentialGrantResponse is the 201/200 body.
+// CredentialGrantResponse is the 201/200 body. AttemptToken is present only
+// for a grant that includes CredNornAttempt: the attempt-bound credential
+// (scope AttemptScope), a bearer secret that is never stored in the ledger
+// (only its token ID is). A replay of the same Idempotency-Key re-signs the
+// same token ID; a newer grant for the plan revokes it.
 type CredentialGrantResponse struct {
-	GrantID   string    `json:"grantId"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	GrantID      string    `json:"grantId"`
+	ExpiresAt    time.Time `json:"expiresAt"`
+	AttemptToken string    `json:"attemptToken,omitempty"`
+}
+
+// AttemptScope is the only scope of the attempt-bound credential the
+// norn-attempt grant returns (E1/P1 hand-off). It is internal: it is not an
+// access-token scope any enrollment, approval or token request can ask for,
+// and it is never listed in the capabilities scope list. The credential is a
+// managed token with subject "fleet-attempt:<attemptId>", no device claim,
+// recorded against the executor device, expiring with its grant.
+const AttemptScope = "fleet:attempt"
+
+// AttemptCredentialRoutes are the only routes the attempt-bound credential
+// may reach (E6 wires the scope matcher), and only for its own attempt; the
+// reconciliation handlers bind the attemptId of the body or query. Every one
+// is also in ExecutorRoutes. Attempt start and cancel, the grant route and
+// /auth/rotate are not here.
+var AttemptCredentialRoutes = []string{
+	"GET /api/v1/fleet/plans/{planID}/attempts/{attemptID}",
+	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat",
+	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance",
+	"GET /api/v1/fleet/plans/{planID}/reconciliations",
+	"POST /api/v1/fleet/plans/{planID}/reconciliations",
 }
 
 // CredentialGrantPayload is the ledger payload of fleet.credential-grant
@@ -494,6 +520,17 @@ type ProviderEvidence struct {
 	Status     string    `json:"status"` // off | archive | not_found
 	ObservedAt time.Time `json:"observedAt"`
 	Reference  string    `json:"reference,omitempty"` // console or audit-log pointer, <= 512 bytes
+}
+
+// ProviderEvidenceRequest is the body of
+// POST /api/v1/fleet/plans/{planID}/provider-evidence (admin, non-CI,
+// Idempotency-Key; non-releasing). Ledger kind
+// fleet.executor.provider-evidence, Ref = plan ID, payload {planId,
+// sourceAttemptId, providerEvidence}. It is the recovery use of the evidence:
+// proof for a resume on a rebuilt host, read by recovery admission.
+type ProviderEvidenceRequest struct {
+	SourceAttemptID  string           `json:"sourceAttemptId"`
+	ProviderEvidence ProviderEvidence `json:"providerEvidence"`
 }
 
 // ProviderEvidenceDigestMetadataKey is the operation-metadata key holding the

@@ -1035,6 +1035,140 @@ and changes nothing.
     tofu plan.
   - `requiredReviews` stays `not_verified`.
 
+### Hand-offs from the P3 review (orchestrator, 2026-10-05)
+
+- **E4b/E6 (blocker): `resumeApproved` must not expire with the attestation.**
+  `pgConvergeFacts.resumeApproved` (`handler/fleet_resources.go:~1290`)
+  applies `ValidStopAttestation` at read time, so `AttestationMaxAge` (5 min)
+  turns `resumeApproved` false for any `--resume` given more than five
+  minutes after the restarted loop attested. The loop attests once per
+  invocation and `decide()` picks `recover` only on `resumeApproved`, so the
+  recovery never starts. Fix in the derivation (PG and etcd): check the
+  attestation with every rule except the age bound. Admission still checks
+  freshness, against the fresh attestation the recover handler posts itself
+  just before its start.
+- **E4b (surface the resume):** `DeriveConverge` sets `approve_converge`
+  only when the fence is free. When the fence is held by the plan's latest
+  executor-lane attempt, a stop attestation or `providerEvidence` exists for
+  it, and no unconsumed resume approve names it, derive `nextAction`
+  `approve_converge` with the message `norn fleet converge <name> --resume`
+  and the attempt ID. This covers a kill mid-recovery: the approve was
+  consumed by the recovery attempt, which is now the latest one, so the
+  operator approves again (D5, budget 0).
+- **E4a/E4b/E6 (`state_lock_foreign`):** `converge-refusals` also accepts
+  `{code: "state_lock_foreign", commitSha, planSha256, sourceAttemptId,
+  tofuLock: {id, operation, who, created}}` (`id` and the other fields may be
+  empty when tofu's lock text was unreadable), `Idempotency-Key:
+  executor-refusal:<sha256(planID, code, sourceAttemptId, lockId)>`. Admit it
+  only while `sourceAttemptId` is the plan's latest, live, executor-lane
+  attempt. It records `fleet.converge.refusal` but does **not** set
+  `desired.converge.refused`. Derive `blocker=state_lock_foreign` (kind
+  execution; add it to `BlockerReasons`) while that attempt stays the latest.
+  The executor backs off 30 min per source after a foreign lock and re-probes
+  then, so an operator who clears the lock needs no other action.
+- **E4b/E6 (destructive remainder in recovery):** recovery reports a
+  destructive remainder with P2's body and key while its recovery attempt is
+  live. The route must admit that, and the blocker must stay visible while the
+  fence is held, not be hidden behind the held-fence execution blocker. The
+  operator's next step is `fleet.target.abandon-plan` (the restarted loop's
+  attestation is the stop evidence, H5 applies), then the GitHub lane.
+- **P5 (restart policy):** `PhaseDied` exits 1 at most once per resume
+  approve, because the restarted loop only attests and waits, so it cannot
+  crash-loop by itself. Startup failures can, and the default
+  `StartLimitBurst=5` in 10 s would leave the unit failed, which contradicts
+  D6. Set `Restart=always`, `RestartSec=30s`, `StartLimitIntervalSec=0`, and
+  `RestartPreventExitStatus=3` (`TokenLost`: re-enroll, do not restart).
+  Keep the host clock on NTP. A host clock behind Norn's `startedAt` makes an
+  owned lock look foreign, which fails safe.
+- **Q1 row 10:** also kill the recovery during its own `tofu plan`. The left
+  lock has `Operation` plan, so M5 refuses it as `state_lock_foreign` and the
+  operator clears it. Verify on MinIO with `use_lockfile=true` that
+  `force-unlock -force <id>` refuses a lock with another ID.
+
+### Hand-offs from the E2e review (orchestrator, 2026-10-05)
+
+- **E6 (etcd executor lane wiring):** `EtcdFleetRunnerHandler` needs
+  `.WithDeviceLookup(...)` with an etcd-side `ActiveAccessDevice` reader
+  (devices live in the auth keyspace under the store prefix). Without it the
+  etcd executor lane answers 403 `insufficient_scope` to every executor
+  principal (fails closed, `TestEtcdExecutorLaneFailsClosedWithoutDeviceLookup`).
+  Heartbeat, advance and checkpoint on etcd still go through `workload()`,
+  which requires a GitHub workload token, so an executor principal is refused
+  there too. Adding them must check ownership against the immutable sibling
+  record `/v3/fleet-executor-attempts/<plan>/<attempt>` (principal subject).
+  This stays behind the P2 hand-off: no executor routing to etcd until the
+  v3 phase profile exists.
+- **Newest converge plan order (both backends):** `(started_at DESC, id
+  DESC)`. etcd no longer uses the kind index's acceptance-time order, because
+  the index time is the acceptance instant (not `StartedAt`) and ties sort by
+  ascending ID. The shared conformance case `NewestPlanOrder` pins it. The
+  watcher's `NewestConvergePlan` (`ListOperations`, `started_at DESC` with no
+  ID tie-break) and E6's etcd recorder should use the same order.
+- **Follow-up (etcd scale):** executor admission scans whole kinds:
+  `fleet.capacity-plan` for the newest plan, and the approve, attestation and
+  provider-evidence kinds for the ledger rows. Each is O(rows of that kind),
+  and a write of the kind anywhere fails the start Txn, which then retries.
+  That is acceptable at fleet scale today. If it grows, add a
+  `(kind, ref)` secondary index and compare its prefix instead.
+
+### Hand-offs from the E5 review (orchestrator, 2026-10-05)
+
+E5 serves three routes from `handler/fleet_executor_ops.go`
+(`FleetExecutorOpsRoutes`: `Grant`, `StopAttestation`, `ProviderEvidence`),
+none of them mounted yet. Until E6 wires them, every route fails closed: the
+generic matcher sends `credential-grants`, `stop-attestations` and
+`provider-evidence` to `api:write`, which the executor principal lacks, and the
+attempt-bound credential (`fleet:attempt`, `executor.AttemptScope`) passes no
+`Allows` check, because `Allows` matches only `admin` or the exact scope.
+
+- **E6 wiring (PG and etcd):**
+  - Mount on both routers: `POST /api/v1/fleet/plans/{planID}/credential-grants`
+    → `Grant`; `POST /api/v1/fleet/executor/stop-attestations` →
+    `StopAttestation`; `POST /api/v1/fleet/plans/{planID}/provider-evidence` →
+    `ProviderEvidence`. PG uses `h.FleetExecutorOpsRoutes()`. etcd uses
+    `NewEtcdFleetExecutorOpsRoutes(cfg, operations, authStore)`. Without the
+    auth store, a `norn-attempt` grant answers 503.
+  - Scope matcher: map `provider-evidence` to `admin`; the handler re-checks
+    admin and non-CI. Admit the executor principal to the grant and
+    attestation routes (both already in `executor.ExecutorRoutes`).
+  - **Attempt credential.** In the auth middleware, before the generic
+    `Allows` check, a principal for which `FleetAttemptCredentialAttemptID` is
+    true may reach only routes where `FleetAttemptCredentialAllowsRoute(p,
+    method, path)` holds (`executor.AttemptCredentialRoutes`). Refuse every
+    other route with 403 `insufficient_scope`. That includes the `""`-scope
+    routes: `/auth/rotate`, `/auth/revoke`, operation reads and cancels,
+    release and external-deployment routes, and the runner-scoped paths.
+    Today those routes are refused only by their handlers.
+  - Runner handlers (PG `fleet_runner.go`/`fleet.go`, etcd
+    `fleet_etcd_attempts.go`) must admit the credential as a third lane on GET
+    attempt, heartbeat, advance and the reconciliations routes:
+    - the bound attempt exists, is executor-lane, and its `PlanID` equals the
+      path plan (the subject names only the attempt, so the matcher cannot
+      check the plan);
+    - a reconciliation body's or query's `attemptId` satisfies
+      `FleetAttemptCredentialMayActOn`;
+    - start and cancel stay executor-principal only.
+  - Harden `RotateManagedToken` (E1 file): refuse `principal.DeviceID == ""`
+    and any `fleet:attempt` principal explicitly. Rotation of the credential
+    fails today only because there is no device to look up (and, off the
+    authority-only path, because scope normalization rejects `fleet:attempt`).
+  - Tests: `TestAttemptCredentialReachesExactlyItsRoutes` (every route in the
+    router table, both backends) and `TestAttemptCredentialRevokedWithDevice`
+    (real registry, `DELETE /devices/{id}`, then a heartbeat answers 401).
+- **Store follow-up (PG `abandonFleetPlanTx`):** a converge plan with no
+  attempt yet still has an empty nonce, and the admin abandon refuses it with
+  `fleet_target_release_evidence_mismatch`. Derive
+  `executor.HolderNonceSHA256` for any converge plan, per the E4b hand-off.
+- **Known limits (accepted):**
+  - Two concurrent fresh grants for one plan (different keys) can each revoke
+    before the other records, and leave two live credentials. Only the
+    executor principal can grant, and its loop is serial.
+  - A finished attempt's credential stays valid until its grant expires
+    (2 h) or the next grant. The E6 handler check (a live, bound attempt)
+    covers that gap.
+  - Provider evidence checks that the source is the plan's latest attempt,
+    not that the plan still holds the fence; recovery admission re-checks.
+
 ### Order and parallel groups
 
 ```

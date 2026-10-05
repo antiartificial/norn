@@ -400,7 +400,7 @@ paths:
       - { name: targetID, in: path, required: true, schema: { type: string, pattern: '^tgt_[0-9a-f]{64}$' } }
     post:
       operationId: releaseFleetTargetFence
-      description: Releases a held fence as the signed operation fleet.target.fence-release. Mode terminal requires the server to observe the bound apply run and every run that hosted an attempt as completed; mode abandon requires the minimum age and a server-observed GitHub run listing snapshot. Either mode also permanently abandons the holder plan. The body carries intent only; proof is never accepted from the client. Requires admin, with no step-up.
+      description: Releases a held fence as the signed operation fleet.target.fence-release. Mode terminal requires the server to observe the bound apply run and every run that hosted an attempt as completed; mode abandon requires the minimum age and a server-observed GitHub run listing snapshot. Either mode also permanently abandons the holder plan. The body carries intent only; proof is never accepted from the client. For an executor-lane holder (ADR 0010) there is no GitHub run, so the release instead needs a valid stop attestation of the holder's latest attempt or the admin's providerEvidence assertion, plus the 30 minute age gate; a GitHub listing never satisfies it, and providerEvidence is refused for any other holder. Requires admin, with no step-up.
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -419,7 +419,7 @@ paths:
   /api/v1/fleet/targets/abandon-plan:
     post:
       operationId: abandonFleetPlan
-      description: Permanently abandons a plan as the signed operation fleet.target.abandon-plan, whether or not its cluster is registered (H7). Requires the minimum age and a server-observed GitHub run listing snapshot; releases the plan's fence when it holds one. Requires admin, with no step-up.
+      description: Permanently abandons a plan as the signed operation fleet.target.abandon-plan, whether or not its cluster is registered (H7). Requires the minimum age and a server-observed GitHub run listing snapshot; releases the plan's fence when it holds one. An executor-lane plan (ADR 0010) instead needs a valid stop attestation of its latest attempt or the admin's providerEvidence, plus the 30 minute age gate; a GitHub listing never satisfies it, and providerEvidence is refused for any other plan. Requires admin, with no step-up.
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -582,7 +582,7 @@ paths:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
     post:
       operationId: createFleetCredentialGrant
-      description: Executor lane (ADR 0010). Records the signed operation fleet.credential-grant and returns its ID. Requires the executor principal (managed token, exact scope fleet:execute, not CI) and an Idempotency-Key. For every phase except plan the attempt must be live and owned by this executor; recover needs a recovery attempt, and every other phase must equal the attempt's currentPhase exactly (no alias). Each type must be allowed for the phase on the attempt's backend profile (PG legacy no-drain or canonical V3). Grants expire after 2 hours.
+      description: Executor lane (ADR 0010). Records the signed operation fleet.credential-grant and returns its ID. Requires the executor principal (managed token, exact scope fleet:execute, not CI) and an Idempotency-Key. For every phase except plan the attempt must be live and owned by this executor; recover needs a recovery attempt, and every other phase must equal the attempt's currentPhase exactly (no alias). Each type must be allowed for the phase on the attempt's backend profile (PG legacy no-drain or canonical V3). Grants expire after 2 hours. A grant that includes norn-attempt also returns attemptToken, the attempt-bound credential (internal scope fleet:attempt, never requestable, not in the capabilities scope list) that the phase uses instead of the executor's device token; it reaches only its own attempt's GET, heartbeat and advance and the plan's reconciliations, expires with the grant, is revoked by the plan's next grant or by revoking the executor device, and is never stored in the ledger (only its token ID). A replay returns the same token ID re-signed.
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -593,6 +593,23 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/provider-evidence:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: recordFleetProviderEvidence
+      description: Executor lane (ADR 0010). Records the signed operation fleet.executor.provider-evidence (Ref = plan ID) with the evidence digest in metadata fleetProviderEvidenceDigest. Non-releasing - the fence is untouched; the record is the proof a recovery on a rebuilt host needs instead of a stop attestation. Requires admin, not CI, no step-up, and an Idempotency-Key. sourceAttemptId must be the plan's latest executor attempt, providerEvidence.dropletId must equal that attempt's droplet, the attempt's executor device must be revoked (fleet_executor_device_active otherwise), the attempt must have been silent for 30 minutes, and the evidence must be valid. The evidence is the admin's assertion, not proof.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetProviderEvidenceRequest' } } }
+      responses:
+        '200': { description: Replay of the same request, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Evidence recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/executor/stop-attestations:
@@ -1927,7 +1944,7 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
 components:
   securitySchemes:
-    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT, description: 'Norn access tokens. Internal-only scope fleet:attempt (ADR 0010) is minted solely by createFleetCredentialGrant as attemptToken; it is not requestable, not listed in capabilities, and reaches only the bound attempt''s GET, heartbeat and advance and the plan''s reconciliations.' }
   parameters:
     AppID: { name: id, in: path, required: true, schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' } }
     OperationID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -2034,6 +2051,14 @@ components:
       properties:
         grantId: { type: string, format: uuid }
         expiresAt: { type: string, format: date-time }
+        attemptToken: { type: string, description: 'Present only when types includes norn-attempt. Bearer secret of the attempt-bound credential (managed token, single internal scope fleet:attempt, subject fleet-attempt:<attemptId>, no device claim, expires at expiresAt). Internal-only: it may call only the bound attempt''s GET, heartbeat and advance and the plan''s reconciliations, and cannot rotate. Never logged or stored in the ledger.' }
+    FleetProviderEvidenceRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceAttemptId, providerEvidence]
+      properties:
+        sourceAttemptId: { type: string, format: uuid, description: The holder plan's latest executor attempt. }
+        providerEvidence: { $ref: '#/components/schemas/FleetProviderEvidence' }
     FleetExecutorStopAttestationRequest:
       type: object
       additionalProperties: false

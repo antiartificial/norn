@@ -53,6 +53,7 @@ func TestExecutorPinnedShapesMatchOpenAPI(t *testing.T) {
 		"FleetCredentialGrantRequest":         reflect.TypeOf(executor.CredentialGrantRequest{}),
 		"FleetCredentialGrant":                reflect.TypeOf(executor.CredentialGrantResponse{}),
 		"FleetProviderEvidence":               reflect.TypeOf(executor.ProviderEvidence{}),
+		"FleetProviderEvidenceRequest":        reflect.TypeOf(executor.ProviderEvidenceRequest{}),
 		"FleetExecutorStopAttestationRequest": reflect.TypeOf(executor.StopAttestationRequest{}),
 		"FleetExecutorTofuLock":               reflect.TypeOf(executor.TofuLock{}),
 		"FleetExecutorAttemptStartRequest":    reflect.TypeOf(executor.AttemptStartRequest{}),
@@ -122,6 +123,7 @@ func TestExecutorRoutesCodesAndReleaseEvidenceArePublished(t *testing.T) {
 		"/api/v1/fleet/plans/{planID}/converge/approve":  "approveFleetConverge",
 		"/api/v1/fleet/plans/{planID}/credential-grants": "createFleetCredentialGrant",
 		"/api/v1/fleet/executor/stop-attestations":       "createFleetExecutorStopAttestation",
+		"/api/v1/fleet/plans/{planID}/provider-evidence": "recordFleetProviderEvidence",
 	} {
 		item, ok := paths[path].(map[string]interface{})
 		if !ok {
@@ -202,6 +204,25 @@ func TestExecutorWorkViewAndEnrollmentArePinned(t *testing.T) {
 	}
 	if !seen["GET /api/v1/fleet/resources/{name}"] || seen["GET /api/v1/fleet/resources"] {
 		t.Error("the executor reads exactly the single-resource view, never the list")
+	}
+	// Provider evidence is admin only: never an executor route.
+	if seen["POST /api/v1/fleet/plans/{planID}/provider-evidence"] {
+		t.Error("provider evidence is an admin route, not an executor route")
+	}
+	// The attempt-bound credential reaches a subset of the executor routes,
+	// never start, cancel, grants, attestations or rotation.
+	for _, route := range executor.AttemptCredentialRoutes {
+		if !seen[route] {
+			t.Errorf("attempt credential route %s is not an executor route", route)
+		}
+		if strings.HasSuffix(route, "/cancel") || strings.HasSuffix(route, "/attempts") || strings.Contains(route, "credential-grants") ||
+			strings.Contains(route, "stop-attestations") || strings.Contains(route, "/auth/") || strings.Contains(route, "/resources/") {
+			t.Errorf("attempt credential must not reach %s", route)
+		}
+	}
+	scopes, _ := resolveRef(doc, "#/components/securitySchemes/bearerAuth")
+	if desc, _ := scopes.(map[string]interface{})["description"].(string); !strings.Contains(desc, executor.AttemptScope) {
+		t.Errorf("bearerAuth must document the internal-only scope %s", executor.AttemptScope)
 	}
 
 	desired, _ := executorSchemaProps(t, doc, "FleetResourceDesired")
