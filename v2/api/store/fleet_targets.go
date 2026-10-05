@@ -16,6 +16,9 @@ package store
 // (row 3), which take FOR UPDATE. Row 4 is FOR UPDATE only for acquire,
 // bind, release and abandon; every other reader takes FOR SHARE.
 //
+// CreateFleetExecutorAttempt (store/fleet_executor_attempts.go) takes rows
+// 1-4 and 6 of this order in one transaction and never touches row 5.
+//
 // Legacy heartbeat and advance (store/fleet_runner_attempts.go) take no lock
 // at all today and must not start taking one: each is a single UPDATE, and
 // WP8a adds the epoch check as an "AND NOT EXISTS (… fleet_target_fences
@@ -478,6 +481,10 @@ func AbandonFleetPlan(ctx context.Context, tx pgx.Tx, planID, nonceSHA256, targe
 	return err
 }
 
+// executorHolderDispatchState is HolderFacts.DispatchState of a converge plan
+// (the etcd backend's "bound").
+const executorHolderDispatchState = "bound"
+
 // FleetTargetHolderFacts reads planID's dispatch and runner-attempt rows
 // inside tx (lock-order positions 5 and 6) and projects them to
 // lifecycle.HolderFacts, for Outcome derivation or DecideRelease. It is a
@@ -490,7 +497,16 @@ func FleetTargetHolderFacts(ctx context.Context, tx pgx.Tx, planID string) (life
 		Scan(&h.DispatchState, &createdAt, &submissionStartedAt)
 	switch {
 	case err == pgx.ErrNoRows:
-		// No dispatch row yet; DispatchState stays "".
+		// No dispatch row. A converge plan on the executor lane never has one
+		// and is bound the moment its fence is acquired and bound with its
+		// first attempt (plan-5-7 section 2.6); every other plan keeps "".
+		converge, convergeErr := fleetConvergePlanTx(ctx, tx, planID)
+		if convergeErr != nil {
+			return h, convergeErr
+		}
+		if converge != nil {
+			h.DispatchState = executorHolderDispatchState
+		}
 	case err != nil:
 		return h, err
 	default:

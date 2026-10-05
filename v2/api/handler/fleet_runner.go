@@ -20,6 +20,8 @@ import (
 
 	"norn/v2/api/config"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/controller"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
@@ -115,13 +117,19 @@ func (h *Handler) ListFleetRunnerAttempts(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireFleetOperateScope(w, r)
+	principal, ok := h.requireFleetRunnerPrincipal(w, r)
 	if !ok {
 		return
 	}
 	preventSensitiveResponseCaching(w)
 	plan, ok := h.requireFleetPlan(w, r, chi.URLParam(r, "planID"))
 	if !ok {
+		return
+	}
+	// The lane is chosen by the principal before any body is decoded. The
+	// executor lane never reaches the GitHub-lane code below.
+	if IsFleetExecutorPrincipal(principal) {
+		h.startFleetExecutorAttempt(w, r, principal, plan)
 		return
 	}
 	// Serialize attempt creation with the same per-plan lock used by the
@@ -336,6 +344,10 @@ func (h *Handler) GetFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if IsFleetExecutorPrincipal(principal) && !h.fleetExecutorDeviceHasPlatform(r.Context(), principal) {
+		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
+		return
+	}
 	if !fleetRunnerCanReadAttempt(principal, attempt) {
 		WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_binding_conflict", "only the bound GitHub Actions runner may read this attempt")
 		return
@@ -345,7 +357,7 @@ func (h *Handler) GetFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) HeartbeatFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireFleetOperateScope(w, r)
+	principal, ok := h.requireFleetRunnerPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -404,7 +416,7 @@ func (h *Handler) HeartbeatFleetRunnerAttempt(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) AdvanceFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireFleetOperateScope(w, r)
+	principal, ok := h.requireFleetRunnerPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -474,7 +486,7 @@ func (h *Handler) AdvanceFleetRunnerAttempt(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) CancelFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireFleetOperateScope(w, r)
+	principal, ok := h.requireFleetRunnerPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -826,6 +838,12 @@ func principalIdentity(principal AccessPrincipal) string {
 }
 
 func fleetRunnerPrincipalOwnsAttempt(principal AccessPrincipal, attempt *model.FleetRunnerAttempt) bool {
+	// Executor lane: a separate branch. IsFleetExecutorPrincipal requires
+	// CI == nil, so a CI principal never reaches it and the CI branch below is
+	// unchanged.
+	if IsFleetExecutorPrincipal(principal) {
+		return fleetExecutorPrincipalOwnsAttempt(principal, attempt)
+	}
 	if attempt == nil || principal.CI == nil || principal.CI.Provider != "github-actions" || !principalHasExactScope(principal, ScopeFleetOperate) {
 		return false
 	}
@@ -885,4 +903,136 @@ func firstIncompleteFleetRunnerPhase(plan *model.Operation, checkpoints []model.
 		}
 	}
 	return "complete", true
+}
+
+// requireFleetRunnerPrincipal selects the lane by principal. An executor
+// principal (managed token, exact fleet:execute, CI == nil) on a
+// fleet-executor device takes the executor lane; every other principal gets
+// exactly the GitHub lane's requireFleetOperateScope.
+func (h *Handler) requireFleetRunnerPrincipal(w http.ResponseWriter, r *http.Request) (AccessPrincipal, bool) {
+	if principal, ok := AccessPrincipalFromRequest(r); ok && IsFleetExecutorPrincipal(principal) {
+		if !h.fleetExecutorDeviceHasPlatform(r.Context(), principal) {
+			WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
+			return AccessPrincipal{}, false
+		}
+		return principal, true
+	}
+	return requireFleetOperateScope(w, r)
+}
+
+// fleetExecutorDeviceHasPlatform is the defence-in-depth platform check: the
+// principal's live, unrevoked device must be a fleet-executor device.
+func (h *Handler) fleetExecutorDeviceHasPlatform(ctx context.Context, principal AccessPrincipal) bool {
+	if h.db == nil {
+		return false
+	}
+	device, err := h.db.ActiveAccessDevice(ctx, principal.DeviceID)
+	return err == nil && device != nil && isFleetExecutorPlatform(device.Platform)
+}
+
+// fleetExecutorPrincipalOwnsAttempt is the executor branch of
+// fleetRunnerPrincipalOwnsAttempt: the attempt is an executor-lane attempt
+// owned by this device (principal_subject managed-device:<deviceId>) whose
+// identifiers are internally consistent.
+func fleetExecutorPrincipalOwnsAttempt(principal AccessPrincipal, attempt *model.FleetRunnerAttempt) bool {
+	if attempt == nil || attempt.SourceDispatchRunID != 0 {
+		return false
+	}
+	metadata, ok := store.FleetExecutorAttemptMetadata(attempt)
+	droplet, invocation, planID, idOK := executor.ParseRunnerAttemptID(attempt.RunnerAttemptID)
+	return ok && idOK && attempt.PrincipalSubject == executor.PrincipalSubject(principal.DeviceID) &&
+		attempt.PlanID == planID && attempt.WorkflowURL == executor.WorkflowURL(droplet, invocation) &&
+		metadata.DropletID == droplet && metadata.InvocationID == invocation
+}
+
+// fleetConvergePlanVerified reports whether plan is a converge plan whose
+// digest and signature verify under the current or a previous audit key.
+func (h *Handler) fleetConvergePlanVerified(plan *model.Operation) bool {
+	keys := []string{}
+	if h.cfg != nil {
+		keys = append(keys, h.cfg.AuditSigningKey)
+		keys = append(keys, h.cfg.AuditPreviousSigningKeys...)
+	}
+	converge, decoded := decodeConvergePlan(plan)
+	return decoded && controller.VerifyConvergePlan(converge, keys)
+}
+
+// validateFleetExecutorStart is the executor lane's own start validator. The
+// GitHub-lane validators are never called for an executor principal.
+func validateFleetExecutorStart(planID string, request executor.AttemptStartRequest) (model.FleetTimingClassification, error) {
+	if err := request.Validate(planID); err != nil {
+		return model.FleetTimingClassification{}, err
+	}
+	classification, err := fleetTimingClassificationFromRequest(fleet.RunnerAttemptStartRequest{OperationClass: request.OperationClass, CreatedNodeCount: request.CreatedNodeCount})
+	if err != nil {
+		return model.FleetTimingClassification{}, &executor.Error{Code: executor.CodeInvalidFleetExecutorRequest, Reason: err.Error()}
+	}
+	return classification, nil
+}
+
+// writeFleetExecutorError maps an executor-lane store refusal: a fence or
+// epoch refusal (409), or an *executor.Error with its pinned HTTP status.
+func writeFleetExecutorError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if writeFleetFenceError(w, r, err) {
+		return true
+	}
+	var refusal *executor.Error
+	if !errors.As(err, &refusal) {
+		return false
+	}
+	status, ok := executor.CodeStatus[refusal.Code]
+	if !ok {
+		status = http.StatusConflict
+	}
+	WriteControlProblem(w, r, status, refusal.Code, refusal.Error())
+	return true
+}
+
+// startFleetExecutorAttempt is the executor lane of StartFleetRunnerAttempt:
+// decode (DisallowUnknownFields, so GitHub-lane fields are refused), validate,
+// then one store transaction acquires the fence, binds it and inserts the
+// attempt (or, with resume, admits one recovery).
+func (h *Handler) startFleetExecutorAttempt(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, plan *model.Operation) {
+	var request executor.AttemptStartRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, err.Error())
+		return
+	}
+	if _, err := validateFleetExecutorStart(plan.ID, request); err != nil {
+		writeFleetExecutorError(w, r, err)
+		return
+	}
+	// The plan must be a converge plan whose digest and signature verify under
+	// the converge-aware verifier (the GitHub-lane verifier rejects it).
+	// Replays of an already admitted attempt skip nothing: the plan is immutable.
+	if _, decoded := decodeConvergePlan(plan); !decoded {
+		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetPlanNotConverge, "the plan is not a converge plan")
+		return
+	}
+	if !h.fleetConvergePlanVerified(plan) {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "converge plan failed integrity verification")
+		return
+	}
+	request.HeartbeatTimeoutSeconds = normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds)
+	result, err := h.db.CreateFleetExecutorAttempt(r.Context(), store.FleetExecutorStart{
+		PlanID: plan.ID, Request: request, PrincipalSubject: executor.PrincipalSubject(principal.DeviceID),
+	})
+	if err != nil {
+		if writeFleetExecutorError(w, r, err) {
+			return
+		}
+		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_exists", "a runner attempt with this identity already exists")
+			return
+		}
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_store_failed", "failed to durably start executor runner attempt")
+		return
+	}
+	h.attachFleetRunnerTiming(result.Attempt)
+	if result.Replayed {
+		writeJSON(w, result.Attempt)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/fleet/plans/"+plan.ID+"/attempts/"+result.Attempt.ID)
+	writeJSONStatus(w, http.StatusCreated, result.Attempt)
 }

@@ -289,7 +289,15 @@ func (h *Handler) ListFleetPlans(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireFleetReadScope(w, r)
+	// The executor lane (plan-5-7 E2) is chosen by the principal and checks
+	// the device platform; every other principal keeps requireFleetReadScope.
+	var principal AccessPrincipal
+	var ok bool
+	if candidate, present := AccessPrincipalFromRequest(r); present && IsFleetExecutorPrincipal(candidate) {
+		principal, ok = h.requireFleetRunnerPrincipal(w, r)
+	} else {
+		principal, ok = requireFleetReadScope(w, r)
+	}
 	if !ok {
 		return
 	}
@@ -311,7 +319,10 @@ func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_plan_read_failed", "failed to read fleet capacity plan")
 		return
 	}
-	if !h.fleetPlanReadable(r, plan) {
+	// An executor principal has no plan read: it may read only the evidence
+	// of an attempt it owns (runnerBoundRead below, executor branch of
+	// fleetRunnerPrincipalOwnsAttempt).
+	if !IsFleetExecutorPrincipal(principal) && !h.fleetPlanReadable(r, plan) {
 		WriteControlProblem(w, r, http.StatusForbidden, "fleet_plan_read_forbidden", "workload token may read only its own approved fleet plan")
 		return
 	}
@@ -371,10 +382,13 @@ func fleetRunnerReconciliationReadNeedsAttemptID(principal AccessPrincipal) bool
 }
 
 func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireFleetOperateScope(w, r)
+	// Lane by principal (plan-5-7 E2): an executor principal on a
+	// fleet-executor device, or exactly the GitHub lane's requireFleetOperateScope.
+	principal, ok := h.requireFleetRunnerPrincipal(w, r)
 	if !ok {
 		return
 	}
+	executorLane := IsFleetExecutorPrincipal(principal)
 	if h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_reconciliation_store_unavailable", "durable operation storage is unavailable")
 		return
@@ -397,10 +411,19 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		WriteControlProblem(w, r, http.StatusForbidden, "fleet_plan_read_forbidden", "fleet workload token is not bound to this approved plan")
 		return
 	}
-	typedPlan, planErr := typedCapacityPlan(plan)
-	if planErr != nil || !h.verifyCapacityPlan(typedPlan) {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "fleet capacity plan failed portable integrity verification")
-		return
+	if executorLane {
+		// The executor lane records evidence only for a converge plan that
+		// verifies under the converge-aware verifier.
+		if !h.fleetConvergePlanVerified(plan) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "converge plan failed integrity verification")
+			return
+		}
+	} else {
+		typedPlan, planErr := typedCapacityPlan(plan)
+		if planErr != nil || !h.verifyCapacityPlan(typedPlan) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "fleet capacity plan failed portable integrity verification")
+			return
+		}
 	}
 	var request fleet.ReconciliationRequest
 	if err := decodeControlJSON(w, r, &request); err != nil {
@@ -452,10 +475,21 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	enqueue.FleetReconciliation = &store.FleetReconciliationAdmission{
-		PlanID: planID, AttemptID: request.AttemptID, RequireActiveAttempt: true,
-		RunnerAttemptID: canonicalRunnerAttemptID(principal.CI),
-		WorkflowURL:     canonicalWorkflowRunURL(principal.CI.Repository, principal.CI.RunID),
+	if executorLane {
+		// validateFleetReconciliationRequest requires attemptId, so
+		// boundAttempt is set. Ownership was checked against the attempt's
+		// device above; the store
+		// re-checks these immutable identifiers on the locked attempt row.
+		enqueue.FleetReconciliation = &store.FleetReconciliationAdmission{
+			PlanID: planID, AttemptID: request.AttemptID, RequireActiveAttempt: true,
+			RunnerAttemptID: boundAttempt.RunnerAttemptID, WorkflowURL: boundAttempt.WorkflowURL,
+		}
+	} else {
+		enqueue.FleetReconciliation = &store.FleetReconciliationAdmission{
+			PlanID: planID, AttemptID: request.AttemptID, RequireActiveAttempt: true,
+			RunnerAttemptID: canonicalRunnerAttemptID(principal.CI),
+			WorkflowURL:     canonicalWorkflowRunURL(principal.CI.Repository, principal.CI.RunID),
+		}
 	}
 	if replayed, found, resolveErr := h.resolveFleetReconciliationReplay(r.Context(), enqueue, planID); resolveErr != nil {
 		writeOperationAcceptanceError(w, r, resolveErr)
