@@ -603,6 +603,7 @@ const (
 	// trigger reasons are the watcher verdicts themselves.
 	BlockerReasonApprovalRequired  = executor.BlockerReasonApprovalRequired
 	BlockerReasonDestructive       = executor.BlockerReasonDestructive
+	BlockerReasonStateLockForeign  = executor.BlockerReasonStateLockForeign
 	BlockerReasonModeMismatch      = executor.BlockerReasonExecutionModeMismatch
 	BlockerReasonTriggerPending    = executor.BlockerReasonTriggerPending
 	BlockerReasonTriggerUnverified = executor.BlockerReasonTriggerUnverified
@@ -615,6 +616,9 @@ type Blocker struct {
 	Reason  string
 	Message string
 	PlanID  string
+	// WhileHeld marks a blocker that stays visible while the fence is held
+	// (a held fence otherwise outranks every converge blocker).
+	WhileHeld bool
 }
 
 // ConvergeDerivation is the executor-lane part of a resource's derived state.
@@ -623,6 +627,10 @@ type ConvergeDerivation struct {
 	NextAction     string
 	Blocker        *Blocker
 	ResumeApproved bool
+	// ResumeNeeded: NextAction is approve_converge for a stopped holder
+	// attempt (ConvergeFacts.ResumeNeededAttemptID), which outranks
+	// await_runner and resolve_uncertain_outcome.
+	ResumeNeeded bool
 }
 
 // EffectiveExecutionMode maps the stored mode ("" until set) to a mode.
@@ -662,6 +670,15 @@ func DeriveConverge(resource Resource, status Status, facts *ConvergeFacts) Conv
 	plan := facts.Plan
 	pending := plan != nil && !convergePlanApplied(status, *plan)
 
+	if held {
+		if b := heldConvergeBlocker(resource, status, facts); b != nil {
+			d.Blocker = b
+			if facts.ResumeNeededAttemptID != "" && b.Reason == BlockerReasonApprovalRequired {
+				d.ResumeNeeded, d.NextAction = true, NextActionApproveConverge
+			}
+			return d
+		}
+	}
 	switch {
 	case mode == executor.ModeGitHub && pending:
 		d.Blocker = &Blocker{Kind: BlockerKindExecution, Reason: BlockerReasonModeMismatch, PlanID: plan.PlanID,
@@ -692,6 +709,36 @@ func DeriveConverge(resource Resource, status Status, facts *ConvergeFacts) Conv
 	return d
 }
 
+// heldConvergeBlocker derives the blockers that stay visible while the fence
+// is held (P2/P3 hand-offs), in priority order: the destructive remainder of
+// the held plan (including while its recovery attempt is live), a foreign
+// state lock the executor refused, and a stopped holder attempt that needs a
+// new resume approve. Nil when none applies.
+func heldConvergeBlocker(resource Resource, status Status, facts *ConvergeFacts) *Blocker {
+	holder := status.Active.PlanID
+	switch {
+	case facts.HolderRefused || (facts.Plan != nil && facts.Plan.Refused && facts.Plan.PlanID == holder):
+		return &Blocker{Kind: BlockerKindApproval, Reason: BlockerReasonDestructive, PlanID: holder, WhileHeld: true,
+			Message: "the plan's remainder is destructive or a contraction; the executor refused it. Abandon the plan (fleet.target.abandon-plan; the restarted loop's stop attestation is the evidence) and apply it through the GitHub lane (dispatch with allowDestructive is the approval)"}
+	case facts.StateLock != nil:
+		lock := facts.StateLock
+		message := "the OpenTofu state lock is not the executor's own, so recovery did not unlock it"
+		if lock.LockID != "" {
+			message += " (lock " + lock.LockID
+			if lock.Who != "" {
+				message += " held by " + lock.Who
+			}
+			message += ")"
+		}
+		return &Blocker{Kind: BlockerKindExecution, Reason: BlockerReasonStateLockForeign, PlanID: holder, WhileHeld: true,
+			Message: message + ". Clear the lock (tofu force-unlock after confirming nothing is running); the executor re-probes after its back-off, no other action is needed"}
+	case facts.ResumeNeededAttemptID != "":
+		return &Blocker{Kind: BlockerKindApproval, Reason: BlockerReasonApprovalRequired, PlanID: holder, WhileHeld: true,
+			Message: "attempt " + facts.ResumeNeededAttemptID + " stopped and its resume approval is spent or absent; run: norn fleet converge " + resource.Name + " --resume"}
+	}
+	return nil
+}
+
 func triggerMessage(facts *ConvergeFacts, base string) string {
 	if facts.TriggerReason == "" {
 		return base
@@ -710,7 +757,7 @@ func ApplyConverge(status Status, resource Resource, facts *ConvergeFacts) Statu
 		active.ResumeApproved = true
 		status.Active = &active
 	}
-	if d.NextAction == NextActionApproveConverge && status.NextAction != NextActionResolveUncertainOutcome && status.NextAction != NextActionAwaitRunner {
+	if d.NextAction == NextActionApproveConverge && (d.ResumeNeeded || (status.NextAction != NextActionResolveUncertainOutcome && status.NextAction != NextActionAwaitRunner)) {
 		status.NextAction = NextActionApproveConverge
 	}
 	return status

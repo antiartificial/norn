@@ -101,19 +101,22 @@ type fleetResourceDocument struct {
 	Policy         controller.ApprovalPolicy       `json:"policy"`
 	Watermarks     map[string]controller.Watermark `json:"watermarks,omitempty"`
 	Status         controller.Status               `json:"status"`
+	// ExecutionMode is absent until the admin sets it (plan-5-7 E4b), so
+	// existing documents and digests do not change.
+	ExecutionMode string `json:"executionMode,omitempty"`
 }
 
 func fleetResourceDocumentOf(r controller.Resource) fleetResourceDocument {
 	return fleetResourceDocument{
 		SchemaVersion: r.SchemaVersion, Desired: r.Desired, DesiredHistory: r.DesiredHistory,
-		Policy: r.Policy, Watermarks: r.Watermarks, Status: r.Status,
+		Policy: r.Policy, Watermarks: r.Watermarks, Status: r.Status, ExecutionMode: r.ExecutionMode,
 	}
 }
 
 func (d fleetResourceDocument) toResource(name, targetID string, revision, authorityEpoch, observationSequence int64, createdAt, updatedAt time.Time) controller.Resource {
 	return controller.Resource{
 		SchemaVersion: d.SchemaVersion, Name: name, TargetID: targetID,
-		Desired: d.Desired, DesiredHistory: d.DesiredHistory, Policy: d.Policy, Watermarks: d.Watermarks, Status: d.Status,
+		Desired: d.Desired, DesiredHistory: d.DesiredHistory, Policy: d.Policy, Watermarks: d.Watermarks, Status: d.Status, ExecutionMode: d.ExecutionMode,
 		Revision: revision, AuthorityEpoch: authorityEpoch, ObservationSequence: observationSequence,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}

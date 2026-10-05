@@ -131,6 +131,10 @@ type OperationAcceptance struct {
 	// fence release and plan abandon (WP9a). Optional and omitempty, so
 	// fingerprints of every other acceptance are unchanged.
 	FleetTargetMutation *FleetTargetMutationAdmission `json:"fleetTargetMutation,omitempty"`
+	// FleetResourceExecutionMode is the typed admission of the signed
+	// fleet.resource.execution-mode (plan-5-7 E4b). Optional and omitempty,
+	// so fingerprints of every other acceptance are unchanged.
+	FleetResourceExecutionMode *FleetResourceExecutionModeAdmission `json:"fleetResourceExecutionMode,omitempty"`
 	// FleetTargetReleaseEvidence is the server-gathered GitHub release
 	// evidence (WP5 observers) for a release or abandon-plan mutation. It is
 	// server-only: json:"-" so no request decode fills it, and it is not part

@@ -8,6 +8,7 @@ package handler
 //	POST /api/v1/fleet/plans/{planID}/credential-grants       (Grant, executor)
 //	POST /api/v1/fleet/executor/stop-attestations             (StopAttestation, executor)
 //	POST /api/v1/fleet/plans/{planID}/provider-evidence       (ProviderEvidence, admin)
+//	POST /api/v1/fleet/plans/{planID}/converge-refusals       (Refuse, executor)
 //
 // Each records one signed ledger operation through the backend's
 // OperationStore, the same acceptance the target routes use. Every decision is
@@ -153,6 +154,10 @@ func (b *pgFleetExecutorOpsBackend) FleetExecutorPlanIsConverge(ctx context.Cont
 	return b.h.db.FleetExecutorPlanIsConverge(ctx, planID)
 }
 
+func (b *pgFleetExecutorOpsBackend) FleetExecutorConvergePlan(ctx context.Context, planID string) (*store.FleetExecutorConvergePlanFact, error) {
+	return b.h.db.FleetExecutorConvergePlan(ctx, planID)
+}
+
 func (b *pgFleetExecutorOpsBackend) FleetExecutorLedgerRows(ctx context.Context, kind, planID string) ([]store.FleetExecutorLedgerRow, error) {
 	return b.h.db.FleetExecutorLedgerRows(ctx, kind, planID)
 }
@@ -196,6 +201,10 @@ func (b *etcdFleetExecutorOpsBackend) FleetExecutorDevice(ctx context.Context, d
 
 func (b *etcdFleetExecutorOpsBackend) FleetExecutorPlanIsConverge(ctx context.Context, planID string) (bool, error) {
 	return b.operations.FleetExecutorPlanIsConverge(ctx, planID)
+}
+
+func (b *etcdFleetExecutorOpsBackend) FleetExecutorConvergePlan(ctx context.Context, planID string) (*store.FleetExecutorConvergePlanFact, error) {
+	return b.operations.FleetExecutorConvergePlan(ctx, planID)
 }
 
 func (b *etcdFleetExecutorOpsBackend) FleetExecutorLedgerRows(ctx context.Context, kind, planID string) ([]store.FleetExecutorLedgerRow, error) {
@@ -711,4 +720,120 @@ func (s *FleetExecutorOpsRoutes) ProviderEvidence(w http.ResponseWriter, r *http
 		return
 	}
 	writeLedgerOperation(w, accepted)
+}
+
+// --- executor refusals ---
+
+// Refuse is POST plans/{planID}/converge-refusals (executor principal,
+// Idempotency-Key). It records the signed fleet.converge.refusal operation
+// (Ref = plan ID) after the plan checks below; E6 mounts the route and the
+// scope matcher admits it through executor.ExecutorRoutes.
+//
+//   - destructive_requires_github_lane: the plan is a converge plan, commitSha
+//     and planSha256 are its own. It is admitted while a recovery attempt of
+//     the plan is live too (the recovery reports a destructive remainder),
+//     and sets ConvergeView.refused. Idempotency-Key executor-refusal:<planID>.
+//   - state_lock_foreign: additionally sourceAttemptId must be the plan's
+//     latest executor-lane attempt and not succeeded, the source a recovery
+//     may resume (PG sweeps a dead loop's attempt to abandoned on any read,
+//     so a queued/running status is not required). It never sets
+//     refused; it derives the blocker state_lock_foreign while that attempt
+//     stays the latest.
+//
+// A replay of an accepted key answers from the ledger before any fact is
+// re-read (the attempt may have moved on since the lost response); the same
+// key with another body is idempotency_key_reused. The principal is not
+// matched to the source attempt's device: a rebuilt host's new device reports
+// the old device's attempt after the provider evidence.
+func (s *FleetExecutorOpsRoutes) Refuse(w http.ResponseWriter, r *http.Request) {
+	principal, ok := s.requireExecutor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := requirePlanID(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requireIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request executor.ConvergeRefusalRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, err.Error())
+		return
+	}
+	if err := request.Validate(); err != nil {
+		writeExecutorError(w, r, err)
+		return
+	}
+	identity, audit, ok := s.ledgerIdentity(w, r, principal, executor.KindConvergeRefusal, planID, key)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	payload := ledgerMap(executor.ConvergeRefusalPayload{PlanID: planID, ConvergeRefusalRequest: request})
+	if resolver, can := s.backend.OperationStore().(store.OperationIdentityResolver); can {
+		prior, err := resolver.ResolveIdentity(ctx, identity)
+		switch {
+		case err == nil:
+			if !sameLedgerValue(prior.Operation.Payload, payload) {
+				writeOperationAcceptanceError(w, r, &store.AcceptanceConflictError{Identity: identity})
+				return
+			}
+			prior.Replayed = true
+			writeLedgerOperation(w, prior)
+			return
+		case !errors.Is(err, store.ErrAcceptanceNotFound):
+			writeOperationAcceptanceError(w, r, err)
+			return
+		}
+	}
+	planReader, can := s.backend.(store.FleetExecutorConvergePlanReader)
+	if !can {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_executor_facts_unavailable", "fleet executor facts could not be read")
+		return
+	}
+	plan, err := planReader.FleetExecutorConvergePlan(ctx, planID)
+	if err != nil {
+		writeFleetExecutorOpsError(w, r, err)
+		return
+	}
+	switch {
+	case plan == nil:
+		writeExecutorError(w, r, &executor.Error{Code: executor.CodeFleetPlanNotConverge, Reason: "the plan is not a converge plan"})
+		return
+	case plan.CommitSHA != request.CommitSHA:
+		writeExecutorError(w, r, &executor.Error{Code: executor.CodeFleetConvergeCommitMismatch, Reason: "commitSha does not match the plan's commit"})
+		return
+	case plan.PlanSHA256 != request.PlanSHA256:
+		writeExecutorError(w, r, &executor.Error{Code: executor.CodeFleetConvergeRefusalRejected, Reason: "planSha256 does not match the plan"})
+		return
+	}
+	if request.Code == executor.RefusalStateLockForeign {
+		attempts, err := s.backend.FleetExecutorAttempts(ctx, planID)
+		if err != nil {
+			writeFleetExecutorOpsError(w, r, err)
+			return
+		}
+		if err := store.DecideFleetExecutorStateLockRefusal(request.SourceAttemptID, attempts); err != nil {
+			writeFleetExecutorOpsError(w, r, err)
+			return
+		}
+	}
+	accepted, err := s.acceptLedger(ctx, identity, audit, "converge refusal recorded", payload,
+		map[string]interface{}{store.FleetExecutorAttesterMetadataKey: executor.PrincipalSubject(principal.DeviceID)})
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	writeLedgerOperation(w, accepted)
+}
+
+// sameLedgerValue compares two ledger payloads by their JSON encoding (map
+// keys are sorted by encoding/json).
+func sameLedgerValue(a, b interface{}) bool {
+	left, errLeft := json.Marshal(a)
+	right, errRight := json.Marshal(b)
+	return errLeft == nil && errRight == nil && string(left) == string(right)
 }

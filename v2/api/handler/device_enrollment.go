@@ -273,6 +273,19 @@ func RotateManagedToken(cfg *config.Config, auth store.AuthStore, closeConnectio
 		WriteControlProblem(w, r, http.StatusConflict, "github_actions_rotation_unsupported", "GitHub Actions tokens must be refreshed through the OIDC exchange")
 		return
 	}
+	// The attempt-bound credential (plan-5-7 E5) expires with its grant and is
+	// never extended: it is refused here by its scope, not left to fail only
+	// because it carries no device claim.
+	for _, scope := range principal.Scopes {
+		if scope == ScopeFleetAttempt {
+			WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the attempt-bound credential cannot be rotated")
+			return
+		}
+	}
+	if principal.DeviceID == "" {
+		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "only a device token can be rotated")
+		return
+	}
 	device, err := auth.ActiveAccessDevice(r.Context(), principal.DeviceID)
 	if err != nil || device == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "device_lookup_failed", "device token lifetime could not be determined")

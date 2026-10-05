@@ -67,6 +67,15 @@ func FleetExecutorAttemptFactFromModel(a *model.FleetRunnerAttempt) FleetExecuto
 // and recording time), as the PG admission reads attestation rows.
 type FleetExecutorLedgerRow = fleetLedgerRow
 
+// FleetExecutorConvergePlanFact is what an executor refusal is checked
+// against: the converge plan's resource and commit, and the hex part of its
+// digest (the planSha256 an attempt start carries).
+type FleetExecutorConvergePlanFact struct {
+	Resource   string
+	CommitSHA  string
+	PlanSHA256 string
+}
+
 // FleetExecutorDeviceFact is the executor device's registry state.
 type FleetExecutorDeviceFact struct {
 	Exists   bool
@@ -83,6 +92,14 @@ type FleetExecutorOpsReader interface {
 	FleetExecutorDevice(ctx context.Context, deviceID string) (FleetExecutorDeviceFact, error)
 	FleetExecutorPlanIsConverge(ctx context.Context, planID string) (bool, error)
 	FleetExecutorLedgerRows(ctx context.Context, kind, planID string) ([]FleetExecutorLedgerRow, error)
+}
+
+// FleetExecutorConvergePlanReader reads the facts an executor refusal is
+// checked against, implemented by *DB (PG) and etcdstore.V3OperationStore.
+// FleetExecutorConvergePlan returns (nil, nil) for an unknown plan or one that
+// is not a converge plan.
+type FleetExecutorConvergePlanReader interface {
+	FleetExecutorConvergePlan(ctx context.Context, planID string) (*FleetExecutorConvergePlanFact, error)
 }
 
 // FleetExecutorDeviceID is the device named by an attempt's principal subject
@@ -153,6 +170,22 @@ func DecideFleetExecutorGrant(request executor.CredentialGrantRequest, profile e
 		return request, nil, executorRefusal(executor.CodeFleetCredentialGrantPhaseMismatch, "grant phase %q is not the attempt's current phase %q", request.Phase, attempt.CurrentPhase)
 	}
 	return request, attempt, nil
+}
+
+// DecideFleetExecutorStateLockRefusal admits a state_lock_foreign refusal: the
+// source attempt must be the plan's latest attempt, on the executor lane, and
+// not succeeded, which is exactly the source a recovery may resume
+// (authorizeFleetExecutorRecoveryTx). Neither the heartbeat lease nor a
+// queued/running status is required: the recovery that finds a foreign lock
+// runs because the source loop died, so its lease has expired, and on PG any
+// attempt read (ListFleetRunnerAttempts, GetFleetRunnerAttempt) then sweeps
+// the attempt to abandoned.
+func DecideFleetExecutorStateLockRefusal(sourceAttemptID string, attempts []FleetExecutorAttemptFact) error {
+	latest := latestFleetExecutorAttempt(attempts)
+	if latest == nil || !latest.Executor || latest.ID != sourceAttemptID || latest.Status == string(model.FleetRunnerAttemptSucceeded) {
+		return executorRefusal(executor.CodeFleetConvergeRefusalRejected, "sourceAttemptId is not the plan's latest recoverable executor-lane attempt")
+	}
+	return nil
 }
 
 // DecideFleetExecutorStopAttestation validates an attestation by the device
@@ -347,6 +380,22 @@ func (db *DB) FleetExecutorPlanIsConverge(ctx context.Context, planID string) (b
 	return converge != nil, err
 }
 
+func (db *DB) FleetExecutorConvergePlan(ctx context.Context, planID string) (*FleetExecutorConvergePlanFact, error) {
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, _, converge, digest, err := fleetExecutorPlanTx(ctx, tx, planID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && converge == nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &FleetExecutorConvergePlanFact{Resource: converge.Resource, CommitSHA: converge.CommitSHA, PlanSHA256: digest}, nil
+}
+
 func (db *DB) FleetExecutorLedgerRows(ctx context.Context, kind, planID string) ([]FleetExecutorLedgerRow, error) {
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -356,7 +405,10 @@ func (db *DB) FleetExecutorLedgerRows(ctx context.Context, kind, planID string) 
 	return fleetLedgerRowsTx(ctx, tx, kind, planID)
 }
 
-var _ FleetExecutorOpsReader = (*DB)(nil)
+var (
+	_ FleetExecutorOpsReader          = (*DB)(nil)
+	_ FleetExecutorConvergePlanReader = (*DB)(nil)
+)
 
 // fleetExecutorLaneProofTx is the PG release hook: inside the release or
 // abandon transaction (after its plan lock) it returns the proof to decide

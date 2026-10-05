@@ -70,6 +70,9 @@ const (
 	KindCredentialGrant       = "fleet.credential-grant"
 	KindStopAttestation       = "fleet.executor.stop-attestation"
 	KindResourceExecutionMode = "fleet.resource.execution-mode"
+	// KindConvergeRefusal records an executor refusal of a plan
+	// (ConvergeRefusalRequest), Ref = plan ID.
+	KindConvergeRefusal = "fleet.converge.refusal"
 )
 
 // Execution modes (stored only in fleet_resources.document, never read inside
@@ -116,6 +119,10 @@ const (
 	// the executor-lane facts of the resource view could not be read.
 	CodeFleetExecutionModeUnavailable = "fleet_execution_mode_unavailable"
 	CodeFleetConvergeFactsFailed      = "fleet_converge_facts_failed"
+	// CodeFleetConvergeRefusalRejected: the refusal does not describe the plan
+	// (planSha256 differs) or, for state_lock_foreign, its source attempt is
+	// not the plan's latest, not succeeded, executor-lane attempt.
+	CodeFleetConvergeRefusalRejected = "fleet_converge_refusal_rejected"
 )
 
 // CodeStatus is the HTTP status of each code above. The contract test checks
@@ -139,6 +146,7 @@ var CodeStatus = map[string]int{
 	CodeFleetExecutorDeviceActive:           409,
 	CodeFleetExecutionModeUnavailable:       503,
 	CodeFleetConvergeFactsFailed:            503,
+	CodeFleetConvergeRefusalRejected:        409,
 }
 
 // Resource-view values this lane adds (E4b): status.nextAction and the
@@ -155,12 +163,13 @@ const (
 	BlockerReasonTriggerUnverified     = "trigger_unverified"
 	BlockerReasonTriggerPending        = "trigger_pending"
 	BlockerReasonApprovalRequired      = "approval_required"
+	BlockerReasonStateLockForeign      = "state_lock_foreign"
 )
 
 // BlockerReasons lists the executor-lane blocker reasons in derivation
 // priority order (a held fence outranks all of them).
 var BlockerReasons = []string{
-	BlockerReasonExecutionModeMismatch, BlockerReasonDestructive, BlockerReasonHistoryRewritten,
+	BlockerReasonExecutionModeMismatch, BlockerReasonDestructive, BlockerReasonStateLockForeign, BlockerReasonHistoryRewritten,
 	BlockerReasonTriggerUnverified, BlockerReasonTriggerPending, BlockerReasonApprovalRequired,
 }
 
@@ -351,6 +360,7 @@ var ExecutorRoutes = []string{
 	"GET /api/v1/fleet/plans/{planID}/reconciliations",
 	"POST /api/v1/fleet/plans/{planID}/reconciliations",
 	"POST /api/v1/fleet/plans/{planID}/credential-grants",
+	"POST /api/v1/fleet/plans/{planID}/converge-refusals",
 	"POST /api/v1/fleet/executor/stop-attestations",
 	"POST /api/v1/auth/rotate",
 }
@@ -367,6 +377,98 @@ const (
 	EnrollmentPendingStatus = 409
 	EnrollmentPollInterval  = 5 * time.Second
 )
+
+// Refusal codes of ConvergeRefusalRequest. They are also the blocker reasons
+// they derive (BlockerReasonDestructive, BlockerReasonStateLockForeign).
+const (
+	RefusalDestructive      = BlockerReasonDestructive
+	RefusalStateLockForeign = BlockerReasonStateLockForeign
+)
+
+// MaxRefusalChangesBytes bounds ConvergeRefusalRequest.Changes (encoded).
+const MaxRefusalChangesBytes = 16 << 10
+
+// ConvergeRefusalRequest is the body of
+// POST /api/v1/fleet/plans/{planID}/converge-refusals (executor principal,
+// Idempotency-Key). Ledger kind KindConvergeRefusal, Ref = plan ID, payload
+// ConvergeRefusalPayload. Two codes:
+//
+//   - destructive_requires_github_lane: planTextSha256 and changes describe
+//     the tofu plan that was refused; sourceAttemptId and tofuLock are absent.
+//     Idempotency-Key executor-refusal:<planID>. It sets
+//     ConvergeView.Refused, so the loop stops fetching and the resource
+//     blocker is destructive_requires_github_lane. It is admitted while a
+//     recovery attempt is live too.
+//   - state_lock_foreign: sourceAttemptId (the plan's latest, not succeeded,
+//     executor-lane attempt) and tofuLock; every tofuLock field may be empty
+//     when tofu's lock text was unreadable. It does NOT set Refused: it
+//     derives the blocker state_lock_foreign while that attempt stays the
+//     plan's latest.
+type ConvergeRefusalRequest struct {
+	Code            string           `json:"code"`
+	CommitSHA       string           `json:"commitSha"`
+	PlanSHA256      string           `json:"planSha256"`
+	PlanTextSHA256  string           `json:"planTextSha256,omitempty"`
+	Changes         json.RawMessage  `json:"changes,omitempty"`
+	SourceAttemptID string           `json:"sourceAttemptId,omitempty"`
+	TofuLock        *RefusalTofuLock `json:"tofuLock,omitempty"`
+}
+
+// RefusalTofuLock is the foreign OpenTofu state lock a recovery found. Unlike
+// TofuLock every field is optional and opaque (created is tofu's own text).
+type RefusalTofuLock struct {
+	ID        string `json:"id,omitempty"`
+	Operation string `json:"operation,omitempty"`
+	Who       string `json:"who,omitempty"`
+	Created   string `json:"created,omitempty"`
+}
+
+// ConvergeRefusalPayload is the ledger payload: the request plus PlanID.
+type ConvergeRefusalPayload struct {
+	PlanID string `json:"planId"`
+	ConvergeRefusalRequest
+}
+
+// Validate checks a refusal body's shape. Matching it to the plan and the
+// attempt is the route's decision.
+func (r ConvergeRefusalRequest) Validate() error {
+	if !commitSHARe.MatchString(r.CommitSHA) || !sha256HexRe.MatchString(r.PlanSHA256) {
+		return invalid("commitSha and planSha256 must be lowercase Git/SHA-256 values")
+	}
+	switch r.Code {
+	case RefusalDestructive:
+		if r.SourceAttemptID != "" || r.TofuLock != nil {
+			return invalid("%s carries no sourceAttemptId or tofuLock", RefusalDestructive)
+		}
+		if r.PlanTextSHA256 != "" && !sha256HexRe.MatchString(r.PlanTextSHA256) {
+			return invalid("planTextSha256 must be 64 lowercase hex characters")
+		}
+		if len(r.Changes) > MaxRefusalChangesBytes {
+			return invalid("changes is too large")
+		}
+		if len(r.Changes) != 0 {
+			var object map[string]json.RawMessage
+			if json.Unmarshal(r.Changes, &object) != nil || object == nil {
+				return invalid("changes must be a JSON object")
+			}
+		}
+	case RefusalStateLockForeign:
+		if _, err := uuid.Parse(r.SourceAttemptID); err != nil {
+			return invalid("sourceAttemptId must be a UUID")
+		}
+		if r.TofuLock == nil || r.PlanTextSHA256 != "" || len(r.Changes) != 0 {
+			return invalid("%s requires tofuLock and carries no planTextSha256 or changes", RefusalStateLockForeign)
+		}
+		for _, field := range []string{r.TofuLock.ID, r.TofuLock.Operation, r.TofuLock.Who, r.TofuLock.Created} {
+			if len(field) > 512 {
+				return invalid("tofuLock fields are limited to 512 bytes")
+			}
+		}
+	default:
+		return invalid("code must be %s or %s", RefusalDestructive, RefusalStateLockForeign)
+	}
+	return nil
+}
 
 // StopAttestationPayload is the ledger payload: the request plus PlanID.
 type StopAttestationPayload struct {

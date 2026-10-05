@@ -547,11 +547,13 @@ func fleetBlocker(s controller.Status) *FleetBlockerView {
 }
 
 // resourceBlocker is fleetBlocker with the executor lane's blockers: a held
-// fence still comes first, then the converge blockers (mode mismatch,
-// destructive refusal, history_rewritten, trigger, approval), then the
-// readiness conditions.
+// fence still comes first, except for the blockers marked WhileHeld (the
+// destructive remainder of the held plan, state_lock_foreign and a stopped
+// attempt that needs a new resume approve), then the converge blockers (mode
+// mismatch, destructive refusal, history_rewritten, trigger, approval), then
+// the readiness conditions.
 func resourceBlocker(s controller.Status, derived controller.ConvergeDerivation) *FleetBlockerView {
-	if s.Active == nil && derived.Blocker != nil {
+	if derived.Blocker != nil && (s.Active == nil || derived.Blocker.WhileHeld) {
 		b := derived.Blocker
 		return &FleetBlockerView{Kind: b.Kind, Reason: b.Reason, Message: b.Message, PlanID: b.PlanID}
 	}
@@ -1159,9 +1161,9 @@ type ConvergeDecisionSource interface {
 	Decision(resource string) (controller.WatchDecision, bool)
 }
 
-// kindFleetConvergeRefusal is the ledger kind of the executor's destructive
-// refusal (P2 hand-off), Ref = plan ID.
-const kindFleetConvergeRefusal = "fleet.converge.refusal"
+// kindFleetConvergeRefusal is the ledger kind of the executor's refusals
+// (P2/P3 hand-offs), Ref = plan ID.
+const kindFleetConvergeRefusal = executor.KindConvergeRefusal
 
 // pgConvergeFacts is the PG FleetConvergeFactsReader, reading the existing
 // ledger: the converge plan, its approve and refusal operations, the stop
@@ -1218,22 +1220,44 @@ func (f *pgConvergeFacts) ConvergeFacts(ctx context.Context, resource *controlle
 					break
 				}
 			}
-			refusals, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: kindFleetConvergeRefusal, Ref: plan.PlanID, Status: string(model.OperationSucceeded), Limit: 1})
+			refusals, err := f.refusals(ctx, plan.PlanID)
 			if err != nil {
 				return nil, err
 			}
-			plan.Refused = len(refusals) > 0
+			for _, refusal := range refusals {
+				if refusal.Code == executor.RefusalDestructive && refusal.CommitSHA == plan.CommitSHA {
+					plan.Refused = true
+					break
+				}
+			}
 			facts.Plan = plan
 		}
 	}
 	if status.Active != nil {
-		resume, err := f.resumeApproved(ctx, recorder, status.Active.PlanID)
+		state, err := f.holderState(ctx, recorder, status.Active.PlanID)
 		if err != nil {
 			return nil, err
 		}
-		facts.ResumeApproved = resume
+		facts.ResumeApproved, facts.ResumeNeededAttemptID, facts.StateLock = state.resumeApproved, state.resumeNeededAttemptID, state.stateLock
+		facts.HolderRefused = state.refused
 	}
 	return facts, nil
+}
+
+// refusals lists planID's recorded executor refusals (newest first, bounded).
+func (f *pgConvergeFacts) refusals(ctx context.Context, planID string) ([]executor.ConvergeRefusalPayload, error) {
+	ops, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: kindFleetConvergeRefusal, Ref: planID, Status: string(model.OperationSucceeded), Limit: 100})
+	if err != nil {
+		return nil, err
+	}
+	var out []executor.ConvergeRefusalPayload
+	for _, op := range ops {
+		var payload executor.ConvergeRefusalPayload
+		if decodeFleetLedgerValue(op.Payload, &payload) && payload.PlanID == planID {
+			out = append(out, payload)
+		}
+	}
+	return out, nil
 }
 
 func decodeFleetLedgerValue(value interface{}, target interface{}) bool {
@@ -1241,21 +1265,42 @@ func decodeFleetLedgerValue(value interface{}, target interface{}) bool {
 	return err == nil && json.Unmarshal(encoded, target) == nil
 }
 
-// resumeApproved mirrors the store's recovery admission without starting
-// anything: an unconsumed resume approve names the holder plan's latest
-// executor-lane attempt, and a valid stop attestation or admin provider
-// evidence exists for exactly that attempt.
-func (f *pgConvergeFacts) resumeApproved(ctx context.Context, recorder *PGConvergePlanRecorder, planID string) (bool, error) {
+// pgHolderState is what the facts reader derives about the plan that holds
+// the fence.
+type pgHolderState struct {
+	// resumeApproved: an unconsumed resume approve names the holder plan's
+	// latest executor-lane attempt, and a stop attestation or admin provider
+	// evidence exists for exactly that attempt.
+	resumeApproved bool
+	// resumeNeededAttemptID: the same stop proof exists but no unconsumed
+	// resume approve names the attempt (P3 hand-off). A recovery that was
+	// itself killed has consumed its approve, so the operator approves again.
+	resumeNeededAttemptID string
+	// stateLock: the executor reported state_lock_foreign for the latest attempt.
+	stateLock *controller.StateLockFacts
+	// refused: a destructive refusal names the holder plan's own commit.
+	refused bool
+}
+
+// holderState mirrors the store's recovery admission without starting
+// anything. The stop attestation is checked with every rule of
+// executor.ValidStopAttestation except its age: the loop attests once per
+// invocation and the operator's --resume may come long after the five minute
+// AttestationMaxAge, so freshness must not turn resumeApproved false (P3
+// blocker). Admission keeps checking freshness against the fresh attestation
+// the recover handler posts itself just before its start.
+func (f *pgConvergeFacts) holderState(ctx context.Context, recorder *PGConvergePlanRecorder, planID string) (pgHolderState, error) {
+	var state pgHolderState
 	converge, err := recorder.ConvergePlan(ctx, planID)
 	if errors.Is(err, ErrConvergePlanNotFound) || errors.Is(err, ErrNotConvergePlan) {
-		return false, nil
+		return state, nil
 	}
 	if err != nil {
-		return false, err
+		return state, err
 	}
 	attempts, err := f.h.db.ListFleetRunnerAttempts(ctx, planID, 100)
 	if err != nil || len(attempts) == 0 {
-		return false, err
+		return state, err
 	}
 	latest := attempts[0]
 	hasChild := map[string]bool{}
@@ -1268,25 +1313,54 @@ func (f *pgConvergeFacts) resumeApproved(ctx context.Context, recorder *PGConver
 		}
 	}
 	source, ok := store.FleetExecutorAttemptMetadata(&latest)
-	if !ok || latest.Status == model.FleetRunnerAttemptSucceeded || hasChild[latest.ID] {
-		return false, nil
+	if !ok {
+		return state, nil
+	}
+	refusals, err := f.refusals(ctx, planID)
+	if err != nil {
+		return state, err
+	}
+	for _, refusal := range refusals {
+		if refusal.Code == executor.RefusalDestructive && refusal.CommitSHA == converge.Converge.CommitSHA {
+			state.refused = true
+		}
+	}
+	for _, refusal := range refusals {
+		if refusal.Code == executor.RefusalStateLockForeign && refusal.SourceAttemptID == latest.ID {
+			lock := controller.StateLockFacts{SourceAttemptID: latest.ID}
+			if refusal.TofuLock != nil {
+				lock.LockID, lock.Who, lock.Operation = refusal.TofuLock.ID, refusal.TofuLock.Who, refusal.TofuLock.Operation
+			}
+			state.stateLock = &lock
+			break
+		}
+	}
+	if latest.Status == model.FleetRunnerAttemptSucceeded || hasChild[latest.ID] {
+		return state, nil
+	}
+	stopped, err := f.stopProof(ctx, planID, latest, source)
+	if err != nil || !stopped {
+		return state, err
 	}
 	approves, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: executor.KindConvergeApprove, Ref: planID, Status: string(model.OperationSucceeded), Limit: 200})
 	if err != nil {
-		return false, err
+		return state, err
 	}
-	approved := false
 	for _, op := range approves {
 		var approve executor.ApproveAdmission
 		if decodeFleetLedgerValue(op.Payload, &approve) && approve.Resume && approve.PlanID == planID &&
 			approve.CommitSHA == converge.Converge.CommitSHA && approve.SourceAttemptID == latest.ID {
-			approved = true
-			break
+			state.resumeApproved = true
+			return state, nil
 		}
 	}
-	if !approved {
-		return false, nil
-	}
+	state.resumeNeededAttemptID = latest.ID
+	return state, nil
+}
+
+// stopProof reports whether a stop attestation (age ignored, see holderState)
+// or admin provider evidence exists for exactly attempt latest.
+func (f *pgConvergeFacts) stopProof(ctx context.Context, planID string, latest model.FleetRunnerAttempt, source executor.AttemptMetadata) (bool, error) {
 	now := f.now().UTC()
 	attestations, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: executor.KindStopAttestation, Ref: planID, Status: string(model.OperationSucceeded), Limit: 50})
 	if err != nil {
@@ -1298,7 +1372,8 @@ func (f *pgConvergeFacts) resumeApproved(ctx context.Context, recorder *PGConver
 			continue
 		}
 		attester, _ := op.Metadata[store.FleetExecutorAttesterMetadataKey].(string)
-		if executor.ValidStopAttestation(payload.StopAttestationRequest, source, latest.PrincipalSubject, attester, now) == nil {
+		// now = observedAt: the age bound is vacuous, every other rule applies.
+		if executor.ValidStopAttestation(payload.StopAttestationRequest, source, latest.PrincipalSubject, attester, payload.ObservedAt) == nil {
 			return true, nil
 		}
 	}

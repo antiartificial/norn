@@ -136,9 +136,23 @@ func (s *V3OperationStore) planFleetTargetMutation(ctx context.Context, acceptan
 			return fleetTargetMutationPlan{}, err
 		}
 		// Executor-lane plans have no dispatch preparation: their holder nonce
-		// is derived (E2).
-		if nonceSHA256 == "" && executorLane {
+		// is derived (E2), and so is a converge plan's that has no attempt yet
+		// (E4b/E5 hand-off).
+		converge, _, err := s.fleetConvergePlanOf(ctx, admission.PlanID)
+		if err != nil {
+			return fleetTargetMutationPlan{}, err
+		}
+		if nonceSHA256 == "" && (executorLane || converge != nil) {
 			nonceSHA256 = executor.HolderNonceSHA256(admission.PlanID)
+		}
+		// A converge plan that never started holds no fence and has nothing
+		// to prove stopped: abandoning it only forbids a later start.
+		if converge != nil && environment == "" && !executorLane {
+			if abandon, ok, err := s.planAbandonUnstartedConvergePlan(ctx, admission.PlanID, operationID, now); err != nil {
+				return fleetTargetMutationPlan{}, err
+			} else if ok {
+				return abandon, nil
+			}
 		}
 		if nonceSHA256 == "" {
 			return fleetTargetMutationPlan{}, lifecycle.ErrFleetTargetReleaseEvidenceMismatch
@@ -146,4 +160,31 @@ func (s *V3OperationStore) planFleetTargetMutation(ctx context.Context, acceptan
 		return s.planFleetTargetAbandon(ctx, admission.PlanID, nonceSHA256, cluster, environment, operationID, proof.ListingSnapshotSHA256, now)
 	}
 	return fleetTargetMutationPlan{}, &store.AcceptanceValidationError{Reason: "fleet target mutation kind is invalid"}
+}
+
+// planAbandonUnstartedConvergePlan abandons a converge plan that never had an
+// attempt: ok is false when the plan is already abandoned or has an attempt.
+// Such a plan holds no fence and has nothing to prove stopped, so the abandon
+// needs no listing snapshot or age; its holder nonce is the derived one. The
+// plan-state compare fails the Txn if an attempt is created meanwhile.
+func (s *V3OperationStore) planAbandonUnstartedConvergePlan(ctx context.Context, planID, operationID string, now time.Time) (fleetTargetMutationPlan, bool, error) {
+	if abandoned, err := s.checkFleetTargetPlanAbandoned(ctx, planID); err != nil || abandoned {
+		return fleetTargetMutationPlan{}, false, err
+	}
+	stateCompare, err := s.fleetPlanStateCompare(ctx, planID)
+	if err != nil {
+		return fleetTargetMutationPlan{}, false, err
+	}
+	attempts, err := s.ListFleetRunnerAttempts(ctx, planID)
+	if err != nil || len(attempts) > 0 {
+		return fleetTargetMutationPlan{}, false, err
+	}
+	record, err := json.Marshal(v3FleetTargetAbandoned{PlanID: planID, NonceSHA256: executor.HolderNonceSHA256(planID), OperationID: operationID, AbandonedAt: now})
+	if err != nil {
+		return fleetTargetMutationPlan{}, false, err
+	}
+	return fleetTargetMutationPlan{
+		compares: []clientv3.Cmp{s.abandonedCompare(planID), stateCompare},
+		puts:     []clientv3.Op{clientv3.OpPut(s.fleetTargetAbandonedKey(planID), string(record))},
+	}, true, nil
 }

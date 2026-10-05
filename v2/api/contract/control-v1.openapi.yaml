@@ -595,6 +595,23 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/converge-refusals:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: createFleetConvergeRefusal
+      description: Executor lane (ADR 0010). Records the signed operation fleet.converge.refusal (Ref = plan ID) for a plan the executor will not apply. Requires the executor principal (exact fleet:execute, not CI) and an Idempotency-Key; the plan must be a converge plan whose commit and digest equal commitSha and planSha256. Code destructive_requires_github_lane (key executor-refusal:<planID>) sets desired.converge.refused and the resource blocker destructive_requires_github_lane, and is admitted while a recovery attempt of the plan is live; the GitHub-lane dispatch of the change clears it. Code state_lock_foreign (key executor-refusal:<sha256 of planID, code, sourceAttemptId and lock ID>) is admitted only while sourceAttemptId is the plan's latest executor-lane attempt and has not finished; it does not set refused, it derives the blocker state_lock_foreign while that attempt stays the latest. A replay returns the first response; the same key with another body is idempotency_key_reused.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetConvergeRefusalRequest' } } }
+      responses:
+        '200': { description: Replay of the same request, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Refusal recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/provider-evidence:
     parameters:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
@@ -2074,6 +2091,27 @@ components:
         sourceCgroupEmpty: { type: boolean, description: 'The executor unit''s cgroup subtree (the unit cgroup and every descendant) holds no process other than the attesting loop, read before it started any child. systemd reuses the unit cgroup across invocations, and phases can neither leave it nor create sub-cgroups (no Delegate=, no capabilities, never systemd-run).' }
         observedAt: { type: string, format: date-time }
         tofuLock: { $ref: '#/components/schemas/FleetExecutorTofuLock' }
+    FleetConvergeRefusalRequest:
+      type: object
+      additionalProperties: false
+      required: [code, commitSha, planSha256]
+      properties:
+        code: { type: string, enum: [destructive_requires_github_lane, state_lock_foreign] }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        planTextSha256: { type: string, pattern: '^([0-9a-f]{64})?$', description: 'destructive_requires_github_lane only: digest of the refused tofu plan text.' }
+        changes: { type: object, additionalProperties: true, description: 'destructive_requires_github_lane only: the refused plan''s change summary, at most 16 KiB encoded.' }
+        sourceAttemptId: { type: string, format: uuid, description: 'state_lock_foreign only, required: the plan''s latest executor-lane attempt.' }
+        tofuLock: { $ref: '#/components/schemas/FleetConvergeRefusalTofuLock' }
+    FleetConvergeRefusalTofuLock:
+      type: object
+      additionalProperties: false
+      description: The foreign OpenTofu state lock a recovery found (state_lock_foreign, required for that code). Every field may be empty when tofu's lock text was unreadable; created is tofu's own text.
+      properties:
+        id: { type: string, maxLength: 512 }
+        operation: { type: string, maxLength: 512 }
+        who: { type: string, maxLength: 512 }
+        created: { type: string, maxLength: 512 }
     FleetExecutorTofuLock:
       type: object
       additionalProperties: false
@@ -2189,7 +2227,7 @@ components:
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: Hex part of the converge plan's digest; the attempt start's planSha256. }
         requiresApproval: { type: boolean, description: The converge plan's requiresApproval. }
         approved: { type: boolean, description: A non-resume fleet.converge.approve exists for this plan and its commitSha. }
-        refused: { type: boolean, description: 'Omitted unless true. The executor recorded a destructive refusal (fleet.converge.refusal) for this plan; blocker destructive_requires_github_lane, and the loop waits instead of replanning.' }
+        refused: { type: boolean, description: 'Omitted unless true. The executor recorded a destructive refusal (fleet.converge.refusal, code destructive_requires_github_lane) for this plan; blocker destructive_requires_github_lane, and the loop waits instead of replanning.' }
     FleetResourceCondition:
       type: object
       required: [type, status, evidenceRefs]
@@ -2234,7 +2272,7 @@ components:
       required: [kind, reason]
       properties:
         kind: { type: string, enum: [execution, condition, reconciliation, observation, trigger, approval] }
-        reason: { type: string, description: 'Executor-lane reasons, in priority order after a held fence: execution_mode_mismatch (execution), destructive_requires_github_lane (approval), history_rewritten, trigger_unverified, trigger_pending (trigger), approval_required (approval).' }
+        reason: { type: string, description: 'Executor-lane reasons, in priority order after a held fence: execution_mode_mismatch (execution), destructive_requires_github_lane (approval), state_lock_foreign (execution), history_rewritten, trigger_unverified, trigger_pending (trigger), approval_required (approval). While the fence is held only destructive_requires_github_lane (for the held plan), state_lock_foreign and approval_required for a stopped attempt that needs a new resume approve (nextAction approve_converge, message norn fleet converge <name> --resume) outrank the execution blocker.' }
         message: { type: string }
         condition: { type: string }
         planId: { type: string }
@@ -2550,6 +2588,7 @@ components:
         - fleet_executor_device_active
         - fleet_execution_mode_unavailable
         - fleet_converge_facts_failed
+        - fleet_converge_refusal_rejected
         - fleet_resource_store_failed
         - fleet_observation_out_of_bounds
         - fleet_observation_identity_denied

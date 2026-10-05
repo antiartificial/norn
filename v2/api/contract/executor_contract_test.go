@@ -59,6 +59,8 @@ func TestExecutorPinnedShapesMatchOpenAPI(t *testing.T) {
 		"FleetExecutorAttemptStartRequest":    reflect.TypeOf(executor.AttemptStartRequest{}),
 		"FleetExecutorAttemptMetadata":        reflect.TypeOf(executor.AttemptMetadata{}),
 		"FleetConvergeView":                   reflect.TypeOf(executor.ConvergeView{}),
+		"FleetConvergeRefusalRequest":         reflect.TypeOf(executor.ConvergeRefusalRequest{}),
+		"FleetConvergeRefusalTofuLock":        reflect.TypeOf(executor.RefusalTofuLock{}),
 	} {
 		props, required := executorSchemaProps(t, doc, schema)
 		var got, req []string
@@ -123,6 +125,7 @@ func TestExecutorRoutesCodesAndReleaseEvidenceArePublished(t *testing.T) {
 		"/api/v1/fleet/plans/{planID}/converge/approve":  "approveFleetConverge",
 		"/api/v1/fleet/plans/{planID}/credential-grants": "createFleetCredentialGrant",
 		"/api/v1/fleet/executor/stop-attestations":       "createFleetExecutorStopAttestation",
+		"/api/v1/fleet/plans/{planID}/converge-refusals": "createFleetConvergeRefusal",
 		"/api/v1/fleet/plans/{planID}/provider-evidence": "recordFleetProviderEvidence",
 	} {
 		item, ok := paths[path].(map[string]interface{})

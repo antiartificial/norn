@@ -26,7 +26,10 @@ import (
 	"norn/v2/api/store"
 )
 
-var _ store.FleetExecutorOpsReader = (*V3OperationStore)(nil)
+var (
+	_ store.FleetExecutorOpsReader          = (*V3OperationStore)(nil)
+	_ store.FleetExecutorConvergePlanReader = (*V3OperationStore)(nil)
+)
 
 func (s *V3OperationStore) fleetExecutorAttemptFact(ctx context.Context, item fleet.RunnerAttempt) (store.FleetExecutorAttemptFact, error) {
 	fact := store.FleetExecutorAttemptFact{
@@ -110,6 +113,24 @@ func (s *V3OperationStore) FleetExecutorDevice(ctx context.Context, deviceID str
 func (s *V3OperationStore) FleetExecutorPlanIsConverge(ctx context.Context, planID string) (bool, error) {
 	converge, _, err := s.fleetConvergePlanOf(ctx, planID)
 	return converge != nil, err
+}
+
+func (s *V3OperationStore) FleetExecutorConvergePlan(ctx context.Context, planID string) (*store.FleetExecutorConvergePlanFact, error) {
+	record, _, err := s.load(ctx, planID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if record.Operation.Kind != "fleet.capacity-plan" {
+		return nil, nil
+	}
+	converge, digest, _ := parseFleetConvergePlanPayload(record.Operation.Payload)
+	if converge == nil {
+		return nil, nil
+	}
+	return &store.FleetExecutorConvergePlanFact{Resource: converge.Resource, CommitSHA: converge.CommitSHA, PlanSHA256: strings.TrimPrefix(digest, "sha256:")}, nil
 }
 
 func (s *V3OperationStore) FleetExecutorLedgerRows(ctx context.Context, kind, planID string) ([]store.FleetExecutorLedgerRow, error) {

@@ -491,6 +491,23 @@ func abandonFleetPlanWithEvidenceTx(ctx context.Context, tx pgx.Tx, planID strin
 	if err != nil {
 		return err
 	}
+	// A converge plan (executor lane) has no dispatch row, so its nonce is
+	// derived, whether or not an attempt exists yet (E4b/E5 hand-off).
+	converge, err := fleetConvergePlanTx(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	if converge != nil && nonce == "" {
+		nonce = executor.HolderNonceSHA256(planID)
+	}
+	// A converge plan that never started holds no fence and has nothing to
+	// prove stopped: abandoning it only forbids a later start.
+	if converge != nil && targetID == "" && len(holder.Attempts) == 0 {
+		if evidence != nil {
+			return &AcceptanceValidationError{Reason: "providerEvidence applies only to an executor-lane holder"}
+		}
+		return AbandonFleetPlan(ctx, tx, planID, nonce, "", operationID, now)
+	}
 	// Executor-lane plans have no dispatch row, so fleetTargetBindInputs returns
 	// an empty nonce for them; their holder nonce is derived (E2).
 	proof, executorLane, err := fleetExecutorLaneProofTx(ctx, tx, planID, evidence, proof, now)

@@ -382,6 +382,31 @@ type ConvergeFacts struct {
 	// ResumeApproved: see ActiveRefs.ResumeApproved. Only meaningful while the
 	// fence is held.
 	ResumeApproved bool
+	// ResumeNeededAttemptID, while the fence is held, names the holder plan's
+	// latest executor-lane attempt when a stop attestation or providerEvidence
+	// exists for it and no unconsumed resume approve names it: the operator
+	// must approve again with --resume (a recovery that was itself killed has
+	// consumed its approve). "" otherwise.
+	ResumeNeededAttemptID string
+	// StateLock is set, while the fence is held, when the executor reported
+	// state_lock_foreign for the holder plan's latest attempt (it does not set
+	// ConvergePlanFacts.Refused). Nil once another attempt is the latest.
+	StateLock *StateLockFacts
+	// HolderRefused is set, while the fence is held, when the executor
+	// recorded a destructive refusal for the holder plan's own commit (a
+	// recovery's destructive remainder). It is read from the holder plan, not
+	// from Plan, which follows the desired revision and may already name a
+	// newer plan.
+	HolderRefused bool
+}
+
+// StateLockFacts describes a foreign OpenTofu state lock the executor refused
+// to unlock (every field may be empty when tofu's lock text was unreadable).
+type StateLockFacts struct {
+	SourceAttemptID string
+	LockID          string
+	Who             string
+	Operation       string
 }
 
 // ConvergePlanFacts describes one converge plan against its approvals.
@@ -396,7 +421,9 @@ type ConvergePlanFacts struct {
 	// Approved: a non-resume approve exists for this plan and commit.
 	Approved   bool
 	ApprovedBy string
-	// Refused: the executor recorded a destructive refusal for this plan.
+	// Refused: the executor recorded a destructive refusal
+	// (destructive_requires_github_lane) for this plan. A state_lock_foreign
+	// refusal does not set it.
 	Refused bool
 }
 
