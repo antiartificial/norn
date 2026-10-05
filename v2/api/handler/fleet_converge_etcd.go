@@ -25,6 +25,7 @@ import (
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/controller"
 	"norn/v2/api/fleet/executor"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -51,7 +52,34 @@ func (p *EtcdConvergePlanRecorder) recorded(ctx context.Context, plan *controlle
 	if err != nil {
 		return nil, err
 	}
-	return &controller.RecordedConverge{PlanID: plan.ID, Digest: plan.Digest, Converge: *plan.Converge, Admissible: !abandoned}, nil
+	admissible := !abandoned
+	if admissible {
+		stale, err := p.revalidationStale(ctx, plan)
+		if err != nil {
+			return nil, err
+		}
+		admissible = !stale
+	}
+	return &controller.RecordedConverge{PlanID: plan.ID, Digest: plan.Digest, Converge: *plan.Converge, Admissible: admissible}, nil
+}
+
+// revalidationStale is the etcd form of store.DB.IsFleetPlanRevalidationStale:
+// the plan's revalidation window (M4) closed with the plan still older than
+// its end, so only a freshly recorded plan can be admitted.
+func (p *EtcdConvergePlanRecorder) revalidationStale(ctx context.Context, plan *controller.ConvergeCapacityPlan) (bool, error) {
+	op, err := p.operations.GetOperation(ctx, plan.ID)
+	if err != nil || op == nil {
+		return false, err
+	}
+	targetID, registryEmpty, _, err := p.operations.ResolveFleetTargetForPlan(ctx, plan.Cluster, "")
+	if err != nil || registryEmpty || targetID == "" {
+		return false, nil
+	}
+	fence, _, err := p.operations.GetFleetTargetFence(ctx, targetID)
+	if err != nil {
+		return false, err
+	}
+	return lifecycle.RevalidationStale(fence, plan.ID, op.StartedAt, time.Now().UTC()), nil
 }
 
 // NewestConvergePlan implements controller.ConvergePlanRecorder. Newest is

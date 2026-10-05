@@ -553,6 +553,31 @@ func (db *DB) IsFleetPlanAbandonedForPlan(ctx context.Context, planID string) (b
 	return IsFleetPlanAbandoned(ctx, tx, planID)
 }
 
+// IsFleetPlanRevalidationStale is the read-only check behind the converge
+// recorder's Admissible: true when the plan was started inside a release's
+// revalidation window that has since closed, so admission refuses it forever
+// (fleet_plan_revalidation_required) and only a freshly recorded plan can
+// proceed. It takes no lock beyond FOR SHARE on the fence and changes nothing.
+func (db *DB) IsFleetPlanRevalidationStale(ctx context.Context, planID string, now time.Time) (bool, error) {
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	cluster, startedAt, _, _, err := fleetExecutorPlanTx(ctx, tx, planID)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, fence, _, registryEmpty, err := LockFleetTargetFenceForPlan(ctx, tx, cluster, "", false)
+	if err != nil || registryEmpty {
+		return false, nil
+	}
+	return lifecycle.RevalidationStale(fence, planID, startedAt, now), nil
+}
+
 // ResolveFleetTargetForCluster is the read-only wrapper handlers use for a
 // diagnostic or pre-flight resolve outside any mutating transaction (the Q11
 // stop-check gate and the m11 non-locking occupancy pre-check both need to

@@ -179,6 +179,26 @@ func DecideAcquire(f FenceFacts, planID, nonceSHA256 string, planStartedAt time.
 	return next, nil
 }
 
+// RevalidationStale reports whether a recorded plan can only be cured by
+// recording a fresh one: the revalidation window of the last release (M4) has
+// fully elapsed at now, yet planStartedAt still precedes its end, so
+// DecideAcquire refuses this plan forever. Inside the window the plan is not
+// stale (waiting cures it only for a plan recorded after the window, so a
+// re-record then would be refused too). A plan that holds the fence, or whose
+// own release set it, is never stale: only a plan that has not acquired
+// anything is superseded. It is advisory (callers read the fence without the
+// acquire's lock) and never changes a fence.
+func RevalidationStale(f FenceFacts, planID string, planStartedAt, now time.Time) bool {
+	if f.Held && f.HolderPlanID == planID {
+		return false
+	}
+	if f.LastRelease == nil || f.LastRelease.Reason == "dispatch_not_submitted" || f.LastRelease.PlanID == planID {
+		return false
+	}
+	windowEnd := f.LastRelease.At.Add(RevalidationSkew)
+	return planStartedAt.Before(windowEnd) && !now.Before(windowEnd)
+}
+
 // DecideBind is the fence transition behind both the first attempt bind and
 // recovery bind (M13: neither is stranded by an epoch advance). The fence
 // must already be held by this plan and nonce. If it was acquired or last
