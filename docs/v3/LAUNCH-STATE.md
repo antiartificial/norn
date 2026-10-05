@@ -58,6 +58,17 @@ returned HTTP 401. Its local token file was removed after a hash-only receipt
 was saved. Technical external cleanup is now observed, but the final pilot
 bill and a signed protected final-zero receipt remain unavailable.
 
+**Reusable DigitalOcean cleanup note:** A pilot personal access token can
+self-revoke without a new dashboard sign-in while its local token file is still
+available. For `pilot261004b`, `POST` to DigitalOcean’s
+[OAuth revocation endpoint](https://docs.digitalocean.com/reference/api/oauth/)
+with that token as both Bearer authorization and the `token` form parameter
+returned HTTP 200; a subsequent `/v2/account` call with the same token returned
+401. Record only a hash and response statuses, then remove the local file.
+DigitalOcean documents the endpoint for OAuth tokens; support for this
+dashboard-issued personal access token is a live observation to recheck before
+future use.
+
 ## Mini and source
 
 On 2026-10-04, the Mini's loopback v3 API returned `status: ok` and a signed
