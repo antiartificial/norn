@@ -282,8 +282,10 @@ type FleetAppliedView struct {
 // FleetActiveView names the plan, dispatch and attempts currently holding the
 // target's fence (IDs only; the fence and attempt stores stay the truth).
 type FleetActiveView struct {
-	PlanID          string   `json:"planId"`
-	DispatchRunID   string   `json:"dispatchRunId,omitempty"`
+	PlanID        string `json:"planId"`
+	DispatchRunID string `json:"dispatchRunId,omitempty"`
+	// AttemptIDs is ordered oldest to newest (attempt start time, then attempt
+	// number, then ID): the last entry is the newest attempt.
 	AttemptIDs      []string `json:"attemptIds"`
 	FenceGeneration int64    `json:"fenceGeneration"`
 	Occupancy       string   `json:"occupancy"`

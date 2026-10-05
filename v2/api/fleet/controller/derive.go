@@ -3,7 +3,7 @@
 // and takes `now` as a parameter: every "fresh" decision is a function of
 // in.Now, never of the wall clock. The same Input always produces a
 // byte-identical Status (every collection DeriveStatus itself builds --
-// Conditions, AttemptIDs -- is sorted).
+// Conditions, AttemptIDs -- is sorted; AttemptIDs oldest to newest).
 //
 // Checkpoint evidence never makes a readiness condition True: the five
 // observation-backed conditions below (ProviderStateKnown, NodesEnrolled,
@@ -439,11 +439,24 @@ func deriveActive(in Input) (*ActiveRefs, lifecycle.Occupancy) {
 	if !in.Fence.Held {
 		return nil, occupancy
 	}
-	ids := make([]string, 0, len(in.Holder.Attempts))
-	for _, a := range in.Holder.Attempts {
+	// Oldest to newest (the AttemptIDs contract): by start time, then the
+	// per-plan attempt number, then ID, so ties are deterministic. Attempt IDs
+	// are random UUIDs, so sorting by ID would not order them in time.
+	ordered := append([]fleet.RunnerAttempt(nil), in.Holder.Attempts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if !a.StartedAt.Equal(b.StartedAt) {
+			return a.StartedAt.Before(b.StartedAt)
+		}
+		if a.Attempt != b.Attempt {
+			return a.Attempt < b.Attempt
+		}
+		return a.ID < b.ID
+	})
+	ids := make([]string, 0, len(ordered))
+	for _, a := range ordered {
 		ids = append(ids, a.ID)
 	}
-	sort.Strings(ids)
 	dispatchRunID := ""
 	// The bound GitHub dispatch run, never an attempt's RunnerAttemptID (a
 	// per-run-attempt identity that recovery runs also carry).

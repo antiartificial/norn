@@ -262,8 +262,12 @@ type AppliedRef struct {
 // it only ever names IDs that already exist in the fence, dispatch and
 // attempt stores, never a second copy of their state.
 type ActiveRefs struct {
-	PlanID          string
-	DispatchRunID   string
+	PlanID        string
+	DispatchRunID string
+	// AttemptIDs is ordered oldest to newest: by attempt StartedAt, then the
+	// per-plan attempt number, then ID. The last entry is the newest attempt
+	// (clients, such as the executor loop, rely on that); it is never an ID
+	// sort, since attempt IDs are random.
 	AttemptIDs      []string
 	FenceGeneration int64
 	Occupancy       string

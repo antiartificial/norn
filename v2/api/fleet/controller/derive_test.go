@@ -577,6 +577,27 @@ func TestDeriveDeterministic(t *testing.T) {
 	}
 }
 
+// TestDeriveAttemptIDsOldestToNewest: attemptIds is ordered by start time, so
+// the last entry is the newest attempt even when IDs sort the other way, and
+// equal start times fall back to the attempt number, then the ID.
+func TestDeriveAttemptIDsOldestToNewest(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	in := baseInput(now)
+	in.Resource.Desired = DesiredRevision{Generation: 0}
+	in.Fence = heldFence()
+	in.Holder = lifecycle.HolderFacts{DispatchState: "dispatched", Attempts: []fleet.RunnerAttempt{
+		{ID: "0973f018", PlanID: "plan-1", Attempt: 3, StartedAt: now, Status: "running", HeartbeatExpiresAt: now.Add(time.Hour)},
+		{ID: "8febeb9e", PlanID: "plan-1", Attempt: 1, StartedAt: now.Add(-2 * time.Hour), Status: "canceled"},
+		{ID: "aaaaaaaa", PlanID: "plan-1", Attempt: 2, StartedAt: now.Add(-time.Hour), Status: "failed"},
+		{ID: "bbbbbbbb", PlanID: "plan-1", Attempt: 2, StartedAt: now.Add(-time.Hour), Status: "failed"},
+	}}
+	want := []string{"8febeb9e", "aaaaaaaa", "bbbbbbbb", "0973f018"}
+	if got := DeriveStatus(in).Active.AttemptIDs; !reflect.DeepEqual(got, want) {
+		t.Fatalf("AttemptIDs = %v, want oldest to newest %v", got, want)
+	}
+}
+
 // TestDeriveControllerRestart: a restarted controller reads the persisted
 // status back (JSON round trip) as Resource.Status and re-derives from the
 // same facts; it must reach exactly the same status, LastApplied included.
