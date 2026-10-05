@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 15:10 UTC. This is the single current handoff for the
+Observed 2026-10-05 15:18 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -71,16 +71,16 @@ future use.
 
 ## Mini and source
 
-On 2026-10-04, the Mini's loopback v3 API returned `status: ok` and a signed
+On 2026-10-05 at 15:18 UTC, the Mini's loopback v3 API returned healthy with
 running source of `26147c39a554b73b6761a371edee5a9591c81d3f`, displayed
 as `v2.20.0-platform-72-g26147c39`. The prefix is a platform version label;
-the source includes v3 work. Consul, Nomad, PostgreSQL, S3, SOPS and the
-Nomad/Consul connector were up. Authenticated inventory showed 28 app entries,
+the source includes v3 work. Authenticated inventory showed 28 app entries,
 45 service entries, zero active operations and 25 active incidents. Those counts
 include discovered and inactive entries and do not prove identity preservation
 through the earlier one-way transition. The Mini reported
 `fleet_configured=false`, zero node pools and zero Fleet plans at that cutoff.
-Recheck before relying on its current runtime state.
+These counts are an inventory, not Fleet readiness or a claim that each
+application is healthy.
 
 Norn [PR #115](https://github.com/antiartificial/norn/pull/115) merged the bridge
 title correction as `c56fa0c`. The signed
