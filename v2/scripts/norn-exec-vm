@@ -11,7 +11,9 @@ set -euo pipefail
 #   up                 create the VM (if absent) and provision it
 #   create             limactl start --name norn-exec template://ubuntu-24.04
 #   provision          users, python + wheelhouse, sops, age, tofu, MinIO, fake metadata
-#   test [module...]   run the VM-only executor tests as root (default: the three P1 modules)
+#   build-minio        cross-build the pinned MinIO source release for the VM (see MINIO_REF)
+#   test [module...]   run the VM-only executor tests as root, in their own PID namespace
+#                      (default: the three P1 modules)
 #   shell [cmd...]     open a shell (or run a command) in the VM
 #   droplet-id <id>    change the droplet ID the fake metadata service reports
 #   stop | destroy | status
@@ -21,6 +23,10 @@ set -euo pipefail
 #                      norn-fleet-controller-executor)
 #   NORN_EXEC_VM_NAME  VM name (default norn-exec)
 #   TOFU_VERSION, SOPS_VERSION, AGE_VERSION  pinned tool versions (defaults below)
+#   MINIO_REF          MinIO source tag build-minio builds (default below). MinIO no longer
+#                      publishes binaries (dl.min.io answers 410 Gone), so provision installs a
+#                      binary built on this Mac by build-minio (needs go) and cached in
+#                      NORN_EXEC_VM_CACHE (default ~/.cache/norn-exec-vm), or one named by MINIO_BIN.
 #
 # limactl is required (brew install lima) and is never installed by this script.
 # The fake DigitalOcean metadata service answers on 169.254.169.254:80 through a
@@ -32,6 +38,8 @@ TOFU_VERSION="${TOFU_VERSION:-1.10.6}"   # staging pin; use_lockfile needs >= 1.
 SOPS_VERSION="${SOPS_VERSION:-3.9.4}"
 AGE_VERSION="${AGE_VERSION:-1.2.1}"
 MINIO_BUCKET="${MINIO_BUCKET:-norn-exec-state}"
+MINIO_REF="${MINIO_REF:-RELEASE.2025-09-07T16-13-09Z}"   # source tag; no release binaries exist any more
+CACHE_DIR="${NORN_EXEC_VM_CACHE:-$HOME/.cache/norn-exec-vm}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLEET_DIR="${NORN_FLEET_DIR:-$(cd "$here/../../.." && pwd)/norn-fleet-controller-executor}"
 
@@ -129,10 +137,10 @@ if [ -f "$req" ]; then
 fi
 
 # MinIO (S3) for the OpenTofu lockfile tests (use_lockfile=true); single drive, the bucket is a directory.
+# dl.min.io no longer serves binaries (410 Gone), so the host builds one (build-minio) and passes its path.
 if [ ! -x /usr/local/bin/minio ]; then
-  curl -fsSL -o /usr/local/bin/minio "https://dl.min.io/server/minio/release/linux-${arch}/minio"
-  (cd /usr/local/bin && curl -fsSL "https://dl.min.io/server/minio/release/linux-${arch}/minio.sha256sum" | sha256sum -c -)
-  chmod 0755 /usr/local/bin/minio
+  [ -n "${MINIO_BIN:-}" ] && [ -f "$MINIO_BIN" ] || { echo "no MinIO binary: run 'norn-exec-vm build-minio' first or set MINIO_BIN" >&2; exit 1; }
+  install -m 0755 "$MINIO_BIN" /usr/local/bin/minio
 fi
 id minio >/dev/null 2>&1 || useradd --system --home-dir /var/lib/minio --shell /usr/sbin/nologin minio
 install -d -o minio -g minio -m 0750 /var/lib/minio "/var/lib/minio/${MINIO_BUCKET}"
@@ -198,11 +206,30 @@ systemctl enable --now minio.service fake-do-metadata.service
 PROVISION
 }
 
+minio_cache_path() {
+  case "$(uname -m)" in arm64|aarch64) printf '%s/minio-linux-arm64\n' "$CACHE_DIR" ;; *) printf '%s/minio-linux-amd64\n' "$CACHE_DIR" ;; esac
+}
+
+# The VM matches the host architecture (Lima vz), so the host cross-builds the pinned source tag.
+cmd_build_minio() {
+  command -v go >/dev/null 2>&1 || die "go not found; build-minio compiles MinIO ${MINIO_REF} from source"
+  local out goarch
+  out="$(minio_cache_path)"
+  [ ! -x "$out" ] || { printf 'MinIO already built: %s\n' "$out"; return 0; }
+  case "$out" in *arm64) goarch=arm64 ;; *) goarch=amd64 ;; esac
+  install -d "$CACHE_DIR"
+  # go install refuses a cross-compiled target when GOBIN is set; it writes $GOPATH/bin/linux_<arch>/minio.
+  GOOS=linux GOARCH="$goarch" GOFLAGS=-buildvcs=false go install "github.com/minio/minio@${MINIO_REF}"
+  mv "$(go env GOPATH)/bin/linux_${goarch}/minio" "$out"
+  printf 'built %s\n' "$out"
+}
+
 cmd_provision() {
   need_lima
   vm_exists || die "VM $NAME does not exist; run '$0 create' first"
   [ -d "$FLEET_DIR/scripts" ] || die "norn-fleet checkout not found at $FLEET_DIR (set NORN_FLEET_DIR)"
-  provision_script | in_vm sudo env "TOFU_VERSION=$TOFU_VERSION" "SOPS_VERSION=$SOPS_VERSION" \
+  local minio_bin="${MINIO_BIN:-$(minio_cache_path)}"
+  provision_script | in_vm sudo env "MINIO_BIN=$minio_bin" "TOFU_VERSION=$TOFU_VERSION" "SOPS_VERSION=$SOPS_VERSION" \
     "AGE_VERSION=$AGE_VERSION" "MINIO_BUCKET=$MINIO_BUCKET" "FLEET_SCRIPTS=$FLEET_DIR/scripts" bash -s
 }
 
@@ -215,7 +242,10 @@ cmd_test() {
   # PhaseHasNoCapabilities, PhaseHasNoCapabilitiesFromTheLoopUser (spawns from norn-exec with the
   # unit's exact capabilities through systemd-run), PhaseCannotReadAgeKey and
   # AttestationRequiresEmptyPhaseUidRealCgroup.
-  in_vm sudo env NORN_EXEC_VM=1 PYTHONDONTWRITEBYTECODE=1 \
+  # The tests run in their own PID namespace: one of them makes kill_phase_processes signal
+  # kill(-1, SIGKILL) as root (its fake setpriv keeps the uid), which would otherwise kill every
+  # process in the VM. In the namespace -1 reaches only the processes the test itself started.
+  in_vm sudo unshare --pid --fork --kill-child --mount-proc env NORN_EXEC_VM=1 PYTHONDONTWRITEBYTECODE=1 \
     sh -c 'cd "$1" && shift && exec python3 -m unittest -v "$@"' sh "$FLEET_DIR/scripts" "${modules[@]}"
 }
 
@@ -228,7 +258,8 @@ cmd_droplet_id() {
 cmd="${1:-}"
 [ "$#" -gt 0 ] && shift
 case "$cmd" in
-  up) cmd_create; cmd_provision ;;
+  up) cmd_create; cmd_build_minio; cmd_provision ;;
+  build-minio) cmd_build_minio ;;
   create) cmd_create ;;
   provision) cmd_provision ;;
   test) cmd_test "$@" ;;
