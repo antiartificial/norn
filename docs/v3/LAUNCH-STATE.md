@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 17:13 UTC. This is the single current handoff for the
+Observed 2026-10-05 17:16 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -14,7 +14,7 @@ attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
 
-At 17:13 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
+At 17:16 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
 validation (`37336272528`) and planning (`37336272298`) were successful. Fleet
 PR #256 (`d4eee3e`) is an open draft. Preceding commit `1fcaeb7` passed
 contract validation run `37343349906`, including the full Python unittest
@@ -23,8 +23,9 @@ Commit `abaabc4` clarifies retirement CLI help text; validation run
 `37344577776` passed the same contract suite at 17:01 UTC. Latest commit
 `d4eee3e` adds a regression test proving an already-started backend cleanup can
 resume after its short approval expires, while a new cleanup cannot start after
-expiry. The focused test passes locally; full validation run
-`37346380888` is still in progress. PR #256 also
+expiry. Full validation run `37346380888` passed at 17:15:58 UTC, including the
+full Python unittest suite, local retirement qualification, workflow checks,
+OpenTofu validation and disposable pilot validation. PR #256 also
 corrects the disposable README's stale `pilot261004b`
 label to the actual `pilot261005a` budget-gate ID, adds a non-executable
 descriptor checker, and makes an already-authorized backend cleanup retryable
