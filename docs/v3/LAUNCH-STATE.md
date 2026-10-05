@@ -102,6 +102,13 @@ Pilot `a` was the first complete management-to-Fleet handoff, but `b` was the
 most recent and exposed the material partial-apply failure. A fresh pilot
 should be based on the repaired contracts, not resumed from `a` or `b`.
 
+`pilot261005a` is a **proposed** fresh run ID, not an approved or active pilot.
+At 15:20 UTC on 2026-10-05, read-only `doctl` calls against the intended
+`theartificial@hotmail.com` account found no matching droplets, databases,
+projects, load balancers, VPCs, firewalls or tags. This is a name-collision
+check, not a full provider-zero or Spaces-bucket proof. New signed spend,
+backend and access material must be generated for this run ID before create.
+
 ## Milestone estimates
 
 No M0–M9 gate has recorded owner sign-off. These rounded estimates measure work
