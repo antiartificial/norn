@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 16:20 UTC. This is the single current handoff for the
+Observed 2026-10-05 16:24 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -14,9 +14,17 @@ attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
 
-At 16:20 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
-validation (`37336272528`) and planning (`37336272298`) were successful. The
-Fleet branch has no fresh pilot resources or runner. Norn launch-state PR #120
+At 16:24 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
+validation (`37336272528`) and planning (`37336272298`) were successful. Fleet
+PR #256 (`28b808f`) is an open draft; its descriptor-checker contract check
+passed on the prior head (`37339322590`) and must rerun for the latest head. It
+also corrects the disposable README's stale `pilot261004b` label to the actual
+`pilot261005a` budget-gate ID. It adds only a non-executable descriptor checker
+and records deadline-controller design requirements. It does not provide a
+scheduler or make a pilot safe to start. The Fleet account has no
+matching `pilot261005a` or `pilot261005c` droplets, databases, load balancers,
+projects, VPCs, volumes, firewalls, reserved IPs, snapshots, or runner labels at
+16:20 UTC; this is still not Spaces bucket-zero proof. Norn launch-state PR #120
 remains open against protected `master`; only the two Socket checks pass, while
 the required API/CLI, Fleet workload, OpenAPI, workflow lint, Web UI and M4
 replica checks have no successful result. Fleet issuer PR #210 is conflicting
@@ -115,23 +123,33 @@ most recent and exposed the material partial-apply failure. A fresh pilot
 should be based on the repaired contracts, not resumed from `a` or `b`.
 
 `pilot261005a` is a **proposed** fresh run ID, not an approved or active pilot.
-At 16:03 UTC on 2026-10-05, read-only `doctl` calls against the intended
+At 16:20 UTC on 2026-10-05, read-only checks against the intended
 `theartificial@hotmail.com` account found no matching droplets, databases,
 projects, load balancers or VPCs; no registered GitHub runner carries its Fleet
-label. This is a name-collision check, not a full provider-zero or
-Spaces-bucket proof. Fleet [PR #255](https://github.com/antiartificial/norn-fleet/pull/255)
+label. The broader name checks also found no matching c-suffixed droplet,
+database, project, load balancer, VPC, volume, firewall, reserved-IP or snapshot
+names. These are name-collision checks, not a full provider-zero or
+Spaces-bucket proof. The canonical owner-only `pilot261005a` directory, its
+budget contract/activation files, and its DigitalOcean token file do not exist;
+staging aggregate-budget variables still point to the retired `b` paths and
+digest. Fleet [PR #255](https://github.com/antiartificial/norn-fleet/pull/255)
 merged the signed c budget, plan, apply, recovery and exact topology gates as
 `abb0b00`; it rejects reuse of retired `pilot261004b`. The PR contract check
 and merge-main plan and validation passed (`37335410031`, `37336272298`,
 `37336272528`). This is code validation, not live proof. Read-only checks at
-16:03 found no c-named DigitalOcean droplets, databases, load balancers,
-projects or VPCs and no registered c runner. The independent deadline
-retirement path remains unimplemented. Existing approvals require post-create
-state and expire within an hour, so signed budget expiry alone cannot guarantee
-teardown. The existing owner-Mac retire-by watchdog performs only a local
-finalizer; it has no provider, GitHub, Spaces or token-exchange capability. The
-paired cloud-retirement controller remains under implementation/review. Do not
-start a new billable run until a restartable, run-scoped owner-Mac controller
+16:20 found no c-named DigitalOcean resources in the categories above and no
+registered c runner. The independent deadline retirement path remains
+unimplemented. Existing approvals require post-create state and expire within
+an hour, so signed budget expiry alone cannot guarantee teardown. The existing
+owner-Mac retire-by watchdog performs only a local finalizer; it has no
+provider, GitHub, Spaces or token-exchange capability. Fleet PR #256 contains a
+validation-only descriptor checker, not a controller. Its runbook records that
+root destroy plans must be built after resources exist, and backend approval
+must still be valid on retry. Specifically, backend cleanup requires a
+currently live approval on every invocation, with `expiresAt` no later than
+`retireBy`, so a restart after T0+5 cannot continue under that approval. There
+is no executable deadline controller. Do not start a new billable run until a
+restartable, run-scoped owner-Mac controller
 can fence the runner, perform Fleet → management → backend cleanup automatically
 from T0+4, retain each stage's receipts, and continue retrying through and beyond
 T0+5 until final zero. A timer alone is not a hard spend cap when the owner host
