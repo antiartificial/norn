@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 17:02 UTC. This is the single current handoff for the
+Observed 2026-10-05 17:13 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -14,13 +14,17 @@ attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
 
-At 17:02 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
+At 17:13 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
 validation (`37336272528`) and planning (`37336272298`) were successful. Fleet
-PR #256 (`abaabc4`) is an open draft. Preceding commit `1fcaeb7` passed
+PR #256 (`d4eee3e`) is an open draft. Preceding commit `1fcaeb7` passed
 contract validation run `37343349906`, including the full Python unittest
 suite, local retirement qualification, workflow validation and OpenTofu checks.
-Current head `abaabc4` clarifies retirement CLI help text; validation run
-`37344577776` passed the same contract suite at 17:01 UTC. PR #256 also
+Commit `abaabc4` clarifies retirement CLI help text; validation run
+`37344577776` passed the same contract suite at 17:01 UTC. Latest commit
+`d4eee3e` adds a regression test proving an already-started backend cleanup can
+resume after its short approval expires, while a new cleanup cannot start after
+expiry. The focused test passes locally; full validation run
+`37346380888` is still in progress. PR #256 also
 corrects the disposable README's stale `pilot261004b`
 label to the actual `pilot261005a` budget-gate ID, adds a non-executable
 descriptor checker, and makes an already-authorized backend cleanup retryable
@@ -94,7 +98,8 @@ remove the local file. DigitalOcean documents the endpoint for OAuth tokens;
 support for a dashboard-issued personal access token is a live observation to
 recheck before relying on it in another pilot.
 
-At 16:44 UTC, the local `doctl` default context authenticated successfully to
+At 17:12 UTC, the signed-in local `doctl` default context authenticated
+successfully (a fresh `doctl account get`) to
 the intended `theartificial@hotmail.com` account (UUID
 `05fe610a42b6d50c65344dd87bd842ce35ab036d`). Supported DigitalOcean API
 inspection and operations can use this existing CLI session without a new
