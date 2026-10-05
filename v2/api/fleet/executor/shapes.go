@@ -80,9 +80,12 @@ const (
 )
 
 // Path classes of a converge plan (default-deny, plan-5-7 section 2.5).
+// PathClassInert is a classifier result only (a docs-only range): no converge
+// plan is recorded for it, so ConvergePlan.Validate rejects it.
 const (
 	PathClassConfig     = "config"
 	PathClassExecutable = "executable"
+	PathClassInert      = "inert"
 )
 
 // Error codes added by this lane, named as in fleet/lifecycle/fence.go: the

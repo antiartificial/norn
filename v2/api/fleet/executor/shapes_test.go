@@ -199,6 +199,9 @@ func TestApproveModeAndPlanValidation(t *testing.T) {
 	if (ConvergePlan{Resource: "r", Repository: "o/r", CommitSHA: sha, PathClass: PathClassConfig, Generation: 1}).Validate() != nil {
 		t.Fatal("config plan must validate")
 	}
+	if (ConvergePlan{Resource: "r", Repository: "o/r", CommitSHA: sha, PathClass: PathClassInert, RequiresApproval: true, Generation: 1}).Validate() == nil {
+		t.Fatal("an inert range never records a converge plan")
+	}
 }
 
 func TestStopAttestationDecision(t *testing.T) {

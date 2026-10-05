@@ -123,10 +123,10 @@ Details: §2.3.
 |---|---|---|---|---|
 | `validate.yml` (175) | `pull_request`, push to `main` (:3-6) | `ubuntu-24.04` or the ephemeral CI runner (:22) | none | none |
 | `plan.yml` (333) | push to `main` on the infra paths (:5-18) | **GitHub-hosted**, environment `staging-plan` (:89, :114) | DO, `STATE_*`, fingerprints, CIDRs (:176-181, :275-300) | none; it writes the artifact `fleet-plan-<env>-<run>` |
-| `apply.yml` (1,386) | `workflow_dispatch` from Norn's App (:4-46) | staging uses `[self-hosted, norn-fleet]` (:111); environment `staging` | DO, Spaces, `id-token: write`, release token; runner-local SSH key, `known_hosts`, bootstrap dir | OIDC exchange, start, heartbeat, checkpoint, advance |
+| `apply.yml` (1,386) | `workflow_dispatch` from Norn's App (:4-46) | staging and production use `[self-hosted, norn-fleet]` (:111); pilots use `norn-fleet-protected`/`norn-pilot-<run>` labels; environment `staging` or `production` (:120) | DO, Spaces, `id-token: write`, release token; runner-local SSH key, `known_hosts`, bootstrap dir | OIDC exchange, start, heartbeat, checkpoint, advance |
 | `recover.yml` (1,886) | `workflow_run` on apply failure, or dispatch (:4-44) | `[self-hosted, norn-fleet]` (:394) | as apply; intent `recover` | `start --resume`, checkpoints |
-| `drift.yml` (259) | cron `17 11 * * *` + dispatch | **GitHub-hosted** (:172-186) | DO, Spaces | none (the result never reaches Norn) |
-| `retire-`/`finalize-external-mac.yml` | dispatch | self-hosted Mac | DO, Spaces, Tailscale | none |
+| `drift.yml` (259) | cron `17 11 * * *` + dispatch | `fleet` job **GitHub-hosted** (:172-186); `external_mac` job on the pilot runner (:25) | DO, Spaces | none (the result never reaches Norn) |
+| `retire-`/`finalize-external-mac.yml` | dispatch | `retire`: pilot runner `[self-hosted, norn-fleet-protected, norn-pilot-<run>]`; `finalize`: the reusable macOS finalizer (`norn-external-mac-finalizer`) | DO, Spaces, Tailscale | none |
 | 4 × `pilot-*-approval.yml` | dispatch | hosted | none | none |
 | `pre-release-pilot-qualification.yml` | dispatch | `macos-15` / ephemeral | none | none |
 
@@ -407,7 +407,11 @@ On a new tip, `VerifyProtectedCommit(sha)` requires:
 If nothing has been applied yet, the first converge needs `approve`.
 
 **Edge cases (M6/M7):**
-- **Pending checks:** re-poll later. This is not a failure.
+- **Pending checks:** re-poll later. This is not a failure. `validate.yml`
+  has no push path filters, so a tip with **no** push run at all (CI skipped
+  with `[skip ci]`, Actions disabled) becomes `trigger_unverified` once its
+  committer date is older than 15 min (`githubapp.ValidateRunGrace`). A run
+  that has started stays pending. The verdict is recomputed on every poll.
 - **Completed failure:** `blocker=trigger_unverified` until a newer tip
   passes.
 - **Coalesced merges:** the path class is computed over the whole
@@ -438,9 +442,9 @@ default-deny:
 
 | Class | Paths | Behaviour |
 |---|---|---|
-| `config` | `environments/<env>/cluster.yaml`, `environments/<env>/*.tfvars`, `.norn/fleet-plan-receipts/**` | auto-apply |
-| `inert` | `docs/**`, `**/*.md` | no converge |
-| `executable` | everything else, including `scripts/**` (the executor too), `ansible/**`, `modules/**`, `cloud-init/**`, `*.tf`, `reconcile-hooks.json`, `schemas/**`, `.github/**` | one-click `approve` first |
+| `config` | `environments/<env>/<region>/cluster.yaml` (schema-checked by `validate.yml`), `.norn/fleet-plan-receipts/<id>.json` | auto-apply |
+| `inert` | `**/*.md` outside `.github/` | no converge |
+| `executable` | everything else, including `scripts/**` (the executor too), `ansible/**`, `modules/**`, `cloud-init/**`, `*.tf`, `*.tfvars` (none is committed; a committed `*.auto.tfvars` overrides `TF_VAR_*` such as `ssh_key_fingerprints`), `reconcile-hooks.json`, `schemas/**`, `.github/**`, and non-Markdown `docs/**` (scripts read `docs/policies/*.json` and `docs/incidents/*.json`) | one-click `approve` first |
 | destructive / contraction (from `plan_policy.py`/`contraction_policy.py` after the plan) | — | **GitHub lane only**: `blocker=destructive_requires_github_lane`. The operator's dispatch with `allowDestructive` is the approval |
 
 **Cost of the GitHub-lane rule.** A reverted scale-up needs the full GitHub
@@ -667,8 +671,10 @@ pattern: one operator session, then nothing remains.
 
 **1. Provision.** Pick one of:
 - **(a) Temporary Linux droplet** in the management team, with a reserved
-  IPv4 listed in `ADMIN_CIDRS_JSON`. It joins the tailnet with a one-off
-  ephemeral pre-auth key.
+  IPv4 listed in `ADMIN_CIDRS_JSON`. It joins the tailnet (one-off ephemeral
+  pre-auth key) only when `NORN_FLEET_PRIVATE_MANAGEMENT_ENABLED` or a private
+  SSH route needs it; standard staging/production apply reaches Norn over the
+  `https://` `NORN_API_URL` and SSH over public IPv4.
 - **(b) Linux VM on the operator's machine** (Lima). Use this only if the
   operator's egress IP is in `ADMIN_CIDRS_JSON`.
 
@@ -677,17 +683,23 @@ egress CIDR, and strict `known_hosts` (`fleet:docs/runbooks/access-and-networkin
 
 **2. Register.**
 - Get a token with `gh api -X POST repos/<r>/actions/runners/registration-token`.
-- Register with `./config.sh --ephemeral --labels self-hosted,norn-fleet
-  --runnergroup <protected-main-only group>`.
+- Register with `./config.sh --ephemeral --labels norn-fleet` (`self-hosted`
+  is added by `config.sh`).
+- **No runner group.** `antiartificial/norn-fleet` is a personal-account repo,
+  and runner groups are organization-only. Compensate: environments
+  `staging`/`production` deploy from `main` only, fork PR workflows disabled,
+  and dispatch first, then register only after confirming the only queued
+  `norn-fleet` job is the intended run.
 
 `--ephemeral` takes exactly one job, so re-register between apply and any
 recovery run.
 
 **3. Credentials.**
 - DO and Spaces come from the GitHub environment secrets, as today.
-- The SSH key, `known_hosts` and bootstrap dir come from the operator's
-  SOPS recipient or the password manager. They are written `0600` to the
-  paths in `vars.NORN_FLEET_*`.
+- The SSH key, `known_hosts`, bootstrap vars file and, where configured, the
+  first-bootstrap route, private SSH route, private management token and
+  reachability proof files come from the operator's SOPS recipient or the
+  password manager. They are written `0600` to the paths in `vars.NORN_FLEET_*`.
 - The executor host's age key is never used.
 
 **4. Run.**
