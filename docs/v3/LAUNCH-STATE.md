@@ -44,6 +44,30 @@ fail, 1 warn). It again reported 28 app entries, 45 services, zero active
 operations, and 25 active incidents. Evidence is in
 `/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T201102Z`.
 
+At 21:01 UTC, the replacement hosted workflows for PR #123 advanced. Norn CI
+run `37365112044` now passes workflow validation, API, CLI, web, Mini synthetic
+schema, API production etcd TLS/RBAC, M1 migration recovery, M1/M4 etcd crash
+containment, M4 durable replicas, M6 mobility transfer/fence, and M7 fixture
+image. The release bundle rehearsal and M4 private ingress jobs remain queued.
+Repository CI run `37365112064` passes API, CLI, Fleet pilot workload, workflow
+lint, OpenAPI and Socket checks; its Web UI tests/build job remains queued.
+Those three jobs have been queued since 20:51 UTC. PR #123 remains open and
+mergeable, but hosted CI is not complete and deployment is not authorized by
+these results. The local release-bundle, ingress, and web-equivalent checks
+passed earlier in this session; they do not replace the queued protected CI
+checks.
+
+At 21:01 UTC, focused local tests for the separate disposable-retirement
+controller worktree passed (78 tests across the coordinator, delegation,
+deadline proposal, root retirement, backend cleanup, and manifest builder).
+These use injected test adapters and fixtures. The worktree still contains
+uncommitted changes based on Fleet `main` `5210307`; the controller has no real
+executor/Spaces adapters, fresh deadline-time fence approval producer or
+renewal, or restart supervisor. Its runbook still classifies deadline
+retirement as not implemented and unrehearsed. This does not block the Norn
+observer-controller merge directly, but it remains a prerequisite to safely
+running another billable disposable Fleet pilot.
+
 At 19:42 UTC, Norn PR [#123](https://github.com/antiartificial/norn/pull/123)
 opened from local integration branch `codex/v3-fleet-controller-integration`
 at `7af5a03d`, based on current `master` `c4641815`. It integrates the
