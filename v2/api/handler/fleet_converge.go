@@ -189,6 +189,9 @@ func (s *FleetConvergeRoutes) Approve(w http.ResponseWriter, r *http.Request) {
 }
 
 // pgConvergeApprovals records fleet.converge.approve through the pipeline.
+// Metadata approvedBy is the authenticated operation actor's subject (outside
+// the request fingerprint); the resource view reports it as
+// approvalPolicy.approvedBy.
 type pgConvergeApprovals struct{ h *Handler }
 
 func (a *pgConvergeApprovals) RecordApproval(w http.ResponseWriter, r *http.Request, key string, admission executor.ApproveAdmission) (model.Operation, bool, bool) {
@@ -207,7 +210,7 @@ func (a *pgConvergeApprovals) RecordApproval(w http.ResponseWriter, r *http.Requ
 	finished := now
 	op := model.Operation{ID: uuid.NewString(), Kind: executor.KindConvergeApprove, Ref: admission.PlanID, Status: model.OperationSucceeded,
 		Risk: "records an operator approval; no provider mutation performed", Source: "control-api", Message: "converge approval recorded",
-		Payload: payload, Metadata: map[string]interface{}{"planId": admission.PlanID}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
+		Payload: payload, Metadata: map[string]interface{}{"planId": admission.PlanID, "approvedBy": enqueue.Actor.Subject}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
 	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)

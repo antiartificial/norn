@@ -111,6 +111,11 @@ const (
 	CodeFleetProviderEvidenceInvalid        = "fleet_provider_evidence_invalid"
 	CodeFleetProviderEvidenceRequired       = "fleet_provider_evidence_required"
 	CodeFleetExecutorDeviceActive           = "fleet_executor_device_active"
+	// The two 503s of the resource routes (E4b): the store cannot set the
+	// mode atomically with its ledger operation (the route fails closed), and
+	// the executor-lane facts of the resource view could not be read.
+	CodeFleetExecutionModeUnavailable = "fleet_execution_mode_unavailable"
+	CodeFleetConvergeFactsFailed      = "fleet_converge_facts_failed"
 )
 
 // CodeStatus is the HTTP status of each code above. The contract test checks
@@ -132,6 +137,31 @@ var CodeStatus = map[string]int{
 	CodeFleetProviderEvidenceInvalid:        400,
 	CodeFleetProviderEvidenceRequired:       409,
 	CodeFleetExecutorDeviceActive:           409,
+	CodeFleetExecutionModeUnavailable:       503,
+	CodeFleetConvergeFactsFailed:            503,
+}
+
+// Resource-view values this lane adds (E4b): status.nextAction and the
+// blocker reasons of FleetResourceBlocker, derived at read time
+// (fleet/controller.DeriveConverge), never stored. The contract test pins
+// NextActionApproveConverge in the OpenAPI nextAction enum and every reason
+// in BlockerReasons in the blocker reason description.
+const (
+	NextActionApproveConverge = "approve_converge"
+
+	BlockerReasonExecutionModeMismatch = "execution_mode_mismatch"
+	BlockerReasonDestructive           = "destructive_requires_github_lane"
+	BlockerReasonHistoryRewritten      = "history_rewritten"
+	BlockerReasonTriggerUnverified     = "trigger_unverified"
+	BlockerReasonTriggerPending        = "trigger_pending"
+	BlockerReasonApprovalRequired      = "approval_required"
+)
+
+// BlockerReasons lists the executor-lane blocker reasons in derivation
+// priority order (a held fence outranks all of them).
+var BlockerReasons = []string{
+	BlockerReasonExecutionModeMismatch, BlockerReasonDestructive, BlockerReasonHistoryRewritten,
+	BlockerReasonTriggerUnverified, BlockerReasonTriggerPending, BlockerReasonApprovalRequired,
 }
 
 // Error reports a refusal by its stable code, like lifecycle.FenceError.
@@ -298,6 +328,10 @@ type ConvergeView struct {
 	// only when Approved is true; admission still enforces it
 	// (CodeFleetConvergeApprovalRequired).
 	Approved bool `json:"approved"`
+	// Refused is true when the executor recorded a destructive refusal
+	// (fleet.converge.refusal) for this plan: blocker
+	// BlockerReasonDestructive, and the loop waits instead of replanning.
+	Refused bool `json:"refused,omitempty"`
 }
 
 // ExecutorRoutes are the only routes the executor principal (exact

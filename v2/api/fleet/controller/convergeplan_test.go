@@ -105,3 +105,25 @@ func TestConvergePlanGoldenDigest(t *testing.T) {
 		t.Fatalf("digest = %s", plan.Digest)
 	}
 }
+
+// The first converge (no last applied commit) always requires approval, even
+// for a config-only class, so the stored flag admission reads
+// (requireFleetConvergeApprovalTx) agrees with ConvergeNeedsApproval.
+func TestConvergePlanFirstConvergeRequiresApproval(t *testing.T) {
+	for _, class := range []string{executor.PathClassConfig, executor.PathClassExecutable} {
+		plan, err := BuildConvergePlan(ConvergePlanInput{Resource: "staging", Cluster: "staging", Repository: "acme/norn-fleet",
+			CommitSHA: shaB, PathClass: class, Generation: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !plan.Converge.RequiresApproval || plan.Converge.Validate() != nil {
+			t.Fatalf("%s first converge: requiresApproval=%v", class, plan.Converge.RequiresApproval)
+		}
+		if !ConvergeNeedsApproval(ConvergePlanFacts{RequiresApproval: plan.Converge.RequiresApproval, BaseCommitSHA: plan.Converge.BaseCommitSHA}) {
+			t.Fatalf("%s first converge: read side disagrees", class)
+		}
+	}
+	if buildForTest(t, executor.PathClassConfig, "k").Converge.RequiresApproval {
+		t.Fatal("a config range over a last applied commit must auto-apply")
+	}
+}

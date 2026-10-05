@@ -62,14 +62,18 @@ type ConvergePlanInput struct {
 }
 
 // BuildConvergePlan builds, digests and signs a converge plan. Executable
-// ranges always require approval; config ranges auto-apply (D2).
+// ranges and the first converge (no LastApplied) always require approval;
+// other config ranges auto-apply (D2). The first-converge rule is set here,
+// on the stored flag admission reads, and not only inferred by the watcher's
+// path class, so admission and controller.ConvergeNeedsApproval agree for
+// every caller.
 func BuildConvergePlan(in ConvergePlanInput) (*ConvergeCapacityPlan, error) {
 	if in.Cluster == "" {
 		return nil, fmt.Errorf("converge plan requires a cluster")
 	}
 	converge := executor.ConvergePlan{
 		Resource: in.Resource, Repository: in.Repository, CommitSHA: in.CommitSHA, BaseCommitSHA: in.LastApplied,
-		PathClass: in.PathClass, RequiresApproval: in.PathClass == executor.PathClassExecutable,
+		PathClass: in.PathClass, RequiresApproval: in.PathClass == executor.PathClassExecutable || in.LastApplied == "",
 		MergeActor: in.MergeActor, PullRequest: in.PullRequest, Generation: in.Generation,
 	}
 	if err := converge.Validate(); err != nil {

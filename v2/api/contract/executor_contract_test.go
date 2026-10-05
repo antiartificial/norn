@@ -213,6 +213,21 @@ func TestExecutorWorkViewAndEnrollmentArePinned(t *testing.T) {
 		t.Error("FleetResourceDesired.converge must stay optional")
 	}
 	status, _ := executorSchemaProps(t, doc, "FleetResourceStatus")
+	if !enumSet(status["nextAction"].(map[string]interface{})["enum"])[executor.NextActionApproveConverge] {
+		t.Errorf("status.nextAction enum omits %s", executor.NextActionApproveConverge)
+	}
+	blocker, _ := executorSchemaProps(t, doc, "FleetResourceBlocker")
+	reasonDoc, _ := blocker["reason"].(map[string]interface{})["description"].(string)
+	for _, reason := range executor.BlockerReasons {
+		if !strings.Contains(reasonDoc, reason) {
+			t.Errorf("blocker.reason description omits %s", reason)
+		}
+	}
+	for _, code := range []string{executor.CodeFleetExecutionModeUnavailable, executor.CodeFleetConvergeFactsFailed} {
+		if executor.CodeStatus[code] != 503 {
+			t.Errorf("%s must be a 503", code)
+		}
+	}
 	active := status["active"].(map[string]interface{})
 	resume, _ := active["properties"].(map[string]interface{})["resumeApproved"].(map[string]interface{})
 	if resume["type"] != "boolean" {

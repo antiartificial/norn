@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 )
 
@@ -61,6 +62,9 @@ const MaxWatermarkTies = 4
 const (
 	VerificationGitHubMergedPlan = "github-merged-plan"
 	VerificationOperatorDeclared = "operator-declared"
+	// VerificationGitHubProtectedMain marks a desired revision the watcher
+	// recorded from a verified protected-main tip (executor lane, ADR 0010).
+	VerificationGitHubProtectedMain = "github-protected-main"
 )
 
 // Observation source names plan.md §2.3 uses for Watermarks' keys.
@@ -77,14 +81,18 @@ const (
 // attempt IDs that already live in the target fence, dispatch and attempt
 // stores, and ReconcileFleetResource re-derives them fresh on every write.
 type Resource struct {
-	SchemaVersion       string
-	Name                string
-	TargetID            string
-	Desired             DesiredRevision
-	DesiredHistory      []DesiredRevision
-	Policy              ApprovalPolicy
-	Watermarks          map[string]Watermark
-	Status              Status
+	SchemaVersion  string
+	Name           string
+	TargetID       string
+	Desired        DesiredRevision
+	DesiredHistory []DesiredRevision
+	Policy         ApprovalPolicy
+	Watermarks     map[string]Watermark
+	Status         Status
+	// ExecutionMode is executor.ModeGitHub or executor.ModeController, stored
+	// once in the resource document and changed only by the admin-signed
+	// fleet.resource.execution-mode. Empty means github.
+	ExecutionMode       string
 	Revision            int64
 	AuthorityEpoch      int64
 	ObservationSequence int64
@@ -173,9 +181,9 @@ var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // proposal's head as github-merged-plan.
 func ValidateDesired(next DesiredRevision) error {
 	switch next.Verification {
-	case VerificationGitHubMergedPlan:
+	case VerificationGitHubMergedPlan, VerificationGitHubProtectedMain:
 		if next.PlanID == "" || next.Repository == "" {
-			return fmt.Errorf("github-merged-plan desired revision requires planId and repository")
+			return fmt.Errorf("%s desired revision requires planId and repository", next.Verification)
 		}
 	case VerificationOperatorDeclared:
 	default:
@@ -219,7 +227,23 @@ type ApprovalPolicy struct {
 	OwnerApprovalEnvelope bool
 	EnvironmentReviewers  string // "not_enforced"
 	IndependentReview     string // "not_enforced"
+
+	// Executor lane additions (plan-5-7 section 2.5). All are zero, and
+	// omitted from the stored document, off that lane.
+	ProtectedBranchVerified   bool   `json:",omitempty"`
+	ValidateWorkflowSucceeded bool   `json:",omitempty"`
+	MergeGate                 string `json:",omitempty"` // MergeGateConfigAutoExecutableApprove
+	DestructiveApproval       string `json:",omitempty"` // DestructiveApprovalGitHubLane
+	ApprovedBy                string `json:",omitempty"`
+	RequiredReviews           string `json:",omitempty"` // RequiredReviewsNotVerified
 }
+
+// Executor-lane approvalPolicy values (D2).
+const (
+	MergeGateConfigAutoExecutableApprove = "config_auto_executable_approve"
+	DestructiveApprovalGitHubLane        = "github_lane_dispatch"
+	RequiredReviewsNotVerified           = "not_verified"
+)
 
 // AppliedRef names the commit the fence's last succeeded release ran (M11),
 // the plan that ran it, and the retained desired entry with that CommitSHA.
@@ -244,6 +268,10 @@ type ActiveRefs struct {
 	FenceGeneration int64
 	Occupancy       string
 	OccupancyReason string
+	// ResumeApproved is executor lane only: an unconsumed resume approve
+	// names the holder plan's latest attempt and a valid stop attestation or
+	// providerEvidence exists for it (ADR 0010).
+	ResumeApproved bool `json:",omitempty"`
 }
 
 // Status is the resource's derived cache. Never read by admission.
@@ -332,4 +360,49 @@ type Input struct {
 	LatestObservations map[string]Observation
 	TiedObservations   map[string][]Observation
 	Now                time.Time
+	// Converge is the executor-lane view of the desired revision's plan,
+	// approvals and the watcher's verdict. Nil means the storage layer did not
+	// gather it: every executor-lane derivation is then dormant and the status
+	// is exactly what WP11 derived.
+	Converge *ConvergeFacts
 }
+
+// ConvergeFacts are the executor-lane facts DeriveStatus and the read view
+// need. Gathering them (ledger approvals and refusals, the stop proof, the
+// watcher's latest decision) is the storage/handler layer's job; derivation
+// over them is pure.
+type ConvergeFacts struct {
+	// Plan is the desired revision's converge plan, nil when the desired
+	// revision's plan is not a converge plan.
+	Plan *ConvergePlanFacts
+	// Trigger is the watcher's verdict for the branch tip: "" (nothing to
+	// report), TriggerPending, TriggerUnverified or TriggerHistoryRewritten.
+	Trigger       string
+	TriggerReason string
+	// ResumeApproved: see ActiveRefs.ResumeApproved. Only meaningful while the
+	// fence is held.
+	ResumeApproved bool
+}
+
+// ConvergePlanFacts describes one converge plan against its approvals.
+type ConvergePlanFacts struct {
+	PlanID        string
+	CommitSHA     string
+	BaseCommitSHA string // last applied commit the plan was built over; "" on the first converge
+	PlanSHA256    string
+	// RequiresApproval is the stored plan's flag; ConvergeNeedsApproval adds
+	// the first-converge rule.
+	RequiresApproval bool
+	// Approved: a non-resume approve exists for this plan and commit.
+	Approved   bool
+	ApprovedBy string
+	// Refused: the executor recorded a destructive refusal for this plan.
+	Refused bool
+}
+
+// Watcher verdicts carried in ConvergeFacts.Trigger.
+const (
+	TriggerPending          = executor.BlockerReasonTriggerPending
+	TriggerUnverified       = executor.BlockerReasonTriggerUnverified
+	TriggerHistoryRewritten = executor.BlockerReasonHistoryRewritten
+)

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 )
 
@@ -105,6 +106,10 @@ const (
 	NextActionRefreshObservations     = "refresh_observations"
 	NextActionInvestigateDrift        = "investigate_drift"
 	NextActionNone                    = "none"
+	// NextActionApproveConverge (executor lane): the desired converge plan
+	// needs a fleet.converge.approve before the executor may start. It ranks
+	// above refresh_observations: nothing else can progress until it is given.
+	NextActionApproveConverge = executor.NextActionApproveConverge
 )
 
 // Observation fact keys DeriveStatus reads. ObservationFacts is otherwise
@@ -143,7 +148,7 @@ func DeriveStatus(in Input) Status {
 	conditions := []Condition{providerStateKnown, nodesEnrolled, runtimeReady, ingressReady, driftDetected, reconciliationRequired}
 	sort.Slice(conditions, func(i, j int) bool { return conditions[i].Type < conditions[j].Type })
 
-	return Status{
+	status := Status{
 		ObservedGeneration:    in.Resource.Desired.Generation,
 		LastAppliedGeneration: lastAppliedGeneration,
 		LastApplied:           lastApplied,
@@ -152,6 +157,7 @@ func DeriveStatus(in Input) Status {
 		NextAction:            deriveNextAction(occupancy, conditions, driftDetected),
 		EvaluatedAt:           in.Now,
 	}
+	return ApplyConverge(status, in.Resource, in.Converge)
 }
 
 // DowngradeStale re-applies the freshness rule to an already-derived Status
@@ -581,4 +587,131 @@ func deriveNextAction(occupancy lifecycle.Occupancy, conditions []Condition, dri
 		return NextActionInvestigateDrift
 	}
 	return NextActionNone
+}
+
+// --- executor lane (plan-5-7 sections 2.5 and 2.9, E4b) --------------------
+
+// Blocker kinds and reasons the executor lane adds. A Blocker is derived at
+// read time (DeriveConverge), never stored: the handler overlays it on the
+// resource view's blocker.
+const (
+	BlockerKindExecution = "execution"
+	BlockerKindTrigger   = "trigger"
+	BlockerKindApproval  = "approval"
+
+	// The reasons are pinned in fleet/executor (OpenAPI contract). The
+	// trigger reasons are the watcher verdicts themselves.
+	BlockerReasonApprovalRequired  = executor.BlockerReasonApprovalRequired
+	BlockerReasonDestructive       = executor.BlockerReasonDestructive
+	BlockerReasonModeMismatch      = executor.BlockerReasonExecutionModeMismatch
+	BlockerReasonTriggerPending    = executor.BlockerReasonTriggerPending
+	BlockerReasonTriggerUnverified = executor.BlockerReasonTriggerUnverified
+	BlockerReasonHistoryRewritten  = executor.BlockerReasonHistoryRewritten
+)
+
+// Blocker is one thing blocking the executor lane.
+type Blocker struct {
+	Kind    string
+	Reason  string
+	Message string
+	PlanID  string
+}
+
+// ConvergeDerivation is the executor-lane part of a resource's derived state.
+type ConvergeDerivation struct {
+	// NextAction is NextActionApproveConverge or "".
+	NextAction     string
+	Blocker        *Blocker
+	ResumeApproved bool
+}
+
+// EffectiveExecutionMode maps the stored mode ("" until set) to a mode.
+func EffectiveExecutionMode(mode string) string {
+	if mode == executor.ModeController {
+		return executor.ModeController
+	}
+	return executor.ModeGitHub
+}
+
+// ConvergeNeedsApproval is the effective approval requirement of a converge
+// plan: executable changes (the plan's own flag) and the first converge, which
+// has no base commit, both need a one-click approve (D2). It is deliberately
+// the stricter of the two, so a config-only first converge waits for approve
+// rather than auto-applying to a target nothing has applied to yet.
+func ConvergeNeedsApproval(p ConvergePlanFacts) bool {
+	return p.RequiresApproval || p.BaseCommitSHA == ""
+}
+
+func convergePlanApplied(status Status, p ConvergePlanFacts) bool {
+	return status.LastApplied != nil && status.LastApplied.CommitSHA == p.CommitSHA
+}
+
+// DeriveConverge is the pure executor-lane derivation. Nil facts derive
+// nothing. The blocker priority is: mode mismatch, destructive refusal,
+// history_rewritten, trigger_unverified, trigger_pending, approval_required.
+// A held fence is reported first by the caller (an execution blocker), not
+// here.
+func DeriveConverge(resource Resource, status Status, facts *ConvergeFacts) ConvergeDerivation {
+	var d ConvergeDerivation
+	if facts == nil {
+		return d
+	}
+	mode := EffectiveExecutionMode(resource.ExecutionMode)
+	held := status.Active != nil
+	d.ResumeApproved = held && facts.ResumeApproved
+	plan := facts.Plan
+	pending := plan != nil && !convergePlanApplied(status, *plan)
+
+	switch {
+	case mode == executor.ModeGitHub && pending:
+		d.Blocker = &Blocker{Kind: BlockerKindExecution, Reason: BlockerReasonModeMismatch, PlanID: plan.PlanID,
+			Message: "the desired revision is a converge plan but the resource's executionMode is github; the executor will not apply it. Switch the mode to controller (admin, fence free) or dispatch through the GitHub lane"}
+	case mode == executor.ModeController && plan == nil && resource.Desired.Generation > 0 &&
+		(status.LastApplied == nil || status.LastApplied.CommitSHA != resource.Desired.CommitSHA):
+		d.Blocker = &Blocker{Kind: BlockerKindExecution, Reason: BlockerReasonModeMismatch, PlanID: resource.Desired.PlanID,
+			Message: "the resource is in controller mode but the desired revision is not a converge plan; the executor applies only converge plans. Wait for the watcher to record the tip or dispatch through the GitHub lane"}
+	case pending && plan.Refused:
+		d.Blocker = &Blocker{Kind: BlockerKindApproval, Reason: BlockerReasonDestructive, PlanID: plan.PlanID,
+			Message: "the plan is destructive or a contraction; the executor refused it. Apply it through the GitHub lane (dispatch with allowDestructive is the approval)"}
+	case mode == executor.ModeController && facts.Trigger == TriggerHistoryRewritten:
+		d.Blocker = &Blocker{Kind: BlockerKindTrigger, Reason: BlockerReasonHistoryRewritten, Message: triggerMessage(facts,
+			"the protected branch tip is not a descendant of the last applied or newest planned commit; the watcher never moves backwards. Restore main so it descends from the last applied commit (for example revert on main), after which the next poll records the new tip")}
+	case mode == executor.ModeController && facts.Trigger == TriggerUnverified:
+		d.Blocker = &Blocker{Kind: BlockerKindTrigger, Reason: BlockerReasonTriggerUnverified, Message: triggerMessage(facts,
+			"the protected branch tip is not verified; a newer passing tip is needed")}
+	case mode == executor.ModeController && facts.Trigger == TriggerPending:
+		d.Blocker = &Blocker{Kind: BlockerKindTrigger, Reason: BlockerReasonTriggerPending, Message: triggerMessage(facts,
+			"the protected branch tip's validate checks have not finished; the watcher re-polls")}
+	case mode == executor.ModeController && pending && ConvergeNeedsApproval(*plan) && !plan.Approved:
+		d.Blocker = &Blocker{Kind: BlockerKindApproval, Reason: BlockerReasonApprovalRequired, PlanID: plan.PlanID,
+			Message: "the converge plan changes executable paths or is the first converge; approve it (POST plans/{planID}/converge/approve) before the executor starts"}
+	}
+	if mode == executor.ModeController && pending && !held && !plan.Refused && ConvergeNeedsApproval(*plan) && !plan.Approved {
+		d.NextAction = NextActionApproveConverge
+	}
+	return d
+}
+
+func triggerMessage(facts *ConvergeFacts, base string) string {
+	if facts.TriggerReason == "" {
+		return base
+	}
+	return base + " (" + facts.TriggerReason + ")"
+}
+
+// ApplyConverge folds the executor-lane derivation into a derived status:
+// Active.ResumeApproved, and next action approve_converge when nothing
+// outranks it (resolve_uncertain_outcome and await_runner do). Nil facts
+// return status unchanged.
+func ApplyConverge(status Status, resource Resource, facts *ConvergeFacts) Status {
+	d := DeriveConverge(resource, status, facts)
+	if status.Active != nil && d.ResumeApproved {
+		active := *status.Active
+		active.ResumeApproved = true
+		status.Active = &active
+	}
+	if d.NextAction == NextActionApproveConverge && status.NextAction != NextActionResolveUncertainOutcome && status.NextAction != NextActionAwaitRunner {
+		status.NextAction = NextActionApproveConverge
+	}
+	return status
 }

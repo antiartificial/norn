@@ -918,6 +918,123 @@ on `169.254.169.254`, using a VM-local alias.
 - **E4b:** an admin approve for a `history_rewritten` tip has no route; add one (admin only) or document the operator path (revert on main).
 - **E4b/E6:** the watcher must record converge plans only for resources whose `executionMode` is `controller`. Mode is enforced at plan recording, never in the execution transaction (T7).
 
+### Hand-offs from the E4b review (orchestrator, 2026-10-05)
+
+E4b's first cut applied the mode and then recorded the ledger op in a second
+call. A lost record left an unaudited mode change. Reusing a key with another
+body applied the change before the idempotency check refused it. The route
+now makes one atomic store call (`handler.FleetExecutionModeStore`). Until a
+store provides it, the route answers 503 `fleet_execution_mode_unavailable`
+and changes nothing.
+
+- **Store follow-up (PG) and E2e (etcd): `SetFleetResourceExecutionMode`.**
+  Implement it on `*store.PGOperationStore` and `*etcdstore.V3OperationStore`
+  with exactly this signature:
+
+  ```go
+  SetFleetResourceExecutionMode(ctx context.Context, identity store.OperationRequestIdentity,
+      audit store.AcceptanceAuditContext, request executor.ExecutionModeRequest) (store.AcceptedOperation, error)
+  ```
+
+  `identity` is `{Authority, Actor, Kind: "fleet.resource.execution-mode",
+  Resource: <name>, Key}`. Follow the `fleet.target.*` pattern: a typed
+  `OperationAcceptance.FleetResourceExecutionMode` admission (`omitempty`)
+  with `{resource, mode, expectedRevision}` in the fingerprint, applied by an
+  `acceptWithGuard` hook. Do all of the following in **one** transaction (PG)
+  or **one** Txn (etcd):
+  1. Insert the request identity first. A replay with the same fingerprint
+     returns the stored op with `Replayed: true` and applies nothing. The same
+     key with another body is `idempotency_key_reused` and also applies
+     nothing.
+  2. Lock the resource's target fence `FOR UPDATE`. A held fence, from either
+     lane, refuses with `&executor.Error{Code:
+     fleet_execution_mode_fence_held}` and rolls back, leaving no ledger row.
+  3. Lock the resource row `FOR UPDATE`. An unknown resource is
+     `ErrFleetResourceNotFound`. If `expectedRevision` differs from the stored
+     revision, return `ErrFleetResourceRevisionConflict`. This compare-and-set
+     applies to every fresh key.
+  4. Write `executionMode` into the resource document. Bump the revision only
+     when the mode changes. Record the op either way, with metadata
+     `{resource, mode, previousMode}`.
+  5. **When switching to `github`** (E2 review), call the abandon path
+     (`abandonFleetPlanTx`) in the same transaction for every converge plan
+     of that resource that has no attempt. Start already refuses abandoned
+     plans, and T7 forbids start from reading the mode. `abandonFleetPlanTx`
+     must use `executor.HolderNonceSHA256(planID)` for executor plans, because
+     `fleetTargetBindInputs` returns an empty nonce for them.
+
+  Conformance coverage needs these cases: replay applies nothing; key reuse
+  applies nothing; a held fence leaves no row; a stale revision is refused;
+  `github` abandons the unstarted converge plans; and a crash between the
+  apply and the record is impossible because there is one transaction.
+- **Store follow-up and E2e: the `executionMode` field.** Add
+  `ExecutionMode string json:"executionMode,omitempty"` to the PG
+  `fleetResourceDocument`, `fleetResourceDocumentOf` and `toResource`
+  (`store/fleet_resources.go`), and to the etcd resource record. Every
+  document write must round-trip the field. Today it is dropped, so
+  `controller.Resource.ExecutionMode` always reads as `""`, which means
+  github. Leave it absent in the stored document until it is set, so existing
+  documents and digests do not change.
+- **Store follow-up, E2e and E6: `ListWatchedResources`.** It returns only
+  resources whose stored `executionMode` is `controller`. On PG that is
+  `document->>'executionMode' = 'controller'`; on etcd it is the same filter
+  over the resource prefix. Each entry carries
+  `LastApplied = status.lastApplied.commitSha`, or `""` when it is absent or
+  has a reason, plus `DesiredGeneration`, `Cluster` and `Repository`. Mode is
+  enforced here, at plan recording, and never in an execution transaction
+  (T7).
+- **E6 wiring:**
+  - Mount `POST /api/v1/fleet/resources/{name}/execution-mode` →
+    `FleetResourceRoutes.SetExecutionMode` on both routers. Do not add it to
+    `ExecutorRoutes`. PG already sets `pgExecutionModeRecorder`. etcd needs
+    `SetExecutionModeRecorder` with an adapter over
+    `V3OperationStore.SetFleetResourceExecutionMode`; until it has one, etcd
+    answers 503.
+  - Call `routes.SetConvergeFacts(...)` before serving. On PG use
+    `h.ConvergeFactsReader(watcher)`. On etcd, E6 adds an equivalent reader.
+    Without it, `desired.converge`, `approve_converge`, `resumeApproved` and
+    the converge blockers are all absent, and the executor sees nothing to
+    converge, which fails closed.
+  - Wire `WatchedResourceSource` so it lists only `controller` resources.
+  - `PGConvergePlanRecorder.Admissible` (and the etcd equivalent) returns
+    false for abandoned plans, so a rescan after a mode round-trip records a
+    fresh plan.
+  - Wire the §2.4 start-time `VerifyProtectedCommit` re-check (60 s cache)
+    with the E3 client per repository.
+- **E5 (from the E2 review): the provider-evidence route.** Add an admin,
+  non-CI, `Idempotency-Key` route that does not release the fence. It records
+  kind `fleet.executor.provider-evidence`
+  (`store.KindFleetExecutorProviderEvidence`) with Ref = plan ID and payload
+  `{planId, sourceAttemptId, providerEvidence}`. Admission checks:
+  - the caller is admin;
+  - the source is the holder plan's latest attempt;
+  - `providerEvidence.dropletId` matches the source attempt's executor
+    droplet;
+  - the executor device is revoked;
+  - H5;
+  - `ProviderEvidence.Validate`.
+
+  It writes `ProviderEvidence.Digest()` under the metadata key
+  `fleetProviderEvidenceDigest`. E2's PG conformance seed shows the row shape.
+  This is the **recovery** use: it is proof for a resume, read by recovery
+  admission and by the resource view's `resumeApproved`. It replaces the
+  earlier idea of carrying `providerEvidence` on fence release or abandon-plan
+  for recovery. Those two routes may still carry `providerEvidence`, but only
+  for a **terminal release** of a dead executor holder, which ends the plan
+  instead of resuming it.
+- **First converge (verified):** E3 classifies a range with no last applied
+  commit as `executable`, so the watcher's plans already carry
+  `requiresApproval`. `BuildConvergePlan` now also sets it whenever
+  `LastApplied == ""`, so the stored flag that
+  `requireFleetConvergeApprovalTx` reads agrees with
+  `controller.ConvergeNeedsApproval` for every caller, including E6's etcd
+  recorder.
+- **Not enforced by Norn, reported as policy:**
+  - `destructiveApproval=github_lane_dispatch` relies on the executor's
+    post-plan refusal (P2) plus `fleet.converge.refusal`. Norn cannot see a
+    tofu plan.
+  - `requiredReviews` stays `not_verified`.
+
 ### Order and parallel groups
 
 ```

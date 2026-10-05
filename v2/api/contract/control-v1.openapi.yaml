@@ -546,7 +546,7 @@ paths:
       - { $ref: '#/components/parameters/FleetResourceName' }
     post:
       operationId: setFleetResourceExecutionMode
-      description: Executor lane (ADR 0010). Sets executionMode (github or controller) as the signed operation fleet.resource.execution-mode. The mode is stored only in the resource document and requires the target fence to be Free (fleet_execution_mode_fence_held otherwise). Requires admin, not available to workload identities, and an Idempotency-Key.
+      description: Executor lane (ADR 0010). Sets executionMode (github or controller) as the signed operation fleet.resource.execution-mode. The mode is stored only in the resource document and requires the target fence to be Free (fleet_execution_mode_fence_held otherwise). The store applies the mode and accepts the operation in one transaction, so a replay returns the stored operation and applies nothing; a store without that capability answers 503 fleet_execution_mode_unavailable and changes nothing. Requires admin, not available to workload identities, and an Idempotency-Key.
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -2164,6 +2164,7 @@ components:
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: Hex part of the converge plan's digest; the attempt start's planSha256. }
         requiresApproval: { type: boolean, description: The converge plan's requiresApproval. }
         approved: { type: boolean, description: A non-resume fleet.converge.approve exists for this plan and its commitSha. }
+        refused: { type: boolean, description: 'Omitted unless true. The executor recorded a destructive refusal (fleet.converge.refusal) for this plan; blocker destructive_requires_github_lane, and the loop waits instead of replanning.' }
     FleetResourceCondition:
       type: object
       required: [type, status, evidenceRefs]
@@ -2201,14 +2202,14 @@ components:
             occupancyReason: { type: string }
             resumeApproved: { type: boolean, description: 'Executor lane only, omitted otherwise. True when an unconsumed fleet.converge.approve with resume true names the holder plan''s latest attempt (attemptIds last) as sourceAttemptId and a valid stop attestation or providerEvidence exists for it.' }
         conditions: { type: array, items: { $ref: '#/components/schemas/FleetResourceCondition' } }
-        nextAction: { type: string, enum: [resolve_uncertain_outcome, await_runner, refresh_observations, investigate_drift, none] }
+        nextAction: { type: string, enum: [resolve_uncertain_outcome, await_runner, approve_converge, refresh_observations, investigate_drift, none], description: 'approve_converge is executor lane only: the desired converge plan needs a fleet.converge.approve (executable change or first converge) and the fence is free.' }
         evaluatedAt: { type: string, format: date-time, description: When the status was last derived; absent before the first evaluation. }
     FleetResourceBlocker:
       type: object
       required: [kind, reason]
       properties:
         kind: { type: string, enum: [execution, condition, reconciliation, observation, trigger, approval] }
-        reason: { type: string }
+        reason: { type: string, description: 'Executor-lane reasons, in priority order after a held fence: execution_mode_mismatch (execution), destructive_requires_github_lane (approval), history_rewritten, trigger_unverified, trigger_pending (trigger), approval_required (approval).' }
         message: { type: string }
         condition: { type: string }
         planId: { type: string }
@@ -2522,6 +2523,8 @@ components:
         - fleet_provider_evidence_invalid
         - fleet_provider_evidence_required
         - fleet_executor_device_active
+        - fleet_execution_mode_unavailable
+        - fleet_converge_facts_failed
         - fleet_resource_store_failed
         - fleet_observation_out_of_bounds
         - fleet_observation_identity_denied
