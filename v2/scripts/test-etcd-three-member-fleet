@@ -3,6 +3,9 @@
 # Requires Docker, OpenSSL, etcdctl, Go, and Python 3. Never targets a named/live cluster.
 set -euo pipefail
 
+# A skipped integration test is a failure in every stage below.
+export NORN_TEST_REQUIRE_INTEGRATION=1
+
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/norn-etcd-three.XXXXXX")"
 chmod 700 "$work_dir"
@@ -120,8 +123,14 @@ export NORN_TEST_ETCD_TLS_PREFIX='/norn-test/tls-fleet-runtime/'
 run_process_test() {
   (cd "$repo_dir/api" && go test . -run '^TestEtcdFleetRuntimeProductionTLSRBACProcess$' -count=1 -v)
 }
+strict="$repo_dir/scripts/go-test-strict"
 echo 'Three-member TLS/RBAC normal runtime'
 run_process_test
+
+echo 'Healthy three-member Fleet suites (skips are fatal), then seed authority-restore data'
+"$strict" ./etcdstore '^TestFleet(Target|Resource|Reconciler)ConformanceEtcd$'
+"$strict" ./handler '^TestFleet(Lifecycle|Fence)ConformanceEtcd$'
+"$strict" ./etcdstore '^TestFleetAuthorityRestoreEtcd/seed$'
 
 echo 'One-member network partition: two-member quorum and normal runtime survive'
 docker network disconnect "$network" "$network-m3"
@@ -132,6 +141,8 @@ NORN_TEST_ETCD_TLS_ENDPOINTS="$(endpoint_for m1),$(endpoint_for m2)"
 export NORN_TEST_ETCD_TLS_ENDPOINTS
 ETCDCTL_ENDPOINTS="$NORN_TEST_ETCD_TLS_ENDPOINTS" etcdctl endpoint health >/dev/null
 run_process_test
+echo 'Partition: Fleet fence acquire race on the two-member quorum'
+"$strict" ./etcdstore '^TestFleetFenceTwoAdapterAcquireRaceEtcd$'
 docker network connect --alias m3 "$network" "$network-m3"
 endpoints="$(endpoint_for m1),$(endpoint_for m2),$(endpoint_for m3)"
 export ETCDCTL_ENDPOINTS="$endpoints" NORN_TEST_ETCD_TLS_ENDPOINTS="$endpoints"
@@ -209,4 +220,6 @@ etcdctl endpoint health >/dev/null
 value="$(etcdctl get '/norn-test/tls-fleet-runtime/qualification-sentinel' --print-value-only)"
 test "$value" = snapshot-retained
 run_process_test
-echo 'PASS: disposable three-member TLS/RBAC, isolated-member partition and rejoin, one loss, quorum refusal, corruption rejection, snapshot restore'
+echo 'Post-restore: advance the authority epoch on the restored seed data'
+"$strict" ./etcdstore '^TestFleetAuthorityRestoreEtcd/verify$'
+echo 'PASS: disposable three-member TLS/RBAC, isolated-member partition and rejoin, one loss, quorum refusal, corruption rejection, snapshot restore, Fleet suites and authority restore'

@@ -21,6 +21,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
@@ -91,6 +92,17 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_not_configured", "configured Fleet GitHub root is invalid")
 			return
 		}
+		// B1/H7: abandonment permanently refuses every path for this plan,
+		// checked before any other branch below, including the
+		// already-bound replay (which never calls AcceptFleetGitHubDispatch
+		// or FinishFleetGitHubDispatch again).
+		if abandoned, abandonErr := operations.CheckFleetTargetPlanAbandoned(r.Context(), planID); abandonErr != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_dispatch_unavailable", "fleet target abandonment status could not be read")
+			return
+		} else if abandoned {
+			handler.WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetHolderAbandoned, "fleet target holder plan is permanently abandoned")
+			return
+		}
 		if bound, bindErr := operations.GetFleetRunnerDispatchBinding(r.Context(), planID); bindErr == nil {
 			prepared, prepErr := operations.GetFleetGitHubDispatchPreparation(r.Context(), planID)
 			if prepErr != nil {
@@ -117,6 +129,18 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 		}
 		prepared, prepErr := operations.GetFleetGitHubDispatchPreparation(r.Context(), planID)
 		if errors.Is(prepErr, etcdstore.ErrNotFound) {
+			// m11: a non-locking occupancy pre-check runs before the GitHub
+			// plan proof and the signed reservation, only on this first-acquire
+			// branch so bound/prepared replays (T6) are never fence-checked.
+			// The locked acquire inside AcceptFleetGitHubDispatch stays
+			// authoritative.
+			if occupied, occErr := operations.FleetTargetOccupiedForPlan(r.Context(), typedPlan.Cluster, environment, planID); occErr != nil {
+				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_dispatch_unavailable", "fleet target fence could not be read")
+				return
+			} else if occupied {
+				handler.WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetExecutionOccupied, "fleet target mutation fence is held by another plan")
+				return
+			}
 			approved, resolveErr := github.ResolveApprovedPlan(r.Context(), planID, environment)
 			if resolveErr != nil || !validEtcdFleetGitHubApproved(approved) {
 				handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_plan_unproven", "GitHub could not prove the approved immutable fleet plan")
@@ -127,6 +151,11 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 		if prepErr != nil {
 			if errors.Is(prepErr, store.ErrAcceptanceIndeterminate) {
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "operation_acceptance_indeterminate", "dispatch preparation outcome is indeterminate; retry the same plan request")
+				return
+			}
+			var fenceErr *lifecycle.FenceError
+			if errors.As(prepErr, &fenceErr) {
+				handler.WriteControlProblem(w, r, http.StatusConflict, fenceErr.Code, fenceErr.Error())
 				return
 			}
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
@@ -147,6 +176,11 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			return
 		}
 		if err := operations.FinishFleetGitHubDispatch(r.Context(), planID, prepared.DispatchNonceSHA256, result.RunID, result.URL); err != nil {
+			var fenceErr *lifecycle.FenceError
+			if errors.As(err, &fenceErr) {
+				handler.WriteControlProblem(w, r, http.StatusConflict, fenceErr.Code, fenceErr.Error())
+				return
+			}
 			handler.WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "verified workflow run could not be bound to its durable dispatch")
 			return
 		}

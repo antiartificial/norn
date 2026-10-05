@@ -88,6 +88,32 @@ func TestV3FleetGitHubDispatchPreparationPersistsOpaqueNonceBeforeBindingEtcd(t 
 	}
 }
 
+// TestV3FleetGitHubDispatchPreparationRetainsRawNonceEtcd pins D10
+// (plan.md §1.4): unlike the PG legacy/V3 dispatch table, which drops the
+// raw dispatch nonce in migration 44 and keeps only its SHA-256 hash, the
+// etcd preparation record at rest still holds the raw nonce until the
+// dispatch binds. This asserts current behavior, not a requirement.
+func TestV3FleetGitHubDispatchPreparationRetainsRawNonceEtcd(t *testing.T) {
+	adapter, client, prefix := fleetRunnerEtcdStore(t)
+	plan := fleetRunnerPlan(t, adapter, "scale")
+	input := fleetGitHubDispatchPreparation(plan.ID)
+	_, prepared, err := acceptFleetGitHubDispatch(t, adapter, &plan, input)
+	if err != nil || len(prepared.DispatchNonce) != 64 {
+		t.Fatalf("prepared=%+v err=%v", prepared, err)
+	}
+	stored, err := client.Get(context.Background(), prefix+"/v3/fleet-github-dispatch-preparations/"+plan.ID)
+	if err != nil || len(stored.Kvs) != 1 {
+		t.Fatalf("load preparation record: %v", err)
+	}
+	var record map[string]interface{}
+	if err := json.Unmarshal(stored.Kvs[0].Value, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["DispatchNonce"] != prepared.DispatchNonce {
+		t.Fatalf("preparation record at rest did not retain the raw nonce: %+v", record)
+	}
+}
+
 func TestV3FleetGitHubDispatchPreparationHasOneConcurrentNonceEtcd(t *testing.T) {
 	adapter, client, prefix := fleetRunnerEtcdStore(t)
 	plan := fleetRunnerPlan(t, adapter, "scale")

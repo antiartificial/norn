@@ -293,6 +293,9 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 	if !allowDeployment && (a.Deployment != nil || len(a.Regions) > 0) {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd deployment admission is not enabled"}
 	}
+	if a.FleetTargetMutation != nil || store.IsFleetTargetMutationKind(a.Operation.Kind) || store.IsFleetTargetMutationKind(a.Identity.Kind) {
+		return s.acceptFleetTargetMutation(ctx, a)
+	}
 	if a.FleetRunnerAttempt != nil {
 		return s.acceptFleetRunnerAttempt(ctx, a)
 	}

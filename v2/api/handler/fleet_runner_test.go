@@ -1,10 +1,18 @@
 package handler
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"norn/v2/api/config"
 	"norn/v2/api/fleet"
@@ -411,6 +419,60 @@ func TestFleetRunnerResumesAtFirstIncompletePhase(t *testing.T) {
 	phase, complete = firstIncompleteFleetRunnerPhase(plan, checkpoints, attemptID)
 	if !complete || phase != "complete" {
 		t.Fatalf("completed phase = %q, complete=%v", phase, complete)
+	}
+}
+
+// TestFleetRunnerHeartbeatReplaySameSequence pins D12 (plan.md §1.6): on the
+// PG legacy path, a heartbeat replay at the same sequence number succeeds
+// and returns the current attempt unchanged when the caller's revision is
+// exactly revision-1 (the revision that recorded it), instead of being
+// rejected as out-of-order or re-applied.
+func TestFleetRunnerHeartbeatReplaySameSequence(t *testing.T) {
+	db := acceptanceIntegrationDB(t)
+	h := &Handler{db: db}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	finished := now
+	planID := uuid.NewString()
+	plan := &model.Operation{ID: planID, Kind: "fleet.capacity-plan", Ref: "app", Status: model.OperationSucceeded, Payload: map[string]interface{}{"action": "scale"}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished}
+	if err := db.InsertCompletedOperation(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	ci := &CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "93", RunAttempt: "1"}
+	principal := AccessPrincipal{Subject: "runner-93", Scopes: []string{ScopeFleetOperate}, CI: ci}
+	attempt := &model.FleetRunnerAttempt{
+		ID: uuid.NewString(), PlanID: planID, RunnerAttemptID: canonicalFleetRunnerAttemptID(ci), Status: model.FleetRunnerAttemptRunning,
+		CurrentPhase: "infrastructure_applied", CommitSHA: strings.Repeat("a", 40), PlanSHA256: strings.Repeat("b", 64),
+		WorkflowURL: canonicalFleetWorkflowURL(ci), PrincipalSubject: principalIdentity(principal),
+		HeartbeatTimeoutSeconds: 120, Revision: 1, StartedAt: now, PhaseStartedAt: now, HeartbeatAt: now, UpdatedAt: now,
+	}
+	if err := db.CreateFleetRunnerAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+
+	heartbeat := func(sequence, revision int64) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(fleet.RunnerHeartbeatRequest{SchemaVersion: model.FleetRunnerAttemptSchemaVersion, Sequence: sequence, Revision: revision, Phase: attempt.CurrentPhase, Message: "alive"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/"+planID+"/attempts/"+attempt.ID+"/heartbeat", bytes.NewReader(body))
+		route := chi.NewRouteContext()
+		route.URLParams.Add("planID", planID)
+		route.URLParams.Add("attemptID", attempt.ID)
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
+		req = WithAccessPrincipal(req, &principal)
+		rec := httptest.NewRecorder()
+		h.HeartbeatFleetRunnerAttempt(rec, req)
+		return rec
+	}
+
+	first := heartbeat(1, 1)
+	var advanced model.FleetRunnerAttempt
+	if first.Code != http.StatusOK || json.NewDecoder(first.Body).Decode(&advanced) != nil || advanced.Revision != 2 || advanced.HeartbeatSequence != 1 {
+		t.Fatalf("first heartbeat status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	replay := heartbeat(1, 1)
+	var replayed model.FleetRunnerAttempt
+	if replay.Code != http.StatusOK || json.NewDecoder(replay.Body).Decode(&replayed) != nil || replayed.Revision != 2 || replayed.HeartbeatSequence != 1 {
+		t.Fatalf("same-sequence replay status=%d body=%s", replay.Code, replay.Body.String())
 	}
 }
 
