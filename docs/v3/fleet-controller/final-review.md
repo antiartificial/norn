@@ -1,5 +1,16 @@
 # Fleet controller: final cross-cutting review (2026-10-04)
 
+> Historical review of the pre-integration feature head. Its B1/B2 blockers
+> and reconciler-default/runbook findings were addressed on
+> `feature/v3-fleet-controller` after this review. The branch has since been
+> merged locally onto current Norn `master` as integration candidate
+> `3bd72a0`; whole-module `go test ./...` passed there after correcting the
+> startup probe fixture to writer 32 / catalog 49. This candidate is not
+> pushed or merged. The review below records the findings at its original
+> 2026-10-04 scope and is not evidence of current provider execution or Fleet
+> deployment. The controller remains observer/status coordination; provider
+> provisioning and live workload qualification are separate gates.
+
 Scope: `feature/v3-fleet-controller`, the 5 commits on `7ea5895f..956f169b`
 (WP1–WP14), reviewed as a whole against [`proposal.md`](./proposal.md),
 [`plan.md`](./plan.md) §2/§5/§6, [`plan-review.md`](./plan-review.md),

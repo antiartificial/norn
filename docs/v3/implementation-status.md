@@ -1,8 +1,15 @@
 # Norn v3 implementation status
 
-Status date: 2026-09-22.
+Status date: 2026-10-05.
 
-This status applies only to the local development branch `codex/v3-foundations`, based on Norn baseline commit `7304f39`. It records branch-local progress; it does not change the proposed status of the v3 ADRs or authorize a runtime mutation.
+The Fleet controller is in local integration candidate commit `3bd72a0`, based
+on current `master` `c4641815`. The candidate is not pushed, merged, or
+deployed. `go test ./...` passed from `v2/api` at this candidate after updating
+the startup probe fixture to writer 32 / catalog 49. The controller's
+observation and status routes do not apply provider infrastructure. The
+independent Fleet executor is not qualified for production, and live
+provider-backed launch evidence remains absent. Older sections below are
+implementation history, not current release status.
 
 ## Current stage
 
@@ -12,7 +19,8 @@ worktree `norn-v3-fleet-controller`, module root `v2/api`. See
 [`fleet-controller/plan.md`](fleet-controller/plan.md),
 [ADR 0009](adrs/0009-fleet-controller.md) and the
 [operator runbook](fleet-controller/operator-runbook.md). Status as of
-2026-10-04: WP1-WP14 have landed on that branch (it is not merged), with a
+2026-10-05: WP1-WP14 are present on the local integration candidate (not
+merged), with a
 whole-module review in [`fleet-controller/final-review.md`](fleet-controller/final-review.md)
 and a qualification record in
 [`fleet-controller/qualification-2026-10-04.md`](fleet-controller/qualification-2026-10-04.md).
