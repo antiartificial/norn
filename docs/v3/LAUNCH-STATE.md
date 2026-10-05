@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 20:30 UTC. This is the single current handoff for the
+Observed 2026-10-05 21:45 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -13,6 +13,41 @@ or complete the release. Fleet remains the first launch track. The next Fleet
 attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
+
+At 21:29 UTC, Norn PR [#123](https://github.com/antiartificial/norn/pull/123)
+merged to protected `master` as `1ca28934034c48f28aed4b97b6d4971d69b642e3`.
+Norn CI [37376169196](https://github.com/antiartificial/norn/actions/runs/37376169196),
+Repository CI [37376169212](https://github.com/antiartificial/norn/actions/runs/37376169212),
+and docs deployment [37376169180](https://github.com/antiartificial/norn/actions/runs/37376169180)
+all succeeded on that exact SHA. The Norn observer/status controller is now in
+protected master; this is not a published platform release or live Fleet
+deployment.
+
+At 21:34 UTC, Fleet PR [#258](https://github.com/antiartificial/norn-fleet/pull/258)
+merged as `e4756190670aa3a8afa6d3cfdc6344a531dd4376`. The staging doctor now
+accepts the verified GitHub squash-commit identity. It still reports three
+missing input groups. `staging-plan` is missing `ADMIN_CIDRS_JSON`,
+`DIGITALOCEAN_TOKEN`, and `STATE_ACCESS_KEY_ID`, `STATE_BUCKET`,
+`STATE_ENDPOINT`, `STATE_REGION`, and `STATE_SECRET_ACCESS_KEY`. `staging` is
+missing `DIGITALOCEAN_TOKEN`, `NORN_API_URL`, and the same five state-store
+values. The protected runner configuration is missing
+`NORN_FLEET_BOOTSTRAP_VARS_FILE`, `NORN_FLEET_KNOWN_HOSTS_FILE`,
+`NORN_FLEET_PRIVATE_INTERFACE`, `NORN_FLEET_SSH_PRIVATE_KEY_FILE`, and
+`NORN_FLEET_SSH_USER`. No provider operation has been run from staging.
+
+The protected `platform-release` environment's
+`NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN` is expired. GitHub token settings show
+the fine-grained token “Norn release immutability check” as expired; the
+environment secret was last updated 2026-09-29. No release workflow was
+dispatched. Renew the token and update that environment secret before publishing
+the exact merged Norn SHA; do not substitute an unrelated token.
+
+The most recent authenticated Mini inventory at 21:13 UTC reports source
+`26147c39a554b73b6761a371edee5a9591c81d3f`
+(`v2.20.0-platform-72-g26147c39`), host `ok`, Fleet unconfigured with zero
+pools, and production readiness blocked. Its evidence is at
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T211312Z`.
+The merged Norn SHA has not been released or promoted to Mini.
 
 At 19:34 UTC, a fresh authenticated Mini inventory again reported host status
 `ok`, but `fleet_configured=false`, zero node pools, and production readiness
@@ -44,19 +79,6 @@ fail, 1 warn). It again reported 28 app entries, 45 services, zero active
 operations, and 25 active incidents. Evidence is in
 `/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T201102Z`.
 
-At 21:01 UTC, the replacement hosted workflows for PR #123 advanced. Norn CI
-run `37365112044` now passes workflow validation, API, CLI, web, Mini synthetic
-schema, API production etcd TLS/RBAC, M1 migration recovery, M1/M4 etcd crash
-containment, M4 durable replicas, M6 mobility transfer/fence, and M7 fixture
-image. The release bundle rehearsal and M4 private ingress jobs remain queued.
-Repository CI run `37365112064` passes API, CLI, Fleet pilot workload, workflow
-lint, OpenAPI and Socket checks; its Web UI tests/build job remains queued.
-Those three jobs have been queued since 20:51 UTC. PR #123 remains open and
-mergeable, but hosted CI is not complete and deployment is not authorized by
-these results. The local release-bundle, ingress, and web-equivalent checks
-passed earlier in this session; they do not replace the queued protected CI
-checks.
-
 At 21:01 UTC, focused local tests for the separate disposable-retirement
 controller worktree passed (78 tests across the coordinator, delegation,
 deadline proposal, root retirement, backend cleanup, and manifest builder).
@@ -64,33 +86,9 @@ These use injected test adapters and fixtures. The worktree still contains
 uncommitted changes based on Fleet `main` `5210307`; the controller has no real
 executor/Spaces adapters, fresh deadline-time fence approval producer or
 renewal, or restart supervisor. Its runbook still classifies deadline
-retirement as not implemented and unrehearsed. This does not block the Norn
-observer-controller merge directly, but it remains a prerequisite to safely
+retirement as not implemented and unrehearsed. This work was independent of the
+Norn observer-controller integration and remains a prerequisite to safely
 running another billable disposable Fleet pilot.
-
-At 19:42 UTC, Norn PR [#123](https://github.com/antiartificial/norn/pull/123)
-opened from local integration branch `codex/v3-fleet-controller-integration`
-at `7af5a03d`, based on current `master` `c4641815`. It integrates the
-observer/status controller; it does not provision provider infrastructure.
-GitHub reports it mergeable and it remains unmerged. This is separate new work
-from the controller implementation branch `feature/v3-fleet-controller`, whose
-first implementation commit (`2db94f8d`, “Add Fleet controller target fence,
-status storage, and derivation (WP1-WP11)”) was authored Sunday, Oct 4. The PR
-integrates that weekend implementation onto current `master`; it is not work
-already merged with last week's baseline. At 19:47 UTC, two checks had started and the
-remaining Norn CI and Repository CI jobs were queued. The complete local
-`go test ./...` passed at integration candidate `3bd72a0` after resolving the
-schema-contract fixture mismatch. No runtime or provider mutation was made.
-The first PR workflow runs were canceled at 19:57 UTC before their pending jobs
-started (the canceled jobs report no test steps); they were not code-test
-failures. Both PR-only workflows were rerun at 19:59 UTC. At 20:09 UTC, Norn CI
-has passed API, API production etcd TLS/RBAC, CLI, Web, Mini synthetic schema,
-M1 migration recovery, M1/M4 etcd crash containment, M4 durable replicas, and
-M6 mobility transfer/fence. M4 private ingress, workflow validation, and
-release bundle rehearsal remain queued. M7 fixture image passed. Repository CI
-has passed Fleet workload, workflow lint, OpenAPI, API Go tests, and CLI Go
-tests; Web UI build remains queued. Socket checks pass. CI is still incomplete,
-so no merge or deployment is supported yet.
 
 At 17:42 UTC, Fleet PR #256 merged to `main` as `5210307`. Merged-main plan
 `37350374522` and contract validation `37350374566` both succeeded. The change
@@ -164,41 +162,25 @@ protected final-zero receipt. The final pilot-specific DigitalOcean bill is not
 yet available. The account's month-to-date balance cannot be attributed to
 this pilot, so compliance with the $20 cap remains unproven.
 
-## Controller work in progress
+## Controller and executor state
 
 There are three distinct controller/executor workstreams; none alone proves
 an autonomous bounded pilot or a live deployment:
 
-* The Norn Fleet observer/controller integration candidate is **new, separate
-  weekend work**, not part of last week's merged baseline. Its implementation
-  began on `feature/v3-fleet-controller` with commit `2db94f8d` on Oct 4; the
-  current integration branch/PR layers it onto current `master`. It is in
-  `/Users/arti/Desktop/Claude/norn-v3-fleet-controller`, branch
-  `codex/v3-fleet-controller-integration`, PR #123 at `7af5a03d`, based on
-  current `master` `c4641815`; it remains unmerged. The first PR workflows were
-  canceled at 19:57 UTC before pending tests began; replacement runs started at
-  19:59 UTC and have a partial pass set, with the API, CLI and web source test
-  jobs passing in Norn CI but the Repository CI Web UI job and three Norn
-  qualification jobs still queued at 20:29 UTC. Local `go test ./...` passed. This
-  controller derives and stores Fleet target,
-  observation and status; it does not provision provider infrastructure.
-  PR/CI, release publication, Mini promotion and Fleet deployment remain
-  distinct gates.
-* The Fleet executor checkout is
-  `/Users/arti/Desktop/Claude/norn-fleet-controller-executor`, branch
-  `feature/fleet-controller-executor`, merged with current Fleet `main`
-  `5210307` at `78c3ceb`, plus the explicit support-boundary documentation at
-  `64cb7b0`. Draft Fleet PR [#257](https://github.com/antiartificial/norn-fleet/pull/257)
-  is open at `64cb7b0`; contract CI is pending. Full local Fleet Python suite
-  passed after integration: 1,769 tests, 8 skipped, in 671.281 seconds. The
-  isolated root-mode `norn-exec` Lima run passed 134 credential/capability,
-  cgroup, identity and recovery tests with zero skips in 107.181 seconds. Review
-  found no concrete credential leak or privilege-escalation defect, but
-  confirmed the executor supports only the legacy PG no-drain phase sequence
-  and refuses v3/etcd before any provider call. The Norn executor API route is
-  also not shipped. The updated runbooks state that this is not a v3 deployment
-  path. No provider-backed E2E was run; do not install this executor on a
-  v3/etcd staging root.
+* The Norn Fleet observer/controller implementation began on
+  `feature/v3-fleet-controller` over the weekend and was integrated by PR #123
+  into protected master on Oct 5. It is merged, tested in post-merge CI, and
+  present in source; it derives and stores Fleet target, observation and status.
+  It does not provision provider infrastructure. Release publication, Mini
+  promotion and Fleet deployment remain separate gates.
+* Fleet executor PR [#257](https://github.com/antiartificial/norn-fleet/pull/257)
+  remains a draft on `feature/fleet-controller-executor` at `64cb7b0`, based on
+  Fleet main `5210307`; its contract check passed. This is separate newer work,
+  not the weekend Norn observer/controller integration. The PR explicitly
+  supports only the legacy PostgreSQL no-drain lifecycle, refuses v3/etcd before
+  provider calls, and does not ship the Norn executor API route. It is not a v3
+  deployment path and must not be installed on a v3/etcd staging root. No
+  provider-backed E2E was run.
 * The checkout `norn-fleet-deadline-retirement` is still on merged Fleet
   `main` commit `5210307` with uncommitted edits, not on an independent commit
   branch. Those edits add delegated owner authority/journaling at existing
@@ -361,9 +343,9 @@ snapshots, reserved IPs, or projects. `doctl` does not inventory Spaces buckets;
 this is not complete account-zero evidence. Staging Fleet's offline
 `scripts/sanity.py` validation passed. Its setup doctor still reports missing
 staging provider/state secrets and runner configuration. The protected squash
-defaults were aligned with policy, but the doctor remains blocked by current
-`main` commit metadata as well as those missing secrets and runner inputs.
-No cloud resource was created or changed.
+metadata policy is now merged and passes staging doctor. The three remaining
+groups are staging-plan secrets, staging secrets and protected runner
+configuration. No cloud resource was created or changed.
 
 The exact `pilot261004b` protected apply log confirms its pre-issued public
 ingress TLS check passed before provider apply. The apply then remained in
@@ -460,42 +442,31 @@ running Fleet qualification.
 | M5 Mini upgrade rehearsal | 35% | Mini runs v3 source, but the original one-way transition lacks its before snapshot. Rehearse on a representative private current backup. |
 | M6 running upgrades and app DB | 25% | Journals and local transfer fixtures exist; protected running upgrade and app DB cutover/interruption proof remain. |
 | M7 mobility | 30% | Isolated Mini fixture web/worker/tick and private restore comparison passed. No Fleet target or complete move exists. |
-| M8 release qualification | 25% | Signed source, protected no-cloud checks and real provider-create evidence exist; provider-backed fitness, soak/fault results and owner sign-off remain. |
+| M8 release qualification | 30% | Post-merge release-bundle rehearsal passed; immutable release publication is held by the expired check token, and provider-backed fitness, soak/fault results and owner sign-off remain. |
 | M9 adoption | 10% | Mini API runs v3 code; Fleet and controlled application adoption are absent. |
 
 ## Next actions
 
-1. Close `pilot261004b` billing and audit: retain the two Tailscale device
-   removals, revoked OAuth client and DigitalOcean token, two independent
-   paginated provider-zero observations, private state snapshots and deletion
-   receipts. Recheck the final itemized invoice when posted. Never call the
-   emergency cleanup a protected final-zero.
-2. Merged Fleet PRs [#252](https://github.com/antiartificial/norn-fleet/pull/252),
-   [#253](https://github.com/antiartificial/norn-fleet/pull/253), and
-   [#254](https://github.com/antiartificial/norn-fleet/pull/254) repair the
-   source-run name check, interruption handling, and exact two-cluster
-   provider-drift adoption. Protected validation passed, but none is live
-   recovery proof. The retired `b` source predates PR #254, so only a new pilot
-   sourced from current main can exercise its helper. A partial five-child
-   remainder apply still needs manual reconciliation from the retained saved
-   plan and provider evidence.
-3. The signed budget and workflow gates merged as Fleet PR #255 (`abb0b00`)
-   and passed main CI. Fleet PR #256 merged as `5210307` and its merged-main
-   validation and plan passed, but the deadline checker remains explicitly
-   non-executable. The separate branch now has delegation-gated root/backend
-   executors and a state-bound root approval producer; finish fence renewal,
-   orchestration, restart behavior, and live lifecycle rehearsal before
-   generating credentials or approving a billable window. It must fence active workflows, retire Fleet before
-   management, retain both root-zero proofs, and clean both state buckets and
-   scoped keys. Only then
-   prepare fresh credentials and an owner-approved bounded window. Keep the
-   issuing Tailscale OAuth client active until the five node keys enroll;
-   revocation invalidated unused keys in `b`.
+1. Renew `NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN` and update the protected
+   `platform-release` environment secret. Dispatch the immutable release
+   workflow for exact SHA `1ca28934034c48f28aed4b97b6d4971d69b642e3` only after
+   the renewed token is valid. Verify the signed tag, target SHA and all
+   platform assets, then import and promote that release on Mini through its
+   managed signed-upgrade path.
+2. Supply fresh staging-only DigitalOcean/state secrets and the protected
+   runner inputs listed by `scripts/setup doctor --environment staging`. The
+   retired pilot's credentials and approvals are not reusable.
+3. Complete and independently qualify the restartable, run-scoped retirement
+   path before authorizing a new billable Fleet pilot. Require automatic Fleet,
+   management and backend cleanup with preserved receipts and a final-zero
+   observation within a new approved budget and time envelope.
 4. Prove live Fleet state: three etcd members/quorum, Consul/Nomad enrollment,
    two ingresses and trusted public TLS, a staging workload with write/read,
-   fault and restore, and loaded 2→3→2 scaling and drain. Retire the disposable
-   pilot inside its new envelope with independent provider/runtime/final-zero
-   evidence. Then finish Mini transition and M0–M9 owner review.
+   fault and restore, and loaded 2→3→2 scaling and drain. Complete the separate
+   protected retirement proof for the pilot.
+5. Close `pilot261004b` billing and audit with the final itemized invoice. Keep
+   the emergency cleanup classified as technical cleanup; it did not produce
+   a protected final-zero receipt.
 
 ## Evidence locations
 
