@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 17:50 UTC. This is the single current handoff for the
+Observed 2026-10-05 20:30 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -13,6 +13,60 @@ or complete the release. Fleet remains the first launch track. The next Fleet
 attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
+
+At 19:34 UTC, a fresh authenticated Mini inventory again reported host status
+`ok`, but `fleet_configured=false`, zero node pools, and production readiness
+`blocked`. It found 28 apps, 45 services, zero active operations, and 25 active
+incidents. The detailed safe inventory is at
+`/tmp/norn-inventory-20261005T1934Z`; this confirms the Mini is online on its
+v3 API source but does not establish Fleet deployment readiness.
+
+At 20:01 UTC, a new authenticated read-only Mini inventory again reported
+source commit `26147c39a554b73b6761a371edee5a9591c81d3f`
+(`v2.20.0-platform-72-g26147c39`), host status `ok`, Fleet
+`configured=false` with zero node pools, and production readiness `blocked`.
+It observed 28 app entries, 45 service entries, zero active operations, and
+25 incidents. Local observation files are at
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T200109Z`.
+This confirms the Mini v3 API is online; it does not show a Fleet deployment.
+
+At 20:30 UTC, a fresh authenticated read-only inventory remained unchanged:
+source `26147c39a554b73b6761a371edee5a9591c81d3f`, host `ok`, Fleet
+unconfigured with zero pools, and production readiness blocked (6 pass, 19
+fail, 1 warn). It reported 28 app entries, 45 service entries, zero active
+operations, and 25 incidents. Evidence is at
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T203015Z`.
+
+At 20:11 UTC, the next authenticated read-only Mini inventory was unchanged:
+source `26147c39a554b73b6761a371edee5a9591c81d3f`, host `ok`, Fleet
+unconfigured with zero pools, and production readiness blocked (6 pass, 19
+fail, 1 warn). It again reported 28 app entries, 45 services, zero active
+operations, and 25 active incidents. Evidence is in
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T201102Z`.
+
+At 19:42 UTC, Norn PR [#123](https://github.com/antiartificial/norn/pull/123)
+opened from local integration branch `codex/v3-fleet-controller-integration`
+at `7af5a03d`, based on current `master` `c4641815`. It integrates the
+observer/status controller; it does not provision provider infrastructure.
+GitHub reports it mergeable and it remains unmerged. This is separate new work
+from the controller implementation branch `feature/v3-fleet-controller`, whose
+first implementation commit (`2db94f8d`, “Add Fleet controller target fence,
+status storage, and derivation (WP1-WP11)”) was authored Sunday, Oct 4. The PR
+integrates that weekend implementation onto current `master`; it is not work
+already merged with last week's baseline. At 19:47 UTC, two checks had started and the
+remaining Norn CI and Repository CI jobs were queued. The complete local
+`go test ./...` passed at integration candidate `3bd72a0` after resolving the
+schema-contract fixture mismatch. No runtime or provider mutation was made.
+The first PR workflow runs were canceled at 19:57 UTC before their pending jobs
+started (the canceled jobs report no test steps); they were not code-test
+failures. Both PR-only workflows were rerun at 19:59 UTC. At 20:09 UTC, Norn CI
+has passed API, API production etcd TLS/RBAC, CLI, Web, Mini synthetic schema,
+M1 migration recovery, M1/M4 etcd crash containment, M4 durable replicas, and
+M6 mobility transfer/fence. M4 private ingress, workflow validation, and
+release bundle rehearsal remain queued. M7 fixture image passed. Repository CI
+has passed Fleet workload, workflow lint, OpenAPI, API Go tests, and CLI Go
+tests; Web UI build remains queued. Socket checks pass. CI is still incomplete,
+so no merge or deployment is supported yet.
 
 At 17:42 UTC, Fleet PR #256 merged to `main` as `5210307`. Merged-main plan
 `37350374522` and contract validation `37350374566` both succeeded. The change
@@ -86,6 +140,101 @@ protected final-zero receipt. The final pilot-specific DigitalOcean bill is not
 yet available. The account's month-to-date balance cannot be attributed to
 this pilot, so compliance with the $20 cap remains unproven.
 
+## Controller work in progress
+
+There are three distinct controller/executor workstreams; none alone proves
+an autonomous bounded pilot or a live deployment:
+
+* The Norn Fleet observer/controller integration candidate is **new, separate
+  weekend work**, not part of last week's merged baseline. Its implementation
+  began on `feature/v3-fleet-controller` with commit `2db94f8d` on Oct 4; the
+  current integration branch/PR layers it onto current `master`. It is in
+  `/Users/arti/Desktop/Claude/norn-v3-fleet-controller`, branch
+  `codex/v3-fleet-controller-integration`, PR #123 at `7af5a03d`, based on
+  current `master` `c4641815`; it remains unmerged. The first PR workflows were
+  canceled at 19:57 UTC before pending tests began; replacement runs started at
+  19:59 UTC and have a partial pass set, with the API, CLI and web source test
+  jobs passing in Norn CI but the Repository CI Web UI job and three Norn
+  qualification jobs still queued at 20:29 UTC. Local `go test ./...` passed. This
+  controller derives and stores Fleet target,
+  observation and status; it does not provision provider infrastructure.
+  PR/CI, release publication, Mini promotion and Fleet deployment remain
+  distinct gates.
+* The Fleet executor checkout is
+  `/Users/arti/Desktop/Claude/norn-fleet-controller-executor`, branch
+  `feature/fleet-controller-executor`, merged with current Fleet `main`
+  `5210307` at `78c3ceb`, plus the explicit support-boundary documentation at
+  `64cb7b0`. Draft Fleet PR [#257](https://github.com/antiartificial/norn-fleet/pull/257)
+  is open at `64cb7b0`; contract CI is pending. Full local Fleet Python suite
+  passed after integration: 1,769 tests, 8 skipped, in 671.281 seconds. The
+  isolated root-mode `norn-exec` Lima run passed 134 credential/capability,
+  cgroup, identity and recovery tests with zero skips in 107.181 seconds. Review
+  found no concrete credential leak or privilege-escalation defect, but
+  confirmed the executor supports only the legacy PG no-drain phase sequence
+  and refuses v3/etcd before any provider call. The Norn executor API route is
+  also not shipped. The updated runbooks state that this is not a v3 deployment
+  path. No provider-backed E2E was run; do not install this executor on a
+  v3/etcd staging root.
+* The checkout `norn-fleet-deadline-retirement` is still on merged Fleet
+  `main` commit `5210307` with uncommitted edits, not on an independent commit
+  branch. Those edits add delegated owner authority/journaling at existing
+  root/backend retirement boundaries and a post-create root approval producer.
+  New `scripts/disposable_retirement_controller.py` provides a local-only
+  persisted coordinator with injected stage adapters, separate controller
+  locking, HMAC/hash-chained intents, proof checks, restart recovery hooks, and
+  T0+5 breach-and-continue behavior. The full Fleet Python unittest suite
+  passed at 20:06 UTC after the latest coordinator proof-validation changes:
+  1,643 tests, four skipped, in 258.317 seconds. The earlier coordinator run
+  had 1,641 tests, four skipped, in 278.771 seconds. This suite includes
+  existing executor and fixture tests; it does not qualify a live provider
+  adapter, unattended restartable orchestration, or deployment. Subsequent
+  local changes now enforce the full root-zero and
+  backend-cleanup receipt field sets, digest shapes, delegated run/root scope,
+  independent provider-observation hashes, bucket bindings, and prior-stage
+  receipt digests; 11 focused tests, `py_compile` and `git diff --check` pass.
+  This is structural binding only: the coordinator still does not reopen and
+  validate retained state exports, executor ledgers, or external provider
+  evidence. The existing per-stage CLI executors do not yet have an adapter or
+  launchd supervisor. The complete
+  1,641 tests, four skipped, in 278.771 seconds on 2026-10-05. Both Fleet and
+  launch-state `git diff --check` pass. It has no real
+  root/backend command, approval, fence-renewal, or Spaces adapter and no CLI or
+  launchd supervisor, and has not passed sleep/reboot/partial-apply rehearsal.
+
+The three workstreams cover separate boundaries (Norn desired-state
+observation, executor-host execution, and disposable-pilot retirement). They
+need an explicit integration/release path; do not infer they compose safely
+because their local tests pass.
+
+After merged Fleet PR #256, a separate local Fleet checkout
+`norn-fleet-deadline-retirement` on branch
+`codex/executable-deadline-controller` contains new, unmerged work. The
+`scripts/disposable_retirement_delegation.py` module validates an owner-HMAC
+run delegation and maintains an owner-only hash-chained retirement journal.
+The journal records and fsyncs a T0+5 breach marker before later cleanup can
+continue. Both the root executor and paired-backend `apply` now have opt-in
+delegation checks at their existing shared-lock mutation boundaries, with
+account, budget, activation, source, evidence, lock, state/root, provider-scope,
+and ordering bindings. New `disposable_deadline_approval.py` and manifest
+builder support derive a short-lived HMAC approval from the owner delegation
+and fresh post-create root output, state, provider scope, retention, fence
+approval digest, and MySQL receipt. The root executor verifies that approval
+against the exact signed delegation. Focused tests after these edits pass: 8
+manifest-builder, 26 root-retirement, 19 backend-cleanup, 11 delegation/journal,
+  and two deadline-proposal tests. The earlier Python suite passed 1,632 tests
+  with four skipped in 300.372 seconds at 19:14 UTC, before the coordinator
+  module was added. The subsequent full run including the coordinator also
+  passed: 1,641 tests with four skipped in 278.771 seconds. A refreshed Mini
+  inventory at 19:34 UTC again reports Fleet unconfigured and production
+  readiness blocked; the controller suite pass does not alter the deployment
+  gate.
+  The deadline
+proposal validator accepts the complete delegation CLI
+bundle but remains validation-only. There is still no fully wired end-to-end
+controller, fresh fence-approval producer/renewal, restart supervisor, or
+sleep/reboot/partial-apply rehearsal. Do not use this branch to authorize or
+start a billable pilot.
+
 The two offline `pilot261004b` Tailscale management records (100.120.209.89
 and 100.122.147.29) were removed after action-time user confirmation; the
 console then showed 14 machines and no `pilot261004b` machines. The five
@@ -97,10 +246,12 @@ returned HTTP 401. Its local token file was removed after a hash-only receipt
 was saved. Technical external cleanup is now observed, but the final pilot
 bill and a signed protected final-zero receipt remain unavailable.
 
-**Reusable DigitalOcean capability:** An already-issued pilot personal access
-token can revoke itself through DigitalOcean’s API, so cleanup of that token
-does not require a second dashboard sign-in when its local token file is still
-available. For `pilot261004b`, `POST` to DigitalOcean’s
+**Reusable DigitalOcean capability:** The authenticated `doctl` context and
+DigitalOcean API can eliminate repeated dashboard sign-ins for supported
+account, resource, and token-management operations. An already-issued pilot
+personal access token can revoke itself through DigitalOcean’s API, so cleanup
+of that token does not require a second dashboard sign-in when its local token
+file is still available. For `pilot261004b`, `POST` to DigitalOcean’s
 [OAuth revocation endpoint](https://docs.digitalocean.com/reference/api/oauth/)
 with that token as both Bearer authorization and the `token` form parameter
 returned HTTP 200; a subsequent `/v2/account` call with the same token returned
@@ -116,14 +267,21 @@ successfully (a fresh `doctl account get`) to
 the intended `theartificial@hotmail.com` account (UUID
 `05fe610a42b6d50c65344dd87bd842ce35ab036d`). Supported DigitalOcean API
 inspection and operations can use this existing CLI session without a new
-dashboard sign-in. It does not supply fresh run-scoped credentials or approval,
-and `doctl` cannot enumerate Spaces buckets in this workflow; retain the
-separate Spaces API/S3 inventory for that proof. Read-only CLI checks found no
+dashboard sign-in, including later token revocation when the active CLI context
+has the required account authority. It does not supply fresh run-scoped
+credentials or approval, and `doctl` cannot enumerate Spaces buckets in this
+workflow; retain the separate Spaces API/S3 inventory for that proof. Read-only CLI checks found no
 `pilot261005a` name matches among droplets, databases, load balancers, projects,
 or VPCs. At 17:44 UTC, corrected read-only `doctl` name checks also found no
 `pilot261004b`, `pilot261005a`, or `pilot261005c` matches among droplets,
 databases, load balancers, firewalls, VPCs, or projects. These name checks are
 not complete provider-zero evidence and did not inspect Spaces buckets. A
+fresh read-only check at 18:14 UTC again authenticated to the intended account
+and found no `pilot261005a` or `pilot261005c` matches in droplets, databases,
+load balancers, firewalls, VPCs, or projects. This is still only a name-collision
+check; volumes, snapshots, reserved IPs, SSH keys, project resources, DNS, and
+Spaces buckets were not checked in this observation. No provider mutation was
+made. A
 plain Mini `norn fleet pools` CLI request at 17:45 returned HTTP 401
 `authenticated_principal_required`; the documented owner-host SOPS inventory
 path then authenticated successfully at 17:50. It confirmed Fleet
@@ -143,12 +301,21 @@ incomplete TLS, local control database without PITR/replica, application
 deployment provenance, snapshot/restore posture, and missing recovery drills.
 The host status is `ok`; this does not override production readiness.
 
-The same inventory showed 28 app entries, 45 service entries, zero active
-operations, and 25 active incidents. The counts include discovered and inactive
-entries and do not prove identity preservation through the earlier one-way
-transition or health for every app. Fleet remains `configured=false` with zero
-node pools and zero plans. Snapshot-retention warnings remain for field-harbor
-and turnkey-offer-intake; mail-mcp and signal-sideband need secret attention.
+At 19:15 UTC, authenticated owner-host inventory was repeated using the
+Norn-platform inventory script. It again reported healthy Mini API source
+`26147c39a554b73b6761a371edee5a9591c81d3f` (`v2.20.0-platform-72-g26147c39`),
+host status `ok`, Fleet `configured=false`, zero node pools, zero plans, and
+production readiness **blocked** with 6 pass, 19 fail, and 1 warn. It observed
+28 app entries, 45 service entries (18 passing, 27 unknown), zero active
+operations, and 25 active incidents. Snapshot-retention warnings remain for
+field-harbor and turnkey-offer-intake; mail-mcp and signal-sideband still need
+secret attention. This read-only inventory made no provider or control-plane
+mutation. The local observation files are in
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T191507Z`.
+
+These app and service counts include discovered and inactive entries; they do
+not prove identity preservation through the earlier one-way transition or
+health for every app.
 
 Norn [PR #115](https://github.com/antiartificial/norn/pull/115) merged the bridge
 title correction as `c56fa0c`. The signed
@@ -200,13 +367,24 @@ validation passed on both `1fcaeb7` and `abaabc4`. This does not authorize a
 new start after expiry or provide
 Fleet/management deadline-time approvals. A read-only workflow audit confirmed
 no existing workflow can mint post-create retirement approvals or execute the
-ordered retirement chain. There is no executable
-deadline controller. Do not start a new billable run until a
+ordered retirement chain. There is no installed or wired
+deadline-retirement executable. The separate branch's coordinator and
+delegation/journal primitives alone do not close this gate. Do not start a new
+billable run until a
 restartable, run-scoped owner-Mac controller
 can fence the runner, perform Fleet → management → backend cleanup automatically
 from T0+4, retain each stage's receipts, and continue retrying through and beyond
 T0+5 until final zero. A timer alone is not a hard spend cap when the owner host
 or provider access is unavailable.
+
+At 19:20 UTC, the authenticated `doctl` context again identified the intended
+DigitalOcean account. Name-filtered lists contained no `pilot261004b`,
+`pilot261005a`, or `pilot261005c` matches: 2 droplets, 0 managed databases,
+0 load balancers, 0 firewalls, 6 VPCs, 1 volume, 2 snapshots, 0 reserved IPs,
+and 3 projects were listed. This is a scoped resource-name collision check;
+Spaces buckets/object versions, DNS, GitHub runners, Tailscale devices, and
+provider resources without these names were not proven absent. No mutation was
+made.
 
 ## Milestone estimates
 
@@ -247,9 +425,10 @@ running Fleet qualification.
 3. The signed budget and workflow gates merged as Fleet PR #255 (`abb0b00`)
    and passed main CI. Fleet PR #256 merged as `5210307` and its merged-main
    validation and plan passed, but the deadline checker remains explicitly
-   non-executable. Finish and review an independently armed,
-   restartable retirement path before generating credentials or approving a
-   billable window. It must fence active workflows, retire Fleet before
+   non-executable. The separate branch now has delegation-gated root/backend
+   executors and a state-bound root approval producer; finish fence renewal,
+   orchestration, restart behavior, and live lifecycle rehearsal before
+   generating credentials or approving a billable window. It must fence active workflows, retire Fleet before
    management, retain both root-zero proofs, and clean both state buckets and
    scoped keys. Only then
    prepare fresh credentials and an owner-approved bounded window. Keep the
