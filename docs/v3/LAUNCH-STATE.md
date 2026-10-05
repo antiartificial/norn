@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 17:16 UTC. This is the single current handoff for the
+Observed 2026-10-05 17:26 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -14,18 +14,22 @@ attempt requires a new bounded pilot approval, fresh credentials, a repaired
 partial-apply/recovery lane, and a complete workload and failure proof. Do not
 reuse `pilot261004b` state, runner, keys or approvals.
 
-At 17:16 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
+At 17:26 UTC, Fleet PR #255 remained merged at `abb0b00` and both merged-main
 validation (`37336272528`) and planning (`37336272298`) were successful. Fleet
-PR #256 (`d4eee3e`) is an open draft. Preceding commit `1fcaeb7` passed
+PR #256 (`3f41503`) is an open draft. Preceding commit `1fcaeb7` passed
 contract validation run `37343349906`, including the full Python unittest
 suite, local retirement qualification, workflow validation and OpenTofu checks.
 Commit `abaabc4` clarifies retirement CLI help text; validation run
-`37344577776` passed the same contract suite at 17:01 UTC. Latest commit
-`d4eee3e` adds a regression test proving an already-started backend cleanup can
-resume after its short approval expires, while a new cleanup cannot start after
-expiry. Full validation run `37346380888` passed at 17:15:58 UTC, including the
-full Python unittest suite, local retirement qualification, workflow checks,
-OpenTofu validation and disposable pilot validation. PR #256 also
+`37344577776` passed the same contract suite at 17:01 UTC. Commit `d4eee3e`
+adds a regression test proving an already-started backend cleanup can resume
+after its short approval expires, while a new cleanup cannot start after expiry.
+Full validation run `37346380888` passed at 17:15:58 UTC, including the full
+Python unittest suite, local retirement qualification, workflow checks,
+OpenTofu validation and disposable pilot validation. Review then found a race
+where a replaced cleanup scope could select another run after the shared lock
+was acquired. Commit `3f41503` binds the reopened scope and canonical ledger path
+to the locked run; its focused regression test passes locally, and full
+validation run `37347927438` is in progress. PR #256 also
 corrects the disposable README's stale `pilot261004b`
 label to the actual `pilot261005a` budget-gate ID, adds a non-executable
 descriptor checker, and makes an already-authorized backend cleanup retryable
@@ -35,9 +39,11 @@ account has no
 matching `pilot261005a` or `pilot261005c` droplets, databases, load balancers,
 projects, VPCs, volumes, firewalls, reserved IPs, snapshots, or runner labels at
 16:20 UTC; this is still not Spaces bucket-zero proof. Norn launch-state PR #120
-remains open against protected `master`; only the two Socket checks pass, while
-the required API/CLI, Fleet workload, OpenAPI, workflow lint, Web UI and M4
-replica checks have no successful result. Fleet issuer PR #210 is conflicting
+remains open against protected `master`. At 17:26 UTC, only its two Socket
+checks had completed: `Repository CI` and `Norn CI`, which provide the required
+API/CLI, Fleet workload, OpenAPI, workflow lint, Web UI and M4 replica checks,
+were disabled manually. Both workflows were re-enabled; the next PR update will
+trigger them. Fleet issuer PR #210 is conflicting
 with main; lifecycle PR #175 has a failed contract check. Neither is a current
 deployment gate result.
 
