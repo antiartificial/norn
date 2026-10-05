@@ -89,6 +89,9 @@ type Handler struct {
 	accessTokenLineage              accessTokenLineageResolver
 	operationStore                  store.OperationStore
 	operationStoreError             error
+	// fleetControllerLiveness is the in-process Fleet reconciler, when this
+	// process runs one; resource reads report its liveness.
+	fleetControllerLiveness FleetControllerLiveness
 }
 
 // ConfigurePrivateReleaseSigner installs the staging-only signer after startup
@@ -204,7 +207,7 @@ func fleetGitHubConfig(cfg *config.Config) githubapp.Config {
 		PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository,
 		Environment: cfg.FleetGitHubEnvironment, PilotRunID: cfg.FleetGitHubPilotRunID,
 		DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath,
-		PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow,
+		PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow, RecoverWorkflow: cfg.FleetGitHubRecoverWorkflow,
 		APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production() || cfg.IsFleetAuthorityOnly(),
 	}
 }

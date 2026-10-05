@@ -244,3 +244,32 @@ func TestV3FleetRunnerAttemptRejectsForgedDispatchEtcd(t *testing.T) {
 		t.Fatalf("forged dispatch err=%v", err)
 	}
 }
+
+// TestV3FleetRunnerFirstAttemptEmptyRegistryMatchesBaseEtcd pins the pre-branch
+// behaviour with no fleet targets registered: the first attempt is admitted by
+// the protected dispatch alone, writes no fence or registry state, and a
+// missing dispatch preparation is refused exactly as before the fence work
+// (the dispatch-completion verification already requires it).
+func TestV3FleetRunnerFirstAttemptEmptyRegistryMatchesBaseEtcd(t *testing.T) {
+	adapter, client, prefix := fleetRunnerEtcdStore(t)
+	ctx := context.Background()
+	plan := fleetRunnerPlan(t, adapter, "scale")
+	nonce := bindFleetRunnerDispatch(t, adapter, plan)
+	accepted, err := adapter.Accept(ctx, fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "empty-registry", "7", "apply", ""))
+	if err != nil || accepted.FleetRunnerAttempt == nil || accepted.FleetRunnerAttempt.Attempt != 1 || accepted.FleetRunnerAttempt.Status != "queued" {
+		t.Fatalf("empty registry must admit the first attempt: %#v err=%v", accepted, err)
+	}
+	keys, err := client.Get(ctx, prefix+"/v3/fleet-target", clientv3.WithPrefix(), clientv3.WithKeysOnly())
+	if err != nil || len(keys.Kvs) != 0 {
+		t.Fatalf("an empty registry must leave no fence or target state: %v err=%v", keys.Kvs, err)
+	}
+
+	other := fleetRunnerPlan(t, adapter, "scale")
+	otherNonce := bindFleetRunnerDispatch(t, adapter, other)
+	if _, err := client.Delete(ctx, prefix+"/v3/fleet-github-dispatch-preparations/"+other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Accept(ctx, fleetRunnerAcceptance(t, adapter, other.ID, otherNonce, "no-preparation", "7", "apply", "")); err == nil || !strings.Contains(err.Error(), "not signed and complete") {
+		t.Fatalf("a missing preparation is refused by dispatch verification: %v", err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 )
 
@@ -107,6 +108,31 @@ func enforceFleetReconciliationAdmission(ctx context.Context, tx pgx.Tx, accepta
 	request, err := FleetReconciliationRequestFromOperation(acceptance.Operation)
 	if err != nil {
 		return err
+	}
+	// Fence and epoch (lock-order positions 2-3-4) are taken FOR SHARE right
+	// after this function's own advisory lock and before the attempt FOR
+	// UPDATE below (position 6), per M7. A succeeded checkpoint under a
+	// superseded epoch is refused (Q10); a failed checkpoint is always
+	// allowed. An abandoned plan refuses every checkpoint (B1/H7).
+	if abandoned, err := IsFleetPlanAbandoned(ctx, tx, admission.PlanID); err != nil {
+		return err
+	} else if abandoned {
+		return fleetReconciliationAdmissionError(lifecycle.CodeFleetTargetHolderAbandoned, "fleet target holder plan is permanently abandoned")
+	}
+	if targetID, fence, epoch, _, lockErr := lockFleetTargetFenceForPlanID(ctx, tx, admission.PlanID, false, false); lockErr != nil {
+		return lockErr
+	} else if targetID != "" {
+		kind := lifecycle.EvidenceSuccessCheckpoint
+		if request.Status == "failed" {
+			kind = lifecycle.EvidenceFailedCheckpoint
+		}
+		if evidenceErr := lifecycle.DecideEvidenceWrite(fence, admission.PlanID, epoch, kind); evidenceErr != nil {
+			var fenceErr *lifecycle.FenceError
+			if errors.As(evidenceErr, &fenceErr) {
+				return fleetReconciliationAdmissionError(fenceErr.Code, fenceErr.Reason)
+			}
+			return evidenceErr
+		}
 	}
 	if admission.AttemptID != "" {
 		attempt, err := scanV3FleetRunnerAttempt(tx.QueryRow(ctx, `SELECT `+fleetRunnerAttemptColumns+` FROM fleet_runner_attempts WHERE id=$1 AND plan_id=$2 FOR UPDATE`, admission.AttemptID, admission.PlanID))
@@ -233,12 +259,9 @@ func ValidateFleetReconciliationAdmissionTransition(plan *model.Operation, exist
 
 func fleetAcceptancePlanRequiresDrain(plan *model.Operation) bool {
 	action, _ := plan.Payload["action"].(string)
-	if action == "replace" {
-		return true
-	}
 	current, _ := plan.Payload["current"].(map[string]interface{})
 	proposed, _ := plan.Payload["proposed"].(map[string]interface{})
-	return action == "scale" && fleetAcceptanceNumber(proposed["desired"]) < fleetAcceptanceNumber(current["desired"])
+	return lifecycle.RequiresDrain(action, fleetAcceptanceNumber(current["desired"]), fleetAcceptanceNumber(proposed["desired"]))
 }
 
 func fleetAcceptanceNumber(value interface{}) float64 {

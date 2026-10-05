@@ -90,8 +90,11 @@ type Config struct {
 	ConfigPath    string
 	PlanWorkflow  string
 	ApplyWorkflow string
-	APIBaseURL    string
-	Production    bool
+	// RecoverWorkflow is the recovery workflow filename observed by
+	// ObserveRecoverRun. It defaults to recover.yml.
+	RecoverWorkflow string
+	APIBaseURL      string
+	Production      bool
 }
 
 type Client struct {
@@ -170,6 +173,7 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 	cfg.ConfigPath = path.Clean(rawConfigPath)
 	cfg.PlanWorkflow = strings.TrimSpace(cfg.PlanWorkflow)
 	cfg.ApplyWorkflow = strings.TrimSpace(cfg.ApplyWorkflow)
+	cfg.RecoverWorkflow = strings.TrimSpace(cfg.RecoverWorkflow)
 	cfg.APIBaseURL = strings.TrimRight(strings.TrimSpace(cfg.APIBaseURL), "/")
 	if cfg.DefaultBranch == "" {
 		cfg.DefaultBranch = "main"
@@ -179,6 +183,9 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 	}
 	if cfg.ApplyWorkflow == "" {
 		cfg.ApplyWorkflow = "apply.yml"
+	}
+	if cfg.RecoverWorkflow == "" {
+		cfg.RecoverWorkflow = "recover.yml"
 	}
 	if cfg.APIBaseURL == "" {
 		cfg.APIBaseURL = "https://api.github.com"
@@ -209,7 +216,7 @@ func validateConfig(cfg Config) error {
 	if !branchRe.MatchString(cfg.DefaultBranch) || strings.Contains(cfg.DefaultBranch, "..") {
 		return fmt.Errorf("GitHub default branch is invalid")
 	}
-	if !workflowRe.MatchString(cfg.PlanWorkflow) || !workflowRe.MatchString(cfg.ApplyWorkflow) {
+	if !workflowRe.MatchString(cfg.PlanWorkflow) || !workflowRe.MatchString(cfg.ApplyWorkflow) || !workflowRe.MatchString(cfg.RecoverWorkflow) || cfg.RecoverWorkflow == cfg.ApplyWorkflow {
 		return fmt.Errorf("GitHub workflow names must be YAML filenames")
 	}
 	if cfg.ConfigPath == "." || strings.HasPrefix(cfg.ConfigPath, "../") || !strings.HasSuffix(cfg.ConfigPath, ".yaml") {

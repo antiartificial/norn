@@ -46,10 +46,15 @@ type Config struct {
 	FleetGitHubPilotRunID    string
 	FleetGitHubPlanWorkflow  string
 	FleetGitHubApplyWorkflow string
-	FleetGitHubAPIBaseURL    string
-	GitToken                 string
-	GitSSHKey                string
-	APIToken                 string
+	// FleetGitHubRecoverWorkflow names the recovery workflow ObserveRecoverRun
+	// verifies release and Q11 stop-check evidence against (WP5/WP8a). It must
+	// differ from FleetGitHubApplyWorkflow; githubapp.New defaults it to
+	// "recover.yml" when empty.
+	FleetGitHubRecoverWorkflow string
+	FleetGitHubAPIBaseURL      string
+	GitToken                   string
+	GitSSHKey                  string
+	APIToken                   string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
 	RequireExplicitAuth      bool
@@ -301,6 +306,7 @@ func Load() *Config {
 		FleetGitHubPilotRunID:                 strings.ToLower(strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_PILOT_RUN_ID"))),
 		FleetGitHubPlanWorkflow:               envOr("NORN_FLEET_GITHUB_PLAN_WORKFLOW", "plan.yml"),
 		FleetGitHubApplyWorkflow:              envOr("NORN_FLEET_GITHUB_APPLY_WORKFLOW", "apply.yml"),
+		FleetGitHubRecoverWorkflow:            envOr("NORN_FLEET_GITHUB_RECOVER_WORKFLOW", "recover.yml"),
 		FleetGitHubAPIBaseURL:                 envOr("NORN_FLEET_GITHUB_API_BASE_URL", "https://api.github.com"),
 		GitToken:                              os.Getenv("NORN_GIT_TOKEN"),
 		GitSSHKey:                             os.Getenv("NORN_GIT_SSH_KEY"),

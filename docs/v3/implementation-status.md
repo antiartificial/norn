@@ -6,6 +6,60 @@ This status applies only to the local development branch `codex/v3-foundations`,
 
 ## Current stage
 
+The Fleet controller work (target fence, authority epoch, resource status;
+changes 1-4) proceeds separately on branch `feature/v3-fleet-controller`,
+worktree `norn-v3-fleet-controller`, module root `v2/api`. See
+[`fleet-controller/plan.md`](fleet-controller/plan.md),
+[ADR 0009](adrs/0009-fleet-controller.md) and the
+[operator runbook](fleet-controller/operator-runbook.md). Status as of
+2026-10-04: WP1-WP14 have landed on that branch (it is not merged), with a
+whole-module review in [`fleet-controller/final-review.md`](fleet-controller/final-review.md)
+and a qualification record in
+[`fleet-controller/qualification-2026-10-04.md`](fleet-controller/qualification-2026-10-04.md).
+Commits since the branch point `7ea5895f` (`git log --oneline 7ea5895f..HEAD`):
+
+| Commit | Work packages |
+| --- | --- |
+| `2db94f8d` | WP1-WP11: lifecycle contract, ADR, test tooling, pure helpers, fence domain, PG and etcd target/epoch/registry storage, GitHub observers, lifecycle and fence suites, PG legacy and etcd fence integration, signed target mutations, resource and observation storage, `DeriveStatus` |
+| `b5877731` | WP9b: target and fence HTTP routes |
+| `d59026a3` | WP12: Fleet status reconciler and wiring |
+| `8b9830bc` | WP13: Fleet resource routes |
+| `956f169b` | WP14: epoch advance on PG restore, etcd restore test, qualification record |
+| `b9dc79ea` | Final-review B1/B2: schema contract, startup and Mini synthetic-upgrade test expectations updated for writer floor 32 (migration 49), plus `final-review.md` |
+
+Landed behavior: migrations 48 (target registry, fences, abandoned plans,
+authority epoch; writer floor 32) and 49 (resources, observations); the
+registry-gated fence on the live PG legacy path and etcd; signed
+`fleet.target.register`, `fleet.target.fence-release` and
+`fleet.target.abandon-plan`; the read-only resource status and observation
+API; the reconciler (on by default, `NORN_FLEET_RECONCILER=false` disables
+it); and the epoch advance in PG `RestorePassive`. With an empty registry,
+admission behaves as before, except for the writer floor.
+
+Deferred or open (see the final review and qualification record):
+
+- End-to-end PG bundle and restore is blocked by a base-branch
+  `controlrecovery` drift (Mini extension tables and columns missing from
+  `CreateBundle` and `RestorePassive`). The fix is on the separate branch
+  `fix/v3-controlrecovery-mini-extension`; this branch covers the epoch step
+  with the narrow `TestFleetAuthorityEpochAdvanceAfterRestorePostgres`.
+- Production etcd restore and epoch-advance wiring (H5); only the
+  three-member script stage exercises it.
+- Generic step-up for fence release (H3); release is `admin` only.
+- Unrouted, unfenced PG V3 path (Q9); migration to V3 is out of scope.
+- Executor packaging, workflow migration, CLI/UI (changes 5-7); no shipped
+  executor produces observations yet, so conditions read `Unknown` until the
+  `observe` intent is configured and a reporter exists.
+- Final-review follow-ups still open: the exported unsigned test-hook mutators
+  (m3) and the `github/reconcile` abandoned-plan mapping and test (m2).
+- Known strict-mode exclusions: Nomad-dependent
+  `TestEtcdFleetStagingReleaseHTTPToDisposableNomad`, the TLS-only root test on
+  single-node etcd, and the pre-existing `controlrecovery`, `cmd/norn-control-recovery`
+  and `database` failures.
+
+This section and the rest of this document otherwise track the separate
+`codex/v3-foundations` branch below and are not updated by that work.
+
 For the current release state and next sequence, see the
 [2026-09-29 release handoff](session-resume-2026-09-29.md). This document
 contains implementation detail accumulated across earlier slices. Sections

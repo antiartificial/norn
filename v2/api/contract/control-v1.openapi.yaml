@@ -345,6 +345,183 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets:
+    post:
+      operationId: registerFleetTarget
+      description: Registers a Fleet target identity with immutable aliases as the signed operation fleet.target.register. Idempotent for an identical target. The body is intent only. Served by the Fleet authority-only router and the etcd Fleet runtime. Requires platform:operate.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetTargetRegisterRequest' }
+      responses:
+        '200': { description: Replay of the same request; the original operation receipt, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201':
+          description: Target registered; the operation ref is the target ID.
+          headers:
+            Location: { schema: { type: string } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/{targetID}:
+    parameters:
+      - { name: targetID, in: path, required: true, schema: { type: string, pattern: '^tgt_[0-9a-f]{64}$' } }
+    get:
+      operationId: getFleetTarget
+      description: Target identity, aliases, mutation fence and derived occupancy. Requires api:read.
+      responses:
+        '200': { description: Target, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTarget' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/{targetID}/fence:
+    parameters:
+      - { name: targetID, in: path, required: true, schema: { type: string, pattern: '^tgt_[0-9a-f]{64}$' } }
+    get:
+      operationId: getFleetTargetFence
+      description: The target's mutation fence and derived occupancy (Free, Active or Uncertain with a reason). Requires api:read.
+      responses:
+        '200': { description: Fence, content: { application/json: { schema: { $ref: '#/components/schemas/FleetTargetFence' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/{targetID}/fence/release:
+    parameters:
+      - { name: targetID, in: path, required: true, schema: { type: string, pattern: '^tgt_[0-9a-f]{64}$' } }
+    post:
+      operationId: releaseFleetTargetFence
+      description: Releases a held fence as the signed operation fleet.target.fence-release. Mode terminal requires the server to observe the bound apply run and every run that hosted an attempt as completed; mode abandon requires the minimum age and a server-observed GitHub run listing snapshot. Either mode also permanently abandons the holder plan. The body carries intent only; proof is never accepted from the client. Requires admin, with no step-up.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetTargetReleaseRequest' }
+      responses:
+        '200': { description: Replay of the same request; the original operation receipt, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Fence released, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/targets/abandon-plan:
+    post:
+      operationId: abandonFleetPlan
+      description: Permanently abandons a plan as the signed operation fleet.target.abandon-plan, whether or not its cluster is registered (H7). Requires the minimum age and a server-observed GitHub run listing snapshot; releases the plan's fence when it holds one. Requires admin, with no step-up.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetTargetAbandonPlanRequest' }
+      responses:
+        '200': { description: Replay of the same request; the original operation receipt, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Plan abandoned, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/resources:
+    get:
+      operationId: listFleetResources
+      description: Lists Fleet resources by name with the same view as getFleetResource (freshness re-applied at read time). limit defaults to 25, at most 100; pass the previous page's next as after. Served by the Fleet authority-only router and the etcd Fleet runtime. Requires api:read.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { name: after, in: query, schema: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,127}$' } }
+      responses:
+        '200': { description: Resources, content: { application/json: { schema: { $ref: '#/components/schemas/FleetResourceList' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/resources/{name}:
+    parameters:
+      - { $ref: '#/components/parameters/FleetResourceName' }
+    post:
+      operationId: ensureFleetResource
+      description: Idempotently creates the resource bound to a registered target; a resource's target is fixed at creation. 201 when created, 200 when it already existed with the same target. Requires platform:operate (as target registration) and is not available to workload identities.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetResourceEnsureRequest' }
+      responses:
+        '200': { description: Existing resource, content: { application/json: { schema: { $ref: '#/components/schemas/FleetResource' } } } }
+        '201':
+          description: Resource created
+          headers:
+            Location: { schema: { type: string } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/FleetResource' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    get:
+      operationId: getFleetResource
+      description: One record that explains what was requested (desired), what exists (status.conditions and observed), what is running (status.active), what blocks progress (blocker) and which supported action comes next (status.nextAction), plus the approval policy Norn actually enforces and controller liveness. The stored status is re-evaluated against the read time, so a condition whose observation is older than 15 minutes reads Unknown/ObservationStale. Requires api:read.
+      responses:
+        '200': { description: Resource, content: { application/json: { schema: { $ref: '#/components/schemas/FleetResource' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/resources/{name}/desired:
+    parameters:
+      - { $ref: '#/components/parameters/FleetResourceName' }
+    post:
+      operationId: setFleetResourceDesired
+      description: Declares the desired revision. The body is intent only; the server resolves the merged plan's approved commit through the GitHub App and records it as github-merged-plan. The plan's cluster must resolve through the target aliases (cluster, plus the dispatch lane's environment alias) to this resource's target, otherwise 409 fleet_resource_plan_target_mismatch (or fleet_target_unregistered / fleet_target_alias_conflict). A pending or unmerged proposal is refused, and a client-supplied commitSha is refused whenever the App is configured. Only without the App is commitSha accepted, recorded as operator-declared. expectedRevision is a compare-and-set against the resource's revision. Requires api:write and is not available to workload identities.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetResourceDesiredRequest' }
+      responses:
+        '200': { description: Desired revision accepted, content: { application/json: { schema: { $ref: '#/components/schemas/FleetResource' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/resources/{name}/observations:
+    parameters:
+      - { $ref: '#/components/parameters/FleetResourceName' }
+    get:
+      operationId: listFleetResourceObservations
+      description: Stored observations, newest first. limit defaults to 100, at most 100. Requires api:read.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
+      responses:
+        '200': { description: Observations, content: { application/json: { schema: { $ref: '#/components/schemas/FleetObservationList' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: appendFleetResourceObservation
+      description: Appends one observation. Only a GitHub Actions workload identity holding fleet:operate with the observe intent on a protected ref, from the configured Fleet repository, may append. Its GitHub environment must be the one this server's Fleet lane dispatches under, and the target must carry the alias environment:<lane> (for example environment:staging/nyc3; aliases never name a raw GitHub environment); the intent fails closed until operators add observe to the allowed intents. observedAt must be within 24 hours before and one minute after the server receive time. The reporter is derived from the verified identity. Stored observations that do not advance their source's watermark are returned as superseded and never clear a newer failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetObservationRequest' }
+      responses:
+        '201': { description: Observation stored; result says whether it applied or was superseded, content: { application/json: { schema: { $ref: '#/components/schemas/FleetObservationAppended' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -1671,6 +1848,7 @@ components:
     RecoveryDrillID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     StepUpToken: { name: X-Norn-Step-Up, in: header, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 200 } }
+    FleetResourceName: { name: name, in: path, required: true, schema: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,127}$' } }
     RequiredIdempotencyKey: { name: Idempotency-Key, in: header, required: true, description: Stable client key bound to one logical external Fleet admission; it must be reused for recovery and must not be reused for another logical deployment., schema: { type: string, minLength: 1, maxLength: 200 } }
   headers:
     NoStoreCacheControl:
@@ -1705,6 +1883,223 @@ components:
         requestId: { type: string }
         error: { type: string, deprecated: true }
         eventBounds: { $ref: '#/components/schemas/EventBounds' }
+    FleetTargetRegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, providerAccount, stateBackend, aliases]
+      properties:
+        provider: { type: string }
+        providerAccount: { type: string }
+        stateBackend: { type: string, format: uri, description: Absolute URI without query, fragment or userinfo. }
+        aliases: { type: array, minItems: 1, maxItems: 64, items: { type: string, description: 'cluster:<name> or environment:<lane>' } }
+    FleetTargetReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [mode, expectedGeneration]
+      properties:
+        mode: { type: string, enum: [terminal, abandon] }
+        expectedGeneration: { type: integer, format: int64, minimum: 0 }
+        reason: { type: string, maxLength: 1024 }
+    FleetTargetAbandonPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [planId]
+      properties:
+        planId: { type: string, format: uuid }
+        reason: { type: string, maxLength: 1024 }
+    FleetTargetFence:
+      type: object
+      required: [targetId, generation, held, authorityEpoch, currentAuthorityEpoch, revision, occupancy]
+      properties:
+        targetId: { type: string }
+        generation: { type: integer, format: int64 }
+        held: { type: boolean }
+        holderPlanId: { type: string }
+        authorityEpoch: { type: integer, format: int64 }
+        currentAuthorityEpoch: { type: integer, format: int64 }
+        revision: { type: integer, format: int64 }
+        lastRelease:
+          type: object
+          required: [planId, reason, at]
+          properties:
+            planId: { type: string }
+            reason: { type: string, enum: [succeeded, dispatch_not_submitted, released_terminal, abandoned] }
+            at: { type: string, format: date-time }
+        occupancy: { type: string, enum: [Free, Active, Uncertain] }
+        occupancyReason: { type: string, enum: [DispatchSubmissionUnresolved, NoLiveAttempt, AttemptTerminalWithoutSuccess, AuthoritySuperseded] }
+    FleetTarget:
+      type: object
+      required: [targetId, provider, providerAccount, stateBackend, createdAt, registrationOperationId, aliases, fence]
+      properties:
+        targetId: { type: string }
+        provider: { type: string }
+        providerAccount: { type: string }
+        stateBackend: { type: string }
+        createdAt: { type: string, format: date-time }
+        registrationOperationId: { type: string }
+        aliases: { type: array, items: { type: string } }
+        fence: { $ref: '#/components/schemas/FleetTargetFence' }
+    FleetResourceEnsureRequest:
+      type: object
+      additionalProperties: false
+      required: [targetId]
+      properties:
+        targetId: { type: string, pattern: '^tgt_[0-9a-f]{64}$' }
+    FleetResourceDesiredRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision]
+      properties:
+        planId: { type: string, format: uuid, description: The merged plan whose approved commit becomes the desired revision. Required whenever the GitHub App is configured. }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$', description: Accepted only when the GitHub App is not configured; recorded as operator-declared. }
+        expectedRevision: { type: integer, format: int64, minimum: 0 }
+    FleetResourceDesired:
+      type: object
+      required: [generation]
+      properties:
+        generation: { type: integer, format: int64, description: 0 means no desired revision has been declared. }
+        planId: { type: string }
+        commitSha: { type: string }
+        repository: { type: string }
+        verification: { type: string, enum: [github-merged-plan, operator-declared] }
+        acceptedAt: { type: string, format: date-time }
+        acceptedBy: { type: string }
+    FleetResourceCondition:
+      type: object
+      required: [type, status, evidenceRefs]
+      properties:
+        type: { type: string, enum: [ProviderStateKnown, NodesEnrolled, RuntimeReady, IngressReady, DriftDetected, ReconciliationRequired] }
+        status: { type: string, enum: ['True', 'False', 'Unknown'] }
+        reason: { type: string }
+        message: { type: string }
+        observedAt: { type: string, format: date-time }
+        evidenceRefs: { type: array, items: { type: string } }
+        observationSequence: { type: integer, format: int64 }
+    FleetResourceStatus:
+      type: object
+      required: [observedGeneration, lastAppliedGeneration, conditions]
+      properties:
+        observedGeneration: { type: integer, format: int64 }
+        lastAppliedGeneration: { type: integer, format: int64 }
+        lastApplied:
+          type: object
+          required: [generation, commitSha, planId]
+          properties:
+            generation: { type: integer, format: int64 }
+            commitSha: { type: string }
+            planId: { type: string }
+            reason: { type: string, enum: [GenerationOutOfHistory, CommitNotDesired] }
+        active:
+          type: object
+          required: [planId, attemptIds, fenceGeneration, occupancy]
+          properties:
+            planId: { type: string }
+            dispatchRunId: { type: string }
+            attemptIds: { type: array, items: { type: string } }
+            fenceGeneration: { type: integer, format: int64 }
+            occupancy: { type: string, enum: [Free, Active, Uncertain] }
+            occupancyReason: { type: string }
+        conditions: { type: array, items: { $ref: '#/components/schemas/FleetResourceCondition' } }
+        nextAction: { type: string, enum: [resolve_uncertain_outcome, await_runner, refresh_observations, investigate_drift, none] }
+        evaluatedAt: { type: string, format: date-time, description: When the status was last derived; absent before the first evaluation. }
+    FleetResourceBlocker:
+      type: object
+      required: [kind, reason]
+      properties:
+        kind: { type: string, enum: [execution, condition, reconciliation, observation] }
+        reason: { type: string }
+        message: { type: string }
+        condition: { type: string }
+        planId: { type: string }
+    FleetApprovalPolicy:
+      type: object
+      description: The approval policy Norn actually enforces, as data. basis is the desired revision's verification (none before one is declared).
+      required: [basis, protectedBranch, mergedPullRequest, planWorkflowSucceeded, boundPlanDigest, authorizedDispatch, ownerApprovalEnvelope, environmentReviewers, independentReview]
+      properties:
+        basis: { type: string, enum: [github-merged-plan, operator-declared, none] }
+        protectedBranch: { type: boolean }
+        mergedPullRequest: { type: boolean }
+        planWorkflowSucceeded: { type: boolean }
+        boundPlanDigest: { type: boolean }
+        authorizedDispatch: { type: boolean, description: True only when this server has a usable GitHub App dispatch path. }
+        ownerApprovalEnvelope: { type: boolean }
+        environmentReviewers: { type: string, enum: [not_enforced] }
+        independentReview: { type: string, enum: [not_enforced] }
+    FleetControllerLiveness:
+      type: object
+      description: running when the in-process reconciler completed a rescan within three intervals, stale when it did not, unknown when this process runs no reconciler or none has completed yet.
+      required: [state]
+      properties:
+        state: { type: string, enum: [running, stale, unknown] }
+        lastRescanAt: { type: string, format: date-time }
+        rescanIntervalSeconds: { type: integer, format: int64 }
+    FleetResource:
+      type: object
+      required: [name, targetId, revision, authorityEpoch, observationSequence, createdAt, updatedAt, desired, desiredHistory, status, observed, approvalPolicy, controller, readAt]
+      properties:
+        name: { type: string }
+        targetId: { type: string }
+        revision: { type: integer, format: int64, description: Compare-and-set token for setFleetResourceDesired. }
+        authorityEpoch: { type: integer, format: int64 }
+        observationSequence: { type: integer, format: int64 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        desired: { $ref: '#/components/schemas/FleetResourceDesired' }
+        desiredHistory: { type: array, maxItems: 20, items: { $ref: '#/components/schemas/FleetResourceDesired' } }
+        status: { $ref: '#/components/schemas/FleetResourceStatus' }
+        blocker: { $ref: '#/components/schemas/FleetResourceBlocker' }
+        observed:
+          type: object
+          description: Per observation source (provider, state, runtime), its latest applied observation.
+          additionalProperties:
+            type: object
+            required: [observedAt, sequence]
+            properties:
+              observedAt: { type: string, format: date-time }
+              sequence: { type: integer, format: int64 }
+        approvalPolicy: { $ref: '#/components/schemas/FleetApprovalPolicy' }
+        controller: { $ref: '#/components/schemas/FleetControllerLiveness' }
+        readAt: { type: string, format: date-time }
+    FleetResourceList:
+      type: object
+      required: [items, controller]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/FleetResource' } }
+        next: { type: string, description: Pass as after to read the next page; absent on the last page. }
+        controller: { $ref: '#/components/schemas/FleetControllerLiveness' }
+    FleetObservationRequest:
+      type: object
+      additionalProperties: false
+      required: [source, observedAt]
+      properties:
+        source: { type: string, enum: [provider, state, runtime] }
+        observedAt: { type: string, format: date-time }
+        facts: { type: object, additionalProperties: true, description: 'At most 16 KiB. provider: targetId, error, enrolledNodes, expectedNodes; state: drift; runtime: ready, ingressReady.' }
+        evidenceRefs: { type: array, maxItems: 20, items: { type: string, maxLength: 512 } }
+    FleetObservation:
+      type: object
+      required: [sequence, source, observedAt, receivedAt, facts, evidenceRefs, reporter, applied]
+      properties:
+        sequence: { type: integer, format: int64 }
+        source: { type: string, enum: [provider, state, runtime] }
+        observedAt: { type: string, format: date-time }
+        receivedAt: { type: string, format: date-time }
+        facts: { type: object, additionalProperties: true }
+        evidenceRefs: { type: array, items: { type: string } }
+        reporter: { type: string }
+        applied: { type: boolean }
+    FleetObservationAppended:
+      allOf:
+        - { $ref: '#/components/schemas/FleetObservation' }
+        - type: object
+          required: [result]
+          properties:
+            result: { type: string, enum: [applied, superseded] }
+    FleetObservationList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/FleetObservation' } }
     ErrorCode:
       type: string
       description: Stable machine-readable code. Clients must preserve unknown future values.
@@ -1876,6 +2271,38 @@ components:
         - fleet_github_dispatch_failed
         - fleet_github_dispatch_in_progress
         - fleet_github_dispatch_ambiguous
+        - fleet_target_execution_occupied
+        - fleet_target_unregistered
+        - fleet_target_alias_conflict
+        - fleet_target_authority_superseded
+        - fleet_plan_revalidation_required
+        - fleet_target_holder_abandoned
+        - fleet_target_recovery_requires_stopped_source
+        - fleet_target_registration_in_flight
+        - fleet_target_expected_generation_mismatch
+        - fleet_target_fence_not_held
+        - fleet_target_has_live_attempt
+        - fleet_target_terminal_proof_incomplete
+        - fleet_target_abandon_too_soon
+        - fleet_target_abandon_snapshot_required
+        - fleet_target_release_evidence_mismatch
+        - fleet_target_not_found
+        - fleet_target_read_failed
+        - fleet_target_observation_failed
+        - invalid_fleet_target_id
+        - invalid_fleet_target_request
+        - invalid_fleet_resource_name
+        - invalid_fleet_resource_request
+        - invalid_fleet_observation
+        - fleet_resource_not_found
+        - fleet_resource_revision_conflict
+        - fleet_resource_target_mismatch
+        - fleet_resource_plan_target_mismatch
+        - fleet_resource_store_failed
+        - fleet_observation_out_of_bounds
+        - fleet_observation_identity_denied
+        - fleet_github_plan_unproven
+        - fleet_environment_mismatch
         - fleet_github_receipt_failed
         - fleet_plan_invalid
         - invalid_fleet_github_dispatch

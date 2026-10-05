@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 )
 
@@ -110,15 +111,11 @@ type FleetRunnerAttemptAdmission struct {
 	PredecessorStop *FleetRunnerPredecessorStopEvidence `json:"predecessorStop,omitempty"`
 }
 
-type FleetRunnerPredecessorStopEvidence struct {
-	PredecessorID       string    `json:"predecessorId"`
-	SourceDispatchRunID string    `json:"sourceDispatchRunId"`
-	RunAttempt          int64     `json:"runAttempt"`
-	WorkflowURL         string    `json:"workflowUrl"`
-	Status              string    `json:"status"`
-	Conclusion          string    `json:"conclusion"`
-	ObservedAt          time.Time `json:"observedAt"`
-}
+// FleetRunnerPredecessorStopEvidence is a type alias for lifecycle.StopEvidence
+// (WP2): the definition moved to fleet/lifecycle so both the PG recovery gate
+// and the shared helper validate the identical type. The JSON shape and
+// fingerprint identity are unchanged.
+type FleetRunnerPredecessorStopEvidence = lifecycle.StopEvidence
 
 type OperationAcceptance struct {
 	Identity            OperationRequestIdentity      `json:"identity"`
@@ -130,6 +127,16 @@ type OperationAcceptance struct {
 	Admission           OperationAdmissionPolicy      `json:"admission,omitempty"`
 	FleetReconciliation *FleetReconciliationAdmission `json:"fleetReconciliation,omitempty"`
 	FleetRunnerAttempt  *FleetRunnerAttemptAdmission  `json:"fleetRunnerAttempt,omitempty"`
+	// FleetTargetMutation is the typed admission for signed target register,
+	// fence release and plan abandon (WP9a). Optional and omitempty, so
+	// fingerprints of every other acceptance are unchanged.
+	FleetTargetMutation *FleetTargetMutationAdmission `json:"fleetTargetMutation,omitempty"`
+	// FleetTargetReleaseEvidence is the server-gathered GitHub release
+	// evidence (WP5 observers) for a release or abandon-plan mutation. It is
+	// server-only: json:"-" so no request decode fills it, and it is not part
+	// of the request fingerprint. The store re-validates it with
+	// lifecycle.DecideRelease and records it in operation metadata.
+	FleetTargetReleaseEvidence *FleetTargetReleaseEvidence `json:"-"`
 	// Semantics carries endpoint-specific execution-affecting policy and
 	// qualification inputs not represented by the operation/deployment fields.
 	// It is covered by the canonical request fingerprint.

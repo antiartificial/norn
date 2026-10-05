@@ -282,6 +282,56 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	}
 }
 
+// TestFleetRunnerLegacyReadWritesExpiry pins D8 (plan.md §1.4): on the PG
+// legacy path, GetFleetRunnerAttempt itself writes the 'abandoned' status
+// and a bumped revision once the heartbeat lease has lapsed, rather than
+// only projecting expiry for the caller. A second read is a no-op because
+// the row is no longer 'queued' or 'running'.
+func TestFleetRunnerLegacyReadWritesExpiry(t *testing.T) {
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	db, err := Connect(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	finished := now
+	planID := uuid.NewString()
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM operations WHERE id = $1`, planID)
+	})
+	plan := &model.Operation{ID: planID, Kind: "fleet.capacity-plan", Ref: "app", Status: model.OperationSucceeded, Payload: map[string]interface{}{"action": "scale"}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished}
+	if err := db.InsertCompletedOperation(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := now.Add(-time.Hour)
+	attempt := &model.FleetRunnerAttempt{
+		ID: uuid.NewString(), PlanID: planID, RunnerAttemptID: "expiry-1", Status: model.FleetRunnerAttemptRunning,
+		CurrentPhase: "infrastructure_applied", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PlanSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		HeartbeatTimeoutSeconds: 30, Revision: 1, StartedAt: stale, PhaseStartedAt: stale, HeartbeatAt: stale, UpdatedAt: stale,
+	}
+	if err := db.CreateFleetRunnerAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := db.GetFleetRunnerAttempt(ctx, attempt.ID)
+	if err != nil || abandoned.Status != model.FleetRunnerAttemptAbandoned || abandoned.Revision != 2 || abandoned.LastError != "runner heartbeat expired" {
+		t.Fatalf("read did not write expiry: %+v, %v", abandoned, err)
+	}
+	again, err := db.GetFleetRunnerAttempt(ctx, attempt.ID)
+	if err != nil || again.Revision != 2 {
+		t.Fatalf("second read re-wrote an already-terminal attempt: %+v, %v", again, err)
+	}
+}
+
 // TestFleetRunnerPilotRunMigrationRoundTrip upgrades a real version-43 row
 // before reading both ordinary and protected pilot attempts.
 func TestFleetRunnerPilotRunMigrationRoundTrip(t *testing.T) {

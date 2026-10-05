@@ -20,6 +20,8 @@ import (
 
 	"norn/v2/api/config"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -29,6 +31,65 @@ const (
 	minFleetHeartbeatTimeout     = 30
 	maxFleetHeartbeatTimeout     = 900
 )
+
+// writeFleetFenceError maps a *lifecycle.FenceError (any mutation fence or
+// authority-epoch refusal, plan.md §2.2) to its HTTP response: all of this
+// family are 409 (plan.md §2.5, "New error codes on existing routes"). It
+// reports false for any other error so callers fall back to their existing
+// mapping unchanged — when the registry is empty no fence path ever returns
+// a *lifecycle.FenceError, so legacy behavior is byte-identical (Q1).
+func writeFleetFenceError(w http.ResponseWriter, r *http.Request, err error) bool {
+	var fenceErr *lifecycle.FenceError
+	if !errors.As(err, &fenceErr) {
+		return false
+	}
+	reason := fenceErr.Reason
+	if reason == "" {
+		reason = fenceErr.Code
+	}
+	WriteControlProblem(w, r, http.StatusConflict, fenceErr.Code, reason)
+	return true
+}
+
+// parseFleetRunnerAttemptID splits the canonical
+// "github-actions:<repo>:<runId>:<runAttempt>" identity
+// canonicalFleetRunnerAttemptID produces, so Q11's stop check can observe
+// the exact GitHub run a recorded attempt names.
+func parseFleetRunnerAttemptID(id string) (repository string, runID, runAttempt int64, ok bool) {
+	parts := strings.Split(id, ":")
+	if len(parts) != 4 || parts[0] != "github-actions" {
+		return "", 0, 0, false
+	}
+	runID, err1 := strconv.ParseInt(parts[2], 10, 64)
+	runAttempt, err2 := strconv.ParseInt(parts[3], 10, 64)
+	if err1 != nil || err2 != nil || runID <= 0 || runAttempt <= 0 {
+		return "", 0, 0, false
+	}
+	return parts[1], runID, runAttempt, true
+}
+
+// fleetRunnerSourceProvenStopped is Q11's stop check (plan.md §5, accepted
+// 2026-10-04): once a plan's target is registered, legacy recovery of a
+// source whose GitHub run is not proven completed is refused. previous's
+// own recorded run identity (not the dispatch's current binding) is what
+// gets observed, so a chained recovery checks the exact run that attempt
+// ran on. Any failure to observe is reported as not-stopped (fail closed).
+func (h *Handler) fleetRunnerSourceProvenStopped(ctx context.Context, previous *model.FleetRunnerAttempt, binding *store.FleetGitHubDispatch) bool {
+	if h.fleetGitHub == nil || previous == nil || binding == nil {
+		return false
+	}
+	_, runID, runAttempt, ok := parseFleetRunnerAttemptID(previous.RunnerAttemptID)
+	if !ok {
+		return false
+	}
+	if !previous.Recovery {
+		approved := &githubapp.Dispatch{RunID: binding.RunID, PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID}
+		observation, err := h.fleetGitHub.ObserveApplyRunByNonceHash(ctx, previous.PlanID, binding.FleetEnvironment, approved, binding.DispatchNonceSHA256, runAttempt)
+		return err == nil && observation != nil && observation.Status == "completed"
+	}
+	observation, err := h.fleetGitHub.ObserveRecoverRun(ctx, binding.RunID, binding.DispatchNonceSHA256, runID, runAttempt, previous.CommitSHA)
+	return err == nil && observation != nil && observation.Status == "completed"
+}
 
 func (h *Handler) ListFleetRunnerAttempts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireControlScope(w, r, ScopeAPIRead); !ok {
@@ -156,6 +217,28 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "recovery timing classification differs from the durable source attempt")
 			return
 		}
+		// Q11 (plan.md §5): once this plan's target is registered, legacy
+		// recovery of a source whose GitHub run is not proven completed is
+		// refused. An unregistered cluster keeps today's unchecked behavior
+		// (the documented gap, lifecycle-contract.md §6).
+		// The observation is made before the store transaction; that is
+		// sound because "completed" is terminal for one exact (run ID, run
+		// attempt), and RecoverFleetRunnerAttempt re-checks the source
+		// attempt's revision under its lock, so a source that changed after
+		// this observation is refused as a conflict. An unregistered cluster
+		// in a non-empty registry is refused by the store's strict bind.
+		recoveryCluster, _ := plan.Payload["cluster"].(string)
+		_, registryEmpty, resolveErr := h.db.ResolveFleetTargetForCluster(r.Context(), recoveryCluster, binding.FleetEnvironment)
+		if resolveErr != nil {
+			if !writeFleetFenceError(w, r, resolveErr) {
+				WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to resolve the fleet target for recovery")
+			}
+			return
+		}
+		if !registryEmpty && !h.fleetRunnerSourceProvenStopped(r.Context(), previous, binding) {
+			WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetRecoveryRequiresStoppedSource, "the source attempt's GitHub run must be proven completed before recovery")
+			return
+		}
 		now := time.Now().UTC()
 		recovery := &model.FleetRunnerAttempt{
 			ID: uuid.NewString(), PlanID: previous.PlanID, RunnerAttemptID: request.RunnerAttemptID,
@@ -168,7 +251,9 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 			Metadata: mergeFleetRunnerMetadata(fleetRunnerTimingMetadata(classification), map[string]interface{}{"authorityConsumption": fleetRunnerAuthorityMetadata(request)}),
 		}
 		recovery.Metadata["recoveryReason"] = "verified GitHub Actions recovery workflow"
-		if err := h.db.RecoverFleetRunnerAttempt(r.Context(), previous, recovery); errors.Is(err, store.ErrFleetRunnerAttemptConflict) {
+		if err := h.db.RecoverFleetRunnerAttempt(r.Context(), previous, recovery); writeFleetFenceError(w, r, err) {
+			return
+		} else if errors.Is(err, store.ErrFleetRunnerAttemptConflict) {
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_resume_conflict", "the durable source runner attempt changed before recovery could create its retry lineage")
 			return
 		} else if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
@@ -215,6 +300,9 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 		Metadata: mergeFleetRunnerMetadata(fleetRunnerTimingMetadata(classification), map[string]interface{}{"authorityConsumption": fleetRunnerAuthorityMetadata(request)}),
 	}
 	if err := h.db.CreateFleetRunnerAttempt(r.Context(), attempt); err != nil {
+		if writeFleetFenceError(w, r, err) {
+			return
+		}
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			if concurrent, lookupErr := h.db.ListFleetRunnerAttempts(r.Context(), plan.ID, 100); lookupErr == nil {
 				for index := range concurrent {
@@ -294,6 +382,16 @@ func (h *Handler) HeartbeatFleetRunnerAttempt(w http.ResponseWriter, r *http.Req
 	}
 	updated, err := h.db.HeartbeatFleetRunnerAttempt(r.Context(), attempt.ID, request.Phase, request.Sequence, request.Revision, strings.TrimSpace(request.Message))
 	if errors.Is(err, store.ErrFleetRunnerAttemptConflict) {
+		// Q10: the epoch predicate inside that single UPDATE (store/fleet_runner_attempts.go)
+		// refuses the same way an ordinary revision conflict does; a diagnostic
+		// read distinguishes which refusal this was, without adding a lock.
+		if superseded, supersededErr := h.db.FleetTargetEpochSupersededForPlan(r.Context(), attempt.PlanID); supersededErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read the fleet target authority epoch")
+			return
+		} else if superseded {
+			WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetAuthoritySuperseded, "fleet target authority epoch has advanced past this attempt's fence")
+			return
+		}
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_revision_conflict", "runner attempt changed; refresh it before heartbeating")
 		return
 	}
@@ -349,13 +447,28 @@ func (h *Handler) AdvanceFleetRunnerAttempt(w http.ResponseWriter, r *http.Reque
 	}
 	updated, err := h.db.AdvanceFleetRunnerAttempt(r.Context(), attempt.ID, attempt.CurrentPhase, next, request.Revision, terminal)
 	if errors.Is(err, store.ErrFleetRunnerAttemptConflict) {
+		// Q10, same diagnostic as Heartbeat above.
+		if superseded, supersededErr := h.db.FleetTargetEpochSupersededForPlan(r.Context(), attempt.PlanID); supersededErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read the fleet target authority epoch")
+			return
+		} else if superseded {
+			WriteControlProblem(w, r, http.StatusConflict, lifecycle.CodeFleetTargetAuthoritySuperseded, "fleet target authority epoch has advanced past this attempt's fence")
+			return
+		}
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_advance_unproven", "record successful reconciliation evidence for the current attempt and phase, then refresh before advancing")
 		return
 	}
 	if err != nil {
+		if writeFleetFenceError(w, r, err) {
+			return
+		}
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_update_failed", "failed to advance runner attempt")
 		return
 	}
+	// Release: succeeded (plan.md §2.2) is committed atomically with this
+	// terminal transition inside AdvanceFleetRunnerAttempt itself
+	// (store/fleet_runner_attempts.go) when terminal is true, never as a
+	// separate best-effort call.
 	h.attachFleetRunnerTiming(updated)
 	writeJSON(w, updated)
 }
@@ -743,24 +856,11 @@ func principalHasExactScope(principal AccessPrincipal, scope string) bool {
 }
 
 func nextFleetRunnerPhase(current string, requiresDrain bool) (string, bool, error) {
-	phases := fleetRunnerPhases(requiresDrain)
-	for index, phase := range phases {
-		if phase != current {
-			continue
-		}
-		if index == len(phases)-1 {
-			return current, true, nil
-		}
-		return phases[index+1], false, nil
-	}
-	return "", false, fmt.Errorf("current phase is not supported")
+	return lifecycle.NextPhase(lifecycle.PostgresLegacy, current, requiresDrain)
 }
 
 func fleetRunnerPhases(requiresDrain bool) []string {
-	if requiresDrain {
-		return fleetReconciliationPhases
-	}
-	return []string{"infrastructure_applied", "inventory_generated", "nodes_configured", "nodes_enrolled", "readiness_verified", "complete"}
+	return lifecycle.Phases(lifecycle.PostgresLegacy, requiresDrain)
 }
 
 // firstIncompleteFleetRunnerPhase makes workflow restarts resumable only from

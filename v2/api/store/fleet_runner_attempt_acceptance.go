@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 )
 
@@ -111,11 +112,7 @@ func requireFleetPredecessorStopBinding(proof *FleetRunnerPredecessorStopEvidenc
 }
 
 func validFleetRunnerPredecessorStop(proof FleetRunnerPredecessorStopEvidence, predecessorID, sourceDispatchRunID string) bool {
-	if proof.PredecessorID != predecessorID || proof.SourceDispatchRunID != sourceDispatchRunID || proof.RunAttempt <= 0 || proof.Status != "completed" || (proof.Conclusion != "failure" && proof.Conclusion != "cancelled" && proof.Conclusion != "timed_out") || proof.ObservedAt.IsZero() || time.Since(proof.ObservedAt) > 5*time.Minute || proof.ObservedAt.After(time.Now().UTC().Add(time.Minute)) {
-		return false
-	}
-	parsed, err := url.Parse(proof.WorkflowURL)
-	return err == nil && parsed.Scheme == "https" && parsed.Host == "github.com" && parsed.User == nil && len(proof.WorkflowURL) <= 2048
+	return lifecycle.ValidStopEvidence(proof, predecessorID, sourceDispatchRunID, time.Now())
 }
 
 // ValidateFleetRunnerPredecessorStopEvidence is the backend-specific recovery
@@ -340,23 +337,7 @@ func acceptFleetRunnerAttempt(ctx context.Context, tx pgx.Tx, acceptance Operati
 }
 
 func validateFleetRunnerAttemptLineage(descending []fleet.RunnerAttempt) error {
-	if len(descending) == 0 {
-		return nil
-	}
-	root := descending[len(descending)-1]
-	if root.Attempt != 1 || root.RootAttemptID != root.ID || root.RetryOf != "" {
-		return fmt.Errorf("fleet runner-attempt root lineage is corrupt")
-	}
-	previousID := root.ID
-	for index := len(descending) - 2; index >= 0; index-- {
-		item := descending[index]
-		wantAttempt := len(descending) - index
-		if item.Attempt != wantAttempt || item.RootAttemptID != root.ID || item.RetryOf != previousID {
-			return fmt.Errorf("fleet runner-attempt retry lineage is corrupt")
-		}
-		previousID = item.ID
-	}
-	return nil
+	return lifecycle.ValidateLineage(descending)
 }
 
 func fleetRunnerAttemptInitialPhaseFromPlan(payload map[string]interface{}) string {

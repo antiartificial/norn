@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# go-test-strict runs one named Go test regression under
+# NORN_TEST_REQUIRE_INTEGRATION=1 and fails the build on any of:
+#   - a non-zero `go test` exit status;
+#   - zero matched tests (no "=== RUN" line in the output);
+#   - any skipped test ("--- SKIP") or a "[no tests to run]" report.
+#
+# This exists so a fence/lifecycle regression command can never pass silently
+# because its run regex matched nothing, or because an integration helper
+# skipped instead of failing when a required test service is unset. See
+# docs/v3/fleet-controller/plan.md, "Conventions (all WPs)" and WP1.
+#
+# Usage: go-test-strict <package> <run-regex> [extra go test flags...]
+
+if [ "$#" -lt 2 ]; then
+  printf 'usage: go-test-strict <package> <run-regex> [extra go test flags...]\n' >&2
+  exit 2
+fi
+
+package=$1
+pattern=$2
+shift 2
+
+api_root=$(cd "$(dirname "$0")/../api" && pwd)
+output=$(mktemp)
+trap 'rm -f "$output"' EXIT
+
+# Stream output while keeping a copy for the checks below.
+set +e
+(
+  cd "$api_root"
+  NORN_TEST_REQUIRE_INTEGRATION=1 go test -count=1 -v -run "$pattern" "$package" "$@"
+) 2>&1 | tee "$output"
+status=${PIPESTATUS[0]}
+set -e
+
+if [ "$status" -ne 0 ]; then
+  printf 'go-test-strict: go test exited %s\n' "$status" >&2
+  exit "$status"
+fi
+if ! grep -q '^=== RUN' "$output"; then
+  printf "go-test-strict: run regex '%s' matched zero tests in %s\n" "$pattern" "$package" >&2
+  exit 1
+fi
+if grep -q -- '--- SKIP' "$output"; then
+  printf 'go-test-strict: a matched test was skipped\n' >&2
+  exit 1
+fi
+if grep -q -- '\[no tests to run\]' "$output"; then
+  printf 'go-test-strict: go test reported no tests to run\n' >&2
+  exit 1
+fi
+
+# A plain-name alternation ('TestA|TestB') must match a top-level test for
+# every alternative, so a typo in one name cannot pass on the others.
+plain_names='^[A-Za-z0-9_|^$]+$'
+if [[ "$pattern" =~ $plain_names ]]; then
+  IFS='|' read -r -a alternatives <<<"$pattern"
+  for alternative in "${alternatives[@]}"; do
+    name=${alternative#^}
+    name=${name%\$}
+    [ -n "$name" ] || continue
+    start='[^ /]*'
+    end=''
+    [ "${alternative:0:1}" != '^' ] || start=''
+    [ "${alternative: -1}" != '$' ] || end='(/.*)?$'
+    if ! grep -Eq "^=== RUN +${start}${name}${end}" "$output"; then
+      printf "go-test-strict: run alternative '%s' matched zero tests in %s\n" "$alternative" "$package" >&2
+      exit 1
+    fi
+  done
+fi

@@ -20,6 +20,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -100,6 +101,16 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	}
 	if s.policy.ReplayTTL > 0 {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd runner-attempt replay expiry is not yet qualified"}
+	}
+	// B1/H7: a plan the operator has permanently abandoned can never admit a
+	// new attempt (first attempt or recovery), checked before replay
+	// resolution so a fresh identity never slips through as if accepted.
+	if input.FleetRunnerAttempt != nil {
+		if abandoned, err := s.checkFleetTargetPlanAbandoned(ctx, input.FleetRunnerAttempt.PlanID); err != nil {
+			return store.AcceptedOperation{}, err
+		} else if abandoned {
+			return store.AcceptedOperation{}, fleetAttemptError(lifecycle.CodeFleetTargetHolderAbandoned, "fleet target holder plan is permanently abandoned")
+		}
 	}
 	acceptance, err := s.normalize(input)
 	if err != nil {
@@ -212,6 +223,38 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	if preparationResponse != nil {
 		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetGitHubDispatchPreparationKey(admission.PlanID)), "=", preparationResponse.Kvs[0].ModRevision))
 	}
+	// Bind the per-target mutation fence atomically with this attempt
+	// (plan.md §2.2 "Bind"; WP8b), for both the first attempt and recovery.
+	// M13: if the fence was acquired or last bound under an older epoch,
+	// bind re-binds it (Generation+1, current epoch) instead of stranding
+	// the plan.
+	preparation, err := s.GetFleetGitHubDispatchPreparation(ctx, admission.PlanID)
+	if err != nil {
+		return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_dispatch_mismatch", "runner attempt dispatch preparation is unavailable")
+	}
+	cluster, _ := plan.Operation.Payload["cluster"].(string)
+	fenceCtx, err := s.loadFleetTargetFenceContext(ctx, cluster, preparation.FleetEnvironment, true)
+	if err != nil {
+		return store.AcceptedOperation{}, wrapFleetFenceError(err)
+	}
+	var fencePut clientv3.Op
+	hasFencePut := false
+	if fenceCtx.TargetID != "" {
+		nextFence, decideErr := lifecycle.DecideBind(fenceCtx.Fence, admission.PlanID, admission.DispatchNonceSHA256, fenceCtx.Epoch)
+		if decideErr != nil {
+			return store.AcceptedOperation{}, wrapFleetFenceError(decideErr)
+		}
+		fenceRecord, marshalErr := json.Marshal(fleetTargetFenceRecord(nextFence))
+		if marshalErr != nil {
+			return store.AcceptedOperation{}, marshalErr
+		}
+		compares = append(compares,
+			clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(fenceCtx.TargetID)), "=", fenceCtx.FenceRevision),
+			clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", fenceCtx.EpochRevision),
+		)
+		fencePut, hasFencePut = clientv3.OpPut(s.fleetTargetFenceKey(fenceCtx.TargetID), string(fenceRecord)), true
+	}
+	compares = append(compares, s.registryCompare(fenceCtx), s.abandonedCompare(admission.PlanID))
 	store.BindAcceptedFleetRunnerAttempt(&acceptance, &item)
 	acceptedAt := now
 	identityID, intentID := uuid.NewString(), uuid.NewString()
@@ -234,6 +277,9 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	}
 	nextState, _ := json.Marshal(v3FleetRunnerPlanState{Version: state.Version + 1})
 	puts = append(puts, clientv3.OpPut(key, string(acceptanceRecord)), clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(operationRecord)), clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, acceptedAt, acceptance.Operation.ID), acceptance.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(acceptance.Operation.ID), key), clientv3.OpPut(s.fleetRunnerAttemptKey(admission.PlanID, item.ID), string(attemptRecord)), clientv3.OpPut(s.fleetRunnerPlanStateKey(admission.PlanID), string(nextState)))
+	if hasFencePut {
+		puts = append(puts, fencePut)
+	}
 	if len(attempts) == 1 {
 		predecessor := attempts[0]
 		predecessor.Status, predecessor.LastError, predecessor.Revision, predecessor.UpdatedAt, predecessor.FinishedAt = "failed", "server-observed GitHub workflow "+admission.PredecessorStop.Conclusion, predecessor.Revision+1, now, &now
@@ -346,10 +392,32 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 		if item.Revision != revision || (item.Status != "queued" && item.Status != "running") {
 			return nil, ErrNotFound
 		}
+		// Epoch compares (Q10; plan.md §2.2 "Evidence writes"): heartbeat and
+		// advance are refused once the fence's recorded authority epoch falls
+		// behind current; cancel is always allowed. strict=false: a plan
+		// already admitted stays ungated if its cluster/environment no
+		// longer resolve the same way (it was already fenced at bind time if
+		// a fence applies to it at all).
+		cluster, err := s.fleetCapacityPlanCluster(ctx, planID)
+		if err != nil {
+			return nil, err
+		}
+		var environment string
+		if preparation, prepErr := s.GetFleetGitHubDispatchPreparation(ctx, planID); prepErr == nil {
+			environment = preparation.FleetEnvironment
+		}
+		fenceCtx, err := s.loadFleetTargetFenceContext(ctx, cluster, environment, false)
+		if err != nil {
+			return nil, err
+		}
+		var releaseNextFence *lifecycle.FenceFacts
 		switch action {
 		case "heartbeat":
 			if len(values) != 2 {
 				return nil, fmt.Errorf("heartbeat requires sequence and message")
+			}
+			if err := lifecycle.DecideEvidenceWrite(fenceCtx.Fence, planID, fenceCtx.Epoch, lifecycle.EvidenceHeartbeat); err != nil {
+				return nil, err
 			}
 			sequence, ok := values[0].(int64)
 			if !ok || sequence != item.HeartbeatSequence+1 || !item.HeartbeatExpiresAt.After(now) {
@@ -364,6 +432,9 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 		case "advance":
 			if len(values) != 1 {
 				return nil, fmt.Errorf("advance requires phase")
+			}
+			if err := lifecycle.DecideEvidenceWrite(fenceCtx.Fence, planID, fenceCtx.Epoch, lifecycle.EvidenceAdvance); err != nil {
+				return nil, err
 			}
 			phase, ok := values[0].(string)
 			if !ok || !fleetValidPhase(phase) || !item.HeartbeatExpiresAt.After(now) {
@@ -381,6 +452,30 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 			if phase == "complete" {
 				item.Status = "succeeded"
 				item.FinishedAt = &now
+				// Release on complete (plan.md §2.2 "Release: succeeded"; WP8b).
+				if fenceCtx.TargetID != "" {
+					// Never free a fence some other plan holds: DecideRelease
+					// checks only Held, not the holder's identity.
+					if fenceCtx.Fence.Held && fenceCtx.Fence.HolderPlanID != planID {
+						return nil, &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetExecutionOccupied, Reason: "fleet target fence is held by another plan"}
+					}
+					attempts, _, attErr := s.listFleetRunnerAttempts(ctx, planID)
+					if attErr != nil {
+						return nil, attErr
+					}
+					holderAttempts := make([]fleet.RunnerAttempt, 0, len(attempts))
+					for _, a := range attempts {
+						if a.ID == item.ID {
+							a = item
+						}
+						holderAttempts = append(holderAttempts, a)
+					}
+					nextFence, relErr := lifecycle.DecideRelease(fenceCtx.Fence, lifecycle.HolderFacts{Attempts: holderAttempts}, lifecycle.ReleaseModeSucceeded, nil, now)
+					if relErr != nil {
+						return nil, relErr
+					}
+					releaseNextFence = &nextFence
+				}
 			}
 		case "cancel":
 			if len(values) != 1 {
@@ -411,6 +506,24 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 			}
 			compares = append(compares, pointerCompares...)
 			puts = append(puts, pointerPuts...)
+		}
+		// T1: heartbeat and advance were decided against the fence and epoch
+		// read above, so both must still hold at commit (a concurrent epoch
+		// advance otherwise lets a superseded heartbeat land). Cancel is
+		// always allowed (Q10) and takes no fence compare.
+		if fenceCtx.TargetID != "" && action != "cancel" {
+			compares = append(compares,
+				clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(fenceCtx.TargetID)), "=", fenceCtx.FenceRevision),
+				clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", fenceCtx.EpochRevision),
+			)
+		}
+		if releaseNextFence != nil {
+			fenceRecord, marshalErr := json.Marshal(fleetTargetFenceRecord(*releaseNextFence))
+			if marshalErr != nil {
+				return nil, marshalErr
+			}
+			compares = append(compares, s.registryCompare(fenceCtx), s.abandonedCompare(planID))
+			puts = append(puts, clientv3.OpPut(s.fleetTargetFenceKey(fenceCtx.TargetID), string(fenceRecord)))
 		}
 		txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
 		if err != nil {
@@ -488,6 +601,20 @@ func (s *V3OperationStore) verifyFleetRunnerAttemptReplay(ctx context.Context, a
 func fleetAttemptError(code, reason string) error {
 	return &store.FleetRunnerAttemptAdmissionError{Code: code, Reason: reason}
 }
+
+// wrapFleetFenceError rewraps a *lifecycle.FenceError (fence/epoch
+// resolution and Decide* refusals, which carry no store-level type of their
+// own) as the same store.FleetRunnerAttemptAdmissionError shape every other
+// bind refusal in this file already uses, so it reaches
+// handler/control_protocol.go's existing generic admission-error mapping
+// instead of falling through to a 500. Any other error is returned as-is.
+func wrapFleetFenceError(err error) error {
+	var fenceErr *lifecycle.FenceError
+	if errors.As(err, &fenceErr) {
+		return fleetAttemptError(fenceErr.Code, fenceErr.Error())
+	}
+	return err
+}
 func fleetLowerHex(value string, length int) bool {
 	if len(value) != length || strings.ToLower(value) != value {
 		return false
@@ -503,18 +630,10 @@ func fleetWorkflowURL(value string) bool {
 	return strings.HasPrefix(value, "https://") && len(value) <= 2048
 }
 func fleetValidPhase(phase string) bool {
-	for _, allowed := range []string{"prechange_verified", "provider_applying", "infrastructure_applied", "inventory_generated", "nodes_configured", "nodes_enrolled", "readiness_verified", "old_nodes_drained", "complete"} {
-		if phase == allowed {
-			return true
-		}
-	}
-	return false
+	return lifecycle.ValidPhase(phase)
 }
 func fleetPlanRequiresDrain(payload map[string]interface{}) bool {
 	action, _ := payload["action"].(string)
-	if action == "replace" {
-		return true
-	}
 	current, _ := payload["current"].(map[string]interface{})
 	proposed, _ := payload["proposed"].(map[string]interface{})
 	number := func(value interface{}) float64 {
@@ -527,7 +646,7 @@ func fleetPlanRequiresDrain(payload map[string]interface{}) bool {
 		}
 		return 0
 	}
-	return action == "scale" && number(proposed["desired"]) < number(current["desired"])
+	return lifecycle.RequiresDrain(action, number(current["desired"]), number(proposed["desired"]))
 }
 func fleetInitialPhase(_ map[string]interface{}) string {
 	// Reconciliation admission requires successful prechange evidence before
@@ -536,29 +655,13 @@ func fleetInitialPhase(_ map[string]interface{}) string {
 	return "prechange_verified"
 }
 func fleetProjectExpiredAttempt(item fleet.RunnerAttempt, now time.Time) fleet.RunnerAttempt {
-	if (item.Status == "queued" || item.Status == "running") && item.HeartbeatExpiresAt.Before(now) {
-		item.Status, item.LastError = "abandoned", "heartbeat lease expired; external execution termination unproven"
-		finished := item.HeartbeatExpiresAt
-		item.FinishedAt = &finished
-	}
-	return item
+	return lifecycle.ProjectExpiry(item, now)
 }
 func fleetValidateLineage(items []fleet.RunnerAttempt) error {
-	if len(items) == 0 {
-		return nil
-	}
+	// Callers rely on items ending up sorted ascending by Attempt after this
+	// call (e.g. attempts[len(attempts)-1] as the latest attempt), so the
+	// in-place sort stays here; lifecycle.ValidateLineage itself is
+	// order-insensitive and does not mutate its argument.
 	sort.Slice(items, func(i, j int) bool { return items[i].Attempt < items[j].Attempt })
-	root := items[0]
-	if root.Attempt != 1 || root.RootAttemptID != root.ID || root.RetryOf != "" {
-		return fmt.Errorf("fleet runner-attempt root lineage is corrupt")
-	}
-	previous := root.ID
-	for index := 1; index < len(items); index++ {
-		item := items[index]
-		if item.Attempt != index+1 || item.RootAttemptID != root.ID || item.RetryOf != previous {
-			return fmt.Errorf("fleet runner-attempt retry lineage is corrupt")
-		}
-		previous = item.ID
-	}
-	return nil
+	return lifecycle.ValidateLineage(items)
 }

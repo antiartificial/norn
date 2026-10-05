@@ -8,8 +8,62 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 )
+
+// fleetTargetEpochRefusalSQL is the epoch-check predicate M7 requires:
+// instead of taking a new lock, legacy heartbeat and advance add this
+// "AND NOT EXISTS" clause to their existing single UPDATE. It resolves
+// plan's target purely through the (already-immutable) cluster alias, so an
+// unregistered cluster or an empty registry makes it vacuously true — byte-
+// identical to the pre-fence UPDATE (Q1). planIDExpr names the column or
+// table-qualified expression holding the attempt's plan_id in that UPDATE's
+// own scope (bare "plan_id" when the table has no alias, "a.plan_id" when
+// it is aliased "a").
+func fleetTargetEpochRefusalSQL(planIDExpr string) string {
+	return `
+	  AND NOT EXISTS (
+	    SELECT 1 FROM operations p
+	    JOIN fleet_target_aliases ca ON ca.alias = 'cluster:' || (p.payload->>'cluster')
+	    JOIN fleet_target_fences f ON f.target_id = ca.target_id
+	    CROSS JOIN fleet_authority_epoch e
+	    WHERE p.id = ` + planIDExpr + ` AND f.authority_epoch < e.epoch
+	  )`
+}
+
+// bindFleetTargetFenceTx is the fence Bind transition (plan.md §2.2) shared
+// by CreateFleetRunnerAttempt (first attempt) and RecoverFleetRunnerAttempt
+// (recovery; M13 means both re-bind identically on an epoch advance). It
+// must run inside tx immediately after the existing "norn.fleet-runner:"
+// plan advisory lock and before any fleet_runner_attempts row is locked or
+// inserted, so the fence (lock-order position 4) is always locked before
+// attempts (position 6). An abandoned plan refuses permanently (B1/H7); an
+// empty registry is byte-identical to no fence check at all (Q1).
+func bindFleetTargetFenceTx(ctx context.Context, tx pgx.Tx, planID string) error {
+	abandoned, err := IsFleetPlanAbandoned(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	if abandoned {
+		return &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetHolderAbandoned}
+	}
+	// Bind resolves the plan's own cluster alias exactly as acquire did
+	// (strict, plan.md §2.2 and the etcd backend): an empty registry is
+	// byte-identical to no fence check (Q1); a non-empty registry with an
+	// unregistered cluster is refused (fleet_target_unregistered); and a
+	// registered target whose fence this plan and nonce do not hold is
+	// refused by DecideBind, never treated as unfenced.
+	targetID, fence, epoch, nonceHash, err := lockFleetTargetFenceForPlanID(ctx, tx, planID, true, true)
+	if err != nil || targetID == "" {
+		return err
+	}
+	next, decErr := lifecycle.DecideBind(fence, planID, nonceHash, epoch)
+	if decErr != nil {
+		return decErr
+	}
+	return PutFleetTargetFence(ctx, tx, next)
+}
 
 var ErrFleetRunnerAttemptConflict = fmt.Errorf("fleet runner attempt changed or is not transitionable")
 
@@ -26,6 +80,9 @@ func (db *DB) CreateFleetRunnerAttempt(ctx context.Context, attempt *model.Fleet
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('norn.fleet-runner:' || $1))`, attempt.PlanID); err != nil {
+		return err
+	}
+	if err := bindFleetTargetFenceTx(ctx, tx, attempt.PlanID); err != nil {
 		return err
 	}
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt), 0) + 1 FROM fleet_runner_attempts WHERE plan_id = $1`, attempt.PlanID).Scan(&attempt.Attempt); err != nil {
@@ -121,6 +178,7 @@ func (db *DB) HeartbeatFleetRunnerAttempt(ctx context.Context, id, phase string,
 		    metadata = metadata || jsonb_build_object('heartbeatMessage', $2::text)
 		WHERE id = $3 AND current_phase = $4 AND revision = $5
 		  AND status IN ('queued', 'running') AND heartbeat_sequence < $1
+		  `+fleetTargetEpochRefusalSQL("plan_id")+`
 		RETURNING id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
 		          commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
 		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
@@ -133,6 +191,29 @@ func (db *DB) HeartbeatFleetRunnerAttempt(ctx context.Context, id, phase string,
 	return attempt, err
 }
 
+// fleetRunnerAdvanceSQL is shared by the non-terminal (lock-free) and
+// terminal (fenced) branches of AdvanceFleetRunnerAttempt below: it is the
+// one statement that transitions the attempt row, identical either way.
+var fleetRunnerAdvanceSQL = `
+	UPDATE fleet_runner_attempts a
+	SET current_phase = $1, status = $2, updated_at = now(), heartbeat_at = now(),
+	    heartbeat_expires_at = now() + (heartbeat_timeout_seconds * interval '1 second'),
+	    phase_started_at = CASE WHEN $2 = 'succeeded' THEN a.phase_started_at ELSE now() END,
+	    revision = revision + 1, finished_at = $3
+	WHERE a.id = $4 AND a.current_phase = $5 AND a.revision = $6
+	  AND a.status IN ('queued', 'running')
+	  AND EXISTS (
+	    SELECT 1 FROM operations o
+	    WHERE o.kind = 'fleet.reconciliation' AND o.ref = a.plan_id
+	      AND o.status = 'succeeded' AND o.payload->>'phase' = $5
+	      AND o.payload->>'attemptId' = a.id
+	  )
+	  ` + fleetTargetEpochRefusalSQL("a.plan_id") + `
+	RETURNING id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
+	          commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
+	          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
+	          heartbeat_at, updated_at, finished_at, last_error, metadata`
+
 func (db *DB) AdvanceFleetRunnerAttempt(ctx context.Context, id, fromPhase, toPhase string, expectedRevision int64, terminal bool) (*model.FleetRunnerAttempt, error) {
 	status := model.FleetRunnerAttemptRunning
 	var finished interface{}
@@ -140,30 +221,74 @@ func (db *DB) AdvanceFleetRunnerAttempt(ctx context.Context, id, fromPhase, toPh
 		status = model.FleetRunnerAttemptSucceeded
 		finished = time.Now().UTC()
 	}
-	row := db.Pool.QueryRow(ctx, `
-		UPDATE fleet_runner_attempts a
-		SET current_phase = $1, status = $2, updated_at = now(), heartbeat_at = now(),
-		    heartbeat_expires_at = now() + (heartbeat_timeout_seconds * interval '1 second'),
-		    phase_started_at = CASE WHEN $2 = 'succeeded' THEN a.phase_started_at ELSE now() END,
-		    revision = revision + 1, finished_at = $3
-		WHERE a.id = $4 AND a.current_phase = $5 AND a.revision = $6
-		  AND a.status IN ('queued', 'running')
-		  AND EXISTS (
-		    SELECT 1 FROM operations o
-		    WHERE o.kind = 'fleet.reconciliation' AND o.ref = a.plan_id
-		      AND o.status = 'succeeded' AND o.payload->>'phase' = $5
-		      AND o.payload->>'attemptId' = a.id
-		  )
-		RETURNING id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
-		          commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
-		          heartbeat_at, updated_at, finished_at, last_error, metadata
-	`, toPhase, status, finished, id, fromPhase, expectedRevision)
-	attempt, err := scanFleetRunnerAttempt(row)
+	if !terminal {
+		attempt, err := scanFleetRunnerAttempt(db.Pool.QueryRow(ctx, fleetRunnerAdvanceSQL, toPhase, status, finished, id, fromPhase, expectedRevision))
+		if err == pgx.ErrNoRows {
+			return nil, ErrFleetRunnerAttemptConflict
+		}
+		return attempt, err
+	}
+	// Terminal: Release: succeeded (plan.md §2.2) must commit atomically with
+	// the same UPDATE that marks the attempt succeeded, never as a separate
+	// best-effort call after the fact (a crash between the two would leave a
+	// succeeded attempt with its fence still held, or silently drop the
+	// release). The fence this plan holds (if any) is locked FOR UPDATE
+	// (lock-order position 4) before the attempt row (position 6) below.
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var planID string
+	if err := tx.QueryRow(ctx, `SELECT plan_id FROM fleet_runner_attempts WHERE id=$1`, id).Scan(&planID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrFleetRunnerAttemptConflict
+		}
+		return nil, err
+	}
+	// The target is resolved through the plan's cluster alias (non-strict,
+	// mirroring the etcd backend), the same resolution the epoch predicate
+	// in fleetRunnerAdvanceSQL uses, and its fence is locked FOR UPDATE
+	// before the attempt row.
+	targetID, fence, _, _, err := lockFleetTargetFenceForPlanID(ctx, tx, planID, true, false)
+	if err != nil {
+		return nil, err
+	}
+	if targetID != "" && fence.Held && fence.HolderPlanID != planID {
+		// Never release a fence some other plan holds: DecideRelease checks
+		// only Held, not the holder's identity (mirrors the etcd side's
+		// fleet_target_execution_occupied). A fence this plan should hold
+		// but that is free is refused by DecideRelease below.
+		return nil, &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetExecutionOccupied}
+	}
+	attempt, err := scanFleetRunnerAttempt(tx.QueryRow(ctx, fleetRunnerAdvanceSQL, toPhase, status, finished, id, fromPhase, expectedRevision))
 	if err == pgx.ErrNoRows {
 		return nil, ErrFleetRunnerAttemptConflict
 	}
-	return attempt, err
+	if err != nil {
+		return nil, err
+	}
+	if targetID != "" {
+		holder, err := FleetTargetHolderFacts(ctx, tx, planID)
+		if err != nil {
+			return nil, err
+		}
+		var now time.Time
+		if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+			return nil, err
+		}
+		next, relErr := lifecycle.DecideRelease(fence, holder, lifecycle.ReleaseModeSucceeded, nil, now)
+		if relErr != nil {
+			return nil, relErr
+		}
+		if err := PutFleetTargetFence(ctx, tx, next); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return attempt, nil
 }
 
 func (db *DB) FailFleetRunnerAttempt(ctx context.Context, id, phase, message string) error {
@@ -326,6 +451,12 @@ func (db *DB) RecoverFleetRunnerAttempt(ctx context.Context, previous *model.Fle
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('norn.fleet-runner:' || $1))`, previous.PlanID); err != nil {
+		return err
+	}
+	// Bind (fence lock-order position 4) must be locked and written before
+	// any fleet_runner_attempts row (position 6) is locked below, so this
+	// path's order can never invert against one that locks fences first.
+	if err := bindFleetTargetFenceTx(ctx, tx, previous.PlanID); err != nil {
 		return err
 	}
 	var status model.FleetRunnerAttemptStatus
