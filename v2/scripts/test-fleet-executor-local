@@ -1,0 +1,2657 @@
+#!/usr/bin/env python3
+"""Q1: local end-to-end qualification of the Fleet controller executor lane.
+
+(docs/v3/fleet-controller/plan-5-7.md, WP Q1; ADR 0010.) Results of the 2026-10-05 run:
+docs/v3/fleet-controller/qualification-executor-local-2026-10-05.md.
+
+Topology (everything is local and fake; no real cloud or GitHub credential):
+
+  Mac   the Norn authority (serveFleetAuthorityOnly: the real router, reconciler, converge watcher and executor lane)
+        started from a test binary (v2/api/fleet_executor_local_authority_test.go, -tags fleetlocal) on its own
+        PostgreSQL database; a fake GitHub (REST over http and https, plus git smart-HTTP) serving a local bare
+        repository; a logging fault proxy between the VM and Norn; the etcd runtime for the gate check.
+  VM    the Lima VM from v2/scripts/norn-exec-vm: the real Ansible role (ansible/roles/fleet_executor in norn-fleet)
+        applied to it, the real systemd unit, real tofu 1.10.6 against MinIO with use_lockfile=true, the fake DO
+        metadata service. github.com and norn.test resolve to VM-local TLS terminators (socat) that forward to the
+        Mac, so the unit runs exactly as the role writes it (https Norn URL, https github.com clone URL).
+
+Usage: test-fleet-executor-local <command> [args]
+  all              setup, vm, bootstrap, baseline, every row, etcd-gate
+  setup [--rebuild]  build binaries, PKI, keys, fixture repository, database; start Mac services
+  vm               prepare the VM, apply the Ansible role (or redeliver secrets), enroll the executor
+  bootstrap        register the target and resource, switch to controller mode, record the first plan
+  baseline         approve the first converge (empty last-applied is executable) and wait for it
+  rows [n ...]     run qualification rows (default: all but 8, in a safe order; row 8 leaves the fence held by the
+                   GitHub lane and runs last); results in $Q1_WORK/results/row-<n>.json
+  etcd-gate        start the etcd runtime and show the executor lane is gated off there
+  reset            clean slate without recreating the VM (new database, repository, MinIO state)
+  tls              reinstall the VM-side TLS terminators
+  status           show where things are
+  teardown         stop Mac processes and drop the database (the VM is left running)
+  fake-github, proxy   (internal) the fake GitHub and the logging fault proxy
+
+Environment: Q1_WORK (work dir), NORN_FLEET_DIR (norn-fleet checkout), NORN_EXEC_VM_NAME (VM name).
+Needs: limactl, a provisioned norn-exec VM (v2/scripts/norn-exec-vm up), go, tofu, sops, age, ansible-playbook,
+PostgreSQL 16 on 127.0.0.1:55432 (role norn_fc), etcd on 127.0.0.1:23790.
+
+Harness accommodations, each tied to a finding in the report (they hide nothing: the findings are reported):
+  * the authority runs from a test binary because validateFleetAuthorityOnly pins a verify-full PostgreSQL DSN;
+  * every converge waits until its plan was recorded 5 min after the previous release (bug 2);
+  * ruby is installed in the VM because the executor venv has no PyYAML (bug 4);
+  * the OpenTofu fixture uses no provider plugin (bug 1) and its post-apply hooks are local scripts;
+  * MinIO is cross-built from source when dl.min.io answers 410.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as dt
+import hashlib
+import http.client
+import http.server
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import socketserver
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+NORN_ROOT = HERE.parents[1]
+FLEET_DIR = Path(os.environ.get("NORN_FLEET_DIR", NORN_ROOT.parent / "norn-fleet-controller-executor")).resolve()
+WORK = Path(os.environ.get("Q1_WORK", Path(tempfile.gettempdir()) / "norn-fleet-executor-local"))
+VM = os.environ.get("NORN_EXEC_VM_NAME", "norn-exec")
+STATE_FILE = WORK / "state.json"
+OWNER, REPO = "antiartificial", "norn-fleet"
+CLUSTER = "tk-staging-nyc3"
+RESOURCE = "staging"
+BUCKET = os.environ.get("MINIO_BUCKET", "norn-exec-state")
+STATE_KEY = "staging/nyc3/terraform.tfstate"
+MINIO_USER, MINIO_PASS = "norn-exec-test", "norn-exec-test-secret"
+GH_PORT, NORN_PORT, PROXY_PORT, CTL_PORT, GH_TLS_PORT = 18801, 18800, 18802, 18803, 18804
+UNIT = "norn-fleet-executor"
+DEFAULT_DROPLET = "4242"
+
+
+def log(msg: str) -> None:
+    print(f"[q1 {dt.datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def die(msg: str) -> "None":
+    print(f"test-fleet-executor-local: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def run(argv, *, check=True, input=None, env=None, cwd=None, timeout=None, quiet=False):
+    """Run a command; return CompletedProcess with text output."""
+    done = subprocess.run([str(a) for a in argv], input=input, text=True, capture_output=True,
+                          env=env, cwd=cwd, timeout=timeout)
+    if check and done.returncode != 0:
+        die(f"command failed ({done.returncode}): {' '.join(map(str, argv))}\n{done.stdout}\n{done.stderr}")
+    return done
+
+
+def sh(script: str, **kw):
+    return run(["bash", "-c", script], **kw)
+
+
+def state() -> dict:
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except FileNotFoundError:
+        return {}
+
+
+def save_state(**updates) -> dict:
+    current = state()
+    current.update(updates)
+    WORK.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(current, indent=2, sort_keys=True))
+    tmp.replace(STATE_FILE)
+    return current
+
+
+def rfc3339(t: dt.datetime | None = None) -> str:
+    return (t or dt.datetime.now(dt.timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# VM access
+# ---------------------------------------------------------------------------
+
+def vm(script: str, *, check=True, timeout=900, user="root") -> subprocess.CompletedProcess:
+    """Run a bash script in the VM (as root through sudo unless user is arti)."""
+    if user == "root":
+        argv = ["limactl", "shell", VM, "--", "sudo", "bash", "-c", script]
+    else:
+        argv = ["limactl", "shell", VM, "--", "bash", "-c", script]
+    return run(argv, check=check, timeout=timeout)
+
+
+def vm_copy_in(local: Path, remote: str, mode: str = "0644", owner: str = "root:root") -> None:
+    run(["limactl", "copy", str(local), f"{VM}:/tmp/q1-in-{local.name}"])
+    vm(f"install -m {mode} -o {owner.split(':')[0]} -g {owner.split(':')[1]} /tmp/q1-in-{local.name} {shlex.quote(remote)}; rm -f /tmp/q1-in-{local.name}")
+
+
+def journal(since: str = "", lines: int = 400, grep: str = "") -> str:
+    cmd = f"journalctl -u {UNIT} -o short-iso --no-pager -n {lines}"
+    if since:
+        cmd += f" --since {shlex.quote(since)}"
+    if grep:
+        cmd += f" | grep -E {shlex.quote(grep)}"
+    return vm(cmd, check=False).stdout
+
+
+def vm_now() -> str:
+    return vm("date '+%Y-%m-%d %H:%M:%S'").stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# Norn (authority) access from the Mac
+# ---------------------------------------------------------------------------
+
+def norn_url() -> str:
+    return f"http://127.0.0.1:{NORN_PORT}"
+
+
+def api_call(method: str, path: str, body=None, *, token: str | None = None, key: str = "", base: str | None = None,
+             timeout=30):
+    st = state()
+    token = st["api_token"] if token is None else token
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request((base or norn_url()) + path, data=data, method=method)
+    req.add_header("Accept", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    if key:
+        req.add_header("Idempotency-Key", key)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        try:
+            return exc.code, json.loads(raw)
+        except ValueError:
+            return exc.code, {"raw": raw.decode(errors="replace")}
+    except (urllib.error.URLError, OSError) as exc:
+        return 0, {"error": str(exc)}
+
+
+def norn_cli(*args, check=True, expect_fail=False, timeout=120):
+    st = state()
+    env = dict(os.environ, NORN_URL=norn_url(), NORN_TOKEN=st["api_token"], NO_COLOR="1")
+    done = run([st["norn_bin"], *args], env=env, check=False, timeout=timeout)
+    out = (done.stdout + done.stderr).strip()
+    if check and not expect_fail and done.returncode != 0:
+        die(f"norn {' '.join(args)} failed:\n{out}")
+    return done.returncode, out
+
+
+def resource() -> dict:
+    code, body = api_call("GET", f"/api/v1/fleet/resources/{RESOURCE}")
+    return body if code == 200 else {"_status": code, **body}
+
+
+def ops(kind: str = "", ref: str = "", limit: int = 100) -> list:
+    q = {"limit": str(limit)}
+    if kind:
+        q["kind"] = kind
+    if ref:
+        q["ref"] = ref
+    code, body = api_call("GET", "/api/operations?" + urllib.parse.urlencode(q))
+    if code != 200:
+        return []
+    return body if isinstance(body, list) else body.get("operations", body.get("items", []))
+
+
+def wait_for(what: str, cond, timeout: int = 300, interval: float = 3.0, quiet: bool = False):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = cond()
+        if last:
+            return last
+        time.sleep(interval)
+    die(f"timed out after {timeout}s waiting for {what}")
+
+
+def try_wait(what: str, cond, timeout: int = 300, interval: float = 3.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = cond()
+        if value:
+            return value
+        time.sleep(interval)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Fake GitHub (REST + git smart HTTP). Runs as `fake-github`.
+# ---------------------------------------------------------------------------
+
+class FakeGitHub:
+    """State lives in a JSON file so the harness can inspect and steer it."""
+
+    def __init__(self, root: Path, port: int, ctl_port: int):
+        self.root, self.port = root, port
+        self.repo_dir = root / "repos" / OWNER / f"{REPO}.git"
+        self.state_file = root / "gh-state.json"
+        self.lock = threading.Lock()
+        self.requests: list[str] = []
+        if not self.state_file.exists():
+            self.save({"protected": True, "validate": {}, "tokens": {}, "minted": 0, "dispatches": [], "prs": {},
+                       "plan_runs": [], "artifacts": {}, "runs": {}, "next_id": 1000, "fail_next": [], "app_slug": "norn-q1"})
+
+    def load(self) -> dict:
+        return json.loads(self.state_file.read_text())
+
+    def save(self, st: dict) -> None:
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(st, indent=1, sort_keys=True))
+        tmp.replace(self.state_file)
+
+    def git(self, *args, check=True):
+        done = subprocess.run(["git", "-C", str(self.repo_dir), *args], capture_output=True, text=True)
+        if check and done.returncode != 0:
+            raise RuntimeError(done.stderr)
+        return done
+
+    def tip(self, branch="main"):
+        done = self.git("rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}", check=False)
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    def has(self, sha: str) -> bool:
+        return bool(re.fullmatch(r"[0-9a-f]{40}", sha)) and self.git("cat-file", "-e", sha + "^{commit}", check=False).returncode == 0
+
+    def valid_token(self, token: str) -> bool:
+        st = self.load()
+        exp = st["tokens"].get(token)
+        return bool(exp) and exp > time.time()
+
+
+def make_handler(gh: FakeGitHub):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "fake-github/1"
+
+        def log_message(self, fmt, *args):
+            line = f"{dt.datetime.now().strftime('%H:%M:%S')} {self.client_address[0]} {self.command} {self.path} -> {getattr(self, '_status', '?')}"
+            gh.requests.append(line)
+            del gh.requests[:-500]
+            with open(gh.root / "gh-requests.log", "a") as f:
+                f.write(line + "\n")
+
+        def send_json(self, status, body, headers=None):
+            raw = json.dumps(body).encode()
+            self._status = status
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def body(self) -> bytes:
+            n = int(self.headers.get("Content-Length") or 0)
+            return self.rfile.read(n) if n else b""
+
+        def bearer(self) -> str:
+            auth = self.headers.get("Authorization", "")
+            return auth.split(" ", 1)[1] if auth.lower().startswith(("bearer ", "token ")) else ""
+
+        def do_GET(self):
+            self.route()
+
+        def do_POST(self):
+            self.route()
+
+        def do_DELETE(self):
+            self.route()
+
+        def do_PUT(self):
+            self.route()
+
+        def route(self):
+            parsed = urllib.parse.urlparse(self.path)
+            path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
+            st = gh.load()
+            for rule in list(st.get("fail_next", [])):
+                if rule["method"] == self.command and re.search(rule["path"], path):
+                    st["fail_next"].remove(rule)
+                    gh.save(st)
+                    self.body()
+                    return self.send_json(rule.get("status", 500), {"message": "injected failure"})
+            if path.startswith(f"/{OWNER}/{REPO}.git/"):
+                return self.git_http(parsed)
+            if path == "/app" and self.command == "GET":
+                return self.send_json(200, {"slug": st["app_slug"]})
+            m = re.fullmatch(r"/app/installations/(\d+)/access_tokens", path)
+            if m and self.command == "POST":
+                self.body()
+                token = "ghs_" + secrets.token_hex(20)
+                exp = time.time() + 3600
+                st["tokens"][token] = exp
+                st["minted"] += 1
+                gh.save(st)
+                return self.send_json(201, {"token": token, "expires_at": rfc3339(dt.datetime.fromtimestamp(exp, dt.timezone.utc)),
+                                            "permissions": {}})
+            if path == "/installation/token" and self.command == "DELETE":
+                st["tokens"].pop(self.bearer(), None)
+                gh.save(st)
+                self._status = 204
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not gh.valid_token(self.bearer()):
+                return self.send_json(401, {"message": "Bad credentials"})
+            base = f"/repos/{OWNER}/{REPO}"
+            if path != base and not path.startswith(base + "/"):
+                return self.send_json(404, {"message": "Not Found"})
+            rest = path[len(base):]
+            return self.repo_api(rest, query, st)
+
+        def repo_api(self, rest, query, st):
+            if rest in ("", "/"):
+                return self.send_json(200, {"full_name": f"{OWNER}/{REPO}", "default_branch": "main"})
+            m = re.fullmatch(r"/branches/([^/]+)", rest)
+            if m:
+                tip = gh.tip(urllib.parse.unquote(m.group(1)))
+                if not tip:
+                    return self.send_json(404, {"message": "Branch not found"})
+                date = gh.git("log", "-1", "--format=%cI", tip).stdout.strip()
+                etag = '"' + hashlib.sha1(f"{tip}:{st['protected']}".encode()).hexdigest() + '"'
+                if self.headers.get("If-None-Match") == etag:
+                    self._status = 304
+                    self.send_response(304)
+                    self.send_header("ETag", etag)
+                    self.end_headers()
+                    return
+                return self.send_json(200, {"name": m.group(1), "protected": bool(st["protected"]),
+                                            "commit": {"sha": tip, "commit": {"committer": {"date": date}}}},
+                                      {"ETag": etag})
+            m = re.fullmatch(r"/actions/workflows/([^/]+)/runs", rest)
+            if m:
+                return self.workflow_runs(urllib.parse.unquote(m.group(1)), query, st)
+            m = re.fullmatch(r"/compare/(.+)", rest)
+            if m:
+                return self.compare(urllib.parse.unquote(m.group(1)), query)
+            return self.dispatch_api(rest, query, st)
+
+        def workflow_runs(self, wf, query, st):
+            if wf == "validate.yml":
+                sha = (query.get("head_sha") or [""])[0]
+                mode = st["validate"].get(sha, "auto")
+                if mode == "auto":
+                    mode = "success" if gh.has(sha) else "none"
+                if mode == "none":
+                    return self.send_json(200, {"workflow_runs": []})
+                run = {"id": 5000 + int(sha[:6], 16) % 100000, "head_sha": sha, "head_branch": "main", "event": "push",
+                       "path": ".github/workflows/validate.yml", "head_repository": {"full_name": f"{OWNER}/{REPO}"},
+                       "status": "completed" if mode in ("success", "failure") else "in_progress",
+                       "conclusion": mode if mode in ("success", "failure") else None}
+                return self.send_json(200, {"workflow_runs": [run]})
+            return self.dispatch_workflow_runs(wf, query, st)
+
+        def compare(self, spec, query):
+            if "..." not in spec:
+                return self.send_json(404, {"message": "Not Found"})
+            base, head = spec.split("...", 1)
+            if not gh.has(base) or not gh.has(head):
+                return self.send_json(404, {"message": "No common ancestor"})
+            if base == head:
+                status = "identical"
+            elif gh.git("merge-base", "--is-ancestor", base, head, check=False).returncode == 0:
+                status = "ahead"
+            elif gh.git("merge-base", "--is-ancestor", head, base, check=False).returncode == 0:
+                status = "behind"
+            else:
+                status = "diverged"
+            files = []
+            ahead = 0
+            if status == "ahead":
+                files = [{"filename": p} for p in gh.git("diff", "--name-only", base, head).stdout.split("\n") if p]
+                ahead = int(gh.git("rev-list", "--count", f"{base}..{head}").stdout.strip() or 0)
+            page, per = int((query.get("page") or ["1"])[0]), int((query.get("per_page") or ["100"])[0])
+            return self.send_json(200, {"status": status, "ahead_by": ahead, "total_commits": ahead,
+                                        "files": files[(page - 1) * per:page * per]})
+
+        # -- git smart HTTP via git http-backend --
+        def git_http(self, parsed):
+            auth = self.headers.get("Authorization", "")
+            ok = False
+            if auth.lower().startswith("basic "):
+                try:
+                    user, _, pw = base64.b64decode(auth.split(" ", 1)[1]).decode().partition(":")
+                    ok = gh.valid_token(pw)
+                except ValueError:
+                    ok = False
+            body = self.body()
+            if not ok:
+                self._status = 401
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="GitHub"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            env = {"PATH": os.environ["PATH"], "GIT_PROJECT_ROOT": str(gh.root / "repos"), "GIT_HTTP_EXPORT_ALL": "1",
+                   "PATH_INFO": parsed.path, "REQUEST_METHOD": self.command, "QUERY_STRING": parsed.query,
+                   "CONTENT_TYPE": self.headers.get("Content-Type", ""), "CONTENT_LENGTH": str(len(body)),
+                   "REMOTE_USER": "x-access-token", "REMOTE_ADDR": self.client_address[0],
+                   "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+            if self.headers.get("Content-Encoding"):
+                env["HTTP_CONTENT_ENCODING"] = self.headers["Content-Encoding"]
+            if self.headers.get("Git-Protocol"):
+                env["HTTP_GIT_PROTOCOL"] = self.headers["Git-Protocol"]
+            done = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True)
+            head, _, payload = done.stdout.partition(b"\r\n\r\n")
+            if not _:
+                head, _, payload = done.stdout.partition(b"\n\n")
+            status = 200
+            headers = []
+            for line in head.decode(errors="replace").splitlines():
+                key, _, value = line.partition(":")
+                if key.lower() == "status":
+                    status = int(value.strip().split()[0])
+                elif key:
+                    headers.append((key, value.strip()))
+            self._status = status
+            self.send_response(status)
+            for key, value in headers:
+                if key.lower() != "content-length":
+                    self.send_header(key, value)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        # GitHub-lane plan, pull request and dispatch endpoints (row 8)
+        def dispatch_api(self, rest, query, st):
+            return gh_lane_api(self, gh, rest, query, st)
+
+        def dispatch_workflow_runs(self, wf, query, st):
+            return gh_lane_workflow_runs(self, gh, wf, query, st)
+
+    return Handler
+
+
+def gh_lane_api(h, gh, rest, query, st):
+    """GitHub-lane endpoints Norn's dispatch path uses (ResolveApprovedPlan, DispatchBoundPlan): a merged plan PR, a
+    successful push plan run with its artifact, and the apply workflow dispatch with its run."""
+    import io
+    import zipfile
+    merge_sha = st.get("lane_merge_sha") or gh.tip()
+    if rest == "/pulls" and h.command == "GET":
+        head = (query.get("head") or [""])[0]
+        branch = head.split(":", 1)[-1]
+        m = re.fullmatch(r"norn/plan-([0-9a-f-]{36})", branch)
+        if not m or not st.get("lane_ready"):
+            return h.send_json(200, [])
+        n = 100 + int(m.group(1)[:5], 16) % 9000
+        return h.send_json(200, [{"number": n, "html_url": f"https://github.com/{OWNER}/{REPO}/pull/{n}", "state": "closed",
+                                  "merged_at": "2026-10-05T12:00:00Z", "head": {"ref": branch, "sha": merge_sha},
+                                  "base": {"ref": "main"}, "title": "Fleet: q1 plan", "body": ""}])
+    m = re.fullmatch(r"/pulls/(\d+)", rest)
+    if m and h.command == "GET":
+        return h.send_json(200, {"number": int(m.group(1)), "merge_commit_sha": merge_sha, "merged_at": "2026-10-05T12:00:00Z"})
+    m = re.fullmatch(r"/actions/runs/(\d+)/artifacts", rest)
+    if m and h.command == "GET":
+        rid = int(m.group(1))
+        return h.send_json(200, {"artifacts": [{"id": rid + 1, "name": f"fleet-plan-staging-nyc3-{rid}", "expired": False}]})
+    m = re.fullmatch(r"/actions/artifacts/(\d+)/zip", rest)
+    if m and h.command == "GET":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("fleet-plan.sha256", hashlib.sha256(b"q1 lane plan").hexdigest() + "\n")
+        raw = buf.getvalue()
+        h._status = 200
+        h.send_response(200)
+        h.send_header("Content-Type", "application/zip")
+        h.send_header("Content-Length", str(len(raw)))
+        h.end_headers()
+        h.wfile.write(raw)
+        return
+    m = re.fullmatch(r"/actions/runs/(\d+)", rest)
+    if m and h.command == "GET":
+        run = st["runs"].get(m.group(1))
+        return h.send_json(200, run) if run else h.send_json(404, {"message": "Not Found"})
+    if rest == "/actions/workflows/apply.yml/dispatches" and h.command == "POST":
+        body = json.loads(h.body() or b"{}")
+        inputs = body.get("inputs") or {}
+        st["next_id"] += 1
+        rid = st["next_id"]
+        run = {"id": rid, "html_url": f"https://github.com/{OWNER}/{REPO}/actions/runs/{rid}", "event": "workflow_dispatch",
+               "head_sha": merge_sha, "head_branch": "main", "path": ".github/workflows/apply.yml@refs/heads/main", "name": "apply",
+               "display_title": f"Apply {inputs.get('fleet_environment')} Norn plan {inputs.get('norn_plan_id')} nonce {inputs.get('dispatch_nonce')}",
+               "status": "queued", "conclusion": None, "run_attempt": 1, "inputs": inputs,
+               "actor": {"login": st["app_slug"] + "[bot]", "type": "Bot"}}
+        st["runs"][str(rid)] = run
+        st["dispatches"].append({"run": rid, "plan": inputs.get("norn_plan_id"), "at": rfc3339()})
+        gh.save(st)
+        return h.send_json(200, {"workflow_run_id": rid, "html_url": run["html_url"]})
+    return h.send_json(404, {"message": "Not Found", "path": rest})
+
+
+def gh_lane_workflow_runs(h, gh, wf, query, st):
+    merge_sha = st.get("lane_merge_sha") or gh.tip()
+    if wf == "plan.yml":
+        if not st.get("lane_ready"):
+            return h.send_json(200, {"workflow_runs": []})
+        return h.send_json(200, {"workflow_runs": [{"id": 9100, "head_sha": merge_sha, "status": "completed", "conclusion": "success"}]})
+    if wf == "apply.yml":
+        return h.send_json(200, {"workflow_runs": [{"id": int(rid)} for rid in st["runs"]]})
+    return h.send_json(404, {"message": "Not Found", "workflow": wf})
+
+
+class CtlHandler(http.server.BaseHTTPRequestHandler):
+    gh: FakeGitHub
+
+    def log_message(self, *a):
+        pass
+
+    def reply(self, status, body):
+        raw = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        st = self.gh.load()
+        if self.path == "/state":
+            return self.reply(200, {**st, "tip": self.gh.tip()})
+        if self.path == "/requests":
+            return self.reply(200, self.gh.requests[-100:])
+        self.reply(404, {})
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(n) or b"{}")
+        with self.gh.lock:
+            st = self.gh.load()
+            if self.path == "/protected":
+                st["protected"] = bool(body["value"])
+            elif self.path == "/validate":
+                st["validate"][body["sha"]] = body["state"]
+            elif self.path == "/fail-next":
+                st["fail_next"].append({"method": body["method"], "path": body["path"], "status": body.get("status", 500)})
+            elif self.path == "/set":
+                st.update(body)
+            else:
+                return self.reply(404, {})
+            self.gh.save(st)
+        self.reply(200, {"ok": True})
+
+
+def serve_fake_github() -> int:
+    gh = FakeGitHub(WORK / "gh", GH_PORT, CTL_PORT)
+    CtlHandler.gh = gh
+    ctl = http.server.ThreadingHTTPServer(("127.0.0.1", CTL_PORT), CtlHandler)
+    threading.Thread(target=ctl.serve_forever, daemon=True).start()
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", GH_PORT), make_handler(gh))
+    srv.daemon_threads = True
+    # The same API over TLS for Norn: the authority-only handler pins https://api.github.com, and the
+    # harness binary redirects that name to this listener (trusting the local CA).
+    import ssl
+    tls = http.server.ThreadingHTTPServer(("127.0.0.1", GH_TLS_PORT), make_handler(gh))
+    tls.daemon_threads = True
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(WORK / "pki/srv.pem"), str(WORK / "pki/srv.key"))
+    tls.socket = ctx.wrap_socket(tls.socket, server_side=True)
+    threading.Thread(target=tls.serve_forever, daemon=True).start()
+    log(f"fake GitHub on 127.0.0.1:{GH_PORT} http, {GH_TLS_PORT} https (control {CTL_PORT}), repo {gh.repo_dir}")
+    srv.serve_forever()
+    return 0
+
+
+def gh_ctl(path: str, body=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{CTL_PORT}{path}", data=json.dumps(body).encode() if body is not None else None,
+                                 method="POST" if body is not None else "GET")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+# ---------------------------------------------------------------------------
+# Logging fault proxy: VM -> (this) -> Norn. Rules in proxy-rules.json.
+# ---------------------------------------------------------------------------
+
+class ProxyHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    rules_file: Path
+    log_file: Path
+
+    def log_message(self, *a):
+        pass
+
+    def rules(self) -> list:
+        try:
+            return json.loads(self.rules_file.read_text())
+        except (OSError, ValueError):
+            return []
+
+    def save_rules(self, rules) -> None:
+        self.rules_file.write_text(json.dumps(rules))
+
+    def forward(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n) if n else b""
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "connection", "content-length")}
+        rule = None
+        with threading.Lock():
+            rules = self.rules()
+            for r in rules:
+                if r["method"] == self.command and re.search(r["path"], self.path) and r.get("count", 1) > 0:
+                    rule = dict(r)
+                    r["count"] = r.get("count", 1) - 1
+                    break
+            if rule:
+                self.save_rules(rules)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", NORN_PORT, timeout=120)
+            conn.request(self.command, self.path, body=body or None, headers={**headers, "Content-Length": str(len(body))} if body else headers)
+            resp = conn.getresponse()
+            payload = resp.read()
+            status, rheaders = resp.status, resp.getheaders()
+            conn.close()
+        except OSError as exc:
+            self._log(f"{self.command} {self.path} -> upstream error {exc}")
+            payload = json.dumps({"code": "proxy_upstream_unreachable"}).encode()
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        action = rule["action"] if rule else "pass"
+        detail = ""
+        if status >= 400:
+            detail = " body=" + payload[:200].decode(errors="replace").replace("\n", " ")
+        self._log(f"{self.command} {self.path} -> {status} ({action}) idem={self.headers.get('Idempotency-Key', '')[:24]}{detail}")
+        if action == "drop_response":
+            self.close_connection = True
+            try:
+                self.connection.shutdown(2)
+            except OSError:
+                pass
+            self.connection.close()
+            return
+        self.send_response(status)
+        for k, v in rheaders:
+            if k.lower() not in ("content-length", "transfer-encoding", "connection"):
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _log(self, line: str) -> None:
+        with open(self.log_file, "a") as f:
+            f.write(f"{dt.datetime.now().strftime('%H:%M:%S.%f')[:-3]} {line}\n")
+
+    do_GET = do_POST = do_DELETE = do_PUT = forward
+
+
+def serve_proxy() -> int:
+    ProxyHandler.rules_file = WORK / "proxy-rules.json"
+    ProxyHandler.log_file = WORK / "proxy.log"
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", PROXY_PORT), ProxyHandler)
+    srv.daemon_threads = True
+    log(f"proxy on 127.0.0.1:{PROXY_PORT} -> 127.0.0.1:{NORN_PORT}")
+    srv.serve_forever()
+    return 0
+
+
+def proxy_rule(method: str, path: str, action: str = "drop_response", count: int = 1) -> None:
+    f = WORK / "proxy-rules.json"
+    try:
+        rules = json.loads(f.read_text())
+    except (OSError, ValueError):
+        rules = []
+    rules.append({"method": method, "path": path, "action": action, "count": count})
+    f.write_text(json.dumps(rules))
+
+
+def proxy_log_tail(n=40, grep="") -> str:
+    try:
+        lines = (WORK / "proxy.log").read_text().splitlines()
+    except OSError:
+        return ""
+    if grep:
+        lines = [l for l in lines if re.search(grep, l)]
+    return "\n".join(lines[-n:])
+
+
+# ---------------------------------------------------------------------------
+# Mac-side setup: PKI, keys, fixture repository, database, binaries, services
+# ---------------------------------------------------------------------------
+
+def openssl(*args, **kw):
+    return run(["openssl", *args], **kw)
+
+
+def gen_pki() -> None:
+    d = WORK / "pki"
+    d.mkdir(parents=True, exist_ok=True)
+    if (d / "ca.pem").exists():
+        return
+    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", d / "ca.key", "-out", d / "ca.pem", "-days", "30",
+            "-subj", "/CN=norn-q1-local-ca")
+    openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", d / "srv.key", "-out", d / "srv.csr", "-subj", "/CN=norn.test")
+    (d / "ext.cnf").write_text("subjectAltName=DNS:norn.test,DNS:github.com,DNS:api.github.com\nextendedKeyUsage=serverAuth\n")
+    openssl("x509", "-req", "-in", d / "srv.csr", "-CA", d / "ca.pem", "-CAkey", d / "ca.key", "-CAcreateserial", "-out", d / "srv.pem",
+            "-days", "30", "-extfile", d / "ext.cnf")
+    # GitHub App key (RS256) for Norn's installation-token minting.
+    openssl("genrsa", "-out", d / "app.pem", "2048")
+    os.chmod(d / "app.pem", 0o600)
+    (d / "full.pem").write_text((d / "srv.pem").read_text() + (d / "srv.key").read_text())
+
+
+def gen_keys() -> dict:
+    d = WORK / "keys"
+    d.mkdir(parents=True, exist_ok=True)
+    if not (d / "age.key").exists():
+        run(["age-keygen", "-o", d / "age.key"])
+        os.chmod(d / "age.key", 0o600)
+    recipient = run(["age-keygen", "-y", d / "age.key"]).stdout.strip()
+    if not (d / "id_ed25519").exists():
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "q1-fixture", "-f", d / "id_ed25519"])
+    pub = (d / "id_ed25519.pub").read_text().strip()
+    wire = base64.b64decode(pub.split()[1])
+    md5 = hashlib.md5(wire).hexdigest()
+    fingerprint = ":".join(md5[i:i + 2] for i in range(0, 32, 2))
+    return {"age_recipient": recipient, "ssh_public_key": pub, "ssh_fingerprint": fingerprint}
+
+
+FIXTURE_MAIN_TF = '''# Q1 fixture OpenTofu root: no cloud provider and no provider plugin. Nodes are terraform_data resources derived
+# from cluster.yaml, so a cluster.yaml change (config-only path class) is a real, non-destructive converge.
+# (A plugin-backed provider, even hashicorp/external, makes the recovery lock probe fail on the standard path
+# layout: its go-plugin unix socket path exceeds 107 bytes. See the Q1 report, bug 1.)
+variable "ssh_key_fingerprints" {
+  type    = list(string)
+  default = []
+}
+
+variable "admin_cidrs" {
+  type    = list(string)
+  default = []
+}
+
+locals {
+  cluster = yamldecode(file("${path.module}/cluster.yaml"))
+  nodes = merge([for pool, p in local.cluster.nodePools : {
+    for i in range(p.desired) : format("%s-%02d", pool, i + 1) => pool
+  }]...)
+}
+
+resource "terraform_data" "node" {
+  for_each = local.nodes
+  input    = each.value
+
+  provisioner "local-exec" {
+    command = "/usr/local/bin/q1-hook node-create"
+  }
+}
+
+output "nodes" {
+  value = { for name, pool in local.nodes : name => { pool = pool, private_address = "10.20.0.${100 + index(keys(local.nodes), name)}" } }
+}
+
+output "ingress_ip" {
+  value = "203.0.113.7"
+}
+'''
+
+FIXTURE_VERSIONS_TF = '''terraform {
+  required_version = ">= 1.8.0"
+  backend "s3" {}
+}
+'''
+
+FIXTURE_HOOKS = {
+    "version": 1,
+    "phases": {
+        "nodes_configured": {"command": ["/usr/local/bin/q1-hook", "nodes_configured"], "timeoutSeconds": 900, "attempts": 1},
+        "nodes_enrolled": {"command": ["/usr/local/bin/q1-hook", "nodes_enrolled"], "timeoutSeconds": 900, "attempts": 1},
+        "readiness_verified": {"command": ["/usr/local/bin/q1-hook", "readiness_verified"], "timeoutSeconds": 900, "attempts": 1},
+        "old_nodes_drained": {"command": ["/usr/local/bin/q1-hook", "old_nodes_drained"], "timeoutSeconds": 900, "attempts": 1},
+    },
+}
+
+FIXTURE_VALIDATE_YML = "name: validate\non: [push, pull_request]\njobs: {validate: {runs-on: ubuntu-24.04, steps: [{run: echo ok}]}}\n"
+
+
+def git_env():
+    return dict(os.environ, GIT_AUTHOR_NAME="q1", GIT_AUTHOR_EMAIL="q1@example.test", GIT_COMMITTER_NAME="q1",
+                GIT_COMMITTER_EMAIL="q1@example.test", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+
+
+def git(cwd, *args, check=True):
+    return run(["git", "-C", cwd, *args], env=git_env(), check=check)
+
+
+def make_fixture_repo() -> str:
+    """Bare repo served by the fake GitHub + a work clone. Returns the first commit sha."""
+    bare = WORK / "gh" / "repos" / OWNER / f"{REPO}.git"
+    work = WORK / "repo-work"
+    if (work / ".git").exists():
+        return git(work, "rev-parse", "HEAD").stdout.strip()
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    run(["git", "init", "-q", "--bare", "-b", "main", bare])
+    run(["git", "init", "-q", "-b", "main", work])
+    # scripts/ from the norn-fleet checkout (the phases run plan_policy.py, sanity.py, ... from the converged tree)
+    dest = work / "scripts"
+    shutil.copytree(FLEET_DIR / "scripts", dest, ignore=shutil.ignore_patterns("__pycache__", "test_*", "executor", "*.pyc"))
+    env_dir = work / "environments" / "staging" / "nyc3"
+    env_dir.mkdir(parents=True)
+    shutil.copy(FLEET_DIR / "environments/staging/nyc3/cluster.yaml", env_dir / "cluster.yaml")
+    (env_dir / "main.tf").write_text(FIXTURE_MAIN_TF)
+    (env_dir / "versions.tf").write_text(FIXTURE_VERSIONS_TF)
+    (env_dir / "reconcile-hooks.json").write_text(json.dumps(FIXTURE_HOOKS, indent=2) + "\n")
+    (work / ".github" / "workflows").mkdir(parents=True)
+    (work / ".github" / "workflows" / "validate.yml").write_text(FIXTURE_VALIDATE_YML)
+    (work / "README.md").write_text("Q1 fixture repository (a subset of norn-fleet plus a provider-free OpenTofu root).\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "q1 fixture: initial")
+    git(work, "remote", "add", "origin", str(bare))
+    git(work, "push", "-q", "origin", "main")
+    return git(work, "rev-parse", "HEAD").stdout.strip()
+
+
+def commit_push(files: dict[str, str | None], message: str, *, force=False, amend_parent: str | None = None,
+                orphan: bool = False) -> str:
+    """Write (or delete, value None) files in the work clone, commit, push to the fake GitHub's bare repo."""
+    work = WORK / "repo-work"
+    if orphan:
+        git(work, "checkout", "-q", "--orphan", "rewrite-tmp")
+        git(work, "rm", "-rf", "-q", "--cached", ".", check=False)
+    for rel, content in files.items():
+        p = work / rel
+        if content is None:
+            if p.exists():
+                p.unlink()
+            continue
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "--allow-empty", "-m", message)
+    sha = git(work, "rev-parse", "HEAD").stdout.strip()
+    if orphan:
+        git(work, "branch", "-q", "-M", "main")
+    git(work, "push", "-q", *(["-f"] if force or orphan else []), "origin", "main")
+    return sha
+
+
+def read_work(rel: str) -> str:
+    return (WORK / "repo-work" / rel).read_text()
+
+
+def pg_url(db: str) -> str:
+    return f"postgresql://norn_fc@127.0.0.1:55432/{db}?sslmode=disable"
+
+
+def psql(db: str, sql: str, check=True):
+    env = dict(os.environ, PATH="/opt/homebrew/opt/postgresql@16/bin:" + os.environ["PATH"])
+    return run(["psql", pg_url(db), "-Atc", sql], env=env, check=check)
+
+
+def build_binaries() -> None:
+    d = WORK / "bin"
+    d.mkdir(parents=True, exist_ok=True)
+    log("building Norn CLI, authority harness binary and etcd/PG API binary from the worktree")
+    run(["go", "build", "-buildvcs=false", "-o", d / "norn", "./"], cwd=NORN_ROOT / "v2" / "cli")
+    run(["go", "test", "-tags", "fleetlocal", "-buildvcs=false", "-c", "-o", d / "authority.test", "."], cwd=NORN_ROOT / "v2" / "api")
+    run(["go", "build", "-buildvcs=false", "-o", d / "norn-api", "."], cwd=NORN_ROOT / "v2" / "api")
+    save_state(norn_bin=str(d / "norn"), authority_bin=str(d / "authority.test"), api_bin=str(d / "norn-api"))
+
+
+def authority_env() -> dict:
+    st = state()
+    cluster = WORK / "repo-work/environments/staging/nyc3/cluster.yaml"
+    env = dict(os.environ)
+    env.update({
+        "Q1_AUTHORITY": "1", "NORN_PROFILE": "development", "NORN_ENVIRONMENT": "staging", "NORN_FLEET_AUTHORITY_ONLY": "true",
+        "NORN_BIND_ADDR": "127.0.0.1", "NORN_PORT": str(NORN_PORT), "NORN_API_TOKEN": st["api_token"],
+        "NORN_REQUIRE_EXPLICIT_AUTH": "true", "NORN_APP_CATALOG_READ_ONLY": "true", "NORN_DATABASE_URL": pg_url(st["db"]),
+        "NORN_AUDIT_SIGNING_KEY": st["audit_key"], "NORN_AUDIT_RETENTION_DAYS": "90",
+        "NORN_ALLOWED_ORIGINS": "https://norn-staging.example.test", "NORN_FLEET_CONFIG": str(cluster),
+        "NORN_FLEET_GITHUB_APP_ID": "123", "NORN_FLEET_GITHUB_INSTALLATION_ID": "456",
+        "NORN_FLEET_GITHUB_PRIVATE_KEY_FILE": str(WORK / "pki/app.pem"), "NORN_FLEET_GITHUB_REPOSITORY": f"{OWNER}/{REPO}",
+        "NORN_FLEET_GITHUB_ENVIRONMENT": "staging", "NORN_FLEET_GITHUB_CONFIG_PATH": "environments/staging/nyc3/cluster.yaml",
+        "Q1_GITHUB_API_ADDR": f"127.0.0.1:{GH_TLS_PORT}", "Q1_CA_FILE": str(WORK / "pki/ca.pem"),
+        "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE": "norn-fleet-staging",
+        "NORN_GITHUB_ACTIONS_OIDC_JWKS_URL": "https://token.actions.githubusercontent.com/.well-known/jwks",
+        "NORN_GITHUB_ACTIONS_FLEET_ALLOWED_REPOSITORY": f"{OWNER}/{REPO}@101@202",
+        "NORN_GITHUB_ACTIONS_ALLOWED_REFS": "refs/heads/main", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS": "push,workflow_dispatch",
+        "NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS": "staging", "NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS": "apply,recover",
+        "NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS": f"{OWNER}/{REPO}/.github/workflows/apply.yml@{'a' * 40}",
+        "NORN_UI_DIR": "",
+    })
+    return env
+
+
+def spawn_bg(name: str, argv, env=None) -> int:
+    logf = open(WORK / f"{name}.log", "ab")
+    proc = subprocess.Popen([str(a) for a in argv], stdout=logf, stderr=logf, env=env, stdin=subprocess.DEVNULL,
+                            start_new_session=True)
+    pids = state().get("pids", {})
+    pids[name] = proc.pid
+    save_state(pids=pids)
+    return proc.pid
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def stop_bg(name: str, sig=signal.SIGTERM, wait=15) -> None:
+    pids = state().get("pids", {})
+    pid = pids.get(name)
+    if not pid or not alive(pid):
+        return
+    os.kill(pid, sig)
+    deadline = time.time() + wait
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.2)
+    if alive(pid):
+        os.kill(pid, signal.SIGKILL)
+
+
+def http_up(url: str, timeout=60) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=3)
+            return True
+        except urllib.error.HTTPError:
+            return True
+        except OSError:
+            time.sleep(0.5)
+    return False
+
+
+def start_authority() -> None:
+    st = state()
+    pid = st.get("pids", {}).get("authority")
+    if pid and alive(pid):
+        return
+    spawn_bg("authority", [st["authority_bin"], "-test.run", "TestFleetExecutorLocalAuthority", "-test.timeout", "0", "-test.v"],
+             authority_env())
+    if not http_up(norn_url() + "/api/health", 60):
+        die("authority did not come up; see " + str(WORK / "authority.log"))
+    log(f"authority up on {norn_url()} (pid {state()['pids']['authority']})")
+
+
+def stop_authority(sig=signal.SIGTERM) -> None:
+    stop_bg("authority", sig)
+
+
+def start_services() -> None:
+    st = state()
+    pids = st.get("pids", {})
+    me = [sys.executable, str(Path(__file__).resolve())]
+    env = dict(os.environ, Q1_WORK=str(WORK))
+    if not (pids.get("fake-github") and alive(pids["fake-github"])):
+        spawn_bg("fake-github", [*me, "fake-github"], env)
+        if not http_up(f"http://127.0.0.1:{CTL_PORT}/state", 15):
+            die("fake GitHub did not start")
+    if not (pids.get("proxy") and alive(pids["proxy"])):
+        spawn_bg("proxy", [*me, "proxy"], env)
+        time.sleep(0.5)
+    start_authority()
+
+
+def cmd_setup(args) -> int:
+    WORK.mkdir(parents=True, exist_ok=True)
+    st = state()
+    if "api_token" not in st:
+        save_state(api_token=secrets.token_urlsafe(40), audit_key=secrets.token_urlsafe(40), created=rfc3339(),
+                   db="norn_q1_" + dt.datetime.now().strftime("%Y%m%d%H%M%S"))
+    gen_pki()
+    save_state(**gen_keys())
+    first = make_fixture_repo()
+    save_state(first_commit=first)
+    st = state()
+    if not psql("postgres", f"select 1 from pg_database where datname='{st['db']}'").stdout.strip():
+        psql("postgres", f"create database {st['db']}")
+        log(f"created PostgreSQL database {st['db']}")
+    if "norn_bin" not in st or args.rebuild:
+        build_binaries()
+    start_services()
+    log("setup done")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# status / teardown
+# ---------------------------------------------------------------------------
+
+def cmd_status(args) -> int:
+    st = state()
+    print(json.dumps({k: v for k, v in st.items() if k not in ("api_token", "audit_key")}, indent=2, sort_keys=True))
+    for name, pid in st.get("pids", {}).items():
+        print(f"{name}: pid {pid} {'alive' if alive(pid) else 'dead'}")
+    code, body = api_call("GET", f"/api/v1/fleet/resources/{RESOURCE}")
+    print("resource:", code, json.dumps(body, indent=1)[:2000])
+    return 0
+
+
+def cmd_teardown(args) -> int:
+    st = state()
+    for name in ("authority", "etcd-runtime", "proxy", "fake-github"):
+        stop_bg(name)
+    if st.get("db"):
+        psql("postgres", f"drop database if exists {st['db']} with (force)", check=False)
+        log(f"dropped database {st['db']}")
+    log("Mac-side processes stopped; the VM is left running")
+    return 0
+
+
+def cmd_reset(args) -> int:
+    """Start from a clean slate without recreating the VM: new database, new fixture repository, empty MinIO state,
+    executor state removed (it enrolls again)."""
+    st = state()
+    log("reset: stopping Mac services and the executor")
+    for name in ("authority", "proxy", "fake-github"):
+        stop_bg(name)
+    vm("systemctl stop norn-fleet-executor; rm -rf /var/lib/norn-fleet-executor/{token,token.json,intent.json,evidence,repo,refused,lock-foreign,last-applied}"
+       " /run/norn-fleet-executor/grants/* /var/lib/norn-fleet-phase/*; "
+       f"systemctl stop minio; rm -rf /var/lib/minio/{BUCKET}/* /var/lib/minio/.minio.sys/buckets/{BUCKET} /etc/q1-gate/hold-*; systemctl start minio",
+       check=False)
+    if st.get("db"):
+        psql("postgres", f"drop database if exists {st['db']} with (force)", check=False)
+    shutil.rmtree(WORK / "gh", ignore_errors=True)
+    shutil.rmtree(WORK / "repo-work", ignore_errors=True)
+    for f in ("proxy.log", "proxy-rules.json", "authority.log"):
+        (WORK / f).unlink(missing_ok=True)
+    new_db = "norn_q1_" + dt.datetime.now().strftime("%Y%m%d%H%M%S")
+    save_state(db=new_db, pids={}, target_id="", baseline_plan="")
+    psql("postgres", f"create database {new_db}")
+    save_state(first_commit=make_fixture_repo())
+    start_services()
+    log(f"reset done; database {new_db}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# VM preparation, the real Ansible role, device enrollment
+# ---------------------------------------------------------------------------
+
+Q1_HOOK = """#!/bin/sh
+# Q1 gate. q1-hook <gate>: block while /etc/q1-gate/hold-<gate> exists, then succeed.
+# `plan` is the OpenTofu external data source (JSON on stdout); every other gate prints nothing.
+gate="$1"
+while [ -e "/etc/q1-gate/hold-$gate" ]; do sleep 0.3; done
+if [ "$gate" = plan ]; then printf '{"ok":"1"}'; fi
+exit 0
+"""
+
+TLS_UNIT = """[Unit]
+Description=Q1 TLS terminator for {name} ({bind}:443 -> {target})
+After=network-online.target
+[Service]
+ExecStart=/usr/bin/socat OPENSSL-LISTEN:443,bind={bind},reuseaddr,fork,cert=/etc/q1/srv.pem,key=/etc/q1/srv.key,verify=0 TCP:{target},connect-timeout=2,retry=10,interval=0.2
+Restart=always
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def fleet_sha() -> str:
+    return git(FLEET_DIR, "rev-parse", "HEAD").stdout.strip()
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def fetch_checksum(url: str, name: str) -> str:
+    text = run(["curl", "-fsSL", url]).stdout
+    for line in text.splitlines():
+        if line.rstrip().endswith(name):
+            return line.split()[0]
+    die(f"{name} not in {url}")
+
+
+def build_role_inputs() -> dict:
+    d = WORK / "ansible"
+    d.mkdir(parents=True, exist_ok=True)
+    sha = fleet_sha()
+    release = d / "executor-release.tar.gz"
+    run(["git", "-C", FLEET_DIR, "archive", "--format=tar.gz", "-o", release, sha, "scripts"])
+    exp = d / "exp"
+    shutil.rmtree(exp, ignore_errors=True)
+    exp.mkdir()
+    run(["tar", "-xzf", release, "-C", exp])
+    tree = run(["python3", FLEET_DIR / "ansible/roles/fleet_executor/files/tree_hash.py", exp / "scripts"]).stdout.strip()
+    # Wheelhouse archive from the one the VM script built (arm64, hash-pinned): wheelhouse/*.whl + requirements.txt
+    vm("rm -rf /tmp/q1-wh && mkdir /tmp/q1-wh && cp -r /opt/norn-fleet-executor/wheelhouse /tmp/q1-wh/wheelhouse"
+       f" && cp {FLEET_DIR}/scripts/requirements-pilot.txt /tmp/q1-wh/requirements.txt"
+       " && tar -C /tmp/q1-wh -czf /tmp/q1-wheelhouse.tar.gz . && chmod 644 /tmp/q1-wheelhouse.tar.gz")
+    wheel_tar = d / "executor-wheelhouse.tar.gz"
+    run(["limactl", "copy", f"{VM}:/tmp/q1-wheelhouse.tar.gz", wheel_tar])
+    wheel_digest = vm("cat /opt/norn-fleet-executor/WHEELHOUSE_SHA256").stdout.strip()
+    tofu_v, sops_v, age_v = "1.10.6", "3.9.4", "1.2.1"
+    arch = "arm64"
+    tofu_sha = fetch_checksum(f"https://github.com/opentofu/opentofu/releases/download/v{tofu_v}/tofu_{tofu_v}_SHA256SUMS",
+                              f"tofu_{tofu_v}_linux_{arch}.zip")
+    sops_sha = fetch_checksum(f"https://github.com/getsops/sops/releases/download/v{sops_v}/sops-v{sops_v}.checksums.txt",
+                              f"sops-v{sops_v}.linux.{arch}")
+    age_tar = d / f"age-v{age_v}-linux-{arch}.tar.gz"
+    if not age_tar.exists():
+        run(["curl", "-fsSL", "-o", age_tar, f"https://github.com/FiloSottile/age/releases/download/v{age_v}/age-v{age_v}-linux-{arch}.tar.gz"])
+    return {"executor_release_sha": sha, "executor_release_archive": str(release),
+            "executor_release_archive_sha256": sha256_file(release), "executor_release_tree_sha256": tree,
+            "executor_wheelhouse_archive": str(wheel_tar), "executor_wheelhouse_archive_sha256": sha256_file(wheel_tar),
+            "executor_wheelhouse_sha256": wheel_digest, "executor_tofu_sha256": tofu_sha, "executor_sops_sha256": sops_sha,
+            "executor_age_sha256": sha256_file(age_tar)}
+
+
+def build_fixture_secrets() -> tuple[Path, Path, str]:
+    """The SOPS file (all credential types, fixture values) and the phase-owned secret tree that the unchanged
+    validate_release_contract.py reads at nodes_configured. Returns (sops file, tree tarball, catalog sha256)."""
+    st = state()
+    d = WORK / "secrets"
+    tree = d / "tree"
+    shutil.rmtree(tree, ignore_errors=True)
+    (tree / "norn").mkdir(parents=True)
+    (tree / "etcd").mkdir()
+    pin = "a" * 40
+    repo = f"{OWNER}/{REPO}"
+    norn_files = {
+        "control-authority": "7d3b6a52-9c3e-4a8e-8c1f-2f0b6f6a1e11", "api.token": "x" * 40, "audit-signing.key": "y" * 40,
+        "allowed-origins": "https://norn-staging.example.test", "ingress-url": "https://ingress.example.test",
+        "registry-url": "registry.example.test/norn", "registry-auth.json": "{}",
+        "release-attestation-issuer": "https://token.actions.githubusercontent.com",
+        "release-attestation-repositories": repo,
+        "release-attestation-workflow-refs": f"{repo}/.github/workflows/release.yml@{pin}",
+        "private-attestation-trusted-keys": "q1", "catalog-age-keys.txt": "q1", "qualification-signing.key": "q1",
+        "private-attestation-signing.pem": "q1",
+        "oidc.env": "\n".join([
+            "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE=norn-fleet-staging", f"NORN_GITHUB_ACTIONS_RELEASE_BINDINGS=demo={repo}@1@2",
+            f"NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS={repo}/.github/workflows/release.yml@{pin}",
+            "NORN_GITHUB_ACTIONS_ALLOWED_REFS=refs/heads/main", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS=push",
+            "NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS=staging", "NORN_GITHUB_ACTIONS_DEFAULT_BRANCH=main",
+            f"NORN_GITHUB_ACTIONS_FLEET_ALLOWED_REPOSITORY={repo}@1@2",
+            f"NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS={repo}/.github/workflows/apply.yml@{pin}",
+            "NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS=staging", "NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS=apply,recover", ""]),
+    }
+    for name, value in norn_files.items():
+        (tree / "norn" / name).write_text(value)
+    for name, value in {"root.password": "r" * 20, "norn.username": "norn", "norn.password": "p" * 20}.items():
+        (tree / "etcd" / name).write_text(value)
+    cat = d / "catalog"
+    shutil.rmtree(cat, ignore_errors=True)
+    (cat / "demo").mkdir(parents=True)
+    (cat / "demo" / "infraspec.yaml").write_text("name: demo\n")
+    tar_env = dict(os.environ, COPYFILE_DISABLE="1")  # no AppleDouble ._ members: the validator refuses them
+    run(["tar", "-czf", tree / "catalog.tar.gz", "-C", cat, "demo"], env=tar_env)
+    catalog_sha = sha256_file(tree / "catalog.tar.gz")
+    for p in tree.rglob("*"):
+        os.chmod(p, 0o700 if p.is_dir() else 0o600)
+    os.chmod(tree, 0o700)
+    tarball = d / "fixture-secrets.tar"
+    run(["tar", "-cf", tarball, "-C", tree, "."], env=tar_env)
+    key = (WORK / "keys/id_ed25519").read_text()
+    plain = {
+        "do-read": {"DIGITALOCEAN_TOKEN": "q1-fake-do-read-token", "SSH_KEY_FINGERPRINTS_JSON": json.dumps([st["ssh_fingerprint"]]),
+                    "ADMIN_CIDRS_JSON": json.dumps(["10.0.0.0/8"]), "SSH_PUBLIC_KEY": st["ssh_public_key"]},
+        "do-write": {"DIGITALOCEAN_TOKEN": "q1-fake-do-write-token", "SSH_KEY_FINGERPRINTS_JSON": json.dumps([st["ssh_fingerprint"]]),
+                     "ADMIN_CIDRS_JSON": json.dumps(["10.0.0.0/8"])},
+        "spaces-rw": {"AWS_ACCESS_KEY_ID": MINIO_USER, "AWS_SECRET_ACCESS_KEY": MINIO_PASS, "STATE_BUCKET": BUCKET,
+                      "STATE_REGION": "us-east-1", "STATE_ENDPOINT": "http://127.0.0.1:9000"},
+        "spaces-read": {"AWS_ACCESS_KEY_ID": MINIO_USER, "AWS_SECRET_ACCESS_KEY": MINIO_PASS, "STATE_BUCKET": BUCKET,
+                        "STATE_REGION": "us-east-1", "STATE_ENDPOINT": "http://127.0.0.1:9000"},
+        "ssh-node": {"id_ed25519": key, "known_hosts": "# q1 fixture: no real nodes\n"},
+        "bootstrap-dir": {"bootstrap-vars.yml": "fleet_secret_dir: /etc/norn-fleet-phase/fixture-secrets\n"
+                          "norn_catalog_source: /etc/norn-fleet-phase/fixture-secrets/catalog.tar.gz\n"
+                          f"norn_catalog_sha256: {catalog_sha}\nnorn_environment: staging\n"},
+        "release-github": {"NORN_RELEASE_GITHUB_TOKEN": "q1-unused"},
+    }
+    def seal(document: dict, name: str) -> Path:
+        plain_file = d / (name + ".plain.json")
+        plain_file.write_text(json.dumps(document))
+        os.chmod(plain_file, 0o600)
+        out = d / name
+        # cwd is the secrets dir: a .sops.yaml in an ancestor of the checkout would otherwise be consulted.
+        out.write_text(run(["sops", "--encrypt", "--age", st["age_recipient"], "--input-type", "json", "--output-type", "yaml",
+                            plain_file.name], cwd=d).stdout)
+        plain_file.unlink()
+        return out
+
+    enc = seal(plain, "staging.sops.yaml")
+    # Accommodation W1 (bug 5): the unchanged recovery cannot parse tofu's coloured lock error. TF_CLI_ARGS=-no-color
+    # reaches every tofu phase through the spaces-* credential entries. The role's check_secrets.py rejects the extra
+    # key by design, so this file is copied in after the role has run.
+    w1 = json.loads(json.dumps(plain))
+    for t in ("spaces-rw", "spaces-read"):
+        w1[t]["TF_CLI_ARGS"] = "-no-color"
+    state_w1 = seal(w1, "staging.w1.sops.yaml")
+    save_state(sops_w1=str(state_w1))
+    return enc, tarball, catalog_sha
+
+
+def vm_ssh_inventory() -> Path:
+    cfg = (Path.home() / ".lima" / VM / "ssh.config").read_text()
+    port = re.search(r"^\s*Port\s+(\d+)", cfg, re.M).group(1)
+    user = re.search(r"^\s*User\s+(\S+)", cfg, re.M).group(1)
+    inv = WORK / "ansible" / "inventory.ini"
+    inv.write_text("[management_executor]\n"
+                   f"norn-exec ansible_host=127.0.0.1 ansible_port={port} ansible_user={user} "
+                   f"ansible_ssh_private_key_file={Path.home()}/.lima/_config/user "
+                   "ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes' "
+                   "ansible_python_interpreter=/usr/bin/python3\n")
+    return inv
+
+
+def vm_prepare_base() -> None:
+    """Things the role does not install: TLS front-ends, the CA, the hook script, ruby (see report), the provider mirror."""
+    st = state()
+    pki = WORK / "pki"
+    log("VM: packages (socat, ruby), CA, TLS terminators, gate script")
+    vm("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq socat ruby >/dev/null", timeout=900)
+    vm("install -d -m 0755 /etc/q1 /etc/q1-gate")
+    vm_copy_in(pki / "ca.pem", "/usr/local/share/ca-certificates/q1-ca.crt")
+    vm("update-ca-certificates >/dev/null")
+    vm_copy_in(pki / "srv.pem", "/etc/q1/srv.pem")
+    vm_copy_in(pki / "srv.key", "/etc/q1/srv.key", mode="0600")
+    hook = WORK / "q1-hook"
+    hook.write_text(Q1_HOOK)
+    vm_copy_in(hook, "/usr/local/bin/q1-hook", mode="0755")
+    (WORK / "tls-norn.service").write_text(TLS_UNIT.format(name="norn.test", bind="127.0.0.12", target=f"host.lima.internal:{PROXY_PORT}"))
+    (WORK / "tls-github.service").write_text(TLS_UNIT.format(name="github.com", bind="127.0.0.11", target=f"host.lima.internal:{GH_PORT}"))
+    vm_copy_in(WORK / "tls-norn.service", "/etc/systemd/system/q1-tls-norn.service")
+    vm_copy_in(WORK / "tls-github.service", "/etc/systemd/system/q1-tls-github.service")
+    vm("grep -q ' norn.test' /etc/hosts || echo '127.0.0.12 norn.test' >> /etc/hosts")
+    vm("systemctl daemon-reload && systemctl enable --now q1-tls-norn.service")
+
+
+def vm_enable_github_front() -> None:
+    vm("grep -q ' github.com' /etc/hosts || echo '127.0.0.11 github.com' >> /etc/hosts")
+    vm("systemctl enable --now q1-tls-github.service")
+
+
+def role_apply(inputs: dict, enc: Path, tags: str = "") -> None:
+    st = state()
+    inv = vm_ssh_inventory()
+    vars_file = WORK / "ansible" / "vars.json"
+    vars_file.write_text(json.dumps({
+        "executor_norn_url": "https://norn.test", "executor_resource": RESOURCE,
+        "executor_repo_url": f"https://github.com/{OWNER}/{REPO}.git",
+        "executor_phase_env": {"NORN_FLEET_SSH_USER": "root", "NORN_FLEET_PRIVATE_INTERFACE": "eth0",
+                               "NORN_FLEET_PUBLIC_HOSTNAME": "staging.fleet.test"},
+        "executor_sops_file_src": str(enc), "executor_age_key_src": str(WORK / "keys/age.key"),
+        "executor_host_age_recipient": st["age_recipient"], **inputs}, indent=1))
+    log("applying ansible/playbooks/management-executor.yml (the real role) to the VM")
+    env = dict(os.environ, ANSIBLE_HOST_KEY_CHECKING="False", ANSIBLE_FORCE_COLOR="0", ANSIBLE_NOCOLOR="1",
+               ANSIBLE_SSH_ARGS="-o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 "
+                                "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null")
+    argv = ["ansible-playbook", "-i", inv, FLEET_DIR / "ansible/playbooks/management-executor.yml", "-e", f"@{vars_file}"]
+    if tags:
+        argv += ["--tags", tags]
+    done = run(argv,
+               cwd=FLEET_DIR / "ansible", env=env, check=False, timeout=3600)
+    (WORK / "ansible" / ("role-run-%s.log" % tags if tags else "role-run.log")).write_text(
+        done.stdout + "\n--- stderr ---\n" + done.stderr)
+    if done.returncode != 0:
+        die("ansible role failed; see " + str(WORK / "ansible/role-run.log") + "\n" + done.stdout[-3000:] + done.stderr[-1500:])
+    save_state(role_applied=rfc3339(), release_sha=inputs["executor_release_sha"])
+
+
+def install_fixture_secret_tree(tarball: Path) -> None:
+    run(["limactl", "copy", str(tarball), f"{VM}:/tmp/q1-fixture-secrets.tar"])
+    vm("rm -rf /etc/norn-fleet-phase/fixture-secrets && install -d -m 0700 -o norn-phase -g norn-phase /etc/norn-fleet-phase/fixture-secrets"
+       " && tar -xf /tmp/q1-fixture-secrets.tar -C /etc/norn-fleet-phase/fixture-secrets"
+       " && chown -R norn-phase:norn-phase /etc/norn-fleet-phase/fixture-secrets && rm -f /tmp/q1-fixture-secrets.tar")
+
+
+def deliver_sops_w1() -> None:
+    """Copy the accommodation-W1 SOPS file over the role's (atomically, same owner and mode as the role sets)."""
+    w1 = state().get("sops_w1")
+    if not w1:
+        return
+    vm_copy_in(Path(w1), "/etc/norn-fleet-executor/staging.sops.yaml.new", mode="0400", owner="norn-exec:norn-exec")
+    vm("mv /etc/norn-fleet-executor/staging.sops.yaml.new /etc/norn-fleet-executor/staging.sops.yaml")
+
+
+def pairing_line() -> tuple[str, str] | None:
+    out = journal(grep="approve enrollment", lines=2000)
+    found = re.findall(r"approve enrollment (\S+) \(code (\S+)\) with scope fleet:execute", out)
+    return found[-1] if found else None
+
+
+def ensure_vm_provisioned() -> None:
+    """norn-exec-vm provision (users, tools, wheelhouse, MinIO, fake metadata). MinIO's official download answers 410
+    (Gone) since the project stopped publishing binaries, so build it from source for the VM's architecture when needed."""
+    if vm("test -x /usr/local/bin/minio && systemctl is-active minio fake-do-metadata", check=False).returncode == 0:
+        return
+    if vm("test -x /usr/local/bin/minio", check=False).returncode != 0:
+        log("MinIO binary missing in the VM: cross-building github.com/minio/minio from source")
+        env = dict(os.environ, GOOS="linux", GOARCH="arm64", CGO_ENABLED="0")
+        run(["go", "install", "github.com/minio/minio@latest"], env=env, timeout=1800)
+        gopath = run(["go", "env", "GOPATH"]).stdout.strip()
+        run(["limactl", "copy", f"{gopath}/bin/linux_arm64/minio", f"{VM}:/tmp/minio"])
+        vm("install -m 0755 /tmp/minio /usr/local/bin/minio")
+    run(["bash", str(HERE / "norn-exec-vm"), "provision"], timeout=3600)
+
+
+def cmd_vm(args) -> int:
+    st = state()
+    if "api_token" not in st:
+        die("run setup first")
+    ensure_vm_provisioned()
+    enc, tarball, catalog_sha = build_fixture_secrets()
+    vm_prepare_base()
+    inputs = build_role_inputs()
+    save_state(role_inputs={k: v for k, v in inputs.items() if k.endswith("sha256") or k.endswith("sha")})
+    if not st.get("role_applied"):
+        role_apply(inputs, enc)
+    else:
+        role_apply(inputs, enc, tags="secrets")  # redeliver the SOPS file (the role's rotation path)
+    install_fixture_secret_tree(tarball)
+    if not getattr(args, "as_shipped", False):
+        deliver_sops_w1()
+    vm_enable_github_front()
+    # Pairing: approve the loop's pending enrollment (scope fleet:execute only).
+    vm(f"systemctl start {UNIT}")
+    if vm("test -s /var/lib/norn-fleet-executor/token", check=False).returncode != 0:
+        pair = wait_for("the executor's pairing line", pairing_line, timeout=240, interval=5)
+        log(f"executor pairing line: enrollment {pair[0]} code {pair[1]}")
+        rc, out = norn_cli("access", "approve", pair[1], "--scope", "fleet:execute")
+        log(out.splitlines()[0] if out else "approved")
+        wait_for("the executor token", lambda: vm("test -s /var/lib/norn-fleet-executor/token", check=False).returncode == 0, timeout=120, interval=3)
+    log("executor enrolled; token present")
+    return 0
+
+
+def cmd_tls(args) -> int:
+    """Reinstall the VM-side TLS terminators (units) and restart them."""
+    (WORK / "tls-norn.service").write_text(TLS_UNIT.format(name="norn.test", bind="127.0.0.12", target=f"host.lima.internal:{PROXY_PORT}"))
+    (WORK / "tls-github.service").write_text(TLS_UNIT.format(name="github.com", bind="127.0.0.11", target=f"host.lima.internal:{GH_PORT}"))
+    vm_copy_in(WORK / "tls-norn.service", "/etc/systemd/system/q1-tls-norn.service")
+    vm_copy_in(WORK / "tls-github.service", "/etc/systemd/system/q1-tls-github.service")
+    vm("systemctl daemon-reload && systemctl restart q1-tls-norn.service q1-tls-github.service")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# bootstrap: target, resource, controller mode, first (approved) converge
+# ---------------------------------------------------------------------------
+
+def register_target_and_resource() -> str:
+    code, body = api_call("POST", "/api/v1/fleet/targets", {
+        "provider": "digitalocean", "providerAccount": "q1-local", "stateBackend": f"s3://{BUCKET}/staging",
+        "aliases": [f"cluster:{CLUSTER}", "environment:staging/nyc3"]}, key="q1-register-target")
+    if code not in (200, 201):
+        die(f"register target: {code} {body}")
+    target = body["ref"]
+    code, body = api_call("POST", f"/api/v1/fleet/resources/{RESOURCE}", {"targetId": target}, key="q1-create-resource")
+    if code not in (200, 201):
+        die(f"create resource: {code} {body}")
+    save_state(target_id=target)
+    return target
+
+
+def set_mode(mode: str) -> None:
+    rc, out = norn_cli("fleet", "mode", RESOURCE, mode)
+    log(f"mode {mode}: {out.splitlines()[0] if out else rc}")
+
+
+def converge_view() -> dict:
+    r = resource()
+    return (r.get("desired") or {}).get("converge") or {}
+
+
+def active() -> dict:
+    return (resource().get("status") or {}).get("active") or {}
+
+
+def exec_attempts(plan_id: str) -> list:
+    code, body = api_call("GET", f"/api/v1/fleet/plans/{plan_id}/attempts")
+    if code != 200:
+        return []
+    return body if isinstance(body, list) else body.get("attempts", [])
+
+
+def attempt_summary(a: dict) -> str:
+    return f"{a.get('id', '?')[:8]} status={a.get('status')} phase={a.get('currentPhase')} retryOf={(a.get('retryOf') or '')[:8]}"
+
+
+def push_and_rescan(files: dict, message: str, wait_plan: bool = True, **kw) -> tuple[str, str]:
+    """Commit to protected main, then rescan now (the watcher also polls every 60 s). Returns (sha, plan id)."""
+    prev_plan = (resource().get("desired") or {}).get("planId", "")
+    sha = commit_push(files, message, **kw)
+    log(f"pushed {sha[:10]}: {message}")
+    rc, out = norn_cli("fleet", "converge", RESOURCE, check=False)
+    log("rescan: " + (out.splitlines()[0] if out else str(rc)))
+    if not wait_plan:
+        return sha, ""
+
+    def planned():
+        d = resource().get("desired") or {}
+        return d.get("commitSha") == sha and d.get("planId") and d["planId"] != prev_plan and d["planId"]
+
+    plan = wait_for(f"a converge plan for {sha[:10]}", planned, timeout=150, interval=3)
+    return sha, plan
+
+
+def wait_applied(sha: str, timeout=900):
+    """Wait until Norn reports sha as the last applied commit and the fence is free."""
+    def done():
+        r = resource()
+        applied = ((r.get("status") or {}).get("lastApplied") or {}).get("commitSha")
+        act = (r.get("status") or {}).get("active")
+        return applied == sha and (not act or act.get("occupancy") == "Free")
+    return wait_for(f"{sha[:10]} to be applied", done, timeout=timeout, interval=5)
+
+
+def vm_tofu_state() -> list[str]:
+    """`tofu state list` against the MinIO state, as root in a scratch copy of the fixture root."""
+    out = vm_tofu("state list")
+    return [l for l in out.splitlines() if l and not l.startswith(("Warning", "│", "╷", "╵"))]
+
+
+def vm_tofu(command: str, *, check=True) -> str:
+    """Run a tofu command against the fixture root's MinIO backend (read-only inspection; as root, not as a phase)."""
+    script = f"""set -e
+d=/tmp/q1-tofu-inspect; rm -rf $d; mkdir -p $d
+cp -r /tmp/q1-fixture-tree/. $d/ 2>/dev/null || true
+cd $d
+export AWS_ACCESS_KEY_ID={MINIO_USER} AWS_SECRET_ACCESS_KEY={MINIO_PASS} AWS_EC2_METADATA_DISABLED=true
+tofu init -input=false -lockfile=readonly -backend-config=bucket={BUCKET} -backend-config=key={STATE_KEY} \
+ -backend-config=region=us-east-1 -backend-config=endpoint=http://127.0.0.1:9000 -backend-config=skip_credentials_validation=true \
+ -backend-config=skip_region_validation=true -backend-config=skip_requesting_account_id=true -backend-config=skip_metadata_api_check=true \
+ -backend-config=skip_s3_checksum=true -backend-config=use_path_style=true -backend-config=use_lockfile=true >/dev/null 2>&1 || true
+tofu {command} 2>&1
+"""
+    done = vm(script, check=False, timeout=300)
+    if check and done.returncode != 0:
+        die(f"tofu {command} failed in VM: {done.stdout[-800:]}")
+    return done.stdout
+
+
+def refresh_inspect_tree() -> None:
+    """Copy the applied fixture root into the VM for the inspection helper (workdir is tracked at HEAD of the work clone)."""
+    work = WORK / "repo-work"
+    tar = WORK / "inspect-tree.tar"
+    run(["tar", "-cf", tar, "-C", work / "environments/staging/nyc3", "."])
+    run(["limactl", "copy", str(tar), f"{VM}:/tmp/q1-inspect-tree.tar"])
+    vm("rm -rf /tmp/q1-fixture-tree && mkdir -p /tmp/q1-fixture-tree && tar -xf /tmp/q1-inspect-tree.tar -C /tmp/q1-fixture-tree")
+
+
+def minio_keys() -> list[str]:
+    """Object keys under the state bucket (the MinIO data directory is the bucket)."""
+    out = vm(f"cd /var/lib/minio/{BUCKET} 2>/dev/null && find . -type f | sed 's#^\\./##' | sort", check=False).stdout
+    return [l for l in out.splitlines() if l]
+
+
+def cmd_bootstrap(args) -> int:
+    if not state().get("target_id"):
+        register_target_and_resource()
+    r = resource()
+    if r.get("executionMode") != "controller":
+        set_mode("controller")
+    log("resource: " + json.dumps({k: r.get(k) for k in ("name", "executionMode", "blocker")}))
+    refresh_inspect_tree()
+    # The first converge: lastApplied is empty, so E3 classes the range executable and the plan needs an approve.
+    rc, out = norn_cli("fleet", "converge", RESOURCE, check=False)
+    log("rescan: " + (out.splitlines()[0] if out else "rescan"))
+
+    def planned():
+        d = resource().get("desired") or {}
+        return d.get("planId") if d.get("commitSha") == git(WORK / "repo-work", "rev-parse", "HEAD").stdout.strip() else ""
+    plan = wait_for("the first converge plan", planned, timeout=150, interval=3)
+    view = converge_view()
+    log(f"first plan {plan}: requiresApproval={view.get('requiresApproval')} approved={view.get('approved')}")
+    save_state(baseline_plan=plan)
+    return 0
+
+
+def cmd_baseline(args) -> int:
+    """Approve the first converge (empty last-applied: executable by rule) and wait for it to be applied."""
+    plan = state().get("baseline_plan") or current_plan()
+    sha = (resource().get("desired") or {}).get("commitSha", "")
+    view = converge_view()
+    log(f"baseline plan {plan}: requiresApproval={view.get('requiresApproval')}")
+    rc, out = norn_cli("fleet", "approve", plan)
+    log(out.splitlines()[-1] if out else str(rc))
+    wait_applied(sha, timeout=900)
+    log(f"baseline applied: {last_applied()}")
+    save_state(baseline_sha=sha)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Row framework and helpers
+# ---------------------------------------------------------------------------
+
+RESULTS = WORK / "results"
+
+
+class Row:
+    def __init__(self, n, title: str):
+        self.n, self.title = n, title
+        self.result = "PASS"
+        self.lines: list[str] = []
+        self.failures: list[str] = []
+        self.started = rfc3339()
+
+    def ev(self, label: str, text: str = "") -> None:
+        text = text.strip()
+        entry = f"{label}: {text}" if text else label
+        self.lines.append(entry)
+        log(f"row {self.n}: {entry[:400]}")
+
+    def check(self, cond: bool, msg: str) -> bool:
+        if cond:
+            self.ev("ok", msg)
+        else:
+            self.failures.append(msg)
+            self.ev("CHECK FAILED", msg)
+        return bool(cond)
+
+    def finish(self) -> dict:
+        if self.failures and self.result == "PASS":
+            self.result = "FAIL"
+        out = {"row": self.n, "title": self.title, "result": self.result, "started": self.started, "finished": rfc3339(),
+               "failures": self.failures, "evidence": self.lines}
+        RESULTS.mkdir(parents=True, exist_ok=True)
+        (RESULTS / f"row-{self.n}.json").write_text(json.dumps(out, indent=1))
+        return out
+
+
+def run_row(n, title: str, fn) -> dict:
+    row = Row(n, title)
+    log(f"=== row {n}: {title}")
+    try:
+        fn(row)
+    except SystemExit as exc:
+        row.result = "FAIL"
+        row.failures.append(f"aborted: {exc}")
+        row.ev("ABORTED", str(exc))
+    except Exception as exc:  # a harness or product failure must be recorded, never hidden
+        import traceback
+        row.result = "FAIL"
+        row.failures.append(f"exception: {exc!r}")
+        row.ev("EXCEPTION", traceback.format_exc()[-1500:])
+    out = row.finish()
+    log(f"=== row {n}: {out['result']}")
+    return out
+
+
+def psql_json(sql: str) -> list:
+    st = state()
+    done = psql(st["db"], f"select coalesce(json_agg(q), '[]'::json) from ({sql}) q")
+    return json.loads(done.stdout.strip() or "[]")
+
+
+def ledger(kind: str, plan: str = "", since: str = "") -> list:
+    cond = f"kind like '{kind}'"
+    if plan:
+        cond += f" and ref='{plan}'"
+    if since:
+        cond += f" and started_at >= '{since}'"
+    return psql_json(f"select id, kind, ref, status, started_at, payload, metadata from operations where {cond} order by started_at")
+
+
+def attempts_db(plan: str) -> list:
+    return psql_json(f"select id, attempt, status, current_phase, retry_of, recovery, metadata->>'invocationId' as invocation, "
+                     f"metadata->>'bootId' as boot, metadata->>'dropletId' as droplet, heartbeat_expires_at, finished_at, last_error "
+                     f"from fleet_runner_attempts where plan_id='{plan}' order by attempt")
+
+
+def gate(name: str, hold: bool) -> None:
+    vm(f"install -d /etc/q1-gate && " + (f"touch /etc/q1-gate/hold-{name}" if hold else f"rm -f /etc/q1-gate/hold-{name}"))
+
+
+def phase_procs(pattern: str = "") -> str:
+    return vm(f"ps -u norn-phase -o pid,args --no-headers | grep -E {shlex.quote(pattern or '.')} | grep -v grep || true",
+              check=False).stdout.strip()
+
+
+def wait_hook_running(name: str, timeout=360) -> str:
+    return wait_for(f"the {name} hook to be waiting in a phase", lambda: phase_procs(f"q1-hook {name}"), timeout=timeout, interval=2)
+
+
+def kill_phase_tofu(sig="KILL") -> str:
+    out = vm(f"pgrep -u norn-phase -x tofu -a; pkill -{sig} -u norn-phase -x tofu; echo killed=$?", check=False).stdout
+    return out.strip()
+
+
+def minio_py(snippet: str) -> str:
+    code = ("import boto3,sys,json\n"
+            f"s3=boto3.client('s3',endpoint_url='http://127.0.0.1:9000',aws_access_key_id='{MINIO_USER}',"
+            f"aws_secret_access_key='{MINIO_PASS}',region_name='us-east-1')\nB='{BUCKET}'\n" + snippet)
+    done = vm("/opt/norn-fleet-executor/venv/bin/python - <<'PYEOF'\n" + code + "\nPYEOF", check=False)
+    if done.returncode != 0:
+        return "ERROR " + done.stdout + done.stderr
+    return done.stdout.strip()
+
+
+def minio_keys_s3() -> list[str]:
+    out = minio_py("print(json.dumps([o['Key'] for o in s3.list_objects_v2(Bucket=B).get('Contents',[])]))")
+    try:
+        return json.loads(out)
+    except ValueError:
+        return [out]
+
+
+def tflock() -> dict | None:
+    out = minio_py(f"""
+try:
+    print(s3.get_object(Bucket=B,Key='{STATE_KEY}.tflock')['Body'].read().decode())
+except Exception as e:
+    print('NOLOCK', type(e).__name__)""")
+    if out.startswith(("NOLOCK", "ERROR")):
+        return None
+    try:
+        return json.loads(out)
+    except ValueError:
+        return {"raw": out}
+
+
+def delete_tflock() -> str:
+    return minio_py(f"s3.delete_object(Bucket=B,Key='{STATE_KEY}.tflock'); print('deleted')")
+
+
+def state_serial() -> str:
+    return minio_py(f"print(json.loads(s3.get_object(Bucket=B,Key='{STATE_KEY}')['Body'].read())['serial'])")
+
+
+def state_resources() -> list[str]:
+    return sorted(set(json.loads(minio_py(
+        f"d=json.loads(s3.get_object(Bucket=B,Key='{STATE_KEY}')['Body'].read())\n"
+        "print(json.dumps([f\"{r['type']}.{r['name']}[{i.get('index_key','')}]\" for r in d['resources'] for i in r['instances']]))") or "[]")))
+
+
+def invocation_id() -> str:
+    return vm(f"systemctl show -p InvocationID --value {UNIT}").stdout.strip()
+
+
+def boot_id() -> str:
+    return vm("cat /proc/sys/kernel/random/boot_id").stdout.strip()
+
+
+def unit_active() -> str:
+    return vm(f"systemctl is-active {UNIT}", check=False).stdout.strip()
+
+
+def current_plan() -> str:
+    return (resource().get("desired") or {}).get("planId", "")
+
+
+def last_applied() -> str:
+    return ((resource().get("status") or {}).get("lastApplied") or {}).get("commitSha", "")
+
+
+def hold_attempt_info(plan: str) -> dict:
+    a = attempts_db(plan)
+    return a[-1] if a else {}
+
+
+def status_text() -> str:
+    return norn_cli("fleet", "status", RESOURCE, check=False)[1]
+
+
+def wait_blocker(fragment: str, timeout=240):
+    return wait_for(f"status text containing {fragment!r}", lambda: fragment in status_text(), timeout=timeout, interval=5)
+
+
+def config_only_edit(marker: str) -> dict:
+    """A cluster.yaml-only change that does not alter the node set (drainTimeout of the ingress pool)."""
+    text = read_work("environments/staging/nyc3/cluster.yaml")
+    parts = text.split("drainTimeout:")
+    # the ingress pool is the second pool: its drainTimeout is the second occurrence
+    if len(parts) != 3:
+        die("unexpected cluster.yaml layout")
+    tail = parts[2]
+    line_end = tail.index("\n")
+    new_val = f" {marker}"
+    return {"environments/staging/nyc3/cluster.yaml": parts[0] + "drainTimeout:" + parts[1] + "drainTimeout:" + new_val + tail[line_end:]}
+
+
+def tf_resource(name: str, gate_name: str = "") -> str:
+    cmd = f"/usr/local/bin/q1-hook {gate_name}" if gate_name else "/bin/true"
+    return (f'resource "terraform_data" "{name}" {{\n  input = "{name}"\n  provisioner "local-exec" {{\n'
+            f'    command = "{cmd}"\n  }}\n}}\n')
+
+
+def approve_current(row: Row | None = None) -> str:
+    plan = current_plan()
+    rc, out = norn_cli("fleet", "approve", plan)
+    if row:
+        row.ev("norn fleet approve", out.splitlines()[-1] if out else str(rc))
+    return plan
+
+
+def executor_log_since(since: str, grep: str = "") -> str:
+    return journal(since=since, lines=3000, grep=grep or "^[^ ]+ [^ ]+ [^ ]+ (python|systemd)")
+
+
+SIGNAL = ("busy|wait:|refused|retry|attest|exiting|executor failed|norn unavailable|cannot|Started norn|Stopping norn|Stopped norn|"
+          "Main process exited|Scheduled restart|state lock|force-unlock|Apply complete|Plan:|plan actions|Error|error|Failed|"
+          "approve enrollment|rescanned|open attempt")
+
+
+def short_journal(since: str, lines: int = 25, pattern: str = SIGNAL) -> str:
+    out = vm(f"journalctl -u {UNIT} -o short-iso --no-pager --since {shlex.quote(since)} | grep -E {shlex.quote(pattern)} | "
+             f"sed -E 's/lima-norn-exec //; s/^([^ ]+)-05:00 /\\1 /' | cut -c1-230 | tail -{lines}", check=False).stdout
+    return out
+
+
+def attempt_chain(plan: str) -> str:
+    return "; ".join(f"#{a['attempt']} {a['id'][:8]} {a['status']}/{a['current_phase']} retryOf={(a['retry_of'] or '')[:8]} "
+                     f"inv={(a['invocation'] or '')[:8]} boot={(a['boot'] or '')[:8]}" for a in attempts_db(plan))
+
+
+REVALIDATION_SKEW = 300  # lifecycle.RevalidationSkew (5 min). See the Q1 report, bug 2.
+
+
+def wait_revalidation_window(row: "Row | None" = None) -> None:
+    """A converge plan recorded less than 5 minutes after the fence's last release can never start
+    (fleet_plan_revalidation_required, and the rescan never re-records it): wait until a plan recorded now
+    would be admissible. This is a harness accommodation for product bug 2, not product behaviour."""
+    st = state()
+    rows = psql_json("select extract(epoch from last_release_at) as epoch from fleet_target_fences")
+    if not rows or rows[0]["epoch"] is None:
+        return
+    ready_at = float(rows[0]["epoch"]) + REVALIDATION_SKEW + 8
+    wait = ready_at - time.time()
+    if wait > 0:
+        msg = f"waiting {wait:.0f}s so a new plan is recorded after the previous release + 5 min (bug 2 accommodation)"
+        if row:
+            row.ev("harness", msg)
+        else:
+            log(msg)
+        time.sleep(wait)
+
+
+def cmd_gate(args) -> int:
+    """gate NAME [hold|release]: set or clear a q1-hook gate in the VM."""
+    gate(args.name, args.action == "hold")
+    log(f"gate {args.name}: {args.action}")
+    return 0
+
+
+def cmd_reclone(args) -> int:
+    """Operator remediation for bug 6 (a corrupted executor clone after a power-off): remove the clone; the loop re-clones."""
+    out = vm("find /var/lib/norn-fleet-executor/repo/.git/objects -type f -size 0 | wc -l", check=False).stdout.strip()
+    log(f"empty loose objects in the executor clone: {out}")
+    vm("rm -rf /var/lib/norn-fleet-executor/repo")
+    log("clone removed; the loop re-clones with a repo-read grant on its next fetch")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Rows
+# ---------------------------------------------------------------------------
+
+def ingress_desired(n: int) -> dict:
+    text = read_work("environments/staging/nyc3/cluster.yaml")
+    head, sep, tail = text.partition("  ingress:")
+    tail = re.sub(r"desired: \d+", f"desired: {n}", tail, count=1)
+    return {"environments/staging/nyc3/cluster.yaml": head + sep + tail}
+
+
+def row1(row: Row) -> None:
+    """merge -> automatic converge (config-only change)."""
+    base = last_applied()
+    row.check(bool(base), f"baseline applied at {base[:10]}")
+    wait_revalidation_window(row)
+    t0 = vm_now()
+    sha = commit_push(ingress_desired(3), "q1 row1: ingress pool desired 2 -> 3 (cluster.yaml only)")
+    row.ev("merge", f"pushed {sha[:10]} to protected main of the fake GitHub; validate.yml push run is auto-green; no rescan, no approve")
+    plan = wait_for("the watcher to record a plan for the merge (60 s poll)",
+                    lambda: (resource().get("desired") or {}).get("commitSha") == sha and current_plan(), timeout=200, interval=3)
+    view = converge_view()
+    row.check(view.get("requiresApproval") is False, f"plan {plan[:8]} requiresApproval={view.get('requiresApproval')} (config path class)")
+    row.check("approve_converge" not in status_text(), "status never asks for an approve")
+    wait_applied(sha, timeout=600)
+    row.ev("applied", f"lastApplied={last_applied()[:10]} generation={(resource().get('desired') or {}).get('generation')}")
+    row.ev("attempts", attempt_chain(plan))
+    a = attempts_db(plan)
+    row.check(len(a) == 1 and a[0]["status"] == "succeeded", "exactly one attempt, succeeded")
+    approvals = ledger("fleet.converge.approve", plan)
+    row.check(not approvals, "no fleet.converge.approve exists for this plan (no human action)")
+    resources = state_resources()
+    row.check('terraform_data.node[ingress-03]' in resources, "MinIO state holds terraform_data.node[ingress-03]")
+    row.ev("MinIO state serial", state_serial())
+    row.ev("executor journal", short_journal(t0, 14))
+
+
+def row2(row: Row) -> None:
+    """executable diff -> blocks on approval -> `norn fleet approve` -> converges."""
+    wait_revalidation_window(row)
+    t0 = vm_now()
+    sha = commit_push({"environments/staging/nyc3/row2.tf": tf_resource("row2")},
+                      "q1 row2: add environments/staging/nyc3/row2.tf (executable path class)")
+    rc, out = norn_cli("fleet", "converge", RESOURCE, check=False)
+    row.ev("rescan", out.splitlines()[0] if out else str(rc))
+    plan = wait_for("a converge plan", lambda: (resource().get("desired") or {}).get("commitSha") == sha and current_plan(), timeout=150)
+    view = converge_view()
+    row.check(view.get("requiresApproval") is True and view.get("approved") is False,
+              f"plan {plan[:8]} requiresApproval=true approved=false")
+    st = status_text()
+    row.check("approve_converge" in st, "status nextAction is approve_converge")
+    row.ev("status while blocked", "\n".join(l for l in st.splitlines() if l.strip().startswith(("blocker", "next", "converge"))))
+    # The loop polls every 60 s: sit through at least one full poll and prove it did not start anything.
+    time.sleep(80)
+    row.check(len(attempts_db(plan)) == 0, "no attempt exists after more than one executor poll")
+    waits = short_journal(t0, 40)
+    row.check("the converge plan needs an approve" in waits, "executor journal says: wait: the converge plan needs an approve")
+    plan = approve_current(row)
+    wait_applied(sha, timeout=600)
+    row.ev("attempts", attempt_chain(plan))
+    a = attempts_db(plan)
+    row.check(len(a) == 1 and a[0]["status"] == "succeeded", "one attempt, succeeded, after the approve")
+    ap = ledger("fleet.converge.approve", plan)
+    row.check(len(ap) == 1, "one fleet.converge.approve in the ledger")
+    row.check('terraform_data.row2[]' in state_resources(), "MinIO state holds terraform_data.row2")
+    row.ev("executor journal", short_journal(t0, 10))
+
+
+# ---------------------------------------------------------------------------
+# Rows 3-7: stop safety and recovery
+# ---------------------------------------------------------------------------
+
+def gated_exec(row: Row, name: str, gate_name: str, message: str, extra: dict | None = None) -> tuple[str, str]:
+    """Hold `gate_name`, push an executable commit whose new resource blocks in q1-hook until released, get it
+    approved, and wait until its apply is in flight. Returns (sha, plan id)."""
+    wait_revalidation_window(row)
+    gate(gate_name, True)
+    files = {f"environments/staging/nyc3/{name}.tf": tf_resource(name, gate_name)}
+    files.update(extra or {})
+    sha = commit_push(files, message)
+    rc, out = norn_cli("fleet", "converge", RESOURCE, check=False)
+    row.ev("pushed + rescan", f"{sha[:10]} {out.splitlines()[0] if out else rc}")
+    plan = wait_for("a converge plan", lambda: (resource().get("desired") or {}).get("commitSha") == sha and current_plan(), timeout=150)
+    row.check(converge_view().get("requiresApproval") is True, "executable path class: plan requires an approve")
+    approve_current(row)
+    return sha, plan
+
+
+def wait_attested(plan: str, count: int, timeout=300):
+    return wait_for(f"{count} stop attestation(s) for the plan", lambda: (lambda r: r if len(r) >= count else None)(
+        ledger("fleet.executor.stop-attestation", plan)), timeout=timeout, interval=4)
+
+
+def attestation_summary(rec: dict) -> str:
+    p = rec["payload"]
+    keep = ("sourceAttemptId", "dropletId", "bootId", "invocationId", "phaseUidEmpty", "phaseProcessGroupReaped",
+            "sourceCgroupEmpty", "tofuLock")
+    return json.dumps({k: (v[:8] if isinstance(v, str) and len(v) > 24 and k != "tofuLock" else v) for k, v in p.items() if k in keep})
+
+
+def row3(row: Row) -> None:
+    """kill a phase mid-apply -> stop attestation -> `norn fleet converge --resume` -> recovers."""
+    t0 = vm_now()
+    sha, plan = gated_exec(row, "row3", "row3", "q1 row3: executable change; its apply is gated")
+    wait_hook_running("row3")
+    a = attempts_db(plan)
+    row.check(len(a) == 1 and a[0]["status"] == "running", "one running attempt while tofu apply is in flight")
+    src_attempt = a[0]["id"]
+    lock = tflock()
+    row.ev("MinIO lock before the kill", json.dumps(lock))
+    row.check(bool(lock) and lock.get("Operation") == "OperationTypeApply" and str(lock.get("Who", "")).startswith("norn-phase@"),
+              "an apply lock owned by norn-phase@<host> is held in MinIO")
+    inv0 = invocation_id()
+    row.ev("kill", kill_phase_tofu())
+    wait_for("the loop to exit and systemd to start a new invocation", lambda: invocation_id() != inv0 and unit_active() == "active",
+             timeout=200, interval=3)
+    row.ev("new invocation", f"{inv0[:8]} -> {invocation_id()[:8]}")
+    row.ev("journal", short_journal(t0, 8))
+    att = wait_attested(plan, 1)
+    row.ev("stop attestation #1", attestation_summary(att[0]))
+    p = att[0]["payload"]
+    row.check(p.get("phaseUidEmpty") and p.get("sourceCgroupEmpty") and p.get("phaseProcessGroupReaped"),
+              "attestation: phase uid empty, cgroup empty, process group reaped")
+    row.check(p.get("sourceAttemptId") == src_attempt and p.get("dropletId") == DEFAULT_DROPLET, "attestation names the source attempt and this droplet")
+    wait_blocker("norn fleet converge")
+    row.ev("status", "\n".join(l for l in status_text().splitlines() if l.strip().startswith(("blocker", "next", "active"))))
+    stale = tflock()
+    row.check(bool(stale) and stale.get("ID") == lock.get("ID"), "the stale .tflock is still in MinIO after the kill")
+    gate("row3", False)
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    row.ev("norn fleet converge --resume", out.splitlines()[-1] if out else str(rc))
+    wait_applied(sha, timeout=900)
+    chain = attempt_chain(plan)
+    row.ev("attempts", chain)
+    a = attempts_db(plan)
+    row.check(len(a) == 2 and a[1]["retry_of"] == src_attempt and a[1]["status"] == "succeeded" and a[1]["recovery"],
+              "recovery attempt retries the source and succeeded")
+    att = ledger("fleet.executor.stop-attestation", plan)
+    locked = [r for r in att if (r["payload"] or {}).get("tofuLock")]
+    row.check(len(locked) == 1 and locked[0]["payload"]["tofuLock"].get("id") == lock.get("ID"),
+              "the recovery's attestation recorded tofuLock.id == the stale lock's ID before the unlock")
+    if locked:
+        row.ev("stop attestation (recovery)", attestation_summary(locked[0]))
+    row.check(tflock() is None, "the lock is gone from MinIO after recovery")
+    row.check("terraform_data.row3[]" in state_resources(), "the gated resource exists in state")
+    row.ev("journal", short_journal(t0, 30))
+
+
+def row4(row: Row) -> None:
+    """`systemctl restart` mid-configure."""
+    wait_revalidation_window(row)
+    t0 = vm_now()
+    gate("nodes_configured", True)
+    sha = commit_push(config_only_edit("17m"), "q1 row4: ingress drainTimeout 17m (config-only); nodes_configured hook is gated")
+    plan = wait_for("a converge plan", lambda: (resource().get("desired") or {}).get("commitSha") == sha and current_plan(), timeout=150)
+    row.check(converge_view().get("requiresApproval") is False, "config-only: no approve")
+    wait_hook_running("nodes_configured", timeout=420)
+    a = attempts_db(plan)
+    row.ev("attempt at the gate", f"{a[0]['status']}/{a[0]['current_phase']}" if a else "none")
+    row.check(bool(a) and a[0]["current_phase"] == "nodes_configured", "attempt is at nodes_configured with the hook running")
+    src_attempt = a[0]["id"]
+    boot0, inv0 = boot_id(), invocation_id()
+    row.ev("systemctl restart", vm(f"systemctl restart {UNIT}; sleep 1; systemctl is-active {UNIT}", check=False).stdout.strip())
+    inv1 = invocation_id()
+    row.check(inv1 != inv0, f"new systemd invocation {inv0[:8]} -> {inv1[:8]}")
+    row.check(not phase_procs("q1-hook"), "no norn-phase process survived the restart (KillMode=control-group)")
+    att = wait_attested(plan, 1)
+    p = att[0]["payload"]
+    row.ev("stop attestation", attestation_summary(att[0]))
+    row.check(p["bootId"] == boot0 and p["invocationId"] != inv0, "same boot, different invocation; attested by the restarted loop")
+    row.check(p.get("phaseUidEmpty") and p.get("sourceCgroupEmpty"), "no norn-phase process and an empty unit cgroup")
+    wait_blocker("norn fleet converge")
+    gate("nodes_configured", False)
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    row.ev("norn fleet converge --resume", out.splitlines()[-1] if out else str(rc))
+    wait_applied(sha, timeout=900)
+    row.ev("attempts", attempt_chain(plan))
+    a = attempts_db(plan)
+    row.check(len(a) == 2 and a[1]["retry_of"] == src_attempt and a[1]["status"] == "succeeded", "recovery attempt succeeded")
+    recon = psql_json(f"select payload->>'phase' as phase, payload->>'attemptId' as attempt, status from operations "
+                      f"where kind='fleet.reconciliation' and ref='{plan}' order by started_at")
+    row.ev("checkpoints", "; ".join(f"{r['phase']}/{r['attempt'][:8]}/{r['status']}" for r in recon))
+    row.ev("journal", short_journal(t0, 20))
+
+
+def power_cycle(row: Row) -> str:
+    """Hard power-off (limactl stop --force), then boot. Returns the new boot id."""
+    row.ev("power-off", run(["limactl", "stop", "--force", VM], check=False).stdout.strip() or "limactl stop --force")
+    deadline = time.time() + 30
+    while time.time() < deadline and "Running" in run(["limactl", "list", VM], check=False).stdout:
+        time.sleep(1)
+    row.ev("VM status", run(["limactl", "list", VM], check=False).stdout.strip().splitlines()[-1])
+    done = run(["limactl", "start", "--tty=false", VM], check=False, timeout=600)
+    row.ev("limactl start", (done.stdout + done.stderr).strip().splitlines()[-1] if (done.stdout + done.stderr).strip() else str(done.returncode))
+    wait_for("the VM to answer", lambda: vm("true", check=False).returncode == 0, timeout=300, interval=5)
+    return boot_id()
+
+
+def row5(row: Row) -> None:
+    """VM power-off mid-apply -> boot -> attestation with a new boot_id -> resume."""
+    t0 = vm_now()
+    sha, plan = gated_exec(row, "row5", "row5", "q1 row5: executable change; apply gated, VM powered off mid-apply")
+    wait_hook_running("row5")
+    a = attempts_db(plan)
+    src_attempt = a[0]["id"]
+    lock = tflock()
+    boot0 = boot_id()
+    row.ev("before power-off", f"boot_id={boot0} attempt={src_attempt[:8]} lock={json.dumps(lock)}")
+    row.check(bool(lock) and lock.get("Operation") == "OperationTypeApply", "apply lock held at the moment of power-off")
+    boot1 = power_cycle(row)
+    row.check(boot1 != boot0, f"boot_id changed {boot0[:8]} -> {boot1[:8]}")
+    row.ev("unit after boot", unit_active())
+    att = wait_attested(plan, 1, timeout=420)
+    p = att[0]["payload"]
+    row.ev("stop attestation", attestation_summary(att[0]))
+    row.check(p["bootId"] == boot1 and p["bootId"] != boot0, "attestation carries the NEW boot_id (the old attempt's boot differs)")
+    old_boot = (attempts_db(plan)[0].get("boot") or "")
+    row.check(old_boot == boot0, f"source attempt recorded the old boot_id ({old_boot[:8]})")
+    wait_blocker("norn fleet converge")
+    stale = tflock()
+    row.check(bool(stale) and stale.get("ID") == lock.get("ID"), "the stale .tflock survived the power-off")
+    gate("row5", False)
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    row.ev("norn fleet converge --resume", out.splitlines()[-1] if out else str(rc))
+    wait_applied(sha, timeout=900)
+    row.ev("attempts", attempt_chain(plan))
+    a = attempts_db(plan)
+    row.check(len(a) == 2 and a[1]["retry_of"] == src_attempt and a[1]["status"] == "succeeded", "recovery attempt succeeded after the reboot")
+    locked = [r for r in ledger("fleet.executor.stop-attestation", plan) if (r["payload"] or {}).get("tofuLock")]
+    row.check(len(locked) == 1 and locked[0]["payload"]["tofuLock"]["id"] == lock.get("ID"), "stale lock unlocked via the attested tofuLock id")
+    row.check(tflock() is None, "lock gone")
+    row.check("terraform_data.row5[]" in state_resources(), "resource created by the recovery")
+    row.ev("journal (since boot)", short_journal(t0, 20))
+
+
+def row6(row: Row) -> None:
+    """lost attempt-start response replays (a: transport retry; b: every response lost, journal replay after restart)."""
+    wait_revalidation_window(row)
+    t0 = vm_now()
+    key_re = r"/api/v1/fleet/plans/[^/]+/attempts$"
+    proxy_rule("POST", key_re, "drop_response", 1)
+    open(WORK / "proxy.log", "a").write("--- row 6a armed ---\n")
+    sha = commit_push(config_only_edit("18m"), "q1 row6a: config-only; the first attempt-start response will be dropped")
+    plan = wait_for("a converge plan", lambda: (resource().get("desired") or {}).get("commitSha") == sha and current_plan(), timeout=150)
+    wait_applied(sha, timeout=600)
+    log6 = proxy_log_tail(200, f"POST /api/v1/fleet/plans/{plan}/attempts")
+    row.ev("proxy log (attempt start)", log6)
+    lines = [l for l in log6.splitlines() if "/attempts " in l]
+    row.check(len(lines) >= 2 and "(drop_response)" in lines[0] and "(pass)" in lines[1], "first attempt-start response dropped, retry passed")
+    idem = {re.search(r"idem=(\S+)", l).group(1) for l in lines}
+    row.check(len(idem) == 1, "the retry reuses the same Idempotency-Key")
+    a = attempts_db(plan)
+    row.ev("attempts", attempt_chain(plan))
+    row.check(len(a) == 1 and a[0]["status"] == "succeeded", "exactly one attempt exists: the lost response created it, the replay returned it")
+    row.ev("journal 6a", short_journal(t0, 8))
+    # 6b: every transport retry loses its response: the loop exits, the journal replays after the restart.
+    wait_revalidation_window(row)
+    t1 = vm_now()
+    proxy_rule("POST", key_re, "drop_response", 5)
+    sha2 = commit_push(config_only_edit("19m"), "q1 row6b: config-only; five attempt-start responses will be dropped")
+    plan2 = wait_for("a converge plan", lambda: (resource().get("desired") or {}).get("commitSha") == sha2 and current_plan(), timeout=150)
+    att = wait_attested(plan2, 1, timeout=420)
+    row.ev("6b stop attestation", attestation_summary(att[0]))
+    j = short_journal(t1, 10)
+    row.ev("6b journal", j)
+    a = attempts_db(plan2)
+    row.check(len(a) == 1, "6b: exactly one attempt exists although five responses were lost")
+    log6b = proxy_log_tail(200, f"POST /api/v1/fleet/plans/{plan2}/attempts")
+    row.ev("6b proxy log", log6b)
+    keys = {re.search(r"idem=(\S+)", l).group(1) for l in log6b.splitlines() if "/attempts " in l}
+    row.check(len(keys) == 1 and len([l for l in log6b.splitlines() if "/attempts " in l]) == 6,
+              "6b: the journal replay is the 6th request with the same key and returns the stored attempt")
+    wait_blocker("norn fleet converge")
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    row.ev("norn fleet converge --resume", out.splitlines()[-1] if out else str(rc))
+    wait_applied(sha2, timeout=900)
+    row.ev("6b attempts", attempt_chain(plan2))
+
+
+def row7(row: Row) -> None:
+    """authority restart mid-run."""
+    t0 = vm_now()
+    sha, plan = gated_exec(row, "row7", "row7", "q1 row7: executable change; apply gated while the authority restarts")
+    wait_hook_running("row7")
+    row.ev("apply is running; sleeping so a supervise heartbeat falls into the outage", "")
+    time.sleep(25)
+    pid_before = state()["pids"]["authority"]
+    stop_authority(signal.SIGTERM)
+    row.ev("authority stopped", f"pid {pid_before}")
+    time.sleep(22)  # covers the 40 s supervise heartbeat boundary partially and several executor/phase retries
+    start_authority()
+    row.ev("authority restarted", f"pid {state()['pids']['authority']} on the same database")
+    gate("row7", False)
+    wait_applied(sha, timeout=900)
+    row.ev("attempts", attempt_chain(plan))
+    a = attempts_db(plan)
+    row.check(len(a) == 1 and a[0]["status"] == "succeeded", "one attempt, succeeded, with no recovery needed")
+    out = proxy_log_tail(400, "502|upstream")
+    row.ev("proxy errors during the outage", out or "(none: no executor request fell into the window)")
+    row.check("terraform_data.row7[]" in state_resources(), "resource created")
+    row.ev("journal", short_journal(t0, 12))
+
+
+# ---------------------------------------------------------------------------
+# Rows 9-12 and the etcd gate
+# ---------------------------------------------------------------------------
+
+def row9(row: Row) -> None:
+    """force-push gives history_rewritten."""
+    work = WORK / "repo-work"
+    applied = last_applied()
+    row.check(bool(applied), f"lastApplied is {applied[:10]}")
+    old_tip = git(work, "rev-parse", "HEAD").stdout.strip()
+    plan_before = current_plan()
+    new_root = commit_push({"NOTE.md": "history rewritten by the Q1 harness\n"}, "q1 row9: force-pushed rewrite of main", orphan=True)
+    row.ev("force-push", f"main now {new_root[:10]} (a new root); the old tip {old_tip[:10]} is no longer reachable from main")
+    rc, out = norn_cli("fleet", "converge", RESOURCE, check=False)
+    row.ev("norn fleet converge (rescan)", out.splitlines()[0] if out else str(rc))
+    row.check("history_rewritten" in out, "the rescan reports history_rewritten")
+    st = status_text()
+    row.ev("status", "\n".join(l for l in st.splitlines() if l.strip().startswith(("desired", "applied", "blocker", "next"))))
+    row.check("history_rewritten" in st, "status carries blocker history_rewritten")
+    row.check(current_plan() == plan_before, "no new converge plan was recorded for the rewritten tip")
+    time.sleep(75)
+    row.check(last_applied() == applied, "lastApplied unchanged; nothing was applied")
+    # Variant: the old history is garbage collected, so GitHub's compare 404s for the last-applied commit.
+    gh = WORK / "gh/repos" / OWNER / f"{REPO}.git"
+    run(["git", "-C", gh, "reflog", "expire", "--expire=now", "--all"], env=git_env())
+    run(["git", "-C", gh, "gc", "--prune=now", "-q"], env=git_env())
+    rc, out2 = norn_cli("fleet", "converge", RESOURCE, check=False)
+    row.ev("after pruning the bare repo (compare 404)", out2.splitlines()[0] if out2 else str(rc))
+    row.check("history_rewritten" in out2, "history_rewritten also when the last-applied commit no longer resolves (compare 404)")
+    # Operator path: revert on main (restore the old history), then converge resumes.
+    git(work, "checkout", "-q", "-B", "main", old_tip)
+    git(work, "push", "-q", "-f", "origin", "main")
+    row.ev("operator revert", f"main force-pushed back to {old_tip[:10]} (the applied tip)")
+    rc, out3 = norn_cli("fleet", "converge", RESOURCE, check=False)
+    row.ev("rescan after revert", out3.splitlines()[0] if out3 else str(rc))
+    row.check("history_rewritten" not in out3, "blocker clears once main descends from the last-applied commit again")
+    row.check("history_rewritten" not in status_text(), "status no longer shows history_rewritten")
+
+
+def row10(row: Row) -> None:
+    """stale MinIO .tflock left by a killed real `tofu apply`: an owned lock is unlocked, a foreign lock is refused,
+    including a kill during the recovery's own `tofu plan` (P3)."""
+    t0 = vm_now()
+    slow = ('locals {\n  # CPU-bound on purpose (about 4 s per plan) so a plan can be killed while it holds the lock\n'
+            '  q1_slow = length(flatten([for i in range(1000) : [for j in range(1000) : i * j]]))\n}\n')
+    sha, plan = gated_exec(row, "row10", "row10", "q1 row10: gated apply and a deliberately slow plan",
+                           extra={"environments/staging/nyc3/slow.tf": slow})
+    wait_hook_running("row10", timeout=420)
+    src = attempts_db(plan)[0]["id"]
+    lock1 = tflock()
+    row.ev("lock 1 (held by the real tofu apply)", json.dumps(lock1))
+    inv0 = invocation_id()
+    row.ev("kill -9 tofu apply", kill_phase_tofu())
+    wait_for("a new invocation", lambda: invocation_id() != inv0 and unit_active() == "active", timeout=200, interval=3)
+    wait_attested(plan, 1)
+    wait_blocker("norn fleet converge")
+    row.check(bool(tflock()) and tflock().get("ID") == lock1.get("ID"), "the killed apply left lock 1 in MinIO")
+    # Watcher inside the VM: kill the recovery's own `tofu plan` (not the lock probe) once it holds the lock.
+    watcher = ("rm -f /tmp/q1-killed; for i in $(seq 1 6000); do "
+               "p=$(pgrep -u norn-phase -f 'tofu .* plan -lock-timeout=5m' | head -1); "
+               "if [ -n \"$p\" ]; then sleep 1.5; kill -9 \"$p\"; echo killed-$p > /tmp/q1-killed; exit 0; fi; sleep 0.05; done")
+    vm("nohup bash -c " + shlex.quote(watcher) + " >/dev/null 2>&1 &")
+    gate("row10", False)
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    row.ev("norn fleet converge --resume (1st)", out.splitlines()[-1] if out else str(rc))
+    wait_for("the recovery's plan to be killed", lambda: vm("cat /tmp/q1-killed 2>/dev/null", check=False).stdout.strip(), timeout=420, interval=4)
+    row.ev("killed the recovery's own tofu plan", vm("cat /tmp/q1-killed").stdout.strip())
+    # recovery 1 owned lock 1 and unlocked it; its re-plan was killed and left lock 2 (Operation plan)
+    att = wait_attested(plan, 3, timeout=420)
+    locked = [r for r in att if (r["payload"] or {}).get("tofuLock")]
+    row.check(len(locked) == 1 and locked[0]["payload"]["tofuLock"]["id"] == lock1.get("ID"),
+              "owned lock: recovery 1 recorded tofuLock.id == lock 1's ID, then force-unlocked it")
+    row.ev("attestation with tofuLock", attestation_summary(locked[0]) if locked else "none")
+    lock2 = wait_for("lock 2 (left by the killed plan)", lambda: (lambda l: l if l and l.get("ID") != lock1.get("ID") else None)(tflock()), timeout=120, interval=3)
+    row.ev("lock 2", json.dumps(lock2))
+    row.check(lock2.get("Operation") == "OperationTypePlan", "the killed `tofu plan` left an Operation=OperationTypePlan lock")
+    a = attempts_db(plan)
+    row.ev("attempts", attempt_chain(plan))
+    wait_blocker("norn fleet converge")  # the recovery attempt is the latest and its approve is consumed (budget 0)
+    ids = (resource().get("status") or {}).get("active", {}).get("attemptIds") or []
+    row.ev("status.active.attemptIds", json.dumps([i[:8] for i in ids]) + f" (newest attempt is {a[-1]['id'][:8]})")
+    row.check(bool(ids) and ids[-1] == a[-1]["id"], "attemptIds[-1] (what the loop reads as the latest attempt) is the newest attempt")
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    row.ev("norn fleet converge --resume (2nd)", out.splitlines()[-1] if out else str(rc))
+    reported = try_wait("the state_lock_foreign blocker", lambda: "state_lock_foreign" in status_text(), timeout=200, interval=5)
+    row.ev("status", "\n".join(l for l in status_text().splitlines() if l.strip().startswith(("blocker", "next"))))
+    refusal = ledger("fleet.converge.refusal", plan)
+    row.check(bool(reported) and any((r["payload"] or {}).get("code") == "state_lock_foreign" for r in refusal),
+              "the loop reported state_lock_foreign and Norn recorded it")
+    row.ev("loop journal (refusal)", short_journal(t0, 4, pattern="state lock|not reported"))
+    if refusal:
+        row.ev("refusal", json.dumps({k: v for k, v in refusal[-1]["payload"].items() if k in ("code", "sourceAttemptId", "tofuLock")}))
+    still = tflock()
+    row.check(bool(still) and still.get("ID") == lock2.get("ID"), "the foreign lock was NOT unlocked by the executor")
+    # MinIO + use_lockfile=true: force-unlock with another ID refuses.
+    refuse = vm_tofu("force-unlock -force 00000000-0000-0000-0000-000000000000", check=False)
+    row.ev("tofu force-unlock -force <wrong id>", refuse.strip()[-300:])
+    row.check(tflock() is not None and tflock().get("ID") == lock2.get("ID"), "force-unlock with another ID left the lock in place")
+    row.check("force-unlock" in refuse.lower() or "failed" in refuse.lower() or "does not match" in refuse.lower() or "error" in refuse.lower(),
+              "tofu refused the wrong ID on MinIO")
+    # The operator clears the lock (tofu force-unlock with the right ID), then the backoff is lifted for the test.
+    cleared = vm_tofu(f"force-unlock -force {lock2['ID']}", check=False)
+    row.ev("operator: tofu force-unlock -force <lock 2 id>", cleared.strip()[-200:])
+    row.check(tflock() is None, "operator cleared lock 2")
+    vm("rm -f /var/lib/norn-fleet-executor/lock-foreign/*.json")  # skip the 30 min back-off (test accelerator)
+    done = try_wait("the plan to be applied", lambda: last_applied() == sha, timeout=420, interval=6)
+    row.ev("attempts", attempt_chain(plan))
+    row.check(bool(done) and "terraform_data.row10[]" in state_resources(), "recovery completed after the lock was cleared")
+    row.ev("journal", short_journal(t0, 30))
+
+
+def row11(row: Row) -> None:
+    """token self-rotation while idle."""
+    meta = json.loads(vm("cat /var/lib/norn-fleet-executor/token.json").stdout)
+    old_token = vm("cat /var/lib/norn-fleet-executor/token").stdout.strip()
+    row.ev("token.json before", json.dumps(meta))
+    code, body = api_call("GET", f"/api/v1/fleet/resources/{RESOURCE}", token=old_token)
+    row.check(code == 200, f"old token works (HTTP {code})")
+    # 7-day token with the 84 h rotation threshold: shorten the *recorded* expiry so the next idle tick rotates.
+    soon = rfc3339(dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2))
+    meta2 = dict(meta, expiresAt=soon)
+    vm(f"python3 - <<'EOF'\nimport json,os\np='/var/lib/norn-fleet-executor/token.json'\nst=os.stat(p)\n"
+       f"open(p,'w').write(json.dumps({json.dumps(meta2)}))\nos.chown(p,st.st_uid,st.st_gid)\nos.chmod(p,0o600)\nEOF")
+    t0 = vm_now()
+    row.ev("recorded expiry set to", soon + " (token itself unchanged)")
+    new = wait_for("the executor to rotate its token on an idle tick",
+                   lambda: (lambda t: t if t and t != old_token else None)(vm("cat /var/lib/norn-fleet-executor/token").stdout.strip()),
+                   timeout=240, interval=5)
+    meta3 = json.loads(vm("cat /var/lib/norn-fleet-executor/token.json").stdout)
+    row.ev("token.json after", json.dumps(meta3))
+    row.check(meta3["deviceId"] == meta["deviceId"], "same device after rotation")
+    remaining = (parse_ts(meta3["expiresAt"]) - dt.datetime.now(dt.timezone.utc)).total_seconds()
+    row.check(remaining > 6.5 * 86400, f"new token lives about 7 days ({remaining / 86400:.2f} d)")
+    row.check(meta3["scopes"] == ["fleet:execute"], "scope is still exactly fleet:execute")
+    code_old, _ = api_call("GET", f"/api/v1/fleet/resources/{RESOURCE}", token=old_token)
+    code_new, _ = api_call("GET", f"/api/v1/fleet/resources/{RESOURCE}", token=new)
+    row.check(code_old == 401 and code_new == 200, f"old token revoked (HTTP {code_old}), new token works (HTTP {code_new})")
+    row.check(vm("stat -c '%a %U' /var/lib/norn-fleet-executor/token").stdout.strip() == "600 norn-exec", "token file is 0600 norn-exec")
+    row.ev("proxy log (rotate)", proxy_log_tail(10, "auth/rotate"))
+    time.sleep(70)
+    row.check("norn unavailable" not in short_journal(t0, 50), "the loop keeps polling with the new token")
+    row.check(unit_active() == "active", "unit still active (no exit 3)")
+
+
+def parse_ts(value: str) -> dt.datetime:
+    value = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+    return dt.datetime.fromisoformat(value)
+
+
+def row12(row: Row) -> None:
+    """a cloned VM disk (a different droplet ID) cannot attest."""
+    t0 = vm_now()
+    sha, plan = gated_exec(row, "row12", "row12", "q1 row12: executable change; the loop is killed, then the 'clone' boots")
+    wait_hook_running("row12")
+    src = attempts_db(plan)[0]
+    inv0 = invocation_id()
+    row.ev("kill", kill_phase_tofu())
+    # RestartSec=30s: re-point the fake metadata service at another droplet before the restarted loop reads it.
+    run(["bash", str(HERE / "norn-exec-vm"), "droplet-id", "9999"])
+    row.ev("droplet id", "metadata service now answers 9999 (this is the cloned disk's new droplet)")
+    wait_for("the restarted loop", lambda: invocation_id() != inv0 and unit_active() == "active", timeout=200, interval=3)
+    time.sleep(8)
+    j = short_journal(t0, 12)
+    row.ev("journal", j)
+    row.check("belongs to another droplet" in j, "loop logs: open attempt belongs to another droplet: needs providerEvidence, not attestation")
+    row.check(len(ledger("fleet.executor.stop-attestation", plan)) == 0, "no stop attestation was recorded")
+    # Forge one with the executor's own token: the server must refuse a droplet that is not the attempt's.
+    token = vm("cat /var/lib/norn-fleet-executor/token").stdout.strip()
+    machine = vm("cat /etc/machine-id").stdout.strip()
+    forged = {"sourceAttemptId": src["id"], "dropletId": "9999", "machineId": machine, "bootId": boot_id(),
+              "invocationId": invocation_id().replace("-", "")[:32], "phaseUidEmpty": True, "phaseProcessGroupReaped": True,
+              "sourceCgroupEmpty": True, "observedAt": rfc3339()}
+    code, body = api_call("POST", "/api/v1/fleet/executor/stop-attestations", forged, token=token, key="q1-forged-" + secrets.token_hex(6))
+    row.ev("forged attestation (dropletId=9999)", f"HTTP {code} {json.dumps(body)[:260]}")
+    row.check(code in (400, 403, 409, 422), f"Norn refuses the clone's attestation (HTTP {code})")
+    row.check(len(ledger("fleet.executor.stop-attestation", plan)) == 0, "still no attestation in the ledger")
+    st = status_text()
+    row.ev("status", "\n".join(l for l in st.splitlines() if l.strip().startswith(("blocker", "next", "active"))))
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume", check=False)
+    row.ev("norn fleet converge --resume while only the clone is up", f"rc={rc} {out.splitlines()[-1] if out else ''}")
+    time.sleep(75)
+    a = attempts_db(plan)
+    row.check(len(a) == 1, "the clone started no recovery attempt (still only the source attempt)")
+    # Put the original identity back; the real host attests and recovers.
+    run(["bash", str(HERE / "norn-exec-vm"), "droplet-id", DEFAULT_DROPLET])
+    gate("row12", False)
+    vm(f"systemctl restart {UNIT}")
+    att = wait_attested(plan, 1, timeout=300)
+    row.ev("stop attestation (original droplet)", attestation_summary(att[0]))
+    row.check(att[0]["payload"]["dropletId"] == DEFAULT_DROPLET, "the original droplet attests")
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    wait_applied(sha, timeout=900)
+    row.ev("attempts", attempt_chain(plan))
+
+
+def row10b(row: Row) -> None:
+    """a foreign lock (another user, another operation) left in MinIO: refused, reported, cleared by the operator, then
+    the single recovery completes (the variant of row 10 that does not depend on attempt-ID ordering, bug 7)."""
+    t0 = vm_now()
+    slow = ('locals {\n  q1_slow = length(flatten([for i in range(1000) : [for j in range(1000) : i * j]]))\n}\n')
+    sha, plan = gated_exec(row, "row10b", "row10b", "q1 row10b: gated apply and a deliberately slow plan",
+                           extra={"environments/staging/nyc3/slow.tf": slow})
+    wait_hook_running("row10b", timeout=420)
+    src = attempts_db(plan)[0]["id"]
+    inv0 = invocation_id()
+    row.ev("kill -9 tofu apply", kill_phase_tofu())
+    wait_for("a new invocation", lambda: invocation_id() != inv0 and unit_active() == "active", timeout=200, interval=3)
+    wait_attested(plan, 1)
+    own = tflock()
+    row.ev("stale lock of the killed apply (owned)", json.dumps(own))
+    row.ev("remove it", delete_tflock())
+    # a foreign lock: `tofu plan` as root (Operation plan, Who root@host), killed while it holds the lock
+    refresh_inspect_tree()
+    script = ("d=/tmp/q1-foreign; rm -rf $d; mkdir -p $d; tar -xf /tmp/q1-inspect-tree.tar -C $d 2>/dev/null; cd $d; "
+              f"export AWS_ACCESS_KEY_ID={MINIO_USER} AWS_SECRET_ACCESS_KEY={MINIO_PASS} AWS_EC2_METADATA_DISABLED=true; "
+              f"tofu init -input=false -lockfile=readonly -backend-config=bucket={BUCKET} -backend-config=key={STATE_KEY} "
+              "-backend-config=region=us-east-1 -backend-config=endpoint=http://127.0.0.1:9000 -backend-config=skip_credentials_validation=true "
+              "-backend-config=skip_region_validation=true -backend-config=skip_requesting_account_id=true -backend-config=skip_metadata_api_check=true "
+              "-backend-config=skip_s3_checksum=true -backend-config=use_path_style=true -backend-config=use_lockfile=true >/dev/null 2>&1; "
+              "tofu plan -lock-timeout=0s -input=false -out=$d/p.tfplan >/tmp/q1-foreign.log 2>&1 & pid=$!; sleep 2; kill -9 $pid; echo killed-$pid")
+    row.ev("foreign planner (root)", vm(script, check=False).stdout.strip())
+    foreign = tflock()
+    row.ev("foreign lock", json.dumps(foreign))
+    row.check(bool(foreign) and foreign.get("Operation") == "OperationTypePlan" and str(foreign.get("Who", "")).startswith("root@"),
+              "a lock held by root@host with Operation=OperationTypePlan is in MinIO")
+    rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
+    row.ev("norn fleet converge --resume", out.splitlines()[-1] if out else str(rc))
+    wait_blocker("state_lock_foreign", timeout=300)
+    row.ev("status", "\n".join(l for l in status_text().splitlines() if l.strip().startswith(("blocker", "next"))))
+    refusal = ledger("fleet.converge.refusal", plan)
+    row.check(any((r["payload"] or {}).get("code") == "state_lock_foreign" for r in refusal), "fleet.converge.refusal state_lock_foreign is in the ledger")
+    if refusal:
+        row.ev("refusal payload", json.dumps({k: v for k, v in refusal[-1]["payload"].items() if k in ("code", "sourceAttemptId", "tofuLock")}))
+        row.check(refusal[-1]["payload"].get("sourceAttemptId") == src, "the refusal names the source attempt")
+    row.check(not [r for r in ledger("fleet.executor.stop-attestation", plan) if (r["payload"] or {}).get("tofuLock")],
+              "no attestation carries a tofuLock: nothing was unlocked")
+    row.check(tflock() is not None and tflock().get("ID") == foreign.get("ID"), "the foreign lock is still in place")
+    refuse = vm_tofu("force-unlock -force 00000000-0000-0000-0000-000000000000", check=False)
+    row.ev("tofu force-unlock -force <wrong id> (MinIO, use_lockfile)", refuse.strip()[:260])
+    row.check("does not match" in refuse and tflock() is not None and tflock().get("ID") == foreign.get("ID"),
+              "tofu refuses a force-unlock with another lock ID and leaves the lock")
+    cleared = vm_tofu(f"force-unlock -force {foreign['ID']}", check=False)
+    row.ev("operator: tofu force-unlock -force <the lock id>", cleared.strip()[-160:])
+    row.check(tflock() is None, "the operator cleared the lock")
+    vm("rm -f /var/lib/norn-fleet-executor/lock-foreign/*.json")  # skip the 30 min back-off (test accelerator)
+    gate("row10b", False)
+    wait_applied(sha, timeout=900)
+    row.ev("attempts", attempt_chain(plan))
+    a = attempts_db(plan)
+    row.check(len(a) == 2 and a[1]["retry_of"] == src and a[1]["status"] == "succeeded", "the one recovery succeeded after the lock was cleared")
+    row.check("terraform_data.row10b[]" in state_resources(), "resource created")
+    row.ev("journal", short_journal(t0, 24))
+
+
+# ---------------------------------------------------------------------------
+# Row 8: GitHub-lane dispatch racing the executor on one fence
+# ---------------------------------------------------------------------------
+
+def lane_prime() -> str:
+    tip = gh_ctl("/state")["tip"]
+    gh_ctl("/set", {"lane_ready": True, "lane_merge_sha": tip})
+    return tip
+
+
+def lane_plan(row: Row, desired: int = 0) -> str:
+    if not desired:  # the other value: a real change to the ingress pool of the checked-out document
+        text = read_work("environments/staging/nyc3/cluster.yaml").partition("  ingress:")[2]
+        current = int(re.search(r"desired: (\d+)", text).group(1))
+        desired = 3 if current == 2 else 2
+    code, body = api_call("POST", "/api/v1/fleet/node-pools/ingress/plan",
+                          {"desired": desired, "reason": "q1 row8 GitHub-lane plan"}, key="q1-lane-plan-" + secrets.token_hex(6))
+    if code not in (200, 201) or "id" not in body:
+        die(f"GitHub-lane capacity plan failed: {code} {json.dumps(body)[:300]}")
+    row.ev("GitHub-lane capacity plan", f"{body['id']} (ingress pool desired {desired})")
+    return body["id"]
+
+
+def lane_dispatch(plan: str) -> tuple[int, dict]:
+    # allowDestructive is harmless for a scale-up and required when the proposal is a contraction (3 -> 2)
+    return api_call("POST", f"/api/v1/fleet/plans/{plan}/github/dispatch", {"allowDestructive": True},
+                    key="q1-lane-dispatch-" + secrets.token_hex(6), timeout=60)
+
+
+def fence_info() -> dict:
+    rows = psql_json("select held, holder_plan_id, generation, last_release_reason from fleet_target_fences")
+    return rows[0] if rows else {}
+
+
+def row8(row: Row) -> None:
+    """GitHub-lane dispatch racing the executor on the same fence (through the fake GitHub dispatch path)."""
+    tip = lane_prime()
+    row.ev("fake GitHub primed", f"plan PR merged at {tip[:10]}, plan workflow green, apply dispatch endpoint live")
+    # 8a: the executor holds the fence (its apply is in flight): the GitHub-lane dispatch loses.
+    sha, plan = gated_exec(row, "row8", "row8", "q1 row8a: executable change; its apply holds the fence")
+    wait_hook_running("row8")
+    holder = fence_info()
+    row.check(holder.get("held") and holder.get("holder_plan_id") == plan, f"fence held by the executor plan {plan[:8]}")
+    lp = lane_plan(row)
+    code, body = lane_dispatch(lp)
+    row.ev("8a GitHub dispatch while the executor holds the fence", f"HTTP {code} {body.get('code', body)}")
+    row.check(code == 409 and body.get("code") == "fleet_target_execution_occupied", "GitHub lane refused with fleet_target_execution_occupied")
+    row.check(not gh_ctl("/state")["dispatches"], "no workflow dispatch was sent to the fake GitHub")
+    gate("row8", False)
+    wait_applied(sha, timeout=900)
+    row.ev("8a executor attempt", attempt_chain(plan))
+    # 8c: simultaneous start of both lanes. Stop the real loop so only this harness contends for the executor side.
+    wait_revalidation_window(row)
+    lp2 = lane_plan(row)
+    vm(f"systemctl stop {UNIT}")
+    sha2 = commit_push(config_only_edit("21m"), "q1 row8c: config-only change; the executor and GitHub lanes start at once")
+    plan2 = wait_for("a converge plan", lambda: (resource().get("desired") or {}).get("commitSha") == sha2 and current_plan(), timeout=150)
+    view = converge_view()
+    token = vm("cat /var/lib/norn-fleet-executor/token").stdout.strip()
+    machine = vm("cat /etc/machine-id").stdout.strip()
+    inv = secrets.token_hex(16)
+    wheel = vm("cat /opt/norn-fleet-executor/WHEELHOUSE_SHA256").stdout.strip()
+    body = {"schemaVersion": "norn.fleet-runner-attempt/v1", "runnerAttemptId": f"executor:{DEFAULT_DROPLET}:{inv}:{plan2}",
+            "commitSha": sha2, "planSha256": view["planSha256"], "workflowUrl": f"norn-executor://{DEFAULT_DROPLET}/{inv}",
+            "heartbeatTimeoutSeconds": 120, "operationClass": "unknown",
+            "executor": {"lane": "executor", "dropletId": DEFAULT_DROPLET, "machineId": machine, "bootId": boot_id(),
+                         "invocationId": inv, "loopRelease": state().get("release_sha", "q1"), "commitSha": sha2,
+                         "wheelhouseSha256": wheel, "tofuVersion": "1.10.6"}}
+    results: dict = {}
+    barrier = threading.Barrier(2)
+
+    def gh_side():
+        barrier.wait()
+        results["github"] = lane_dispatch(lp2)
+
+    def exec_side():
+        barrier.wait()
+        time.sleep(0.15)
+        results["executor"] = api_call("POST", f"/api/v1/fleet/plans/{plan2}/attempts", body, token=token,
+                                       key="executor-attempt:q1race" + secrets.token_hex(8), timeout=60)
+
+    threads = [threading.Thread(target=gh_side), threading.Thread(target=exec_side)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    gcode, gbody = results["github"]
+    ecode, ebody = results["executor"]
+    row.ev("8c GitHub-lane dispatch", f"HTTP {gcode} {gbody.get('code', gbody.get('status', ''))}")
+    row.ev("8c executor-lane attempt start (executor token)", f"HTTP {ecode} {ebody.get('code', ebody.get('status', ''))}")
+    wins = [name for name, code in (("github", gcode), ("executor", ecode)) if code in (200, 201, 202)]
+    row.check(len(wins) == 1, f"exactly one lane acquired the fence ({wins})")
+    loser = results["executor" if "github" in wins else "github"]
+    row.check(loser[0] == 409 and loser[1].get("code") == "fleet_target_execution_occupied",
+              f"the other lane got 409 fleet_target_execution_occupied (HTTP {loser[0]} {loser[1].get('code')})")
+    f = fence_info()
+    row.ev("fence after the race", json.dumps(f))
+    row.check(bool(f.get("held")), "the fence is held by exactly the winner")
+    if "github" in wins:
+        row.ev("fake GitHub dispatches", json.dumps(gh_ctl("/state")["dispatches"][-1:]))
+    # restart the real loop: it must see a held fence and wait (busy), not start a second owner
+    vm(f"systemctl start {UNIT}")
+    time.sleep(75)
+    row.ev("real loop after restart", short_journal(vm_now_minus(120), 6, pattern="busy|wait|attest|refused"))
+    st = status_text()
+    row.ev("status", "\n".join(l for l in st.splitlines() if l.strip().startswith(("active", "blocker", "next"))))
+
+
+def vm_now_minus(seconds: int) -> str:
+    return vm(f"date -d '-{seconds} seconds' '+%Y-%m-%d %H:%M:%S'").stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# etcd runtime: the executor lane is gated off there
+# ---------------------------------------------------------------------------
+
+ETCD_PORT = 18805
+EXECUTOR_ROUTES = [
+    ("GET", "/api/v1/fleet/resources/staging"),
+    ("POST", "/api/v1/fleet/resources/staging/converge"),
+    ("POST", "/api/v1/fleet/plans/00000000-0000-4000-8000-000000000000/attempts"),
+    ("POST", "/api/v1/fleet/plans/00000000-0000-4000-8000-000000000000/credential-grants"),
+    ("POST", "/api/v1/fleet/plans/00000000-0000-4000-8000-000000000000/converge-refusals"),
+    ("POST", "/api/v1/fleet/plans/00000000-0000-4000-8000-000000000000/converge/approve"),
+    ("POST", "/api/v1/fleet/plans/00000000-0000-4000-8000-000000000000/provider-evidence"),
+    ("POST", "/api/v1/fleet/executor/stop-attestations"),
+    ("POST", "/api/v1/enrollments"),
+    ("POST", "/api/v1/enrollments/approve"),
+]
+
+
+def etcd_env(secret: str, prefix: str, authority: str, extra: dict | None = None) -> dict:
+    env = dict(os.environ)
+    env.update({
+        "NORN_CONTROL_BACKEND": "etcd", "NORN_ETCD_ENDPOINTS": "http://127.0.0.1:23790", "NORN_ETCD_PREFIX": prefix,
+        "NORN_CONTROL_AUTHORITY": authority, "NORN_PROFILE": "development", "NORN_ENVIRONMENT": "staging",
+        "NORN_API_TOKEN": secret, "NORN_AUDIT_SIGNING_KEY": "q1-etcd-gate-audit-key-0000000000", "NORN_AUDIT_RETENTION_DAYS": "365",
+        "NORN_REQUIRE_EXPLICIT_AUTH": "true", "NORN_BIND_ADDR": "127.0.0.1", "NORN_PORT": str(ETCD_PORT),
+        "NORN_FLEET_CONFIG": str(WORK / "repo-work/environments/staging/nyc3/cluster.yaml"), "NORN_UI_DIR": "",
+        "NORN_LEGACY_TOKEN_SIGNING_UNTIL": "2020-01-01T00:00:00Z",
+        "NORN_NOMAD_ADDR": "https://nomad.example.test:4646", "NORN_CONSUL_ADDR": "https://consul.example.test:8501",
+        "CONSUL_HTTP_SSL_VERIFY": "true", "NORN_REGISTRY_URL": "registry.example.test/norn",
+        "NORN_FLEET_GITHUB_APP_ID": "123", "NORN_FLEET_GITHUB_INSTALLATION_ID": "456",
+        "NORN_FLEET_GITHUB_PRIVATE_KEY_FILE": str(WORK / "pki/app.pem"), "NORN_FLEET_GITHUB_REPOSITORY": f"{OWNER}/{REPO}",
+        "NORN_FLEET_GITHUB_ENVIRONMENT": "staging", "NORN_FLEET_GITHUB_CONFIG_PATH": "environments/staging/nyc3/cluster.yaml",
+        "NORN_FLEET_GITHUB_API_BASE_URL": f"http://127.0.0.1:{GH_PORT}",
+        # staging validation: exact GitHub Actions bindings and allowlists (values are fixtures, never contacted)
+        "NORN_RELEASE_ADMISSION_MODE": "keyless", "NORN_RELEASE_ATTESTATION_ISSUER": "https://token.actions.githubusercontent.com",
+        "NORN_RELEASE_ATTESTATION_ALLOWED_REPOSITORIES": "example/norn",
+        "NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS": "example/norn/.github/workflows/release.yml@" + "a" * 40,
+        "NORN_RELEASE_REQUIRE_SBOM": "true", "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE": "norn",
+        "NORN_GITHUB_ACTIONS_RELEASE_BINDINGS": "demo=example/norn@1@2", "NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES": "example/norn@1@2",
+        "NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS": "example/norn/.github/workflows/release.yml@" + "a" * 40,
+        "NORN_GITHUB_ACTIONS_ALLOWED_REFS": "refs/tags/v*", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS": "push",
+        "NORN_GITHUB_ACTIONS_ALLOWED_APPS": "demo", "NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS": "staging",
+        "NORN_GITHUB_ACTIONS_DEFAULT_BRANCH": "main",
+        "NORN_QUALIFICATION_SIGNING_KEY": base64.b64encode(b"q" * 32).decode().rstrip("="),
+    })
+    env.pop("NORN_DATABASE_URL", None)
+    env.update(extra or {})
+    return env
+
+
+def cmd_etcd_gate(args) -> int:
+    st = state()
+    out = WORK / "results"
+    out.mkdir(parents=True, exist_ok=True)
+    row = Row("etcd-gate", "the etcd runtime serves no executor-lane routes (gate holds)")
+    secret = secrets.token_urlsafe(40)
+    prefix = f"/norn-q1-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}/"
+    authority = "1f0e5c1e-3b0b-4b53-9a9e-0d9a5b7f0a11"
+    try:
+        token_file = WORK / "etcd-bootstrap-token"
+        token_file.unlink(missing_ok=True)
+        env = etcd_env(secret, prefix, authority, {
+            "NORN_ETCD_BOOTSTRAP_TOKEN_FILE": str(token_file), "NORN_ETCD_BOOTSTRAP_SUBJECT": "q1-operator",
+            "NORN_ETCD_BOOTSTRAP_SCOPES": "api:read,api:write,platform:operate", "NORN_ETCD_BOOTSTRAP_TTL": "2h"})
+        done = run([st["api_bin"], "--norn-etcd-bootstrap"], env=env, check=False, timeout=60)
+        row.ev("bootstrap token", (done.stdout + done.stderr).strip()[-200:] or f"rc={done.returncode}")
+        token = token_file.read_text().strip() if token_file.exists() else ""
+        row.check(bool(token), "an etcd managed operator token exists (api:read api:write platform:operate)")
+        log_f = open(WORK / "etcd-runtime.log", "wb")
+        proc = subprocess.Popen([st["api_bin"]], env=etcd_env(secret, prefix, authority), stdout=log_f, stderr=log_f,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+        save_state(pids={**state().get("pids", {}), "etcd-runtime": proc.pid})
+        base = f"http://127.0.0.1:{ETCD_PORT}"
+        if not http_up(base + "/api/health", 60):
+            row.result = "FAIL"
+            row.ev("etcd runtime did not start", (WORK / "etcd-runtime.log").read_text()[-800:])
+            return 1
+        row.ev("etcd runtime up", f"pid {proc.pid} on {base}, prefix {prefix}")
+        code, caps = api_call("GET", "/api/v1/capabilities", token=token, base=base)
+        features = caps.get("features", [])
+        row.ev("capabilities", f"backend={caps.get('backend')} mode={caps.get('mode')} features={features}")
+        row.check("fleet-executor-v1" not in features, "capabilities do not advertise fleet-executor-v1")
+        row.check(not any("fleetConverge" in k or "fleetExecutor" in k or "fleetCredential" in k for k in (caps.get("endpoints") or {})),
+                  "capabilities list no executor-lane endpoint")
+        for method, path in EXECUTOR_ROUTES:
+            code, body = api_call(method, path, {} if method == "POST" else None, token=token, key="q1-gate-" + secrets.token_hex(4), base=base)
+            row.ev(f"{method} {path.split('/api/v1/')[1]}", f"HTTP {code} {body.get('code', body.get('error', ''))}")
+            if path.endswith("/resources/staging") or path.endswith("/attempts"):
+                # pre-existing Fleet runner/resource routes: they exist on etcd for ordinary scopes; the lane principal
+                # is refused on them while the gate is closed (etcdFleetLaneAuthGated laneOpen=false).
+                row.ev("  (not lane-only: exists for ordinary scopes)", f"HTTP {code}")
+                continue
+            row.check(code == 501 and body.get("code") == "backend_route_unsupported",
+                      f"{method} {path.split('/api/v1/')[1]} is not served (HTTP {code} {body.get('code', '')})")
+        # a request carrying an executor-shaped bearer that is not a valid token is simply unauthorized
+        code, body = api_call("POST", "/api/v1/fleet/executor/stop-attestations", {}, token="not-a-token", key="q1-gate-x", base=base)
+        row.ev("unauthenticated attestation POST", f"HTTP {code}")
+        row.check(code in (401, 404, 501), "no route and no auth path for the lane")
+        log_text = (WORK / "etcd-runtime.log").read_text()
+        row.check("watcher" not in log_text.lower() or "converge watcher enabled" not in log_text.lower(), "no converge watcher started on the etcd runtime")
+    finally:
+        stop_bg("etcd-runtime")
+        # remove the test prefix from etcd
+        run(["etcdctl", "--endpoints=http://127.0.0.1:23790", "del", "--prefix", prefix], check=False)
+    res = row.finish()
+    print(json.dumps({k: res[k] for k in ("row", "result", "failures")}))
+    return 0 if res["result"] == "PASS" else 1
+
+
+ROW_TABLE = {
+    "1": ("merge -> automatic converge (config-only)", "row1"),
+    "2": ("executable diff -> approval -> converge", "row2"),
+    "3": ("kill a phase mid-apply -> attestation -> --resume", "row3"),
+    "4": ("systemctl restart mid-configure", "row4"),
+    "5": ("VM power-off mid-apply -> boot -> new boot_id attestation -> resume", "row5"),
+    "6": ("lost attempt-start response replays", "row6"),
+    "7": ("authority restart mid-run", "row7"),
+    "8": ("GitHub-lane dispatch racing the executor on one fence", "row8"),
+    "9": ("force-push gives history_rewritten", "row9"),
+    "10": ("stale MinIO .tflock: owned unlocked, foreign refused", "row10"),
+    "10b": ("foreign lock refused, reported, cleared, single recovery completes", "row10b"),
+    "11": ("token self-rotation while idle", "row11"),
+    "12": ("cloned VM disk (new droplet id) cannot attest", "row12"),
+}
+# Order: converge-heavy rows first, rows that leave a held fence (8) last.
+DEFAULT_ORDER = ["1", "2", "3", "4", "6", "7", "5", "12", "10", "10b", "9", "11"]
+
+
+def cmd_rows(args) -> int:
+    wanted = args.rows or DEFAULT_ORDER
+    summary = []
+    for n in wanted:
+        if n not in ROW_TABLE:
+            die(f"unknown row {n}")
+        title, fn_name = ROW_TABLE[n]
+        out = run_row(n, title, globals()[fn_name])
+        summary.append(out)
+        if out["result"] != "PASS":
+            log(f"row {n} did not pass: {out['failures']}")
+    print("\n== summary ==")
+    for out in summary:
+        print(f"row {out['row']:>3}  {out['result']:<8} {out['title']}")
+    return 0 if all(o["result"] == "PASS" for o in summary) else 1
+
+
+def cmd_all(args) -> int:
+    """setup -> vm -> bootstrap -> baseline -> every row -> etcd-gate (the VM is left running; use teardown)."""
+    ns = argparse.Namespace(rebuild=False, rows=[])
+    for step in (cmd_setup, cmd_vm, cmd_bootstrap, cmd_baseline):
+        step(ns)
+    rc = cmd_rows(argparse.Namespace(rows=DEFAULT_ORDER + ["8"]))
+    return cmd_etcd_gate(ns) or rc
+
+
+# ---MAIN---
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    s = sub.add_parser("setup")
+    s.add_argument("--rebuild", action="store_true")
+    v = sub.add_parser("vm")
+    v.add_argument("--as-shipped", action="store_true", help="skip accommodation W1 (TF_CLI_ARGS=-no-color)")
+    for name in ("bootstrap", "etcd-gate", "status", "teardown", "fake-github", "proxy", "reset", "tls", "baseline", "all", "reclone"):
+        sub.add_parser(name)
+    g = sub.add_parser("gate")
+    g.add_argument("name")
+    g.add_argument("action", choices=("hold", "release"), nargs="?", default="release")
+    r = sub.add_parser("rows")
+    r.add_argument("rows", nargs="*")
+    args = parser.parse_args(argv)
+    WORK.mkdir(parents=True, exist_ok=True)
+    fn = globals().get("cmd_" + args.command.replace("-", "_"))
+    if args.command == "fake-github":
+        return serve_fake_github()
+    if args.command == "proxy":
+        return serve_proxy()
+    if fn is None:
+        die(f"command {args.command} not implemented yet")
+    return fn(args) or 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
