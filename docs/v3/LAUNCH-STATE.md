@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 15:00 UTC. This is the single current handoff for the
+Observed 2026-10-05 15:06 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -132,9 +132,10 @@ running Fleet qualification.
 2. Finish and merge the protected partial-apply repairs before another create.
    The source-run name check was corrected by merged
    [Fleet PR #252](https://github.com/antiartificial/norn-fleet/pull/252).
-   [Fleet PR #253](https://github.com/antiartificial/norn-fleet/pull/253)
-   carries graceful process-group interruption and a local failure receipt;
-   its latest protected validation is pending. [Fleet PR #254](https://github.com/antiartificial/norn-fleet/pull/254)
+   Merged [Fleet PR #253](https://github.com/antiartificial/norn-fleet/pull/253)
+   adds graceful process-group interruption and a local failure receipt;
+   its protected validation passed, but it has not run against a live provider
+   interruption. [Fleet PR #254](https://github.com/antiartificial/norn-fleet/pull/254)
    carries a forward-only, exact two-cluster adoption path for provider-created
    databases missing from state; its protected validation is pending. Neither
    PR is live recovery proof. The retired `b` source predates PR #254, so only
