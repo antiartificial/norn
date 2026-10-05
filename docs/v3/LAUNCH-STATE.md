@@ -71,7 +71,7 @@ future use.
 
 ## Mini and source
 
-On 2026-10-05 at 15:18 UTC, the Mini's loopback v3 API returned healthy with
+On 2026-10-05 at 15:35 UTC, the Mini's loopback v3 API returned healthy with
 running source of `26147c39a554b73b6761a371edee5a9591c81d3f`, displayed
 as `v2.20.0-platform-72-g26147c39`. The prefix is a platform version label;
 the source includes v3 work. Authenticated inventory showed 28 app entries,
@@ -107,14 +107,14 @@ At 15:36 UTC on 2026-10-05, read-only `doctl` calls against the intended
 `theartificial@hotmail.com` account found no matching droplets, databases,
 projects, load balancers or VPCs; no registered GitHub runner carries its Fleet
 label. This is a name-collision check, not a full provider-zero or
-Spaces-bucket proof. Fleet source branch `codex/fresh-pilot-budget` now has
-commit `42ea088` wiring the signed c budget, plan, apply, recovery and exact
-topology gates, and explicitly rejecting retired `pilot261004b`. It is open as
-[Fleet PR #255](https://github.com/antiartificial/norn-fleet/pull/255); the
-latest cleanup commit is `2f63748`. The required `contract` check has not
-reported a run, so merge is blocked. This is not merged or live proof. The
-independent deadline retirement path remains
-unimplemented. Existing approvals require post-create state and expire within
+Spaces-bucket proof. Fleet [PR #255](https://github.com/antiartificial/norn-fleet/pull/255)
+merged the signed c budget, plan, apply, recovery and exact topology gates as
+`abb0b00`; it rejects reuse of retired `pilot261004b`. The PR contract check
+and merge-main plan and validation passed (`37335410031`, `37336272298`,
+`37336272528`). This is code validation, not live proof. Read-only checks at
+15:35 found no c-named DigitalOcean droplets, databases, load balancers,
+projects or VPCs and no registered c runner. The independent deadline
+retirement path remains unimplemented. Existing approvals require post-create state and expire within
 an hour, so signed budget expiry alone cannot guarantee teardown. Do not
 start a new billable run until a restartable, run-scoped owner-Mac controller
 can perform Fleet → management → backend cleanup automatically from T0+4 and
@@ -147,23 +147,21 @@ running Fleet qualification.
    paginated provider-zero observations, private state snapshots and deletion
    receipts. Recheck the final itemized invoice when posted. Never call the
    emergency cleanup a protected final-zero.
-2. Finish and merge the protected partial-apply repairs before another create.
-   The source-run name check was corrected by merged
-   [Fleet PR #252](https://github.com/antiartificial/norn-fleet/pull/252).
-   Merged [Fleet PR #253](https://github.com/antiartificial/norn-fleet/pull/253)
-   adds graceful process-group interruption and a local failure receipt;
-   its protected validation passed, but it has not run against a live provider
-   interruption. Merged [Fleet PR #254](https://github.com/antiartificial/norn-fleet/pull/254)
-   adds a forward-only, exact two-cluster adoption path for provider-created
-   databases missing from state; its protected validation passed. Neither
-   merged change is live recovery proof. The retired `b` source predates PR #254, so only
-   a new pilot sourced from the merged helper can exercise it. A partial
-   five-child remainder apply still requires manual reconciliation from the
-   retained saved plan and provider evidence.
-3. Review and merge the `pilot261005a` signed budget and workflow gates, then
-   implement and review an independently armed, restartable retirement path.
-   It must fence active workflows, retire Fleet before management, retain both
-   root-zero proofs, and clean both state buckets and scoped keys. Only then
+2. Merged Fleet PRs [#252](https://github.com/antiartificial/norn-fleet/pull/252),
+   [#253](https://github.com/antiartificial/norn-fleet/pull/253), and
+   [#254](https://github.com/antiartificial/norn-fleet/pull/254) repair the
+   source-run name check, interruption handling, and exact two-cluster
+   provider-drift adoption. Protected validation passed, but none is live
+   recovery proof. The retired `b` source predates PR #254, so only a new pilot
+   sourced from current main can exercise its helper. A partial five-child
+   remainder apply still needs manual reconciliation from the retained saved
+   plan and provider evidence.
+3. The signed budget and workflow gates merged as Fleet PR #255 (`abb0b00`)
+   and passed main CI. Implement and review an independently armed,
+   restartable retirement path before generating credentials or approving a
+   billable window. It must fence active workflows, retire Fleet before
+   management, retain both root-zero proofs, and clean both state buckets and
+   scoped keys. Only then
    prepare fresh credentials and an owner-approved bounded window. Keep the
    issuing Tailscale OAuth client active until the five node keys enroll;
    revocation invalidated unused keys in `b`.
