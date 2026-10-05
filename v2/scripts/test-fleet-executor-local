@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Q1: local end-to-end qualification of the Fleet controller executor lane.
 
-(docs/v3/fleet-controller/plan-5-7.md, WP Q1; ADR 0010.) Results of the 2026-10-05 run:
-docs/v3/fleet-controller/qualification-executor-local-2026-10-05.md.
+(docs/v3/fleet-controller/plan-5-7.md, WP Q1; ADR 0010.) Results of the 2026-10-05 runs (first run, and the re-run
+after the fixes): docs/v3/fleet-controller/qualification-executor-local-2026-10-05.md.
 
 Topology (everything is local and fake; no real cloud or GitHub credential):
 
@@ -34,12 +34,20 @@ Environment: Q1_WORK (work dir), NORN_FLEET_DIR (norn-fleet checkout), NORN_EXEC
 Needs: limactl, a provisioned norn-exec VM (v2/scripts/norn-exec-vm up), go, tofu, sops, age, ansible-playbook,
 PostgreSQL 16 on 127.0.0.1:55432 (role norn_fc), etcd on 127.0.0.1:23790.
 
-Harness accommodations, each tied to a finding in the report (they hide nothing: the findings are reported):
+Harness accommodations (they hide no product behaviour; the report lists each):
   * the authority runs from a test binary because validateFleetAuthorityOnly pins a verify-full PostgreSQL DSN;
-  * every converge waits until its plan was recorded 5 min after the previous release (bug 2);
-  * ruby is installed in the VM because the executor venv has no PyYAML (bug 4);
-  * the OpenTofu fixture uses no provider plugin (bug 1) and its post-apply hooks are local scripts;
-  * MinIO is cross-built from source when dl.min.io answers 410.
+  * every row except 2b waits until the previous release + 5 min before pushing, only so each row's timeouts stay
+    meaningful (row 2b pushes inside the window and waits for the system to converge unattended);
+  * the OpenTofu fixture uses the hashicorp/null provider (a real go-plugin provider) and its hooks are local scripts;
+  * the executor wheelhouse is built as docs/runbooks/executor-host-provisioning.md says (both architectures, PyYAML
+    pinned), and the VM has no ruby;
+  * row 5 fsyncs the MinIO lock object before the power-off (MinIO lost it in the first run); Q1_ROW5_NOSYNC=1 skips that
+    (the fsync can flush the git clone too, which hides the clone corruption of bug 6);
+  * MinIO is cross-built from source when dl.min.io answers 410;
+  * Q1_ROW5_CORRUPT=1 truncates the clone's newest loose objects before row 5's power-off (the damage of the first run's
+    power cuts, which later power cuts did not reproduce); the report labels that run as an injection;
+  * test accelerators: the lock-foreign back-off record is removed after the operator clears a lock (rows 10, 10b), and
+    the recorded token expiry is shortened (row 11).
 """
 
 from __future__ import annotations
@@ -779,10 +787,10 @@ def gen_keys() -> dict:
     return {"age_recipient": recipient, "ssh_public_key": pub, "ssh_fingerprint": fingerprint}
 
 
-FIXTURE_MAIN_TF = '''# Q1 fixture OpenTofu root: no cloud provider and no provider plugin. Nodes are terraform_data resources derived
-# from cluster.yaml, so a cluster.yaml change (config-only path class) is a real, non-destructive converge.
-# (A plugin-backed provider, even hashicorp/external, makes the recovery lock probe fail on the standard path
-# layout: its go-plugin unix socket path exceeds 107 bytes. See the Q1 report, bug 1.)
+FIXTURE_MAIN_TF = '''# Q1 fixture OpenTofu root. Nodes are terraform_data resources derived from cluster.yaml, so a cluster.yaml change
+# (config-only path class) is a real, non-destructive converge. null_resource.anchor uses a real provider plugin
+# (hashicorp/null, a go-plugin child with a unix socket in TMPDIR), so every plan and every recovery lock probe
+# starts a plugin (Q1 bug 1). Its triggers never change, so it never shows up in a plan after the first.
 variable "ssh_key_fingerprints" {
   type    = list(string)
   default = []
@@ -798,6 +806,12 @@ locals {
   nodes = merge([for pool, p in local.cluster.nodePools : {
     for i in range(p.desired) : format("%s-%02d", pool, i + 1) => pool
   }]...)
+}
+
+resource "null_resource" "anchor" {
+  triggers = {
+    fixed = "q1"
+  }
 }
 
 resource "terraform_data" "node" {
@@ -821,6 +835,12 @@ output "ingress_ip" {
 FIXTURE_VERSIONS_TF = '''terraform {
   required_version = ">= 1.8.0"
   backend "s3" {}
+  required_providers {
+    null = {
+      source  = "hashicorp/null"
+      version = "3.2.4"
+    }
+  }
 }
 '''
 
@@ -863,10 +883,12 @@ def make_fixture_repo() -> str:
     shutil.copy(FLEET_DIR / "environments/staging/nyc3/cluster.yaml", env_dir / "cluster.yaml")
     (env_dir / "main.tf").write_text(FIXTURE_MAIN_TF)
     (env_dir / "versions.tf").write_text(FIXTURE_VERSIONS_TF)
+    # init runs with -lockfile=readonly on the executor: commit a lock file with hashes for the VM (arm64) and the Mac.
+    run(["tofu", "providers", "lock", "-platform=linux_arm64", "-platform=linux_amd64", "-platform=darwin_arm64"], cwd=env_dir)
     (env_dir / "reconcile-hooks.json").write_text(json.dumps(FIXTURE_HOOKS, indent=2) + "\n")
     (work / ".github" / "workflows").mkdir(parents=True)
     (work / ".github" / "workflows" / "validate.yml").write_text(FIXTURE_VALIDATE_YML)
-    (work / "README.md").write_text("Q1 fixture repository (a subset of norn-fleet plus a provider-free OpenTofu root).\n")
+    (work / "README.md").write_text("Q1 fixture repository (a subset of norn-fleet plus an OpenTofu root with the null provider).\n")
     git(work, "add", "-A")
     git(work, "commit", "-q", "-m", "q1 fixture: initial")
     git(work, "remote", "add", "origin", str(bare))
@@ -1144,13 +1166,26 @@ def build_role_inputs() -> dict:
     exp.mkdir()
     run(["tar", "-xzf", release, "-C", exp])
     tree = run(["python3", FLEET_DIR / "ansible/roles/fleet_executor/files/tree_hash.py", exp / "scripts"]).stdout.strip()
-    # Wheelhouse archive from the one the VM script built (arm64, hash-pinned): wheelhouse/*.whl + requirements.txt
-    vm("rm -rf /tmp/q1-wh && mkdir /tmp/q1-wh && cp -r /opt/norn-fleet-executor/wheelhouse /tmp/q1-wh/wheelhouse"
-       f" && cp {FLEET_DIR}/scripts/requirements-pilot.txt /tmp/q1-wh/requirements.txt"
-       " && tar -C /tmp/q1-wh -czf /tmp/q1-wheelhouse.tar.gz . && chmod 644 /tmp/q1-wheelhouse.tar.gz")
+    # Wheelhouse archive as docs/runbooks/executor-host-provisioning.md says: wheels for both linux architectures from
+    # the hash-pinned scripts/requirements-executor.txt (its -r line replaced by the pilot requirements), built on the Mac.
+    wh = d / "wh"
+    shutil.rmtree(wh, ignore_errors=True)
+    (wh / "wheelhouse").mkdir(parents=True)
+    pilot = (FLEET_DIR / "scripts/requirements-pilot.txt").read_text()
+    lines = (FLEET_DIR / "scripts/requirements-executor.txt").read_text().splitlines()
+    merged = "\n".join(pilot.rstrip("\n").splitlines() + [l for l in lines if l.strip() and not l.startswith(("#", "-r"))]) + "\n"
+    (wh / "requirements.txt").write_text(merged)
+    for plat in ("manylinux2014_x86_64", "manylinux2014_aarch64"):
+        done = run(["python3", "-m", "pip", "download", "--only-binary=:all:", "--require-hashes", "--python-version", "3.12",
+                    "--implementation", "cp", "--platform", plat, "-d", wh / "wheelhouse", "-r", wh / "requirements.txt"],
+                   check=False, timeout=900)
+        (d / f"pip-download-{plat}.log").write_text(done.stdout + "\n" + done.stderr)
+        if done.returncode != 0:
+            die(f"pip download --require-hashes failed for {plat} (a hash mismatch here is a product bug, bug 4):\n"
+                + (done.stdout + done.stderr)[-1500:])
     wheel_tar = d / "executor-wheelhouse.tar.gz"
-    run(["limactl", "copy", f"{VM}:/tmp/q1-wheelhouse.tar.gz", wheel_tar])
-    wheel_digest = vm("cat /opt/norn-fleet-executor/WHEELHOUSE_SHA256").stdout.strip()
+    run(["tar", "-C", wh, "-czf", wheel_tar, "wheelhouse", "requirements.txt"], env=dict(os.environ, COPYFILE_DISABLE="1"))
+    wheel_digest = sh("export LC_ALL=C; cd %s && shasum -a 256 -- * | shasum -a 256 | cut -d' ' -f1" % shlex.quote(str(wh / "wheelhouse"))).stdout.strip()
     tofu_v, sops_v, age_v = "1.10.6", "3.9.4", "1.2.1"
     arch = "arm64"
     tofu_sha = fetch_checksum(f"https://github.com/opentofu/opentofu/releases/download/v{tofu_v}/tofu_{tofu_v}_SHA256SUMS",
@@ -1240,14 +1275,6 @@ def build_fixture_secrets() -> tuple[Path, Path, str]:
         return out
 
     enc = seal(plain, "staging.sops.yaml")
-    # Accommodation W1 (bug 5): the unchanged recovery cannot parse tofu's coloured lock error. TF_CLI_ARGS=-no-color
-    # reaches every tofu phase through the spaces-* credential entries. The role's check_secrets.py rejects the extra
-    # key by design, so this file is copied in after the role has run.
-    w1 = json.loads(json.dumps(plain))
-    for t in ("spaces-rw", "spaces-read"):
-        w1[t]["TF_CLI_ARGS"] = "-no-color"
-    state_w1 = seal(w1, "staging.w1.sops.yaml")
-    save_state(sops_w1=str(state_w1))
     return enc, tarball, catalog_sha
 
 
@@ -1265,14 +1292,17 @@ def vm_ssh_inventory() -> Path:
 
 
 def vm_prepare_base() -> None:
-    """Things the role does not install: TLS front-ends, the CA, the hook script, ruby (see report), the provider mirror."""
+    """Things the role does not install: TLS front-ends, the CA, the hook script. No ruby: the executor venv must import PyYAML (Q1 bug 4)."""
     st = state()
     pki = WORK / "pki"
-    log("VM: packages (socat, ruby), CA, TLS terminators, gate script")
-    vm("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq socat ruby >/dev/null", timeout=900)
+    log("VM: packages (socat), CA, TLS terminators, gate script; ruby must not be present")
+    vm("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq socat >/dev/null", timeout=900)
+    vm("if command -v ruby >/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq ruby ruby-* >/dev/null 2>&1; fi", check=False)
+    if vm("command -v ruby", check=False).returncode == 0:
+        die("ruby is still installed in the VM; bug 4 cannot be checked")
     vm("install -d -m 0755 /etc/q1 /etc/q1-gate")
     vm_copy_in(pki / "ca.pem", "/usr/local/share/ca-certificates/q1-ca.crt")
-    vm("update-ca-certificates >/dev/null")
+    vm("update-ca-certificates --fresh >/dev/null 2>&1")
     vm_copy_in(pki / "srv.pem", "/etc/q1/srv.pem")
     vm_copy_in(pki / "srv.key", "/etc/q1/srv.key", mode="0600")
     hook = WORK / "q1-hook"
@@ -1283,12 +1313,28 @@ def vm_prepare_base() -> None:
     vm_copy_in(WORK / "tls-norn.service", "/etc/systemd/system/q1-tls-norn.service")
     vm_copy_in(WORK / "tls-github.service", "/etc/systemd/system/q1-tls-github.service")
     vm("grep -q ' norn.test' /etc/hosts || echo '127.0.0.12 norn.test' >> /etc/hosts")
-    vm("systemctl daemon-reload && systemctl enable --now q1-tls-norn.service")
+    vm("systemctl daemon-reload && systemctl enable q1-tls-norn.service && systemctl restart q1-tls-norn.service")  # restart: socat reads the cert once
+    install_provider_mirror()
+
+
+def install_provider_mirror() -> None:
+    """github.com resolves to the fake GitHub in the VM (the role needs the https clone URL), and the OpenTofu registry
+    serves provider checksums from github.com, so the registry download of hashicorp/null cannot work here. The same
+    provider zip goes into OpenTofu's implied local mirror directory instead; the committed lock file's hashes are still
+    checked and the plugin is still a real go-plugin child, so the bug 1 socket path is exercised."""
+    mirror = WORK / "mirror"
+    zip_name = "terraform-provider-null_3.2.4_linux_arm64.zip"
+    zipf = mirror / "registry.opentofu.org/hashicorp/null" / zip_name
+    if not zipf.exists():
+        run(["tofu", "providers", "mirror", "-platform=linux_arm64", mirror], cwd=WORK / "repo-work/environments/staging/nyc3")
+    d = "/usr/local/share/terraform/plugins/registry.opentofu.org/hashicorp/null"
+    vm(f"install -d -m 0755 {d}")
+    vm_copy_in(zipf, f"{d}/{zip_name}")
 
 
 def vm_enable_github_front() -> None:
     vm("grep -q ' github.com' /etc/hosts || echo '127.0.0.11 github.com' >> /etc/hosts")
-    vm("systemctl enable --now q1-tls-github.service")
+    vm("systemctl enable q1-tls-github.service && systemctl restart q1-tls-github.service")
 
 
 def role_apply(inputs: dict, enc: Path, tags: str = "") -> None:
@@ -1325,17 +1371,8 @@ def install_fixture_secret_tree(tarball: Path) -> None:
        " && chown -R norn-phase:norn-phase /etc/norn-fleet-phase/fixture-secrets && rm -f /tmp/q1-fixture-secrets.tar")
 
 
-def deliver_sops_w1() -> None:
-    """Copy the accommodation-W1 SOPS file over the role's (atomically, same owner and mode as the role sets)."""
-    w1 = state().get("sops_w1")
-    if not w1:
-        return
-    vm_copy_in(Path(w1), "/etc/norn-fleet-executor/staging.sops.yaml.new", mode="0400", owner="norn-exec:norn-exec")
-    vm("mv /etc/norn-fleet-executor/staging.sops.yaml.new /etc/norn-fleet-executor/staging.sops.yaml")
-
-
-def pairing_line() -> tuple[str, str] | None:
-    out = journal(grep="approve enrollment", lines=2000)
+def pairing_line(since: str = "") -> tuple[str, str] | None:
+    out = journal(since=since, grep="approve enrollment", lines=2000)
     found = re.findall(r"approve enrollment (\S+) \(code (\S+)\) with scope fleet:execute", out)
     return found[-1] if found else None
 
@@ -1369,13 +1406,12 @@ def cmd_vm(args) -> int:
     else:
         role_apply(inputs, enc, tags="secrets")  # redeliver the SOPS file (the role's rotation path)
     install_fixture_secret_tree(tarball)
-    if not getattr(args, "as_shipped", False):
-        deliver_sops_w1()
     vm_enable_github_front()
     # Pairing: approve the loop's pending enrollment (scope fleet:execute only).
+    started = vm_now()  # only a pairing line printed by this start (the journal holds earlier runs' lines)
     vm(f"systemctl start {UNIT}")
     if vm("test -s /var/lib/norn-fleet-executor/token", check=False).returncode != 0:
-        pair = wait_for("the executor's pairing line", pairing_line, timeout=240, interval=5)
+        pair = wait_for("the executor's pairing line", lambda: pairing_line(started), timeout=240, interval=5)
         log(f"executor pairing line: enrollment {pair[0]} code {pair[1]}")
         rc, out = norn_cli("access", "approve", pair[1], "--scope", "fleet:execute")
         log(out.splitlines()[0] if out else "approved")
@@ -1473,6 +1509,8 @@ def vm_tofu_state() -> list[str]:
 
 def vm_tofu(command: str, *, check=True) -> str:
     """Run a tofu command against the fixture root's MinIO backend (read-only inspection; as root, not as a phase)."""
+    if vm("test -f /tmp/q1-fixture-tree/main.tf", check=False).returncode != 0:
+        refresh_inspect_tree()  # /tmp is wiped by a reboot (row 5)
     script = f"""set -e
 d=/tmp/q1-tofu-inspect; rm -rf $d; mkdir -p $d
 cp -r /tmp/q1-fixture-tree/. $d/ 2>/dev/null || true
@@ -1576,7 +1614,11 @@ class Row:
         out = {"row": self.n, "title": self.title, "result": self.result, "started": self.started, "finished": rfc3339(),
                "failures": self.failures, "evidence": self.lines}
         RESULTS.mkdir(parents=True, exist_ok=True)
-        (RESULTS / f"row-{self.n}.json").write_text(json.dumps(out, indent=1))
+        path, k = RESULTS / f"row-{self.n}.json", 1
+        while path.exists():  # a repeated row keeps every run
+            k += 1
+            path = RESULTS / f"row-{self.n}-run{k}.json"
+        path.write_text(json.dumps(out, indent=1))
         return out
 
 
@@ -1768,9 +1810,9 @@ REVALIDATION_SKEW = 300  # lifecycle.RevalidationSkew (5 min). See the Q1 report
 
 
 def wait_revalidation_window(row: "Row | None" = None) -> None:
-    """A converge plan recorded less than 5 minutes after the fence's last release can never start
-    (fleet_plan_revalidation_required, and the rescan never re-records it): wait until a plan recorded now
-    would be admissible. This is a harness accommodation for product bug 2, not product behaviour."""
+    """A converge plan recorded less than 5 minutes after the fence's last release is refused
+    (fleet_plan_revalidation_required) and superseded only after the window closes (the bug 2 fix, row 2b). Every row
+    except 2b waits until a plan recorded now would be admissible so that its own timeouts stay meaningful."""
     st = state()
     rows = psql_json("select extract(epoch from last_release_at) as epoch from fleet_target_fences")
     if not rows or rows[0]["epoch"] is None:
@@ -1778,7 +1820,7 @@ def wait_revalidation_window(row: "Row | None" = None) -> None:
     ready_at = float(rows[0]["epoch"]) + REVALIDATION_SKEW + 8
     wait = ready_at - time.time()
     if wait > 0:
-        msg = f"waiting {wait:.0f}s so a new plan is recorded after the previous release + 5 min (bug 2 accommodation)"
+        msg = f"waiting {wait:.0f}s so a new plan is recorded after the previous release + 5 min (keeps this row's timeouts meaningful; row 2b does not wait)"
         if row:
             row.ev("harness", msg)
         else:
@@ -1868,6 +1910,46 @@ def row2(row: Row) -> None:
     row.check(len(ap) == 1, "one fleet.converge.approve in the ledger")
     row.check('terraform_data.row2[]' in state_resources(), "MinIO state holds terraform_data.row2")
     row.ev("executor journal", short_journal(t0, 10))
+
+
+def row2b(row: Row) -> None:
+    """(bug 2 fix) a merge recorded inside the 5-minute window after a release converges unattended once the window
+    closes. The harness does not wait for the window, does not rescan and does not approve: the watcher records the
+    plan, the executor is refused (fleet_plan_revalidation_required), its rescan after the window supersedes the plan
+    and the new plan converges."""
+    rows = psql_json("select extract(epoch from last_release_at) as epoch from fleet_target_fences")
+    release_at = float(rows[0]["epoch"])
+    since_release = time.time() - release_at
+    row.ev("fence last release", f"{since_release:.0f}s ago (the window is 300s)")
+    row.check(since_release < 240, f"this push is well inside the revalidation window ({since_release:.0f}s after the release)")
+    t0 = vm_now()
+    open(WORK / "proxy.log", "a").write("--- row 2b armed ---\n")
+    sha = commit_push(config_only_edit("16m"), "q1 row2b: config-only change pushed inside the revalidation window; nothing else is done by hand")
+    pushed_at = time.time()
+    row.ev("merge", f"pushed {sha[:10]}; no rescan, no approve and no wait by the harness")
+    plan1 = wait_for("the watcher to record the first plan",
+                     lambda: (resource().get("desired") or {}).get("commitSha") == sha and current_plan(), timeout=200, interval=3)
+    row.ev("first plan", f"{plan1} recorded {time.time() - release_at:.0f}s after the release")
+    row.check(time.time() - release_at < 300, "the first plan was recorded inside the window (so it is refused)")
+    wait_applied(sha, timeout=900)
+    applied_at = time.time()
+    plan_final = current_plan()
+    row.ev("applied", f"lastApplied={last_applied()[:10]} {applied_at - release_at:.0f}s after the release, {applied_at - pushed_at:.0f}s after the push")
+    row.check(applied_at - release_at > 300, "it converged only after the window closed")
+    row.ev("plan ids", f"first {plan1[:8]}, final {plan_final[:8]}")
+    refused = proxy_log_tail(400, "fleet_plan_revalidation_required")
+    row.ev("attempt-start refusals seen by the proxy", refused or "(none)")
+    row.check("fleet_plan_revalidation_required" in refused, "the executor was refused with 409 fleet_plan_revalidation_required first")
+    j = short_journal(t0, 30, pattern="rescan|revalidation|open attempt|executor failed|wait:|refused")
+    row.ev("executor journal", j)
+    rescans = proxy_log_tail(400, "POST /api/v1/fleet/resources/staging/converge")
+    row.ev("rescans from the executor", rescans)
+    a = attempts_db(plan_final)
+    row.ev("attempts (final plan)", attempt_chain(plan_final))
+    row.check(len(a) == 1 and a[0]["status"] == "succeeded", "exactly one attempt on the final plan, succeeded")
+    row.check(plan_final != plan1, "the stale plan was superseded: the final plan differs from the first")
+    row.check(not ledger("fleet.converge.approve", plan_final) and not ledger("fleet.converge.approve", plan1), "no approve exists: no human action")
+    row.check(not ledger("fleet.executor.stop-attestation", plan_final), "no recovery or attestation was needed")
 
 
 # ---------------------------------------------------------------------------
@@ -2000,17 +2082,47 @@ def power_cycle(row: Row) -> str:
     return boot_id()
 
 
+def fresh_name(base: str) -> str:
+    """base, or base + 'r<n>' when an earlier run of the row already committed environments/staging/nyc3/<base>.tf."""
+    n = 1
+    name = base
+    while (WORK / "repo-work/environments/staging/nyc3" / f"{name}.tf").exists():
+        n += 1
+        name = f"{base}r{n}"
+    return name
+
+
 def row5(row: Row) -> None:
     """VM power-off mid-apply -> boot -> attestation with a new boot_id -> resume."""
     t0 = vm_now()
-    sha, plan = gated_exec(row, "row5", "row5", "q1 row5: executable change; apply gated, VM powered off mid-apply")
-    wait_hook_running("row5")
+    name = fresh_name("row5")  # a repeated row needs a new resource, or its commit is empty and the watcher sees nothing to do
+    row.ev("resource", name)
+    sha, plan = gated_exec(row, name, name, f"q1 {name}: executable change; apply gated, VM powered off mid-apply")
+    wait_hook_running(name)
     a = attempts_db(plan)
     src_attempt = a[0]["id"]
     lock = tflock()
     boot0 = boot_id()
     row.ev("before power-off", f"boot_id={boot0} attempt={src_attempt[:8]} lock={json.dumps(lock)}")
     row.check(bool(lock) and lock.get("Operation") == "OperationTypeApply", "apply lock held at the moment of power-off")
+    if os.environ.get("Q1_ROW5_CORRUPT"):
+        # The power cuts of the first run left empty loose objects in the executor's clone (Q1 bug 6); later power cuts
+        # did not reproduce that (the guest had written everything back). This variant puts the same damage on disk
+        # (the clone's newest loose objects truncated to zero bytes) just before the power-off. The fsync below then commits it, so the power cut keeps it. It is an injection, not a
+        # power-cut effect, and the row says so.
+        hit = vm("cd /var/lib/norn-fleet-executor/repo/.git/objects && n=0; for f in $(find . -mindepth 2 -type f -mmin -30 | head -8); do "
+                 "chmod u+w $f; : > $f; n=$((n+1)); done; echo truncated=$n", check=False).stdout.strip()
+        row.ev("INJECTED: loose objects of the executor clone truncated to 0 bytes before the power-off", hit)
+    # MinIO lost its lock object in the first run's power-off (its writes are not fsynced), which a durable S3 backend
+    # would not. Flush only the lock object's files so the M5 lock path after a power cut is exercised; nothing else is
+    # synced, so the executor's git clone (Q1 bug 6) is exactly as exposed to the power cut as before.
+    # Q1_ROW5_NOSYNC=1 skips it: an fsync commits the whole ext4 journal, so it can also flush the clone's loose objects
+    # and hide the corruption case (bug 6); the no-sync variant is the faithful power cut for the clone.
+    if os.environ.get("Q1_ROW5_NOSYNC"):
+        row.ev("no fsync before the power-off (Q1_ROW5_NOSYNC=1): MinIO may lose its lock object", "")
+    else:
+        row.ev("fsync of the MinIO lock object only", vm(f"find /var/lib/minio/{BUCKET} -path '*.tflock*' -type f -exec sync {{}} + ; "
+                                                         f"find /var/lib/minio/{BUCKET} -path '*.tflock*' -type d -exec sync {{}} + ; echo synced", check=False).stdout.strip())
     boot1 = power_cycle(row)
     row.check(boot1 != boot0, f"boot_id changed {boot0[:8]} -> {boot1[:8]}")
     row.ev("unit after boot", unit_active())
@@ -2022,8 +2134,14 @@ def row5(row: Row) -> None:
     row.check(old_boot == boot0, f"source attempt recorded the old boot_id ({old_boot[:8]})")
     wait_blocker("norn fleet converge")
     stale = tflock()
-    row.check(bool(stale) and stale.get("ID") == lock.get("ID"), "the stale .tflock survived the power-off")
-    gate("row5", False)
+    lock_survived = bool(stale) and stale.get("ID") == lock.get("ID")
+    if os.environ.get("Q1_ROW5_NOSYNC") and not lock_survived:
+        row.ev("MinIO lost the lock object in the power cut (no fsync): the M5 lock path after a power cut is not exercised in this run", "")
+    else:
+        row.check(lock_survived, "the stale .tflock survived the power-off")
+    clone_bad = vm("find /var/lib/norn-fleet-executor/repo -type f -size 0 -path '*/objects/*' 2>/dev/null | wc -l", check=False).stdout.strip()
+    row.ev("empty git objects in the executor clone right after boot", clone_bad)
+    gate(name, False)
     rc, out = norn_cli("fleet", "converge", RESOURCE, "--resume")
     row.ev("norn fleet converge --resume", out.splitlines()[-1] if out else str(rc))
     wait_applied(sha, timeout=900)
@@ -2031,9 +2149,11 @@ def row5(row: Row) -> None:
     a = attempts_db(plan)
     row.check(len(a) == 2 and a[1]["retry_of"] == src_attempt and a[1]["status"] == "succeeded", "recovery attempt succeeded after the reboot")
     locked = [r for r in ledger("fleet.executor.stop-attestation", plan) if (r["payload"] or {}).get("tofuLock")]
-    row.check(len(locked) == 1 and locked[0]["payload"]["tofuLock"]["id"] == lock.get("ID"), "stale lock unlocked via the attested tofuLock id")
+    if lock_survived:
+        row.check(len(locked) == 1 and locked[0]["payload"]["tofuLock"]["id"] == lock.get("ID"), "stale lock unlocked via the attested tofuLock id")
     row.check(tflock() is None, "lock gone")
-    row.check("terraform_data.row5[]" in state_resources(), "resource created by the recovery")
+    row.check(f"terraform_data.{name}[]" in state_resources(), "resource created by the recovery")
+    row.ev("clone repaired by the loop", short_journal(t0, 6, pattern="clone|corrupt|re-clon|reclon|git fetch failed"))
     row.ev("journal (since boot)", short_journal(t0, 20))
 
 
@@ -2398,8 +2518,9 @@ def row8(row: Row) -> None:
     tip = lane_prime()
     row.ev("fake GitHub primed", f"plan PR merged at {tip[:10]}, plan workflow green, apply dispatch endpoint live")
     # 8a: the executor holds the fence (its apply is in flight): the GitHub-lane dispatch loses.
-    sha, plan = gated_exec(row, "row8", "row8", "q1 row8a: executable change; its apply holds the fence")
-    wait_hook_running("row8")
+    name = fresh_name("row8")  # a repeated row needs a new resource (an unchanged tree gives an empty, inert commit)
+    sha, plan = gated_exec(row, name, name, f"q1 {name}a: executable change; its apply holds the fence")
+    wait_hook_running(name)
     holder = fence_info()
     row.check(holder.get("held") and holder.get("holder_plan_id") == plan, f"fence held by the executor plan {plan[:8]}")
     lp = lane_plan(row)
@@ -2407,7 +2528,7 @@ def row8(row: Row) -> None:
     row.ev("8a GitHub dispatch while the executor holds the fence", f"HTTP {code} {body.get('code', body)}")
     row.check(code == 409 and body.get("code") == "fleet_target_execution_occupied", "GitHub lane refused with fleet_target_execution_occupied")
     row.check(not gh_ctl("/state")["dispatches"], "no workflow dispatch was sent to the fake GitHub")
-    gate("row8", False)
+    gate(name, False)
     wait_applied(sha, timeout=900)
     row.ev("8a executor attempt", attempt_chain(plan))
     # 8c: simultaneous start of both lanes. Stop the real loop so only this harness contends for the executor side.
@@ -2420,7 +2541,7 @@ def row8(row: Row) -> None:
     token = vm("cat /var/lib/norn-fleet-executor/token").stdout.strip()
     machine = vm("cat /etc/machine-id").stdout.strip()
     inv = secrets.token_hex(16)
-    wheel = vm("cat /opt/norn-fleet-executor/WHEELHOUSE_SHA256").stdout.strip()
+    wheel = state()["role_inputs"]["executor_wheelhouse_sha256"]  # the digest the role verified and wrote to executor.env
     body = {"schemaVersion": "norn.fleet-runner-attempt/v1", "runnerAttemptId": f"executor:{DEFAULT_DROPLET}:{inv}:{plan2}",
             "commitSha": sha2, "planSha256": view["planSha256"], "workflowUrl": f"norn-executor://{DEFAULT_DROPLET}/{inv}",
             "heartbeatTimeoutSeconds": 120, "operationClass": "unknown",
@@ -2584,6 +2705,7 @@ def cmd_etcd_gate(args) -> int:
 ROW_TABLE = {
     "1": ("merge -> automatic converge (config-only)", "row1"),
     "2": ("executable diff -> approval -> converge", "row2"),
+    "2b": ("merge inside the revalidation window converges unattended after it", "row2b"),
     "3": ("kill a phase mid-apply -> attestation -> --resume", "row3"),
     "4": ("systemctl restart mid-configure", "row4"),
     "5": ("VM power-off mid-apply -> boot -> new boot_id attestation -> resume", "row5"),
@@ -2597,7 +2719,7 @@ ROW_TABLE = {
     "12": ("cloned VM disk (new droplet id) cannot attest", "row12"),
 }
 # Order: converge-heavy rows first, rows that leave a held fence (8) last.
-DEFAULT_ORDER = ["1", "2", "3", "4", "6", "7", "5", "12", "10", "10b", "9", "11"]
+DEFAULT_ORDER = ["1", "2b", "2", "3", "4", "6", "7", "5", "12", "10", "10b", "9", "11"]
 
 
 def cmd_rows(args) -> int:
@@ -2632,9 +2754,7 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     s = sub.add_parser("setup")
     s.add_argument("--rebuild", action="store_true")
-    v = sub.add_parser("vm")
-    v.add_argument("--as-shipped", action="store_true", help="skip accommodation W1 (TF_CLI_ARGS=-no-color)")
-    for name in ("bootstrap", "etcd-gate", "status", "teardown", "fake-github", "proxy", "reset", "tls", "baseline", "all", "reclone"):
+    for name in ("vm", "bootstrap", "etcd-gate", "status", "teardown", "fake-github", "proxy", "reset", "tls", "baseline", "all", "reclone"):
         sub.add_parser(name)
     g = sub.add_parser("gate")
     g.add_argument("name")

@@ -6,6 +6,9 @@ fail on product defects: rows 3, 5 and 10. Seven product defects (bugs 1 to 7)
 block the lane, and there are a logging gap and VM-script defects (bugs 8 and 9).
 Nothing in the product code was patched.
 
+**Update:** the defects were fixed and this qualification was re-run the same day; see the last section,
+"Re-run after fixes (2026-10-05)". The result is not qualified-as-is above, qualified in effect below.
+
 | | |
 |---|---|
 | Norn | `/Users/arti/Desktop/Claude/norn-v3-fleet-executor`, branch `feature/v3-fleet-executor` at `6714a309` (uncommitted additions listed in section 8) |
@@ -890,3 +893,120 @@ ok: no route and no auth path for the lane
 ok: no converge watcher started on the etcd runtime
 ```
 
+## Re-run after fixes (2026-10-05)
+
+Status: **all twelve Q1 rows, 10b, 2b and the etcd gate pass; nothing was NOT RUN from the list of rows.** No product
+defect was found in this run. Four harness defects were found and fixed (section 9.5), and what was not exercised
+is listed in 9.4. The accommodations of the first run for bugs 1, 2 (partly), 4 and 5 are gone; the
+rest are listed in 9.3.
+
+| | |
+|---|---|
+| Norn | `/Users/arti/Desktop/Claude/norn-v3-fleet-executor`, branch `feature/v3-fleet-executor`, product code at `5da7d433` (bugs 2, 7, 8 and follow-ups); harness changes in the commit that adds this section |
+| norn-fleet | `/Users/arti/Desktop/Claude/norn-fleet-controller-executor`, branch `feature/fleet-controller-executor`, `bc1f8a1` (bugs 1, 3, 4, 5, 6, 9 and follow-ups), provisioned with the real Ansible role |
+| VM | the same Lima VM `norn-exec` (Ubuntu 24.04, aarch64, OpenTofu 1.10.6), `/opt/norn-fleet-executor` removed first, ruby purged, role applied from `bc1f8a1` (44 ok, 12 changed, 0 failed, 3 skipped), `PyYAML` checked by the role's own "venv imports PyYAML" task |
+| Date | 2026-10-05, 14:28 to 17:47 (CDT). Three environments (new PostgreSQL database, repository, empty MinIO state, re-enrolled executor each), see 9.6. |
+
+### 9.1 Result per row
+
+PASS/FAIL/NOT RUN is for this re-run. "First" is the first run's result from section 1.
+
+| Row | Claim | First | Re-run | One line |
+|---|---|---|---|---|
+| 1 | merge, automatic converge (config-only) | PASS | **PASS** | Watcher recorded the plan, no approve, one attempt, `ingress-03` in the MinIO state. Now with a real provider (`hashicorp/null`) in the root and `sanity.py` running on the role-provisioned PATH with no ruby. |
+| 2b (new) | merge inside the 5 minute revalidation window converges unattended after it | n/a (bug 2) | **PASS** | Pushed 5 s after a release; plan recorded 32 s after the release; the executor was refused `409 fleet_plan_revalidation_required` and rescanned every tick; the window closed; the stale plan was superseded (`ccf0b45e` to `a23746e2`) and applied at 373 s after the release, one attempt, no approve, no attestation. The harness did not wait, rescan or approve. |
+| 2 | executable diff blocks on approval, `norn fleet approve`, converges | PASS | **PASS** | Unchanged: no attempt across more than one poll, `wait: the converge plan needs an approve`, one attempt after the approve. |
+| 3 | kill a phase mid-apply, attestation, `--resume`, recovers | FAIL as shipped, PASS with W1 | **PASS, no W1** | Attestation correct; the recovery's attestation carried `tofuLock.id` equal to the stale apply lock's ID (`2e0fa2f6-...`), the lock was force-unlocked, recovery attempt succeeded. The lock probe ran with a plugin-backed provider (bug 1) and read the coloured lock error (bug 5). |
+| 4 | `systemctl restart` mid-configure | PASS | **PASS** | Same boot, new invocation, no `norn-phase` process, checkpoints split across the two attempts. |
+| 5 | power-off mid-apply, new `boot_id` attestation, resume | FAIL (2 of 2) | **PASS (5 completed runs)** | Every run: new boot_id in the attestation, stale lock unlocked, recovery succeeded, no manual `reclone`. No natural power cut left an empty object in the clone (4 of 4 clean, see 9.2). Run 5 injected the first run's damage and the loop re-cloned by itself and recovered. Details in 9.2. |
+| 6 | lost attempt-start response replays | PASS | **PASS** | 6a one attempt after one lost response; 6b six requests with one `Idempotency-Key`, the journal replay returned the stored attempt, attested, resumed. |
+| 7 | authority restart mid-run | PASS | **PASS** | 22 s outage, the loop's `GET .../attempts/<id>` requests got `Connection refused` and retried; one attempt, no recovery. |
+| 8 | GitHub-lane dispatch racing the executor on one fence | PASS | **PASS** | 8a `409 fleet_target_execution_occupied`, no dispatch sent. 8c: exactly one winner (this time the GitHub lane, 201), the executor start got the same 409; the real loop then logged `busy: fence is Uncertain`. |
+| 9 | force-push gives `history_rewritten` | PASS | **PASS** | Also when the old commit is pruned (compare 404); clears on revert. |
+| 10 | stale `.tflock` of a killed `tofu apply`; kill during the recovery's own `tofu plan` (bug 7) | FAIL | **PASS** | Owned lock unlocked (recovery 1 attested `tofuLock.id` = lock 1). Recovery 1's own `tofu plan` was killed, leaving an `OperationTypePlan` lock. `status.active.attemptIds` was `["caf4bbab","199a032d"]` (oldest first, newest is `199a032d`). Recovery 2 used the right source, refused the foreign lock, and the `state_lock_foreign` report was recorded and shown. Operator `force-unlock` of the right ID cleared it, a third attempt (retry of `199a032d`) succeeded. Run once (see 9.4). |
+| 10b | foreign lock refused, reported, cleared, single recovery completes | PASS with W1 | **PASS, no W1** | `root@host` `OperationTypePlan` lock: not unlocked, `fleet.converge.refusal` recorded, a wrong-ID `force-unlock` refused by tofu on MinIO, operator cleared, one recovery completed. |
+| 11 | token self-rotation while idle | PASS | **PASS** | Same device, new 7-day token, old token 401, scope `fleet:execute`, file 0600, loop keeps polling. |
+| 12 | cloned disk (new droplet ID) cannot attest | PASS (tail needed W1) | **PASS** | Whole row, including the original droplet's attestation and recovery, with no W1. Forged attestation `409 fleet_executor_stop_attestation_invalid`. |
+| etcd gate | etcd runtime serves no executor-lane route | PASS | **PASS** | The real `norn-api` on etcd: no `fleet-executor-v1` capability, eight lane-only routes answer `501 backend_route_unsupported`. |
+| `norn-exec-vm test` | default command, now under `unshare` | did not complete, killed every VM process | **PASS** | 92 tests OK, 0 skipped, in 7.3 s. The four VM-only tests (`PhaseHasNoCapabilities`, `...FromTheLoopUser`, `PhaseCannotReadAgeKey`, `AttestationRequiresEmptyPhaseUidRealCgroup`) ran and passed. Boot ID, uptime and the MainPIDs of the executor, minio, fake-do-metadata, socat and sshd were identical before and after. Run while the executor was idle. |
+
+NOT RUN: nothing from the requested list. Not exercised, with reasons, are in 9.4.
+
+### 9.2 Bug by bug
+
+| Bug | First run | Now |
+|---|---|---|
+| 1 recovery lock probe socket path | harness used a provider-free root | Root uses `hashicorp/null` 3.2.4 (a real go-plugin provider; `null_resource.anchor` is in every plan). Every lock probe (rows 3, 5, 10, 10b, 12) worked on the standard `work_root` path. **Fixed.** |
+| 2 revalidation-refused plan wedges | waited 5 min in the harness before every push | Row 2b: converges unattended after the window with no harness help. **Fixed.** Other rows still wait (9.3). |
+| 3 recovery cannot resume at `complete` | reached once by a 68 s network stall | **Not exercised** (needs a stop between `readiness_verified` and `complete`). Unit tests only. |
+| 4 no YAML parser in the venv | `ruby` installed as a workaround | The wheelhouse was built per the runbook (both architectures, `pip download --require-hashes`); **the aarch64 PyYAML hash passed** `pip download` on the Mac and the role's offline `--no-index --require-hashes` install in the VM. `venv/bin/python -c "import yaml"` is 6.0.3 from the venv (`include-system-site-packages = false`; the system python has 6.0.1). No ruby in the VM. `sanity.py` ran in every converge. **Fixed.** |
+| 5 coloured tofu lock error | W1 `TF_CLI_ARGS=-no-color` in the SOPS file | No W1; the role's SOPS file is the unmodified fixture. Owned locks unlocked in rows 3, 5, 10, 10b (unlock) and 12. **Fixed.** |
+| 6 power cut corrupts the clone | 2 of 2 runs, manual `reclone` | 4 natural power cuts: 0 empty objects after boot each time, recovery needed no help. A fifth run truncated 6 of the clone's newest object files (packs and their indexes) to 0 bytes before the power-off (the first run's damage, an injection, `Q1_ROW5_CORRUPT=1`); after boot there were 6 empty files and the journal said `the repository clone ... is damaged (its repository, HEAD or objects are unreadable): cloning it again`, then the recovery succeeded. **Fixed**; the natural cuts are clean because the clone is now fsynced (`core.fsync`, `fetch.unpackLimit=1`), which also means the repair path only ran under injection. |
+| 7 `attemptIds` sorted by ID | wedged a plan about half the time | Row 10: two recoveries, correct source for the second, report accepted. **Fixed** (one run; with random IDs the old code failed half the time, so one pass is weak evidence, backed by the order being by attempt number now, see `derive.go`). |
+| 8 VM script defects | `test` killed the VM; MinIO 410 | `norn-exec-vm test` passes and is safe. `provision` and `build-minio` were **not re-run** (the VM already had MinIO); the harness's MinIO source build is still its fallback. |
+| 9 failed handler results not logged | silent journal | Visible in this run: `converge failed (terminal=True): init failed with exit code 1; attempt -` (the provider could not be downloaded, 9.5) and `recover waiting (terminal=False): state_lock_foreign; attempt -`. **Fixed.** |
+
+Row 5 runs: (1) fsync of the MinIO lock object, clean clone, PASS; (2) fsync, PASS; (3) no fsync (`Q1_ROW5_NOSYNC=1`):
+MinIO lost the lock object, as in the first run, so "unlock after a power cut" is not exercised in this run, clone
+clean, recovery PASS; (4) injection that the power cut discarded (the injection was written before the fsync, so it
+was lost; the clone was clean), PASS; (5) injection ordered before the fsync, so it survived: repaired, PASS. A sixth
+start in the first environment aborted on a harness defect (9.5) and is not counted. The fsync is a harness
+accommodation: MinIO does not fsync, a real Spaces backend is durable. The fsync can also flush the clone (an ext4
+journal commit), which is why run 3 exists without it.
+
+### 9.3 Accommodations that remain
+
+| | Accommodation | Why |
+|---|---|---|
+| | Every row except 2b waits until the previous release + 5 min before it pushes (`wait_revalidation_window`). Rows 1, 2, 3, 4, 5, 6, 7, 8, 10, 10b and 12 wait; row 9 force-pushes without waiting (it records no plan) and row 11 pushes nothing. | So each row's own timeouts (plan within 150 s, etc.) stay meaningful. Without the wait the row would also pass but take up to 5 more minutes and the timeouts would need raising. Row 2b is the only row that tests the window. |
+| | `hashicorp/null` is served from OpenTofu's implied local mirror (`/usr/local/share/terraform/plugins`) with the committed lock file's hashes. The registry download fails because `github.com` resolves to the fake GitHub in the VM and the registry serves checksums from `github.com`. | Harness network only. The plugin is still a real go-plugin child, so bug 1's socket path is exercised. |
+| | Row 5 fsync of the MinIO lock object; Row 5 injection (run 5). | See 9.2. |
+| | MinIO cross-built from source (kept from the first run). | `dl.min.io` 410. |
+| | Test accelerators: remove `lock-foreign/*.json` after the operator clears a lock (30 minute back-off); shorten the recorded token expiry (row 11). | As in the first run. |
+| | Authority from a test binary (`-tags fleetlocal`). | `validateFleetAuthorityOnly` pins a verify-full DSN, as in section 3.2. |
+
+Removed: W1; the ruby install (and ruby was purged and checked absent); the provider-free fixture; manual `reclone`.
+
+### 9.4 Not exercised and weak spots
+
+- Bug 3 (resume at `complete`) was not reached.
+- Row 10's P3 scenario ran once; row 7's outage was one 22 s outage.
+- `norn-exec-vm provision` / `build-minio` were not re-run.
+- The runbook's wheelhouse step, as written for a first provision, works. The role extracts the archive with
+  `creates: requirements.txt` (`ansible/roles/fleet_executor/tasks/install.yml:262-268`), so on a host that already
+  has an older wheelhouse the extraction is skipped and the digest assert fails; the runbook's "upgrading the release"
+  paragraph lists three release variables, not the wheelhouse ones. Not tested here (the harness removed
+  `/opt/norn-fleet-executor/{venv,wheelhouse,requirements.txt}` first); it fails loudly, not silently.
+- The loop's rescan after a revalidation refusal uses one idempotency key per plan and generation
+  (`scripts/executor/loop.py:229-231`); the rescans in row 2b were repeated every tick with that key and the supersede
+  worked after the window, so this did not matter here.
+
+### 9.5 Harness defects found and fixed
+
+1. The pairing line was read from the whole journal, so a second `vm` run approved a stale enrollment code.
+2. A new PKI was not picked up by the VM: `update-ca-certificates` without `--fresh` and `socat` never restarted
+   (it reads the certificate once).
+3. A repeated row 5 or row 8 rewrote an identical file, so its commit was empty and the watcher answered `none`
+   (`fresh_name`). Row 8c read `WHEELHOUSE_SHA256`, which the VM script (not the role) wrote.
+4. `/tmp` is wiped by row 5's reboot, so row 10's `tofu force-unlock` inspected an empty directory and printed
+   `LocalState not locked`; `vm_tofu` now rebuilds the inspection tree. This cost one partial row 10 and 10b in the
+   first environment (killed before 10b did anything; the product part of row 10 had behaved correctly), which were
+   rerun from a clean environment.
+
+The provider-download failure (the first baseline converge failed with `init failed`, retried every minute until the
+mirror was installed) was a harness network effect, not a product defect.
+
+### 9.6 Runs and state
+
+| Environment | Rows |
+|---|---|
+| 1 (14:28) | 1, 2b, 2, 3, 4, 6, 7, 5 (twice, the second aborted), 12, 10 (product part passed, harness defect 4) |
+| 2 (16:20) | 10, 10b, 5 (three runs), 9, 11, etcd gate, 8 (aborted twice by harness defect 3) |
+| 3 (17:24) | 5 (injection), 8 |
+
+Environments were recreated with the harness `reset` (new PostgreSQL database, repository, MinIO state, executor
+re-enrolled; the VM and the role stayed). End state: Mac processes stopped; the databases `norn_q1_20261005142801`,
+`norn_q1_20261005161946` and `norn_q1_20261005172428` dropped (the second and third by `reset`/`teardown`); `norn_fc` and
+`norn_fc_recovery` untouched; the VM `norn-exec` running with the executor unit stopped. The work directory
+(`results*/`, proxy and authority logs) is `<scratchpad>/q2/`. Run the harness with `python3`; `vm --as-shipped` no
+longer exists. New env vars: `Q1_ROW5_NOSYNC=1`, `Q1_ROW5_CORRUPT=1`.
