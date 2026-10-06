@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Observed 2026-10-05 21:45 UTC. This is the single current handoff for the
+Observed 2026-10-06 00:17 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -35,18 +35,39 @@ values. The protected runner configuration is missing
 `NORN_FLEET_PRIVATE_INTERFACE`, `NORN_FLEET_SSH_PRIVATE_KEY_FILE`, and
 `NORN_FLEET_SSH_USER`. No provider operation has been run from staging.
 
-The protected `platform-release` environment's
-`NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN` is expired. GitHub token settings show
-the fine-grained token “Norn release immutability check” as expired; the
-environment secret was last updated 2026-09-29. No release workflow was
-dispatched. Renew the token and update that environment secret before publishing
-the exact merged Norn SHA; do not substitute an unrelated token.
+At 00:10 UTC, the protected `platform-release` environment secret
+`NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN` was updated after the release-check PAT
+was regenerated. At 00:12 UTC, workflow run
+[37392793546](https://github.com/antiartificial/norn/actions/runs/37392793546)
+was dispatched for exact merged SHA
+`1ca28934034c48f28aed4b97b6d4971d69b642e3`. Authorization, pinned UI build,
+and all four Linux/macOS amd64/arm64 bundle jobs passed. The `publish` job is
+waiting for review in the protected `platform-release` environment; no
+immutable release has been published yet.
 
-The most recent authenticated Mini inventory at 21:13 UTC reports source
+During browser inspection, the newly generated release-check PAT value appeared
+in an accessibility snapshot. Treat it as exposed and revoke/replace it before
+approving publication. The environment secret must then be refreshed with the
+replacement. The running publish job may fail if it reaches the immutability
+check after revocation; rerun the same exact SHA after rotation if needed. No
+token value is recorded here.
+
+The current staging doctor still reports missing staging-plan secrets
+`ADMIN_CIDRS_JSON`, `DIGITALOCEAN_TOKEN`, `STATE_ACCESS_KEY_ID`, `STATE_BUCKET`,
+`STATE_ENDPOINT`, `STATE_REGION`, and `STATE_SECRET_ACCESS_KEY`; staging is
+missing `DIGITALOCEAN_TOKEN`, `NORN_API_URL`, and the five `STATE_*` values.
+Protected runner variables remain missing:
+`NORN_FLEET_BOOTSTRAP_VARS_FILE`, `NORN_FLEET_KNOWN_HOSTS_FILE`,
+`NORN_FLEET_PRIVATE_INTERFACE`, `NORN_FLEET_SSH_PRIVATE_KEY_FILE`, and
+`NORN_FLEET_SSH_USER`. No provider operation has been run from staging.
+
+At 00:22 UTC, the newest authenticated Mini inventory reports source
 `26147c39a554b73b6761a371edee5a9591c81d3f`
 (`v2.20.0-platform-72-g26147c39`), host `ok`, Fleet unconfigured with zero
-pools, and production readiness blocked. Its evidence is at
-`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T211312Z`.
+pools, and production readiness blocked (6 pass, 19 fail, 1 warning). It found
+28 apps, 45 services, zero active operations, and 25 active incidents. Evidence
+is at
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261006T002155Z`.
 The merged Norn SHA has not been released or promoted to Mini.
 
 At 19:34 UTC, a fresh authenticated Mini inventory again reported host status
@@ -442,15 +463,15 @@ running Fleet qualification.
 | M5 Mini upgrade rehearsal | 35% | Mini runs v3 source, but the original one-way transition lacks its before snapshot. Rehearse on a representative private current backup. |
 | M6 running upgrades and app DB | 25% | Journals and local transfer fixtures exist; protected running upgrade and app DB cutover/interruption proof remain. |
 | M7 mobility | 30% | Isolated Mini fixture web/worker/tick and private restore comparison passed. No Fleet target or complete move exists. |
-| M8 release qualification | 30% | Post-merge release-bundle rehearsal passed; immutable release publication is held by the expired check token, and provider-backed fitness, soak/fault results and owner sign-off remain. |
+| M8 release qualification | 32% | Protected exact-SHA authorization, UI build, and all four platform bundle builds passed; publish is awaiting environment review and credential rotation. Mini promotion, provider-backed fitness, soak/fault results, and owner sign-off remain. |
 | M9 adoption | 10% | Mini API runs v3 code; Fleet and controlled application adoption are absent. |
 
 ## Next actions
 
-1. Renew `NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN` and update the protected
-   `platform-release` environment secret. Dispatch the immutable release
-   workflow for exact SHA `1ca28934034c48f28aed4b97b6d4971d69b642e3` only after
-   the renewed token is valid. Verify the signed tag, target SHA and all
+1. Revoke and replace the exposed release-check PAT, update
+   `NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN`, then review the pending run (or
+   rerun it for exact SHA `1ca28934034c48f28aed4b97b6d4971d69b642e3` if the
+   current run fails). Verify the immutable signed tag, target SHA, and all
    platform assets, then import and promote that release on Mini through its
    managed signed-upgrade path.
 2. Supply fresh staging-only DigitalOcean/state secrets and the protected
