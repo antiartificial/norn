@@ -61,11 +61,13 @@ Protected runner variables remain missing:
 `NORN_FLEET_PRIVATE_INTERFACE`, `NORN_FLEET_SSH_PRIVATE_KEY_FILE`, and
 `NORN_FLEET_SSH_USER`. No provider operation has been run from staging.
 
-The most recent authenticated Mini inventory at 21:13 UTC reports source
+At 00:22 UTC, the newest authenticated Mini inventory reports source
 `26147c39a554b73b6761a371edee5a9591c81d3f`
 (`v2.20.0-platform-72-g26147c39`), host `ok`, Fleet unconfigured with zero
-pools, and production readiness blocked. Its evidence is at
-`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261005T211312Z`.
+pools, and production readiness blocked (6 pass, 19 fail, 1 warning). It found
+28 apps, 45 services, zero active operations, and 25 active incidents. Evidence
+is at
+`/var/folders/c8/d4bdjwzn2qgfmg3hqz7qj7ch0000gn/T/norn-inventory-20261006T002155Z`.
 The merged Norn SHA has not been released or promoted to Mini.
 
 At 19:34 UTC, a fresh authenticated Mini inventory again reported host status
