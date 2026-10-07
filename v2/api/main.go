@@ -1853,6 +1853,10 @@ func controlScopeForRequest(r *http.Request) string {
 		// bound GitHub Actions identity. Authentication still happens here; the
 		// handler performs the final ownership authorization decision.
 		return ""
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/fleet/plans/") && strings.HasSuffix(path, "/github/reconcile"):
+		// Reservation reconciliation is an operator action; the handler binds
+		// it to the exact plan and verifies the authoritative GitHub outcome.
+		return handler.ScopeFleetOperate
 	case strings.HasSuffix(path, "/exec"):
 		return handler.ScopeAppsExec
 	case path == "/api/access/tokens":
@@ -1932,11 +1936,11 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		}
 	}
 	if cfg != nil && cfg.IsFleetAuthorityOnly() {
-		features := []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "github-actions-oidc-exchange-v1", "fleet-target-fence-v1", "fleet-resource-v1"}
+		features := []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "fleet-github-reconcile-v1", "github-actions-oidc-exchange-v1", "fleet-target-fence-v1", "fleet-resource-v1"}
 		endpoints := map[string]string{
 			"operationList": "/api/operations", "activeOperations": "/api/operations/active",
 			"enrollments": "/api/v1/enrollments", "devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
-			"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch", "fleetTargets": "/api/v1/fleet/targets", "fleetResources": "/api/v1/fleet/resources",
+			"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch", "fleetGitHubReconcile": "/api/v1/fleet/plans/{planID}/github/reconcile", "fleetTargets": "/api/v1/fleet/targets", "fleetResources": "/api/v1/fleet/resources",
 		}
 		features, endpoints = withExternalFleetAdmissionCapabilities(cfg, features, endpoints)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2201,6 +2205,7 @@ func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler)
 		r.Post("/fleet/plans/{planID}/github/execute", h.ExecuteFleetGitHubApply)
 		r.Post("/fleet/plans/{planID}/github/rerun", h.RerunFleetGitHubApply)
 		r.Post("/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
+		r.Post("/fleet/plans/{planID}/github/reconcile", h.ReconcileFleetGitHubReservation)
 		r.Post("/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
 		fleetTargets := h.FleetTargetRoutes()
 		r.Post("/fleet/targets", fleetTargets.Register)
