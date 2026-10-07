@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -218,6 +219,12 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 		}
 	}
 	if err != nil {
+		var recoveryFailure *githubapp.DispatchRecoveryFailure
+		if errors.As(err, &recoveryFailure) {
+			log.Printf("fleet GitHub reservation recovery failed stage=%s", recoveryFailure.Stage)
+		} else {
+			log.Printf("fleet GitHub reservation recovery failed stage=unknown")
+		}
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_ambiguous", "GitHub could not authoritatively reconcile the reservation; it remains queued")
 		return
 	}
