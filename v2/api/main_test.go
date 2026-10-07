@@ -474,12 +474,23 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 	if containsCapability(capabilities.Features, "external-fleet-deployment-admission-v4") || capabilities.Endpoints["externalFleetAdmissionBegin"] != "" {
 		t.Fatalf("Fleet authority advertised external admission without a verifier: %#v", capabilities)
 	}
+	if !containsCapability(capabilities.Features, "fleet-github-reconcile-v1") || capabilities.Endpoints["fleetGitHubReconcile"] != "/api/v1/fleet/plans/{planID}/github/reconcile" {
+		t.Fatalf("Fleet GitHub reconciliation is not advertised: %#v", capabilities)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/fleet/plans", nil)
 	req.Header.Set("Authorization", "Bearer "+valid.APIToken)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code == http.StatusNotFound {
 		t.Fatalf("Fleet route is not registered")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/plan-1/github/reconcile", strings.NewReader(`{"kind":"apply-dispatch"}`))
+	req.Header.Set("Authorization", "Bearer "+valid.APIToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("Fleet GitHub reconciliation route is not registered")
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/audit/mutations", nil)
 	req.Header.Set("Authorization", "Bearer "+valid.APIToken)
@@ -1101,6 +1112,37 @@ func TestCatalogReadOnlyCapabilitiesHideCatalogMutations(t *testing.T) {
 	}
 	if !containsCapability(capability.Features, "app-catalog-read-only-v1") {
 		t.Fatalf("catalog readonly capability missing: %#v", capability.Features)
+	}
+}
+
+func TestFleetAuthorityCapabilitiesAndRouterExposeGitHubReconcile(t *testing.T) {
+	cfg := &config.Config{Profile: "production", Environment: "staging", FleetAuthorityOnly: true}
+	recorder := httptest.NewRecorder()
+	writeControlCapabilitiesForConfig(cfg, recorder, httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("capabilities status = %d", recorder.Code)
+	}
+	var capabilities struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if capabilities.Endpoints["fleetGitHubReconcile"] != "/api/v1/fleet/plans/{planID}/github/reconcile" {
+		t.Fatalf("reconcile endpoint not advertised: %#v", capabilities.Endpoints)
+	}
+	found := false
+	for _, feature := range capabilities.Features {
+		if feature == "fleet-github-reconcile-v1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reconcile feature not advertised: %#v", capabilities.Features)
+	}
+	if got := controlScopeForRequest(httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/plan-1/github/reconcile", nil)); got != handler.ScopeFleetOperate {
+		t.Fatalf("reconcile control scope = %q, want %q", got, handler.ScopeFleetOperate)
 	}
 }
 
