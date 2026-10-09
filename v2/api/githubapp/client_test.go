@@ -621,7 +621,7 @@ func TestReconcileObservedPilotApplyRejectsChangedBindingAndEffects(t *testing.T
 	}
 	inputs := map[string]string{
 		"fleet_environment": "disposable/fleet/nyc3", "pilot_run_id": "pilot261006c",
-		"plan_run_id": "37892634005", "plan_sha256": observedPilotPlanSHA,
+		"plan_run_id": "37893643367", "plan_sha256": observedPilotPlanSHA,
 		"norn_plan_id": observedPilotPlanID, "dispatch_nonce": observedPilotNonce,
 		"allow_destructive": "true", "approval_envelope_sha256": "",
 	}
@@ -683,8 +683,8 @@ func TestReconcileObservedPilotApplyRejectsChangedBindingAndEffects(t *testing.T
 
 func TestReconcileObservedPilotApplyAcceptsOnlyStableBoundRun(t *testing.T) {
 	approved := &Dispatch{PlanRunID: observedPilotPlanRunID, PlanSHA: observedPilotPlanSHA, ApprovedHeadSHA: observedPilotHeadSHA, PilotRunID: "pilot261006c"}
-	inputs := map[string]string{"fleet_environment": "disposable/fleet/nyc3", "pilot_run_id": "pilot261006c", "plan_run_id": "37892634005", "plan_sha256": observedPilotPlanSHA, "norn_plan_id": observedPilotPlanID, "dispatch_nonce": observedPilotNonce, "allow_destructive": "true", "approval_envelope_sha256": ""}
-	planRun := applyRun{ID: observedPilotPlanRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotPlanRunID), Event: "push", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/plan.yml", Name: "plan", Status: "completed", Conclusion: "success", RunAttempt: 2}
+	inputs := map[string]string{"fleet_environment": "disposable/fleet/nyc3", "pilot_run_id": "pilot261006c", "plan_run_id": "37893643367", "plan_sha256": observedPilotPlanSHA, "norn_plan_id": observedPilotPlanID, "dispatch_nonce": observedPilotNonce, "allow_destructive": "true", "approval_envelope_sha256": ""}
+	planRun := applyRun{ID: observedPilotPlanRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotPlanRunID), Event: "workflow_dispatch", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/plan.yml@main", Name: "plan", Status: "completed", Conclusion: "success", RunAttempt: 1}
 	applyRun := applyRun{ID: observedPilotRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotRunID), Event: "workflow_dispatch", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/apply.yml", Name: "apply", DisplayTitle: observedPilotTitle, Status: "completed", Conclusion: "cancelled", RunAttempt: 1, Inputs: inputs}
 	applyRun.Repository.FullName = observedPilotRepository
 	applyRun.Actor.Login, applyRun.Actor.Type = "norn-fleet-pilot-antiartificial[bot]", "Bot"
@@ -813,7 +813,7 @@ func TestReconcileObservedPilotApplyAcceptsOnlyStableBoundRun(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.TargetApply != "skipped" || result.RunnerSSHCleanup != "failed-unverified" || result.WholeProviderEffects != "unknown" || result.Outcome != "target-apply-skipped-whole-provider-effects-unknown" {
+		if result.TargetApply != "skipped" || result.RunnerSSHCleanup != "console-failed-before-cleanup-plan-apply" || result.WholeProviderEffects != "no-workflow-provider-resource-mutation-evidenced" || result.Outcome != "verified-no-provider-resource-apply" {
 			t.Fatalf("unexpected reconciliation result: %#v", result)
 		}
 	})

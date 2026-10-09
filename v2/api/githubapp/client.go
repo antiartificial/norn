@@ -1054,7 +1054,7 @@ type reconciliationSnapshot struct {
 
 const (
 	observedPilotRunID       = int64(37893727725)
-	observedPilotPlanRunID   = int64(37892634005)
+	observedPilotPlanRunID   = int64(37893643367)
 	observedPilotApplyJobID  = int64(113700233233)
 	observedPilotAdmissionID = int64(113700210905)
 	observedPilotPlanID      = "0586dc87-bbe6-421b-8e8e-49f7e2a43699"
@@ -1068,10 +1068,10 @@ const (
 
 // ReconcileObservedPilotApply accepts only the one observed nonce-bound pilot
 // run. It verifies the approved artifact and immutable protected run, then
-// double-fetches canonical run/job snapshots and rejects any change. Its
-// classification is intentionally weaker than no-write: the failed cleanup
-// may have applied its firewall-only closure before failing, so callers must
-// keep the dispatch queued and reconcile provider state before retry/release.
+// double-fetches canonical run/job snapshots and rejects any change. The
+// target provider apply was skipped. Cleanup failed during console evaluation,
+// before its plan/apply commands. This classifies workflow provider-resource
+// mutation only; it does not substitute for independent provider readback.
 // GitHub's run REST representation omits dispatch inputs (inputs:null); the
 // protected workflow's exact successful input-validation and artifact-binding
 // steps plus Norn's persisted nonce hash and the immutable run title provide
@@ -1089,7 +1089,7 @@ func (c *Client) ReconcileObservedPilotApply(ctx context.Context, planID, fleetE
 		return nil, err
 	}
 	planRun, err := c.getApplyRun(ctx, token, approved.PlanRunID)
-	if err != nil || planRun.ID != approved.PlanRunID || !canonicalWorkflowURL(c.cfg.Repository, planRun.ID, planRun.HTMLURL) || planRun.Event != "push" || planRun.Name != "plan" || planRun.Status != "completed" || planRun.Conclusion != "success" || planRun.HeadBranch != c.cfg.DefaultBranch || planRun.HeadSHA != approved.ApprovedHeadSHA || planRun.Path != ".github/workflows/plan.yml" || planRun.RunAttempt != 2 {
+	if err != nil || planRun.ID != approved.PlanRunID || !canonicalWorkflowURL(c.cfg.Repository, planRun.ID, planRun.HTMLURL) || planRun.Event != "workflow_dispatch" || planRun.Name != "plan" || planRun.Status != "completed" || planRun.Conclusion != "success" || planRun.HeadBranch != c.cfg.DefaultBranch || planRun.HeadSHA != approved.ApprovedHeadSHA || !workflowPathMatches(planRun.Path, "plan.yml", c.cfg.DefaultBranch) || planRun.RunAttempt != 1 {
 		return nil, fmt.Errorf("approved pilot plan run no longer matches its immutable binding")
 	}
 	artifactSHA, err := c.planArtifactSHA(ctx, token, approved.PlanRunID, fleetEnvironment)
@@ -1112,11 +1112,11 @@ func (c *Client) ReconcileObservedPilotApply(ctx context.Context, planID, fleetE
 	}
 	return &PilotApplyReconciliation{
 		SchemaVersion: "norn.fleet-github-pilot-apply-reconciliation/v1",
-		Outcome:       "target-apply-skipped-whole-provider-effects-unknown",
+		Outcome:       "verified-no-provider-resource-apply",
 		RunID:         observedPilotRunID, ApplyJobID: observedPilotApplyJobID,
 		ApprovedPlanRunID: approved.PlanRunID, ApprovedPlanSHA256: approved.PlanSHA,
-		TargetApply: "skipped", RunnerSSHCleanup: "failed-unverified",
-		WholeProviderEffects: "unknown",
+		TargetApply: "skipped", RunnerSSHCleanup: "console-failed-before-cleanup-plan-apply",
+		WholeProviderEffects: "no-workflow-provider-resource-mutation-evidenced",
 	}, nil
 }
 
