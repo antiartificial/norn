@@ -216,6 +216,16 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 			if err == nil {
 				observed = &githubapp.Reconciliation{Outcome: "recovered", Dispatch: recovered}
 			} else {
+				// One exact cancelled pilot run is known to have failed its TLS gate
+				// before the target apply. Its always-run firewall cleanup was also
+				// interrupted, so return a read-only classification and leave the
+				// reservation/fence queued until provider state is reconciled.
+				pilot, pilotErr := h.fleetGitHub.ReconcileObservedPilotApply(r.Context(), plan.ID, binding.FleetEnvironment, binding.AllowDestructive, approved, binding.DispatchNonceSHA256)
+				if pilotErr == nil && binding.DispatchState == "submitting" && binding.RunID == 0 && binding.RunAttempt == 0 && binding.WorkflowURL == "" && binding.ApprovalEnvelopeSHA256 == "" {
+					preventSensitiveResponseCaching(w)
+					writeJSON(w, map[string]interface{}{"operation": op, "outcome": pilot.Outcome, "reconciliation": pilot})
+					return
+				}
 				// A mismatched workflow HEAD is never recovered as a dispatch. The
 				// only exception is an exact nonce-bound disposable Fleet run whose
 				// provider barrier failure and skipped post-barrier steps prove no

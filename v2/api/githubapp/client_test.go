@@ -584,6 +584,259 @@ func TestFindApplyRunRequiresFullBoundWorkflowIdentity(t *testing.T) {
 	}
 }
 
+func TestReconcileObservedPilotApplyRejectsChangedBindingAndEffects(t *testing.T) {
+	if err := verifyObservedPilotApplyInputs(nil); err != nil {
+		t.Fatalf("GitHub REST inputs:null must defer to the exact step and nonce evidence: %v", err)
+	}
+	inputs := map[string]string{
+		"fleet_environment": "disposable/fleet/nyc3", "pilot_run_id": "pilot261006c",
+		"plan_run_id": "37892634005", "plan_sha256": observedPilotPlanSHA,
+		"norn_plan_id": observedPilotPlanID, "dispatch_nonce": observedPilotNonce,
+		"allow_destructive": "true", "approval_envelope_sha256": "",
+	}
+	if err := verifyObservedPilotApplyInputs(inputs); err != nil {
+		t.Fatalf("exact inputs rejected: %v", err)
+	}
+	if err := verifyObservedPilotApplyInputs(nil); err != nil {
+		t.Fatalf("GitHub REST inputs:null must defer to exact workflow-step and nonce evidence: %v", err)
+	}
+	for name, mutate := range map[string]func(map[string]string){
+		"wrong nonce":    func(v map[string]string) { v["dispatch_nonce"] = strings.Repeat("0", 64) },
+		"wrong artifact": func(v map[string]string) { v["plan_sha256"] = strings.Repeat("0", 64) },
+		"extra input":    func(v map[string]string) { v["unexpected"] = "value" },
+		"missing input":  func(v map[string]string) { delete(v, "approval_envelope_sha256") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := make(map[string]string, len(inputs))
+			for key, item := range inputs {
+				value[key] = item
+			}
+			mutate(value)
+			if err := verifyObservedPilotApplyInputs(value); err == nil {
+				t.Fatal("altered inputs accepted")
+			}
+		})
+	}
+	steps := observedPilotApplySteps()
+	for index, step := range steps {
+		if step.Conclusion != "skipped" {
+			continue
+		}
+		t.Run(fmt.Sprintf("effect step %d must remain skipped", step.Number), func(t *testing.T) {
+			changed := append([]reconciliationStep(nil), steps...)
+			changed[index].Conclusion = "success"
+			if reflect.DeepEqual(changed, observedPilotApplySteps()) {
+				t.Fatal("executed effect accepted")
+			}
+		})
+	}
+	for name, mutate := range map[string]func([]reconciliationStep) []reconciliationStep{
+		"extra step": func(v []reconciliationStep) []reconciliationStep {
+			return append(v, reconciliationStep{94, "unexpected", "completed", "success"})
+		},
+		"duplicate step":         func(v []reconciliationStep) []reconciliationStep { v[1] = v[0]; return v },
+		"missing step":           func(v []reconciliationStep) []reconciliationStep { return v[:len(v)-1] },
+		"main apply ran":         func(v []reconciliationStep) []reconciliationStep { v[37].Conclusion = "success"; return v },
+		"node configuration ran": func(v []reconciliationStep) []reconciliationStep { v[38].Conclusion = "success"; return v },
+		"TLS gate changed":       func(v []reconciliationStep) []reconciliationStep { v[18].Conclusion = "success"; return v },
+		"cleanup changed":        func(v []reconciliationStep) []reconciliationStep { v[39].Conclusion = "success"; return v },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := append([]reconciliationStep(nil), steps...)
+			if reflect.DeepEqual(mutate(changed), observedPilotApplySteps()) {
+				t.Fatal("altered step sequence accepted")
+			}
+		})
+	}
+}
+
+func TestReconcileObservedPilotApplyAcceptsOnlyStableBoundRun(t *testing.T) {
+	approved := &Dispatch{PlanRunID: observedPilotPlanRunID, PlanSHA: observedPilotPlanSHA, ApprovedHeadSHA: observedPilotHeadSHA, PilotRunID: "pilot261006c"}
+	inputs := map[string]string{"fleet_environment": "disposable/fleet/nyc3", "pilot_run_id": "pilot261006c", "plan_run_id": "37892634005", "plan_sha256": observedPilotPlanSHA, "norn_plan_id": observedPilotPlanID, "dispatch_nonce": observedPilotNonce, "allow_destructive": "true", "approval_envelope_sha256": ""}
+	planRun := applyRun{ID: observedPilotPlanRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotPlanRunID), Event: "push", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/plan.yml", Name: "plan", Status: "completed", Conclusion: "success", RunAttempt: 2}
+	applyRun := applyRun{ID: observedPilotRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotRunID), Event: "workflow_dispatch", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/apply.yml", Name: "apply", DisplayTitle: observedPilotTitle, Status: "completed", Conclusion: "cancelled", RunAttempt: 1, Inputs: inputs}
+	applyRun.Repository.FullName = observedPilotRepository
+	applyRun.Actor.Login, applyRun.Actor.Type = "norn-fleet-pilot-antiartificial[bot]", "Bot"
+	labels := []string{"self-hosted", "norn-fleet-protected", "norn-pilot-pilot261006c", "Linux"}
+	jobs := []reconciliationJob{
+		{ID: observedPilotAdmissionID, RunID: observedPilotRunID, RunAttempt: 1, Name: "pilot_admission", Status: "completed", Conclusion: "success", StartedAt: "2026-10-09T06:28:50Z", CompletedAt: "2026-10-09T06:28:53Z", RunnerID: 229, RunnerName: observedPilotRunnerName, Labels: labels, Steps: observedPilotAdmissionSteps()},
+		{ID: observedPilotApplyJobID, RunID: observedPilotRunID, RunAttempt: 1, Name: "apply", Status: "completed", Conclusion: "cancelled", StartedAt: "2026-10-09T06:28:56Z", CompletedAt: "2026-10-09T06:42:44Z", RunnerID: 229, RunnerName: observedPilotRunnerName, Labels: labels, Steps: observedPilotApplySteps()},
+	}
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
+	for name, value := range map[string]string{"fleet-plan.sha256": observedPilotPlanSHA + "\n", "pilot-run-id.txt": "pilot261006c\n"} {
+		file, err := zipWriter.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = file.Write([]byte(value))
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	newClient := func(t *testing.T, mutateSecond string, runAttempt int) *Client {
+		t.Helper()
+		applyReads, jobReads := 0, 0
+		client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if tokenResponse(w, r, map[string]string{"actions": "read", "contents": "read"}) {
+				return
+			}
+			switch r.URL.Path {
+			case fmt.Sprintf("/repos/%s/actions/runs/%d", observedPilotRepository, observedPilotPlanRunID):
+				_ = json.NewEncoder(w).Encode(planRun)
+			case fmt.Sprintf("/repos/%s/actions/runs/%d/artifacts", observedPilotRepository, observedPilotPlanRunID):
+				fmt.Fprintf(w, `{"artifacts":[{"id":1,"name":"fleet-plan-disposable-fleet-nyc3-%d","expired":false}]}`, observedPilotPlanRunID)
+			case fmt.Sprintf("/repos/%s/actions/artifacts/1/zip", observedPilotRepository):
+				if mutateSecond != "artifact mismatch" {
+					_, _ = w.Write(archive.Bytes())
+					return
+				}
+				var wrong bytes.Buffer
+				bad := zip.NewWriter(&wrong)
+				for name, value := range map[string]string{"fleet-plan.sha256": strings.Repeat("0", 64), "pilot-run-id.txt": "pilot261006c\n"} {
+					file, _ := bad.Create(name)
+					_, _ = file.Write([]byte(value))
+				}
+				_ = bad.Close()
+				_, _ = w.Write(wrong.Bytes())
+			case fmt.Sprintf("/repos/%s/actions/runs/%d", observedPilotRepository, observedPilotRunID):
+				applyReads++
+				value := applyRun
+				value.Inputs = nil // GitHub REST currently returns `inputs: null` for this run.
+				value.RunAttempt = runAttempt
+				if mutateSecond == "run" && applyReads == 2 {
+					value.UpdatedAt = "2026-10-09T06:43:00Z"
+				}
+				switch mutateSecond {
+				case "wrong nonce input":
+					value.Inputs = cloneStringMap(inputs)
+					value.Inputs["dispatch_nonce"] = strings.Repeat("0", 64)
+				case "wrong plan input":
+					value.Inputs = cloneStringMap(inputs)
+					value.Inputs["norn_plan_id"] = "11111111-1111-4111-8111-111111111111"
+				case "wrong fleet input":
+					value.Inputs = cloneStringMap(inputs)
+					value.Inputs["fleet_environment"] = "disposable/external-mac/nyc3"
+				case "extra input":
+					value.Inputs = cloneStringMap(inputs)
+					value.Inputs["extra"] = "unexpected"
+				case "changed head":
+					value.HeadSHA = strings.Repeat("0", 40)
+				case "exact input set":
+					value.Inputs = cloneStringMap(inputs)
+				}
+				_ = json.NewEncoder(w).Encode(value)
+			case fmt.Sprintf("/repos/%s/actions/runs/%d/jobs", observedPilotRepository, observedPilotRunID):
+				jobReads++
+				values := append([]reconciliationJob(nil), jobs...)
+				for i := range values {
+					values[i].Labels = append([]string(nil), values[i].Labels...)
+					values[i].Steps = append([]reconciliationStep(nil), values[i].Steps...)
+				}
+				if mutateSecond == "jobs" && jobReads == 2 {
+					values[1].CompletedAt = "2026-10-09T06:43:00Z"
+				}
+				switch mutateSecond {
+				case "extra job":
+					values = append(values, values[1])
+				case "duplicate job":
+					values[1] = values[0]
+				case "missing job":
+					values = values[:1]
+				case "bad admission":
+					values[0].Conclusion = "failure"
+				case "wrong runner":
+					values[0].RunnerName = "untrusted-runner"
+				case "duplicate step":
+					values[1].Steps[1] = values[1].Steps[0]
+				case "missing step":
+					values[1].Steps = values[1].Steps[:len(values[1].Steps)-1]
+				case "target apply ran":
+					values[1].Steps[37].Conclusion = "success"
+				case "node configuration ran":
+					values[1].Steps[38].Conclusion = "success"
+				case "TLS gate changed":
+					values[1].Steps[18].Conclusion = "success"
+				case "cleanup changed":
+					values[1].Steps[39].Conclusion = "success"
+				}
+				_ = json.NewEncoder(w).Encode(struct {
+					TotalCount int                 `json:"total_count"`
+					Jobs       []reconciliationJob `json:"jobs"`
+				}{len(values), values})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		client.cfg.Repository = observedPilotRepository
+		client.cfg.Environment = "staging"
+		client.cfg.PilotRunID = "pilot261006c"
+		client.cfg.ConfigPath = "environments/disposable/fleet/nyc3/cluster.yaml"
+		return client
+	}
+	call := func(c *Client) (*PilotApplyReconciliation, error) {
+		return c.ReconcileObservedPilotApply(context.Background(), observedPilotPlanID, "disposable/fleet/nyc3", true, approved, testObservedPilotNonceHash())
+	}
+	t.Run("exact outcome is accepted without claiming no-write", func(t *testing.T) {
+		result, err := call(newClient(t, "", 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.TargetApply != "skipped" || result.RunnerSSHCleanup != "failed-unverified" || result.WholeProviderEffects != "unknown" || result.Outcome != "target-apply-skipped-whole-provider-effects-unknown" {
+			t.Fatalf("unexpected reconciliation result: %#v", result)
+		}
+	})
+	t.Run("exact REST input object is accepted when present", func(t *testing.T) {
+		if _, err := call(newClient(t, "exact input set", 1)); err != nil {
+			t.Fatalf("exact input set rejected: %v", err)
+		}
+	})
+	for _, tc := range []struct {
+		name, mutate string
+		attempt      int
+	}{
+		{"changed run snapshot", "run", 1}, {"changed job snapshot", "jobs", 1}, {"rerun", "", 2},
+		{"mismatched artifact", "artifact mismatch", 1},
+		{"wrong nonce input", "wrong nonce input", 1}, {"wrong plan input", "wrong plan input", 1},
+		{"wrong fleet input", "wrong fleet input", 1}, {"extra input", "extra input", 1}, {"changed head", "changed head", 1},
+		{"extra job", "extra job", 1}, {"duplicate job", "duplicate job", 1}, {"missing job", "missing job", 1},
+		{"failed admission", "bad admission", 1}, {"wrong runner", "wrong runner", 1},
+		{"duplicate step", "duplicate step", 1}, {"missing step", "missing step", 1},
+		{"target apply executed", "target apply ran", 1}, {"configuration executed", "node configuration ran", 1},
+		{"TLS gate changed", "TLS gate changed", 1}, {"cleanup changed", "cleanup changed", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := call(newClient(t, tc.mutate, tc.attempt)); err == nil {
+				t.Fatal("non-exact final snapshot accepted")
+			}
+		})
+	}
+	wrongApproval := *approved
+	wrongApproval.PlanSHA = strings.Repeat("0", 64)
+	if _, err := newClient(t, "", 1).ReconcileObservedPilotApply(context.Background(), observedPilotPlanID, "disposable/fleet/nyc3", true, &wrongApproval, testObservedPilotNonceHash()); err == nil {
+		t.Fatal("wrong approved artifact binding accepted")
+	}
+	if _, err := newClient(t, "", 1).ReconcileObservedPilotApply(context.Background(), observedPilotPlanID, "disposable/fleet/nyc3", false, approved, testObservedPilotNonceHash()); err == nil {
+		t.Fatal("dispatch with a different destructive-approval binding accepted")
+	}
+	if _, err := newClient(t, "", 1).ReconcileObservedPilotApply(context.Background(), observedPilotPlanID, "disposable/fleet/nyc3", true, approved, strings.Repeat("0", 64)); err == nil {
+		t.Fatal("wrong persisted nonce hash accepted")
+	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func testObservedPilotNonceHash() string {
+	digest := sha256.Sum256([]byte(observedPilotNonce))
+	return hex.EncodeToString(digest[:])
+}
+
 func TestDispatchBoundPlanPrefersPersistedExactRun(t *testing.T) {
 	planID := "44444444-4444-4444-8444-444444444444"
 	nonce := strings.Repeat("a", 64)
