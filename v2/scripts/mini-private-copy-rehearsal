@@ -300,6 +300,12 @@ fingerprint_tables() {
       printf 'unsafe table name in source schema: %s\n' "$table" >&2
       exit 1
     }
+    # These two Norn-owned tables are migration metadata, not preserved
+    # application data. The rehearsal validates their post-migration ledger
+    # and compatibility floors below; migrations 48+ must update them.
+    case "$table" in
+      norn_schema_migrations|norn_schema_compatibility) continue ;;
+    esac
     count=$("${psql_private[@]}" -c "SELECT count(*) FROM public.\"$table\"")
     pk_columns=$("${psql_private[@]}" -c "SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY array_position(i.indkey, a.attnum)) FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey) WHERE i.indrelid='public.\"$table\"'::regclass AND i.indisprimary")
     [[ -n $pk_columns ]] || {
@@ -323,6 +329,11 @@ fingerprint_tables() {
 
 fingerprint_tables "$before_file" true
 before_rows=$(awk -F '\t' '{sum += $2} END {print sum + 0}' "$before_file")
+fingerprinted_table_count=$(wc -l <"$before_file" | tr -d ' ')
+[[ $fingerprinted_table_count -gt 0 ]] || {
+  printf 'expected at least one original non-metadata public table, found none\n' >&2
+  exit 1
+}
 
 run_migrate() {
   NORN_DATABASE_URL=$private_database_url \
@@ -435,11 +446,13 @@ printf 'candidate_sha=%s\n' "$expected_sha"
 printf 'candidate_version=%s\n' "$expected_version"
 printf 'postgres_version=%s\n' "$("$postgres_bin/postgres" --version)"
 printf 'original_tables=%s\n' "$original_table_count"
+printf 'fingerprinted_tables=%s\n' "$fingerprinted_table_count"
 printf 'original_rows=%s\n' "$before_rows"
 printf 'ledger_versions=1-%s\n' "$catalog_version"
 printf 'minimum_reader=%s\n' "$minimum_reader"
 printf 'minimum_writer=%s\n' "$minimum_writer"
 printf 'fingerprints=primary-key-and-full-row-matched\n'
+printf 'migration_metadata_tables=norn_schema_migrations,norn_schema_compatibility-validated\n'
 printf 'second_migrate_only=passed\n'
 printf 'passive_health=passed\n'
 if [[ $check_live_state == true ]]; then
