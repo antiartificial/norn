@@ -57,6 +57,18 @@ var (
 	ErrRerunIneligible   = errors.New("protected workflow rerun is not eligible")
 )
 
+// DispatchRecoveryFailure carries only a bounded failure stage for server-side
+// diagnostics. It deliberately excludes GitHub response bodies, workflow
+// titles, dispatch nonces, and credentials from logs and client responses.
+type DispatchRecoveryFailure struct {
+	Stage string
+}
+
+func (e *DispatchRecoveryFailure) Error() string { return ErrDispatchAmbiguous.Error() }
+func (e *DispatchRecoveryFailure) Unwrap() error { return ErrDispatchAmbiguous }
+
+func recoveryFailure(stage string) error { return &DispatchRecoveryFailure{Stage: stage} }
+
 const (
 	applyRunDisplayTitleFormat      = "Apply %s Norn plan %s nonce %s"
 	pilotApplyRunDisplayTitleFormat = "Apply %s pilot %s Norn plan %s nonce %s"
@@ -573,15 +585,15 @@ func (c *Client) RecoverBoundExternalMacRerun(ctx context.Context, planID, fleet
 // method never creates a GitHub workflow dispatch.
 func (c *Client) RecoverBoundPlan(ctx context.Context, planID, fleetEnvironment string, approved *Dispatch, nonceHash string) (*Dispatch, error) {
 	if fleetEnvironment != c.fleetRoot() || approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !sha256Re.MatchString(nonceHash) || approved.PilotRunID != c.cfg.PilotRunID {
-		return nil, ErrDispatchAmbiguous
+		return nil, recoveryFailure("binding")
 	}
 	token, err := c.installationToken(ctx, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"})
 	if err != nil {
-		return nil, ErrDispatchAmbiguous
+		return nil, recoveryFailure("installation-token")
 	}
 	appActor, err := c.appActorLogin(ctx)
 	if err != nil {
-		return nil, ErrDispatchAmbiguous
+		return nil, recoveryFailure("app-actor")
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 && c.pause != nil {
@@ -589,14 +601,18 @@ func (c *Client) RecoverBoundPlan(ctx context.Context, planID, fleetEnvironment 
 		}
 		found, findErr := c.findApplyRunByNonceHash(ctx, token, planID, fleetEnvironment, approved, nonceHash, appActor)
 		if findErr != nil {
-			return nil, ErrDispatchAmbiguous
+			var stage *DispatchRecoveryFailure
+			if errors.As(findErr, &stage) {
+				return nil, stage
+			}
+			return nil, recoveryFailure("run-lookup")
 		}
 		if found != nil {
 			found.Existing = true
 			return found, nil
 		}
 	}
-	return nil, ErrDispatchAmbiguous
+	return nil, recoveryFailure("zero-matches")
 }
 
 // ReconcileFailedPlanVerification proves that a nonce-bound disposable Fleet
@@ -944,19 +960,19 @@ func (c *Client) findApplyRunByNonceHash(ctx context.Context, token, planID, fle
 	}
 	query := "?event=workflow_dispatch&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&per_page=100"
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/runs"+query), nil, &runs); err != nil {
-		return nil, err
+		return nil, recoveryFailure("run-list")
 	}
 	var match *Dispatch
 	for _, run := range runs.WorkflowRuns {
 		candidate, err := c.getApplyRun(ctx, token, run.ID)
 		if err != nil {
-			return nil, err
+			return nil, recoveryFailure("run-fetch")
 		}
 		if err := c.verifyApplyRunByNonceHash(candidate, planID, fleetEnvironment, approved, nonceHash, appActor); err != nil {
 			continue
 		}
 		if match != nil {
-			return nil, ErrDispatchAmbiguous
+			return nil, recoveryFailure("multiple-matches")
 		}
 		match = &Dispatch{RunID: candidate.ID, RunAttempt: candidate.RunAttempt, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID}
 	}

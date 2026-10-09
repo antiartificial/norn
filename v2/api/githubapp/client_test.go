@@ -753,6 +753,39 @@ func TestRecoverBoundPlanRejectsMultipleHashMatches(t *testing.T) {
 	client.pause = func(time.Duration) {}
 	if _, err := client.RecoverBoundPlan(context.Background(), planID, "production/nyc3", approved, nonceHash); !errors.Is(err, ErrDispatchAmbiguous) {
 		t.Fatalf("multiple hash matches err=%v", err)
+	} else {
+		var failure *DispatchRecoveryFailure
+		if !errors.As(err, &failure) || failure.Stage != "multiple-matches" {
+			t.Fatalf("multiple hash match diagnostic=%#v err=%v", failure, err)
+		}
+	}
+}
+
+func TestRecoverBoundPlanClassifiesRunListFailureWithoutLeakingResponse(t *testing.T) {
+	planID := "99999999-9999-4999-8999-999999999999"
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("c", 64), ApprovedHeadSHA: strings.Repeat("b", 40)}
+	const providerDetail = "private-provider-response-marker"
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		if strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs") {
+			http.Error(w, providerDetail, http.StatusForbidden)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	_, err := client.RecoverBoundPlan(context.Background(), planID, "production/nyc3", approved, strings.Repeat("d", 64))
+	var failure *DispatchRecoveryFailure
+	if !errors.Is(err, ErrDispatchAmbiguous) || !errors.As(err, &failure) || failure.Stage != "run-list" {
+		t.Fatalf("run list failure diagnostic=%#v err=%v", failure, err)
+	}
+	if strings.Contains(err.Error(), providerDetail) {
+		t.Fatalf("provider response leaked through recovery error: %v", err)
 	}
 }
 
