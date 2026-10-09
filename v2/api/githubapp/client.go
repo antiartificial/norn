@@ -971,6 +971,12 @@ func (c *Client) findApplyRunByNonceHash(ctx context.Context, token, planID, fle
 		if err := c.verifyApplyRunByNonceHash(candidate, planID, fleetEnvironment, approved, nonceHash, appActor); err != nil {
 			continue
 		}
+		// A completed failed or cancelled run is not a recovered dispatch.
+		// Leave it to the exact-run reconciler, which may still be unable to
+		// prove whether the workflow's cleanup had provider effects.
+		if candidate.Status == "completed" && candidate.Conclusion != "success" {
+			continue
+		}
 		if match != nil {
 			return nil, recoveryFailure("multiple-matches")
 		}

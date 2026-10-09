@@ -395,6 +395,37 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	}
 }
 
+func TestRecoverBoundPlanDoesNotRecoverCancelledHashMatchedRun(t *testing.T) {
+	planID := "77777777-7777-4777-8777-777777777777"
+	nonce := strings.Repeat("a", 64)
+	sum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(sum[:])
+	headSHA := strings.Repeat("b", 40)
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("c", 64), ApprovedHeadSHA: headSHA}
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		switch {
+		case strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs"):
+			fmt.Fprint(w, `{"workflow_runs":[{"id":93}]}`)
+		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"completed","conclusion":"cancelled","actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	client.pause = func(time.Duration) {}
+	result, err := client.RecoverBoundPlan(context.Background(), planID, "production/nyc3", approved, nonceHash)
+	if !errors.Is(err, ErrDispatchAmbiguous) || result != nil {
+		t.Fatalf("cancelled run was accepted as recovered: result=%#v err=%v", result, err)
+	}
+}
+
 func TestExternalMacDispatchCarriesAndPinsPilotRunID(t *testing.T) {
 	planID := "25252525-2525-4252-8252-252525252525"
 	planSHA := strings.Repeat("a", 64)
@@ -961,7 +992,7 @@ func TestRecoverBoundPlanFindsHashMatchedRunAfterCrashWithoutPosting(t *testing.
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/92":
 			fmt.Fprintf(w, `{"id":92,"html_url":"https://github.com/acme/norn-fleet/actions/runs/92","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+strings.Repeat("d", 64))
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"completed","conclusion":"success","actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
 		case r.Method == http.MethodPost:
 			postCount++
 			t.Fatal("hash-only recovery attempted a second workflow POST")
