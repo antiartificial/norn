@@ -991,6 +991,7 @@ type applyRun struct {
 	Status       string            `json:"status"`
 	Conclusion   string            `json:"conclusion"`
 	RunAttempt   int               `json:"run_attempt"`
+	UpdatedAt    string            `json:"updated_at"`
 	Inputs       map[string]string `json:"inputs"`
 	Repository   struct {
 		FullName string `json:"full_name"`
@@ -999,6 +1000,303 @@ type applyRun struct {
 		Login string `json:"login"`
 		Type  string `json:"type"`
 	} `json:"actor"`
+}
+
+// PilotApplyReconciliation reports that only the approved target apply was
+// skipped. The always-run SSH cleanup can itself mutate a firewall, so this
+// result explicitly leaves whole-provider effects unknown.
+type PilotApplyReconciliation struct {
+	SchemaVersion        string `json:"schemaVersion"`
+	Outcome              string `json:"outcome"`
+	RunID                int64  `json:"runId"`
+	ApplyJobID           int64  `json:"applyJobId"`
+	ApprovedPlanRunID    int64  `json:"approvedPlanRunId"`
+	ApprovedPlanSHA256   string `json:"approvedPlanSha256"`
+	TargetApply          string `json:"targetApply"`
+	RunnerSSHCleanup     string `json:"runnerSshCleanup"`
+	WholeProviderEffects string `json:"wholeProviderEffects"`
+}
+
+type reconciliationStep struct {
+	Number     int    `json:"number"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+type reconciliationJob struct {
+	ID          int64                `json:"id"`
+	RunID       int64                `json:"run_id"`
+	RunAttempt  int                  `json:"run_attempt"`
+	Name        string               `json:"name"`
+	Status      string               `json:"status"`
+	Conclusion  string               `json:"conclusion"`
+	StartedAt   string               `json:"started_at"`
+	CompletedAt string               `json:"completed_at"`
+	RunnerID    int64                `json:"runner_id"`
+	RunnerName  string               `json:"runner_name"`
+	Labels      []string             `json:"labels"`
+	Steps       []reconciliationStep `json:"steps"`
+}
+
+type reconciliationSnapshot struct {
+	Run     applyRun
+	Jobs    []reconciliationJob
+	RawRun  []byte
+	RawJobs []byte
+}
+
+const (
+	observedPilotRunID       = int64(37893727725)
+	observedPilotPlanRunID   = int64(37892634005)
+	observedPilotApplyJobID  = int64(113700233233)
+	observedPilotAdmissionID = int64(113700210905)
+	observedPilotPlanID      = "0586dc87-bbe6-421b-8e8e-49f7e2a43699"
+	observedPilotNonce       = "a5f90addbc28cafc28e42aa58edd28ed13bdf7b5771f17e0814c2857f422a9c8"
+	observedPilotHeadSHA     = "55d3472f808cb1ca066e4b658aaa0ef1e182fff3"
+	observedPilotPlanSHA     = "676fd1f48f7e06e73821d9a4e94810ab8473491a8868a4d6553b2d182eac68cb"
+	observedPilotTitle       = "Apply disposable/fleet/nyc3 pilot pilot261006c Norn plan " + observedPilotPlanID + " nonce " + observedPilotNonce
+	observedPilotRunnerName  = "norn-pilot-pilot261006c-runner"
+	observedPilotRepository  = "antiartificial/norn-fleet"
+)
+
+// ReconcileObservedPilotApply accepts only the one observed nonce-bound pilot
+// run. It verifies the approved artifact and immutable protected run, then
+// double-fetches canonical run/job snapshots and rejects any change. Its
+// classification is intentionally weaker than no-write: the failed cleanup
+// may have applied its firewall-only closure before failing, so callers must
+// keep the dispatch queued and reconcile provider state before retry/release.
+// GitHub's run REST representation omits dispatch inputs (inputs:null); the
+// protected workflow's exact successful input-validation and artifact-binding
+// steps plus Norn's persisted nonce hash and the immutable run title provide
+// that binding. When REST does return inputs, they must match the full set.
+func (c *Client) ReconcileObservedPilotApply(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonceHash string) (*PilotApplyReconciliation, error) {
+	observedNonceSHA := sha256.Sum256([]byte(observedPilotNonce))
+	if fleetEnvironment != "disposable/fleet/nyc3" || planID != observedPilotPlanID || !allowDestructive || !sha256Re.MatchString(nonceHash) || subtle.ConstantTimeCompare([]byte(nonceHash), []byte(hex.EncodeToString(observedNonceSHA[:]))) != 1 || approved == nil || approved.PlanRunID != observedPilotPlanRunID || approved.PlanSHA != observedPilotPlanSHA || approved.ApprovedHeadSHA != observedPilotHeadSHA || approved.PilotRunID != "pilot261006c" {
+		return nil, fmt.Errorf("pilot apply reconciliation binding is not the observed immutable run")
+	}
+	if c.cfg.Repository != observedPilotRepository || c.cfg.PilotRunID != "pilot261006c" || c.cfg.ConfigPath != "environments/disposable/fleet/nyc3/cluster.yaml" || fleetEnvironment != c.fleetRoot() {
+		return nil, fmt.Errorf("pilot reconciliation is unavailable outside the exact disposable Fleet root")
+	}
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read", "contents": "read"})
+	if err != nil {
+		return nil, err
+	}
+	planRun, err := c.getApplyRun(ctx, token, approved.PlanRunID)
+	if err != nil || planRun.ID != approved.PlanRunID || !canonicalWorkflowURL(c.cfg.Repository, planRun.ID, planRun.HTMLURL) || planRun.Event != "push" || planRun.Name != "plan" || planRun.Status != "completed" || planRun.Conclusion != "success" || planRun.HeadBranch != c.cfg.DefaultBranch || planRun.HeadSHA != approved.ApprovedHeadSHA || planRun.Path != ".github/workflows/plan.yml" || planRun.RunAttempt != 2 {
+		return nil, fmt.Errorf("approved pilot plan run no longer matches its immutable binding")
+	}
+	artifactSHA, err := c.planArtifactSHA(ctx, token, approved.PlanRunID, fleetEnvironment)
+	if err != nil || artifactSHA != approved.PlanSHA {
+		return nil, fmt.Errorf("approved pilot plan artifact no longer matches its immutable binding")
+	}
+	first, err := c.pilotReconciliationSnapshot(ctx, token, observedPilotRunID)
+	if err != nil {
+		return nil, err
+	}
+	second, err := c.pilotReconciliationSnapshot(ctx, token, observedPilotRunID)
+	if err != nil {
+		return nil, err
+	}
+	if !reflect.DeepEqual(first, second) {
+		return nil, fmt.Errorf("pilot apply run or job snapshot changed during reconciliation")
+	}
+	if err := verifyObservedPilotApplySnapshot(first, c.cfg.Repository, c.cfg.DefaultBranch, planID, fleetEnvironment, nonceHash, approved); err != nil {
+		return nil, err
+	}
+	return &PilotApplyReconciliation{
+		SchemaVersion: "norn.fleet-github-pilot-apply-reconciliation/v1",
+		Outcome:       "target-apply-skipped-whole-provider-effects-unknown",
+		RunID:         observedPilotRunID, ApplyJobID: observedPilotApplyJobID,
+		ApprovedPlanRunID: approved.PlanRunID, ApprovedPlanSHA256: approved.PlanSHA,
+		TargetApply: "skipped", RunnerSSHCleanup: "failed-unverified",
+		WholeProviderEffects: "unknown",
+	}, nil
+}
+
+func (c *Client) pilotReconciliationSnapshot(ctx context.Context, token string, runID int64) (reconciliationSnapshot, error) {
+	var snapshot reconciliationSnapshot
+	var rawRun json.RawMessage
+	if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d", runID)), nil, &rawRun); err != nil {
+		return snapshot, err
+	}
+	if err := json.Unmarshal(rawRun, &snapshot.Run); err != nil {
+		return snapshot, err
+	}
+	var err error
+	snapshot.RawRun, err = canonicalJSON(rawRun)
+	if err != nil {
+		return snapshot, err
+	}
+	var jobs struct {
+		TotalCount int                 `json:"total_count"`
+		Jobs       []reconciliationJob `json:"jobs"`
+	}
+	var rawJobs json.RawMessage
+	if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d/jobs?per_page=100", runID)), nil, &rawJobs); err != nil {
+		return snapshot, err
+	}
+	if err := json.Unmarshal(rawJobs, &jobs); err != nil {
+		return snapshot, err
+	}
+	if jobs.TotalCount != len(jobs.Jobs) {
+		return snapshot, fmt.Errorf("pilot apply jobs are incomplete")
+	}
+	snapshot.Jobs = jobs.Jobs
+	snapshot.RawJobs, err = canonicalJSON(rawJobs)
+	if err != nil {
+		return snapshot, err
+	}
+	return snapshot, nil
+}
+
+func canonicalJSON(raw []byte) ([]byte, error) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
+}
+
+func verifyObservedPilotApplySnapshot(snapshot reconciliationSnapshot, repository, branch, planID, fleetEnvironment, nonceHash string, approved *Dispatch) error {
+	run := snapshot.Run
+	if approved == nil || run.ID != observedPilotRunID || !canonicalWorkflowURL(repository, run.ID, run.HTMLURL) || run.Repository.FullName != observedPilotRepository || run.Event != "workflow_dispatch" || run.HeadBranch != branch || run.HeadSHA != observedPilotHeadSHA || run.Path != ".github/workflows/apply.yml" || run.Name != "apply" || run.RunAttempt != 1 || run.Status != "completed" || run.Conclusion != "cancelled" || run.DisplayTitle != observedPilotTitle || planID != observedPilotPlanID || fleetEnvironment != "disposable/fleet/nyc3" || approved.PlanRunID != observedPilotPlanRunID || approved.PlanSHA != observedPilotPlanSHA || approved.ApprovedHeadSHA != observedPilotHeadSHA || approved.PilotRunID != "pilot261006c" || run.Actor.Type != "Bot" || run.Actor.Login != "norn-fleet-pilot-antiartificial[bot]" {
+		return fmt.Errorf("GitHub apply run does not match the observed immutable cancelled run")
+	}
+	runNonceSHA := sha256.Sum256([]byte(observedPilotNonce))
+	if subtle.ConstantTimeCompare([]byte(nonceHash), []byte(hex.EncodeToString(runNonceSHA[:]))) != 1 {
+		return fmt.Errorf("GitHub apply run title does not match Norn's protected nonce hash")
+	}
+	if err := verifyObservedPilotApplyInputs(run.Inputs); err != nil {
+		return err
+	}
+	if len(snapshot.Jobs) != 2 {
+		return fmt.Errorf("GitHub apply run has an unexpected job set")
+	}
+	var admission, apply *reconciliationJob
+	for i := range snapshot.Jobs {
+		job := &snapshot.Jobs[i]
+		if job.RunID != run.ID || job.RunAttempt != 1 || job.Status != "completed" || job.CompletedAt == "" || job.StartedAt == "" || job.RunnerID != 229 || job.RunnerName != observedPilotRunnerName || !reflect.DeepEqual(job.Labels, []string{"self-hosted", "norn-fleet-protected", "norn-pilot-pilot261006c", "Linux"}) {
+			return fmt.Errorf("GitHub apply job identity is not the observed immutable runner")
+		}
+		switch job.Name {
+		case "pilot_admission":
+			if admission != nil || job.ID != observedPilotAdmissionID || job.Conclusion != "success" {
+				return fmt.Errorf("GitHub admission job is not the exact successful admission")
+			}
+			admission = job
+		case "apply":
+			if apply != nil || job.ID != observedPilotApplyJobID || job.Conclusion != "cancelled" {
+				return fmt.Errorf("GitHub apply job is not the exact cancelled apply")
+			}
+			apply = job
+		default:
+			return fmt.Errorf("GitHub apply run has an unexpected job")
+		}
+	}
+	if admission == nil || apply == nil {
+		return fmt.Errorf("GitHub apply run is missing an admission or apply job")
+	}
+	if !reflect.DeepEqual(admission.Steps, observedPilotAdmissionSteps()) {
+		return fmt.Errorf("GitHub admission steps do not match the exact successful runner admission")
+	}
+	if !reflect.DeepEqual(apply.Steps, observedPilotApplySteps()) {
+		return fmt.Errorf("GitHub apply steps do not match the exact failed-gate/cancelled-cleanup outcome")
+	}
+	return nil
+}
+
+func verifyObservedPilotApplyInputs(inputs map[string]string) error {
+	// GitHub's Actions REST run response currently serializes dispatch inputs as
+	// null. In that case the exact protected validation/artifact-binding steps
+	// and the nonce-bound run title are the observable workflow evidence. A
+	// present object must still match the complete expected input set.
+	if inputs == nil {
+		return nil
+	}
+	expected := map[string]string{
+		"fleet_environment":        "disposable/fleet/nyc3",
+		"pilot_run_id":             "pilot261006c",
+		"plan_run_id":              fmt.Sprintf("%d", observedPilotPlanRunID),
+		"plan_sha256":              observedPilotPlanSHA,
+		"norn_plan_id":             observedPilotPlanID,
+		"dispatch_nonce":           observedPilotNonce,
+		"allow_destructive":        "true",
+		"approval_envelope_sha256": "",
+	}
+	if len(inputs) != len(expected) {
+		return fmt.Errorf("GitHub apply inputs do not match the exact approved artifact binding")
+	}
+	for key, value := range expected {
+		if inputs[key] != value {
+			return fmt.Errorf("GitHub apply inputs do not match the exact approved artifact binding")
+		}
+	}
+	return nil
+}
+
+func observedPilotAdmissionSteps() []reconciliationStep {
+	return []reconciliationStep{
+		{1, "Set up job", "completed", "success"},
+		{2, "Require selected admission runner", "completed", "success"},
+		{3, "Run set -euo pipefail", "completed", "success"},
+		{4, "Complete job", "completed", "success"},
+	}
+}
+
+func observedPilotApplySteps() []reconciliationStep {
+	return []reconciliationStep{
+		{1, "Set up job", "completed", "success"},
+		{2, "Reject GitHub workflow reruns", "completed", "skipped"},
+		{3, "Require exact protected pilot effect runner", "completed", "success"},
+		{4, "Validate manual approval inputs", "completed", "success"},
+		{5, "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", "completed", "success"},
+		{6, "Configure protected macOS Python trust", "completed", "skipped"},
+		{7, "Prepare pinned external-Mac Python runtime", "completed", "skipped"},
+		{8, "Authenticate admitted owner Mac and active runner before effects", "completed", "skipped"},
+		{9, "Prepare pinned disposable provider inventory runtime", "completed", "success"},
+		{10, "Validate selected Fleet topology before provider apply", "completed", "success"},
+		{11, "Prove runner access to a configured Droplet SSH key", "completed", "skipped"},
+		{12, "Verify the approved plan workflow run", "completed", "success"},
+		{13, "Download approved review artifact", "completed", "success"},
+		{14, "Bind approved pilot artifact to exact dispatch run", "completed", "success"},
+		{15, "Run opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f", "completed", "success"},
+		{16, "Preflight disposable Fleet runner inputs", "completed", "success"},
+		{17, "Bind disposable target to exact run config before provider access", "completed", "success"},
+		{18, "Bind external-Mac root, runner, live price approval, and five node keys", "completed", "skipped"},
+		{19, "Prove pre-issued disposable public ingress TLS before provider apply", "completed", "failure"},
+		{20, "Prove exact disposable precreate provider absence", "completed", "skipped"},
+		{21, "Require hands-off reconciliation configuration", "completed", "skipped"},
+		{22, "Collect fresh empty external-Mac inventory immediately before first create", "completed", "skipped"},
+		{23, "Prove external-Mac state and lock are absent before first provider apply", "completed", "skipped"},
+		{24, "Record verified pre-create external-Mac registry boundaries", "completed", "skipped"},
+		{25, "Initialize locked provider selections and remote state", "completed", "success"},
+		{26, "Revalidate temporary runner SSH route against current state", "completed", "skipped"},
+		{27, "Re-create and bind the approved plan", "completed", "skipped"},
+		{28, "Classify and bind a staged contraction", "completed", "skipped"},
+		{29, "Consume external-Mac owner approval before recovery authority", "completed", "skipped"},
+		{30, "Persist recovery binding before provider mutation", "completed", "skipped"},
+		{31, "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "completed", "skipped"},
+		{32, "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "completed", "skipped"},
+		{33, "Verify external-Mac ACL immediately before durable attempt", "completed", "skipped"},
+		{34, "Start durable Fleet runner attempt", "completed", "skipped"},
+		{35, "Create contraction identity receipt before any node fencing", "completed", "skipped"},
+		{36, "Persist contraction identity receipt before provider deletion", "completed", "skipped"},
+		{37, "Prove headroom, readiness, and drain before deletion", "completed", "skipped"},
+		{38, "Apply verified plan", "completed", "skipped"},
+		{39, "Resume node configuration, enrollment, and assurance", "completed", "skipped"},
+		{40, "Close temporary runner SSH after bootstrap or failure", "completed", "failure"},
+		{41, "Prove the external-Mac controller reaches all enrolled Tailscale identities", "completed", "skipped"},
+		{42, "Close and authenticate first-bootstrap SSH after external-Mac enrollment", "completed", "skipped"},
+		{43, "Record non-secret evidence", "completed", "success"},
+		{44, "Admit the separately executed disposable MySQL workload", "completed", "skipped"},
+		{45, "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "completed", "success"},
+		{46, "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "completed", "skipped"},
+		{92, "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", "completed", "success"},
+		{93, "Complete job", "completed", "success"},
+	}
 }
 
 func (c *Client) getApplyRun(ctx context.Context, token string, runID int64) (*applyRun, error) {
