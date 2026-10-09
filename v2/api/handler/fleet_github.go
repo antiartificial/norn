@@ -214,6 +214,12 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 			recovered, err = h.fleetGitHub.RecoverBoundPlan(r.Context(), plan.ID, binding.FleetEnvironment, approved, binding.DispatchNonceSHA256)
 			if err == nil {
 				observed = &githubapp.Reconciliation{Outcome: "recovered", Dispatch: recovered}
+			} else {
+				// A mismatched workflow HEAD is never recovered as a dispatch. The
+				// only exception is an exact nonce-bound disposable Fleet run whose
+				// provider barrier failure and skipped post-barrier steps prove no
+				// provider/state effect ran; that outcome cancels the reservation.
+				observed, err = h.fleetGitHub.ReconcileFailedPlanVerification(r.Context(), plan.ID, binding.FleetEnvironment, binding.AllowDestructive, approved, binding.DispatchNonceSHA256)
 			}
 		}
 	}

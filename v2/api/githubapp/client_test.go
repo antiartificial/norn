@@ -756,6 +756,104 @@ func TestRecoverBoundPlanRejectsMultipleHashMatches(t *testing.T) {
 	}
 }
 
+func TestReconcileFailedPlanVerificationIsNonceBoundAndProvesNoWrite(t *testing.T) {
+	planID := "4c7f76a4-4714-4d3a-956e-421958ae7a2f"
+	approvedSHA := strings.Repeat("5", 40)
+	applySHA := strings.Repeat("d", 40)
+	planSHA := strings.Repeat("a", 64)
+	nonce := strings.Repeat("b", 64)
+	nonceSum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(nonceSum[:])
+	pilotID := "pilot261006c"
+	approved := &Dispatch{PlanRunID: 37595768647, PlanSHA: planSHA, ApprovedHeadSHA: approvedSHA, PilotRunID: pilotID}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*applyRun, *[]map[string]string)
+	}{
+		{name: "exact pre-provider failure"},
+		{name: "wrong nonce", mutate: func(run *applyRun, _ *[]map[string]string) {
+			run.DisplayTitle = applyRunDisplayTitle("disposable/fleet/nyc3", pilotID, planID, strings.Repeat("c", 64))
+		}},
+		{name: "wrong plan", mutate: func(run *applyRun, _ *[]map[string]string) {
+			run.DisplayTitle = applyRunDisplayTitle("disposable/fleet/nyc3", pilotID, "11111111-1111-4111-8111-111111111111", nonce)
+		}},
+		{name: "wrong plan input", mutate: func(run *applyRun, _ *[]map[string]string) {
+			run.Inputs["norn_plan_id"] = "11111111-1111-4111-8111-111111111111"
+		}},
+		{name: "wrong environment", mutate: func(run *applyRun, _ *[]map[string]string) {
+			run.DisplayTitle = applyRunDisplayTitle("disposable/external-mac/nyc3", pilotID, planID, nonce)
+		}},
+		{name: "wrong environment input", mutate: func(run *applyRun, _ *[]map[string]string) {
+			run.Inputs["fleet_environment"] = "disposable/external-mac/nyc3"
+		}},
+		{name: "wrong nonce input", mutate: func(run *applyRun, _ *[]map[string]string) { run.Inputs["dispatch_nonce"] = strings.Repeat("c", 64) }},
+		{name: "other actor", mutate: func(run *applyRun, _ *[]map[string]string) { run.Actor.Login = "other[bot]" }},
+		{name: "wrong repository", mutate: func(run *applyRun, _ *[]map[string]string) { run.Repository.FullName = "acme/other" }},
+		{name: "wrong workflow ref", mutate: func(run *applyRun, _ *[]map[string]string) { run.Path = ".github/workflows/apply.yml@feature" }},
+		{name: "nonfailed run", mutate: func(run *applyRun, _ *[]map[string]string) { run.Conclusion = "success" }},
+		{name: "post barrier step running", mutate: func(_ *applyRun, steps *[]map[string]string) {
+			(*steps)[len(*steps)-1]["status"] = "in_progress"
+			(*steps)[len(*steps)-1]["conclusion"] = ""
+		}},
+		{name: "unexpected prior step", mutate: func(_ *applyRun, steps *[]map[string]string) {
+			*steps = append((*steps)[:6], append([]map[string]string{{"name": "Unexpected provider action", "status": "completed", "conclusion": "success"}}, (*steps)[6:]...)...)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			title := applyRunDisplayTitle("disposable/fleet/nyc3", pilotID, planID, nonce)
+			run := applyRun{ID: 37598259437, HTMLURL: "https://github.com/acme/norn-fleet/actions/runs/37598259437", Event: "workflow_dispatch", HeadSHA: applySHA, HeadBranch: "main", Path: ".github/workflows/apply.yml@main", Name: "apply", DisplayTitle: title, Status: "completed", Conclusion: "failure", RunAttempt: 1}
+			run.Repository.FullName = "acme/norn-fleet"
+			run.Actor.Login, run.Actor.Type = "norn-fleet-pilot-antiartificial[bot]", "Bot"
+			run.Inputs = map[string]string{"fleet_environment": "disposable/fleet/nyc3", "pilot_run_id": pilotID, "plan_run_id": "37595768647", "plan_sha256": planSHA, "norn_plan_id": planID, "dispatch_nonce": nonce, "allow_destructive": "true", "approval_envelope_sha256": ""}
+			steps := []map[string]string{
+				{"name": "Reject GitHub workflow reruns", "status": "completed", "conclusion": "skipped"},
+				{"name": "Require exact protected pilot effect runner", "status": "completed", "conclusion": "success"},
+				{"name": "Validate manual approval inputs", "status": "completed", "conclusion": "success"},
+				{"name": "Checkout", "status": "completed", "conclusion": "success"},
+				{"name": "Prepare pinned disposable provider inventory runtime", "status": "completed", "conclusion": "success"},
+				{"name": "Validate selected Fleet topology before provider apply", "status": "completed", "conclusion": "success"},
+				{"name": "Verify the approved plan workflow run", "status": "completed", "conclusion": "failure"},
+				{"name": "Download approved review artifact", "status": "completed", "conclusion": "skipped"},
+			}
+			if tc.mutate != nil {
+				tc.mutate(&run, &steps)
+			}
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/app" {
+					fmt.Fprint(w, `{"slug":"norn-fleet-pilot-antiartificial"}`)
+					return
+				}
+				if tokenResponse(w, r, map[string]string{"actions": "read"}) {
+					return
+				}
+				switch r.URL.Path {
+				case "/repos/acme/norn-fleet/actions/workflows/apply.yml/runs":
+					fmt.Fprintf(w, `{"workflow_runs":[{"id":%d}]}`, run.ID)
+				case "/repos/acme/norn-fleet/actions/runs/37598259437":
+					_ = json.NewEncoder(w).Encode(run)
+				case "/repos/acme/norn-fleet/actions/runs/37598259437/jobs":
+					admission := map[string]interface{}{"name": "pilot_admission", "status": "completed", "conclusion": "success", "steps": []map[string]string{{"name": "Require selected admission runner", "status": "completed", "conclusion": "success"}, {"name": "admit", "status": "completed", "conclusion": "success"}}}
+					apply := map[string]interface{}{"name": "apply", "status": "completed", "conclusion": "failure", "steps": steps}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"total_count": 2, "jobs": []interface{}{admission, apply}})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			client.cfg.PilotRunID = pilotID
+			client.cfg.ConfigPath = "environments/disposable/fleet/nyc3/cluster.yaml"
+			result, err := client.ReconcileFailedPlanVerification(context.Background(), planID, "disposable/fleet/nyc3", true, approved, nonceHash)
+			if tc.name == "exact pre-provider failure" {
+				if err != nil || result == nil || result.Outcome != "verified-no-write" || result.Dispatch != nil {
+					t.Fatalf("lookup-only no-write result=%+v err=%v", result, err)
+				}
+			} else if err == nil || result != nil {
+				t.Fatalf("adversarial run accepted as no-write: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestConfigRejectsTraversalAndNonGitHubProductionAPI(t *testing.T) {
 	_, err := New(Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: "staging", ConfigPath: "../secret.yaml"}, nil)
 	if err == nil {

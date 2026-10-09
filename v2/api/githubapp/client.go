@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -598,6 +599,185 @@ func (c *Client) RecoverBoundPlan(ctx context.Context, planID, fleetEnvironment 
 	return nil, ErrDispatchAmbiguous
 }
 
+// ReconcileFailedPlanVerification proves that a nonce-bound disposable Fleet
+// apply failed at the pre-provider plan-run identity barrier. This is strictly
+// lookup-only: it never returns a Dispatch and can only justify canceling the
+// reservation as verified-no-write. Normal successful/replay recovery remains
+// governed by RecoverBoundPlan's exact approved-HEAD check.
+func (c *Client) ReconcileFailedPlanVerification(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonceHash string) (*Reconciliation, error) {
+	if fleetEnvironment != "disposable/fleet/nyc3" || approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !sha256Re.MatchString(nonceHash) || approved.PilotRunID != c.cfg.PilotRunID || !pilotRunIDRe.MatchString(approved.PilotRunID) {
+		return nil, ErrDispatchAmbiguous
+	}
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read"})
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	actor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	var runs struct {
+		WorkflowRuns []struct {
+			ID int64 `json:"id"`
+		} `json:"workflow_runs"`
+	}
+	query := "?event=workflow_dispatch&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&per_page=100"
+	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/runs"+query), nil, &runs); err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	var matched *applyRun
+	var nonce string
+	for _, listed := range runs.WorkflowRuns {
+		candidate, err := c.getApplyRun(ctx, token, listed.ID)
+		if err != nil {
+			return nil, ErrDispatchAmbiguous
+		}
+		environment, candidatePlanID, candidateNonce, ok := parseApplyRunDisplayTitle(candidate.DisplayTitle, c.cfg.PilotRunID)
+		if !ok || environment != fleetEnvironment || candidatePlanID != planID {
+			continue
+		}
+		candidateHash := sha256.Sum256([]byte(candidateNonce))
+		if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(candidateHash[:])), []byte(nonceHash)) != 1 {
+			continue
+		}
+		if matched != nil {
+			return nil, ErrDispatchAmbiguous
+		}
+		matched, nonce = candidate, candidateNonce
+	}
+	if matched == nil || matched.HeadSHA == approved.ApprovedHeadSHA {
+		return nil, ErrDispatchAmbiguous
+	}
+	if !c.verifyFailedPlanVerificationRun(matched, planID, fleetEnvironment, allowDestructive, approved, nonce, actor) {
+		return nil, ErrDispatchAmbiguous
+	}
+	if err := c.verifyFailedPlanVerificationJobs(ctx, token, matched.ID); err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	latest, err := c.getApplyRun(ctx, token, matched.ID)
+	if err != nil || !c.verifyFailedPlanVerificationRun(latest, planID, fleetEnvironment, allowDestructive, approved, nonce, actor) || latest.RunAttempt != matched.RunAttempt || latest.HeadSHA != matched.HeadSHA || latest.Status != matched.Status || latest.Conclusion != matched.Conclusion {
+		return nil, ErrDispatchAmbiguous
+	}
+	return &Reconciliation{Outcome: "verified-no-write"}, nil
+}
+
+func (c *Client) verifyFailedPlanVerificationRun(run *applyRun, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonce, appActor string) bool {
+	if run == nil || approved == nil || run.RunAttempt != 1 || run.Status != "completed" || run.Conclusion != "failure" ||
+		!canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Repository.FullName != c.cfg.Repository ||
+		run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || !commitSHARe.MatchString(run.HeadSHA) || run.HeadSHA == approved.ApprovedHeadSHA ||
+		!workflowPathMatches(run.Path, c.cfg.ApplyWorkflow, c.cfg.DefaultBranch) || (run.Name != "apply" && run.Name != run.DisplayTitle) ||
+		run.Actor.Type != "Bot" || run.Actor.Login != appActor || run.DisplayTitle != applyRunDisplayTitle(fleetEnvironment, c.cfg.PilotRunID, planID, nonce) {
+		return false
+	}
+	expected := map[string]string{
+		"fleet_environment":        fleetEnvironment,
+		"pilot_run_id":             approved.PilotRunID,
+		"plan_run_id":              strconv.FormatInt(approved.PlanRunID, 10),
+		"plan_sha256":              approved.PlanSHA,
+		"norn_plan_id":             planID,
+		"dispatch_nonce":           nonce,
+		"allow_destructive":        strconv.FormatBool(allowDestructive),
+		"approval_envelope_sha256": "",
+	}
+	if len(run.Inputs) != len(expected) {
+		return false
+	}
+	for key, value := range expected {
+		if run.Inputs[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+type workflowJobSnapshot struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Steps      []struct {
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+	} `json:"steps"`
+}
+
+func (c *Client) verifyFailedPlanVerificationJobs(ctx context.Context, token string, runID int64) error {
+	var response struct {
+		TotalCount int                   `json:"total_count"`
+		Jobs       []workflowJobSnapshot `json:"jobs"`
+	}
+	if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d/jobs?filter=latest&per_page=100", runID)), nil, &response); err != nil || response.TotalCount != 2 || len(response.Jobs) != 2 {
+		return ErrDispatchAmbiguous
+	}
+	var admission, apply *workflowJobSnapshot
+	for index := range response.Jobs {
+		job := &response.Jobs[index]
+		switch job.Name {
+		case "pilot_admission":
+			if admission != nil {
+				return ErrDispatchAmbiguous
+			}
+			admission = job
+		case "apply":
+			if apply != nil {
+				return ErrDispatchAmbiguous
+			}
+			apply = job
+		default:
+			return ErrDispatchAmbiguous
+		}
+	}
+	if admission == nil || apply == nil || admission.Status != "completed" || admission.Conclusion != "success" || apply.Status != "completed" || apply.Conclusion != "failure" {
+		return ErrDispatchAmbiguous
+	}
+	if len(admission.Steps) != 2 || admission.Steps[0].Name != "Require selected admission runner" {
+		return ErrDispatchAmbiguous
+	}
+	for _, step := range admission.Steps {
+		if step.Status != "completed" || step.Conclusion != "success" {
+			return ErrDispatchAmbiguous
+		}
+	}
+	barrier := "Verify the approved plan workflow run"
+	readOnlyBefore := map[string]bool{
+		"Reject GitHub workflow reruns":                          false,
+		"Require exact protected pilot effect runner":            true,
+		"Validate manual approval inputs":                        true,
+		"Checkout":                                               true,
+		"Prepare pinned disposable provider inventory runtime":   true,
+		"Validate selected Fleet topology before provider apply": true,
+	}
+	foundBarrier := false
+	seen := map[string]bool{}
+	for _, step := range apply.Steps {
+		if step.Name == barrier {
+			if foundBarrier || step.Status != "completed" || step.Conclusion != "failure" {
+				return ErrDispatchAmbiguous
+			}
+			foundBarrier = true
+			continue
+		}
+		if !foundBarrier {
+			requiredSuccess, known := readOnlyBefore[step.Name]
+			if !known || seen[step.Name] || step.Status != "completed" || (step.Conclusion != "success" && step.Conclusion != "skipped") || (requiredSuccess && step.Conclusion != "success") || (!requiredSuccess && step.Conclusion != "skipped") {
+				return ErrDispatchAmbiguous
+			}
+			seen[step.Name] = true
+		} else if step.Status != "completed" || step.Conclusion != "skipped" {
+			return ErrDispatchAmbiguous
+		}
+	}
+	for name := range readOnlyBefore {
+		if !seen[name] {
+			return ErrDispatchAmbiguous
+		}
+	}
+	if !foundBarrier {
+		return ErrDispatchAmbiguous
+	}
+	return nil
+}
+
 func (c *Client) recoverSubmittedDispatch(ctx context.Context, token, planID, fleetEnvironment string, approved *Dispatch, nonce, appActor string) (*Dispatch, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 && c.pause != nil {
@@ -796,7 +976,10 @@ type applyRun struct {
 	Conclusion   string            `json:"conclusion"`
 	RunAttempt   int               `json:"run_attempt"`
 	Inputs       map[string]string `json:"inputs"`
-	Actor        struct {
+	Repository   struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+	Actor struct {
 		Login string `json:"login"`
 		Type  string `json:"type"`
 	} `json:"actor"`
