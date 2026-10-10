@@ -30,7 +30,7 @@ Usage: test-fleet-executor-local <command> [args]
   teardown         stop Mac processes and drop the database (the VM is left running)
   fake-github, proxy   (internal) the fake GitHub and the logging fault proxy
 
-Environment: Q1_WORK (work dir), NORN_FLEET_DIR (norn-fleet checkout), NORN_EXEC_VM_NAME (VM name).
+Environment: Q1_WORK (work dir), Q1_PORT_BASE (default 18800; uses base..base+5), NORN_FLEET_DIR (norn-fleet checkout), NORN_EXEC_VM_NAME (VM name).
 Needs: limactl, a provisioned norn-exec VM (v2/scripts/norn-exec-vm up), go, tofu, sops, age, ansible-playbook,
 PostgreSQL 16 on 127.0.0.1:55432 (role norn_fc), etcd on 127.0.0.1:23790.
 
@@ -88,7 +88,8 @@ RESOURCE = "staging"
 BUCKET = os.environ.get("MINIO_BUCKET", "norn-exec-state")
 STATE_KEY = "staging/nyc3/terraform.tfstate"
 MINIO_USER, MINIO_PASS = "norn-exec-test", "norn-exec-test-secret"
-GH_PORT, NORN_PORT, PROXY_PORT, CTL_PORT, GH_TLS_PORT = 18801, 18800, 18802, 18803, 18804
+_PB = int(os.environ.get("Q1_PORT_BASE", "18800"))  # all local ports are offsets of this; move it if 18800-18805 are taken
+GH_PORT, NORN_PORT, PROXY_PORT, CTL_PORT, GH_TLS_PORT = _PB + 1, _PB, _PB + 2, _PB + 3, _PB + 4
 UNIT = "norn-fleet-executor"
 DEFAULT_DROPLET = "4242"
 
@@ -2596,7 +2597,7 @@ def vm_now_minus(seconds: int) -> str:
 # etcd runtime: the executor lane is gated off there
 # ---------------------------------------------------------------------------
 
-ETCD_PORT = 18805
+ETCD_PORT = _PB + 5
 EXECUTOR_ROUTES = [
     ("GET", "/api/v1/fleet/resources/staging"),
     ("POST", "/api/v1/fleet/resources/staging/converge"),

@@ -1010,3 +1010,40 @@ re-enrolled; the VM and the role stayed). End state: Mac processes stopped; the 
 `norn_fc_recovery` untouched; the VM `norn-exec` running with the executor unit stopped. The work directory
 (`results*/`, proxy and authority logs) is `<scratchpad>/q2/`. Run the harness with `python3`; `vm --as-shipped` no
 longer exists. New env vars: `Q1_ROW5_NOSYNC=1`, `Q1_ROW5_CORRUPT=1`.
+
+## Re-run on master integration (2026-10-10)
+
+Status: **qualified on the integrated code.** Every requested row, the etcd gate and `norn-exec-vm test` passed; rows 4, 9, 11 and 12 were out of the requested scope and were NOT RUN. No product defect was found. Three harness defects are listed below. Nothing in the product code was patched.
+
+| | |
+|---|---|
+| Norn | `/Users/arti/Desktop/Claude/norn-fleet-executor-master`, branch `feature/fleet-executor`, HEAD `8ccd3d3a` (executor lane on current `origin/master`, including the Fleet GitHub-lane fixes for cancelled runs and the reconcile route). Harness change in the commit that adds this section |
+| norn-fleet | `/Users/arti/Desktop/Claude/norn-fleet-controller-executor`, branch `feature/fleet-controller-executor`, `9a6c798` (143 upstream commits merged; PLAN `resource_changes` / destructive consistency check; `tofu init -reconfigure`) |
+| VM | Lima `norn-exec` (Ubuntu 24.04, aarch64, OpenTofu 1.10.6). Previous executor release, venv, wheelhouse and `requirements.txt` removed, then the real Ansible role applied from `9a6c798` (43 ok, 13 changed, 0 failed, 4 skipped) with the offline wheelhouse built from `scripts/requirements-executor.txt` (`venv/bin/python` imports PyYAML 6.0.3, no ruby) |
+| Date | 2026-10-10, 14:43 to 18:36 (CDT). Two environments (new PostgreSQL database, repository, MinIO state each) |
+
+| Row | Claim | Result | One line |
+|---|---|---|---|
+| 1 | automatic converge, real `hashicorp/null` provider | **PASS** | Plan recorded, no approve, one attempt, converged. |
+| 2 | executable diff blocks on approval, `norn fleet approve`, converges | **PASS** | No attempt before the approve; one attempt after it. |
+| 2b | merge inside the revalidation window self-heals | **PASS** | Converged unattended after the window with no harness help. |
+| 3 | kill a phase mid-apply, attestation, `--resume` | **PASS** | Recovery unlocked the loop's own stale lock and succeeded. |
+| 5 | power-off mid-apply, new `boot_id` attestation, resume (run once) | **PASS** | Natural power cut (no injection, no `Q1_ROW5_NOSYNC`), recovery needed no help. |
+| 6 | lost attempt-start response replays (extra) | **PASS** | |
+| 7 | authority restart mid-run (extra) | **PASS** | |
+| 8 | GitHub-lane race on one fence (master's GitHub-lane code) | **PASS** | 8a: GitHub dispatch got 409 `fleet_target_execution_occupied`, nothing sent to GitHub, executor attempt succeeded. 8c: GitHub lane won (201), the executor start got 409 `fleet_target_execution_occupied`; the real loop then logged `busy: fence is Uncertain`. |
+| 10 | stale lock of a killed `tofu apply`; kill during the recovery's own plan | **PASS** | |
+| 10b | foreign lock refused, reported, cleared, single recovery | **PASS** | |
+| etcd gate | etcd runtime serves no executor-lane route | **PASS** | Eight lane-only routes answer 501 `backend_route_unsupported`; no converge watcher on etcd. |
+| `norn-exec-vm test` | default command in the VM | **PASS** | 92 tests OK; boot ID unchanged across the run. |
+| 4, 9, 11, 12 | | **NOT RUN** | Not in the requested set. |
+
+Harness defects found (no product bug):
+
+1. The ports 18800 to 18805 were hard-coded and 18800 was already held by an unrelated `ssh -L` tunnel to another authority, so the harness's authority could not bind and the harness talked to that other authority (401s; nothing was sent that mattered). Fixed: `Q1_PORT_BASE` (default 18800) offsets all local ports. This run used 28800.
+2. The VM clock jumped during the first pairing, so `vm_now()` was later than the journal's pairing line and `pairing_line` timed out after 240 s. The enrollment was approved by hand with the harness helpers. Not fixed (environmental, Lima clock); a re-run of `vm` works.
+3. A row 8 run interrupted mid-way left a stopped executor and a leftover gate file, and the next run aborted with `aborted: 1`. It was re-run from `reset`, `vm`, `bootstrap`, `baseline` and passed. The `reset` sub-command is the supported way out of that state.
+
+Row 5 note: the PASS here is a single natural power cut. The clone-repair path was not exercised (no injection).
+
+End state: Mac processes stopped; database `norn_q1_20261010175031` dropped (the earlier `norn_q1_20261010144503` was dropped by `reset`); `norn_fc` and `norn_fc_recovery` untouched; the svc2 PostgreSQL and etcd left running; VM `norn-exec` running with the executor unit stopped. Work directory `<scratchpad>/q4/` (`rows1.log`, `row8b.log`, `work/results/`).
