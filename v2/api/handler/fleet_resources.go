@@ -88,6 +88,7 @@ var (
 	errFleetResourceRevisionConflict = errors.New("fleet resource revision conflict")
 	errFleetResourceTargetMismatch   = errors.New("fleet resource bound to a different target")
 	errFleetResourceInvalid          = errors.New("fleet resource request invalid")
+	errFleetResourceStoreUnavailable = errors.New("fleet resource durable store unavailable")
 	errFleetObservationBounds        = errors.New("fleet observation out of bounds")
 	errFleetConvergeFacts            = errors.New("fleet converge facts could not be read")
 	// errFleetExecutionModeUnavailable means the backend's store cannot change
@@ -1457,28 +1458,49 @@ func (b *pgFleetResourceBackend) GetTarget(ctx context.Context, targetID string)
 	return (&pgFleetTargetBackend{h: b.h}).GetTarget(ctx, targetID)
 }
 func (b *pgFleetResourceBackend) EnsureResource(ctx context.Context, name, targetID string) (*controller.Resource, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	resource, err := b.h.db.EnsureFleetResource(ctx, name, targetID)
 	return resource, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) GetResource(ctx context.Context, name string) (*controller.Resource, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	resource, err := b.h.db.GetFleetResource(ctx, name)
 	return resource, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) ListResourceNames(ctx context.Context, after string, limit int) ([]string, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	return b.h.db.ListFleetResourceNames(ctx, after, limit)
 }
 func (b *pgFleetResourceBackend) SetDesired(ctx context.Context, name string, expectedRevision int64, next controller.DesiredRevision) (*controller.Resource, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	resource, err := b.h.db.SetDesiredFleetResourceIf(ctx, name, expectedRevision, next)
 	return resource, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) AppendObservation(ctx context.Context, name, source string, observedAt time.Time, facts controller.ObservationFacts, evidenceRefs []string, reporter string) (*controller.Resource, controller.Observation, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, controller.Observation{}, errFleetResourceStoreUnavailable
+	}
 	resource, observation, err := b.h.db.AppendFleetObservation(ctx, name, source, observedAt, facts, evidenceRefs, reporter)
 	return resource, observation, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) ListObservations(ctx context.Context, name string, limit int) ([]controller.Observation, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	return b.h.db.ListFleetObservations(ctx, name, limit)
 }
 func (b *pgFleetResourceBackend) PlanTarget(ctx context.Context, planID, environment string) (string, bool, error) {
+	if b.h == nil || b.h.db == nil {
+		return "", false, errFleetResourceStoreUnavailable
+	}
 	plan, err := b.h.db.GetOperation(ctx, planID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil

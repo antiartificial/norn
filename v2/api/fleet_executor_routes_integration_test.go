@@ -1331,7 +1331,15 @@ func TestConvergeFactsReaderParity(t *testing.T) {
 			return reader.ConvergeFacts(ctx, resource, status)
 		})
 	})
-	if len(pgSnapshots) == 0 || len(pgSnapshots) != len(etcdSnapshots) {
+	if t.Failed() {
+		return
+	}
+	if len(pgSnapshots) == 0 || len(etcdSnapshots) == 0 {
+		// A backend subtest skipped (no service, outside strict mode); the
+		// helpers already fail instead when NORN_TEST_REQUIRE_INTEGRATION is set.
+		t.Skip("parity needs both the PG and etcd backends")
+	}
+	if len(pgSnapshots) != len(etcdSnapshots) {
 		t.Fatalf("snapshots: pg %d, etcd %d", len(pgSnapshots), len(etcdSnapshots))
 	}
 	for i := range pgSnapshots {
