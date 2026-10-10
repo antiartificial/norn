@@ -185,7 +185,7 @@ func TestSchemaMigratorDDLAndLedgerFailureRollsBackAtomically(t *testing.T) {
 }
 
 func TestSchemaMigratorLockTimeoutAndRelease(t *testing.T) {
-	pools := schemaMigrationTestPools(t, 2)
+	pools := schemaMigrationIsolatedDatabasePools(t, 2)
 	ctx := context.Background()
 	holder, err := pools[0].Begin(ctx)
 	if err != nil {
@@ -215,7 +215,7 @@ func TestSchemaMigratorLockTimeoutAndRelease(t *testing.T) {
 }
 
 func TestSchemaMigratorQuiescentControlDatabaseGate(t *testing.T) {
-	pool := schemaMigrationTestPools(t, 1)[0]
+	pool := schemaMigrationIsolatedDatabasePools(t, 1)[0]
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `CREATE TABLE operations (id TEXT PRIMARY KEY, status TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestSchemaMigratorQuiescentControlDatabaseGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	other, err := pgxpool.New(ctx, pool.Config().ConnString())
+	other, err := pgxpool.NewWithConfig(ctx, pool.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,6 +493,57 @@ func schemaMigrationTestPools(t *testing.T, count int) []*pgxpool.Pool {
 			t.Errorf("drop test schema: %v", err)
 		}
 	})
+	return pools
+}
+
+// schemaMigrationIsolatedDatabasePools is for tests whose subject is
+// database-wide: the default migration advisory lock and the quiescence gate
+// (every other client backend on the database). A schema does not isolate
+// either, so packages running concurrently against the shared test database
+// (go test ./...) would trip them. These tests get a private database instead.
+func schemaMigrationIsolatedDatabasePools(t *testing.T, count int) []*pgxpool.Pool {
+	t.Helper()
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	adminConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := pgxpool.NewWithConfig(ctx, adminConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := "norn_schema_migration_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	identifier := pgx.Identifier{database}.Sanitize()
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+identifier); err != nil {
+		admin.Close()
+		t.Fatalf("create isolated test database: %v", err)
+	}
+	pools := make([]*pgxpool.Pool, 0, count)
+	t.Cleanup(func() {
+		for _, pool := range pools {
+			pool.Close()
+		}
+		defer admin.Close()
+		if _, err := admin.Exec(context.Background(), `DROP DATABASE `+identifier+` WITH (FORCE)`); err != nil {
+			t.Errorf("drop isolated test database: %v", err)
+		}
+	})
+	for range count {
+		config := adminConfig.Copy()
+		config.ConnConfig.Database = database
+		pool, err := pgxpool.NewWithConfig(ctx, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pools = append(pools, pool)
+		if err := pool.Ping(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return pools
 }
 
