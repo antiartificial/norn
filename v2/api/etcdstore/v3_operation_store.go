@@ -320,6 +320,16 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 	if !errors.Is(err, ErrNotFound) {
 		return store.AcceptedOperation{}, err
 	}
+	// Recording-path mode gate (after the replay check, so a replay never
+	// reads the mode): the resource key's ModRevision joins the Txn compares.
+	var modeCompare *clientv3.Cmp
+	if a.RequireFleetResourceMode != "" {
+		compare, err := s.fleetResourceModeCompare(ctx, a)
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		modeCompare = &compare
+	}
 	var fleetTarget *FleetAppTarget
 	var fleetTargetCompare clientv3.Cmp
 	if allowDeployment && a.Deployment != nil {
@@ -391,6 +401,9 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 	if catalogCompare != nil {
 		comparisons = append(comparisons, *catalogCompare)
 	}
+	if modeCompare != nil {
+		comparisons = append(comparisons, *modeCompare)
+	}
 	txn, err := s.kv.Txn(ctx).If(comparisons...).Then(puts...).Commit()
 	if err != nil {
 		// A timed-out transaction can commit after the client loses its answer.
@@ -413,6 +426,14 @@ func (s *V3OperationStore) acceptOperationAggregate(ctx context.Context, a store
 		}
 		existing, err := s.loadAcceptance(ctx, key)
 		if errors.Is(err, ErrNotFound) {
+			if modeCompare != nil {
+				// The resource changed: report a switch away from the mode
+				// as such, otherwise the caller retries against fresh state.
+				if _, modeErr := s.fleetResourceModeCompare(ctx, a); modeErr != nil {
+					return store.AcceptedOperation{}, modeErr
+				}
+				return store.AcceptedOperation{}, ErrFleetResourceModeChanged
+			}
 			if catalogCompare != nil {
 				if _, catalogErr := s.deploymentDatabaseCatalogCompare(ctx, a.Operation); catalogErr != nil {
 					return store.AcceptedOperation{}, catalogErr

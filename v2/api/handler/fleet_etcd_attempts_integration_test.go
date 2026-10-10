@@ -210,3 +210,56 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 		t.Fatalf("other workflow accessed runner attempt: %d %s", got.Code, got.Body.String())
 	}
 }
+
+type fakeExecutorDeviceLookup struct{ platform string }
+
+func (f fakeExecutorDeviceLookup) ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error) {
+	return &store.AccessDevice{Platform: f.platform}, nil
+}
+
+// TestEtcdExecutorLaneFailsClosedWithoutDeviceLookup: the etcd executor lane
+// refuses every executor principal until WithDeviceLookup is wired (E6), and
+// a non-executor device platform after it is.
+func TestEtcdExecutorLaneFailsClosedWithoutDeviceLookup(t *testing.T) {
+	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-executor-lane-audit-signing-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := uuid.NewString()
+	operations, err := etcdstore.NewV3OperationStore(client, "/norn-conf/executor-lane/"+uuid.NewString(), authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := &AccessPrincipal{Subject: "exec", Source: AccessPrincipalSourceManagedToken, TokenID: "jti", DeviceID: uuid.NewString(),
+		Scopes: []string{ScopeFleetExecute}, ExpiresAt: time.Now().Add(time.Hour)}
+	if !IsFleetExecutorPrincipal(*principal) {
+		t.Fatal("test principal must select the executor lane")
+	}
+	call := func(h *EtcdFleetRunnerHandler) *httptest.ResponseRecorder {
+		router := chi.NewRouter()
+		router.Post("/api/v1/fleet/plans/{planID}/attempts", h.Create)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/"+uuid.NewString()+"/attempts", strings.NewReader(`{}`))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, WithAccessPrincipal(req, principal))
+		return rec
+	}
+	cfg := &config.Config{ControlAuthority: authority}
+	if rec := call(NewEtcdFleetRunnerHandler(cfg, operations)); rec.Code != http.StatusForbidden || decodeProblemCode(rec) != "insufficient_scope" {
+		t.Fatalf("without a device lookup the executor lane must refuse: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(NewEtcdFleetRunnerHandler(cfg, operations).WithDeviceLookup(fakeExecutorDeviceLookup{platform: "ios"})); rec.Code != http.StatusForbidden {
+		t.Fatalf("a non-executor device platform must be refused: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(NewEtcdFleetRunnerHandler(cfg, operations).WithDeviceLookup(fakeExecutorDeviceLookup{platform: FleetExecutorPlatform})); rec.Code != http.StatusNotFound {
+		t.Fatalf("an executor device passes the platform gate and reaches the plan read: %d %s", rec.Code, rec.Body.String())
+	}
+}

@@ -16,6 +16,9 @@ package store
 // (row 3), which take FOR UPDATE. Row 4 is FOR UPDATE only for acquire,
 // bind, release and abandon; every other reader takes FOR SHARE.
 //
+// CreateFleetExecutorAttempt (store/fleet_executor_attempts.go) takes rows
+// 1-4 and 6 of this order in one transaction and never touches row 5.
+//
 // Legacy heartbeat and advance (store/fleet_runner_attempts.go) take no lock
 // at all today and must not start taking one: each is a single UPDATE, and
 // WP8a adds the epoch check as an "AND NOT EXISTS (… fleet_target_fences
@@ -478,6 +481,10 @@ func AbandonFleetPlan(ctx context.Context, tx pgx.Tx, planID, nonceSHA256, targe
 	return err
 }
 
+// executorHolderDispatchState is HolderFacts.DispatchState of a converge plan
+// (the etcd backend's "bound").
+const executorHolderDispatchState = "bound"
+
 // FleetTargetHolderFacts reads planID's dispatch and runner-attempt rows
 // inside tx (lock-order positions 5 and 6) and projects them to
 // lifecycle.HolderFacts, for Outcome derivation or DecideRelease. It is a
@@ -490,7 +497,16 @@ func FleetTargetHolderFacts(ctx context.Context, tx pgx.Tx, planID string) (life
 		Scan(&h.DispatchState, &createdAt, &submissionStartedAt)
 	switch {
 	case err == pgx.ErrNoRows:
-		// No dispatch row yet; DispatchState stays "".
+		// No dispatch row. A converge plan on the executor lane never has one
+		// and is bound the moment its fence is acquired and bound with its
+		// first attempt (plan-5-7 section 2.6); every other plan keeps "".
+		converge, convergeErr := fleetConvergePlanTx(ctx, tx, planID)
+		if convergeErr != nil {
+			return h, convergeErr
+		}
+		if converge != nil {
+			h.DispatchState = executorHolderDispatchState
+		}
 	case err != nil:
 		return h, err
 	default:
@@ -535,6 +551,44 @@ func (db *DB) IsFleetPlanAbandonedForPlan(ctx context.Context, planID string) (b
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	return IsFleetPlanAbandoned(ctx, tx, planID)
+}
+
+// IsFleetPlanRevalidationStale is the read-only check behind the converge
+// recorder's Admissible: true when the plan was started inside a release's
+// revalidation window that has since closed, so admission refuses it forever
+// (fleet_plan_revalidation_required) and only a freshly recorded plan can
+// proceed. A plan with any runner attempt or dispatch row is never stale (see
+// lifecycle.RevalidationStale). It takes no lock beyond FOR SHARE on the fence
+// and changes nothing. A missing plan, an empty registry and an unresolvable
+// cluster (a *lifecycle.FenceError) are "not stale"; any other error is a real
+// database error and is returned, as the etcd form does. Callers treat an
+// error as not stale (admissible) and log it.
+func (db *DB) IsFleetPlanRevalidationStale(ctx context.Context, planID string, now time.Time) (bool, error) {
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	cluster, startedAt, _, _, err := fleetExecutorPlanTx(ctx, tx, planID)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, fence, _, registryEmpty, err := LockFleetTargetFenceForPlan(ctx, tx, cluster, "", false)
+	var fenceErr *lifecycle.FenceError
+	if errors.As(err, &fenceErr) || (err == nil && registryEmpty) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var hasHistory bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM fleet_runner_attempts WHERE plan_id=$1) OR EXISTS (SELECT 1 FROM fleet_github_dispatches WHERE plan_id=$1)`, planID).Scan(&hasHistory); err != nil {
+		return false, err
+	}
+	return lifecycle.RevalidationStale(fence, planID, startedAt, now, hasHistory), nil
 }
 
 // ResolveFleetTargetForCluster is the read-only wrapper handlers use for a

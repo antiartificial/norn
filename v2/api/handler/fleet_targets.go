@@ -32,6 +32,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/store"
@@ -132,6 +133,10 @@ type FleetTargetHolderBinding struct {
 	// apply run (at least 1 once bound).
 	BoundRunAttempt int64
 	Attempts        []fleet.RunnerAttempt
+	// ExecutorLane is true when the holder's attempts are executor-lane
+	// attempts (plan-5-7 E5): there is no GitHub run to observe, and the
+	// store decides the release from a stop attestation or providerEvidence.
+	ExecutorLane bool
 }
 
 // FleetTargetBackend is the per-backend adapter behind the shared routes.
@@ -243,11 +248,14 @@ type fleetTargetReleaseRequest struct {
 	Mode               string `json:"mode"`
 	ExpectedGeneration *int64 `json:"expectedGeneration"`
 	Reason             string `json:"reason"`
+	// ProviderEvidence is the admin's assertion for an executor-lane holder.
+	ProviderEvidence *executor.ProviderEvidence `json:"providerEvidence,omitempty"`
 }
 
 type fleetTargetAbandonPlanRequest struct {
-	PlanID string `json:"planId"`
-	Reason string `json:"reason"`
+	PlanID           string                     `json:"planId"`
+	Reason           string                     `json:"reason"`
+	ProviderEvidence *executor.ProviderEvidence `json:"providerEvidence,omitempty"`
 }
 
 // Register is POST targets (platform:operate).
@@ -289,7 +297,7 @@ func (s *FleetTargetRoutes) Release(w http.ResponseWriter, r *http.Request) {
 	}
 	admission := store.FleetTargetMutationAdmission{
 		Kind: store.FleetTargetMutationRelease, TargetID: targetID,
-		Release: &store.FleetTargetReleaseAdmission{Mode: request.Mode, ExpectedGeneration: *request.ExpectedGeneration, Reason: request.Reason},
+		Release: &store.FleetTargetReleaseAdmission{Mode: request.Mode, ExpectedGeneration: *request.ExpectedGeneration, Reason: request.Reason, ProviderEvidence: request.ProviderEvidence},
 	}
 	s.accept(w, r, principal, admission, func(ctx context.Context) (*store.FleetTargetReleaseEvidence, *routeProblem) {
 		target, err := s.backend.GetTarget(ctx, targetID)
@@ -309,6 +317,9 @@ func (s *FleetTargetRoutes) Release(w http.ResponseWriter, r *http.Request) {
 		if !fence.Held {
 			// The store refuses a free fence as not held before it reads any proof.
 			return nil, nil
+		}
+		if lane, problem := s.executorLane(ctx, fence.HolderPlanID); problem != nil || lane {
+			return nil, problem
 		}
 		if request.Mode == string(lifecycle.ReleaseModeTerminal) {
 			return s.terminalEvidence(ctx, fence.HolderPlanID)
@@ -336,7 +347,7 @@ func (s *FleetTargetRoutes) AbandonPlan(w http.ResponseWriter, r *http.Request) 
 	}
 	admission := store.FleetTargetMutationAdmission{
 		Kind: store.FleetTargetMutationAbandonPlan, PlanID: planID,
-		Release: &store.FleetTargetReleaseAdmission{Mode: string(lifecycle.ReleaseModeAbandon), Reason: request.Reason},
+		Release: &store.FleetTargetReleaseAdmission{Mode: string(lifecycle.ReleaseModeAbandon), Reason: request.Reason, ProviderEvidence: request.ProviderEvidence},
 	}
 	s.accept(w, r, principal, admission, func(ctx context.Context) (*store.FleetTargetReleaseEvidence, *routeProblem) {
 		exists, err := s.backend.PlanExists(ctx, planID)
@@ -345,6 +356,9 @@ func (s *FleetTargetRoutes) AbandonPlan(w http.ResponseWriter, r *http.Request) 
 		}
 		if !exists {
 			return nil, &routeProblem{http.StatusNotFound, "fleet_plan_not_found", "fleet capacity plan not found"}
+		}
+		if lane, problem := s.executorLane(ctx, planID); problem != nil || lane {
+			return nil, problem
 		}
 		return s.listingEvidence(ctx, planID)
 	})
@@ -484,6 +498,28 @@ func (s *FleetTargetRoutes) accept(w http.ResponseWriter, r *http.Request, princ
 		status = http.StatusOK
 	}
 	writeJSONStatus(w, status, accepted.Operation)
+}
+
+// executorLane reports whether the holder plan is on the executor lane. Such a
+// holder has no GitHub run: the route gathers no GitHub evidence and the store
+// decides from a stop attestation or the admission's providerEvidence.
+func (s *FleetTargetRoutes) executorLane(ctx context.Context, planID string) (bool, *routeProblem) {
+	binding, err := s.backend.HolderBinding(ctx, planID)
+	if err != nil {
+		return false, &routeProblem{http.StatusServiceUnavailable, "fleet_target_read_failed", "fleet holder could not be read"}
+	}
+	return binding.ExecutorLane, nil
+}
+
+// fleetExecutorLaneAttempts reports whether any attempt is an executor-lane
+// attempt (its runnerAttemptId is executor:<droplet>:<invocation>:<plan>).
+func fleetExecutorLaneAttempts(attempts []fleet.RunnerAttempt) bool {
+	for _, attempt := range attempts {
+		if _, _, _, ok := executor.ParseRunnerAttemptID(attempt.RunnerAttemptID); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // terminalEvidence proves, by the WP5 observers, that the bound apply run and
@@ -658,6 +694,7 @@ func (b *pgFleetTargetBackend) HolderBinding(ctx context.Context, planID string)
 		return binding, err
 	}
 	binding.Attempts = holder.Attempts
+	binding.ExecutorLane = fleetExecutorLaneAttempts(holder.Attempts)
 	return binding, nil
 }
 
@@ -726,6 +763,12 @@ func (b *etcdFleetTargetBackend) HolderBinding(ctx context.Context, planID strin
 	preparation, err := b.operations.GetFleetGitHubDispatchPreparation(ctx, planID)
 	switch {
 	case errors.Is(err, etcdstore.ErrNotFound):
+		// An executor-lane plan has no dispatch preparation.
+		attempts, listErr := b.operations.ListFleetRunnerAttempts(ctx, planID)
+		if listErr != nil {
+			return binding, listErr
+		}
+		binding.Attempts, binding.ExecutorLane = attempts, fleetExecutorLaneAttempts(attempts)
 		return binding, nil
 	case err != nil:
 		return binding, err
@@ -749,6 +792,7 @@ func (b *etcdFleetTargetBackend) HolderBinding(ctx context.Context, planID strin
 		return binding, err
 	}
 	binding.Attempts = attempts
+	binding.ExecutorLane = fleetExecutorLaneAttempts(attempts)
 	return binding, nil
 }
 

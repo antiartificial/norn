@@ -42,8 +42,10 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/controller"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -86,7 +88,12 @@ var (
 	errFleetResourceRevisionConflict = errors.New("fleet resource revision conflict")
 	errFleetResourceTargetMismatch   = errors.New("fleet resource bound to a different target")
 	errFleetResourceInvalid          = errors.New("fleet resource request invalid")
+	errFleetResourceStoreUnavailable = errors.New("fleet resource durable store unavailable")
 	errFleetObservationBounds        = errors.New("fleet observation out of bounds")
+	errFleetConvergeFacts            = errors.New("fleet converge facts could not be read")
+	// errFleetExecutionModeUnavailable means the backend's store cannot change
+	// the execution mode (no SetFleetResourceExecutionMode).
+	errFleetExecutionModeUnavailable = errors.New("fleet execution mode is not supported by this store")
 )
 
 // FleetApprovedPlanResolver is the GitHub App subset desired-revision
@@ -123,6 +130,48 @@ type FleetResourceBackend interface {
 	FleetEnvironment() (string, *routeProblem)
 }
 
+// FleetExecutionModeStore is the store capability behind the execution-mode
+// route (plan-5-7, "Hand-offs from the E4b review"; PG: *store.PGOperationStore,
+// etcd: *etcdstore.V3OperationStore). SetFleetResourceExecutionMode applies the
+// mode AND accepts the signed fleet.resource.execution-mode operation in ONE
+// transaction (PG) or ONE Txn (etcd):
+//
+//   - request identity first: a replay of identity.Key (same fingerprint)
+//     returns the stored operation with Replayed true and re-applies nothing;
+//     the same key with another body is idempotency_key_reused, also without
+//     applying;
+//   - the resource's target fence FOR UPDATE: held (any holder, either lane)
+//     refuses with &executor.Error{Code: executor.CodeFleetExecutionModeFenceHeld}
+//     and leaves no ledger entry;
+//   - the resource row FOR UPDATE: unknown is store.ErrFleetResourceNotFound,
+//     request.ExpectedRevision != revision is store.ErrFleetResourceRevisionConflict;
+//   - the mode is written into the resource document (executionMode) and the
+//     revision bumped only when it changes; the operation is recorded either
+//     way, with metadata {resource, mode, previousMode}.
+//
+// The mode is read only by the watcher and the resource view, never inside an
+// execution transaction (T7).
+type FleetExecutionModeStore interface {
+	SetFleetResourceExecutionMode(ctx context.Context, identity store.OperationRequestIdentity, audit store.AcceptanceAuditContext, request executor.ExecutionModeRequest) (store.AcceptedOperation, error)
+}
+
+// FleetExecutionModeRecorder applies and records the execution mode
+// atomically for one backend (PG: pgExecutionModeRecorder over
+// FleetExecutionModeStore; etcd: E6). It writes the problem response itself
+// and returns ok=false when it did.
+type FleetExecutionModeRecorder interface {
+	RecordExecutionMode(w http.ResponseWriter, r *http.Request, key, resource string, request executor.ExecutionModeRequest) (op model.Operation, replayed, ok bool)
+}
+
+// FleetConvergeFactsReader gathers the executor-lane facts of a resource for
+// the read view: the desired converge plan with its approval and refusal, the
+// watcher's verdict and the resume-approval state. status is the already
+// downgraded status (status.Active names the holder). It returns nil facts when
+// the resource has nothing executor-related to report.
+type FleetConvergeFactsReader interface {
+	ConvergeFacts(ctx context.Context, resource *controller.Resource, status controller.Status) (*controller.ConvergeFacts, error)
+}
+
 // FleetResourceRoutes serves the resource routes for one backend.
 type FleetResourceRoutes struct {
 	backend  FleetResourceBackend
@@ -134,6 +183,11 @@ type FleetResourceRoutes struct {
 	resolverErr error
 	liveness    FleetControllerLiveness
 	now         func() time.Time
+	facts       FleetConvergeFactsReader
+	modes       FleetExecutionModeRecorder
+	// executorDevices is the live-device read behind the executor
+	// principal's resource read; without it that read is refused.
+	executorDevices fleetExecutorDeviceLookup
 }
 
 // NewFleetResourceRoutes builds the shared routes. resolver is nil only when
@@ -141,6 +195,27 @@ type FleetResourceRoutes struct {
 // liveness is nil when this process runs no reconciler.
 func NewFleetResourceRoutes(backend FleetResourceBackend, cfg *config.Config, resolver FleetApprovedPlanResolver, resolverErr error, liveness FleetControllerLiveness) *FleetResourceRoutes {
 	return &FleetResourceRoutes{backend: backend, cfg: cfg, resolver: resolver, resolverErr: resolverErr, liveness: liveness, now: time.Now}
+}
+
+// SetConvergeFacts wires the executor-lane facts the read view reports
+// (desired.converge, the new blockers, approve_converge, resumeApproved).
+// Without it the view reports exactly what the stored status says and no
+// converge object. Call it before serving.
+func (s *FleetResourceRoutes) SetConvergeFacts(reader FleetConvergeFactsReader) {
+	s.facts = reader
+}
+
+// SetExecutorDeviceLookup wires the device read the executor principal's
+// GET resources/{name} needs (its device must be a live fleet-executor
+// device). Without it the executor principal is refused (fail closed).
+func (s *FleetResourceRoutes) SetExecutorDeviceLookup(devices fleetExecutorDeviceLookup) {
+	s.executorDevices = devices
+}
+
+// SetExecutionModeRecorder wires the ledger recorder of the execution-mode
+// route (the PG routes already carry theirs).
+func (s *FleetResourceRoutes) SetExecutionModeRecorder(recorder FleetExecutionModeRecorder) {
+	s.modes = recorder
 }
 
 // SetFleetControllerLiveness records the in-process reconciler so resource
@@ -156,7 +231,12 @@ func (h *Handler) FleetResourceRoutes() *FleetResourceRoutes {
 	if h.fleetGitHub != nil {
 		resolver = h.fleetGitHub
 	}
-	return NewFleetResourceRoutes(&pgFleetResourceBackend{h: h}, h.cfg, resolver, h.fleetGitHubConfigError, h.fleetControllerLiveness)
+	routes := NewFleetResourceRoutes(&pgFleetResourceBackend{h: h}, h.cfg, resolver, h.fleetGitHubConfigError, h.fleetControllerLiveness)
+	routes.modes = &pgExecutionModeRecorder{h: h}
+	if h.db != nil {
+		routes.executorDevices = h.db
+	}
+	return routes
 }
 
 // NewEtcdFleetResourceRoutes returns the etcd routes. resolver may be nil
@@ -176,6 +256,9 @@ type FleetDesiredView struct {
 	Verification string     `json:"verification,omitempty"`
 	AcceptedAt   *time.Time `json:"acceptedAt,omitempty"`
 	AcceptedBy   string     `json:"acceptedBy,omitempty"`
+	// Converge is executor lane only: the work view of the desired
+	// revision's converge plan. Never set on history entries.
+	Converge *executor.ConvergeView `json:"converge,omitempty"`
 }
 
 // FleetConditionView is one derived readiness fact.
@@ -200,12 +283,20 @@ type FleetAppliedView struct {
 // FleetActiveView names the plan, dispatch and attempts currently holding the
 // target's fence (IDs only; the fence and attempt stores stay the truth).
 type FleetActiveView struct {
-	PlanID          string   `json:"planId"`
-	DispatchRunID   string   `json:"dispatchRunId,omitempty"`
+	PlanID        string `json:"planId"`
+	DispatchRunID string `json:"dispatchRunId,omitempty"`
+	// AttemptIDs is ascending by attempt number (ID as the tiebreak); the last
+	// entry is the latest attempt.
 	AttemptIDs      []string `json:"attemptIds"`
 	FenceGeneration int64    `json:"fenceGeneration"`
 	Occupancy       string   `json:"occupancy"`
 	OccupancyReason string   `json:"occupancyReason,omitempty"`
+	// ResumeApproved is executor lane only (omitted otherwise).
+	ResumeApproved bool `json:"resumeApproved,omitempty"`
+	// ResumeNeededAttemptID is the attempt a resume approve must name.
+	ResumeNeededAttemptID string `json:"resumeNeededAttemptId,omitempty"`
+	// CommitSHA is the holder converge plan's commit.
+	CommitSHA string `json:"commitSha,omitempty"`
 }
 
 // FleetStatusView is the stored status with the freshness rule re-applied at
@@ -250,6 +341,14 @@ type FleetApprovalPolicyView struct {
 	OwnerApprovalEnvelope bool   `json:"ownerApprovalEnvelope"`
 	EnvironmentReviewers  string `json:"environmentReviewers"`
 	IndependentReview     string `json:"independentReview"`
+
+	// Executor lane only; omitted otherwise (plan-5-7 section 2.5).
+	ProtectedBranchVerified   bool   `json:"protectedBranchVerified,omitempty"`
+	ValidateWorkflowSucceeded bool   `json:"validateWorkflowSucceeded,omitempty"`
+	MergeGate                 string `json:"mergeGate,omitempty"`
+	DestructiveApproval       string `json:"destructiveApproval,omitempty"`
+	ApprovedBy                string `json:"approvedBy,omitempty"`
+	RequiredReviews           string `json:"requiredReviews,omitempty"`
 }
 
 // FleetControllerView reports whether a controller is keeping the stored
@@ -277,6 +376,7 @@ type FleetResourceView struct {
 	Blocker             *FleetBlockerView             `json:"blocker,omitempty"`
 	Observed            map[string]FleetWatermarkView `json:"observed"`
 	ApprovalPolicy      FleetApprovalPolicyView       `json:"approvalPolicy"`
+	ExecutionMode       string                        `json:"executionMode,omitempty"`
 	Controller          FleetControllerView           `json:"controller"`
 	ReadAt              time.Time                     `json:"readAt"`
 }
@@ -361,21 +461,56 @@ func observationView(o controller.Observation) FleetObservationView {
 // and independent review are not enforced anywhere.
 func FleetApprovalPolicy(verification string, authorizedDispatch bool) controller.ApprovalPolicy {
 	policy := controller.ApprovalPolicy{AuthorizedDispatch: authorizedDispatch, EnvironmentReviewers: "not_enforced", IndependentReview: "not_enforced"}
-	if verification == controller.VerificationGitHubMergedPlan {
+	switch verification {
+	case controller.VerificationGitHubMergedPlan:
 		policy.ProtectedBranch, policy.MergedPullRequest, policy.PlanWorkflowSucceeded, policy.BoundPlanDigest = true, true, true, true
+	case controller.VerificationGitHubProtectedMain:
+		// The watcher verified a protected default branch tip whose validate
+		// workflow succeeded at exactly that SHA (VerifyProtectedCommit). It
+		// proves neither a merged pull request nor the plan workflow's bound
+		// artifact, so those stay false. Required reviews cannot be read
+		// without Administration: read.
+		policy.ProtectedBranch, policy.ProtectedBranchVerified, policy.ValidateWorkflowSucceeded = true, true, true
 	}
 	return policy
 }
 
-func approvalPolicyView(verification string, authorizedDispatch bool) FleetApprovalPolicyView {
-	p := FleetApprovalPolicy(verification, authorizedDispatch)
+// fleetResourceApprovalPolicy is FleetApprovalPolicy plus the executor-lane
+// merge gate (D2), reported for a resource in controller mode or whose desired
+// revision came from the protected-main watcher:
+//
+//   - mergeGate config_auto_executable_approve: config changes auto-apply;
+//     executable changes and the first converge need a fleet.converge.approve;
+//   - destructiveApproval github_lane_dispatch: destructive changes are never
+//     applied here (blocker destructive_requires_github_lane); the operator's
+//     GitHub-lane dispatch with allowDestructive is the approval;
+//   - requiredReviews not_verified;
+//   - approvedBy: the actor of the matching approve of the desired plan, only
+//     when one exists and its actor is known.
+func fleetResourceApprovalPolicy(mode, verification string, authorizedDispatch bool, plan *controller.ConvergePlanFacts) controller.ApprovalPolicy {
+	policy := FleetApprovalPolicy(verification, authorizedDispatch)
+	if controller.EffectiveExecutionMode(mode) == executor.ModeController || verification == controller.VerificationGitHubProtectedMain {
+		policy.MergeGate = controller.MergeGateConfigAutoExecutableApprove
+		policy.DestructiveApproval = controller.DestructiveApprovalGitHubLane
+		policy.RequiredReviews = controller.RequiredReviewsNotVerified
+		if plan != nil && plan.Approved {
+			policy.ApprovedBy = plan.ApprovedBy
+		}
+	}
+	return policy
+}
+
+func approvalPolicyView(mode, verification string, authorizedDispatch bool, plan *controller.ConvergePlanFacts) FleetApprovalPolicyView {
+	p := fleetResourceApprovalPolicy(mode, verification, authorizedDispatch, plan)
 	basis := verification
 	if basis == "" {
 		basis = "none"
 	}
 	return FleetApprovalPolicyView{Basis: basis, ProtectedBranch: p.ProtectedBranch, MergedPullRequest: p.MergedPullRequest,
 		PlanWorkflowSucceeded: p.PlanWorkflowSucceeded, BoundPlanDigest: p.BoundPlanDigest, AuthorizedDispatch: p.AuthorizedDispatch,
-		OwnerApprovalEnvelope: p.OwnerApprovalEnvelope, EnvironmentReviewers: p.EnvironmentReviewers, IndependentReview: p.IndependentReview}
+		OwnerApprovalEnvelope: p.OwnerApprovalEnvelope, EnvironmentReviewers: p.EnvironmentReviewers, IndependentReview: p.IndependentReview,
+		ProtectedBranchVerified: p.ProtectedBranchVerified, ValidateWorkflowSucceeded: p.ValidateWorkflowSucceeded, MergeGate: p.MergeGate,
+		DestructiveApproval: p.DestructiveApproval, ApprovedBy: p.ApprovedBy, RequiredReviews: p.RequiredReviews}
 }
 
 func statusView(s controller.Status) FleetStatusView {
@@ -390,7 +525,9 @@ func statusView(s controller.Status) FleetStatusView {
 			ids = []string{}
 		}
 		view.Active = &FleetActiveView{PlanID: s.Active.PlanID, DispatchRunID: s.Active.DispatchRunID, AttemptIDs: ids,
-			FenceGeneration: s.Active.FenceGeneration, Occupancy: s.Active.Occupancy, OccupancyReason: s.Active.OccupancyReason}
+			FenceGeneration: s.Active.FenceGeneration, Occupancy: s.Active.Occupancy, OccupancyReason: s.Active.OccupancyReason,
+			ResumeApproved:        s.Active.ResumeApproved,
+			ResumeNeededAttemptID: s.Active.ResumeNeededAttemptID, CommitSHA: s.Active.CommitSHA}
 	}
 	for _, c := range s.Conditions {
 		view.Conditions = append(view.Conditions, FleetConditionView{Type: c.Type, Status: c.Status, Reason: c.Reason, Message: c.Message,
@@ -430,6 +567,20 @@ func fleetBlocker(s controller.Status) *FleetBlockerView {
 	return nil
 }
 
+// resourceBlocker is fleetBlocker with the executor lane's blockers: a held
+// fence still comes first, except for the blockers marked WhileHeld (the
+// destructive remainder of the held plan, state_lock_foreign and a stopped
+// attempt that needs a new resume approve), then the converge blockers (mode
+// mismatch, destructive refusal, history_rewritten, trigger, approval), then
+// the readiness conditions.
+func resourceBlocker(s controller.Status, derived controller.ConvergeDerivation) *FleetBlockerView {
+	if derived.Blocker != nil && (s.Active == nil || derived.Blocker.WhileHeld) {
+		b := derived.Blocker
+		return &FleetBlockerView{Kind: b.Kind, Reason: b.Reason, Message: b.Message, PlanID: b.PlanID}
+	}
+	return fleetBlocker(s)
+}
+
 func (s *FleetResourceRoutes) controllerView(now time.Time) FleetControllerView {
 	if s.liveness == nil {
 		return FleetControllerView{State: "unknown"}
@@ -446,10 +597,24 @@ func (s *FleetResourceRoutes) controllerView(now time.Time) FleetControllerView 
 }
 
 // resourceView builds the read response: the stored status with the
-// freshness rule re-applied against now, the real approval policy and the
-// controller's liveness.
-func (s *FleetResourceRoutes) resourceView(resource *controller.Resource, now time.Time) FleetResourceView {
+// freshness rule re-applied against now, the executor-lane facts folded in
+// (approve_converge, resumeApproved, the converge blockers), the real approval
+// policy and the controller's liveness.
+func (s *FleetResourceRoutes) resourceView(ctx context.Context, resource *controller.Resource, now time.Time) (FleetResourceView, error) {
 	status := controller.DowngradeStale(resource.Status, now)
+	var facts *controller.ConvergeFacts
+	if s.facts != nil {
+		var err error
+		if facts, err = s.facts.ConvergeFacts(ctx, resource, status); err != nil {
+			return FleetResourceView{}, errors.Join(errFleetConvergeFacts, err)
+		}
+	}
+	derived := controller.DeriveConverge(*resource, status, facts)
+	status = controller.ApplyConverge(status, *resource, facts)
+	var plan *controller.ConvergePlanFacts
+	if facts != nil {
+		plan = facts.Plan
+	}
 	history := make([]FleetDesiredView, 0, len(resource.DesiredHistory))
 	for _, entry := range resource.DesiredHistory {
 		history = append(history, desiredView(entry))
@@ -458,13 +623,19 @@ func (s *FleetResourceRoutes) resourceView(resource *controller.Resource, now ti
 	for source, mark := range resource.Watermarks {
 		observed[source] = FleetWatermarkView{ObservedAt: mark.ObservedAt.UTC(), Sequence: mark.Sequence}
 	}
+	desired := desiredView(resource.Desired)
+	if plan != nil {
+		desired.Converge = &executor.ConvergeView{PlanSHA256: plan.PlanSHA256, RequiresApproval: controller.ConvergeNeedsApproval(*plan),
+			Approved: plan.Approved, Refused: plan.Refused}
+	}
 	return FleetResourceView{
 		Name: resource.Name, TargetID: resource.TargetID, Revision: resource.Revision, AuthorityEpoch: resource.AuthorityEpoch,
 		ObservationSequence: resource.ObservationSequence, CreatedAt: resource.CreatedAt.UTC(), UpdatedAt: resource.UpdatedAt.UTC(),
-		Desired: desiredView(resource.Desired), DesiredHistory: history, Status: statusView(status), Blocker: fleetBlocker(status),
-		Observed: observed, ApprovalPolicy: approvalPolicyView(resource.Desired.Verification, s.resolver != nil && s.resolverErr == nil),
-		Controller: s.controllerView(now), ReadAt: now.UTC(),
-	}
+		Desired: desired, DesiredHistory: history, Status: statusView(status), Blocker: resourceBlocker(status, derived),
+		Observed: observed, ApprovalPolicy: approvalPolicyView(resource.ExecutionMode, resource.Desired.Verification, s.resolver != nil && s.resolverErr == nil, plan),
+		ExecutionMode: resource.ExecutionMode,
+		Controller:    s.controllerView(now), ReadAt: now.UTC(),
+	}, nil
 }
 
 // --- handlers ---
@@ -490,6 +661,10 @@ func writeFleetResourceError(w http.ResponseWriter, r *http.Request, err error) 
 		WriteControlProblem(w, r, http.StatusBadRequest, "fleet_observation_out_of_bounds", "the observation is outside the accepted time, size or evidence bounds")
 	case errors.Is(err, errFleetResourceInvalid):
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_resource_request", "the request is not valid for a Fleet resource")
+	case errors.Is(err, errFleetConvergeFacts):
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, executor.CodeFleetConvergeFactsFailed, "the executor-lane facts (plan, approvals, watcher verdict) could not be read")
+	case errors.Is(err, errFleetExecutionModeUnavailable):
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, executor.CodeFleetExecutionModeUnavailable, "this Fleet store does not support changing the execution mode")
 	default:
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_resource_store_failed", "the Fleet resource store could not complete the request")
 	}
@@ -545,12 +720,29 @@ func (s *FleetResourceRoutes) Create(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 		w.Header().Set("Location", "/api/v1/fleet/resources/"+name)
 	}
-	writeJSONStatus(w, status, s.resourceView(resource, s.now().UTC()))
+	view, err := s.resourceView(r.Context(), resource, s.now().UTC())
+	if err != nil {
+		writeFleetResourceError(w, r, err)
+		return
+	}
+	writeJSONStatus(w, status, view)
 }
 
-// Get is GET resources/{name} (api:read).
+// Get is GET resources/{name} (api:read, or the executor principal on a live
+// fleet-executor device: it reads the work view of its resource, never the
+// list).
 func (s *FleetResourceRoutes) Get(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireTargetScope(w, r, ScopeAPIRead, false); !ok {
+	if executorPrincipal, present := AccessPrincipalFromRequest(r); present && IsFleetExecutorPrincipal(executorPrincipal) {
+		var device *store.AccessDevice
+		var err error
+		if s.executorDevices != nil {
+			device, err = s.executorDevices.ActiveAccessDevice(r.Context(), executorPrincipal.DeviceID)
+		}
+		if s.executorDevices == nil || err != nil || device == nil || !isFleetExecutorPlatform(device.Platform) {
+			WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "the executor lane requires a "+FleetExecutorPlatform+" device")
+			return
+		}
+	} else if _, ok := requireTargetScope(w, r, ScopeAPIRead, false); !ok {
 		return
 	}
 	name, ok := resourceName(w, r)
@@ -562,7 +754,12 @@ func (s *FleetResourceRoutes) Get(w http.ResponseWriter, r *http.Request) {
 		writeFleetResourceError(w, r, err)
 		return
 	}
-	writeJSON(w, s.resourceView(resource, s.now().UTC()))
+	view, err := s.resourceView(r.Context(), resource, s.now().UTC())
+	if err != nil {
+		writeFleetResourceError(w, r, err)
+		return
+	}
+	writeJSON(w, view)
 }
 
 func pageLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
@@ -609,7 +806,12 @@ func (s *FleetResourceRoutes) List(w http.ResponseWriter, r *http.Request) {
 			writeFleetResourceError(w, r, err)
 			return
 		}
-		list.Items = append(list.Items, s.resourceView(resource, now))
+		view, err := s.resourceView(r.Context(), resource, now)
+		if err != nil {
+			writeFleetResourceError(w, r, err)
+			return
+		}
+		list.Items = append(list.Items, view)
 	}
 	if len(names) == limit {
 		list.Next = names[len(names)-1]
@@ -690,7 +892,12 @@ func (s *FleetResourceRoutes) SetDesired(w http.ResponseWriter, r *http.Request)
 		writeFleetResourceError(w, r, err)
 		return
 	}
-	writeJSON(w, s.resourceView(updated, s.now().UTC()))
+	view, err := s.resourceView(r.Context(), updated, s.now().UTC())
+	if err != nil {
+		writeFleetResourceError(w, r, err)
+		return
+	}
+	writeJSON(w, view)
 }
 
 // resolveMergedPlan fills next from the merged plan's approved commit. The
@@ -741,6 +948,61 @@ func (s *FleetResourceRoutes) resolveMergedPlan(ctx context.Context, resourceTar
 	}
 	next.PlanID, next.CommitSHA, next.Repository, next.Verification = planID, approved.ApprovedHeadSHA, repository, controller.VerificationGitHubMergedPlan
 	return nil
+}
+
+// SetExecutionMode is POST resources/{name}/execution-mode (admin, non-CI,
+// Idempotency-Key). It switches the resource between the github and
+// controller lanes, and only while the target's fence is Free: the store
+// checks that in the same transaction that stores the mode and records the
+// operation, so a mode never changes under a running attempt or without its
+// ledger entry. The mode lives only in the resource
+// document; the signed fleet.resource.execution-mode operation is the audit
+// record. A GitHub-lane operation on a controller-mode target needs no mode
+// change (plan-5-7 section 2.9). Mode is enforced when the watcher records
+// plans, never inside an execution transaction (T7).
+func (s *FleetResourceRoutes) SetExecutionMode(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireTargetScope(w, r, ScopeAdmin, true); !ok {
+		return
+	}
+	name, ok := resourceName(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requireIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request executor.ExecutionModeRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, err.Error())
+		return
+	}
+	if err := request.Validate(); err != nil {
+		writeExecutorError(w, r, err)
+		return
+	}
+	if s.modes == nil {
+		writeFleetResourceError(w, r, errFleetExecutionModeUnavailable)
+		return
+	}
+	if _, err := s.backend.GetResource(r.Context(), name); err != nil {
+		writeFleetResourceError(w, r, err)
+		return
+	}
+	// One store transaction checks the fence, applies the mode and records
+	// the operation; a replayed key returns the stored operation and applies
+	// nothing (FleetExecutionModeStore).
+	op, replayed, ok := s.modes.RecordExecutionMode(w, r, key, name, request)
+	if !ok {
+		return
+	}
+	op.AttachReceipt()
+	if replayed {
+		writeJSON(w, op)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
+	writeJSONStatus(w, http.StatusCreated, op)
 }
 
 // ListObservations is GET resources/{name}/observations (api:read), newest
@@ -890,6 +1152,286 @@ func hasAlias(aliases []string, want string) bool {
 	return false
 }
 
+// --- executor lane: mode recorder, facts reader ---
+
+// pgExecutionModeRecorder applies and records fleet.resource.execution-mode
+// through the PG operation store's atomic FleetExecutionModeStore method.
+type pgExecutionModeRecorder struct{ h *Handler }
+
+func (a *pgExecutionModeRecorder) RecordExecutionMode(w http.ResponseWriter, r *http.Request, key, resource string, request executor.ExecutionModeRequest) (model.Operation, bool, bool) {
+	h := a.h
+	modes, capable := h.operationStore.(FleetExecutionModeStore)
+	if !capable {
+		// Fail closed: without the atomic store method nothing is applied.
+		writeFleetResourceError(w, r, errFleetExecutionModeUnavailable)
+		return model.Operation{}, false, false
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, key, nil)
+	if !ok {
+		return model.Operation{}, false, false
+	}
+	identity := store.OperationRequestIdentity{Authority: enqueue.Authority, Actor: enqueue.Actor, Kind: executor.KindResourceExecutionMode, Resource: resource, Key: enqueue.Key}
+	accepted, err := modes.SetFleetResourceExecutionMode(r.Context(), identity, enqueue.Audit, request)
+	if err != nil {
+		var refusal *executor.Error
+		mapped := mapFleetResourcePGError(err)
+		switch {
+		case errors.As(err, &refusal):
+			writeExecutorError(w, r, err)
+		case errors.Is(mapped, errFleetResourceNotFound), errors.Is(mapped, errFleetResourceRevisionConflict):
+			writeFleetResourceError(w, r, mapped)
+		default:
+			writeOperationAcceptanceError(w, r, err)
+		}
+		return model.Operation{}, false, false
+	}
+	return accepted.Operation, accepted.Replayed, true
+}
+
+// ConvergeDecisionSource is the watcher subset the facts reader uses.
+// *controller.Watcher implements it.
+type ConvergeDecisionSource interface {
+	Decision(resource string) (controller.WatchDecision, bool)
+}
+
+// kindFleetConvergeRefusal is the ledger kind of the executor's refusals
+// (P2/P3 hand-offs), Ref = plan ID.
+const kindFleetConvergeRefusal = executor.KindConvergeRefusal
+
+// pgConvergeFacts is the PG FleetConvergeFactsReader, reading the existing
+// ledger: the converge plan, its approve and refusal operations, the stop
+// attestations and provider evidence. It decides nothing itself; derivation is
+// controller.DeriveConverge.
+type pgConvergeFacts struct {
+	h         *Handler
+	decisions ConvergeDecisionSource
+	now       func() time.Time
+}
+
+// ConvergeFactsReader returns the PG facts reader. decisions is the watcher
+// (nil when this process runs none: no trigger blocker is then reported).
+func (h *Handler) ConvergeFactsReader(decisions ConvergeDecisionSource) FleetConvergeFactsReader {
+	return &pgConvergeFacts{h: h, decisions: decisions, now: time.Now}
+}
+
+func (f *pgConvergeFacts) ConvergeFacts(ctx context.Context, resource *controller.Resource, status controller.Status) (*controller.ConvergeFacts, error) {
+	facts := &controller.ConvergeFacts{}
+	if f.decisions != nil {
+		if decision, ok := f.decisions.Decision(resource.Name); ok {
+			switch decision.Action {
+			case controller.WatchPending:
+				facts.Trigger = controller.TriggerPending
+			case controller.WatchUnverified:
+				facts.Trigger = controller.TriggerUnverified
+			case controller.WatchHistoryRewritten:
+				facts.Trigger = controller.TriggerHistoryRewritten
+			}
+			facts.TriggerReason = decision.Reason
+		}
+	}
+	recorder := &PGConvergePlanRecorder{h: f.h}
+	if resource.Desired.PlanID != "" {
+		recorded, err := recorder.ConvergePlan(ctx, resource.Desired.PlanID)
+		switch {
+		case errors.Is(err, ErrConvergePlanNotFound), errors.Is(err, ErrNotConvergePlan):
+		case err != nil:
+			return nil, err
+		default:
+			plan := &controller.ConvergePlanFacts{PlanID: recorded.PlanID, CommitSHA: recorded.Converge.CommitSHA, BaseCommitSHA: recorded.Converge.BaseCommitSHA,
+				PlanSHA256: strings.TrimPrefix(recorded.Digest, "sha256:"), RequiresApproval: recorded.Converge.RequiresApproval}
+			approves, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: executor.KindConvergeApprove, Ref: plan.PlanID, Status: string(model.OperationSucceeded), Limit: 200})
+			if err != nil {
+				return nil, err
+			}
+			for _, op := range approves {
+				var approve executor.ApproveAdmission
+				if decodeFleetLedgerValue(op.Payload, &approve) && approve.PlanID == plan.PlanID && approve.CommitSHA == plan.CommitSHA && !approve.Resume {
+					plan.Approved = true
+					if by, _ := op.Metadata["approvedBy"].(string); by != "" {
+						plan.ApprovedBy = by
+					}
+					break
+				}
+			}
+			refusals, err := f.refusals(ctx, plan.PlanID)
+			if err != nil {
+				return nil, err
+			}
+			for _, refusal := range refusals {
+				if refusal.Code == executor.RefusalDestructive && refusal.CommitSHA == plan.CommitSHA {
+					plan.Refused = true
+					break
+				}
+			}
+			facts.Plan = plan
+		}
+	}
+	if status.Active != nil {
+		state, err := f.holderState(ctx, recorder, status.Active.PlanID)
+		if err != nil {
+			return nil, err
+		}
+		facts.ResumeApproved, facts.ResumeNeededAttemptID, facts.StateLock = state.resumeApproved, state.resumeNeededAttemptID, state.stateLock
+		facts.HolderRefused = state.refused
+		facts.HolderCommitSHA = state.commitSHA
+	}
+	return facts, nil
+}
+
+// refusals lists planID's recorded executor refusals (newest first, bounded).
+func (f *pgConvergeFacts) refusals(ctx context.Context, planID string) ([]executor.ConvergeRefusalPayload, error) {
+	ops, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: kindFleetConvergeRefusal, Ref: planID, Status: string(model.OperationSucceeded), Limit: 100})
+	if err != nil {
+		return nil, err
+	}
+	var out []executor.ConvergeRefusalPayload
+	for _, op := range ops {
+		var payload executor.ConvergeRefusalPayload
+		if decodeFleetLedgerValue(op.Payload, &payload) && payload.PlanID == planID {
+			out = append(out, payload)
+		}
+	}
+	return out, nil
+}
+
+func decodeFleetLedgerValue(value interface{}, target interface{}) bool {
+	encoded, err := json.Marshal(value)
+	return err == nil && json.Unmarshal(encoded, target) == nil
+}
+
+// pgHolderState is what the facts reader derives about the plan that holds
+// the fence.
+type pgHolderState struct {
+	// resumeApproved: an unconsumed resume approve names the holder plan's
+	// latest executor-lane attempt, and a stop attestation or admin provider
+	// evidence exists for exactly that attempt.
+	resumeApproved bool
+	// resumeNeededAttemptID: the same stop proof exists but no unconsumed
+	// resume approve names the attempt (P3 hand-off). A recovery that was
+	// itself killed has consumed its approve, so the operator approves again.
+	resumeNeededAttemptID string
+	// stateLock: the executor reported state_lock_foreign for the latest attempt.
+	stateLock *controller.StateLockFacts
+	// refused: a destructive refusal names the holder plan's own commit.
+	refused bool
+	// commitSHA: the holder converge plan's own commit.
+	commitSHA string
+}
+
+// holderState mirrors the store's recovery admission without starting
+// anything. The stop attestation is checked with every rule of
+// executor.ValidStopAttestation except its age: the loop attests once per
+// invocation and the operator's --resume may come long after the five minute
+// AttestationMaxAge, so freshness must not turn resumeApproved false (P3
+// blocker). Admission keeps checking freshness against the fresh attestation
+// the recover handler posts itself just before its start.
+func (f *pgConvergeFacts) holderState(ctx context.Context, recorder *PGConvergePlanRecorder, planID string) (pgHolderState, error) {
+	var state pgHolderState
+	converge, err := recorder.ConvergePlan(ctx, planID)
+	if errors.Is(err, ErrConvergePlanNotFound) || errors.Is(err, ErrNotConvergePlan) {
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+	state.commitSHA = converge.Converge.CommitSHA
+	attempts, err := f.h.db.ListFleetRunnerAttempts(ctx, planID, 100)
+	if err != nil || len(attempts) == 0 {
+		return state, err
+	}
+	latest := attempts[0]
+	hasChild := map[string]bool{}
+	for _, a := range attempts {
+		if a.Attempt > latest.Attempt {
+			latest = a
+		}
+		if a.RetryOf != "" {
+			hasChild[a.RetryOf] = true
+		}
+	}
+	source, ok := store.FleetExecutorAttemptMetadata(&latest)
+	if !ok {
+		return state, nil
+	}
+	refusals, err := f.refusals(ctx, planID)
+	if err != nil {
+		return state, err
+	}
+	for _, refusal := range refusals {
+		if refusal.Code == executor.RefusalDestructive && refusal.CommitSHA == converge.Converge.CommitSHA {
+			state.refused = true
+		}
+	}
+	for _, refusal := range refusals {
+		if refusal.Code == executor.RefusalStateLockForeign && refusal.SourceAttemptID == latest.ID {
+			lock := controller.StateLockFacts{SourceAttemptID: latest.ID}
+			if refusal.TofuLock != nil {
+				lock.LockID, lock.Who, lock.Operation = refusal.TofuLock.ID, refusal.TofuLock.Who, refusal.TofuLock.Operation
+			}
+			state.stateLock = &lock
+			break
+		}
+	}
+	if latest.Status == model.FleetRunnerAttemptSucceeded || hasChild[latest.ID] {
+		return state, nil
+	}
+	stopped, err := f.stopProof(ctx, planID, latest, source)
+	if err != nil || !stopped {
+		return state, err
+	}
+	approves, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: executor.KindConvergeApprove, Ref: planID, Status: string(model.OperationSucceeded), Limit: 200})
+	if err != nil {
+		return state, err
+	}
+	for _, op := range approves {
+		var approve executor.ApproveAdmission
+		if decodeFleetLedgerValue(op.Payload, &approve) && approve.Resume && approve.PlanID == planID &&
+			approve.CommitSHA == converge.Converge.CommitSHA && approve.SourceAttemptID == latest.ID {
+			state.resumeApproved = true
+			return state, nil
+		}
+	}
+	state.resumeNeededAttemptID = latest.ID
+	return state, nil
+}
+
+// stopProof reports whether a stop attestation (age ignored, see holderState)
+// or admin provider evidence exists for exactly attempt latest.
+func (f *pgConvergeFacts) stopProof(ctx context.Context, planID string, latest model.FleetRunnerAttempt, source executor.AttemptMetadata) (bool, error) {
+	now := f.now().UTC()
+	attestations, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: executor.KindStopAttestation, Ref: planID, Status: string(model.OperationSucceeded), Limit: 50})
+	if err != nil {
+		return false, err
+	}
+	for _, op := range attestations {
+		var payload executor.StopAttestationPayload
+		if !decodeFleetLedgerValue(op.Payload, &payload) || payload.PlanID != planID || payload.SourceAttemptID != latest.ID {
+			continue
+		}
+		attester, _ := op.Metadata[store.FleetExecutorAttesterMetadataKey].(string)
+		// now = observedAt: the age bound is vacuous, every other rule applies.
+		if executor.ValidStopAttestation(payload.StopAttestationRequest, source, latest.PrincipalSubject, attester, payload.ObservedAt) == nil {
+			return true, nil
+		}
+	}
+	evidenceOps, err := f.h.db.ListOperations(ctx, store.OperationFilter{Kind: store.KindFleetExecutorProviderEvidence, Ref: planID, Status: string(model.OperationSucceeded), Limit: 50})
+	if err != nil {
+		return false, err
+	}
+	for _, op := range evidenceOps {
+		var payload store.FleetExecutorProviderEvidencePayload
+		digest, _ := op.Metadata[executor.ProviderEvidenceDigestMetadataKey].(string)
+		if !decodeFleetLedgerValue(op.Payload, &payload) || payload.PlanID != planID || payload.SourceAttemptID != latest.ID {
+			continue
+		}
+		evidence := payload.ProviderEvidence
+		if evidence.Validate(now) == nil && evidence.DropletID == source.DropletID && digest != "" && evidence.Digest() == digest {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // --- PostgreSQL adapter ---
 
 type pgFleetResourceBackend struct{ h *Handler }
@@ -916,28 +1458,49 @@ func (b *pgFleetResourceBackend) GetTarget(ctx context.Context, targetID string)
 	return (&pgFleetTargetBackend{h: b.h}).GetTarget(ctx, targetID)
 }
 func (b *pgFleetResourceBackend) EnsureResource(ctx context.Context, name, targetID string) (*controller.Resource, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	resource, err := b.h.db.EnsureFleetResource(ctx, name, targetID)
 	return resource, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) GetResource(ctx context.Context, name string) (*controller.Resource, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	resource, err := b.h.db.GetFleetResource(ctx, name)
 	return resource, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) ListResourceNames(ctx context.Context, after string, limit int) ([]string, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	return b.h.db.ListFleetResourceNames(ctx, after, limit)
 }
 func (b *pgFleetResourceBackend) SetDesired(ctx context.Context, name string, expectedRevision int64, next controller.DesiredRevision) (*controller.Resource, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	resource, err := b.h.db.SetDesiredFleetResourceIf(ctx, name, expectedRevision, next)
 	return resource, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) AppendObservation(ctx context.Context, name, source string, observedAt time.Time, facts controller.ObservationFacts, evidenceRefs []string, reporter string) (*controller.Resource, controller.Observation, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, controller.Observation{}, errFleetResourceStoreUnavailable
+	}
 	resource, observation, err := b.h.db.AppendFleetObservation(ctx, name, source, observedAt, facts, evidenceRefs, reporter)
 	return resource, observation, mapFleetResourcePGError(err)
 }
 func (b *pgFleetResourceBackend) ListObservations(ctx context.Context, name string, limit int) ([]controller.Observation, error) {
+	if b.h == nil || b.h.db == nil {
+		return nil, errFleetResourceStoreUnavailable
+	}
 	return b.h.db.ListFleetObservations(ctx, name, limit)
 }
 func (b *pgFleetResourceBackend) PlanTarget(ctx context.Context, planID, environment string) (string, bool, error) {
+	if b.h == nil || b.h.db == nil {
+		return "", false, errFleetResourceStoreUnavailable
+	}
 	plan, err := b.h.db.GetOperation(ctx, planID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil

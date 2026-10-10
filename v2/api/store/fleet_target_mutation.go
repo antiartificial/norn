@@ -37,6 +37,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 )
@@ -75,6 +76,11 @@ type FleetTargetReleaseAdmission struct {
 	Mode               string `json:"mode"`
 	ExpectedGeneration int64  `json:"expectedGeneration,omitempty"`
 	Reason             string `json:"reason,omitempty"`
+	// ProviderEvidence is the admin's signed assertion about an executor-lane
+	// holder's droplet (plan-5-7 E5, ADR 0010). It is part of the signed,
+	// fingerprinted admission, valid only when the holder is on the executor
+	// lane, and never becomes FleetTargetReleaseEvidence.
+	ProviderEvidence *executor.ProviderEvidence `json:"providerEvidence,omitempty"`
 }
 
 // FleetTargetReleaseEvidence is the server-gathered GitHub evidence for a
@@ -239,6 +245,12 @@ func attachFleetTargetReleaseEvidence(acceptance *OperationAcceptance) error {
 		metadata[key] = value
 	}
 	delete(metadata, FleetTargetReleaseEvidenceMetadataKey)
+	// The provider-evidence digest is server-written (caller values discarded)
+	// and deterministic from the fingerprinted admission.
+	delete(metadata, executor.ProviderEvidenceDigestMetadataKey)
+	if m := acceptance.FleetTargetMutation; m != nil && m.Release != nil && m.Release.ProviderEvidence != nil {
+		metadata[executor.ProviderEvidenceDigestMetadataKey] = m.Release.ProviderEvidence.Digest()
+	}
 	acceptance.Operation.Metadata = metadata
 	e := acceptance.FleetTargetReleaseEvidence
 	if e == nil {
@@ -339,6 +351,11 @@ func normalizeFleetTargetMutationFields(a *FleetTargetMutationAdmission) error {
 		if len(r.Reason) > maxFleetTargetReasonBytes {
 			return bad("reason is too long")
 		}
+		if r.ProviderEvidence != nil {
+			evidence := *r.ProviderEvidence
+			evidence.ObservedAt = evidence.ObservedAt.UTC()
+			r.ProviderEvidence = &evidence
+		}
 		if r.Mode != string(lifecycle.ReleaseModeTerminal) && r.Mode != string(lifecycle.ReleaseModeAbandon) {
 			return bad("release mode must be terminal or abandon")
 		}
@@ -383,7 +400,7 @@ func enforceFleetTargetMutation(ctx context.Context, tx pgx.Tx, acceptance Opera
 	case FleetTargetMutationRelease:
 		return releaseFleetTargetFenceTx(ctx, tx, admission.TargetID, admission.Release, acceptance.FleetTargetReleaseEvidence.TerminalProof(), operationID, now)
 	case FleetTargetMutationAbandonPlan:
-		return abandonFleetPlanTx(ctx, tx, admission.PlanID, acceptance.FleetTargetReleaseEvidence.TerminalProof(), operationID, now)
+		return abandonFleetPlanWithEvidenceTx(ctx, tx, admission.PlanID, admission.Release.ProviderEvidence, acceptance.FleetTargetReleaseEvidence.TerminalProof(), operationID, now)
 	}
 	return &AcceptanceValidationError{Reason: "fleet target mutation kind is invalid"}
 }
@@ -422,6 +439,13 @@ func releaseFleetTargetFenceTx(ctx context.Context, tx pgx.Tx, targetID string, 
 	if err != nil {
 		return err
 	}
+	// An executor-lane holder has no GitHub run to observe: its proof is a stop
+	// attestation or the admin's providerEvidence (E5). Other holders are
+	// untouched, and refuse a providerEvidence.
+	proof, _, err = fleetExecutorLaneProofTx(ctx, tx, fence.HolderPlanID, release.ProviderEvidence, proof, now)
+	if err != nil {
+		return err
+	}
 	next, err := lifecycle.DecideRelease(fence, holder, release.ReleaseMode(), proof, now)
 	if err != nil {
 		return err
@@ -438,6 +462,12 @@ func releaseFleetTargetFenceTx(ctx context.Context, tx pgx.Tx, targetID string, 
 // the real fence when planID holds one, or to a synthetic held-by-plan fence
 // otherwise, and records the permanent abandon row either way.
 func abandonFleetPlanTx(ctx context.Context, tx pgx.Tx, planID string, proof *lifecycle.TerminalProof, operationID string, now time.Time) error {
+	return abandonFleetPlanWithEvidenceTx(ctx, tx, planID, nil, proof, operationID, now)
+}
+
+// abandonFleetPlanWithEvidenceTx is abandonFleetPlanTx with the admission's
+// optional executor-lane providerEvidence.
+func abandonFleetPlanWithEvidenceTx(ctx context.Context, tx pgx.Tx, planID string, evidence *executor.ProviderEvidence, proof *lifecycle.TerminalProof, operationID string, now time.Time) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "norn:fleet-attempt:"+planID); err != nil {
 		return err
 	}
@@ -457,16 +487,42 @@ func abandonFleetPlanTx(ctx context.Context, tx pgx.Tx, planID string, proof *li
 	if err != nil {
 		return err
 	}
+	holder, err := FleetTargetHolderFacts(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	// A converge plan (executor lane) has no dispatch row, so its nonce is
+	// derived, whether or not an attempt exists yet (E4b/E5 hand-off).
+	converge, err := fleetConvergePlanTx(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	if converge != nil && nonce == "" {
+		nonce = executor.HolderNonceSHA256(planID)
+	}
+	// A converge plan that never started holds no fence and has nothing to
+	// prove stopped: abandoning it only forbids a later start.
+	if converge != nil && targetID == "" && len(holder.Attempts) == 0 {
+		if evidence != nil {
+			return &AcceptanceValidationError{Reason: "providerEvidence applies only to an executor-lane holder"}
+		}
+		return AbandonFleetPlan(ctx, tx, planID, nonce, "", operationID, now)
+	}
+	// Executor-lane plans have no dispatch row, so fleetTargetBindInputs returns
+	// an empty nonce for them; their holder nonce is derived (E2).
+	proof, executorLane, err := fleetExecutorLaneProofTx(ctx, tx, planID, evidence, proof, now)
+	if err != nil {
+		return err
+	}
+	if nonce == "" && executorLane {
+		nonce = executor.HolderNonceSHA256(planID)
+	}
 	decide := lifecycle.FenceFacts{Held: true, HolderPlanID: planID, HolderNonceSHA256: nonce}
 	if targetID != "" {
 		decide, nonce = fence, fence.HolderNonceSHA256
 	}
 	if nonce == "" {
 		return lifecycle.ErrFleetTargetReleaseEvidenceMismatch
-	}
-	holder, err := FleetTargetHolderFacts(ctx, tx, planID)
-	if err != nil {
-		return err
 	}
 	next, err := lifecycle.DecideRelease(decide, holder, lifecycle.ReleaseModeAbandon, proof, now)
 	if err != nil {

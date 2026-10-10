@@ -254,3 +254,46 @@ func TestDecideReleaseEvidence(t *testing.T) {
 		t.Fatalf("dispatch_not_submitted with no prior release must record it, got %+v, %v", fresh, err)
 	}
 }
+
+func TestRevalidationStale(t *testing.T) {
+	released := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
+	started := released.Add(2 * time.Minute)
+	windowEnd := released.Add(RevalidationSkew)
+	fence := FenceFacts{LastRelease: &Release{PlanID: "other", Reason: "succeeded", At: released}}
+	tests := []struct {
+		name  string
+		mod   func(*FenceFacts)
+		start time.Time
+		now   time.Time
+		want  bool
+	}{
+		{"window open", func(*FenceFacts) {}, started, windowEnd.Add(-time.Second), false},
+		{"window closed, plan older", func(*FenceFacts) {}, started, windowEnd, true},
+		{"plan started after window", func(*FenceFacts) {}, windowEnd, windowEnd.Add(time.Hour), false},
+		{"never released", func(f *FenceFacts) { f.LastRelease = nil }, started, windowEnd, false},
+		{"dispatch_not_submitted exempt", func(f *FenceFacts) { f.LastRelease.Reason = "dispatch_not_submitted" }, started, windowEnd, false},
+		{"own release", func(f *FenceFacts) { f.LastRelease.PlanID = "p" }, started, windowEnd, false},
+		{"holder is the plan", func(f *FenceFacts) { f.Held, f.HolderPlanID = true, "p" }, started, windowEnd, false},
+		{"another plan holds", func(f *FenceFacts) { f.Held, f.HolderPlanID = true, "other" }, started, windowEnd, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fence
+			r := *fence.LastRelease
+			f.LastRelease = &r
+			tc.mod(&f)
+			if got := RevalidationStale(f, "p", tc.start, tc.now, false); got != tc.want {
+				t.Fatalf("RevalidationStale = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// M1: a plan that has run (attempt or dispatch row) is never stale, even
+	// when another plan's later release overwrote LastRelease and the window
+	// of that release has closed over the plan.
+	if RevalidationStale(fence, "p", started, windowEnd.Add(time.Hour), true) {
+		t.Fatal("a plan with attempt history must never be stale")
+	}
+	if !RevalidationStale(fence, "p", started, windowEnd.Add(time.Hour), false) {
+		t.Fatal("control: the same plan without history is stale")
+	}
+}

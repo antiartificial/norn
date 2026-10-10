@@ -188,6 +188,15 @@ func (s *V3OperationStore) loadFleetTargetHolderFacts(ctx context.Context, planI
 		}
 		facts.DispatchState, facts.SubmissionStartedAt = "bound", binding.CreatedAt
 	}
+	if facts.DispatchState == "" {
+		// A converge plan on the executor lane has no dispatch keys and is
+		// bound once its first attempt exists (plan-5-7 section 2.6).
+		if converge, _, err := s.fleetConvergePlanOf(ctx, planID); err != nil {
+			return lifecycle.HolderFacts{}, err
+		} else if converge != nil {
+			facts.DispatchState = fleetExecutorHolderDispatchState
+		}
+	}
 	return facts, nil
 }
 

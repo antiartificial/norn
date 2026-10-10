@@ -80,7 +80,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return fmt.Errorf("private invocation startup preflight: %w", err)
 	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
-	githubConfig := githubapp.Config{AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID, PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository, Environment: cfg.FleetGitHubEnvironment, PilotRunID: cfg.FleetGitHubPilotRunID, DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath, PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow, RecoverWorkflow: cfg.FleetGitHubRecoverWorkflow, APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production()}
+	githubConfig := fleetGitHubConfig(cfg)
 	var fleetGitHub *githubapp.Client
 	if githubapp.Configured(githubConfig) {
 		fleetGitHub, err = githubapp.New(githubConfig, nil)
@@ -169,40 +169,17 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if releaseHTTPEnabled {
 		operationRead = etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead, handler.ScopeReleaseStage)
 	}
-	registerEtcdFleetTargetRoutes(router, cfg, identities, operations, fleetGitHub)
-	var liveness handler.FleetControllerLiveness
-	if reconciler != nil {
-		liveness = reconciler
+	var commits controller.CommitSource
+	if fleetGitHub != nil {
+		commits = fleetGitHub
 	}
-	registerEtcdFleetResourceRoutes(router, cfg, identities, operations, fleetGitHub, liveness)
+	watcher := registerEtcdFleetControllerRoutes(router, cfg, identities, operations, fleetGitHub, commits, reconciler, etcdFleetExecutorLaneEnabled)
 	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
-		fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations, fleetGitHub)
-		runnerAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/pull-request", etcdFleetGitHubPullRequest(cfg, operations, fleetGitHub))
-		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.List)
-		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.Create)
-		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}", fleetRunner.Get)
-		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", fleetRunner.Heartbeat)
-		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", fleetRunner.Advance)
-		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", fleetRunner.Cancel)
-		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/reconciliations", fleetRunner.ListReconciliations)
-		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/reconciliations", fleetRunner.Reconcile)
 	}
-	// A credential may retire itself regardless of its application scopes.
-	managed := etcdManagedTokenAuth(cfg, identities)
-	// GitHub's short-lived assertion is the credential for this route; a Norn
-	// bearer token does not exist until the durable exchange succeeds.
-	router.Post("/api/v1/auth/github-actions/exchange", func(w http.ResponseWriter, r *http.Request) {
-		handler.ExchangeFleetGitHubActionsOIDC(cfg, identities, w, r)
-	})
-	router.With(managed).Post("/api/v1/auth/rotate", func(w http.ResponseWriter, r *http.Request) {
-		handler.RotateManagedToken(cfg, identities, nil, w, r)
-	})
-	router.With(managed).Post("/api/v1/auth/revoke", func(w http.ResponseWriter, r *http.Request) {
-		handler.RevokeManagedToken(identities, nil, w, r)
-	})
+	registerEtcdFleetCredentialRoutes(router, cfg, identities, etcdFleetExecutorLaneEnabled)
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			handler.WriteControlProblem(w, r, http.StatusNotImplemented, "backend_route_unsupported", "route is not implemented by the etcd normal Fleet capability set")
@@ -246,6 +223,14 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}()
 		log.Print("etcd Fleet resource reconciler enabled (observe-only; writes Fleet status only)")
 	}
+	if watcher != nil {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			watcher.Run(workerCtx)
+		}()
+		log.Print("etcd Fleet converge watcher enabled (records converge plans for controller-mode resources)")
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("norn %s etcd Fleet runtime listening on %s", Version, srv.Addr)
@@ -283,6 +268,9 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		endpoints["fleetGitHubDispatch"] = "/api/v1/fleet/plans/{planID}/github/dispatch"
 		endpoints["fleetRunnerAttempts"] = "/api/v1/fleet/plans/{planID}/attempts"
 		endpoints["fleetReconciliations"] = "/api/v1/fleet/plans/{planID}/reconciliations"
+		if etcdFleetExecutorLaneEnabled {
+			features, endpoints = withFleetExecutorCapabilities(features, endpoints)
+		}
 		unsupported = []string{"app-mutations", "operation-cancellation"}
 	}
 	if canaryHTTPEnabled {
@@ -664,4 +652,91 @@ func refreshEtcdCapacityPlanSignature(plan *fleet.CapacityPlan, key string) erro
 	_, _ = mac.Write([]byte(plan.Digest))
 	plan.Signature = "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
 	return nil
+}
+
+// etcdFleetExecutorLaneEnabled gates the executor lane off the etcd runtime
+// (plan-5-7 P2 and E2e hand-offs): the executor's converge pipeline is pinned
+// to the PG legacy phase profile, and an etcd/v3 attempt (prechange_verified
+// -> provider_applying) has no executor support yet. Until that profile
+// exists the etcd runtime mounts none of the executor-lane routes, runs no
+// converge watcher, admits neither the executor principal nor the
+// attempt-bound credential to any route, and does not advertise
+// fleet-executor-v1. The lane's code stays tested with the gate open.
+const etcdFleetExecutorLaneEnabled = false
+
+// registerEtcdFleetControllerRoutes mounts the Fleet target, resource and
+// runner routes of the etcd runtime and, with executorLane, the executor-lane
+// routes; it returns the converge watcher (nil without executorLane, when this
+// process runs no reconciler, or has no Fleet GitHub App). The executor lane
+// (plan-5-7 E6) needs the GitHub App: the watcher, the start-time
+// protected-branch re-check and the runner routes all do. The watcher runs
+// only where the reconciler runs.
+func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, operations *etcdstore.V3OperationStore, fleetGitHub *githubapp.Client, commits controller.CommitSource, reconciler *controller.Reconciler, executorLane bool) *controller.Watcher {
+	registerEtcdFleetTargetRoutes(router, cfg, identities, operations, fleetGitHub)
+	var liveness handler.FleetControllerLiveness
+	if reconciler != nil {
+		liveness = reconciler
+	}
+	var lane *etcdFleetExecutorLane
+	var watcher *controller.Watcher
+	if fleetGitHub != nil && executorLane {
+		lane = &etcdFleetExecutorLane{devices: identities}
+		watcher = newFleetConvergeWatcher(reconciler, cfg, commits, operations, handler.NewEtcdConvergePlanRecorder(cfg, operations), operations)
+		if watcher != nil {
+			lane.decisions = watcher
+		}
+	}
+	registerEtcdFleetResourceRoutes(router, cfg, identities, operations, fleetGitHub, liveness, lane)
+	if fleetGitHub == nil {
+		return watcher
+	}
+	fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations, fleetGitHub)
+	// fleet:operate for the GitHub lane. Gated off, the lane principals are
+	// refused by the exact-scope check, as before the executor lane existed.
+	runnerAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
+	if executorLane {
+		// The executor lane's device platform check and start-time re-check;
+		// the executor principal and the attempt-bound credential take their
+		// own exact route sets.
+		fleetRunner = fleetRunner.WithDeviceLookup(identities).
+			WithStartVerifier(newFleetStartVerifier(cfg.FleetGitHubRepository, commits))
+		runnerAuth = etcdFleetLaneAuth(cfg, identities, handler.ScopeFleetOperate)
+	}
+	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.List)
+	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.Create)
+	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}", fleetRunner.Get)
+	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", fleetRunner.Heartbeat)
+	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", fleetRunner.Advance)
+	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", fleetRunner.Cancel)
+	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/reconciliations", fleetRunner.ListReconciliations)
+	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/reconciliations", fleetRunner.Reconcile)
+	if !executorLane {
+		return watcher
+	}
+	var rescanner handler.ConvergeRescanner = fleetUnavailableRescanner{}
+	if watcher != nil {
+		rescanner = watcher
+	}
+	registerEtcdFleetExecutorRoutes(router, cfg, identities, operations, rescanner, fleetGitHub)
+	return watcher
+}
+
+// registerEtcdFleetCredentialRoutes mounts the credential self-service routes.
+// A credential may retire itself regardless of its application scopes, but
+// the executor principal and the attempt-bound credential reach only their
+// own route sets (plan-5-7 E6): the executor may rotate, neither may revoke.
+// Without executorLane both are refused here too.
+func registerEtcdFleetCredentialRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, executorLane bool) {
+	managed := etcdFleetLaneAuthGated(cfg, identities, executorLane)
+	// GitHub's short-lived assertion is the credential for this route; a Norn
+	// bearer token does not exist until the durable exchange succeeds.
+	router.Post("/api/v1/auth/github-actions/exchange", func(w http.ResponseWriter, r *http.Request) {
+		handler.ExchangeFleetGitHubActionsOIDC(cfg, identities, w, r)
+	})
+	router.With(managed).Post("/api/v1/auth/rotate", func(w http.ResponseWriter, r *http.Request) {
+		handler.RotateManagedToken(cfg, identities, nil, w, r)
+	})
+	router.With(managed).Post("/api/v1/auth/revoke", func(w http.ResponseWriter, r *http.Request) {
+		handler.RevokeManagedToken(identities, nil, w, r)
+	})
 }

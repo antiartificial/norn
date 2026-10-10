@@ -410,3 +410,112 @@ func TestFleetGitHubDispatchAcquireConcurrentAbandonNeverLeavesAbandonedHolder(t
 		t.Fatalf("refused acquire changed the dispatch row: %+v, %v", dispatch, err)
 	}
 }
+
+// TestIsFleetPlanRevalidationStale is the regression for the revalidation
+// wedge: a plan recorded inside a release's revalidation window is refused
+// by DecideAcquire forever, and the recorder must then report it inadmissible
+// so a rescan supersedes it. Inside the window it is not stale (a re-record
+// would be refused too).
+func TestIsFleetPlanRevalidationStale(t *testing.T) {
+	db := isolatedMigrationDB(t)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	identity := lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "reval-stale", StateBackend: "s3://reval-stale/state"}
+	target, err := db.RegisterFleetTarget(ctx, identity, []string{"cluster:reval-stale"}, "op-reval-stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := fleetFenceTestPlan(t, db, ctx, "reval-stale")
+	var startedAt time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT started_at FROM operations WHERE id=$1`, planID).Scan(&startedAt); err != nil {
+		t.Fatal(err)
+	}
+	stale := func(now time.Time) bool {
+		t.Helper()
+		got, err := db.IsFleetPlanRevalidationStale(ctx, planID, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if stale(startedAt.Add(time.Hour)) {
+		t.Fatal("a plan on a never-released target is stale")
+	}
+	// Released one minute before the plan was recorded: window ends 4m after.
+	if _, err := db.Pool.Exec(ctx, `UPDATE fleet_target_fences SET last_release_plan_id=$2, last_release_reason='succeeded', last_release_at=$3 WHERE target_id=$1`,
+		target.TargetID, uuid.NewString(), startedAt.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if stale(startedAt.Add(3 * time.Minute)) {
+		t.Fatal("a plan inside the open revalidation window is stale")
+	}
+	if !stale(startedAt.Add(5 * time.Minute)) {
+		t.Fatal("a plan older than the closed revalidation window is not stale")
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE fleet_target_fences SET last_release_reason='dispatch_not_submitted' WHERE target_id=$1`, target.TargetID); err != nil {
+		t.Fatal(err)
+	}
+	if stale(startedAt.Add(5 * time.Minute)) {
+		t.Fatal("dispatch_not_submitted is exempt from revalidation")
+	}
+}
+
+// TestIsFleetPlanRevalidationStaleExemptions: the holder, the plan whose own
+// release set LastRelease, and a plan with runner attempt history are never
+// stale, even with the window of another plan's release closed over them (M1).
+func TestIsFleetPlanRevalidationStaleExemptions(t *testing.T) {
+	db := isolatedMigrationDB(t)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	identity := lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "reval-exempt", StateBackend: "s3://reval-exempt/state"}
+	target, err := db.RegisterFleetTarget(ctx, identity, []string{"cluster:reval-exempt"}, "op-reval-exempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := fleetFenceTestPlan(t, db, ctx, "reval-exempt")
+	var startedAt time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT started_at FROM operations WHERE id=$1`, planID).Scan(&startedAt); err != nil {
+		t.Fatal(err)
+	}
+	setFence := func(held bool, holder, releasePlan string) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, `UPDATE fleet_target_fences SET held=$2, holder_plan_id=$3, holder_nonce_sha256=CASE WHEN $2 THEN 'nonce' ELSE '' END, authority_epoch=CASE WHEN $2 THEN 1 ELSE authority_epoch END, last_release_plan_id=$4, last_release_reason='succeeded', last_release_at=$5 WHERE target_id=$1`,
+			target.TargetID, held, holder, releasePlan, startedAt.Add(-time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := func() bool {
+		t.Helper()
+		got, err := db.IsFleetPlanRevalidationStale(ctx, planID, startedAt.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	other := uuid.NewString()
+	setFence(false, "", other)
+	if !stale() {
+		t.Fatal("control: a plan with no history inside a closed window must be stale")
+	}
+	setFence(true, planID, other)
+	if stale() {
+		t.Fatal("the fence holder is never stale")
+	}
+	setFence(false, "", planID)
+	if stale() {
+		t.Fatal("the plan whose own release set LastRelease is never stale")
+	}
+	// M1: Y ran (attempt row), then another plan released after it.
+	setFence(false, "", other)
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO fleet_runner_attempts(id,plan_id,attempt,runner_attempt_id,commit_sha,plan_sha256,workflow_url,status,current_phase,root_attempt_id,heartbeat_timeout_seconds,heartbeat_at,heartbeat_expires_at,started_at,updated_at) VALUES ($1,$2,1,'runner-1','commit','sha','https://example.test/run/1','failed','apply',$1,60,$3,$3,$3,$3)`,
+		uuid.NewString(), planID, startedAt); err != nil {
+		t.Fatal(err)
+	}
+	if stale() {
+		t.Fatal("a plan with a runner attempt is never stale, even after another plan's release")
+	}
+}

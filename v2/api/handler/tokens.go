@@ -54,6 +54,9 @@ const (
 	// staging receipt for the one configured external workload.
 	ScopeFleetExternalAdmission = "fleet:external-admission"
 	ScopeAdmin                  = "admin"
+	// ScopeFleetExecute is the Fleet executor lane. It is grantable only alone
+	// and only to a fleet-executor device (see fleet_executor_principal.go).
+	ScopeFleetExecute = "fleet:execute"
 )
 
 var accessTokenScopes = map[string]struct{}{
@@ -61,11 +64,12 @@ var accessTokenScopes = map[string]struct{}{
 	ScopePlatformOperate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
 	ScopeFleetOperate:           {},
 	ScopeFleetExternalAdmission: {},
+	ScopeFleetExecute:           {},
 	ScopeReleaseAttest:          {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own
@@ -262,6 +266,9 @@ func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Durat
 	if err != nil {
 		return nil, err
 	}
+	if containsScope(normalized, ScopeFleetExecute) {
+		return nil, fmt.Errorf("%s is grantable only to %s devices", ScopeFleetExecute, FleetExecutorPlatform)
+	}
 	issuedAt = issuedAt.UTC()
 	return &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl)}, nil
 }
@@ -327,6 +334,10 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 	scopes, err := normalizeAccessTokenScopes(req.Scopes)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	if containsScope(scopes, ScopeFleetExecute) {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", ScopeFleetExecute+" is grantable only to "+FleetExecutorPlatform+" devices")
 		return
 	}
 	token, record, err := IssueManagedAccessToken(r.Context(), h.cfg.APIToken, h.db, req.Note, scopes, ttl)

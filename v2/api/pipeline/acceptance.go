@@ -23,6 +23,8 @@ type EnqueueRequest struct {
 	Admission           store.OperationAdmissionPolicy
 	FleetReconciliation *store.FleetReconciliationAdmission
 	FleetRunnerAttempt  *store.FleetRunnerAttemptAdmission
+	// RequireFleetResourceMode is store.OperationAcceptance.RequireFleetResourceMode.
+	RequireFleetResourceMode string
 }
 
 func (p *Pipeline) SetOperationStore(operationStore store.OperationStore) {
@@ -68,8 +70,9 @@ func (p *Pipeline) acceptOperation(ctx context.Context, request EnqueueRequest, 
 		Identity:  store.OperationRequestIdentity{Authority: request.Authority, Actor: request.Actor, Kind: operation.Kind, Resource: resource, Key: request.Key},
 		Operation: operation, Deployment: deployment, Regions: regions, Audit: request.Audit,
 		Admission: request.Admission, Semantics: request.Semantics,
-		FleetReconciliation: request.FleetReconciliation,
-		FleetRunnerAttempt:  request.FleetRunnerAttempt,
+		FleetReconciliation:      request.FleetReconciliation,
+		FleetRunnerAttempt:       request.FleetRunnerAttempt,
+		RequireFleetResourceMode: request.RequireFleetResourceMode,
 	}
 	fingerprint, err := store.CanonicalOperationRequestFingerprint(acceptance)
 	if err != nil {

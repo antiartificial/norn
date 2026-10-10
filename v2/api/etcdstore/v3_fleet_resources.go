@@ -29,15 +29,21 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/controller"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
+	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 // ErrFleetResourceNotFound mirrors store.ErrFleetResourceNotFound.
@@ -423,6 +429,18 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 	}
 	exact(abandonedKey, abandonedResponse)
 	holder.Abandoned = len(abandonedResponse.Kvs) == 1
+	if holder.DispatchState == "" {
+		// A converge plan on the executor lane has no dispatch keys and is
+		// bound once its first attempt exists (plan-5-7 section 2.6).
+		converge, planRevision, err := s.fleetConvergePlanOf(ctx, planID)
+		if err != nil {
+			return holder, 0, nil, err
+		}
+		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.opKey(planID)), "=", planRevision))
+		if converge != nil {
+			holder.DispatchState = fleetExecutorHolderDispatchState
+		}
+	}
 	return holder, runID, compares, nil
 }
 
@@ -495,6 +513,7 @@ func (s *V3OperationStore) ReconcileFleetResource(ctx context.Context, name stri
 		var holder lifecycle.HolderFacts
 		var holderRunID int64
 		var releasedAttempts []fleet.RunnerAttempt
+		var releasedConverge *executor.ConvergePlan
 		if resource.TargetID != "" {
 			var fenceRevision int64
 			fence, fenceRevision, err = s.GetFleetTargetFence(ctx, resource.TargetID)
@@ -519,6 +538,12 @@ func (s *V3OperationStore) ReconcileFleetResource(ctx context.Context, name stri
 					return nil, err
 				}
 				compares = append(compares, releasedCompares...)
+				var planRevision int64
+				releasedConverge, planRevision, err = s.fleetConvergePlanOf(ctx, fence.LastRelease.PlanID)
+				if err != nil {
+					return nil, err
+				}
+				compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.opKey(fence.LastRelease.PlanID)), "=", planRevision))
 			}
 		}
 
@@ -558,6 +583,7 @@ func (s *V3OperationStore) ReconcileFleetResource(ctx context.Context, name stri
 
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		status := derive(controller.Input{Resource: resource, Fence: fence, Holder: holder, HolderDispatchRunID: holderRunID, LastReleaseAttempts: releasedAttempts, AuthorityEpoch: epoch, LatestObservations: latest, TiedObservations: tied, Now: now})
+		status = fleetLastAppliedFromConvergePlan(status, fence, releasedConverge)
 		if resource.AuthorityEpoch == epoch && controller.StatusEquivalent(resource.Status, status) {
 			// Unchanged (see controller.StatusEquivalent): skip the write so
 			// the revision and etcd history do not grow, but still confirm
@@ -593,4 +619,322 @@ func (s *V3OperationStore) ReconcileFleetResource(ctx context.Context, name stri
 		lastErr = ErrFleetResourceReconcileConflict
 	}
 	return nil, lastErr
+}
+
+// fleetLastAppliedFromConvergePlan is store.lastAppliedFromConvergePlan: when
+// the fence's succeeded release was a converge plan, the last-applied commit
+// and generation are the converge plan's own (commitSha, generation), not a
+// lookup of the attempt's commit in the desired history. Any other plan, and
+// any release that is not "succeeded", leaves status untouched.
+func fleetLastAppliedFromConvergePlan(status controller.Status, fence lifecycle.FenceFacts, converge *executor.ConvergePlan) controller.Status {
+	if converge == nil || fence.LastRelease == nil || fence.LastRelease.Reason != "succeeded" ||
+		status.LastApplied == nil || status.LastApplied.PlanID != fence.LastRelease.PlanID {
+		return status
+	}
+	applied := *status.LastApplied
+	applied.Generation, applied.CommitSHA, applied.Reason = converge.Generation, converge.CommitSHA, ""
+	status.LastApplied = &applied
+	status.LastAppliedGeneration = converge.Generation
+	return status
+}
+
+// ListWatchedResources returns only the resources whose stored executionMode
+// is controller, for the converge watcher (controller.WatchedResourceSource).
+// Cluster is the resource target's cluster alias; LastApplied is
+// status.lastApplied.commitSha, or "" when it is absent or carries a reason.
+// A controller resource whose target or cluster alias is missing is skipped.
+// Mode is enforced here, at plan recording, never in an execution Txn (T7).
+func (s *V3OperationStore) ListWatchedResources(ctx context.Context) ([]controller.WatchedResource, error) {
+	prefix := s.fleetResourceKey("")
+	response, err := s.kv.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	if err != nil {
+		return nil, err
+	}
+	var out []controller.WatchedResource
+	for _, kv := range response.Kvs {
+		var resource controller.Resource
+		if err := decodeV3Record(kv.Value, &resource); err != nil {
+			return nil, fmt.Errorf("fleet resource is corrupt: %w", err)
+		}
+		if resource.ExecutionMode != executor.ModeController || resource.TargetID == "" {
+			continue
+		}
+		target, err := s.GetFleetTarget(ctx, resource.TargetID)
+		if err != nil {
+			return nil, err
+		}
+		cluster := ""
+		if target != nil {
+			for _, alias := range target.Aliases {
+				if strings.HasPrefix(alias, "cluster:") {
+					cluster = strings.TrimPrefix(alias, "cluster:")
+					break
+				}
+			}
+		}
+		if cluster == "" {
+			continue
+		}
+		watched := controller.WatchedResource{Name: resource.Name, Cluster: cluster, Repository: resource.Desired.Repository, DesiredGeneration: resource.Desired.Generation}
+		if applied := resource.Status.LastApplied; applied != nil && applied.Reason == "" {
+			watched.LastApplied = applied.CommitSHA
+		}
+		out = append(out, watched)
+	}
+	return out, nil
+}
+
+// SetFleetResourceExecutionMode applies and records a
+// fleet.resource.execution-mode operation in ONE Txn (plan-5-7, "Hand-offs
+// from the E4b review"). Request identity first: a replay with the same body
+// returns the stored operation and applies nothing; the same key with another
+// body is a store.AcceptanceConflictError (idempotency_key_reused). Otherwise
+// the resource, its target fence and the capacity-plan index are read, and the
+// Txn compares each of them: a held fence (either lane) refuses with
+// executor.CodeFleetExecutionModeFenceHeld, an unknown resource is
+// ErrFleetResourceNotFound, a stale expectedRevision is
+// ErrFleetResourceRevisionConflict. The mode is written into the resource
+// record and the revision bumped only when the effective mode changes. A
+// switch to github abandons (executor.HolderNonceSHA256) every converge plan
+// of the resource that has no attempt, in the same Txn; start already refuses
+// abandoned plans and never reads the mode (T7).
+//
+// The previousMode in the operation metadata is part of the signed request, so
+// a replay rebuilds the request with the stored operation's previousMode
+// before comparing fingerprints.
+func (s *V3OperationStore) SetFleetResourceExecutionMode(ctx context.Context, identity store.OperationRequestIdentity, audit store.AcceptanceAuditContext, request executor.ExecutionModeRequest) (store.AcceptedOperation, error) {
+	if err := request.Validate(); err != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: err.Error()}
+	}
+	name := strings.TrimSpace(identity.Resource)
+	if identity.Kind != executor.KindResourceExecutionMode || !controller.ValidResourceName(name) {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "fleet resource execution-mode identity is invalid"}
+	}
+	if s.policy.ReplayTTL > 0 {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd fleet execution-mode replay expiry is not yet qualified"}
+	}
+	build := func(previousMode string, now time.Time) (store.OperationAcceptance, error) {
+		finished := now
+		op := model.Operation{
+			ID: uuid.NewString(), Kind: executor.KindResourceExecutionMode, Ref: name, Status: model.OperationSucceeded,
+			Source: "fleet-execution-mode", Risk: "changes which lane may apply converge plans for the resource",
+			Message:   "fleet resource execution mode " + request.Mode,
+			Payload:   map[string]interface{}{"resource": name, "mode": request.Mode, "expectedRevision": request.ExpectedRevision},
+			Metadata:  map[string]interface{}{"resource": name, "mode": request.Mode, "previousMode": previousMode},
+			StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1,
+		}
+		acceptance := store.OperationAcceptance{
+			Identity: identity, Operation: op, Audit: audit,
+			Semantics: map[string]interface{}{"action": executor.KindResourceExecutionMode, "resource": name, "mode": request.Mode, "expectedRevision": request.ExpectedRevision},
+		}
+		acceptance.Identity.Resource = name
+		var err error
+		if acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance); err != nil {
+			return store.OperationAcceptance{}, err
+		}
+		return s.normalize(acceptance)
+	}
+
+	for round := 0; round < fleetExecutorStartRounds; round++ {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		probe, err := build("", now)
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		key := s.acceptanceKey(probe.Identity)
+		if existing, err := s.loadAcceptance(ctx, key); err == nil {
+			previous, _ := existing.record.Accepted.Operation.Metadata["previousMode"].(string)
+			stored, err := build(previous, now)
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			return s.replay(ctx, key, existing, stored.Identity, stored.Fingerprint)
+		} else if !errors.Is(err, ErrNotFound) {
+			return store.AcceptedOperation{}, err
+		}
+
+		resource, resourceRevision, err := s.getFleetResourceWithRevision(ctx, name)
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.fleetResourceKey(name)), "=", resourceRevision)}
+		if resource.TargetID != "" {
+			fence, fenceRevision, err := s.GetFleetTargetFence(ctx, resource.TargetID)
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			if fence.Held {
+				return store.AcceptedOperation{}, &executor.Error{Code: executor.CodeFleetExecutionModeFenceHeld, Reason: "the resource's target fence is held; wait for it to be free"}
+			}
+			compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(resource.TargetID)), "=", fenceRevision))
+		}
+		if request.ExpectedRevision != resource.Revision {
+			return store.AcceptedOperation{}, ErrFleetResourceRevisionConflict
+		}
+		previousMode := controller.EffectiveExecutionMode(resource.ExecutionMode)
+		acceptance, err := build(previousMode, now)
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		var puts []clientv3.Op
+		if previousMode != request.Mode {
+			resource.ExecutionMode = request.Mode
+			resource.Revision++
+			resource.UpdatedAt = now
+			encoded, err := json.Marshal(resource)
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			puts = append(puts, clientv3.OpPut(s.fleetResourceKey(name), string(encoded)))
+		}
+		if request.Mode == executor.ModeGitHub {
+			abandonCompares, abandonPuts, err := s.planAbandonUnstartedConvergePlans(ctx, name, resource.TargetID, acceptance.Operation.ID, now)
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			compares, puts = append(compares, abandonCompares...), append(puts, abandonPuts...)
+		}
+
+		identityID, intentID := uuid.NewString(), uuid.NewString()
+		intent, err := store.SealOperationAcceptance(ctx, s.signer, acceptance, identityID, intentID, now)
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		accepted := store.AcceptedOperation{Operation: acceptance.Operation, RequestIdentityID: identityID, AcceptanceIntentID: intentID, Intent: intent}
+		acceptanceRecord, err := json.Marshal(v3Acceptance{Identity: acceptance.Identity, Accepted: accepted})
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		operationRecord, err := json.Marshal(v3Record{Operation: acceptance.Operation})
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		compares = append(compares,
+			clientv3.Compare(clientv3.CreateRevision(key), "=", 0),
+			clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0))
+		puts = append(puts,
+			clientv3.OpPut(key, string(acceptanceRecord)),
+			clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(operationRecord)),
+			clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, now, acceptance.Operation.ID), acceptance.Operation.ID),
+			clientv3.OpPut(s.operationAcceptanceIndexKey(acceptance.Operation.ID), key))
+		txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
+		if err != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
+		}
+		if txn.Succeeded {
+			return accepted, nil
+		}
+		// Lost the Txn: nothing committed; the next round re-decides from
+		// fresh reads (a concurrent replay of this key is found first).
+	}
+	return store.AcceptedOperation{}, fmt.Errorf("fleet resource execution mode changed concurrently")
+}
+
+// planAbandonUnstartedConvergePlans returns the compares and puts that abandon
+// every converge plan of resource that has no runner attempt, using
+// executor.HolderNonceSHA256 (fleetTargetBindInputs has no nonce for them).
+// The capacity-plan index is compared so a plan recorded after the scan fails
+// the Txn, each plan's attempts prefix so a start after the scan does too, and
+// each abandoned key must still be absent.
+func (s *V3OperationStore) planAbandonUnstartedConvergePlans(ctx context.Context, resource, targetID, operationID string, now time.Time) ([]clientv3.Cmp, []clientv3.Op, error) {
+	prefix := s.operationKindIndexPrefix("fleet.capacity-plan")
+	end := clientv3.GetPrefixRangeEnd(prefix)
+	start := prefix
+	var firstRevision int64
+	var compares []clientv3.Cmp
+	var puts []clientv3.Op
+	for {
+		response, err := s.kv.Get(ctx, start, clientv3.WithRange(end), clientv3.WithLimit(100), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+		if err != nil {
+			return nil, nil, err
+		}
+		if firstRevision == 0 {
+			firstRevision = response.Header.Revision
+		}
+		for _, kv := range response.Kvs {
+			record, _, err := s.load(ctx, string(kv.Value))
+			if err != nil {
+				return nil, nil, fmt.Errorf("load indexed operation %q: %w", string(kv.Value), err)
+			}
+			op := record.Operation
+			if op.Ref != resource || op.Status != model.OperationSucceeded {
+				continue
+			}
+			converge, _, _ := parseFleetConvergePlanPayload(op.Payload)
+			if converge == nil || converge.Resource != resource {
+				continue
+			}
+			if abandoned, err := s.checkFleetTargetPlanAbandoned(ctx, op.ID); err != nil {
+				return nil, nil, err
+			} else if abandoned {
+				continue
+			}
+			attempts, err := s.kv.Get(ctx, s.fleetRunnerAttemptPrefix(op.ID), clientv3.WithPrefix(), clientv3.WithCountOnly())
+			if err != nil {
+				return nil, nil, err
+			}
+			if attempts.Count != 0 {
+				continue
+			}
+			record2, err := json.Marshal(v3FleetTargetAbandoned{PlanID: op.ID, NonceSHA256: executor.HolderNonceSHA256(op.ID), TargetID: targetID, OperationID: operationID, AbandonedAt: now})
+			if err != nil {
+				return nil, nil, err
+			}
+			compares = append(compares, s.abandonedCompare(op.ID),
+				clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(op.ID)).WithPrefix(), "=", 0))
+			puts = append(puts, clientv3.OpPut(s.fleetTargetAbandonedKey(op.ID), string(record2)))
+		}
+		if !response.More || len(response.Kvs) == 0 {
+			break
+		}
+		start = string(response.Kvs[len(response.Kvs)-1].Key) + "\x00"
+	}
+	compares = append(compares, clientv3.Compare(clientv3.ModRevision(prefix).WithPrefix(), "<", firstRevision+1))
+	return compares, puts, nil
+}
+
+// ErrFleetResourceModeChanged means the resource key changed between the mode
+// read and the commit of AcceptFleetConvergePlan; the mode may still match, so
+// the caller retries (AcceptFleetConvergePlan does, a bounded number of times).
+var ErrFleetResourceModeChanged = errors.New("fleet resource changed while its execution mode was checked")
+
+// fleetResourceModeCompare reads the resource named by a.Operation.Ref and
+// returns the compare that pins its ModRevision, or controller.ErrNotWatched
+// when its effective execution mode is not a.RequireFleetResourceMode (a
+// missing resource included).
+func (s *V3OperationStore) fleetResourceModeCompare(ctx context.Context, a store.OperationAcceptance) (clientv3.Cmp, error) {
+	resource, revision, err := s.getFleetResourceWithRevision(ctx, a.Operation.Ref)
+	if errors.Is(err, ErrFleetResourceNotFound) {
+		return clientv3.Cmp{}, controller.ErrNotWatched
+	}
+	if err != nil {
+		return clientv3.Cmp{}, err
+	}
+	if controller.EffectiveExecutionMode(resource.ExecutionMode) != a.RequireFleetResourceMode {
+		return clientv3.Cmp{}, controller.ErrNotWatched
+	}
+	return clientv3.Compare(clientv3.ModRevision(s.fleetResourceKey(a.Operation.Ref)), "=", revision), nil
+}
+
+// AcceptFleetConvergePlan is the etcd converge-plan recorder's commit (E6
+// calls it from its controller.ConvergePlanRecorder). It accepts a
+// fleet.capacity-plan operation only while the resource named by a.Operation.Ref
+// is in controller mode, in the same Txn: the resource key's ModRevision is
+// compared, so a switch to github that lands after the watcher's read either
+// fails this Txn (the next round sees github and refuses with
+// controller.ErrNotWatched) or commits after it, and then abandons the plan
+// (SetFleetResourceExecutionMode compares the capacity-plan index). A replay
+// of an accepted key is answered before the mode is read. The resource key
+// also changes on every reconcile write, so a lost compare is retried.
+func (s *V3OperationStore) AcceptFleetConvergePlan(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
+	if a.Operation.Kind != "fleet.capacity-plan" || a.Identity.Kind != "fleet.capacity-plan" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "converge plan recording requires a fleet.capacity-plan operation"}
+	}
+	a.RequireFleetResourceMode = executor.ModeController
+	for round := 0; ; round++ {
+		accepted, err := s.Accept(ctx, a)
+		if !errors.Is(err, ErrFleetResourceModeChanged) || round+1 >= fleetExecutorStartRounds {
+			return accepted, err
+		}
+	}
 }

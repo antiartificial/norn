@@ -56,6 +56,7 @@ import (
 
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/controller"
+	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
 )
 
@@ -100,19 +101,22 @@ type fleetResourceDocument struct {
 	Policy         controller.ApprovalPolicy       `json:"policy"`
 	Watermarks     map[string]controller.Watermark `json:"watermarks,omitempty"`
 	Status         controller.Status               `json:"status"`
+	// ExecutionMode is absent until the admin sets it (plan-5-7 E4b), so
+	// existing documents and digests do not change.
+	ExecutionMode string `json:"executionMode,omitempty"`
 }
 
 func fleetResourceDocumentOf(r controller.Resource) fleetResourceDocument {
 	return fleetResourceDocument{
 		SchemaVersion: r.SchemaVersion, Desired: r.Desired, DesiredHistory: r.DesiredHistory,
-		Policy: r.Policy, Watermarks: r.Watermarks, Status: r.Status,
+		Policy: r.Policy, Watermarks: r.Watermarks, Status: r.Status, ExecutionMode: r.ExecutionMode,
 	}
 }
 
 func (d fleetResourceDocument) toResource(name, targetID string, revision, authorityEpoch, observationSequence int64, createdAt, updatedAt time.Time) controller.Resource {
 	return controller.Resource{
 		SchemaVersion: d.SchemaVersion, Name: name, TargetID: targetID,
-		Desired: d.Desired, DesiredHistory: d.DesiredHistory, Policy: d.Policy, Watermarks: d.Watermarks, Status: d.Status,
+		Desired: d.Desired, DesiredHistory: d.DesiredHistory, Policy: d.Policy, Watermarks: d.Watermarks, Status: d.Status, ExecutionMode: d.ExecutionMode,
 		Revision: revision, AuthorityEpoch: authorityEpoch, ObservationSequence: observationSequence,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}
@@ -485,6 +489,7 @@ func (db *DB) reconcileFleetResourceOnce(ctx context.Context, name string, deriv
 	var holder lifecycle.HolderFacts
 	var holderRunID int64
 	var releasedAttempts []fleet.RunnerAttempt
+	var releasedConverge *executor.ConvergePlan
 	if resource.TargetID != "" {
 		fence, err = GetFleetTargetFence(ctx, tx, resource.TargetID, false)
 		if err != nil {
@@ -501,6 +506,10 @@ func (db *DB) reconcileFleetResourceOnce(ctx context.Context, name string, deriv
 		// separately: derive's LastApplied (M11) needs them.
 		if fence.LastRelease != nil && fence.LastRelease.Reason == "succeeded" {
 			releasedAttempts, err = readFleetPlanAttemptsTx(ctx, tx, fence.LastRelease.PlanID)
+			if err != nil {
+				return nil, err
+			}
+			releasedConverge, err = fleetConvergePlanTx(ctx, tx, fence.LastRelease.PlanID)
 			if err != nil {
 				return nil, err
 			}
@@ -532,6 +541,7 @@ func (db *DB) reconcileFleetResourceOnce(ctx context.Context, name string, deriv
 
 	now := time.Now().UTC()
 	status := derive(controller.Input{Resource: *resource, Fence: fence, Holder: holder, HolderDispatchRunID: holderRunID, LastReleaseAttempts: releasedAttempts, AuthorityEpoch: epoch, LatestObservations: latest, TiedObservations: tied, Now: now})
+	status = lastAppliedFromConvergePlan(status, fence, releasedConverge)
 	if resource.AuthorityEpoch == epoch && controller.StatusEquivalent(resource.Status, status) {
 		// Unchanged: no write, so no revision bump (WP12; see
 		// controller.StatusEquivalent). The deferred rollback ends the
@@ -572,6 +582,17 @@ func readFleetTargetHolderFactsTx(ctx context.Context, tx pgx.Tx, planID string)
 	dispatch, err := scanFleetGitHubDispatch(tx.QueryRow(ctx, `SELECT `+fleetGitHubDispatchColumns+` FROM fleet_github_dispatches WHERE plan_id=$1`, planID))
 	if err != nil && err != pgx.ErrNoRows {
 		return holder, 0, err
+	}
+	if dispatch == nil {
+		// A converge plan on the executor lane has no dispatch row and is
+		// bound once its first attempt exists (plan-5-7 section 2.6).
+		converge, err := fleetConvergePlanTx(ctx, tx, planID)
+		if err != nil {
+			return holder, 0, err
+		}
+		if converge != nil {
+			holder.DispatchState = executorHolderDispatchState
+		}
 	}
 	if dispatch != nil {
 		holder.DispatchState = dispatch.DispatchState
@@ -615,4 +636,24 @@ func readFleetPlanAttemptsTx(ctx context.Context, tx pgx.Tx, planID string) ([]f
 		attempts = append(attempts, lifecycle.FromLegacy(attempt))
 	}
 	return attempts, rows.Err()
+}
+
+// lastAppliedFromConvergePlan folds E4c into the store: when the fence's
+// succeeded release was a converge plan, the last-applied commit and generation
+// are the converge plan's own (commitSha, generation), not a lookup of the
+// attempt's commit in the desired history. derive (fleet/controller) can only
+// resolve the generation through DesiredHistory, which leaves it 0 with a
+// reason once the commit has left the history; the plan always records it.
+// Plans without a converge payload, and any release that is not "succeeded",
+// leave status untouched.
+func lastAppliedFromConvergePlan(status controller.Status, fence lifecycle.FenceFacts, converge *executor.ConvergePlan) controller.Status {
+	if converge == nil || fence.LastRelease == nil || fence.LastRelease.Reason != "succeeded" ||
+		status.LastApplied == nil || status.LastApplied.PlanID != fence.LastRelease.PlanID {
+		return status
+	}
+	applied := *status.LastApplied
+	applied.Generation, applied.CommitSHA, applied.Reason = converge.Generation, converge.CommitSHA, ""
+	status.LastApplied = &applied
+	status.LastAppliedGeneration = converge.Generation
+	return status
 }

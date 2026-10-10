@@ -1562,14 +1562,45 @@ func (c *Client) installationToken(ctx context.Context, permissions map[string]s
 	if cached, ok := c.tokens[cacheKey]; ok && cached.reuseUntil.After(now) {
 		return cached.value, nil
 	}
-	key, err := c.privateKey()
+	token, expiresAt, err := c.mintInstallationToken(ctx, permissions)
 	if err != nil {
 		return "", err
+	}
+	reuseUntil := expiresAt.Add(-2 * time.Minute)
+	if ceiling := now.Add(10 * time.Minute); reuseUntil.After(ceiling) {
+		reuseUntil = ceiling
+	}
+	c.tokens[cacheKey] = cachedToken{value: token, reuseUntil: reuseUntil}
+	return token, nil
+}
+
+// IssueRepoReadToken mints a fresh GitHub App installation token for a host
+// that must fetch the configured repository: restricted to that one
+// repository and to contents:read only. It is never cached or shared (each
+// call is one GitHub mint), and GitHub fixes its expiry at about one hour.
+// The caller must not log or store the token.
+func (c *Client) IssueRepoReadToken(ctx context.Context) (string, time.Time, error) {
+	return c.mintInstallationToken(ctx, map[string]string{"contents": "read"})
+}
+
+// RevokeRepoReadToken revokes a token from IssueRepoReadToken that was never
+// handed out (DELETE /installation/token, authenticated by the token itself).
+func (c *Client) RevokeRepoReadToken(ctx context.Context, token string) error {
+	return c.requestWithAuth(ctx, token, http.MethodDelete, "/installation/token", nil, nil)
+}
+
+// mintInstallationToken requests a token for the configured repository with
+// exactly permissions and returns it with GitHub's expiry.
+func (c *Client) mintInstallationToken(ctx context.Context, permissions map[string]string) (string, time.Time, error) {
+	now := c.now().UTC()
+	key, err := c.privateKey()
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	claims := jwt.MapClaims{"iat": now.Add(-60 * time.Second).Unix(), "exp": now.Add(9 * time.Minute).Unix(), "iss": c.cfg.AppID}
 	appJWT, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(key)
 	if err != nil {
-		return "", fmt.Errorf("sign GitHub App JWT: %w", err)
+		return "", time.Time{}, fmt.Errorf("sign GitHub App JWT: %w", err)
 	}
 	var response struct {
 		Token     string    `json:"token"`
@@ -1578,17 +1609,12 @@ func (c *Client) installationToken(ctx context.Context, permissions map[string]s
 	body := map[string]any{"repositories": []string{strings.SplitN(c.cfg.Repository, "/", 2)[1]}, "permissions": permissions}
 	endpoint := fmt.Sprintf("/app/installations/%d/access_tokens", c.cfg.InstallationID)
 	if err := c.requestWithAuth(ctx, appJWT, http.MethodPost, endpoint, body, &response); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if response.Token == "" || !response.ExpiresAt.After(now.Add(time.Minute)) {
-		return "", fmt.Errorf("GitHub returned an invalid installation token")
+		return "", time.Time{}, fmt.Errorf("GitHub returned an invalid installation token")
 	}
-	reuseUntil := response.ExpiresAt.Add(-2 * time.Minute)
-	if ceiling := now.Add(10 * time.Minute); reuseUntil.After(ceiling) {
-		reuseUntil = ceiling
-	}
-	c.tokens[cacheKey] = cachedToken{value: response.Token, reuseUntil: reuseUntil}
-	return response.Token, nil
+	return response.Token, response.ExpiresAt, nil
 }
 
 func permissionCacheKey(permissions map[string]string) string {

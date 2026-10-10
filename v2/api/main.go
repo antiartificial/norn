@@ -37,6 +37,7 @@ import (
 	"norn/v2/api/engine"
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/controller"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/githubattestation"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
@@ -1681,6 +1682,19 @@ func secureDatabaseDSN(raw string) bool {
 }
 
 func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(http.Handler) http.Handler {
+	return controlBearerAuth(token, h, requireExplicit, false)
+}
+
+// fleetAuthorityBearerAuth is bearerAuth for the authority-only router, the
+// only PG router that serves the Fleet executor lane: the executor principal
+// and the attempt-bound credential reach exactly their route sets there. Every
+// other router (bearerAuth) refuses both on every route, so the general
+// router's GitHub-lane attempt routes never admit them (plan-5-7 E6).
+func fleetAuthorityBearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handler {
+	return controlBearerAuth(token, h, true, true)
+}
+
+func controlBearerAuth(token string, h *handler.Handler, requireExplicit, fleetExecutorLane bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Capabilities stay publicly discoverable, but a client that supplies a
@@ -1737,6 +1751,17 @@ func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(htt
 			}
 			if strings.HasPrefix(authorization, "Bearer ") && h != nil {
 				if principal, ok := h.VerifyAccessToken(authorization[7:]); ok {
+					// The executor principal and the attempt-bound credential
+					// are decided by their exact route sets alone (plan-5-7
+					// E6); the generic scope check never runs for them.
+					if restricted, allowed := fleetLaneAdmits(principal, r); restricted {
+						if !allowed || !fleetExecutorLane {
+							handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "this credential may not call this route")
+							return
+						}
+						next.ServeHTTP(w, handler.WithAccessPrincipal(r, principal))
+						return
+					}
 					if !principal.Allows(requiredScope) && !allowsScopedRead(principal, r, requiredScope) && !allowsReleaseOperatorWrite(principal, r, requiredScope) && !allowsFleetOperatorWrite(principal, r, requiredScope) && !allowsFleetObservationIngest(principal, r) {
 						handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+requiredScope)
 						return
@@ -1804,6 +1829,9 @@ func publicControlPathForMode(path string, requireExplicit bool) bool {
 
 func controlScopeForRequest(r *http.Request) string {
 	path := r.URL.Path
+	if scope, ok := fleetExecutorScopeForRequest(r.Method, path); ok {
+		return scope
+	}
 	switch {
 	case path == "/ws" || path == "/api/v1/events":
 		return handler.ScopeEventsRead
@@ -1943,6 +1971,7 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 			"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch", "fleetGitHubReconcile": "/api/v1/fleet/plans/{planID}/github/reconcile", "fleetTargets": "/api/v1/fleet/targets", "fleetResources": "/api/v1/fleet/resources",
 		}
 		features, endpoints = withExternalFleetAdmissionCapabilities(cfg, features, endpoints)
+		features, endpoints = withFleetExecutorCapabilities(features, endpoints)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"protocolVersion": 1, "serverVersion": Version,
 			"environment": map[string]string{"id": cfg.EnvironmentID(), "profile": profile},
@@ -1952,7 +1981,10 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 				"scopes": handler.AccessTokenScopeNames(), "principal": principalInfo,
 				"githubActionsExchange": "/api/v1/auth/github-actions/exchange",
 				"enrollmentScopes":      []string{handler.ScopeAPIRead, handler.ScopeAPIWrite},
-				"websocketBearerHeader": false, "websocketQueryToken": false, "deviceEnrollment": true,
+				// fleet:execute is grantable only alone and only to the
+				// fleet-executor platform (plan-5-7 E1/E6).
+				"enrollmentScopesByPlatform": fleetExecutorEnrollmentScopes(),
+				"websocketBearerHeader":      false, "websocketQueryToken": false, "deviceEnrollment": true,
 			},
 			"endpoints": endpoints,
 		})
@@ -2148,6 +2180,14 @@ func fleetAuthorityOnlyRouter(cfg *config.Config, db *store.DB) http.Handler {
 // fleetAuthorityOnlyRouterWithHandler keeps the constrained route allowlist
 // independently testable after startup has constructed its optional verifier.
 func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler) http.Handler {
+	return fleetAuthorityOnlyRouterWithWatcher(cfg, h, nil)
+}
+
+// fleetAuthorityOnlyRouterWithWatcher is the allowlist plus the executor lane
+// (plan-5-7 E6). watcher is the converge watcher, nil when this process runs
+// none (no reconciler); the rescan route then answers 502 and the resource
+// view reports no watcher verdict.
+func fleetAuthorityOnlyRouterWithWatcher(cfg *config.Config, h *handler.Handler, watcher *controller.Watcher) http.Handler {
 	allowedOrigins := []string{}
 	for _, origin := range strings.Split(cfg.AllowedOrigins, ",") {
 		if origin = strings.TrimSpace(origin); origin != "" {
@@ -2162,7 +2202,7 @@ func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler)
 		AllowedOrigins: allowedOrigins, AllowedMethods: []string{"GET", "POST", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Content-Type", "Authorization", "Idempotency-Key"}, AllowCredentials: true,
 	}))
-	r.Use(bearerAuth(cfg.APIToken, h, true))
+	r.Use(fleetAuthorityBearerAuth(cfg.APIToken, h))
 	r.Use(h.MutationAuditMiddleware)
 
 	r.Get("/api/health", h.FleetAuthorityHealth)
@@ -2214,12 +2254,32 @@ func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler)
 		r.Get("/fleet/targets/{targetID}/fence", fleetTargets.Fence)
 		r.Post("/fleet/targets/{targetID}/fence/release", fleetTargets.Release)
 		fleetResources := h.FleetResourceRoutes()
+		var rescanner handler.ConvergeRescanner = fleetUnavailableRescanner{}
+		var decisions handler.ConvergeDecisionSource
+		if watcher != nil {
+			rescanner, decisions = watcher, watcher
+		}
+		// Without the facts reader desired.converge, approve_converge,
+		// resumeApproved and the converge blockers are all absent.
+		fleetResources.SetConvergeFacts(h.ConvergeFactsReader(decisions))
 		r.Get("/fleet/resources", fleetResources.List)
 		r.Post("/fleet/resources/{name}", fleetResources.Create)
 		r.Get("/fleet/resources/{name}", fleetResources.Get)
 		r.Post("/fleet/resources/{name}/desired", fleetResources.SetDesired)
 		r.Get("/fleet/resources/{name}/observations", fleetResources.ListObservations)
 		r.Post("/fleet/resources/{name}/observations", fleetResources.AppendObservation)
+		// Executor lane (plan-5-7 E6): authority-only and etcd runtime only,
+		// never on the general router. The scope matcher (bearerAuth) admits
+		// the executor principal to exactly executor.ExecutorRoutes.
+		r.Post("/fleet/resources/{name}/execution-mode", fleetResources.SetExecutionMode)
+		fleetConverge := h.FleetConvergeRoutes(rescanner)
+		r.Post("/fleet/resources/{name}/converge", fleetConverge.Rescan)
+		r.Post("/fleet/plans/{planID}/converge/approve", fleetConverge.Approve)
+		fleetExecutorOps := h.FleetExecutorOpsRoutes()
+		r.Post("/fleet/plans/{planID}/credential-grants", fleetExecutorOps.Grant)
+		r.Post("/fleet/plans/{planID}/converge-refusals", fleetExecutorOps.Refuse)
+		r.Post("/fleet/plans/{planID}/provider-evidence", fleetExecutorOps.ProviderEvidence)
+		r.Post("/fleet/executor/stop-attestations", fleetExecutorOps.StopAttestation)
 		if externalFleetAdmissionCapabilityConfigured(cfg) {
 			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/begin", h.BeginExternalFleetDeploymentAdmission)
 			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/resume", h.ResumeExternalFleetDeploymentAdmission)
@@ -2235,6 +2295,35 @@ func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler)
 		fileServer(r, cfg.UIDir)
 	}
 	return r
+}
+
+// wireFleetAuthorityExecutorLane wires the executor lane's non-route parts on
+// the PG authority (plan-5-7 E6) and returns the converge watcher, which is
+// nil unless reconciler is (the watcher runs only where the reconciler runs).
+// The recorder's Admissible is false for an abandoned plan (so a rescan after
+// a mode round-trip records a fresh plan) and true for a refused one (so a
+// rescan never records the same commit again). It is also false for a plan
+// that has no runner attempt or dispatch row and whose fence revalidation
+// window (M4) has closed with the plan still older than the window's end:
+// admission would refuse it forever, so the next Rescan supersedes it with a
+// fresh plan (a poll's exists decision settles the resource and does not).
+func wireFleetAuthorityExecutorLane(cfg *config.Config, h *handler.Handler, db *store.DB, reconciler *controller.Reconciler, github controller.CommitSource) *controller.Watcher {
+	h.SetFleetExecutorStartVerifier(newFleetStartVerifier(cfg.FleetGitHubRepository, github))
+	recorder := h.ConvergePlanRecorder()
+	recorder.Admissible = func(ctx context.Context, planID string) (bool, error) {
+		abandoned, err := db.IsFleetPlanAbandonedForPlan(ctx, planID)
+		if err != nil || abandoned {
+			return false, err
+		}
+		stale, err := db.IsFleetPlanRevalidationStale(ctx, planID, time.Now().UTC())
+		if err != nil {
+			// Fail toward admissible: a read error must not supersede a plan.
+			log.Printf("fleet converge: revalidation staleness of plan %s: %v", planID, err)
+			return true, nil
+		}
+		return !stale, nil
+	}
+	return newFleetConvergeWatcher(reconciler, cfg, github, db, recorder, db)
 }
 
 func newFleetAuthorityOnlyHandler(cfg *config.Config, db *store.DB) (*handler.Handler, error) {
@@ -2276,12 +2365,30 @@ func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
 		// Resource reads report this reconciler's liveness (WP13).
 		h.SetFleetControllerLiveness(reconciler)
 	}
-	var routes http.Handler = fleetAuthorityOnlyRouterWithHandler(cfg, h)
+	// The converge watcher and the start-time protected-branch re-check use
+	// their own E3 client. The watcher runs only where the reconciler runs.
+	// Without a (valid) GitHub App the watcher does not run and every fresh
+	// executor start is refused as unverified (fail closed).
+	var github controller.CommitSource
+	if githubConfig := fleetGitHubConfig(cfg); githubapp.Configured(githubConfig) {
+		if client, githubErr := githubapp.New(githubConfig, nil); githubErr != nil {
+			log.Printf("WARNING: Fleet authority-only: Fleet GitHub App unavailable, converge watcher disabled and executor starts refused: %v", githubErr)
+		} else {
+			github = client
+		}
+	}
+	watcher := wireFleetAuthorityExecutorLane(cfg, h, db, reconciler, github)
+	var routes http.Handler = fleetAuthorityOnlyRouterWithWatcher(cfg, h, watcher)
 	stopReconciler := func() {}
 	if reconciler != nil {
 		routes = fleetReconcilerNotify(reconciler)(routes)
 		stopReconciler = startFleetReconciler(context.Background(), reconciler)
 		log.Print("Fleet resource reconciler enabled (observe-only; writes Fleet status only)")
+	}
+	stopWatcher := func() {}
+	if watcher != nil {
+		stopWatcher = startFleetConvergeWatcher(context.Background(), watcher)
+		log.Print("Fleet converge watcher enabled (records converge plans for controller-mode resources)")
 	}
 	srv := &http.Server{
 		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(routes, "norn.fleet-authority"),
@@ -2296,6 +2403,7 @@ func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	stopWatcher()
 	stopReconciler()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()

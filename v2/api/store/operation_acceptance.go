@@ -170,6 +170,16 @@ func (s *PGOperationStore) acceptWithGuard(ctx context.Context, input OperationA
 			return AcceptedOperation{}, err
 		}
 	}
+	if acceptance.FleetResourceExecutionMode != nil {
+		if err := enforceFleetResourceExecutionMode(ctx, tx, &acceptance); err != nil {
+			return AcceptedOperation{}, err
+		}
+	}
+	if acceptance.RequireFleetResourceMode != "" {
+		if err := enforceFleetResourceModeRequired(ctx, tx, &acceptance); err != nil {
+			return AcceptedOperation{}, err
+		}
+	}
 	if acceptance.FleetRunnerAttempt != nil {
 		attempt, err := acceptFleetRunnerAttempt(ctx, tx, acceptance)
 		if err != nil {
@@ -378,6 +388,9 @@ func (s *PGOperationStore) normalize(ctx context.Context, input OperationAccepta
 	if err := normalizeFleetTargetMutationAcceptance(&input); err != nil {
 		return OperationAcceptance{}, err
 	}
+	if err := NormalizeFleetResourceExecutionModeAcceptance(&input); err != nil {
+		return OperationAcceptance{}, err
+	}
 	want, err := CanonicalOperationRequestFingerprint(input)
 	if err != nil {
 		return OperationAcceptance{}, err
@@ -570,7 +583,9 @@ type requestMaterial struct {
 	FleetReconciliation *FleetReconciliationAdmission `json:"fleetReconciliation,omitempty"`
 	FleetRunnerAttempt  *FleetRunnerAttemptAdmission  `json:"fleetRunnerAttempt,omitempty"`
 	FleetTargetMutation *FleetTargetMutationAdmission `json:"fleetTargetMutation,omitempty"`
-	Semantics           map[string]interface{}        `json:"semantics,omitempty"`
+	// FleetResourceExecutionMode is typed admission for fleet.resource.execution-mode.
+	FleetResourceExecutionMode *FleetResourceExecutionModeAdmission `json:"fleetResourceExecutionMode,omitempty"`
+	Semantics                  map[string]interface{}               `json:"semantics,omitempty"`
 }
 
 type canonicalRegion struct {
@@ -589,7 +604,7 @@ func canonicalRequestMaterial(acceptance OperationAcceptance) ([]byte, error) {
 		copy.ExpectedPredecessorID = ""
 		fleetRunnerAttempt = &copy
 	}
-	material := requestMaterial{Schema: OperationRequestFingerprintVersion, Authority: acceptance.Identity.Authority, Kind: acceptance.Identity.Kind, Resource: acceptance.Identity.Resource, Admission: acceptance.Admission, FleetReconciliation: acceptance.FleetReconciliation, FleetRunnerAttempt: fleetRunnerAttempt, FleetTargetMutation: acceptance.FleetTargetMutation, Semantics: acceptance.Semantics}
+	material := requestMaterial{Schema: OperationRequestFingerprintVersion, Authority: acceptance.Identity.Authority, Kind: acceptance.Identity.Kind, Resource: acceptance.Identity.Resource, Admission: acceptance.Admission, FleetReconciliation: acceptance.FleetReconciliation, FleetRunnerAttempt: fleetRunnerAttempt, FleetTargetMutation: acceptance.FleetTargetMutation, FleetResourceExecutionMode: acceptance.FleetResourceExecutionMode, Semantics: acceptance.Semantics}
 	material.Operation.Kind, material.Operation.App, material.Operation.Ref = acceptance.Operation.Kind, acceptance.Operation.App, acceptance.Operation.Ref
 	material.Operation.Risk, material.Operation.Source, material.Operation.Status, material.Operation.MaxAttempts = acceptance.Operation.Risk, acceptance.Operation.Source, string(acceptance.Operation.Status), acceptance.Operation.MaxAttempts
 	material.Operation.Payload = semanticOperationMap(acceptance.Operation.Payload, acceptance)
