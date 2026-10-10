@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -392,6 +393,54 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	inputs := dispatched["inputs"].(map[string]any)
 	if result.RunID != 93 || result.ApprovedHeadSHA != headSHA || inputs["fleet_environment"] != "production/nyc3" || inputs["plan_run_id"] != "91" || inputs["plan_sha256"] != planSHA || inputs["norn_plan_id"] != planID || inputs["allow_destructive"] != "true" || inputs["dispatch_nonce"] != nonce || dispatched["return_run_details"] != true {
 		t.Fatalf("result=%#v dispatch=%#v", result, dispatched)
+	}
+}
+
+func TestPilotDispatchResolvesMergedPushPlanArtifact(t *testing.T) {
+	planID := "32323232-3232-4232-8232-323232323232"
+	planSHA := strings.Repeat("a", 64)
+	headSHA := strings.Repeat("b", 40)
+	const pilotRunID = "pilot261006c"
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
+	entry, _ := zipWriter.Create("fleet-plan.sha256")
+	_, _ = entry.Write([]byte(planSHA + "\n"))
+	entry, _ = zipWriter.Create("pilot-run-id.txt")
+	_, _ = entry.Write([]byte(pilotRunID + "\n"))
+	_ = zipWriter.Close()
+	var planRunQuery url.Values
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+			fmt.Fprintf(w, `[{"number":8,"html_url":"https://github.com/acme/norn-fleet/pull/8","state":"closed","merged_at":"2026-10-10T05:34:34Z","head":{"ref":%q,"sha":%q},"base":{"ref":"main"}}]`, "norn/plan-"+planID, strings.Repeat("c", 40))
+		case r.URL.Path == "/repos/acme/norn-fleet/pulls/8":
+			fmt.Fprintf(w, `{"merge_commit_sha":%q,"merged_at":"2026-10-10T05:34:34Z"}`, headSHA)
+		case strings.Contains(r.URL.Path, "/actions/workflows/plan.yml/runs"):
+			planRunQuery = r.URL.Query()
+			fmt.Fprintf(w, `{"workflow_runs":[{"id":91,"head_sha":%q,"status":"completed","conclusion":"success"}]}`, headSHA)
+		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/91/artifacts":
+			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-disposable-fleet-nyc3-91","expired":false}]}`)
+		case r.URL.Path == "/repos/acme/norn-fleet/actions/artifacts/92/zip":
+			_, _ = w.Write(archive.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	client.cfg.PilotRunID = pilotRunID
+	client.cfg.ConfigPath = "environments/disposable/fleet/nyc3/cluster.yaml"
+
+	approved, err := client.ResolveApprovedPlan(context.Background(), planID, "disposable/fleet/nyc3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.PlanRunID != 91 || approved.PlanSHA != planSHA || approved.ApprovedHeadSHA != headSHA || approved.PilotRunID != pilotRunID {
+		t.Fatalf("resolved pilot plan = %#v", approved)
+	}
+	if got := planRunQuery.Get("event"); got != "push" {
+		t.Fatalf("pilot resolver selected event %q for the merged-main plan run", got)
 	}
 }
 
