@@ -828,11 +828,10 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID, fleetEn
 			Conclusion string `json:"conclusion"`
 		} `json:"workflow_runs"`
 	}
-	event := "push"
-	if c.cfg.PilotRunID != "" {
-		event = "workflow_dispatch"
-	}
-	query := "?event=" + event + "&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&status=success&per_page=100"
+	// A protected PR merge triggers the reviewed plan workflow with a push
+	// event for the merge commit, including disposable pilots. Keep discovery
+	// bound to that event and the exact merge SHA below.
+	query := "?event=push&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&status=success&per_page=100"
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.PlanWorkflow)+"/runs"+query), nil, &runs); err != nil {
 		return nil, err
 	}
