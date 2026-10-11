@@ -182,7 +182,9 @@ class DoctorFixtureTest(unittest.TestCase):
         releases = self.root / "releases"
         binaries = ("host-runtime", "norn", "norn-api", "norn-effect-runner", "norn-host-agent",
                     "norn-ingress-observer", "norn-ingress-publisher", "mini-create-protected-backup",
-                    "mini-private-copy-rehearsal", "mini-signed-shadow-launchagent-rehearsal",
+                    "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal",
+                    "mini-recovered-forward-transition", "mini-recovered-forward-validate-journal",
+                    "mini-recovered-forward-verify-evidence", "mini-signed-shadow-launchagent-rehearsal",
                     "mini-verify-protected-backup", "platform-release-artifact", "platform-release-fetch-github",
                     "platform-release-manifest", "platform-release-verify-github", "platform-upgrade")
         for sha in (legacy_sha, candidate_sha):
