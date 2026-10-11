@@ -32,7 +32,7 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.home = self.root / "home"
         (self.home / ".config/norn").mkdir(parents=True)
         self.env = os.environ.copy()
@@ -186,14 +186,41 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "verified")
-        value["carriedForwardEvidenceSHA256"] = "0" * 64
-        canonical = json.dumps({k: v for k, v in value.items() if k != "signature"}, sort_keys=True, separators=(",", ":")).encode()
-        value["signature"] = "hmac-sha256:" + hmac.new(
+        previous_path = self.evidence
+        previous_raw = previous_path.read_bytes()
+        next_candidate = "f" * 40
+        next_dir = self.root / ("retarget-" + next_candidate)
+        next_dir.mkdir(mode=0o700)
+        next_dir.chmod(0o700)
+        shadow["candidateSHA"] = next_candidate
+        shadow_raw = strict_dump(shadow)
+        self.shadow.write_bytes(shadow_raw)
+        chained = {key: item for key, item in value.items() if key != "signature"}
+        chained.update({
+            "candidateSHA": next_candidate,
+            "carriedForwardEvidenceSHA256": sha(previous_raw),
+            "carriedForwardEvidencePath": str(previous_path.resolve()),
+            "shadowReceiptSHA256": sha(shadow_raw),
+        })
+        canonical = json.dumps(chained, sort_keys=True, separators=(",", ":")).encode()
+        chained["signature"] = "hmac-sha256:" + hmac.new(
             KEY, b"norn.recovered-forward-evidence/v3\0" + canonical, hashlib.sha256).hexdigest()
-        self.evidence.write_bytes(strict_dump(value))
+        self.evidence = self.private(next_dir / "source-evidence.json", strict_dump(chained))
         result = subprocess.run(
             [str(SCRIPT), str(self.evidence), sha(self.evidence.read_bytes()), TRANSITION,
-             SOURCE, new_candidate, str(self.proof), str(self.artifact), str(self.shadow)],
+             SOURCE, next_candidate, str(self.proof), str(self.artifact), str(self.shadow)],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "verified")
+        chained["carriedForwardEvidenceSHA256"] = "0" * 64
+        canonical = json.dumps({k: v for k, v in chained.items() if k != "signature"}, sort_keys=True, separators=(",", ":")).encode()
+        chained["signature"] = "hmac-sha256:" + hmac.new(
+            KEY, b"norn.recovered-forward-evidence/v3\0" + canonical, hashlib.sha256).hexdigest()
+        self.evidence.write_bytes(strict_dump(chained))
+        result = subprocess.run(
+            [str(SCRIPT), str(self.evidence), sha(self.evidence.read_bytes()), TRANSITION,
+             SOURCE, next_candidate, str(self.proof), str(self.artifact), str(self.shadow)],
             env=self.env, capture_output=True, text=True,
         )
         self.assertNotEqual(result.returncode, 0)

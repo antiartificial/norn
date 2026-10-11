@@ -68,6 +68,76 @@ def verify_signature(value: dict, schema: str, key: bytes, label: str) -> dict:
     return signed
 
 
+def verify_carried_forward_chain(value: dict, evidence_path: Path, key: bytes) -> None:
+    """Verify a bounded chain from this candidate back to the initial v2 baseline."""
+    bundle = evidence_path.parent
+    root = bundle.parent
+    try:
+        root_info = root.lstat()
+    except OSError as error:
+        raise ValueError("version 3 evidence transition root is unavailable") from error
+    if (root.is_symlink() or not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != os.geteuid()
+            or stat.S_IMODE(root_info.st_mode) != 0o700):
+        raise ValueError("version 3 evidence transition root must be owner-only mode 0700")
+    baseline_fields = (
+        "transitionId", "sourceSHA", "databaseIdentity", "recoveryFenceSHA256",
+        "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+        "reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest",
+    )
+    expected_path = Path(value.get("carriedForwardEvidencePath", ""))
+    expected_digest = value.get("carriedForwardEvidenceSHA256")
+    seen_candidates = {value.get("candidateSHA")}
+    for _ in range(32):
+        if (not expected_path.is_absolute() or expected_path.is_symlink()
+                or expected_path.resolve(strict=True) != expected_path):
+            raise ValueError("version 3 evidence prior path must be absolute, canonical, and not a symlink")
+        fixed = root / "transition.json.source-evidence.json"
+        versioned_match = re.fullmatch(r"retarget-([0-9a-f]{40})", expected_path.parent.name)
+        if expected_path == fixed:
+            prior_candidate = None
+        elif (expected_path.parent.parent == root and expected_path.name == "source-evidence.json"
+              and versioned_match):
+            prior_candidate = versioned_match.group(1)
+            info = expected_path.parent.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o700):
+                raise ValueError("version 3 prior evidence directory must be owner-only mode 0700")
+            if prior_candidate in seen_candidates:
+                raise ValueError("version 3 evidence chain repeats a candidate identity")
+            seen_candidates.add(prior_candidate)
+        else:
+            raise ValueError("version 3 evidence path is outside its exact versioned transition bundle")
+        prior_raw = private(expected_path, "prior candidate-bound source evidence")
+        if digest(prior_raw) != expected_digest:
+            raise ValueError("version 3 evidence prior evidence digest mismatch")
+        prior = strict_json(prior_raw, "prior candidate-bound source evidence")
+        prior_schema = prior.get("schema")
+        if prior_schema == SCHEMA:
+            prior_fields = FIELDS
+        elif prior_schema == V3_SCHEMA:
+            prior_fields = V3_FIELDS
+        else:
+            raise ValueError("prior candidate-bound evidence schema is invalid")
+        if set(prior) != prior_fields:
+            raise ValueError("prior candidate-bound evidence fields are invalid")
+        verified_prior = verify_signature(prior, prior_schema, key, "prior candidate-bound evidence")
+        if (not re.fullmatch(r"[0-9a-f]{40}", str(verified_prior.get("candidateSHA", "")))
+                or (prior_candidate is not None and verified_prior.get("candidateSHA") != prior_candidate)
+                or any(verified_prior.get(name) != value.get(name) for name in baseline_fields)):
+            raise ValueError("prior evidence does not preserve the exact source baseline fields")
+        if prior_schema == SCHEMA:
+            if expected_path != fixed:
+                raise ValueError("initial v2 source evidence must use the fixed transition evidence path")
+            return
+        if verified_prior.get("preservationCapture") != "carried-forward-verified":
+            raise ValueError("prior version 3 evidence lacks carried-forward preservation capture")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(verified_prior.get("carriedForwardEvidenceSHA256", ""))):
+            raise ValueError("prior version 3 evidence digest is invalid")
+        expected_path = Path(verified_prior.get("carriedForwardEvidencePath", ""))
+        expected_digest = verified_prior.get("carriedForwardEvidenceSHA256")
+    raise ValueError("version 3 evidence chain exceeds the 32-candidate safety limit")
+
+
 def parse_utc(value: object, label: str) -> dt.datetime:
     if not isinstance(value, str):
         raise ValueError(f"{label} timestamp is missing")
@@ -114,30 +184,13 @@ def main() -> int:
         if not re.fullmatch(r"[0-9a-f]{64}", str(value.get("carriedForwardEvidenceSHA256", ""))):
             raise ValueError("version 3 evidence prior evidence digest is invalid")
         bundle = evidence_path.parent
-        transition_root = bundle.parent
-        expected_prior = (transition_root / "transition.json.source-evidence.json").resolve(strict=True)
         bundle_info = bundle.lstat()
         if (not stat.S_ISDIR(bundle_info.st_mode) or bundle_info.st_uid != os.geteuid() or
                 stat.S_IMODE(bundle_info.st_mode) != 0o700 or
                 bundle.name != f"retarget-{value.get('candidateSHA')}" or
-                evidence_path.name != "source-evidence.json" or
-                transition_root.is_symlink() or transition_root.stat().st_uid != os.geteuid() or
-                stat.S_IMODE(transition_root.stat().st_mode) != 0o700 or
-                Path(value.get("carriedForwardEvidencePath", "")) != expected_prior):
+                evidence_path.name != "source-evidence.json"):
             raise ValueError("version 3 evidence path is outside its exact versioned transition bundle")
-        prior_raw = private(expected_prior, "prior candidate-bound source evidence")
-        if digest(prior_raw) != value.get("carriedForwardEvidenceSHA256"):
-            raise ValueError("version 3 evidence prior evidence digest mismatch")
-        prior = strict_json(prior_raw, "prior candidate-bound source evidence")
-        if set(prior) != FIELDS or prior.get("schema") != SCHEMA:
-            raise ValueError("prior candidate-bound evidence schema or fields are invalid")
-        prior = verify_signature(prior, SCHEMA, key, "prior candidate-bound evidence")
-        carried_fields = ("transitionId", "sourceSHA", "databaseIdentity", "recoveryFenceSHA256",
-                          "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
-                          "reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest")
-        if (prior.get("candidateSHA") != "85fb2830ac18a711b2e3e20de45c1adcbbd4935d" or
-                any(prior.get(name) != value.get(name) for name in carried_fields)):
-            raise ValueError("version 3 evidence does not preserve the exact 85fb baseline fields")
+        verify_carried_forward_chain(value, evidence_path, key)
     if (value.get("transitionId"), value.get("sourceSHA"), value.get("candidateSHA")) != (str(transition), str(source), str(candidate)):
         raise ValueError("source evidence does not bind the exact transition and release SHAs")
     if (not isinstance(value.get("transitionId"), str) or
