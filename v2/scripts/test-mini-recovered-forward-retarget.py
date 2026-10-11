@@ -212,6 +212,7 @@ class RetargetTests(unittest.TestCase):
         lsof.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         lsof.chmod(0o700)
         args.extend(["--lsof", str(lsof.resolve())])
+        args.extend(["--api-port", "18800"])
         with patch.dict(os.environ, {"NORN_AUDIT_SIGNING_KEY": self.key.decode()}), \
              patch.object(RETARGET, "verify_database", return_value=db), \
              patch.object(RETARGET, "verify_backup_shadow", return_value=({}, {}, proof_sha, backup_sha, backup_bytes)):
@@ -233,6 +234,7 @@ class RetargetTests(unittest.TestCase):
             "--release-verifier", str(verifier.resolve()), "--current-link", str(current),
             "--psql", str(psql.resolve()), "--launchctl", str(launchctl.resolve()),
             "--api-binary", str(api.resolve()), "--host-agent-binary", str(agent.resolve()),
+            "--api-port", "18800",
         ])
         consume_args.lsof = lsof
         with patch.dict(os.environ, {"NORN_DATABASE_URL": "postgres://fixture/norn",
@@ -340,7 +342,7 @@ class RetargetTests(unittest.TestCase):
         lsof = self.root / "lsof"
         lsof.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         lsof.chmod(0o700)
-        args = types.SimpleNamespace(launchctl=Path("/fixture/launchctl"), api_binary=api, host_agent_binary=agent, lsof=lsof)
+        args = types.SimpleNamespace(launchctl=Path("/fixture/launchctl"), api_binary=api, host_agent_binary=agent, lsof=lsof, api_port=18800)
         output = "PID\tStatus\tLabel\n-\t78\tcom.norn.api\n-\t78\tcom.norn.host-agent\n"
         real_run = RETARGET.subprocess.run
         def run_with_snapshot(command, **kwargs):
@@ -348,9 +350,14 @@ class RetargetTests(unittest.TestCase):
                 return types.SimpleNamespace(returncode=0, stdout=output, stderr="")
             return real_run(command, **kwargs)
         with patch.object(RETARGET.subprocess, "run", side_effect=run_with_snapshot):
-            self.assertEqual(len(RETARGET.verify_services(args)), 2)
+            self.assertEqual(RETARGET.verify_services(args), {
+                "launchd": {"com.norn.api": {"pid": "-", "status": "78"},
+                            "com.norn.host-agent": {"pid": "-", "status": "78"}},
+                "apiListenerPort": 18800,
+            })
         def run_with_listener(command, **kwargs):
             if command[0] == str(lsof):
+                self.assertIn("-iTCP:18800", command)
                 return types.SimpleNamespace(returncode=0, stdout="4242\n", stderr="")
             if command[0] == str(args.launchctl):
                 return types.SimpleNamespace(returncode=0, stdout=output, stderr="")

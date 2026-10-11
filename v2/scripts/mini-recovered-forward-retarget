@@ -342,13 +342,16 @@ def verify_services(args: argparse.Namespace) -> dict[str, Any]:
             fail(f"cannot prove {label} fence binary: {error}")
         if run.returncode != 78 or run.stdout.strip() != "norn legacy baseline fence active; candidate recovery is required":
             fail(f"{label} fence binary does not return the exact exit-78 fence sentinel")
-    listener = subprocess.run([str(args.lsof), "-nP", "-iTCP:8800", "-sTCP:LISTEN", "-t"],
+    api_port = getattr(args, "api_port", 8800)
+    if type(api_port) is not int or not 1 <= api_port <= 65535:
+        fail("Mini API listener port is invalid")
+    listener = subprocess.run([str(args.lsof), "-nP", f"-iTCP:{api_port}", "-sTCP:LISTEN", "-t"],
                               capture_output=True, text=True, check=False)
     if listener.returncode not in (0, 1):
         fail("cannot verify that the Mini API listener is absent")
     if listener.stdout.strip():
         fail("Mini API listener remains active during recovered-forward retarget")
-    return found
+    return {"launchd": found, "apiListenerPort": api_port}
 
 
 def sign_document(value: dict[str, Any], key: bytes) -> bytes:
@@ -441,6 +444,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--psql", type=Path, default=Path("/usr/bin/psql"))
     result.add_argument("--launchctl", type=Path, default=Path("/bin/launchctl"))
     result.add_argument("--lsof", type=Path, default=Path("/usr/sbin/lsof"))
+    result.add_argument("--api-port", type=int, default=8800)
     result.add_argument("--api-binary", type=Path, required=True)
     result.add_argument("--host-agent-binary", type=Path, required=True)
     return result
