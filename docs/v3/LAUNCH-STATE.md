@@ -39,12 +39,32 @@ interruption-tested recovered-forward transition that proves all writers are
 quiesced before migration and only moves forward. Fleet deployment, Fleet
 management nodes, and Fleet etcd are not prerequisites for this Mini update.
 
-At 18:49 UTC, direct SSH to Mini and loopback API checks reconfirmed source
-`26147c39a554b73b6761a371edee5a9591c81d3f`, version
-`v2.20.0-platform-72-g26147c39`, schema 47 with writer floor 31, health `ok`,
-and active single-node runtime services including PostgreSQL, Consul, and
-Nomad. The direct IP path worked; the `mini.tail113139.ts.net` alias did not
-resolve from this Mac. No live mutation was performed.
+Architecture boundary: Mini is the single-node development platform and uses
+its existing unmanaged PostgreSQL service. It does not host or require Fleet
+management nodes or an etcd quorum. The disposable DigitalOcean cluster is a
+separate staging Fleet; once running, Mini may connect to it through the Fleet
+API for development and control-plane workflows. Mini v3 qualification can
+proceed independently of that staging Fleet.
+
+At 2026-10-11 19:42 UTC, protected signed release
+`798c82847c04156d99a9876c0bb0d6d4b76f901b` was published and independently
+verified; it is a v3.0.0-rc.1 prerelease, not a stable v3.0.0 release. Direct
+SSH and loopback API checks reconfirmed Mini still serves
+`26147c39a554b73b6761a371edee5a9591c81d3f` (`v2.20.0-platform-72-g26147c39`),
+schema 47/writer floor 31, health `ok`, and single-node PostgreSQL/Consul/Nomad.
+No candidate was promoted.
+
+The failed transition evidence binds historical candidate
+`e7301f779041cd22f1872090323d3b8ed5c4611b`, while the current signed runtime is
+`26147c39a554b73b6761a371edee5a9591c81d3f`. Its reconciliation records
+`matchesBefore=false`; that is an explicit loss of proof for the old baseline,
+not evidence that current data should be discarded. The local correction now
+models these as separate identities (`sourceSHA` and `incidentCandidateSHA`),
+retains the v1 receipt and all historical files, and captures a fresh current
+Mini workload digest for the new forward transition. It still requires a fresh
+verified database backup and exact-candidate signed shadow restore before any
+live migration. This correction is not yet merged or released, and no live
+Mini state has been changed.
 
 Observed 2026-10-11. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
@@ -507,7 +527,7 @@ running Fleet qualification.
 | M2 profiles and retention | 50% | Mini uses development/PostgreSQL; separate-node restore, provider retention and legacy binding review remain. |
 | M3 etcd Fleet | 45% | Local three-member rehearsals and live five-node provider creation exist; no bootstrapped etcd membership, quorum, fault/restore, alarm, rotation or soak proof. |
 | M4 capacity and ingress | 40% | Local admission and two-ingress fixtures exist; no live route, placement, loaded 2→3→2 or drain proof. |
-| M5 Mini upgrade rehearsal | 55% | Exact signed candidate imported; fresh backup proof and signed private restore/LaunchAgent rehearsal passed. Live schema migration and promotion remain blocked until a recovered-forward lane proves all old writers are quiesced. |
+| M5 Mini upgrade rehearsal | 55% | Earlier backup/shadow rehearsals passed, but they do not bind the current `798c…` release. Current release is `26147c…`; its old failed ledger is for `e730…` and records `matchesBefore=false`. The separate-identity adoption correction is local only; fresh exact-candidate backup/shadow, protected release, writer fencing, migration, promotion, and postflight remain. |
 | M6 running upgrades and app DB | 25% | Journals and local transfer fixtures exist; protected running upgrade and app DB cutover/interruption proof remain. |
 | M7 mobility | 30% | Isolated Mini fixture web/worker/tick and private restore comparison passed. No Fleet target or complete move exists. |
 | M8 release qualification | 40% | Exact-SHA signed prerelease published and verified; live Mini promotion, Fleet provider-backed fitness, soak/fault results, and owner sign-off remain. |
@@ -515,12 +535,12 @@ running Fleet qualification.
 
 ## Next actions
 
-1. Implement and qualify the separate recovered-forward Mini transition for
-   the exact adopted recovery state. It must bind the signed candidate, fresh
-   backup/restore evidence, adoption receipt, source release and schema, fence
-   both API and host-agent writers, prove writer quiescence, journal
-   interruption/retry safely, and prohibit rollback to the old writer. Then
-   take fresh preflight evidence and promote the exact signed release on Mini.
+1. Merge and publish the separate-identity recovered-forward correction. On
+   Mini, create the v2 adoption receipt while preserving the old v1 receipt,
+   then take a fresh backup and signed shadow restore for the exact release.
+   Run the interruption-tested transition, verify API and host-agent writer
+   fencing/quiescence, migrate forward, and prove health, schema, preserved
+   workloads, and host assurance. Mini does not wait for or require Fleet/etcd.
 2. Supply fresh staging-only DigitalOcean/state secrets and the protected
    runner inputs listed by `scripts/setup doctor --environment staging`. The
    retired pilot's credentials and approvals are not reusable.

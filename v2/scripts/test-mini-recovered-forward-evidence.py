@@ -15,7 +15,9 @@ SCRIPT = Path(__file__).with_name("mini-recovered-forward-verify-evidence")
 KEY = b"fixture-audit-signing-key-at-least-32-bytes"
 SOURCE = "a" * 40
 CANDIDATE = "b" * 40
+INCIDENT_CANDIDATE = "c" * 40
 TRANSITION = "fixture-transition-001"
+INCIDENT_BEFORE = "9" * 64
 
 
 def sha(raw: bytes) -> str:
@@ -40,12 +42,23 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         self.shadow = self.private("shadow.json", b"")
         self.adoption_inputs = {}
         refs = {}
-        for label in ("fence", "ledger", "reconciliation"):
-            path = self.private(f"{label}.json", (label + " evidence\n").encode())
+        fence = {"schema": "norn.legacy-baseline-fence/v1", "state": "candidate-postflight-failed",
+                 "legacyReleaseSHA": "d" * 40}
+        ledger = {"schema": "norn.m5-protected-transition/v1", "state": "candidate-recovery-required",
+                  "legacyReleaseSHA": "d" * 40, "candidateSHA": INCIDENT_CANDIDATE,
+                  "upgradeExitCode": 1, "beforeDigest": INCIDENT_BEFORE}
+        reconciliation = {"schema": "norn.m5-post-transition-reconciliation/v1",
+                          "release": {"sha": INCIDENT_CANDIDATE, "verified": True},
+                          "transition": {"beforeDigest": INCIDENT_BEFORE,
+                                         "ledgerState": "candidate-recovery-required",
+                                         "matchesBefore": False, "upgradeExitCode": 1}}
+        for label, value in (("fence", fence), ("ledger", ledger), ("reconciliation", reconciliation)):
+            path = self.private(f"{label}.json", strict_dump(value))
             refs[label] = {"path": str(path), "sha256": sha(path.read_bytes())}
         adoption = {
-            "schema": "norn.recovered-baseline-adoption/v1",
-            "candidateSHA": CANDIDATE,
+            "schema": "norn.recovered-baseline-adoption/v2",
+            "sourceSHA": SOURCE,
+            "incidentCandidateSHA": INCIDENT_CANDIDATE,
             "adopterSHA": "a" * 40,
             "incidentBindingSHA256": "c" * 64,
             "preservationUnprovenReasonSHA256": "2" * 64,
@@ -55,8 +68,8 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
             "preservationProven": False,
         }
         canonical = json.dumps(adoption, sort_keys=True, separators=(",", ":")).encode()
-        adoption["signature"] = "hmac-sha256:" + hmac.new(KEY, b"norn.recovered-baseline-adoption/v1\0" + canonical, hashlib.sha256).hexdigest()
-        self.adoption = self.private(self.home / ".config/norn/.norn-recovered-baseline-adoption.json", strict_dump(adoption))
+        adoption["signature"] = "hmac-sha256:" + hmac.new(KEY, b"norn.recovered-baseline-adoption/v2\0" + canonical, hashlib.sha256).hexdigest()
+        self.adoption = self.private(self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json", strict_dump(adoption))
         self.refs = refs
         self.write_inputs()
 
@@ -94,7 +107,7 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         shadow_raw = strict_dump(shadow)
         self.shadow.write_bytes(shadow_raw)
         value = {
-            "schema": "norn.recovered-forward-evidence/v1",
+            "schema": "norn.recovered-forward-evidence/v2",
             "transitionId": TRANSITION,
             "sourceSHA": SOURCE,
             "candidateSHA": CANDIDATE,
@@ -108,10 +121,12 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
             "backupSHA256": sha(artifact_raw),
             "backupBytes": len(artifact_raw),
             "shadowReceiptSHA256": sha(shadow_raw),
+            "incidentCandidateSHA": INCIDENT_CANDIDATE,
+            "incidentBeforeDigest": INCIDENT_BEFORE,
             "beforeDigest": "1" * 64,
         }
         canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-        value["signature"] = "hmac-sha256:" + hmac.new(KEY, b"norn.recovered-forward-evidence/v1\0" + canonical, hashlib.sha256).hexdigest()
+        value["signature"] = "hmac-sha256:" + hmac.new(KEY, b"norn.recovered-forward-evidence/v2\0" + canonical, hashlib.sha256).hexdigest()
         raw = strict_dump(value)
         self.evidence = self.private("source-evidence.json", raw)
 
@@ -160,7 +175,7 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         value["unexpected"] = True
         canonical = {k: v for k, v in value.items() if k != "signature"}
         signed = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
-        value["signature"] = "hmac-sha256:" + hmac.new(KEY, b"norn.recovered-forward-evidence/v1\0" + signed, hashlib.sha256).hexdigest()
+        value["signature"] = "hmac-sha256:" + hmac.new(KEY, b"norn.recovered-forward-evidence/v2\0" + signed, hashlib.sha256).hexdigest()
         self.evidence.write_bytes(strict_dump(value))
         result = self.verify()
         self.assertNotEqual(result.returncode, 0)

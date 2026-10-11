@@ -61,3 +61,25 @@ failure retains `candidate-recovery-required`; the operator must follow the
 legacy-baseline roll-forward boundary. A passing hermetic test or receipt does
 not by itself sign M5. Gate evidence still requires the scheduled on-host run,
 application-availability observation, and operator review of the result.
+
+## Re-adopting a later signed source after a failed transition
+
+If Mini has since returned to a different signed release, do not relabel or
+rewrite the earlier failed-transition ledger, reconciliation, or v1 adoption
+receipt. The v2 recovered-baseline adoption contract keeps the two release
+identities separate: `sourceSHA` is the currently serving signed Mini release;
+`incidentCandidateSHA` is the candidate named by the historical failed ledger
+and reconciliation. It writes a new owner-only
+`.norn-recovered-baseline-adoption-v2.json`, leaving the v1 receipt untouched.
+The historical `matchesBefore=false` remains explicit and preservation of the
+pre-failure application state stays unproven.
+
+After that adoption is recorded, the recovered-forward wrapper takes a fresh
+protected database backup and exact-candidate signed shadow restore, then
+captures the current Mini workload digest as the new preservation baseline.
+It separately binds the historical incident digest for audit. The new
+transition can therefore prove preservation from the accepted current source
+without claiming that the earlier failed attempt preserved its older baseline.
+While the failed fence remains, ordinary `platform-upgrade upgrade` is
+prohibited, including through `env-exec`; only the journaled recovered-forward
+path can migrate, promote, and finalize.
