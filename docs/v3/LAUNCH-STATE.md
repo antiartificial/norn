@@ -16,10 +16,16 @@ deployment, etcd quorum, ingress, workload/scale testing, and teardown remain
 separate Fleet acceptance milestones; none is a prerequisite for upgrading the
 Mini.
 
-PR [#137](https://github.com/antiartificial/norn/pull/137) contains the drain
-correction. Its checks are green and it is mergeable, but it is still open, so
-the code is not yet in protected `master` and no release from that change has
-been published.
+As of 2026-10-11, PR [#137](https://github.com/antiartificial/norn/pull/137)
+was merged as `02095664e69c885c28ecef20ba65d7261e2f3134`, and its immutable
+signed prerelease was published as
+[`platform-02095664e69c885c28ecef20ba65d7261e2f3134`](https://github.com/antiartificial/norn/releases/tag/platform-02095664e69c885c28ecef20ba65d7261e2f3134).
+The Mini imported and signature-verified that exact release. Its preflight
+then refused before migration because the live PostgreSQL schema was at 47
+while the candidate requires at least 49. No live promotion or migration was
+performed. A follow-up correction is in review to apply Mini-only drain rules
+to the standard signed upgrade path used by the Mini's recovered-baseline
+state; queued Fleet dispatch receipts alone must not block the Mini upgrade.
 
 Observed 2026-10-06 00:17 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)

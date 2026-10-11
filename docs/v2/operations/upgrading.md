@@ -90,7 +90,11 @@ Before host promotion, verify all of the following:
   fetch/verify configuration;
 - public repositories download anonymously; private mirrors use only an owned,
   non-symlink, exact-mode-`0600` Contents-read token file;
-- the active-operation drain is clear and host fetch/verify hooks are executable.
+- the Mini-affecting operation drain is clear and host fetch/verify hooks are
+  executable. Queued `fleet.github.apply-dispatch` receipts in the shared
+  control database are preserved because the Mini worker does not claim them;
+  running Fleet dispatches, active Mini operations, or malformed/truncated
+  queue evidence still block the upgrade.
 
 With `require-signed`, rollback, preflight, and upgrade invoke the configured
 fetch hook when the exact release directory is absent. They require an exact
