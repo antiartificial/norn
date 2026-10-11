@@ -2,6 +2,7 @@
 # Opt-in M5 composition: verified signed candidate + private restored database
 # + a disposable macOS LaunchAgent. It never targets the live API label/port.
 set -euo pipefail
+script_dir=$(cd "$(dirname "$0")" && pwd)
 
 write_shadow_env() {
   local output=$1
@@ -148,11 +149,8 @@ api=os.lstat(os.environ['NORN_M5_SHADOW_API'])
 if session.st_uid != os.getuid() or stat.S_IMODE(session.st_mode) != 0o600: raise SystemExit('shadow handoff capability ownership or mode is unsafe')
 if not stat.S_ISDIR(release.st_mode) or release.st_uid != os.getuid() or not stat.S_ISREG(api.st_mode) or api.st_uid != os.getuid(): raise SystemExit('shadow signed snapshot ownership is unsafe')
 PY
-  canonical_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-  canonical_manifest="$canonical_root/v2/scripts/platform-release-manifest"
-  canonical_artifact="$canonical_root/v2/scripts/platform-release-artifact"
-  [[ $("$canonical_manifest" verify --release "$NORN_M5_SHADOW_RELEASE" --expected-sha "$NORN_M5_SHADOW_SHA") == signed ]] || { echo 'shadow candidate snapshot no longer verifies as signed' >&2; return 1; }
-  "$canonical_artifact" verify --release-dir "$NORN_M5_SHADOW_RELEASE" --public-key "$NORN_M5_SHADOW_PUBLIC_KEY" --quiet
+  [[ $("$script_dir/platform-release-manifest" verify --release "$NORN_M5_SHADOW_RELEASE" --expected-sha "$NORN_M5_SHADOW_SHA") == signed ]] || { echo 'shadow candidate snapshot no longer verifies as signed' >&2; return 1; }
+  "$script_dir/platform-release-artifact" verify --release-dir "$NORN_M5_SHADOW_RELEASE" --public-key "$NORN_M5_SHADOW_PUBLIC_KEY" --quiet
   [[ ${NORN_M5_SHADOW_PLIST:-} != "$HOME/Library/LaunchAgents"/* ]] || { echo 'shadow plist must not use the live LaunchAgents directory' >&2; return 2; }
   NORN_M5_SHADOW_IDENTITY_KEY="$session_identity_key" write_shadow_env "$NORN_M5_SHADOW_ENV"
   printf '#!/usr/bin/env bash\nset -a\n. %q\nset +a\nexec %q\n' "$NORN_M5_SHADOW_ENV" "$NORN_M5_SHADOW_API" >"$NORN_M5_SHADOW_LAUNCHER"
@@ -230,7 +228,6 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $release == /* && -d $release && ! -L $release && $public_key == /* && -f $public_key && ! -L $public_key ]] || usage
 [[ -n ${NORN_REHEARSAL_BACKUP_ARTIFACT:-} && -n ${NORN_REHEARSAL_BACKUP_PROOF:-} && -z ${NORN_REHEARSAL_SOURCE_DATABASE_URL:-} ]] || { echo 'signed shadow rehearsal requires protected backup mode without a source URL' >&2; exit 2; }
-script_dir=$(cd "$(dirname "$0")" && pwd)
 source_release=$release
 manifest="$script_dir/platform-release-manifest"
 artifact="$script_dir/platform-release-artifact"
