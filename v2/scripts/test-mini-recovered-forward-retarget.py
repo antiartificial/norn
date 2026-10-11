@@ -36,7 +36,7 @@ class RetargetTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.key = b"test-only-retarget-signing-key-32bytes"
         self.source = "a" * 40
-        self.old_candidate = RETARGET.SOURCE_CANDIDATE
+        self.old_candidate = "b" * 40
         self.new_candidate = "c" * 40
         self.transition = "mini-v3-retarget-test"
         self.identity = "hmac-sha256:" + hmac.new(
@@ -85,9 +85,10 @@ class RetargetTests(unittest.TestCase):
         path.write_bytes(raw)
         path.chmod(0o600)
 
-    def test_only_exact_legacy_fenced_85fb_source_binding_is_accepted(self):
+    def test_only_exact_source_bound_legacy_fenced_candidate_is_accepted(self):
         args = type("Args", (), {"journal": self.journal_path, "source_sha": self.source,
-                                 "transition_id": self.transition, "evidence": self.evidence_path})
+                                 "candidate_sha": self.new_candidate, "transition_id": self.transition,
+                                 "evidence": self.evidence_path})
         journal, evidence, path = RETARGET.verify_source_binding(args, self.key)
         self.assertEqual(journal["state"], "legacy-fenced")
         self.assertEqual(evidence["candidateSHA"], self.old_candidate)
@@ -104,9 +105,41 @@ class RetargetTests(unittest.TestCase):
                     RETARGET.verify_source_binding(args, self.key)
         self.write_private(self.journal_path, self.journal_raw)
 
+    def test_accepts_signed_candidate_versioned_v3_evidence_for_retarget_chain(self):
+        previous = "d" * 40
+        evidence_dir = self.root / f"retarget-{previous}"
+        evidence_dir.mkdir(mode=0o700)
+        evidence_dir.chmod(0o700)
+        evidence_path = evidence_dir / "source-evidence.json"
+        carried = {
+            **{key: value for key, value in self.old_evidence.items() if key not in {"schema", "candidateSHA", "backupProofSHA256", "backupSHA256", "backupBytes", "shadowReceiptSHA256", "signature"}},
+            "schema": RETARGET.EVIDENCE_SCHEMA,
+            "candidateSHA": previous,
+            "preservationCapture": "carried-forward-verified",
+            "carriedForwardEvidenceSHA256": "c" * 64,
+            "carriedForwardEvidencePath": str(self.evidence_path),
+            "backupProofSHA256": "6" * 64,
+            "backupSHA256": "7" * 64,
+            "backupBytes": 321,
+            "shadowReceiptSHA256": "8" * 64,
+        }
+        raw = RETARGET.sign_document(carried, self.key)
+        self.write_private(evidence_path, raw)
+        journal = dict(self.journal, candidateReleaseSHA=previous, sourceEvidencePath=str(evidence_path),
+                       sourceEvidenceSHA256=RETARGET.digest(raw))
+        self.write_private(self.journal_path, RETARGET.canonical(journal) + b"\n")
+        args = type("Args", (), {"journal": self.journal_path, "source_sha": self.source,
+                                 "candidate_sha": self.new_candidate, "transition_id": self.transition,
+                                 "evidence": evidence_path})
+        bound, evidence, path = RETARGET.verify_source_binding(args, self.key)
+        self.assertEqual(bound["candidateReleaseSHA"], previous)
+        self.assertEqual(evidence["preservationCapture"], "carried-forward-verified")
+        self.assertEqual(path, evidence_path)
+
     def test_bad_old_signature_or_journal_digest_refuses_retarget(self):
         args = type("Args", (), {"journal": self.journal_path, "source_sha": self.source,
-                                 "transition_id": self.transition, "evidence": self.evidence_path})
+                                 "candidate_sha": self.new_candidate, "transition_id": self.transition,
+                                 "evidence": self.evidence_path})
         self.write_private(self.evidence_path, self.evidence_raw.replace(b"\"beforeDigest\":\"b", b"\"beforeDigest\":\"c"))
         with self.assertRaises(SystemExit):
             RETARGET.verify_source_binding(args, self.key)
@@ -217,7 +250,7 @@ class RetargetTests(unittest.TestCase):
         self.write_private(shadow, b"shadow fixture")
         releases = self.root / "releases"
         releases.mkdir()
-        for release_sha in (self.source, self.new_candidate):
+        for release_sha in (self.source, self.old_candidate, self.new_candidate):
             release_dir = releases / release_sha
             (release_dir / "bin").mkdir(parents=True)
             (release_dir / "release.env").write_text(f"NORN_RELEASE_SHA={release_sha}\n")

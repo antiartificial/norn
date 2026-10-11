@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any
 
 
-SOURCE_CANDIDATE = "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"
 JOURNAL_SCHEMA = "norn.recovered-forward-transition/v1"
 OLD_EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v2"
 EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v3"
@@ -40,6 +39,13 @@ OLD_EVIDENCE_FIELDS = {
     "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
     "backupBytes", "shadowReceiptSHA256", "incidentCandidateSHA", "incidentBeforeDigest",
     "beforeDigest", "signature",
+}
+RETAINED_EVIDENCE_V3_FIELDS = {
+    "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+    "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+    "reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest",
+    "preservationCapture", "carriedForwardEvidenceSHA256", "carriedForwardEvidencePath",
+    "backupProofSHA256", "backupSHA256", "backupBytes", "shadowReceiptSHA256", "signature",
 }
 
 
@@ -153,21 +159,36 @@ def verify_source_binding(args: argparse.Namespace, key: bytes) -> tuple[dict[st
         fail("active transition directory must be invoking-user-owned mode 0700")
     journal_raw = read_private(args.journal, "active transition journal")
     journal = strict_json(journal_raw, "active transition journal")
+    previous_candidate = journal.get("candidateReleaseSHA")
     if (journal.get("schema") != JOURNAL_SCHEMA or journal.get("state") != "legacy-fenced"
-            or journal.get("candidateReleaseSHA") != SOURCE_CANDIDATE
+            or not HEX40.fullmatch(str(previous_candidate or "")) or previous_candidate == args.candidate_sha
             or journal.get("sourceSHA") != args.source_sha or journal.get("transitionID") != args.transition_id):
-        fail("retarget is allowed only from the exact source-bound 85fb legacy-fenced journal")
+        fail("retarget requires the exact source- and transition-bound legacy-fenced journal")
     evidence_path = Path(journal.get("sourceEvidencePath", ""))
-    if (not evidence_path.is_absolute() or evidence_path.parent != args.journal.parent
-            or evidence_path.name != args.journal.name + ".source-evidence.json"
+    fixed_evidence = args.journal.with_name(args.journal.name + ".source-evidence.json")
+    versioned_evidence = args.journal.parent / f"retarget-{previous_candidate}" / "source-evidence.json"
+    if (not evidence_path.is_absolute() or evidence_path not in (fixed_evidence, versioned_evidence)
             or evidence_path.resolve(strict=True) != args.evidence.resolve(strict=True)):
         fail("journal source evidence path differs from the explicitly supplied immutable evidence")
+    if evidence_path == versioned_evidence:
+        info = evidence_path.parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            fail("previous candidate evidence directory must be invoking-user-owned mode 0700")
     evidence_raw = read_private(evidence_path, "old candidate-bound source evidence")
-    evidence = verify_hmac(evidence_raw, OLD_EVIDENCE_SCHEMA, OLD_EVIDENCE_FIELDS, key, "old source evidence")
+    raw_value = strict_json(evidence_raw, "old source evidence")
+    if raw_value.get("schema") == OLD_EVIDENCE_SCHEMA:
+        evidence = verify_hmac(evidence_raw, OLD_EVIDENCE_SCHEMA, OLD_EVIDENCE_FIELDS, key, "old source evidence")
+    elif raw_value.get("schema") == EVIDENCE_SCHEMA:
+        evidence = verify_hmac(evidence_raw, EVIDENCE_SCHEMA, RETAINED_EVIDENCE_V3_FIELDS, key, "old source evidence")
+        if evidence.get("preservationCapture") != "carried-forward-verified":
+            fail("retained candidate evidence does not prove the carried-forward preservation baseline")
+    else:
+        fail("old source evidence schema is unsupported for safe retargeting")
     if (evidence.get("transitionId") != args.transition_id or evidence.get("sourceSHA") != args.source_sha
-            or evidence.get("candidateSHA") != SOURCE_CANDIDATE
+            or evidence.get("candidateSHA") != previous_candidate
             or journal.get("sourceEvidenceSHA256") != digest(evidence_raw)):
-        fail("old journal and signed evidence do not bind the exact source/85fb tuple")
+        fail("old journal and signed evidence do not bind the exact previous candidate tuple")
     return journal, evidence, evidence_path
 
 
@@ -208,9 +229,17 @@ def verify_backup_shadow(args: argparse.Namespace, source_sha: str, candidate_sh
 def verify_source_release(args: argparse.Namespace) -> Path:
     if not HEX40.fullmatch(args.source_sha) or not HEX40.fullmatch(args.candidate_sha) or args.source_sha == args.candidate_sha:
         fail("source and new candidate must be different exact lowercase commit SHAs")
+    previous_candidate = getattr(args, "previous_candidate_sha", None)
+    if previous_candidate and (not HEX40.fullmatch(previous_candidate)
+                               or previous_candidate in {args.source_sha, args.candidate_sha}):
+        fail("previous candidate release identity is malformed or conflicts with this transition")
     source = args.releases_root / args.source_sha
     candidate = args.releases_root / args.candidate_sha
-    for release, expected in ((source, args.source_sha), (candidate, args.candidate_sha)):
+    releases = [(source, args.source_sha)]
+    if previous_candidate:
+        releases.append((args.releases_root / previous_candidate, previous_candidate))
+    releases.append((candidate, args.candidate_sha))
+    for release, expected in releases:
         if not release.is_dir() or release.is_symlink():
             fail(f"release {expected} is missing or unsafe")
         env_file = release / "release.env"
@@ -407,8 +436,8 @@ def run(argv: list[str] | None = None) -> int:
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
     if len(key) < 32:
         fail("NORN_AUDIT_SIGNING_KEY must contain at least 32 bytes")
-    if not HEX40.fullmatch(args.candidate_sha) or args.candidate_sha == SOURCE_CANDIDATE:
-        fail("new candidate SHA must be exact lowercase hex and differ from the old 85fb candidate")
+    if not HEX40.fullmatch(args.candidate_sha):
+        fail("new candidate SHA must be exact lowercase hex")
     for path, label in ((args.releases_root, "release root"), (args.output_parent, "output parent"),
                         (args.journal.parent, "journal directory"), (args.evidence.parent, "evidence directory"),
                         (args.backup_proof, "backup proof"), (args.backup_artifact, "backup artifact"),
@@ -423,6 +452,7 @@ def run(argv: list[str] | None = None) -> int:
     if not args.current_link.is_absolute() or args.current_link.parent.resolve(strict=True) != args.current_link.parent:
         fail("current symlink path must be absolute with a canonical parent directory")
     journal, old_evidence, evidence_path = verify_source_binding(args, key)
+    args.previous_candidate_sha = journal["candidateReleaseSHA"]
     candidate_release = verify_source_release(args)
     database = verify_database(args, old_evidence, key)
     proof, shadow, proof_sha, backup_sha, backup_bytes = verify_backup_shadow(
@@ -471,7 +501,7 @@ def run(argv: list[str] | None = None) -> int:
         "schema": RETARGET_SCHEMA,
         "transitionID": args.transition_id,
         "sourceSHA": args.source_sha,
-        "previousCandidateSHA": SOURCE_CANDIDATE,
+        "previousCandidateSHA": args.previous_candidate_sha,
         "candidateSHA": args.candidate_sha,
         "previousJournalSHA256": digest(read_private(args.journal, "active transition journal")),
         "previousEvidenceSHA256": old_evidence_sha,
