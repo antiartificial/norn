@@ -68,6 +68,20 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(phase, resume)
 
+    def test_recovered_forward_resume_does_not_query_the_stopped_api_after_drain(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        resume = source.split("recovered_forward_resume_or_start() {", 1)[1].split("\n}", 1)[0]
+        host_agent_fenced = resume.split("    host-agent-fenced)\n", 1)[1].split(" ;;", 1)[0]
+        api_fencing = resume.split("    api-fencing|legacy-fenced)\n", 1)[1].split(" ;;", 1)[0]
+
+        self.assertLess(
+            host_agent_fenced.index("legacy_baseline_require_drained"),
+            host_agent_fenced.index("recovered_forward_ensure_api_fenced"),
+        )
+        self.assertNotIn("legacy_baseline_require_drained", api_fencing)
+        self.assertIn("recovered_forward_ensure_host_agent_fenced", api_fencing)
+        self.assertIn("recovered_forward_ensure_api_fenced", api_fencing)
+
     def test_signed_transition_wrapper_uses_internal_nonrecursive_controller_mode(self) -> None:
         wrapper = (SCRIPT_DIR / "mini-recovered-forward-transition").read_text(encoding="utf-8")
         self.assertIn('env["NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE"] = args.transition_id', wrapper)
