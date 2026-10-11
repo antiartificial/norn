@@ -446,6 +446,64 @@ def invoke_platform(script: Path, mode: str, args: list[str], env: dict[str, str
         fail(f"managed platform-upgrade {mode} exited {result.returncode}; preserve the journal and resume this exact transition")
 
 
+def resolve_platform_script(candidate_sha: str, home: Path, wrapper_path: Path | None = None,
+                            test_path: str | None = None) -> Path:
+    """Use the signed candidate's controller while keeping its install target canonical.
+
+    The managed controller on Mini is necessarily the source-version script
+    until candidate activation. Calling it to start recovered-forward would
+    delegate the new evidence protocol to an older controller. The wrapper
+    itself ships inside the signed candidate, so its sibling is the exact
+    candidate controller. NORN_PLATFORM_SCRIPT_BIN remains an independent
+    setting used by that controller as the destination for managed host tools.
+    """
+    if test_path:
+        if os.environ.get("NORN_RECOVERED_FORWARD_TEST_HOOKS") != "1":
+            fail("--platform-upgrade-test-bin is available only to the hermetic test harness")
+        script = Path(test_path)
+    else:
+        helper = wrapper_path or Path(__file__)
+        try:
+            helper_info = helper.lstat()
+            home = home.resolve(strict=True)
+        except OSError as error:
+            fail(f"signed recovered-forward helper is unavailable: {error}")
+        if not stat.S_ISREG(helper_info.st_mode) or stat.S_ISLNK(helper_info.st_mode):
+            fail("recovered-forward helper must be a regular file in the signed candidate")
+        releases_root = home / "norn/releases"
+        release = releases_root / candidate_sha
+        bin_dir = release / "bin"
+        if (releases_root.is_symlink() or not releases_root.is_dir()
+                or releases_root.resolve(strict=True) != releases_root.absolute()
+                or release.is_symlink() or not release.is_dir()
+                or release.resolve(strict=True) != release.absolute()
+                or bin_dir.is_symlink() or not bin_dir.is_dir()
+                or bin_dir.resolve(strict=True) != bin_dir.absolute()):
+            fail("recovered-forward candidate release is not an immutable installed release")
+        if helper.resolve(strict=True).parent != bin_dir.absolute():
+            fail("recovered-forward helper is not inside the exact candidate release")
+        release_env = release / "release.env"
+        try:
+            release_env_info = release_env.lstat()
+            if not stat.S_ISREG(release_env_info.st_mode) or stat.S_ISLNK(release_env_info.st_mode):
+                fail("recovered-forward candidate release identity is not a regular file")
+            values = dict(line.strip().split("=", 1) for line in release_env.read_text().splitlines() if "=" in line)
+        except (OSError, ValueError):
+            fail("recovered-forward candidate release identity cannot be read")
+        if values.get("NORN_RELEASE_SHA") != candidate_sha:
+            fail("recovered-forward helper release identity differs from the exact candidate")
+        script = release / "bin/platform-upgrade"
+
+    try:
+        info = script.lstat()
+    except OSError as error:
+        fail(f"candidate platform-upgrade executable is unavailable: {error}")
+    if (not script.is_absolute() or not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode) or not os.access(script, os.X_OK)):
+        fail("candidate platform-upgrade must be an executable regular file")
+    return script
+
+
 def verify_maintenance_status(value: Any, transition_id: str, source_sha: str, candidate_sha: str, evidence_sha: str) -> None:
     if type(value) is not dict or value.get("maintenance") != "recovered-forward-preservation" or value.get("transitionId") != transition_id or value.get("owner") != f"recovered-forward:{transition_id}":
         fail("Mini API is not serving the exact recovered-forward maintenance transition")
@@ -498,14 +556,9 @@ def run(argv: list[str] | None = None) -> int:
     info = transition_dir.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
         fail("recovered-forward directory must be invoking-user-owned mode 0700")
-    if args.platform_upgrade_test_bin:
-        if os.environ.get("NORN_RECOVERED_FORWARD_TEST_HOOKS") != "1":
-            fail("--platform-upgrade-test-bin is available only to the hermetic test harness")
-        platform_script = Path(args.platform_upgrade_test_bin)
-    else:
-        platform_script = Path(os.environ.get("NORN_PLATFORM_SCRIPT_BIN", str(home / ".config/norn/host/bin/platform-upgrade")))
-    if not platform_script.is_absolute() or platform_script.is_symlink() or not platform_script.is_file() or not os.access(platform_script, os.X_OK):
-        fail("canonical managed platform-upgrade executable is unavailable")
+    platform_script = resolve_platform_script(
+        args.candidate_sha, home, test_path=args.platform_upgrade_test_bin,
+    )
 
     adoption, retained, adoption_raw = adoption_evidence(home, key, args.source_sha)
     journal_present = journal.exists() or journal.is_symlink()

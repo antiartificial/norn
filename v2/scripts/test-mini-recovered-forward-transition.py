@@ -137,6 +137,55 @@ class RecoveredForwardWrapperTests(unittest.TestCase):
         self.assertFalse(hasattr(WRAPPER, "post_json"), "wrapper must leave API finalization to platform-upgrade")
         self.assertNotIn("/api/v1/platform/recovered-forward/finalize", SCRIPT.read_text())
 
+    def test_production_controller_is_from_the_exact_candidate_not_the_old_host_path(self):
+        release = self.root / "norn" / "releases" / self.candidate
+        bin_dir = release / "bin"
+        bin_dir.mkdir(parents=True)
+        helper = bin_dir / "mini-recovered-forward-transition"
+        helper.write_text("fixture helper")
+        controller = bin_dir / "platform-upgrade"
+        controller.write_text("fixture candidate controller")
+        controller.chmod(0o700)
+        (release / "release.env").write_text(f"NORN_RELEASE_SHA={self.candidate}\n")
+        # The installed source controller remains the deployment target, but
+        # the signed candidate controller must own the new transition logic.
+        old_controller = self.root / "host" / "bin" / "platform-upgrade"
+        old_controller.parent.mkdir(parents=True)
+        old_controller.write_text("old source controller")
+        with patch.dict(os.environ, {"NORN_PLATFORM_SCRIPT_BIN": str(old_controller)}):
+            selected = WRAPPER.resolve_platform_script(self.candidate, self.root, helper)
+        self.assertEqual(selected, controller.resolve())
+
+    def test_production_controller_rejects_wrong_release_and_symlink(self):
+        release = self.root / "norn" / "releases" / self.candidate
+        bin_dir = release / "bin"
+        bin_dir.mkdir(parents=True)
+        helper = bin_dir / "mini-recovered-forward-transition"
+        helper.write_text("fixture helper")
+        controller = bin_dir / "platform-upgrade"
+        controller.write_text("fixture candidate controller")
+        controller.chmod(0o700)
+        (release / "release.env").write_text(f"NORN_RELEASE_SHA={self.candidate}\n")
+        with self.assertRaisesRegex(SystemExit, "not an immutable installed release"):
+            WRAPPER.resolve_platform_script("a" * 40, self.root, helper)
+        controller.unlink()
+        controller.symlink_to(old_controller := (self.root / "old-controller"))
+        old_controller.write_text("unexpected controller")
+        old_controller.chmod(0o700)
+        with self.assertRaisesRegex(SystemExit, "executable regular file"):
+            WRAPPER.resolve_platform_script(self.candidate, self.root, helper)
+
+    def test_test_controller_override_stays_hermetically_gated(self):
+        controller = self.root / "controller"
+        controller.write_text("fixture")
+        controller.chmod(0o700)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(SystemExit, "hermetic test harness"):
+                WRAPPER.resolve_platform_script(self.candidate, self.root, test_path=str(controller))
+        with patch.dict(os.environ, {"NORN_RECOVERED_FORWARD_TEST_HOOKS": "1"}):
+            self.assertEqual(WRAPPER.resolve_platform_script(self.candidate, self.root,
+                                                               test_path=str(controller)), controller)
+
 
 if __name__ == "__main__":
     unittest.main()
