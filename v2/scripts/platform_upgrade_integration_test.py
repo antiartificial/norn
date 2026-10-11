@@ -59,6 +59,14 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(phase, resume)
 
+    def test_recovered_forward_alone_preserves_queued_fleet_apply_dispatches(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        migration = source.split("run_schema_migration() {", 1)[1].split("\n}\n", 1)[0]
+        recovered, remaining = migration.split('elif [[ "$mode" == "legacy-baseline"', 1)
+        self.assertIn("NORN_REQUIRE_QUIESCENT_CONTROL_DB=true", recovered)
+        self.assertIn("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true", recovered)
+        self.assertNotIn("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH", remaining)
+
     def write(self, relative: str, content: str, executable: bool = False) -> None:
         path = self.repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +88,8 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "mini-private-copy-rehearsal",
             "mini-protected-transition-rehearsal",
             "mini-signed-shadow-launchagent-rehearsal",
+            "mini-recovered-forward-retarget",
+            "mini-recovered-forward-retarget-consume",
             "mini-recovered-forward-transition",
             "mini-recovered-forward-verify-evidence",
             "mini-recovered-forward-validate-journal",

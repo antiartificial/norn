@@ -67,6 +67,10 @@ type SchemaMigratorOptions struct {
 	// the only client backend for current_database() and every operation is
 	// terminal. It is intended only for an explicit maintenance migration.
 	RequireQuiescentControlDB bool
+	// PreserveQueuedFleetApplyDispatch permits only queued Fleet apply-dispatch
+	// receipts during a quiescent maintenance migration. It is valid only with
+	// RequireQuiescentControlDB and retains every other operation as a blocker.
+	PreserveQueuedFleetApplyDispatch bool
 }
 
 // SchemaAccess selects the compatibility promises a read-only check enforces.
@@ -206,13 +210,14 @@ func (e *MigrationApplyError) Unwrap() error { return e.Err }
 
 // SchemaMigrator owns an immutable migration catalog for one PostgreSQL pool.
 type SchemaMigrator struct {
-	pool                      *pgxpool.Pool
-	migrations                []SchemaMigration
-	compatibility             BinarySchemaCompatibility
-	lockKey                   int64
-	lockTimeout               time.Duration
-	requireQuiescentControlDB bool
-	adoptUnversioned          func(context.Context, pgx.Tx) error
+	pool                             *pgxpool.Pool
+	migrations                       []SchemaMigration
+	compatibility                    BinarySchemaCompatibility
+	lockKey                          int64
+	lockTimeout                      time.Duration
+	requireQuiescentControlDB        bool
+	preserveQueuedFleetApplyDispatch bool
+	adoptUnversioned                 func(context.Context, pgx.Tx) error
 }
 
 // NewSchemaMigrator validates and copies definitions before any database work.
@@ -229,6 +234,9 @@ func NewSchemaMigrator(pool *pgxpool.Pool, migrations []SchemaMigration, compati
 	if options.LockTimeout < 0 {
 		return nil, &MigrationDefinitionError{Reason: "migration lock timeout cannot be negative"}
 	}
+	if options.PreserveQueuedFleetApplyDispatch && !options.RequireQuiescentControlDB {
+		return nil, &MigrationDefinitionError{Reason: "preserving queued Fleet apply-dispatch receipts requires a quiescent control database migration"}
+	}
 	if options.LockKey == 0 {
 		options.LockKey = defaultSchemaMigrationLockKey
 	}
@@ -237,12 +245,13 @@ func NewSchemaMigrator(pool *pgxpool.Pool, migrations []SchemaMigration, compati
 	}
 	catalog := append([]SchemaMigration(nil), migrations...)
 	return &SchemaMigrator{
-		pool:                      pool,
-		migrations:                catalog,
-		compatibility:             compatibility,
-		lockKey:                   options.LockKey,
-		lockTimeout:               options.LockTimeout,
-		requireQuiescentControlDB: options.RequireQuiescentControlDB,
+		pool:                             pool,
+		migrations:                       catalog,
+		compatibility:                    compatibility,
+		lockKey:                          options.LockKey,
+		lockTimeout:                      options.LockTimeout,
+		requireQuiescentControlDB:        options.RequireQuiescentControlDB,
+		preserveQueuedFleetApplyDispatch: options.PreserveQueuedFleetApplyDispatch,
 	}, nil
 }
 
@@ -326,7 +335,7 @@ func (m *SchemaMigrator) Migrate(ctx context.Context) (SchemaStatus, error) {
 		return SchemaStatus{}, &MigrationApplyError{Phase: "migration session", Err: err}
 	}
 	if m.requireQuiescentControlDB {
-		if err := requireQuiescentControlDatabase(ctx, tx); err != nil {
+		if err := requireQuiescentControlDatabase(ctx, tx, m.preserveQueuedFleetApplyDispatch); err != nil {
 			return SchemaStatus{}, err
 		}
 	}
@@ -438,7 +447,7 @@ func (m *SchemaMigrator) Migrate(ctx context.Context) (SchemaStatus, error) {
 // advisory lock and before metadata setup or any migration DDL. The exact
 // transaction that owns the lock performs both observations, so a concurrent
 // migration cannot slip between the quiescence proof and DDL.
-func requireQuiescentControlDatabase(ctx context.Context, tx pgx.Tx) error {
+func requireQuiescentControlDatabase(ctx context.Context, tx pgx.Tx, preserveQueuedFleetApplyDispatch bool) error {
 	var otherBackends int
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*)
@@ -452,9 +461,13 @@ func requireQuiescentControlDatabase(ctx context.Context, tx pgx.Tx) error {
 		return &MigrationApplyError{Phase: "control database quiescence", Err: fmt.Errorf("%d other client backends remain connected to the control database", otherBackends)}
 	}
 	var nonterminal int
+	// The recovered-forward lane can preserve a queued Fleet apply-dispatch
+	// receipt for remote reconciliation. Every other nonterminal operation,
+	// including a running dispatch, still blocks DDL.
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FROM operations
-		WHERE status NOT IN ('succeeded', 'failed', 'canceled')`).Scan(&nonterminal); err != nil {
+		WHERE status NOT IN ('succeeded', 'failed', 'canceled')
+		  AND NOT ($1 AND kind = 'fleet.github.apply-dispatch' AND status = 'queued')`, preserveQueuedFleetApplyDispatch).Scan(&nonterminal); err != nil {
 		return &MigrationApplyError{Phase: "control database quiescence", Err: err}
 	}
 	if nonterminal != 0 {

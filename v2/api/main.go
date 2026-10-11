@@ -141,6 +141,10 @@ func main() {
 	// recovery, watchers, or workers. Passive mode must remain a read-only
 	// database check and exposes only its three loopback status routes.
 	requireQuiescentControlDB := os.Getenv("NORN_REQUIRE_QUIESCENT_CONTROL_DB") == "true"
+	preserveQueuedFleetApplyDispatch := os.Getenv("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH") == "true"
+	if preserveQueuedFleetApplyDispatch && !requireQuiescentControlDB {
+		log.Fatalf("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true requires NORN_REQUIRE_QUIESCENT_CONTROL_DB=true")
+	}
 	var db *store.DB
 	if requireQuiescentControlDB {
 		if startupCfg.SchemaMode != startup.SchemaModeMigrateOnly {
@@ -156,7 +160,9 @@ func main() {
 	defer db.Close()
 	var migrator *store.SchemaMigrator
 	if requireQuiescentControlDB {
-		migrator, err = store.NewQuiescentControlSchemaMigrator(db)
+		migrator, err = store.NewQuiescentControlSchemaMigratorWithOptions(db, store.SchemaMigratorOptions{
+			PreserveQueuedFleetApplyDispatch: preserveQueuedFleetApplyDispatch,
+		})
 	} else {
 		migrator, err = store.NewControlSchemaMigrator(db)
 	}

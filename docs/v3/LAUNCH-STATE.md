@@ -71,12 +71,46 @@ pragmatic deployment objective. The [milestone contract](execution-milestones.md
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
 
+## Latest Mini transition checkpoint (2026-10-11 21:00 UTC)
+
+The Mini is being upgraded as its own single-node Norn instance. It uses its
+existing unmanaged PostgreSQL and does not need Fleet nodes, Fleet management
+nodes, or Fleet etcd. Fleet availability is not an upgrade prerequisite.
+Once a Fleet is running, Mini may connect to it through the Fleet API; that
+connection is a separate integration step, not a runtime dependency for Mini.
+
+Norn PR [#144](https://github.com/antiartificial/norn/pull/144) merged as
+`85fb2830ac18a711b2e3e20de45c1adcbbd4935d`; the protected signed prerelease
+[`platform-85fb2830ac18a711b2e3e20de45c1adcbbd4935d`](https://github.com/antiartificial/norn/releases/tag/platform-85fb2830ac18a711b2e3e20de45c1adcbbd4935d)
+was published for that exact SHA. The Mini imported and verified it. A fresh
+local backup and exact-candidate shadow rehearsal passed. The live forward
+transition `mini-v3-20261011-85fb2830` is paused in `legacy-fenced`: both
+`com.norn.api` and `com.norn.host-agent` are fenced with exit 78, `current`
+still points to `26147c39a554b73b6761a371edee5a9591c81d3f`, and PostgreSQL
+remains at schema 47. No v3 migration or candidate promotion has occurred.
+
+The immediate gate is seven queued `fleet.github.apply-dispatch` receipts for
+pilot `pilot261006c`. Their bound GitHub apply runs are terminal (five failed,
+two cancelled); the `Apply verified plan` step is skipped for each. The
+migration quiescence contract currently blocks on every nonterminal operation,
+while Mini's own preflight explicitly preserves these queued Fleet dispatch
+receipts because they do not mutate Mini. The fix is to align those contracts
+narrowly: allow only queued `fleet.github.apply-dispatch` receipts to remain
+unchanged through migration, while continuing to block every other active
+operation and any additional database client. Do not edit operation rows
+directly, bypass the guard, or alter the journal's candidate binding. Then
+resume the same signed transition through a supported guarded candidate
+retarget path, if its journal and schema checks still validate. Mini's
+independent upgrade must not be held for provisioning or starting a Fleet
+cluster.
+
 ## Current decision
 
 **Norn v3 is not deployed on Fleet.** Mini's single-node upgrade is independent
-of Fleet deployment. The Mini runs v3 source through the v3 API, but its
-development profile and preserved applications do not qualify the Fleet or
-complete the release. A Fleet attempt remains a separate acceptance run and
+of Fleet deployment. Mini is currently fenced during its single-node upgrade;
+it is not serving its normal API until the recovered-forward transition
+completes. Its development profile and preserved applications do not qualify
+Fleet or complete the release. A Fleet attempt remains a separate acceptance run and
 requires fresh credentials, a repaired partial-apply/recovery lane, and a
 complete workload and failure proof. Do not reuse `pilot261004b` state, runner,
 keys or approvals.
