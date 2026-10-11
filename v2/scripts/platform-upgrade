@@ -8,6 +8,8 @@ Usage:
   platform-upgrade upgrade [ref]
   platform-upgrade legacy-baseline [ref] --legacy-release <full-sha> --backup-proof <path> --backup-artifact <path>
   platform-upgrade legacy-baseline-finalize --transition-id <id>
+  platform-upgrade recovered-forward <candidate-sha> --source-sha <full-sha> --source-evidence <path> --source-evidence-sha256 <sha256> --backup-proof <path> --backup-artifact <path> --shadow-receipt <path>
+  platform-upgrade recovered-forward-finalize --transition-id <id> --preservation-receipt <path>
   platform-upgrade recovered-baseline-adopt --incident-binding <path> --receipt <path> --expected-current-sha <full-sha>
   platform-upgrade rebuild <ref> --verify
   platform-upgrade releases
@@ -89,7 +91,7 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|legacy-baseline|legacy-baseline-finalize|recovered-baseline-adopt|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch|mini-protected-backup|mini-signed-shadow) ;;
+  preflight|upgrade|legacy-baseline|legacy-baseline-finalize|recovered-forward|recovered-forward-finalize|recovered-baseline-adopt|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch|mini-protected-backup|mini-signed-shadow) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -130,6 +132,17 @@ legacy_release_sha=""
 legacy_backup_proof=""
 legacy_backup_artifact=""
 legacy_finalize_transition_id=""
+recovered_transition_id=""
+recovered_source_sha=""
+recovered_source_evidence=""
+recovered_source_evidence_sha256=""
+recovered_backup_proof=""
+recovered_backup_artifact=""
+recovered_shadow_receipt=""
+recovered_preservation_receipt=""
+recovered_preservation_receipt_sha256=""
+recovered_transition_root="$HOME/.config/norn/recovered-forward"
+recovered_journal_path="$recovered_transition_root/transition.json"
 recovered_incident_binding=""
 recovered_receipt=""
 recovered_expected_current_sha=""
@@ -177,6 +190,39 @@ if [[ "$mode" == "legacy-baseline-finalize" ]]; then
   done
   [[ "$legacy_finalize_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "legacy-baseline-finalize requires a valid transition ID"
 fi
+if [[ "$mode" == "recovered-forward" ]]; then
+  ref="${1:-}"
+  [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-forward requires an exact 40-character candidate SHA"
+  shift
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --source-sha) [[ "$#" -ge 2 ]] || fail "recovered-forward requires --source-sha"; recovered_source_sha="$2"; shift 2 ;;
+      --transition-id) [[ "$#" -ge 2 ]] || fail "recovered-forward requires --transition-id"; recovered_transition_id="$2"; shift 2 ;;
+      --source-evidence) [[ "$#" -ge 2 ]] || fail "recovered-forward requires --source-evidence"; recovered_source_evidence="$2"; shift 2 ;;
+      --source-evidence-sha256) [[ "$#" -ge 2 ]] || fail "recovered-forward requires --source-evidence-sha256"; recovered_source_evidence_sha256="$2"; shift 2 ;;
+      --backup-proof) [[ "$#" -ge 2 ]] || fail "recovered-forward requires --backup-proof"; recovered_backup_proof="$2"; shift 2 ;;
+      --backup-artifact) [[ "$#" -ge 2 ]] || fail "recovered-forward requires --backup-artifact"; recovered_backup_artifact="$2"; shift 2 ;;
+      --shadow-receipt) [[ "$#" -ge 2 ]] || fail "recovered-forward requires --shadow-receipt"; recovered_shadow_receipt="$2"; shift 2 ;;
+      *) fail "unknown recovered-forward option: $1" ;;
+    esac
+  done
+  [[ "$recovered_source_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-forward requires an exact source SHA"
+  [[ "$recovered_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "recovered-forward requires a valid transition ID"
+  [[ "$recovered_source_evidence" == "$HOME/.config/norn/recovered-forward/transition.json.source-evidence.json" ]] || fail "recovered-forward source evidence must use the fixed owner-only transition path"
+  [[ "$recovered_source_evidence_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "recovered-forward requires the exact source-evidence SHA-256"
+  [[ -n "$recovered_backup_proof" && -n "$recovered_backup_artifact" && -n "$recovered_shadow_receipt" ]] || fail "recovered-forward requires backup proof, backup artifact, and signed shadow receipt"
+fi
+if [[ "$mode" == "recovered-forward-finalize" ]]; then
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --transition-id) [[ "$#" -ge 2 ]] || fail "recovered-forward-finalize requires --transition-id"; recovered_transition_id="$2"; shift 2 ;;
+      --preservation-receipt) [[ "$#" -ge 2 ]] || fail "recovered-forward-finalize requires --preservation-receipt"; recovered_preservation_receipt="$2"; shift 2 ;;
+      *) fail "unknown recovered-forward-finalize option: $1" ;;
+    esac
+  done
+  [[ "$recovered_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "recovered-forward-finalize requires a valid transition ID"
+  [[ "$recovered_preservation_receipt" == "$HOME/.config/norn/recovered-forward/preservation-receipt.json" ]] || fail "recovered-forward-finalize receipt must use the fixed owner-only transition path"
+fi
 if [[ "$mode" == "recovered-baseline-adopt" ]]; then
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -211,6 +257,7 @@ bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
 legacy_api_path="${NORN_LEGACY_API_PATH:-$bin_dir/norn-api}"
 legacy_backup_max_age_seconds="${NORN_LEGACY_BACKUP_MAX_AGE_SECONDS:-3600}"
 legacy_fence_state_path="${NORN_LEGACY_FENCE_STATE_PATH:-$(dirname "$legacy_api_path")/.norn-legacy-baseline-fence.json}"
+recovered_original_fence_path="$legacy_fence_state_path"
 legacy_transition_id="${NORN_LEGACY_BASELINE_TRANSITION_ID:-}"
 legacy_record_state=""
 if [[ -e "$legacy_fence_state_path" ]]; then
@@ -270,6 +317,7 @@ PY
     # valid receipt can unlock only the ordinary forward lane.
     case "$mode" in
       legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
+      recovered-forward|recovered-forward-finalize) recovered_baseline_receipt_validate || fail "recovered-forward requires the exact valid adoption receipt before Mini transition work" ;;
       proxy-switch) fail "recovered baseline blocks proxy switching while the failed fence is retained" ;;
       preflight|upgrade|mini-protected-backup|mini-signed-shadow) recovered_baseline_receipt_validate || fail "recovered baseline adoption receipt is required and must validate before Mini evidence work" ;;
       env-exec)
@@ -285,7 +333,7 @@ PY
         else
           [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
           case "${recovered_early_args[1]}" in
-            preflight|upgrade|mini-protected-backup|mini-signed-shadow) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+            preflight|upgrade|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-finalize) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
             recovered-baseline-adopt)
               recovered_adopter_release="$(python3 - "${recovered_early_args[0]}" "$releases" <<'PY'
 import os, sys
@@ -317,9 +365,17 @@ PY
   elif [[ "$legacy_record_state" != "candidate-promoted" ]]; then
     case "$mode" in
       recovered-baseline-adopt|legacy-baseline-finalize|releases|startup-contract|proxy-status|proxy-plan|smoke) ;;
+      recovered-forward|recovered-forward-finalize)
+        [[ "$legacy_record_state" == "candidate-postflight-failed" ]] || fail "recovered-forward is limited to the retained candidate-postflight-failed sentinel"
+        recovered_baseline_receipt_validate || fail "recovered-forward adoption receipt is missing or invalid"
+        ;;
       *) fail "legacy baseline transition is pending; platform mutation requires its exact finalize or recovery path" ;;
     esac
   fi
+fi
+transition_state_path="$legacy_fence_state_path"
+if [[ "$mode" == "recovered-forward" || "$mode" == "recovered-forward-finalize" ]]; then
+  transition_state_path="$recovered_journal_path"
 fi
 host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}"
 host_agent_label="${NORN_HOST_AGENT_LABEL:-com.norn.host-agent}"
@@ -1034,7 +1090,7 @@ if [[ "$mode" == "rebuild" ]]; then
   [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || fail "rebuild requires an exact 40-character lowercase commit SHA"
 fi
 
-if [[ "$mode" != "rollback" && "$mode" != "recovered-baseline-adopt" ]]; then
+if [[ "$mode" != "rollback" && "$mode" != "recovered-baseline-adopt" && "$mode" != "recovered-forward-finalize" ]]; then
   if [[ "$ref" != "HEAD" ]]; then
     git -C "$repo" fetch --tags --prune origin >/dev/null 2>&1 || log "warning: git fetch failed; using local refs"
   fi
@@ -1265,7 +1321,11 @@ build_release_into() {
   install -m 0755 "$worktree/v2/scripts/mini-create-protected-backup" "$target/bin/mini-create-protected-backup"
   install -m 0755 "$worktree/v2/scripts/mini-verify-protected-backup" "$target/bin/mini-verify-protected-backup"
   install -m 0755 "$worktree/v2/scripts/mini-private-copy-rehearsal" "$target/bin/mini-private-copy-rehearsal"
+  install -m 0755 "$worktree/v2/scripts/mini-protected-transition-rehearsal" "$target/bin/mini-protected-transition-rehearsal"
   install -m 0755 "$worktree/v2/scripts/mini-signed-shadow-launchagent-rehearsal" "$target/bin/mini-signed-shadow-launchagent-rehearsal"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-transition" "$target/bin/mini-recovered-forward-transition"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-verify-evidence" "$target/bin/mini-recovered-forward-verify-evidence"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-validate-journal" "$target/bin/mini-recovered-forward-validate-journal"
   install -m 0755 "$worktree/v2/scripts/host-runtime" "$target/bin/host-runtime"
 
   cat > "$target/release.env" <<EOF
@@ -1551,12 +1611,74 @@ for key, expected in (("NORN_STARTUP_MODE", "active"), ("NORN_SCHEMA_MODE", "che
 PY
 }
 
+recovered_forward_validate_preflight() {
+  [[ "$ref" =~ ^[0-9a-f]{40}$ && "$recovered_source_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-forward requires exact source and candidate SHAs"
+  [[ "$recovered_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "recovered-forward transition ID is invalid"
+  [[ "$recovered_source_evidence" == "$recovered_transition_root/transition.json.source-evidence.json" ]] || fail "recovered-forward source evidence path is not fixed"
+  [[ -f "$recovered_source_evidence" && -f "$recovered_backup_proof" && -f "$recovered_backup_artifact" && -f "$recovered_shadow_receipt" ]] || fail "recovered-forward requires signed evidence, protected backup, and signed shadow receipt"
+  [[ -L "$current_link" ]] || fail "recovered-forward requires an exact current signed release"
+  local source_release current_target current_sha verifier
+  source_release="$releases/$recovered_source_sha"
+  [[ -d "$source_release" && ! -L "$source_release" ]] || fail "recovered-forward exact signed source release is unavailable"
+  current_target="$(cd "$(dirname "$current_link")" && cd "$(readlink "$current_link")" && pwd)" || fail "recovered-forward current release symlink is invalid"
+  current_sha="$(release_sha "$current_target")"
+  if [[ -e "$transition_state_path" ]]; then
+    recovered_forward_load_start_journal
+  case "$recovered_phase" in
+      prepared|host-agent-fencing|host-agent-fenced|legacy-fenced|api-fencing|migration-started|schema-migrated)
+        [[ "$current_sha" == "$recovered_source_sha" ]] || fail "recovered-forward pre-promotion resume requires the exact source release to remain current" ;;
+      candidate-activation-started)
+        [[ "$current_sha" == "$recovered_source_sha" || "$current_sha" == "$ref" ]] || fail "recovered-forward activation resume requires the exact source or candidate release" ;;
+      candidate-postflight-failed|candidate-preservation-pending|candidate-finalize-requested|candidate-normal-activation-pending|candidate-normal-active-pending-host-agent|candidate-normal-active-pending-host-agent-restart|candidate-promoted)
+        [[ "$current_sha" == "$ref" ]] || fail "recovered-forward activation resume requires the exact candidate release to remain current" ;;
+      *) fail "recovered-forward journal phase is not resumable" ;;
+    esac
+  else
+    [[ "$current_sha" == "$recovered_source_sha" ]] || fail "recovered-forward current release changed from the exact signed source"
+  fi
+  [[ "$sha" == "$ref" ]] || fail "recovered-forward candidate is not the exact requested source SHA"
+  verify_release "$source_release" "$recovered_source_sha"
+  verify_release "$release" "$ref"
+  [[ -n "$release_verify_hook" && -x "$release_verify_hook" ]] || fail "recovered-forward requires an external release signature verifier"
+  "$release_verify_hook" "$source_release" "$source_release/release.json" || fail "recovered-forward source release signature verification failed"
+  "$release_verify_hook" "$release" "$release/release.json" || fail "recovered-forward candidate release signature verification failed"
+  legacy_release_sha="$recovered_source_sha"
+  legacy_backup_proof="$recovered_backup_proof"
+  legacy_backup_artifact="$recovered_backup_artifact"
+  if [[ ! -e "$transition_state_path" ]]; then
+    legacy_baseline_validate_backup_proof
+  else
+    log "resuming a journal-bound backup/shadow set; checking exact digests and identities without reapplying the initial freshness window"
+  fi
+  verifier="$script_dir/mini-recovered-forward-verify-evidence"
+  [[ -x "$verifier" ]] || fail "recovered-forward evidence verifier is unavailable"
+  [[ "$(NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" "$verifier" "$recovered_source_evidence" "$recovered_source_evidence_sha256" "$recovered_transition_id" "$recovered_source_sha" "$ref" "$recovered_backup_proof" "$recovered_backup_artifact" "$recovered_shadow_receipt")" == "verified" ]] || fail "recovered-forward signed evidence verification failed"
+  legacy_transition_id="$recovered_transition_id"
+  export NORN_LEGACY_BASELINE_TRANSITION_ID="$recovered_transition_id"
+  export NORN_LEGACY_BASELINE_CANDIDATE_SHA="$ref"
+}
+
 legacy_baseline_write_fence_state() {
   local state="$1" pid="${2:-0}"
   require_cmd python3
-  python3 - "$legacy_fence_state_path" "$legacy_release_sha" "$pid" "$state" <<'PY' || fail "could not atomically persist legacy fence state"
+  local transition_schema="norn.legacy-baseline-fence/v1"
+  if [[ "$mode" == "recovered-forward" || "$mode" == "recovered-forward-finalize" ]]; then
+    transition_schema="norn.recovered-forward-transition/v1"
+  fi
+  NORN_RECOVERED_FORWARD_JOURNAL_SCHEMA="$transition_schema" \
+  NORN_RECOVERED_FORWARD_SOURCE_SHA="$recovered_source_sha" \
+  NORN_RECOVERED_FORWARD_CANDIDATE_SHA="${sha:-}" \
+  NORN_RECOVERED_FORWARD_EVIDENCE_PATH="$recovered_source_evidence" \
+  NORN_RECOVERED_FORWARD_EVIDENCE_SHA256="$recovered_source_evidence_sha256" \
+  NORN_RECOVERED_FORWARD_BACKUP_PROOF="$recovered_backup_proof" \
+  NORN_RECOVERED_FORWARD_BACKUP_ARTIFACT="$recovered_backup_artifact" \
+  NORN_RECOVERED_FORWARD_SHADOW_RECEIPT="$recovered_shadow_receipt" \
+  NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT="$recovered_preservation_receipt" \
+  NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256="${recovered_preservation_receipt_sha256:-}" \
+  python3 - "$transition_state_path" "$legacy_release_sha" "$pid" "$state" <<'PY' || fail "could not atomically persist transition state"
 import json, os, sys, tempfile
 path, sha, pid, state = sys.argv[1:]
+schema = os.environ.get("NORN_RECOVERED_FORWARD_JOURNAL_SCHEMA", "norn.legacy-baseline-fence/v1")
 directory = os.path.dirname(path)
 os.makedirs(directory, mode=0o700, exist_ok=True)
 fd, temporary = tempfile.mkstemp(prefix=".norn-legacy-fence.", dir=directory)
@@ -1566,19 +1688,36 @@ try:
     if os.path.exists(path):
         with open(path, encoding="utf-8") as source:
             record = json.load(source)
-        if record.get("schema") != "norn.legacy-baseline-fence/v1":
+        if record.get("schema") != schema:
             raise SystemExit("existing legacy baseline state has an unexpected schema")
         if sha and record.get("legacyReleaseSHA") and record["legacyReleaseSHA"] != sha:
             raise SystemExit("legacy release provenance changed")
     sha = sha or record.get("legacyReleaseSHA", "")
     if not sha:
         raise SystemExit("legacy release provenance is missing")
-    record.update({"schema":"norn.legacy-baseline-fence/v1", "legacyReleaseSHA":sha,
+    record.update({"schema":schema, "legacyReleaseSHA":sha,
                    "legacyPID":int(pid), "state":state})
     transition = os.environ.get("NORN_LEGACY_BASELINE_TRANSITION_ID", "") or record.get("transitionID", "")
     if transition: record["transitionID"] = transition
     candidate = os.environ.get("NORN_LEGACY_BASELINE_CANDIDATE_SHA", "") or record.get("candidateReleaseSHA", "")
     if candidate: record["candidateReleaseSHA"] = candidate
+    if schema == "norn.recovered-forward-transition/v1":
+        bindings = {
+            "sourceSHA": os.environ.get("NORN_RECOVERED_FORWARD_SOURCE_SHA", ""),
+            "candidateReleaseSHA": os.environ.get("NORN_RECOVERED_FORWARD_CANDIDATE_SHA", ""),
+            "sourceEvidencePath": os.environ.get("NORN_RECOVERED_FORWARD_EVIDENCE_PATH", ""),
+            "sourceEvidenceSHA256": os.environ.get("NORN_RECOVERED_FORWARD_EVIDENCE_SHA256", ""),
+            "backupProofPath": os.environ.get("NORN_RECOVERED_FORWARD_BACKUP_PROOF", ""),
+            "backupArtifactPath": os.environ.get("NORN_RECOVERED_FORWARD_BACKUP_ARTIFACT", ""),
+            "shadowReceiptPath": os.environ.get("NORN_RECOVERED_FORWARD_SHADOW_RECEIPT", ""),
+            "preservationReceiptPath": os.environ.get("NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT", ""),
+            "preservationReceiptSHA256": os.environ.get("NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256", ""),
+        }
+        for key, value in bindings.items():
+            if value:
+                if key in record and record[key] != value:
+                    raise SystemExit("recovered-forward transition binding changed: " + key)
+                record[key] = value
     os.write(fd, (json.dumps(record, separators=(",", ":")) + "\n").encode())
     os.fsync(fd)
     os.close(fd); fd = None
@@ -1598,9 +1737,9 @@ PY
 # applying a migration; the exact protected finalize path is the only way
 # forward once a state record exists.
 legacy_baseline_reject_pending_transition() {
-  [[ ! -e "$legacy_fence_state_path" ]] && return 0
+  [[ ! -e "$transition_state_path" ]] && return 0
   require_cmd python3
-  python3 - "$legacy_fence_state_path" <<'PY' || fail "legacy baseline transition state is present; use legacy-baseline-finalize for its exact transition or recover explicitly"
+  python3 - "$transition_state_path" <<'PY' || fail "legacy baseline transition state is present; use legacy-baseline-finalize for its exact transition or recover explicitly"
 import json, re, sys
 record = json.load(open(sys.argv[1], encoding="utf-8"))
 if record.get("schema") != "norn.legacy-baseline-fence/v1":
@@ -1777,8 +1916,12 @@ legacy_baseline_fence_service() {
   local fence_dir
   fence_dir="$(dirname "$legacy_api_path")"
   mkdir -p "$fence_dir"
-  mkdir -p "$(dirname "$legacy_fence_state_path")"
-  legacy_baseline_write_fence_state "legacy-fenced" "$legacy_pid"
+  mkdir -p "$(dirname "$transition_state_path")"
+  if [[ "$mode" == "recovered-forward" ]]; then
+    legacy_baseline_write_fence_state "api-fencing" "$legacy_pid"
+  else
+    legacy_baseline_write_fence_state "legacy-fenced" "$legacy_pid"
+  fi
   legacy_baseline_install_fence_binary "$legacy_api_path"
   /bin/kill -KILL "$legacy_pid" || fail "legacy baseline fence is installed but the frozen legacy API PID could not be terminated"
   for _ in $(seq 1 30); do
@@ -1797,11 +1940,14 @@ legacy_baseline_fence_service() {
     observed_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
     [[ -z "$observed_pid" || "$observed_pid" == "0" ]] || fail "legacy API respawned after its binary was fenced"
   fi
+  if [[ "$mode" == "recovered-forward" ]]; then
+    legacy_baseline_write_fence_state "legacy-fenced"
+  fi
   log "legacy service fenced; its old binary cannot restart from $legacy_api_path"
 }
 
 promote_legacy_baseline_release() {
-  [[ -f "$legacy_fence_state_path" ]] || fail "legacy baseline fence state is missing; refusing candidate promotion"
+  [[ -f "$transition_state_path" ]] || fail "legacy baseline fence state is missing; refusing candidate promotion"
   verify_release "$release" "$sha"
   log "promoting $release after legacy service fence"
   activate_release_artifacts "$release" true preserve-host-agent || fail "signed candidate activation failed after the legacy service fence"
@@ -1831,9 +1977,24 @@ PY
   fi
 }
 
+promote_recovered_forward_release() {
+  [[ -f "$transition_state_path" ]] || fail "recovered-forward journal is missing before candidate activation"
+  verify_release "$release" "$sha"
+  legacy_baseline_write_fence_state "candidate-activation-started"
+  log "promoting exact candidate $sha under the recovered-forward DB fence; rollback is disabled"
+  activate_release_artifacts "$release" true preserve-host-agent || fail "signed candidate activation failed while recovered-forward fence remains held"
+  restart_api
+  if ! postflight; then
+    legacy_baseline_write_fence_state "candidate-postflight-failed"
+    fail "recovered-forward candidate postflight failed; source binary remains fenced and rollback is forbidden"
+  fi
+  legacy_baseline_write_fence_state "candidate-preservation-pending"
+  log "candidate is running in recovered-forward read-only maintenance; Mini preservation proof is pending"
+}
+
 legacy_baseline_pending_candidate_sha() {
   require_cmd python3
-  python3 - "$legacy_fence_state_path" "$legacy_finalize_transition_id" <<'PY'
+  python3 - "$transition_state_path" "$legacy_finalize_transition_id" <<'PY'
 import json, re, sys
 record = json.load(open(sys.argv[1], encoding="utf-8"))
 if record.get("state") not in {"candidate-preservation-pending", "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart"} or record.get("transitionID") != sys.argv[2]:
@@ -1847,7 +2008,7 @@ PY
 
 legacy_baseline_pending_provenance() {
   require_cmd python3
-  python3 - "$legacy_fence_state_path" "$legacy_finalize_transition_id" <<'PY'
+  python3 - "$transition_state_path" "$legacy_finalize_transition_id" <<'PY'
 import json, re, sys
 record = json.load(open(sys.argv[1], encoding="utf-8"))
 if record.get("state") not in {"candidate-preservation-pending", "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart"} or record.get("transitionID") != sys.argv[2]:
@@ -1863,7 +2024,7 @@ PY
 
 legacy_baseline_pending_phase() {
   require_cmd python3
-  python3 - "$legacy_fence_state_path" "$legacy_finalize_transition_id" <<'PY'
+  python3 - "$transition_state_path" "$legacy_finalize_transition_id" <<'PY'
 import json, sys
 record = json.load(open(sys.argv[1], encoding="utf-8"))
 state = record.get("state")
@@ -2227,7 +2388,7 @@ stop_candidate() {
 
 run_schema_migration() {
   log "applying the target release schema in migrate-only mode"
-  if [[ "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ]]; then
+  if [[ "$mode" == "recovered-forward" || ( "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ) ]]; then
     env \
       -u NORN_SKIP_DEPLOYMENT_RECOVERY \
       -u NORN_SKIP_OPERATION_RECOVERY \
@@ -2273,7 +2434,7 @@ validate_current_rollback_target() {
 postflight() {
   ensure_release_log_dir
   log "waiting for running API"
-  if [[ "$mode" == "legacy-baseline" ]]; then
+  if [[ "$mode" == "legacy-baseline" || "$mode" == "recovered-forward" ]]; then
     local token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
     [[ -n "$token" ]] || fail "legacy baseline postflight requires an authenticated API token"
     wait_health "$api_base" 30 "" "$token" || return 1
@@ -2288,7 +2449,15 @@ postflight() {
     curl -fsS "$api_base/api/schema" | tee "$release_log_dir/postflight-schema.json"
     printf '\n'
   fi
-  if [[ "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ]]; then
+  if [[ "$mode" == "recovered-forward" ]]; then
+    python3 - "$release_log_dir/postflight-schema.json" "$recovered_transition_id" "$recovered_source_sha" "$sha" "$recovered_source_evidence_sha256" <<'PY' || return 1
+import json,sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+transition,source,candidate,evidence=sys.argv[2:]
+if value.get("maintenance")!="recovered-forward-preservation" or value.get("transitionId")!=transition or value.get("owner")!="recovered-forward:"+transition or value.get("finalized") is not False or value.get("sourceSHA")!=source or value.get("candidateSHA")!=candidate or value.get("sourceEvidenceSHA256")!=evidence or value.get("runtimeTopology")!="single-node-mini" or value.get("fleetAPIConsulted") is not False or value.get("etcdConsulted") is not False:
+    raise SystemExit("candidate did not report the exact recovered-forward Mini maintenance fence")
+PY
+  elif [[ "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ]]; then
     python3 - "$release_log_dir/postflight-schema.json" "$legacy_transition_id" <<'PY' || return 1
 import json, sys
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -2307,11 +2476,21 @@ restart_api() {
   launchctl unsetenv NORN_SKIP_NOMAD_WATCHER >/dev/null 2>&1 || true
   launchctl setenv NORN_STARTUP_MODE active
   launchctl setenv NORN_SCHEMA_MODE check
-  if [[ "$mode" == "legacy-baseline" ]]; then
+  if [[ "$mode" == "recovered-forward" ]]; then
+    [[ -n "$recovered_transition_id" && -n "$recovered_source_evidence" && -n "$recovered_source_evidence_sha256" ]] || fail "recovered-forward maintenance launch is missing exact evidence bindings"
+    launchctl setenv NORN_RECOVERED_FORWARD_MAINTENANCE true
+    launchctl setenv NORN_RECOVERED_FORWARD_TRANSITION_ID "$recovered_transition_id"
+    launchctl setenv NORN_RECOVERED_FORWARD_CANDIDATE_SHA "$sha"
+    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_SHA "$recovered_source_sha"
+    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH "$recovered_source_evidence"
+    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256 "$recovered_source_evidence_sha256"
+    launchctl setenv NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH "$HOME/.config/norn/recovered-forward/preservation-receipt.json"
+  elif [[ "$mode" == "legacy-baseline" ]]; then
     [[ -n "$legacy_transition_id" ]] || fail "legacy baseline maintenance restart requires a transition ID"
     launchctl setenv NORN_LEGACY_BASELINE_MAINTENANCE true
     launchctl setenv NORN_LEGACY_BASELINE_TRANSITION_ID "$legacy_transition_id"
   else
+    launchctl unsetenv NORN_RECOVERED_FORWARD_MAINTENANCE >/dev/null 2>&1 || true
     launchctl unsetenv NORN_LEGACY_BASELINE_MAINTENANCE >/dev/null 2>&1 || true
     launchctl unsetenv NORN_LEGACY_BASELINE_TRANSITION_ID >/dev/null 2>&1 || true
   fi
@@ -2319,7 +2498,7 @@ restart_api() {
 }
 
 finalize_legacy_baseline_release() {
-  [[ -f "$legacy_fence_state_path" ]] || fail "legacy baseline fence state is missing"
+  [[ -f "$transition_state_path" ]] || fail "legacy baseline fence state is missing"
   require_cmd python3
   require_cmd curl
   # Serialize the handoff with all platform promotions.  The durable database
@@ -2405,6 +2584,374 @@ PY
   log "legacy baseline finalize completed: normal candidate API and host agent are running"
 }
 
+recovered_forward_load_journal() {
+  [[ -f "$transition_state_path" && ! -L "$transition_state_path" ]] || fail "recovered-forward journal is missing or unsafe"
+  local fields
+  fields="$(python3 - "$transition_state_path" "$recovered_transition_id" <<'PY'
+import json,os,re,stat,sys
+path,expected=sys.argv[1:]
+info=os.lstat(path)
+if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or stat.S_IMODE(info.st_mode)!=0o600: raise SystemExit("journal must be owner-only mode-0600 regular file")
+v=json.load(open(path,encoding="utf-8"))
+if v.get("schema")!="norn.recovered-forward-transition/v1" or v.get("transitionID")!=expected: raise SystemExit("journal schema or transition ID differs")
+state=v.get("state")
+allowed={"candidate-postflight-failed","candidate-activation-started","candidate-preservation-pending","candidate-finalize-requested","candidate-normal-activation-pending","candidate-normal-active-pending-host-agent","candidate-normal-active-pending-host-agent-restart","candidate-promoted"}
+if state not in allowed: raise SystemExit("journal phase is not eligible for finalization")
+names=("sourceSHA","candidateReleaseSHA","sourceEvidencePath","sourceEvidenceSHA256","backupProofPath","backupArtifactPath","shadowReceiptPath")
+values=[v.get(k,"") for k in names]
+if not re.fullmatch(r"[0-9a-f]{40}",str(values[0])) or not re.fullmatch(r"[0-9a-f]{40}",str(values[1])) or not re.fullmatch(r"[0-9a-f]{64}",str(values[3])): raise SystemExit("journal release/evidence identity is invalid")
+if any(not isinstance(x,str) or not x or "\n" in x or "\t" in x for x in values[2:]): raise SystemExit("journal path fields are invalid")
+print("\t".join([state,*map(str,values)]))
+PY
+)" || fail "recovered-forward journal validation failed"
+  IFS=$'\t' read -r recovered_phase recovered_source_sha sha recovered_source_evidence recovered_source_evidence_sha256 recovered_backup_proof recovered_backup_artifact recovered_shadow_receipt <<<"$fields"
+  recovered_preservation_receipt="$HOME/.config/norn/recovered-forward/preservation-receipt.json"
+  legacy_release_sha="$recovered_source_sha"
+  legacy_transition_id="$recovered_transition_id"
+  legacy_finalize_transition_id="$recovered_transition_id"
+  release="$releases/$sha"
+  [[ -d "$release" && ! -L "$release" ]] || fail "recovered-forward exact candidate release is unavailable"
+  version="$(release_version "$release")"
+  verify_release "$release" "$sha"
+  local source_release="$releases/$recovered_source_sha"
+  [[ -d "$source_release" && ! -L "$source_release" ]] || fail "recovered-forward exact source release is unavailable"
+  verify_release "$source_release" "$recovered_source_sha"
+  [[ -n "$release_verify_hook" && -x "$release_verify_hook" ]] || fail "recovered-forward finalization requires the external signed-release verifier"
+  "$release_verify_hook" "$source_release" "$source_release/release.json" || fail "recovered-forward source release verification failed"
+  "$release_verify_hook" "$release" "$release/release.json" || fail "recovered-forward candidate release verification failed"
+  recovered_baseline_receipt_validate || fail "original failed-transition sentinel or adoption receipt changed"
+  [[ "$recovered_source_evidence" == "$recovered_transition_root/transition.json.source-evidence.json" ]] || fail "journal source-evidence path is not fixed"
+  [[ "$recovered_preservation_receipt" == "$HOME/.config/norn/recovered-forward/preservation-receipt.json" ]] || fail "preservation receipt path is not fixed"
+  local verifier="$script_dir/mini-recovered-forward-verify-evidence"
+  [[ -x "$verifier" ]] || fail "recovered-forward evidence verifier is unavailable"
+  [[ "$(NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" "$verifier" "$recovered_source_evidence" "$recovered_source_evidence_sha256" "$recovered_transition_id" "$recovered_source_sha" "$sha" "$recovered_backup_proof" "$recovered_backup_artifact" "$recovered_shadow_receipt")" == "verified" ]] || fail "recovered-forward source evidence no longer verifies"
+  local current_target current_sha
+  current_target="$(cd "$(dirname "$current_link")" && cd "$(readlink "$current_link")" && pwd)" || fail "current release link is unavailable during recovered-forward finalization"
+  current_sha="$(release_sha "$current_target")"
+  [[ "$current_sha" == "$sha" ]] || fail "current release no longer points at the exact recovered-forward candidate"
+  if [[ "$recovered_phase" == "candidate-promoted" ]]; then
+    verify_release "$release" "$sha"
+  fi
+}
+
+# Validate the durable transition before resuming its pre-activation phases.
+# The exact evidence set is supplied again by the caller and must byte-match
+# the paths and identities already journaled. The legacy failure sentinel is
+# intentionally not reused or rewritten here.
+recovered_forward_load_start_journal() {
+  [[ -f "$transition_state_path" && ! -L "$transition_state_path" ]] || fail "recovered-forward journal is missing or unsafe"
+  local journal_validator="$script_dir/mini-recovered-forward-validate-journal"
+  [[ -x "$journal_validator" ]] || fail "recovered-forward journal validator is unavailable"
+  local fields
+  fields="$("$journal_validator" "$transition_state_path" "$recovered_transition_id" "$recovered_source_sha" "$ref" "$recovered_source_evidence" "$recovered_source_evidence_sha256" "$recovered_backup_proof" "$recovered_backup_artifact" "$recovered_shadow_receipt")" || fail "recovered-forward journal is invalid or its exact bindings changed"
+  recovered_phase="$fields"
+  legacy_release_sha="$recovered_source_sha"
+  legacy_transition_id="$recovered_transition_id"
+  legacy_finalize_transition_id="$recovered_transition_id"
+}
+
+recovered_forward_is_fence_binary() {
+  local path="$1" output status
+  [[ -x "$path" ]] || return 1
+  if output="$("$path" 2>&1)"; then status=0; else status=$?; fi
+  [[ "$status" == "78" && "$output" == "norn legacy baseline fence active; candidate recovery is required" ]]
+}
+
+recovered_forward_ensure_host_agent_fenced() {
+  require_cmd launchctl
+  if ! recovered_forward_is_fence_binary "$host_agent_bin"; then
+    local launch_state pid source_agent orphans
+    source_agent="$releases/$recovered_source_sha/bin/norn-host-agent"
+    cmp -s "$source_agent" "$host_agent_bin" || fail "managed host-agent is neither the exact signed source nor the exact fence"
+    if launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
+      pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    else
+      pid=""
+    fi
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      legacy_baseline_fence_host_agent
+    else
+      orphans="$(pgrep -f -- "$host_agent_bin" | sort -u || true)"
+      [[ -z "$orphans" ]] || fail "host-agent service is absent but a source-agent process remains without a journal-bound launchd owner"
+      legacy_baseline_write_fence_state "host-agent-fencing" "0"
+      legacy_baseline_install_fence_binary "$host_agent_bin"
+      log "recovered-forward fenced the exact source host-agent after proving no source-agent process remained"
+    fi
+    return
+  fi
+  local launch_state pid
+  if launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
+    pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      local recorded child
+      recorded="$(python3 - "$transition_state_path" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1],encoding="utf-8")).get("legacyPID",0))
+PY
+)" || fail "cannot read the recorded host-agent PID"
+      [[ "$pid" == "$recorded" ]] || fail "recovered-forward host-agent fence PID differs from its durable journal"
+      child="$(pgrep -P "$pid" | sort -u || true)"
+      if [[ -n "$child" ]]; then
+        [[ "$child" =~ ^[1-9][0-9]*$ ]] || fail "recovered-forward fenced host-agent has ambiguous child processes"
+        /bin/kill -TERM "$child" || fail "could not stop the journal-bound host-agent child"
+        for _ in $(seq 1 30); do
+          kill -0 "$child" >/dev/null 2>&1 || break
+          sleep 1
+        done
+        kill -0 "$child" >/dev/null 2>&1 && fail "journal-bound host-agent child remained after fence recovery"
+      fi
+      /bin/kill -TERM "$pid" || fail "could not stop the journal-bound fenced host-agent wrapper"
+      for _ in $(seq 1 30); do
+        kill -0 "$pid" >/dev/null 2>&1 || break
+        sleep 1
+      done
+      kill -0 "$pid" >/dev/null 2>&1 && fail "journal-bound host-agent PID remained after fence recovery"
+    fi
+  fi
+  log "verified recovered-forward host-agent fence is already installed and stopped"
+}
+
+recovered_forward_ensure_api_fenced() {
+  local port listener launch_state pid
+  port="$(direct_loopback_api_port)" || fail "recovered-forward resume requires the direct Mini API listener"
+  require_cmd lsof
+  if recovered_forward_is_fence_binary "$legacy_api_path"; then
+    listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+    if launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+      pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+      if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+        local recorded
+        recorded="$(python3 - "$transition_state_path" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1],encoding="utf-8")).get("legacyPID",0))
+PY
+)" || fail "cannot read the recorded API PID"
+        [[ "$pid" == "$recorded" && "$listener" == "$pid" ]] || fail "recovered-forward API fence PID/listener differs from the durable journal"
+        /bin/kill -KILL "$pid" || fail "could not terminate the journal-bound frozen source API"
+        for _ in $(seq 1 30); do
+          kill -0 "$pid" >/dev/null 2>&1 || break
+          sleep 1
+        done
+        kill -0 "$pid" >/dev/null 2>&1 && fail "journal-bound source API PID remained after fence recovery"
+        listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+      fi
+    fi
+    [[ -z "$listener" ]] || fail "recovered-forward API fence is installed but a listener remains"
+    legacy_baseline_write_fence_state "legacy-fenced"
+    return
+  fi
+  if cmp -s "$releases/$ref/bin/norn-api" "$legacy_api_path"; then
+    listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+    if launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+      pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+      if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+        [[ "$listener" == "$pid" ]] || fail "candidate API launchd PID/listener identity is ambiguous during activation resume"
+        local token status_file
+        token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
+        [[ -n "$token" ]] || fail "candidate activation resume requires authenticated maintenance status"
+        status_file="$(mktemp "${TMPDIR:-/tmp}/norn-recovered-forward-resume.XXXXXX")"
+        if ! curl -fsS -H "Authorization: Bearer $token" "$api_base/api/v1/platform/recovered-forward/status" >"$status_file"; then
+          rm -f "$status_file"
+          fail "candidate API is live but its maintenance fence cannot be verified"
+        fi
+        python3 - "$status_file" "$recovered_transition_id" "$recovered_source_sha" "$ref" "$recovered_source_evidence_sha256" <<'PY' || { rm -f "$status_file"; fail "running candidate is not under the exact recovered-forward DB fence"; }
+import json,sys
+v=json.load(open(sys.argv[1],encoding="utf-8")); transition,source,candidate,evidence=sys.argv[2:]
+if v.get("maintenance")!="recovered-forward-preservation" or v.get("transitionId")!=transition or v.get("sourceSHA")!=source or v.get("candidateSHA")!=candidate or v.get("sourceEvidenceSHA256")!=evidence or v.get("finalized") is not False: raise SystemExit("maintenance fence mismatch")
+PY
+        rm -f "$status_file"
+        return
+      fi
+    fi
+    [[ -z "$listener" ]] || fail "candidate API listener has no provable launchd owner"
+    return
+  fi
+  local source_release="$releases/$recovered_source_sha"
+  cmp -s "$source_release/bin/norn-api" "$legacy_api_path" || fail "recovered-forward API binary is neither the exact signed source nor the exact fence"
+  if launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+    pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      local listener
+      listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+      [[ "$listener" == "$pid" ]] || fail "recovered-forward API PID/listener ownership is ambiguous during fence recovery"
+      legacy_baseline_fence_service
+      legacy_baseline_write_fence_state "legacy-fenced"
+      return
+    fi
+  fi
+  local listener
+  listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+  [[ -z "$listener" ]] || fail "recovered-forward has an API listener without a verifiable launchd owner"
+  legacy_baseline_install_fence_binary "$legacy_api_path"
+  legacy_baseline_write_fence_state "legacy-fenced"
+  log "recovered-forward installed the source API fence after confirming no service or listener remained"
+}
+
+recovered_forward_resume_or_start() {
+  local phase=""
+  acquire_promotion_lock
+  if [[ -e "$transition_state_path" ]]; then
+    recovered_forward_load_start_journal
+    phase="$recovered_phase"
+    log "resuming exact recovered-forward transition $recovered_transition_id from durable phase $phase"
+  else
+    legacy_baseline_require_drained
+    legacy_baseline_require_durable_startup_mode
+    legacy_baseline_write_fence_state "prepared"
+    phase="prepared"
+  fi
+
+  case "$phase" in
+    candidate-postflight-failed|candidate-preservation-pending|candidate-finalize-requested|candidate-normal-activation-pending|candidate-normal-active-pending-host-agent|candidate-normal-active-pending-host-agent-restart|candidate-promoted)
+      log "exact candidate is already promoted; outer evidence wrapper may resume preservation/finalization"
+      return 0 ;;
+    prepared|host-agent-fencing)
+      recovered_forward_ensure_host_agent_fenced
+      legacy_baseline_write_fence_state "host-agent-fenced"
+      phase="host-agent-fenced" ;;
+    host-agent-fenced|legacy-fenced|api-fencing)
+      recovered_forward_ensure_host_agent_fenced
+      legacy_baseline_require_drained
+      recovered_forward_ensure_api_fenced
+      phase="legacy-fenced" ;;
+    migration-started|schema-migrated|candidate-activation-started) ;;
+    *) fail "recovered-forward durable phase is not resumable: $phase" ;;
+  esac
+
+  if [[ "$phase" == "legacy-fenced" ]]; then
+    legacy_baseline_write_fence_state "migration-started"
+    phase="migration-started"
+  fi
+  if [[ "$phase" == "migration-started" ]]; then
+    recovered_forward_ensure_host_agent_fenced
+    recovered_forward_ensure_api_fenced
+    # migrate-only is explicitly idempotent and requires a quiescent control
+    # database. Repeating after interruption is safer than inferring whether
+    # the previous process committed its last migration.
+    run_schema_migration
+    legacy_baseline_write_fence_state "schema-migrated"
+    phase="schema-migrated"
+  fi
+  if [[ "$phase" == "schema-migrated" ]]; then
+    recovered_forward_ensure_host_agent_fenced
+    recovered_forward_ensure_api_fenced
+    candidate_preflight
+    stop_candidate
+    promote_recovered_forward_release
+  elif [[ "$phase" == "candidate-activation-started" ]]; then
+    recovered_forward_ensure_host_agent_fenced
+    recovered_forward_ensure_api_fenced
+    promote_recovered_forward_release
+  fi
+}
+
+recovered_forward_finalize_release() {
+  require_cmd launchctl
+  require_cmd curl
+  require_cmd python3
+  local token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
+  [[ -n "$token" ]] || fail "recovered-forward-finalize requires an authenticated Mini API token"
+  acquire_promotion_lock
+  recovered_forward_load_journal
+  local api_status status_file finalize_file maintenance
+  status_file="$(mktemp "${TMPDIR:-/tmp}/norn-recovered-forward-status.XXXXXX")"
+  finalize_file="$(mktemp "${TMPDIR:-/tmp}/norn-recovered-forward-finalize.XXXXXX")"
+  chmod 0600 "$status_file" "$finalize_file"
+  trap 'rm -f "$status_file" "$finalize_file"' RETURN
+  [[ -f "$recovered_preservation_receipt" && ! -L "$recovered_preservation_receipt" ]] || fail "signed preservation receipt is missing; run the local Mini comparison before finalization"
+  recovered_preservation_receipt_sha256="$(python3 - "$recovered_preservation_receipt" <<'PY'
+import hashlib,os,stat,sys
+p=sys.argv[1]; i=os.lstat(p)
+if not stat.S_ISREG(i.st_mode) or i.st_uid!=os.geteuid() or stat.S_IMODE(i.st_mode)!=0o600: raise SystemExit("preservation receipt must be mode-0600 and owner-only")
+print(hashlib.sha256(open(p,"rb").read()).hexdigest())
+PY
+)" || fail "preservation receipt is unsafe"
+  local finalized="false"
+  local normal_candidate_active="false"
+  if [[ "$recovered_phase" == "candidate-promoted" ]]; then
+    legacy_baseline_verify_normal_candidate "$version" "$sha" "$token"
+    if ! legacy_baseline_host_agent_is_running_candidate; then restart_fenced_host_agent; fi
+    log "recovered-forward candidate was already fully promoted; verified exact runtime and host agent"
+    return 0
+  fi
+  if curl -fsS -H "Authorization: Bearer $token" "$api_base/api/v1/platform/recovered-forward/status" >"$status_file"; then
+    finalized="$(python3 - "$status_file" "$recovered_transition_id" "$recovered_source_sha" "$sha" "$recovered_source_evidence_sha256" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1],encoding="utf-8")); transition,source,candidate,evidence=sys.argv[2:]
+if v.get("maintenance")!="recovered-forward-preservation" or v.get("transitionId")!=transition or v.get("owner")!="recovered-forward:"+transition or v.get("sourceSHA")!=source or v.get("candidateSHA")!=candidate or v.get("sourceEvidenceSHA256")!=evidence or v.get("runtimeTopology")!="single-node-mini" or v.get("fleetAPIConsulted") is not False or v.get("etcdConsulted") is not False: raise SystemExit("maintenance status binding mismatch")
+if type(v.get("epoch")) is not int or v["epoch"]<1: raise SystemExit("maintenance fence epoch is invalid")
+print("finalized" if v.get("finalized") is True else "pending")
+PY
+)" || fail "Mini recovered-forward status does not match the exact journal"
+    maintenance="$(python3 - "$status_file" <<'PY'
+import json,sys
+v=json.load(open(sys.argv[1],encoding="utf-8")); print(v["epoch"])
+PY
+)"
+    if [[ "$finalized" != "finalized" ]]; then
+      legacy_baseline_write_fence_state "candidate-finalize-requested"
+      python3 - "$recovered_preservation_receipt" "$recovered_transition_id" "$(python3 - "$status_file" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1],encoding="utf-8"))["owner"])
+PY
+)" "$maintenance" >"$finalize_file" <<'PY'
+import json,sys
+receipt_path,transition,owner,epoch=sys.argv[1:]
+receipt=json.load(open(receipt_path,encoding="utf-8"))
+      json.dump({"transitionId":transition,"owner":owner,"epoch":int(epoch),"preservationReceipt":receipt},sys.stdout,separators=(",",":"))
+PY
+      curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary "@$finalize_file" "$api_base/api/v1/platform/recovered-forward/finalize" >"$status_file" || fail "Mini rejected the exact recovered-forward preservation receipt"
+      python3 - "$status_file" "$recovered_transition_id" "$recovered_preservation_receipt_sha256" <<'PY' || fail "Mini did not confirm durable recovered-forward finalization"
+import json,sys
+v=json.load(open(sys.argv[1],encoding="utf-8"))
+if v.get("transitionId")!=sys.argv[2] or v.get("finalized") is not True: raise SystemExit("finalization confirmation mismatch")
+PY
+    fi
+  else
+    # A retry after the one-process activation may find the already-running
+    # normal candidate instead of the maintenance router. It is accepted only
+    # with exact source SHA and active runtime schema evidence.
+    curl -fsS -H "Authorization: Bearer $token" "$api_base/api/version" >"$status_file" || fail "recovered-forward maintenance API is unavailable; refusing to infer database fence state"
+    python3 - "$status_file" "$sha" <<'PY' || fail "running API is not the exact recovered-forward candidate"
+import json,sys
+v=json.load(open(sys.argv[1],encoding="utf-8"))
+if v.get("sourceSha")!=sys.argv[2]: raise SystemExit("candidate source SHA mismatch")
+PY
+    normal_candidate_active="true"
+  fi
+  if [[ "$normal_candidate_active" != "true" ]]; then
+    legacy_baseline_write_fence_state "candidate-normal-activation-pending"
+    # API already verified and persisted the signed preservation receipt. The
+    # exact one-process token binds source evidence plus receipt digest at the
+    # database fence release boundary.
+    launchctl unsetenv NORN_RECOVERED_FORWARD_MAINTENANCE >/dev/null 2>&1 || true
+    launchctl setenv NORN_STARTUP_MODE active
+    launchctl setenv NORN_SCHEMA_MODE check
+    launchctl setenv NORN_RECOVERED_FORWARD_TRANSITION_ID "$recovered_transition_id"
+    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_SHA "$recovered_source_sha"
+    launchctl setenv NORN_RECOVERED_FORWARD_CANDIDATE_SHA "$sha"
+    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH "$recovered_source_evidence"
+    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256 "$recovered_source_evidence_sha256"
+    launchctl setenv NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH "$recovered_preservation_receipt"
+    launchctl setenv NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256 "$recovered_preservation_receipt_sha256"
+    launchctl setenv NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID "$recovered_transition_id"
+    launchctl kickstart -k "gui/$(id -u)/$launch_label" || fail "exact candidate API activation failed; the durable DB fence remains held"
+    launchctl unsetenv NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID >/dev/null 2>&1 || true
+  fi
+  wait_health "$api_base" 45 "" "$token" || fail "candidate API did not become healthy after recovered-forward activation"
+  local final_version_file="$status_file" final_schema_file="$finalize_file"
+  curl -fsS -H "Authorization: Bearer $token" "$api_base/api/version" >"$final_version_file" || fail "candidate API version evidence unavailable after activation"
+  curl -fsS -H "Authorization: Bearer $token" "$api_base/api/schema" >"$final_schema_file" || fail "candidate API schema evidence unavailable after activation"
+  validate_active_responses "$version" "$final_version_file" "$final_schema_file" "$sha" || fail "exact recovered-forward candidate is not active after fence release"
+  legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent"
+  restart_fenced_host_agent
+  legacy_baseline_write_fence_state "candidate-promoted"
+  for name in NORN_RECOVERED_FORWARD_MAINTENANCE NORN_RECOVERED_FORWARD_TRANSITION_ID NORN_RECOVERED_FORWARD_SOURCE_SHA NORN_RECOVERED_FORWARD_CANDIDATE_SHA NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256 NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256; do
+    launchctl unsetenv "$name" >/dev/null 2>&1 || true
+  done
+  log "recovered-forward Mini transition finalized for exact candidate $sha; original failed sentinel preserved"
+}
+
 atomic_install_file() {
   local source="$1"
   local destination="$2"
@@ -2481,7 +3028,7 @@ sync_managed_host_artifacts() {
     fail "release is missing platform-release-manifest"
   fi
   local release_helper
-  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-signed-shadow-launchagent-rehearsal; do
+  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
     if [[ -f "$target/bin/$release_helper" ]]; then
       atomic_install_file "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || return 1
     elif [[ "$strict" == "true" ]]; then
@@ -2502,7 +3049,7 @@ sync_managed_host_artifacts() {
     cmp -s "$target/bin/norn" "$host_cli_bin" || fail "managed host CLI verification failed"
     cmp -s "$target/bin/platform-upgrade" "$platform_script_bin" || fail "managed platform script verification failed"
     cmp -s "$target/bin/platform-release-manifest" "$(dirname "$platform_script_bin")/platform-release-manifest" || fail "managed platform manifest helper verification failed"
-    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-signed-shadow-launchagent-rehearsal; do
+    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
       cmp -s "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || fail "managed $release_helper verification failed"
     done
     cmp -s "$target/bin/host-runtime" "$host_runtime_bin" || fail "managed host runtime verification failed"
@@ -2795,7 +3342,7 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       recovered_env_command="${recovered_env_args[0]}"; recovered_env_mode="${recovered_env_args[1]}"
       [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
       case "$recovered_env_mode" in
-        preflight|upgrade|mini-protected-backup|mini-signed-shadow) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+        preflight|upgrade|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-finalize) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
         recovered-baseline-adopt) [[ "$recovered_env_command" == "$platform_script_bin" || "$recovered_env_command" == "$releases"/*/bin/platform-upgrade ]] || fail "recovered baseline adoption child is not an immutable release script" ;;
         *) fail "recovered baseline rejects env-exec child mode $recovered_env_mode" ;;
       esac
@@ -2808,6 +3355,11 @@ fi
 
 if [[ "$mode" == "recovered-baseline-adopt" ]]; then
   recovered_baseline_adopt
+  exit 0
+fi
+
+if [[ "$mode" == "recovered-forward-finalize" ]]; then
+  recovered_forward_finalize_release
   exit 0
 fi
 
@@ -2850,6 +3402,9 @@ if [[ "$mode" == "legacy-baseline" ]]; then
   candidate_preflight
   stop_candidate
   promote_legacy_baseline_release
+elif [[ "$mode" == "recovered-forward" ]]; then
+  recovered_forward_validate_preflight
+  recovered_forward_resume_or_start
 elif [[ "$mode" == "upgrade" ]]; then
   validate_prospective_schema_transition "$target_startup_contract"
   acquire_promotion_lock

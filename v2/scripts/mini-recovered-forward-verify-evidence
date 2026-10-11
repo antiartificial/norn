@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Validate signed evidence bindings for the Mini recovered-forward lane."""
+
+import hashlib
+import hmac
+import json
+import os
+import re
+import stat
+import sys
+import datetime as dt
+from pathlib import Path
+
+
+SCHEMA = "norn.recovered-forward-evidence/v1"
+FIELDS = {
+    "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+    "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256",
+    "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
+    "backupBytes", "shadowReceiptSHA256", "beforeDigest", "signature",
+}
+
+
+def private(path: Path, label: str) -> bytes:
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError(f"{label} must be absolute and not a symlink")
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError(f"{label} must be an owner-only mode-0600 regular file")
+    return path.read_bytes()
+
+
+def digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def strict_json(raw: bytes, label: str) -> dict:
+    def object_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{label} contains a duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    value = json.loads(raw, object_pairs_hook=object_pairs)
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return value
+
+
+def verify_signature(value: dict, schema: str, key: bytes, label: str) -> dict:
+    signed = dict(value)
+    signature = signed.pop("signature", None)
+    canonical = json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
+    expected = "hmac-sha256:" + hmac.new(key, schema.encode() + b"\0" + canonical, hashlib.sha256).hexdigest()
+    if not isinstance(signature, str) or not hmac.compare_digest(signature, expected):
+        raise ValueError(f"{label} signature does not verify")
+    return signed
+
+
+def parse_utc(value: object, label: str) -> dt.datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} timestamp is missing")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{label} timestamp is invalid") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} timestamp must include UTC offset")
+    if parsed.utcoffset() != dt.timedelta(0):
+        raise ValueError(f"{label} timestamp must be UTC")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def main() -> int:
+    if len(sys.argv) != 9:
+        raise ValueError("usage: mini-recovered-forward-verify-evidence evidence sha transition source candidate backup-proof backup-artifact shadow-receipt")
+    evidence_path, expected_sha, transition, source, candidate, proof_path, artifact_path, shadow_path = map(Path, sys.argv[1:])
+    key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    if len(key) < 32:
+        raise ValueError("audit signing key is unavailable")
+    raw = private(evidence_path, "source evidence")
+    if digest(raw) != str(expected_sha):
+        raise ValueError("source evidence digest mismatch")
+    value = strict_json(raw, "source evidence")
+    signature = value.pop("signature", None)
+    if set(value) | {"signature"} != FIELDS or value.get("schema") != SCHEMA:
+        raise ValueError("source evidence fields or schema are not exact")
+    signed = dict(value)
+    canonical = json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
+    expected_signature = "hmac-sha256:" + hmac.new(key, SCHEMA.encode() + b"\0" + canonical, hashlib.sha256).hexdigest()
+    if not isinstance(signature, str) or not hmac.compare_digest(signature, expected_signature):
+        raise ValueError("source evidence signature does not verify")
+    if (value.get("transitionId"), value.get("sourceSHA"), value.get("candidateSHA")) != (str(transition), str(source), str(candidate)):
+        raise ValueError("source evidence does not bind the exact transition and release SHAs")
+    if (not isinstance(value.get("transitionId"), str) or
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}", value["transitionId"]) or
+            not re.fullmatch(r"[0-9a-f]{40}", value["sourceSHA"]) or
+            not re.fullmatch(r"[0-9a-f]{40}", value["candidateSHA"]) or
+            not isinstance(value.get("databaseIdentity"), str) or
+            not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", value["databaseIdentity"]) or
+            type(value.get("backupBytes")) is not int or value["backupBytes"] <= 0):
+        raise ValueError("source evidence identity or byte-count types are invalid")
+    for name in FIELDS - {"schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity", "backupBytes", "signature"}:
+        if not isinstance(value.get(name), str) or not re.fullmatch(r"[0-9a-f]{64}", value[name]):
+            raise ValueError(f"source evidence digest is invalid: {name}")
+    proof_raw = private(proof_path, "backup proof")
+    artifact_raw = private(artifact_path, "backup artifact")
+    shadow_raw = private(shadow_path, "shadow receipt")
+    proof = strict_json(proof_raw, "backup proof")
+    shadow = strict_json(shadow_raw, "shadow receipt")
+    proof_fields = {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "backupBytes", "createdAt"}
+    if set(proof) != proof_fields or proof.get("schema") != "norn.legacy-control-backup/v1":
+        raise ValueError("backup proof fields or schema are not exact")
+    if (not re.fullmatch(r"[0-9a-f]{40}", str(proof.get("sourceReleaseSHA", ""))) or
+            not re.fullmatch(r"[0-9a-f]{64}", str(proof.get("backupSHA256", ""))) or
+            type(proof.get("backupBytes")) is not int or proof["backupBytes"] <= 0 or
+            not isinstance(proof.get("databaseIdentity"), str) or
+            not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", proof["databaseIdentity"])):
+        raise ValueError("backup proof identity, digest, or byte-count types are invalid")
+    if proof.get("sourceReleaseSHA") != str(source) or proof.get("backupSHA256") != digest(artifact_raw) or proof.get("backupBytes") != len(artifact_raw):
+        raise ValueError("backup proof and artifact do not bind the exact source")
+    if value.get("backupProofSHA256") != digest(proof_raw) or value.get("backupSHA256") != proof.get("backupSHA256") or value.get("backupBytes") != proof.get("backupBytes"):
+        raise ValueError("source evidence backup binding mismatch")
+    if value.get("databaseIdentity") != proof.get("databaseIdentity"):
+        raise ValueError("source evidence database identity differs from the protected backup")
+    shadow_fields = {"schema", "completedAt", "exitCode", "candidateSHA", "shadowLabel", "shadowPort", "runtimeClaim", "privateRestoreClaim", "backupSHA256", "backupBytes"}
+    if (set(shadow) != shadow_fields or type(shadow.get("exitCode")) is not int or shadow["exitCode"] != 0 or
+            not isinstance(shadow.get("shadowLabel"), str) or not shadow["shadowLabel"] or
+            type(shadow.get("shadowPort")) is not int or not 1 <= shadow["shadowPort"] <= 65535 or
+            type(shadow.get("backupBytes")) is not int or
+            shadow.get("schema") != "norn.m5-signed-shadow-launchagent-rehearsal/v2" or
+            shadow.get("runtimeClaim") != "passed" or shadow.get("privateRestoreClaim") != "passed" or
+            shadow.get("candidateSHA") != str(candidate) or shadow.get("backupSHA256") != proof.get("backupSHA256") or
+            shadow.get("backupBytes") != proof.get("backupBytes") or value.get("shadowReceiptSHA256") != digest(shadow_raw)):
+        raise ValueError("signed shadow receipt does not bind the exact candidate and backup")
+    backup_time = parse_utc(proof.get("createdAt"), "backup")
+    shadow_time = parse_utc(shadow.get("completedAt"), "shadow")
+    now = dt.datetime.now(dt.timezone.utc)
+    if shadow_time <= backup_time or shadow_time > now + dt.timedelta(minutes=5):
+        raise ValueError("shadow receipt time must follow the backup and not be in the future")
+    adoption_path = Path.home() / ".config/norn/.norn-recovered-baseline-adoption.json"
+    adoption_raw = private(adoption_path, "recovered-baseline adoption receipt")
+    adoption = strict_json(adoption_raw, "adoption receipt")
+    adoption_fields = {"schema", "candidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}
+    if set(adoption) != adoption_fields or adoption.get("schema") != "norn.recovered-baseline-adoption/v1" or adoption.get("preservationProven") is not False:
+        raise ValueError("adoption receipt fields or schema are not exact")
+    verify_signature(adoption, "norn.recovered-baseline-adoption/v1", key, "adoption receipt")
+    if value.get("adoptionReceiptSHA256") != digest(adoption_raw):
+        raise ValueError("source evidence adoption receipt digest mismatch")
+    if (not re.fullmatch(r"[0-9a-f]{40}", str(adoption.get("candidateSHA", ""))) or
+            not re.fullmatch(r"[0-9a-f]{40}", str(adoption.get("adopterSHA", ""))) or
+            not re.fullmatch(r"[0-9a-f]{64}", str(adoption.get("incidentBindingSHA256", ""))) or
+            not re.fullmatch(r"[0-9a-f]{64}", str(adoption.get("preservationUnprovenReasonSHA256", "")))):
+        raise ValueError("adoption receipt identity digests are invalid")
+    for output_name, receipt_name in (("recoveryFenceSHA256", "legacyFence"), ("ledgerSHA256", "ledger"), ("reconciliationSHA256", "reconciliation")):
+        item = adoption.get(receipt_name)
+        if not isinstance(item, dict) or set(item) != {"path", "sha256"} or value.get(output_name) != item.get("sha256"):
+            raise ValueError(f"source evidence does not bind adoption {receipt_name}")
+        evidence_raw = private(Path(item["path"]), f"adoption {receipt_name}")
+        if digest(evidence_raw) != item["sha256"]:
+            raise ValueError(f"adoption {receipt_name} changed")
+    if value.get("incidentBindingSHA256") != adoption.get("incidentBindingSHA256"):
+        raise ValueError("source evidence incident binding digest mismatch")
+    print("verified")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError, json.JSONDecodeError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)

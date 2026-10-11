@@ -43,6 +43,22 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_recovered_forward_dispatch_uses_locked_journal_resume_path(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        dispatch = source.split('elif [[ "$mode" == "recovered-forward" ]]; then', 1)[1].split(
+            'elif [[ "$mode" == "upgrade" ]]; then', 1
+        )[0]
+        self.assertIn("recovered_forward_validate_preflight", dispatch)
+        self.assertIn("recovered_forward_resume_or_start", dispatch)
+        self.assertNotIn("automatic replay is refused", dispatch)
+        resume = source.split("recovered_forward_resume_or_start() {", 1)[1].split("\n}", 1)[0]
+        self.assertLess(resume.index("acquire_promotion_lock"), resume.index('if [[ -e "$transition_state_path" ]]'))
+        for phase in (
+            "prepared", "host-agent-fencing", "host-agent-fenced", "api-fencing", "legacy-fenced",
+            "migration-started", "schema-migrated", "candidate-activation-started",
+        ):
+            self.assertIn(phase, resume)
+
     def write(self, relative: str, content: str, executable: bool = False) -> None:
         path = self.repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +78,11 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "mini-create-protected-backup",
             "mini-verify-protected-backup",
             "mini-private-copy-rehearsal",
+            "mini-protected-transition-rehearsal",
             "mini-signed-shadow-launchagent-rehearsal",
+            "mini-recovered-forward-transition",
+            "mini-recovered-forward-verify-evidence",
+            "mini-recovered-forward-validate-journal",
         ):
             shutil.copy2(SCRIPT_DIR / name, scripts / name)
         self.write("v2/scripts/host-runtime", "#!/usr/bin/env bash\nexit 0\n", executable=True)

@@ -75,6 +75,42 @@ func (db *DB) MarkRuntimeMutationFenceFinalizationRequested(ctx context.Context,
 	return err
 }
 
+// MarkRecoveredForwardFinalizationRequested binds the durable handoff to both
+// the source evidence that acquired the fence and the exact signed
+// preservation receipt accepted by the maintenance API. The fence remains
+// held; only the exact candidate process may release it at runtime admission.
+func (db *DB) MarkRecoveredForwardFinalizationRequested(ctx context.Context, fence RuntimeMutationFence, sourceEvidenceSHA256, preservationSHA256 string) error {
+	if db == nil || db.Pool == nil || fence.Epoch <= 0 || strings.TrimSpace(fence.Owner) == "" ||
+		!validSHA256Hex(sourceEvidenceSHA256) || !validSHA256Hex(preservationSHA256) ||
+		!strings.HasPrefix(fence.Owner, "recovered-forward:") {
+		return ErrRuntimeMutationFenceOwnershipLost
+	}
+	heldReason := "preserve recovered-forward:" + sourceEvidenceSHA256
+	finalReason := "recovered-forward finalized:" + sourceEvidenceSHA256 + ":" + preservationSHA256
+	var updated bool
+	err := db.Pool.QueryRow(ctx, `
+		UPDATE runtime_mutation_fence
+		SET reason=$3
+		WHERE singleton=true AND active=true AND epoch=$1 AND owner=$2 AND reason=$4
+		RETURNING true`, fence.Epoch, fence.Owner, finalReason, heldReason).Scan(&updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrRuntimeMutationFenceOwnershipLost
+	}
+	return err
+}
+
+func validSHA256Hex(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // AcquireRuntimeMutationFence installs the next durable epoch. Empty owner or
 // reason is rejected so an active stop is always attributable and explainable.
 func (db *DB) AcquireRuntimeMutationFence(ctx context.Context, owner, reason string) (RuntimeMutationFence, error) {

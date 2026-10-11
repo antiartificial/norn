@@ -1,0 +1,618 @@
+#!/usr/bin/env python3
+"""Coordinate the one-way recovered-forward Mini transition.
+
+The managed platform-upgrade command owns host fencing, schema migration,
+release promotion and activation. This wrapper captures the Mini preservation
+baseline, binds immutable evidence to the retained adoption/backup/shadow
+proofs, and resumes only the exact journaled candidate.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import hmac
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v1"
+RECEIPT_SCHEMA = "norn.recovered-forward-preservation/v1"
+ADOPTION_SCHEMA = "norn.recovered-baseline-adoption/v1"
+TRANSITION_SCHEMA = "norn.recovered-forward-transition/v1"
+EVIDENCE_FIELDS = {
+    "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+    "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256",
+    "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
+    "backupBytes", "shadowReceiptSHA256", "beforeDigest", "signature",
+}
+RECEIPT_FIELDS = {
+    "schema", "transitionId", "candidateSHA", "sourceEvidenceSHA256", "beforeDigest",
+    "afterDigest", "preservationMatched", "finalizedAt", "signature",
+}
+TRANSITION_PHASES = {
+    "prepared", "host-agent-fencing", "host-agent-fenced", "api-fencing", "legacy-fenced",
+    "migration-started", "schema-migrated",
+    "candidate-activation-started", "candidate-postflight-failed", "candidate-preservation-pending",
+    "candidate-finalize-requested", "candidate-normal-activation-pending",
+    "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart",
+    "candidate-promoted",
+}
+PRESERVATION_PHASES = {
+    "candidate-preservation-pending", "candidate-finalize-requested",
+    "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent",
+    "candidate-normal-active-pending-host-agent-restart",
+}
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+TRANSITION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$")
+MAX_EVIDENCE_BYTES = 64 * 1024
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            fail(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
+
+
+def secure_read(path: Path, label: str, *, owner_only: bool = True, max_bytes: int = MAX_EVIDENCE_BYTES) -> bytes:
+    if not path.is_absolute():
+        fail(f"{label} must be an absolute path")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        fail(f"cannot safely open {label}: {error}")
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            fail(f"{label} must be an invoking-user-owned regular file")
+        if owner_only and stat.S_IMODE(info.st_mode) != 0o600:
+            fail(f"{label} must have owner-only mode 0600")
+        if info.st_size < 0 or info.st_size > max_bytes:
+            fail(f"{label} is empty or exceeds the {max_bytes}-byte limit")
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            data = handle.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            fail(f"{label} exceeds the {max_bytes}-byte limit")
+        return data
+    finally:
+        os.close(fd)
+
+
+def load_json_bytes(raw: bytes, label: str) -> Any:
+    try:
+        return json.loads(raw, object_pairs_hook=strict_object)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        fail(f"{label} is not strict JSON: {error}")
+
+
+def verify_hmac_document(raw: bytes, schema: str, key: bytes, label: str, expected_fields: set[str] | None = None) -> dict[str, Any]:
+    if len(key) < 32:
+        fail("NORN_AUDIT_SIGNING_KEY must contain at least 32 bytes")
+    value = load_json_bytes(raw, label)
+    if type(value) is not dict:
+        fail(f"{label} must be a JSON object")
+    signature = value.get("signature")
+    if expected_fields is not None and set(value) != expected_fields:
+        fail(f"{label} fields are not exact")
+    if value.get("schema") != schema or not isinstance(signature, str) or not signature.startswith("hmac-sha256:"):
+        fail(f"{label} schema or signature format is invalid")
+    unsigned = dict(value)
+    del unsigned["signature"]
+    expected = "hmac-sha256:" + hmac.new(key, schema.encode() + b"\0" + canonical(unsigned), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        fail(f"{label} HMAC signature does not verify")
+    return value
+
+
+def signed_document(payload: dict[str, Any], key: bytes) -> bytes:
+    unsigned = dict(payload)
+    signature = "hmac-sha256:" + hmac.new(key, str(payload["schema"]).encode() + b"\0" + canonical(unsigned), hashlib.sha256).hexdigest()
+    result = dict(unsigned)
+    result["signature"] = signature
+    return canonical(result)
+
+
+def atomic_private_create(path: Path, data: bytes) -> None:
+    parent = path.parent
+    if not path.is_absolute() or parent.is_symlink() or not parent.is_dir():
+        fail("source-evidence destination or parent is unsafe")
+    parent_info = parent.stat()
+    if parent_info.st_uid != os.geteuid() or stat.S_IMODE(parent_info.st_mode) != 0o700:
+        fail("recovered-forward directory must be invoking-user-owned mode 0700")
+    if path.exists() or path.is_symlink():
+        fail(f"immutable source evidence already exists: {path}")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as target:
+            target.write(data)
+            target.flush()
+            os.fsync(target.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            fail("source evidence was claimed concurrently")
+        os.unlink(temporary)
+        directory_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def load_preservation_module():
+    helper = Path(__file__).with_name("mini-protected-transition-rehearsal")
+    loader = importlib.machinery.SourceFileLoader("norn_mini_protected_transition_rehearsal", str(helper))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        fail("canonical Mini preservation helper is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def api_base(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.username or parsed.password):
+        fail("Mini API must be a direct loopback HTTP endpoint")
+    return value.rstrip("/")
+
+
+def fetch_json(base: str, path: str, token: str) -> Any:
+    request = urllib.request.Request(base + path)
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(2 << 20)
+            if len(raw) >= 2 << 20:
+                fail(f"Mini API response is too large: {path}")
+            return load_json_bytes(raw, f"Mini API {path}")
+    except (urllib.error.URLError, TimeoutError) as error:
+        fail(f"Mini API read failed at {path}: {error}")
+
+
+def digest(value: Any) -> str:
+    return sha256(canonical(value))
+
+
+def adoption_evidence(home: Path, key: bytes, source_sha: str) -> tuple[dict[str, Any], dict[str, bytes], bytes]:
+    receipt_path = home / ".config/norn/.norn-recovered-baseline-adoption.json"
+    receipt_raw = secure_read(receipt_path, "recovered-baseline adoption receipt")
+    adoption = verify_hmac_document(receipt_raw, ADOPTION_SCHEMA, key, "recovered-baseline adoption receipt", {
+        "schema", "candidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256",
+        "legacyFence", "ledger", "reconciliation", "preservationProven", "signature",
+    })
+    if adoption.get("candidateSHA") != source_sha or adoption.get("preservationProven") is not False:
+        fail("adoption receipt does not bind the exact current source and unproven preservation state")
+    if not HEX40.fullmatch(str(adoption.get("adopterSHA", ""))) or not HEX64.fullmatch(str(adoption.get("incidentBindingSHA256", ""))) or not HEX64.fullmatch(str(adoption.get("preservationUnprovenReasonSHA256", ""))):
+        fail("adoption receipt adopter or incident digest bindings are malformed")
+    referenced: dict[str, bytes] = {}
+    decoded: dict[str, Any] = {}
+    for field in ("legacyFence", "ledger", "reconciliation"):
+        item = adoption.get(field)
+        if type(item) is not dict or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not HEX64.fullmatch(str(item["sha256"])):
+            fail(f"adoption receipt {field} binding is malformed")
+        path = Path(os.path.expanduser(item["path"]))
+        raw = secure_read(path, f"retained {field} evidence", owner_only=False)
+        if not hmac.compare_digest(sha256(raw), item["sha256"]):
+            fail(f"retained {field} evidence changed from its adoption digest")
+        referenced[field] = raw
+        decoded[field] = load_json_bytes(raw, f"retained {field} evidence")
+
+    fence = decoded["legacyFence"]
+    ledger = decoded["ledger"]
+    reconciliation = decoded["reconciliation"]
+    if (fence.get("schema") != "norn.legacy-baseline-fence/v1" or fence.get("state") != "candidate-postflight-failed"
+            or not HEX40.fullmatch(str(fence.get("legacyReleaseSHA", "")))):
+        fail("retained legacy fence is not the exact failed candidate-postflight state")
+    if (ledger.get("schema") != "norn.m5-protected-transition/v1" or ledger.get("state") != "candidate-recovery-required"
+            or ledger.get("legacyReleaseSHA") != fence.get("legacyReleaseSHA") or ledger.get("candidateSHA") != source_sha
+            or ledger.get("upgradeExitCode") != 1 or not HEX64.fullmatch(str(ledger.get("beforeDigest", "")))):
+        fail("retained protected-transition ledger is not bound to the exact failed source")
+    release, transition = reconciliation.get("release"), reconciliation.get("transition")
+    if (reconciliation.get("schema") != "norn.m5-post-transition-reconciliation/v1" or type(release) is not dict or type(transition) is not dict
+            or release.get("sha") != source_sha or release.get("verified") is not True
+            or transition.get("beforeDigest") != ledger.get("beforeDigest")
+            or transition.get("ledgerState") != "candidate-recovery-required"
+            or transition.get("matchesBefore") is not False or transition.get("upgradeExitCode") != 1):
+        fail("retained reconciliation evidence does not prove the exact interrupted transition")
+
+    incident_sha = adoption.get("incidentBindingSHA256")
+    if not HEX64.fullmatch(str(incident_sha)):
+        fail("adoption receipt incident-binding digest is invalid")
+    return adoption, referenced, receipt_raw
+
+
+def secure_file_digest(path: Path, label: str) -> tuple[str, int]:
+    if not path.is_absolute():
+        fail(f"{label} must be an absolute path")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        fail(f"cannot safely open {label}: {error}")
+    h = hashlib.sha256()
+    size = 0
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            fail(f"{label} must be invoking-user-owned mode-0600 regular file")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                size += len(chunk)
+                h.update(chunk)
+    finally:
+        os.close(fd)
+    return h.hexdigest(), size
+
+
+def verify_backup_and_shadow(args: argparse.Namespace, source_sha: str, candidate_sha: str, *, enforce_freshness: bool) -> tuple[dict[str, Any], dict[str, Any], bytes, str, int]:
+    proof_raw = secure_read(args.backup_proof, "protected backup proof")
+    shadow_raw = secure_read(args.shadow_receipt, "signed shadow receipt")
+    proof = load_json_bytes(proof_raw, "protected backup proof")
+    shadow = load_json_bytes(shadow_raw, "signed shadow receipt")
+    if (type(proof) is not dict or set(proof) != {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "backupBytes", "createdAt"}
+            or proof.get("schema") != "norn.legacy-control-backup/v1" or proof.get("sourceReleaseSHA") != source_sha):
+        fail("backup proof does not bind the exact old source release")
+    if not HEX64.fullmatch(str(proof.get("backupSHA256", ""))) or type(proof.get("backupBytes")) is not int:
+        fail("backup proof digest or byte count is invalid")
+    artifact_sha, artifact_bytes = secure_file_digest(args.backup_artifact, "protected backup artifact")
+    if proof["backupBytes"] != artifact_bytes or not hmac.compare_digest(proof["backupSHA256"], artifact_sha):
+        fail("protected backup artifact no longer matches its proof")
+    database_identity = proof.get("databaseIdentity")
+    if not isinstance(database_identity, str) or not database_identity.startswith("hmac-sha256:"):
+        fail("backup proof database identity is invalid")
+    try:
+        backup_time = dt.datetime.fromisoformat(str(proof["createdAt"]).replace("Z", "+00:00"))
+    except ValueError:
+        fail("backup proof timestamp is invalid")
+    if backup_time.tzinfo is None or backup_time.utcoffset() != dt.timedelta(0):
+        fail("backup proof timestamp must be UTC")
+    try:
+        shadow_time = dt.datetime.fromisoformat(str(shadow.get("completedAt", "")).replace("Z", "+00:00"))
+    except ValueError:
+        fail("shadow receipt timestamp is invalid")
+    now = dt.datetime.now(dt.timezone.utc)
+    if (shadow.get("schema") != "norn.m5-signed-shadow-launchagent-rehearsal/v2" or shadow.get("runtimeClaim") != "passed"
+            or shadow.get("privateRestoreClaim") != "passed" or shadow.get("candidateSHA") != candidate_sha
+            or shadow.get("backupSHA256") != proof["backupSHA256"] or shadow.get("backupBytes") != proof["backupBytes"]
+            or shadow_time.tzinfo is None or shadow_time.utcoffset() != dt.timedelta(0)
+            or shadow_time <= backup_time or shadow_time > now + dt.timedelta(minutes=5)):
+        fail("shadow receipt does not prove a fresh passing restore/runtime rehearsal for this exact candidate and backup")
+
+    verifier = Path(__file__).with_name("mini-verify-protected-backup")
+    if not verifier.is_file() or not os.access(verifier, os.X_OK):
+        fail("protected backup verifier is unavailable")
+    if enforce_freshness:
+        result = subprocess.run([str(verifier), str(args.backup_proof), str(args.backup_artifact), source_sha],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if result.returncode:
+            fail("protected backup freshness/identity verification failed: " + result.stderr.strip())
+    return proof, shadow, proof_raw, artifact_sha, artifact_bytes
+
+
+def make_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("candidate_sha")
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--transition-id", required=True)
+    parser.add_argument("--backup-proof", required=True, type=Path)
+    parser.add_argument("--backup-artifact", required=True, type=Path)
+    parser.add_argument("--shadow-receipt", required=True, type=Path)
+    parser.add_argument("--api", default=os.environ.get("NORN_API_BASE", "http://127.0.0.1:8800"))
+    parser.add_argument("--platform-upgrade-test-bin", help=argparse.SUPPRESS)
+    return parser
+
+
+def load_journal(path: Path, transition_id: str, source_sha: str, candidate_sha: str, evidence_sha: str) -> dict[str, Any] | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    raw = secure_read(path, "recovered-forward transition journal")
+    record = load_json_bytes(raw, "recovered-forward transition journal")
+    expected = {
+        "schema": TRANSITION_SCHEMA, "transitionID": transition_id, "sourceSHA": source_sha,
+        "candidateReleaseSHA": candidate_sha,
+        "sourceEvidencePath": str(path.with_name(path.name + ".source-evidence.json")),
+        "sourceEvidenceSHA256": evidence_sha,
+    }
+    if type(record) is not dict or record.get("schema") != TRANSITION_SCHEMA or record.get("state") not in TRANSITION_PHASES:
+        fail("existing recovered-forward journal has an unknown schema or phase")
+    for key, value in expected.items():
+        if record.get(key) != value:
+            fail(f"existing recovered-forward journal binding changed: {key}")
+    return record
+
+
+def sign_or_validate_evidence(args: argparse.Namespace, paths: dict[str, Path], key: bytes, api: str, token: str,
+                               adoption: dict[str, Any], source_evidence: dict[str, bytes], adoption_raw: bytes,
+                               proof: dict[str, Any], proof_raw: bytes, artifact_sha: str, artifact_bytes: int,
+                               shadow: dict[str, Any], shadow_raw: bytes) -> tuple[dict[str, Any], bytes, str]:
+    evidence_path = paths["evidence"]
+    if evidence_path.exists() or evidence_path.is_symlink():
+        raw = secure_read(evidence_path, "immutable recovered-forward source evidence")
+        evidence = verify_hmac_document(raw, EVIDENCE_SCHEMA, key, "recovered-forward source evidence", EVIDENCE_FIELDS)
+        if (evidence.get("transitionId") != args.transition_id or evidence.get("sourceSHA") != args.source_sha
+                or evidence.get("candidateSHA") != args.candidate_sha):
+            fail("existing immutable evidence belongs to another transition or candidate")
+        return evidence, raw, sha256(raw)
+
+    version = fetch_json(api, "/api/version", token)
+    if type(version) is not dict or version.get("sourceSha") != args.source_sha:
+        fail("current Mini API is not the exact signed source release")
+    schema = fetch_json(api, "/api/schema", token)
+    if type(schema) is not dict:
+        fail("current Mini schema status is unavailable")
+    nested_schema = schema.get("schema")
+    if isinstance(nested_schema, dict):
+        schema = nested_schema
+    database_id = schema.get("databaseIdentity")
+    if database_id != proof.get("databaseIdentity"):
+        fail("current Mini database identity differs from the protected backup")
+
+    preservation = load_preservation_module()
+    before_state = preservation.stable_state(api, token)
+    before_digest = preservation.digest(before_state)
+    if before_digest != load_json_bytes(source_evidence["ledger"], "retained transition ledger").get("beforeDigest"):
+        fail("current Mini workload/data state no longer matches the retained pre-transition baseline")
+    references = adoption
+    evidence = {
+        "schema": EVIDENCE_SCHEMA,
+        "transitionId": args.transition_id,
+        "sourceSHA": args.source_sha,
+        "candidateSHA": args.candidate_sha,
+        "databaseIdentity": database_id,
+        "recoveryFenceSHA256": references["legacyFence"]["sha256"],
+        "adoptionReceiptSHA256": sha256(adoption_raw),
+        "incidentBindingSHA256": references["incidentBindingSHA256"],
+        "ledgerSHA256": references["ledger"]["sha256"],
+        "reconciliationSHA256": references["reconciliation"]["sha256"],
+        "backupProofSHA256": sha256(proof_raw),
+        "backupSHA256": artifact_sha,
+        "backupBytes": artifact_bytes,
+        "shadowReceiptSHA256": sha256(shadow_raw),
+        "beforeDigest": before_digest,
+    }
+    raw = signed_document(evidence, key)
+    atomic_private_create(evidence_path, raw)
+    return evidence, raw, sha256(raw)
+
+
+def validate_unjournaled_source(api: str, token: str, proof: dict[str, Any], evidence: dict[str, Any]) -> None:
+    """A saved evidence file without a durable upgrade journal is not a resume."""
+    version = fetch_json(api, "/api/version", token)
+    if type(version) is not dict or version.get("sourceSha") != evidence.get("sourceSHA"):
+        fail("without an exact transition journal, Mini must still serve the signed source release")
+    schema = fetch_json(api, "/api/schema", token)
+    if type(schema) is not dict:
+        fail("current Mini schema status is unavailable")
+    nested = schema.get("schema")
+    if isinstance(nested, dict):
+        schema = nested
+    if schema.get("databaseIdentity") != proof.get("databaseIdentity") or proof.get("databaseIdentity") != evidence.get("databaseIdentity"):
+        fail("unjournaled transition database identity differs from the immutable evidence")
+    stable = load_preservation_module().stable_state(api, token)
+    if digest(stable) != evidence.get("beforeDigest"):
+        fail("without an exact transition journal, Mini state differs from the immutable source baseline")
+
+
+def invoke_platform(script: Path, mode: str, args: list[str], env: dict[str, str]) -> None:
+    result = subprocess.run([str(script), mode, *args], env=env, check=False)
+    if result.returncode:
+        fail(f"managed platform-upgrade {mode} exited {result.returncode}; preserve the journal and resume this exact transition")
+
+
+def verify_maintenance_status(value: Any, transition_id: str, source_sha: str, candidate_sha: str, evidence_sha: str) -> None:
+    if type(value) is not dict or value.get("maintenance") != "recovered-forward-preservation" or value.get("transitionId") != transition_id or value.get("owner") != f"recovered-forward:{transition_id}":
+        fail("Mini API is not serving the exact recovered-forward maintenance transition")
+    if (value.get("sourceSHA") != source_sha or value.get("candidateSHA") != candidate_sha
+            or value.get("sourceEvidenceSHA256") != evidence_sha or value.get("runtimeTopology") != "single-node-mini"
+            or value.get("fleetAPIConsulted") is not False or value.get("etcdConsulted") is not False
+            or type(value.get("epoch")) is not int or value["epoch"] < 1):
+        fail("Mini maintenance status does not match the source, candidate, evidence, and standalone topology")
+
+
+def build_receipt(evidence: dict[str, Any], evidence_sha: str, candidate_sha: str, after_digest: str, key: bytes) -> bytes:
+    if after_digest != evidence.get("beforeDigest"):
+        fail("Mini workload/data preservation digest changed; keep the runtime fence held for investigation")
+    payload = {
+        "schema": RECEIPT_SCHEMA,
+        "transitionId": evidence["transitionId"],
+        "candidateSHA": candidate_sha,
+        "sourceEvidenceSHA256": evidence_sha,
+        "beforeDigest": evidence["beforeDigest"],
+        "afterDigest": after_digest,
+        "preservationMatched": True,
+        "finalizedAt": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+    raw = signed_document(payload, key)
+    verify_hmac_document(raw, RECEIPT_SCHEMA, key, "generated preservation receipt", RECEIPT_FIELDS)
+    return raw
+
+
+def run(argv: list[str] | None = None) -> int:
+    args = make_parser().parse_args(argv)
+    if not HEX40.fullmatch(args.candidate_sha) or not HEX40.fullmatch(args.source_sha):
+        fail("source and candidate SHA must be exact lowercase 40-character commits")
+    if args.source_sha == args.candidate_sha:
+        fail("recovered-forward candidate must differ from the current source release")
+    if not TRANSITION_ID.fullmatch(args.transition_id):
+        fail("transition ID is invalid")
+
+    home = Path.home()
+    transition_dir = home / ".config/norn/recovered-forward"
+    journal = transition_dir / "transition.json"
+    evidence_path = transition_dir / "transition.json.source-evidence.json"
+    receipt_path = transition_dir / "preservation-receipt.json"
+    api = api_base(args.api)
+    token = os.environ.get("NORN_TOKEN") or os.environ.get("NORN_API_TOKEN", "")
+    key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    if len(token) < 32 or len(key) < 32:
+        fail("Mini API token and audit signing key must be available through the protected environment")
+    if not transition_dir.exists():
+        transition_dir.mkdir(mode=0o700, parents=True)
+    info = transition_dir.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        fail("recovered-forward directory must be invoking-user-owned mode 0700")
+    if args.platform_upgrade_test_bin:
+        if os.environ.get("NORN_RECOVERED_FORWARD_TEST_HOOKS") != "1":
+            fail("--platform-upgrade-test-bin is available only to the hermetic test harness")
+        platform_script = Path(args.platform_upgrade_test_bin)
+    else:
+        platform_script = Path(os.environ.get("NORN_PLATFORM_SCRIPT_BIN", str(home / ".config/norn/host/bin/platform-upgrade")))
+    if not platform_script.is_absolute() or platform_script.is_symlink() or not platform_script.is_file() or not os.access(platform_script, os.X_OK):
+        fail("canonical managed platform-upgrade executable is unavailable")
+
+    adoption, retained, adoption_raw = adoption_evidence(home, key, args.source_sha)
+    journal_present = journal.exists() or journal.is_symlink()
+    # Do not let a malformed or unrelated journal suppress backup freshness
+    # checks. The exact evidence digest is checked by load_journal below.
+    if journal_present:
+        if journal.is_symlink():
+            fail("recovered-forward transition journal cannot be a symlink")
+        journal_probe = load_json_bytes(secure_read(journal, "recovered-forward transition journal"), "recovered-forward transition journal")
+        if (type(journal_probe) is not dict or journal_probe.get("schema") != TRANSITION_SCHEMA
+                or journal_probe.get("state") not in TRANSITION_PHASES
+                or journal_probe.get("transitionID") != args.transition_id
+                or journal_probe.get("sourceSHA") != args.source_sha
+                or journal_probe.get("candidateReleaseSHA") != args.candidate_sha
+                or journal_probe.get("sourceEvidencePath") != str(evidence_path)):
+            fail("existing journal does not authorize resume of this exact source/candidate transition")
+    proof, shadow, proof_raw, artifact_sha, artifact_bytes = verify_backup_and_shadow(
+        args, args.source_sha, args.candidate_sha, enforce_freshness=not journal_present)
+    evidence, evidence_raw, evidence_sha = sign_or_validate_evidence(
+        args, {"journal": journal, "evidence": evidence_path, "receipt": receipt_path}, key, api, token,
+        adoption, retained, adoption_raw, proof, proof_raw, artifact_sha, artifact_bytes, shadow,
+        secure_read(args.shadow_receipt, "signed shadow receipt"),
+    )
+
+    # The signed release's independent verifier rechecks every immutable input
+    # before the managed child can touch host or database state.
+    verifier = Path(__file__).with_name("mini-recovered-forward-verify-evidence")
+    if not verifier.is_file() or not os.access(verifier, os.X_OK):
+        fail("recovered-forward evidence verifier is unavailable")
+    verified = subprocess.run([str(verifier), str(evidence_path), evidence_sha, args.transition_id, args.source_sha,
+                               args.candidate_sha, str(args.backup_proof), str(args.backup_artifact), str(args.shadow_receipt)],
+                              env=os.environ.copy(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    if verified.returncode or verified.stdout.strip() != "verified":
+        fail("signed source evidence or one of its immutable dependencies failed verification: " + verified.stderr.strip())
+
+    journal_value = load_journal(journal, args.transition_id, args.source_sha, args.candidate_sha, evidence_sha)
+    if not journal_value:
+        validate_unjournaled_source(api, token, proof, evidence)
+    if journal_value and journal_value["state"] == "candidate-promoted":
+        current = fetch_json(api, "/api/version", token)
+        health = fetch_json(api, "/api/health", token)
+        if current.get("sourceSha") != args.candidate_sha or health.get("runtimeMutationFence") != "inactive":
+            fail("completed journal does not match the currently serving candidate with an inactive runtime fence")
+        print("recovered-forward transition already complete")
+        return 0
+
+    env = os.environ.copy()
+    env["NORN_API_BASE"] = api
+    # The shell lane validates its own journal phase and decides whether this
+    # is initial execution or safe exact-candidate phase recovery.
+    if not journal_value or journal_value["state"] not in PRESERVATION_PHASES:
+        invoke_platform(platform_script, "recovered-forward", [
+            args.candidate_sha, "--source-sha", args.source_sha, "--transition-id", args.transition_id,
+            "--source-evidence", str(evidence_path), "--source-evidence-sha256", evidence_sha,
+            "--backup-proof", str(args.backup_proof), "--backup-artifact", str(args.backup_artifact),
+            "--shadow-receipt", str(args.shadow_receipt),
+        ], env)
+
+    if journal_value and journal_value["state"] in {
+        "candidate-finalize-requested", "candidate-normal-activation-pending",
+        "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart",
+    }:
+        if not (receipt_path.exists() and not receipt_path.is_symlink()):
+            fail("journal is past preservation comparison but its signed local receipt is missing")
+        invoke_platform(platform_script, "recovered-forward-finalize", [
+            "--transition-id", args.transition_id, "--preservation-receipt", str(receipt_path),
+        ], env)
+        current = fetch_json(api, "/api/version", token)
+        health = fetch_json(api, "/api/health", token)
+        if current.get("sourceSha") != args.candidate_sha or health.get("runtimeMutationFence") != "inactive":
+            fail("resumed finalization failed exact-candidate or inactive-fence postconditions")
+        print("recovered-forward transition completed; exact candidate is active and the Mini mutation fence is released")
+        return 0
+
+    status = fetch_json(api, "/api/v1/platform/recovered-forward/status", token)
+    verify_maintenance_status(status, args.transition_id, args.source_sha, args.candidate_sha, evidence_sha)
+    preservation = load_preservation_module()
+    after_state = preservation.stable_state(api, token)
+    after_digest = preservation.digest(after_state)
+
+    # The signed local receipt is created before the managed finalizer writes
+    # its durable journal phase and posts to the API. A crash after this atomic
+    # file creation can safely retry the same exact receipt bytes.
+    if receipt_path.exists() or receipt_path.is_symlink():
+        receipt_raw = secure_read(receipt_path, "persisted recovered-forward preservation receipt")
+        receipt = verify_hmac_document(receipt_raw, RECEIPT_SCHEMA, key, "persisted preservation receipt", RECEIPT_FIELDS)
+        if (receipt.get("transitionId") != args.transition_id or receipt.get("candidateSHA") != args.candidate_sha
+                or receipt.get("sourceEvidenceSHA256") != evidence_sha or receipt.get("beforeDigest") != evidence.get("beforeDigest")
+                or receipt.get("afterDigest") != after_digest or receipt.get("preservationMatched") is not True):
+            fail("persisted preservation receipt differs from current exact transition evidence")
+    else:
+        receipt_raw = build_receipt(evidence, evidence_sha, args.candidate_sha, after_digest, key)
+        atomic_private_create(receipt_path, receipt_raw)
+    if not hmac.compare_digest(secure_read(receipt_path, "preservation receipt"), receipt_raw):
+        fail("preservation receipt changed before the managed finalize handoff")
+
+    invoke_platform(platform_script, "recovered-forward-finalize", [
+        "--transition-id", args.transition_id, "--preservation-receipt", str(receipt_path),
+    ], env)
+    current = fetch_json(api, "/api/version", token)
+    health = fetch_json(api, "/api/health", token)
+    if current.get("sourceSha") != args.candidate_sha or health.get("runtimeMutationFence") != "inactive":
+        fail("final candidate postcondition failed: exact source SHA and inactive runtime fence are required")
+    print("recovered-forward transition completed; exact candidate is active and the Mini mutation fence is released")
+    return 0
+
+
+def main() -> None:
+    try:
+        raise SystemExit(run())
+    except SystemExit as error:
+        if isinstance(error.code, str):
+            print(error.code, file=sys.stderr)
+            raise SystemExit(2)
+        raise
+
+
+if __name__ == "__main__":
+    main()
