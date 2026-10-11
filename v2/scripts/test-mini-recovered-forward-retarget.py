@@ -105,6 +105,146 @@ class RetargetTests(unittest.TestCase):
                     RETARGET.verify_source_binding(args, self.key)
         self.write_private(self.journal_path, self.journal_raw)
 
+    def test_postflight_failed_journal_requires_exact_current_failed_candidate(self):
+        failed = dict(self.journal, state="candidate-postflight-failed")
+        failed_raw = RETARGET.canonical(failed) + b"\n"
+        self.write_private(self.journal_path, failed_raw)
+        args = type("Args", (), {"journal": self.journal_path, "source_sha": self.source,
+                                 "candidate_sha": self.new_candidate, "transition_id": self.transition,
+                                 "evidence": self.evidence_path})
+        journal, evidence, _ = RETARGET.verify_source_binding(args, self.key)
+        self.assertEqual(journal["state"], "candidate-postflight-failed")
+        self.assertEqual(args.previous_journal_state, "candidate-postflight-failed")
+        self.assertEqual(evidence["candidateSHA"], self.old_candidate)
+
+        releases = self.root / "releases"
+        releases.mkdir()
+        for sha in (self.source, self.old_candidate, self.new_candidate):
+            release = releases / sha
+            release.mkdir()
+            (release / "release.env").write_text(f"NORN_RELEASE_SHA={sha}\n", encoding="utf-8")
+            (release / "release.json").write_text("{}\n", encoding="utf-8")
+        verifier = self.root / "verify"
+        verifier.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        verifier.chmod(0o700)
+        link = self.root / "current"
+        link.symlink_to(releases / self.old_candidate)
+        release_args = type("Args", (), {"source_sha": self.source, "candidate_sha": self.new_candidate,
+                                          "previous_candidate_sha": self.old_candidate,
+                                          "previous_journal_state": args.previous_journal_state,
+                                          "releases_root": releases, "current_link": link,
+                                          "release_verifier": verifier})
+        with patch.object(RETARGET.subprocess, "run", return_value=type("Result", (), {"returncode": 0})()):
+            self.assertEqual(RETARGET.verify_source_release(release_args), releases / self.new_candidate)
+        link.unlink()
+        link.symlink_to(releases / self.source)
+        with patch.object(RETARGET.subprocess, "run", return_value=type("Result", (), {"returncode": 0})()):
+            with self.assertRaisesRegex(SystemExit, "exact journaled release"):
+                RETARGET.verify_source_release(release_args)
+
+    def test_database_gate_accepts_only_exact_pre_or_post_candidate_ledger(self):
+        database_url = "postgres://fixture/norn"
+        identity = "hmac-sha256:" + hmac.new(
+            self.key, b"norn.database-identity/v1\0" + database_url.encode(), hashlib.sha256).hexdigest()
+        old_evidence = dict(self.old_evidence, databaseIdentity=identity)
+        psql = self.root / "psql"
+        psql.write_text("#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_PSQL_OUT\"\n", encoding="utf-8")
+        psql.chmod(0o700)
+        args = type("Args", (), {"psql": psql})
+        env = {"NORN_DATABASE_URL": database_url, "NORN_AUDIT_SIGNING_KEY": self.key.decode(),
+               "FIXTURE_PSQL_OUT": "1|47|47|0|0|47|0"}
+        with patch.dict(os.environ, env, clear=False):
+            args.previous_journal_state = "legacy-fenced"
+            self.assertEqual(RETARGET.verify_database(args, old_evidence, self.key)["schemaMax"], 47)
+            args.previous_journal_state = "candidate-postflight-failed"
+            os.environ["FIXTURE_PSQL_OUT"] = "1|49|49|2|0|49|0"
+            proof = RETARGET.verify_database(args, old_evidence, self.key)
+            self.assertEqual((proof["schemaMax"], proof["candidateMigrationRows"]), (49, 2))
+            os.environ["FIXTURE_PSQL_OUT"] = "1|49|48|2|0|49|0"
+            with self.assertRaisesRegex(SystemExit, "exact complete"):
+                RETARGET.verify_database(args, old_evidence, self.key)
+
+    def test_postflight_failed_retarget_keeps_predecessor_current_until_guarded_activation(self):
+        failed = dict(self.journal, state="candidate-postflight-failed")
+        self.write_private(self.journal_path, RETARGET.canonical(failed) + b"\n")
+        proof = self.root / "fresh-proof.json"
+        artifact = self.root / "fresh-backup.dump"
+        shadow = self.root / "fresh-shadow.json"
+        self.write_private(proof, b"proof fixture")
+        self.write_private(artifact, b"backup fixture")
+        self.write_private(shadow, b"shadow fixture")
+        releases = self.root / "releases"
+        releases.mkdir()
+        for release_sha in (self.source, self.old_candidate, self.new_candidate):
+            release_dir = releases / release_sha
+            (release_dir / "bin").mkdir(parents=True)
+            (release_dir / "release.env").write_text(f"NORN_RELEASE_SHA={release_sha}\n", encoding="utf-8")
+            (release_dir / "release.json").write_text("{}\n", encoding="utf-8")
+        verifier = self.root / "verify"
+        verifier.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        verifier.chmod(0o700)
+        api = self.root / "api"
+        agent = self.root / "agent"
+        for binary in (api, agent):
+            binary.write_text("#!/bin/sh\nprintf '%s\\n' 'norn legacy baseline fence active; candidate recovery is required'\nexit 78\n", encoding="utf-8")
+            binary.chmod(0o700)
+        psql = self.root / "psql"
+        psql.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        psql.chmod(0o700)
+        launchctl = self.root / "launchctl"
+        launchctl.write_text("#!/bin/sh\nprintf '%s\\n' 'PID Status Label' '- 78 com.norn.api' '- 78 com.norn.host-agent'\n", encoding="utf-8")
+        launchctl.chmod(0o700)
+        current = self.root / "current"
+        current.symlink_to(releases / self.old_candidate)
+        db = {"databaseIdentity": self.identity, "schemaMax": 49, "schemaRows": 49,
+              "candidateMigrationRows": 2, "futureRows": 0, "unknownRows": 0,
+              "otherClientBackends": 0, "previousJournalState": "candidate-postflight-failed"}
+        proof_sha, backup_sha, backup_bytes, shadow_sha = "c" * 64, "d" * 64, 14, RETARGET.digest(b"shadow fixture")
+        args = [self.new_candidate, "--source-sha", self.source, "--transition-id", self.transition,
+                "--journal", str(self.journal_path.resolve()), "--evidence", str(self.evidence_path.resolve()),
+                "--backup-proof", str(proof.resolve()), "--backup-artifact", str(artifact.resolve()),
+                "--shadow-receipt", str(shadow.resolve()), "--current-link", str(current),
+                "--releases-root", str(releases.resolve()), "--release-verifier", str(verifier.resolve()),
+                "--output-parent", str(self.root.resolve()), "--psql", str(psql.resolve()),
+                "--launchctl", str(launchctl.resolve()), "--api-binary", str(api.resolve()),
+                "--host-agent-binary", str(agent.resolve())]
+        lsof = self.root / "lsof"
+        lsof.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        lsof.chmod(0o700)
+        args.extend(["--lsof", str(lsof.resolve())])
+        with patch.dict(os.environ, {"NORN_AUDIT_SIGNING_KEY": self.key.decode()}), \
+             patch.object(RETARGET, "verify_database", return_value=db), \
+             patch.object(RETARGET, "verify_backup_shadow", return_value=({}, {}, proof_sha, backup_sha, backup_bytes)):
+            self.assertEqual(RETARGET.run(args), 0)
+        bundle = self.root / f"retarget-{self.new_candidate}"
+        tuple_raw = (bundle / "retarget.json").read_bytes()
+        tuple_value = RETARGET.verify_hmac(tuple_raw, RETARGET.RETARGET_SCHEMA,
+                                           set(RETARGET.strict_json(tuple_raw, "retarget tuple")), self.key,
+                                           "retarget tuple")
+        self.assertEqual(tuple_value["previousJournalState"], "candidate-postflight-failed")
+        versioned = RETARGET.strict_json((bundle / "transition.json").read_bytes(), "versioned journal")
+        self.assertEqual(versioned["state"], "candidate-activation-started")
+        self.assertEqual(versioned["retargetedFromCandidateSHA"], self.old_candidate)
+
+        consume_args = CONSUMER.parser().parse_args([
+            str(bundle), "--candidate-sha", self.new_candidate, "--journal", str(self.journal_path.resolve()),
+            "--backup-proof", str(proof.resolve()), "--backup-artifact", str(artifact.resolve()),
+            "--shadow-receipt", str(shadow.resolve()), "--releases-root", str(releases.resolve()),
+            "--release-verifier", str(verifier.resolve()), "--current-link", str(current),
+            "--psql", str(psql.resolve()), "--launchctl", str(launchctl.resolve()),
+            "--api-binary", str(api.resolve()), "--host-agent-binary", str(agent.resolve()),
+        ])
+        consume_args.lsof = lsof
+        with patch.dict(os.environ, {"NORN_DATABASE_URL": "postgres://fixture/norn",
+                                    "NORN_AUDIT_SIGNING_KEY": self.key.decode()}), \
+             patch.object(CONSUMER.RETARGET, "verify_database", return_value=db), \
+             patch.object(CONSUMER.RETARGET, "verify_backup_shadow", return_value=({}, {}, proof_sha, backup_sha, backup_bytes)):
+            self.assertEqual(CONSUMER.perform(consume_args), 0)
+        active = RETARGET.strict_json(self.journal_path.read_bytes(), "active journal")
+        self.assertEqual(active["state"], "candidate-activation-started")
+        self.assertEqual(active["candidateReleaseSHA"], self.new_candidate)
+        self.assertEqual(current.resolve(strict=True), (releases / self.old_candidate).resolve(strict=True))
+
     def test_accepts_signed_candidate_versioned_v3_evidence_for_retarget_chain(self):
         previous = "d" * 40
         evidence_dir = self.root / f"retarget-{previous}"
@@ -174,18 +314,18 @@ class RetargetTests(unittest.TestCase):
     def test_database_gate_requires_same_identity_and_exact_schema_47(self):
         args = types.SimpleNamespace(psql=Path("/fixture/psql"))
         environ = {"NORN_DATABASE_URL": "postgres://fixture/norn"}
-        good = types.SimpleNamespace(returncode=0, stdout="47|47|0|0|0\n", stderr="")
+        good = types.SimpleNamespace(returncode=0, stdout="1|47|47|0|0|47|0\n", stderr="")
         with patch.dict(os.environ, {**environ, "NORN_AUDIT_SIGNING_KEY": self.key.decode()}), \
              patch.object(RETARGET.subprocess, "run", return_value=good) as run:
             result = RETARGET.verify_database(args, self.old_evidence, self.key)
         self.assertEqual(result["schemaMax"], 47)
         self.assertNotIn("postgres://fixture/norn", run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs["env"]["PGOPTIONS"], "-c default_transaction_read_only=on")
-        for ledger in ("48|48|1|0|0\n", "47|47|0|1|0\n", "46|46|0|0|0\n", "47|47|0|0|2\n"):
+        for ledger in ("1|48|48|1|0|48|0\n", "1|47|47|0|1|47|0\n", "1|46|46|0|0|46|0\n", "1|47|47|0|0|47|2\n"):
             with self.subTest(ledger=ledger), \
                  patch.dict(os.environ, {**environ, "NORN_AUDIT_SIGNING_KEY": self.key.decode()}), \
                  patch.object(RETARGET.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=ledger, stderr="")), \
-                 self.assertRaisesRegex(SystemExit, "not exactly complete"):
+                 self.assertRaisesRegex(SystemExit, "exact complete"):
                 RETARGET.verify_database(args, self.old_evidence, self.key)
         with patch.dict(os.environ, {**environ, "NORN_AUDIT_SIGNING_KEY": self.key.decode()}), \
              self.assertRaisesRegex(SystemExit, "identity differs"):
@@ -197,7 +337,10 @@ class RetargetTests(unittest.TestCase):
         for binary in (api, agent):
             binary.write_text("#!/bin/sh\nprintf '%s\\n' 'norn legacy baseline fence active; candidate recovery is required'\nexit 78\n")
             binary.chmod(0o700)
-        args = types.SimpleNamespace(launchctl=Path("/fixture/launchctl"), api_binary=api, host_agent_binary=agent)
+        lsof = self.root / "lsof"
+        lsof.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        lsof.chmod(0o700)
+        args = types.SimpleNamespace(launchctl=Path("/fixture/launchctl"), api_binary=api, host_agent_binary=agent, lsof=lsof)
         output = "PID\tStatus\tLabel\n-\t78\tcom.norn.api\n-\t78\tcom.norn.host-agent\n"
         real_run = RETARGET.subprocess.run
         def run_with_snapshot(command, **kwargs):
@@ -206,6 +349,15 @@ class RetargetTests(unittest.TestCase):
             return real_run(command, **kwargs)
         with patch.object(RETARGET.subprocess, "run", side_effect=run_with_snapshot):
             self.assertEqual(len(RETARGET.verify_services(args)), 2)
+        def run_with_listener(command, **kwargs):
+            if command[0] == str(lsof):
+                return types.SimpleNamespace(returncode=0, stdout="4242\n", stderr="")
+            if command[0] == str(args.launchctl):
+                return types.SimpleNamespace(returncode=0, stdout=output, stderr="")
+            return real_run(command, **kwargs)
+        with patch.object(RETARGET.subprocess, "run", side_effect=run_with_listener), \
+             self.assertRaisesRegex(SystemExit, "listener remains active"):
+            RETARGET.verify_services(args)
         for bad in (output.replace("-\t78\tcom.norn.api", "123\t0\tcom.norn.api"),
                     output.replace("-\t78\tcom.norn.host-agent", "-\t0\tcom.norn.host-agent")):
             with patch.object(RETARGET.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout=bad, stderr="")), \

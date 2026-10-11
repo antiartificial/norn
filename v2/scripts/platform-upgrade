@@ -158,6 +158,7 @@ recovered_transition_id=""
 recovered_source_sha=""
 recovered_source_evidence=""
 recovered_source_evidence_sha256=""
+recovered_retargeted_from_sha=""
 recovered_backup_proof=""
 recovered_backup_artifact=""
 recovered_shadow_receipt=""
@@ -305,7 +306,6 @@ recovered_baseline_receipt_validate() {
   NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" "$current_link" "$releases" <<'PY'
 import hashlib, hmac, json, os, stat, sys
 path = os.path.abspath(os.path.expanduser(sys.argv[1]))
-current_link = os.path.abspath(os.path.expanduser(sys.argv[2]))
 release_root = os.path.realpath(os.path.expanduser(sys.argv[3]))
 key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
 if not key:
@@ -322,15 +322,18 @@ for field in ("sourceSHA", "incidentCandidateSHA"):
     if not isinstance(value.get(field), str) or len(value[field]) != 40 or any(ch not in "0123456789abcdef" for ch in value[field]):
         raise SystemExit("recovered baseline receipt has a malformed release identity")
 try:
-    current_release = os.path.realpath(current_link)
-    if os.path.commonpath((release_root, current_release)) != release_root:
-        raise SystemExit("Mini current release is outside the immutable release root")
+    current_release = os.path.join(release_root, value["sourceSHA"])
+    if os.path.realpath(current_release) != current_release or os.path.commonpath((release_root, current_release)) != release_root:
+        raise SystemExit("Mini adoption source is outside the exact immutable release root")
+    release_info = os.lstat(current_release)
+    if not stat.S_ISDIR(release_info.st_mode) or stat.S_ISLNK(release_info.st_mode):
+        raise SystemExit("Mini adoption source release is missing or unsafe")
     with open(os.path.join(current_release, "release.env"), encoding="utf-8") as source:
         release_values = dict(line.strip().split("=", 1) for line in source if "=" in line)
 except (OSError, ValueError):
     raise SystemExit("Mini current release identity cannot be verified")
 if release_values.get("NORN_RELEASE_SHA") != value["sourceSHA"]:
-    raise SystemExit("recovered baseline receipt is not bound to the current Mini release")
+    raise SystemExit("recovered baseline receipt is not bound to the exact immutable source release")
 if not isinstance(signature, str) or not signature.startswith("hmac-sha256:"):
     raise SystemExit("recovered baseline receipt signature is missing")
 canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
@@ -703,8 +706,19 @@ env_file = sys.argv[1]
 sops_bin = sys.argv[2]
 argv = sys.argv[3:]
 raw = subprocess.check_output([sops_bin, "--decrypt", "--output-type", "json", os.path.expanduser(env_file)])
-env = os.environ.copy()
-env.update({str(k): str(v) for k, v in json.loads(raw).items()})
+runtime_env = os.environ.copy()
+env = {str(k): str(v) for k, v in json.loads(raw).items()}
+# SOPS remains authoritative for normal application configuration. Recovered-
+# forward transition bindings are short-lived runtime inputs from the signed
+# journal/controller, however; letting stale encrypted values override them
+# can make a newly retargeted candidate boot with the previous candidate's
+# evidence. Preserve the runtime values for this exact protocol namespace.
+for name, value in runtime_env.items():
+    if name.startswith("NORN_RECOVERED_FORWARD_"):
+        env[name] = value
+for name in ("PATH", "HOME", "USER", "TMPDIR", "LANG", "LC_ALL"):
+    if name in runtime_env:
+        env[name] = runtime_env[name]
 if "NORN_TOKEN" not in env and "NORN_API_BEARER_TOKEN" in env:
     env["NORN_TOKEN"] = env["NORN_API_BEARER_TOKEN"]
 if "NORN_API_TOKEN" not in env and "NORN_API_BEARER_TOKEN" in env:
@@ -1676,13 +1690,14 @@ recovered_forward_validate_preflight() {
   [[ -d "$source_release" && ! -L "$source_release" ]] || fail "recovered-forward exact signed source release is unavailable"
   current_target="$(cd "$(dirname "$current_link")" && cd "$(readlink "$current_link")" && pwd)" || fail "recovered-forward current release symlink is invalid"
   current_sha="$(release_sha "$current_target")"
+  [[ "$current_target" == "$releases/$current_sha" ]] || fail "recovered-forward current symlink does not resolve to the canonical release directory"
   if [[ -e "$transition_state_path" ]]; then
     recovered_forward_load_start_journal
   case "$recovered_phase" in
       prepared|host-agent-fencing|host-agent-fenced|legacy-fenced|api-fencing|migration-started|schema-migrated)
         [[ "$current_sha" == "$recovered_source_sha" ]] || fail "recovered-forward pre-promotion resume requires the exact source release to remain current" ;;
       candidate-activation-started)
-        [[ "$current_sha" == "$recovered_source_sha" || "$current_sha" == "$ref" ]] || fail "recovered-forward activation resume requires the exact source or candidate release" ;;
+        [[ "$current_sha" == "$recovered_source_sha" || "$current_sha" == "$ref" || ( -n "$recovered_retargeted_from_sha" && "$current_sha" == "$recovered_retargeted_from_sha" ) ]] || fail "recovered-forward activation resume requires the exact source, candidate, or journaled failed predecessor release" ;;
       candidate-postflight-failed|candidate-preservation-pending|candidate-finalize-requested|candidate-normal-activation-pending|candidate-normal-active-pending-host-agent|candidate-normal-active-pending-host-agent-restart|candidate-promoted)
         [[ "$current_sha" == "$ref" ]] || fail "recovered-forward activation resume requires the exact candidate release to remain current" ;;
       *) fail "recovered-forward journal phase is not resumable" ;;
@@ -1696,6 +1711,12 @@ recovered_forward_validate_preflight() {
   [[ -n "$release_verify_hook" && -x "$release_verify_hook" ]] || fail "recovered-forward requires an external release signature verifier"
   "$release_verify_hook" "$source_release" "$source_release/release.json" || fail "recovered-forward source release signature verification failed"
   "$release_verify_hook" "$release" "$release/release.json" || fail "recovered-forward candidate release signature verification failed"
+  if [[ -n "$recovered_retargeted_from_sha" && "$current_sha" == "$recovered_retargeted_from_sha" ]]; then
+    local retargeted_release="$releases/$recovered_retargeted_from_sha"
+    [[ -d "$retargeted_release" && ! -L "$retargeted_release" ]] || fail "journaled failed predecessor release is unavailable"
+    verify_release "$retargeted_release" "$recovered_retargeted_from_sha"
+    "$release_verify_hook" "$retargeted_release" "$retargeted_release/release.json" || fail "journaled failed predecessor release signature verification failed"
+  fi
   legacy_release_sha="$recovered_source_sha"
   legacy_backup_proof="$recovered_backup_proof"
   legacy_backup_artifact="$recovered_backup_artifact"
@@ -2461,6 +2482,14 @@ run_schema_migration() {
       -u NORN_SKIP_OPERATION_RECOVERY \
       -u NORN_SKIP_OPERATION_WORKER \
       -u NORN_SKIP_NOMAD_WATCHER \
+      -u NORN_RECOVERED_FORWARD_MAINTENANCE \
+      -u NORN_RECOVERED_FORWARD_TRANSITION_ID \
+      -u NORN_RECOVERED_FORWARD_SOURCE_SHA \
+      -u NORN_RECOVERED_FORWARD_CANDIDATE_SHA \
+      -u NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH \
+      -u NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256 \
+      -u NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH \
+      -u NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256 \
       NORN_STARTUP_MODE=active \
       NORN_SCHEMA_MODE=migrate-only \
       NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
@@ -2682,7 +2711,8 @@ if any(not isinstance(x,str) or not x or "\n" in x or "\t" in x for x in values[
 print("\t".join([state,*map(str,values)]))
 PY
 )" || fail "recovered-forward journal validation failed"
-  IFS=$'\t' read -r recovered_phase recovered_source_sha sha recovered_source_evidence recovered_source_evidence_sha256 recovered_backup_proof recovered_backup_artifact recovered_shadow_receipt <<<"$fields"
+  IFS=$'\t' read -r recovered_phase recovered_source_sha sha recovered_source_evidence recovered_source_evidence_sha256 recovered_backup_proof recovered_backup_artifact recovered_shadow_receipt recovered_retargeted_from_sha <<<"$fields"
+  if [[ "$recovered_retargeted_from_sha" == "-" ]]; then recovered_retargeted_from_sha=""; fi
   recovered_preservation_receipt="$HOME/.config/norn/recovered-forward/preservation-receipt.json"
   legacy_release_sha="$recovered_source_sha"
   legacy_transition_id="$recovered_transition_id"
@@ -2722,7 +2752,8 @@ recovered_forward_load_start_journal() {
   [[ -x "$journal_validator" ]] || fail "recovered-forward journal validator is unavailable"
   local fields
   fields="$("$journal_validator" "$transition_state_path" "$recovered_transition_id" "$recovered_source_sha" "$ref" "$recovered_source_evidence" "$recovered_source_evidence_sha256" "$recovered_backup_proof" "$recovered_backup_artifact" "$recovered_shadow_receipt")" || fail "recovered-forward journal is invalid or its exact bindings changed"
-  recovered_phase="$fields"
+  IFS=$'\t' read -r recovered_phase recovered_retargeted_from_sha <<<"$fields"
+  if [[ "$recovered_retargeted_from_sha" == "-" ]]; then recovered_retargeted_from_sha=""; fi
   legacy_release_sha="$recovered_source_sha"
   legacy_transition_id="$recovered_transition_id"
   legacy_finalize_transition_id="$recovered_transition_id"

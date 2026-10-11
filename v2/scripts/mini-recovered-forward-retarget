@@ -28,7 +28,7 @@ from typing import Any
 JOURNAL_SCHEMA = "norn.recovered-forward-transition/v1"
 OLD_EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v2"
 EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v3"
-RETARGET_SCHEMA = "norn.recovered-forward-retarget/v1"
+RETARGET_SCHEMA = "norn.recovered-forward-retarget/v2"
 PROOF_SCHEMA = "norn.legacy-control-backup/v1"
 SHADOW_SCHEMA = "norn.m5-signed-shadow-launchagent-rehearsal/v2"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -160,10 +160,11 @@ def verify_source_binding(args: argparse.Namespace, key: bytes) -> tuple[dict[st
     journal_raw = read_private(args.journal, "active transition journal")
     journal = strict_json(journal_raw, "active transition journal")
     previous_candidate = journal.get("candidateReleaseSHA")
-    if (journal.get("schema") != JOURNAL_SCHEMA or journal.get("state") != "legacy-fenced"
+    previous_state = journal.get("state")
+    if (journal.get("schema") != JOURNAL_SCHEMA or previous_state not in {"legacy-fenced", "candidate-postflight-failed"}
             or not HEX40.fullmatch(str(previous_candidate or "")) or previous_candidate == args.candidate_sha
             or journal.get("sourceSHA") != args.source_sha or journal.get("transitionID") != args.transition_id):
-        fail("retarget requires the exact source- and transition-bound legacy-fenced journal")
+        fail("retarget requires the exact source- and transition-bound legacy-fenced or candidate-postflight-failed journal")
     evidence_path = Path(journal.get("sourceEvidencePath", ""))
     fixed_evidence = args.journal.with_name(args.journal.name + ".source-evidence.json")
     versioned_evidence = args.journal.parent / f"retarget-{previous_candidate}" / "source-evidence.json"
@@ -189,6 +190,7 @@ def verify_source_binding(args: argparse.Namespace, key: bytes) -> tuple[dict[st
             or evidence.get("candidateSHA") != previous_candidate
             or journal.get("sourceEvidenceSHA256") != digest(evidence_raw)):
         fail("old journal and signed evidence do not bind the exact previous candidate tuple")
+    args.previous_journal_state = previous_state
     return journal, evidence, evidence_path
 
 
@@ -256,8 +258,10 @@ def verify_source_release(args: argparse.Namespace) -> Path:
     if not current.is_symlink():
         fail("current release path is not a symlink")
     resolved = current.resolve(strict=True)
-    if resolved != source.resolve(strict=True):
-        fail("current release symlink no longer resolves to the exact journaled source release")
+    previous_state = getattr(args, "previous_journal_state", "legacy-fenced")
+    expected_current = source if previous_state == "legacy-fenced" else args.releases_root / previous_candidate
+    if resolved != expected_current.resolve(strict=True):
+        fail("current release symlink no longer resolves to the exact journaled release")
     return candidate
 
 
@@ -268,7 +272,7 @@ def verify_database(args: argparse.Namespace, old_evidence: dict[str, Any], key:
     identity = "hmac-sha256:" + hmac.new(key, b"norn.database-identity/v1\0" + url.encode(), hashlib.sha256).hexdigest()
     if identity != old_evidence.get("databaseIdentity"):
         fail("live database URL identity differs from the old signed Mini preservation baseline")
-    query = "SELECT COALESCE(MAX(version),0),COUNT(*),COUNT(*) FILTER (WHERE version IN (48,49)),COUNT(*) FILTER (WHERE version NOT BETWEEN 1 AND 47),(SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend') FROM norn_schema_migrations"
+    query = "SELECT COALESCE(MIN(version),0),COALESCE(MAX(version),0),COUNT(*),COUNT(*) FILTER (WHERE version BETWEEN 48 AND 49),COUNT(*) FILTER (WHERE version NOT BETWEEN 1 AND 49),COUNT(DISTINCT version),(SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend') FROM norn_schema_migrations"
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"postgres", "postgresql"} or not parsed.path.strip("/") or parsed.fragment:
         fail("NORN_DATABASE_URL must identify one PostgreSQL database")
@@ -308,10 +312,14 @@ def verify_database(args: argparse.Namespace, old_evidence: dict[str, Any], key:
     if result.returncode:
         fail(f"read-only schema ledger query failed (exit {result.returncode})")
     rows = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if rows != ["47|47|0|0|0"]:
-        fail("database schema ledger is not exactly complete through 47, or later/unknown migrations or other client sessions exist")
-    return {"databaseIdentity": identity, "schemaMax": 47, "schemaRows": 47, "futureRows": 0, "unknownRows": 0,
-            "otherClientBackends": 0}
+    previous_state = getattr(args, "previous_journal_state", "legacy-fenced")
+    expected_row = "1|47|47|0|0|47|0" if previous_state == "legacy-fenced" else "1|49|49|2|0|49|0"
+    if rows != [expected_row]:
+        fail("database schema ledger is not the exact complete pre- or post-candidate migration state, or other client sessions exist")
+    schema_max = 47 if previous_state == "legacy-fenced" else 49
+    return {"databaseIdentity": identity, "schemaMax": schema_max, "schemaRows": schema_max,
+            "candidateMigrationRows": 0 if schema_max == 47 else 2, "futureRows": 0, "unknownRows": 0,
+            "otherClientBackends": 0, "previousJournalState": previous_state}
 
 
 def verify_services(args: argparse.Namespace) -> dict[str, Any]:
@@ -334,6 +342,12 @@ def verify_services(args: argparse.Namespace) -> dict[str, Any]:
             fail(f"cannot prove {label} fence binary: {error}")
         if run.returncode != 78 or run.stdout.strip() != "norn legacy baseline fence active; candidate recovery is required":
             fail(f"{label} fence binary does not return the exact exit-78 fence sentinel")
+    listener = subprocess.run([str(args.lsof), "-nP", "-iTCP:8800", "-sTCP:LISTEN", "-t"],
+                              capture_output=True, text=True, check=False)
+    if listener.returncode not in (0, 1):
+        fail("cannot verify that the Mini API listener is absent")
+    if listener.stdout.strip():
+        fail("Mini API listener remains active during recovered-forward retarget")
     return found
 
 
@@ -426,6 +440,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--output-parent", type=Path, required=True)
     result.add_argument("--psql", type=Path, default=Path("/usr/bin/psql"))
     result.add_argument("--launchctl", type=Path, default=Path("/bin/launchctl"))
+    result.add_argument("--lsof", type=Path, default=Path("/usr/sbin/lsof"))
     result.add_argument("--api-binary", type=Path, required=True)
     result.add_argument("--host-agent-binary", type=Path, required=True)
     return result
@@ -488,12 +503,13 @@ def run(argv: list[str] | None = None) -> int:
     new_journal = dict(journal)
     new_journal.update({
         "candidateReleaseSHA": args.candidate_sha,
+        "retargetedFromCandidateSHA": args.previous_candidate_sha,
         "sourceEvidencePath": str(new_evidence_path),
         "sourceEvidenceSHA256": "pending-signed-evidence-digest",
         "backupProofPath": str(args.backup_proof.resolve()),
         "backupArtifactPath": str(args.backup_artifact.resolve()),
         "shadowReceiptPath": str(args.shadow_receipt.resolve()),
-        "state": "legacy-fenced",
+        "state": "candidate-activation-started" if getattr(args, "previous_journal_state", "legacy-fenced") == "candidate-postflight-failed" else "legacy-fenced",
     })
     evidence_raw = sign_document(new_evidence, key)
     new_journal["sourceEvidenceSHA256"] = digest(evidence_raw)
@@ -502,6 +518,7 @@ def run(argv: list[str] | None = None) -> int:
         "transitionID": args.transition_id,
         "sourceSHA": args.source_sha,
         "previousCandidateSHA": args.previous_candidate_sha,
+        "previousJournalState": getattr(args, "previous_journal_state", "legacy-fenced"),
         "candidateSHA": args.candidate_sha,
         "previousJournalSHA256": digest(read_private(args.journal, "active transition journal")),
         "previousEvidenceSHA256": old_evidence_sha,
