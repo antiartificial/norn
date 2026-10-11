@@ -1703,6 +1703,49 @@ recovered_forward_validate_preflight() {
   export NORN_LEGACY_BASELINE_CANDIDATE_SHA="$ref"
 }
 
+# A newer signed candidate may need to retarget the already-authorized journal
+# before the shell controller can validate its own candidate binding. Dispatch
+# only the one known legacy-fenced journal from the prior Mini attempt; the
+# signed candidate wrapper performs the full evidence, release, backup, shadow,
+# and retarget-tuple verification before changing it. Once retargeted, the
+# recursive managed-controller call sees the new SHA and continues normally.
+recovered_forward_dispatch_exact_retarget() {
+  local candidate_sha="$1" journal="$HOME/.config/norn/recovered-forward/transition.json"
+  local wrapper="$script_dir/mini-recovered-forward-transition"
+  local match_status=0
+  [[ -f "$journal" && ! -L "$journal" ]] || return 0
+  [[ -x "$wrapper" && ! -L "$wrapper" ]] || fail "signed recovered-forward retarget wrapper is unavailable"
+  python3 - "$journal" "$candidate_sha" <<'PY' || match_status=$?
+import json, os, stat, sys
+path, candidate = sys.argv[1:]
+info = os.lstat(path)
+if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o600):
+    raise SystemExit("journal is not a private regular file")
+with open(path, encoding="utf-8") as source:
+    value = json.load(source)
+if (type(value) is dict
+        and value.get("schema") == "norn.recovered-forward-transition/v1"
+        and value.get("state") == "legacy-fenced"
+        and value.get("sourceSHA") == "26147c39a554b73b6761a371edee5a9591c81d3f"
+        and value.get("candidateReleaseSHA") == "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"
+        and candidate != value.get("candidateReleaseSHA")):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+  # Python uses exit 0 for the exact known journal and exit 1 for every other
+  # state. A malformed or unreadable journal must fail closed in the ordinary
+  # validator below, not be treated as permission to retarget.
+  if [[ "$match_status" -ne 0 ]]; then
+    [[ -r "$journal" ]] || fail "recovered-forward journal cannot be safely inspected"
+    return 0
+  fi
+  log "dispatching exact signed-candidate retarget for the retained Mini journal"
+  exec "$wrapper" "$candidate_sha" --source-sha "$recovered_source_sha" \
+    --transition-id "$recovered_transition_id" --backup-proof "$recovered_backup_proof" \
+    --backup-artifact "$recovered_backup_artifact" --shadow-receipt "$recovered_shadow_receipt"
+}
+
 legacy_baseline_write_fence_state() {
   local state="$1" pid="${2:-0}"
   require_cmd python3
@@ -3462,6 +3505,7 @@ if [[ "$mode" == "legacy-baseline" ]]; then
   stop_candidate
   promote_legacy_baseline_release
 elif [[ "$mode" == "recovered-forward" ]]; then
+  recovered_forward_dispatch_exact_retarget "$ref"
   recovered_forward_validate_preflight
   recovered_forward_resume_or_start
 elif [[ "$mode" == "upgrade" ]]; then
