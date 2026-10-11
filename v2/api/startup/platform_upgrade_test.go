@@ -165,7 +165,7 @@ func TestPlatformUpgradeRecoveredBaselineAdoptionIsNarrowAndEarlyGated(t *testin
 		"live API source SHA does not match --expected-current-sha",
 		"API listener is not owned solely by the LaunchAgent PID",
 		"preservationProven\":False",
-		"norn.recovered-baseline-adoption/v1\\0",
+		"norn.recovered-baseline-adoption/v2\\0",
 		"recovered baseline permanently rejects legacy-baseline replay",
 	} {
 		if !strings.Contains(text, required) {
@@ -197,8 +197,14 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	repo := filepath.Clean(filepath.Join(filepath.Dir(platformUpgradePath(t)), "..", ".."))
 	missing.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
 	out, err := missing.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "ordinary upgrade is prohibited") || strings.Contains(string(out), "building") {
+		t.Fatalf("ordinary upgrade was not refused before release preparation: %v %s", err, out)
+	}
+	preflight := exec.Command(platformUpgradePath(t), "preflight", "HEAD")
+	preflight.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
+	out, err = preflight.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "adoption receipt is required") || strings.Contains(string(out), "building") {
-		t.Fatalf("missing receipt did not fail before release preparation: %v %s", err, out)
+		t.Fatalf("missing receipt did not fail evidence preflight: %v %s", err, out)
 	}
 	legacy := exec.Command(platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "x")
 	legacy.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence)
