@@ -79,6 +79,22 @@ fail() {
   exit 1
 }
 
+recovered_forward_evidence_path_valid() {
+  local evidence_path="$1" candidate_sha="$2" root="$3"
+  python3 - "$evidence_path" "$candidate_sha" "$root" <<'PY'
+import os,stat,sys
+from pathlib import Path
+path=Path(sys.argv[1]); candidate=sys.argv[2]; root=Path(sys.argv[3])
+fixed=root/"transition.json.source-evidence.json"
+versioned=root/("retarget-"+candidate)/"source-evidence.json"
+if path not in (fixed,versioned): raise SystemExit("source-evidence path is outside exact candidate-versioned transition location")
+if root.is_symlink() or path.is_symlink() or (path.parent!=root and path.parent.is_symlink()): raise SystemExit("source-evidence path traverses a symlink")
+if path==versioned:
+ info=path.parent.lstat()
+ if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or stat.S_IMODE(info.st_mode)!=0o700: raise SystemExit("versioned evidence directory must be owner-only mode 0700")
+PY
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 not found"
 }
@@ -208,7 +224,7 @@ if [[ "$mode" == "recovered-forward" ]]; then
   done
   [[ "$recovered_source_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-forward requires an exact source SHA"
   [[ "$recovered_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "recovered-forward requires a valid transition ID"
-  [[ "$recovered_source_evidence" == "$HOME/.config/norn/recovered-forward/transition.json.source-evidence.json" ]] || fail "recovered-forward source evidence must use the fixed owner-only transition path"
+  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$ref" "$recovered_transition_root" || fail "recovered-forward source evidence path is not fixed or exact-candidate-versioned"
   [[ "$recovered_source_evidence_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "recovered-forward requires the exact source-evidence SHA-256"
   [[ -n "$recovered_backup_proof" && -n "$recovered_backup_artifact" && -n "$recovered_shadow_receipt" ]] || fail "recovered-forward requires backup proof, backup artifact, and signed shadow receipt"
 fi
@@ -1350,6 +1366,8 @@ build_release_into() {
   install -m 0755 "$worktree/v2/scripts/mini-private-copy-rehearsal" "$target/bin/mini-private-copy-rehearsal"
   install -m 0755 "$worktree/v2/scripts/mini-protected-transition-rehearsal" "$target/bin/mini-protected-transition-rehearsal"
   install -m 0755 "$worktree/v2/scripts/mini-signed-shadow-launchagent-rehearsal" "$target/bin/mini-signed-shadow-launchagent-rehearsal"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-retarget" "$target/bin/mini-recovered-forward-retarget"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-retarget-consume" "$target/bin/mini-recovered-forward-retarget-consume"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-transition" "$target/bin/mini-recovered-forward-transition"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-verify-evidence" "$target/bin/mini-recovered-forward-verify-evidence"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-validate-journal" "$target/bin/mini-recovered-forward-validate-journal"
@@ -1641,7 +1659,7 @@ PY
 recovered_forward_validate_preflight() {
   [[ "$ref" =~ ^[0-9a-f]{40}$ && "$recovered_source_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-forward requires exact source and candidate SHAs"
   [[ "$recovered_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "recovered-forward transition ID is invalid"
-  [[ "$recovered_source_evidence" == "$recovered_transition_root/transition.json.source-evidence.json" ]] || fail "recovered-forward source evidence path is not fixed"
+  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$ref" "$recovered_transition_root" || fail "recovered-forward source evidence path is not fixed or exact-candidate-versioned"
   [[ -f "$recovered_source_evidence" && -f "$recovered_backup_proof" && -f "$recovered_backup_artifact" && -f "$recovered_shadow_receipt" ]] || fail "recovered-forward requires signed evidence, protected backup, and signed shadow receipt"
   [[ -L "$current_link" ]] || fail "recovered-forward requires an exact current signed release"
   local source_release current_target current_sha verifier
@@ -2415,7 +2433,7 @@ stop_candidate() {
 
 run_schema_migration() {
   log "applying the target release schema in migrate-only mode"
-  if [[ "$mode" == "recovered-forward" || ( "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ) ]]; then
+  if [[ "$mode" == "recovered-forward" ]]; then
     env \
       -u NORN_SKIP_DEPLOYMENT_RECOVERY \
       -u NORN_SKIP_OPERATION_RECOVERY \
@@ -2424,6 +2442,17 @@ run_schema_migration() {
       NORN_STARTUP_MODE=active \
       NORN_SCHEMA_MODE=migrate-only \
       NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
+	  NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true \
+	  "$release/bin/norn-api"
+  elif [[ "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ]]; then
+	  env \
+	    -u NORN_SKIP_DEPLOYMENT_RECOVERY \
+	    -u NORN_SKIP_OPERATION_RECOVERY \
+	    -u NORN_SKIP_OPERATION_WORKER \
+	    -u NORN_SKIP_NOMAD_WATCHER \
+	    NORN_STARTUP_MODE=active \
+	    NORN_SCHEMA_MODE=migrate-only \
+	    NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
       "$release/bin/norn-api"
   else
     env \
@@ -2647,7 +2676,7 @@ PY
   "$release_verify_hook" "$source_release" "$source_release/release.json" || fail "recovered-forward source release verification failed"
   "$release_verify_hook" "$release" "$release/release.json" || fail "recovered-forward candidate release verification failed"
   recovered_baseline_receipt_validate || fail "original failed-transition sentinel or adoption receipt changed"
-  [[ "$recovered_source_evidence" == "$recovered_transition_root/transition.json.source-evidence.json" ]] || fail "journal source-evidence path is not fixed"
+  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$sha" "$recovered_transition_root" || fail "journal source-evidence path is not fixed or exact-candidate-versioned"
   [[ "$recovered_preservation_receipt" == "$HOME/.config/norn/recovered-forward/preservation-receipt.json" ]] || fail "preservation receipt path is not fixed"
   local verifier="$script_dir/mini-recovered-forward-verify-evidence"
   [[ -x "$verifier" ]] || fail "recovered-forward evidence verifier is unavailable"
@@ -3055,7 +3084,7 @@ sync_managed_host_artifacts() {
     fail "release is missing platform-release-manifest"
   fi
   local release_helper
-  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
+  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
     if [[ -f "$target/bin/$release_helper" ]]; then
       atomic_install_file "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || return 1
     elif [[ "$strict" == "true" ]]; then
@@ -3076,7 +3105,7 @@ sync_managed_host_artifacts() {
     cmp -s "$target/bin/norn" "$host_cli_bin" || fail "managed host CLI verification failed"
     cmp -s "$target/bin/platform-upgrade" "$platform_script_bin" || fail "managed platform script verification failed"
     cmp -s "$target/bin/platform-release-manifest" "$(dirname "$platform_script_bin")/platform-release-manifest" || fail "managed platform manifest helper verification failed"
-    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
+    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
       cmp -s "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || fail "managed $release_helper verification failed"
     done
     cmp -s "$target/bin/host-runtime" "$host_runtime_bin" || fail "managed host runtime verification failed"

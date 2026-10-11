@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""Verify and activate a prepared recovered-forward retarget bundle.
+
+This runs only from the exact signed candidate release. It preserves the old
+journal byte-for-byte before atomically replacing the active journal; evidence
+files remain versioned and immutable in the prepared bundle.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+HELPER = Path(__file__).with_name("mini-recovered-forward-retarget")
+LOADER = importlib.machinery.SourceFileLoader("norn_recovered_forward_retarget", str(HELPER))
+SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
+RETARGET = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+SPEC.loader.exec_module(RETARGET)
+
+TUPLE_FIELDS = {
+    "schema", "transitionID", "sourceSHA", "previousCandidateSHA", "candidateSHA",
+    "previousJournalSHA256", "previousEvidenceSHA256", "previousEvidencePath", "candidateReleasePath", "journalPath",
+    "versionedJournalPath", "versionedEvidencePath", "versionedJournalSHA256", "versionedEvidenceSHA256",
+    "backupProofPath", "backupArtifactPath",
+    "shadowReceiptPath", "databaseIdentity", "schemaLedger", "services", "preservationCapture",
+    "createdAt", "signature",
+}
+V3_EVIDENCE_FIELDS = {
+    "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+    "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+    "reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest",
+    "preservationCapture", "carriedForwardEvidenceSHA256", "carriedForwardEvidencePath",
+    "backupProofSHA256", "backupSHA256", "backupBytes", "shadowReceiptSHA256", "signature",
+}
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def secure_read(path: Path, label: str, *, max_bytes: int = 64 * 1024) -> bytes:
+    return RETARGET.read_private(path, label, max_bytes=max_bytes)
+
+
+def regular_private(path: Path, label: str) -> None:
+    if path.is_symlink():
+        fail(f"{label} cannot be a symlink")
+    try:
+        info = path.lstat()
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        fail(f"{label} must be an invoking-user-owned mode-0600 regular file")
+
+
+def verify_bundle(args: argparse.Namespace, key: bytes) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes, bytes]:
+    if not args.bundle.is_absolute() or args.bundle.is_symlink():
+        fail("retarget bundle must be an absolute non-symlink directory")
+    bundle = args.bundle.resolve(strict=True)
+    root = args.journal.parent.resolve(strict=True)
+    if bundle.parent != root or bundle.name != f"retarget-{args.candidate_sha}":
+        fail("retarget bundle must be the exact versioned child of the active transition directory")
+    bundle_info = bundle.lstat()
+    if not stat.S_ISDIR(bundle_info.st_mode) or bundle_info.st_uid != os.geteuid() or stat.S_IMODE(bundle_info.st_mode) != 0o700:
+        fail("retarget bundle must be invoking-user-owned mode 0700")
+    tuple_path = bundle / "retarget.json"
+    journal_path = bundle / "transition.json"
+    evidence_path = bundle / "source-evidence.json"
+    previous_journal_path = bundle / "previous-transition.json"
+    for path, label in ((tuple_path, "retarget tuple"), (journal_path, "versioned journal"),
+                        (evidence_path, "versioned evidence"), (previous_journal_path, "previous journal copy")):
+        regular_private(path, label)
+    tuple_raw = secure_read(tuple_path, "retarget tuple")
+    tuple_value = RETARGET.verify_hmac(tuple_raw, RETARGET.RETARGET_SCHEMA, TUPLE_FIELDS, key, "retarget tuple")
+    journal_raw = secure_read(journal_path, "versioned journal")
+    journal = RETARGET.strict_json(journal_raw, "versioned journal")
+    evidence_raw = secure_read(evidence_path, "versioned evidence")
+    if (sha(journal_raw) != tuple_value.get("versionedJournalSHA256")
+            or sha(evidence_raw) != tuple_value.get("versionedEvidenceSHA256")):
+        fail("versioned journal or evidence bytes differ from the signed retarget tuple")
+    evidence = RETARGET.verify_hmac(evidence_raw, RETARGET.EVIDENCE_SCHEMA, V3_EVIDENCE_FIELDS, key, "versioned evidence")
+    previous_raw = secure_read(previous_journal_path, "previous journal copy")
+    if (tuple_value.get("candidateSHA") != args.candidate_sha or tuple_value.get("journalPath") != str(args.journal)
+            or tuple_value.get("versionedJournalPath") != str(journal_path)
+            or tuple_value.get("versionedEvidencePath") != str(evidence_path)
+            or tuple_value.get("backupProofPath") != str(args.backup_proof)
+            or tuple_value.get("backupArtifactPath") != str(args.backup_artifact)
+            or tuple_value.get("shadowReceiptPath") != str(args.shadow_receipt)
+            or tuple_value.get("candidateReleasePath") != str((args.releases_root / args.candidate_sha).resolve(strict=True))
+            or tuple_value.get("preservationCapture") != "carried-forward-verified"):
+        fail("retarget tuple does not bind this exact candidate and versioned bundle")
+    if (journal.get("schema") != RETARGET.JOURNAL_SCHEMA or journal.get("state") != "legacy-fenced"
+            or journal.get("transitionID") != tuple_value.get("transitionID")
+            or journal.get("sourceSHA") != tuple_value.get("sourceSHA")
+            or journal.get("candidateReleaseSHA") != args.candidate_sha
+            or journal.get("sourceEvidencePath") != str(evidence_path)
+            or journal.get("sourceEvidenceSHA256") != sha(evidence_raw)):
+        fail("versioned journal differs from the signed retarget tuple or evidence")
+    if (evidence.get("transitionId") != tuple_value.get("transitionID")
+            or evidence.get("sourceSHA") != tuple_value.get("sourceSHA")
+            or evidence.get("candidateSHA") != args.candidate_sha
+            or evidence.get("preservationCapture") != "carried-forward-verified"
+            or evidence.get("carriedForwardEvidenceSHA256") != tuple_value.get("previousEvidenceSHA256")
+            or evidence.get("carriedForwardEvidencePath") != tuple_value.get("previousEvidencePath")):
+        fail("new evidence does not explicitly chain the old candidate preservation baseline")
+    old_journal = RETARGET.strict_json(previous_raw, "preserved previous journal")
+    old_evidence_path = Path(old_journal.get("sourceEvidencePath", ""))
+    if not old_evidence_path.is_absolute() or str(old_evidence_path.resolve(strict=True)) != tuple_value.get("previousEvidencePath"):
+        fail("retarget tuple prior evidence path differs from the preserved original journal")
+    old_evidence_raw = secure_read(old_evidence_path, "old candidate-bound evidence")
+    old_evidence = RETARGET.verify_hmac(old_evidence_raw, RETARGET.OLD_EVIDENCE_SCHEMA,
+                                        RETARGET.OLD_EVIDENCE_FIELDS, key, "old candidate-bound evidence")
+    if (sha(previous_raw) != tuple_value.get("previousJournalSHA256")
+            or sha(old_evidence_raw) != tuple_value.get("previousEvidenceSHA256")
+            or old_journal.get("candidateReleaseSHA") != RETARGET.SOURCE_CANDIDATE
+            or old_journal.get("state") != "legacy-fenced"
+            or old_evidence.get("beforeDigest") != evidence.get("beforeDigest")
+            or old_evidence.get("databaseIdentity") != evidence.get("databaseIdentity")):
+        fail("preserved prior journal/evidence does not prove the exact old fenced baseline")
+    if previous_raw != secure_read(args.journal, "active journal candidate check") and sha(secure_read(args.journal, "active journal candidate check")) != sha(journal_raw):
+        fail("active journal is neither the exact original journal nor the already activated retarget journal")
+    return tuple_value, journal, evidence, journal_raw, previous_raw
+
+
+def canonical_inputs(args: argparse.Namespace) -> None:
+    for path, label in ((args.journal.parent, "transition directory"), (args.releases_root, "release root"),
+                        (args.release_verifier, "release verifier"), (args.psql, "psql executable"),
+                        (args.launchctl, "launchctl executable"), (args.api_binary, "API fence binary"),
+                        (args.host_agent_binary, "host-agent fence binary"), (args.backup_proof, "backup proof"),
+                        (args.backup_artifact, "backup artifact"), (args.shadow_receipt, "shadow receipt")):
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as error:
+            fail(f"{label} path is unavailable: {error}")
+        if not path.is_absolute() or path != resolved or path.is_symlink():
+            fail(f"{label} path must be absolute, canonical, and not a symlink")
+    if not args.current_link.is_absolute() or args.current_link.parent.resolve(strict=True) != args.current_link.parent:
+        fail("current release symlink must have an absolute path and canonical parent")
+
+
+def perform(args: argparse.Namespace) -> int:
+    canonical_inputs(args)
+    key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    if len(key) < 32:
+        fail("NORN_AUDIT_SIGNING_KEY must contain at least 32 bytes")
+    tuple_value, new_journal, evidence, new_journal_raw, previous_raw = verify_bundle(args, key)
+    old_journal_raw = secure_read(args.journal, "active transition journal")
+    archive = args.journal.with_name(f"transition.json.previous-{RETARGET.SOURCE_CANDIDATE}-{sha(previous_raw)}")
+    if old_journal_raw == new_journal_raw:
+        if not archive.exists():
+            fail("retarget journal is active but its required byte-exact history archive is missing")
+        if secure_read(archive, "archived previous transition journal") != previous_raw:
+            fail("retarget archive differs from the byte-exact prior journal")
+        print("retarget already active")
+        return 0
+    if old_journal_raw != previous_raw or sha(old_journal_raw) != tuple_value.get("previousJournalSHA256"):
+        fail("active journal changed after bundle preparation")
+
+    # Recheck live state immediately before archiving/switching.
+    source_sha = tuple_value["sourceSHA"]
+    candidate_sha = tuple_value["candidateSHA"]
+    if args.current_link.resolve(strict=True) != (args.releases_root / source_sha).resolve(strict=True):
+        fail("current symlink no longer resolves to the exact source release")
+    release_args = argparse.Namespace(source_sha=source_sha, candidate_sha=candidate_sha,
+                                      releases_root=args.releases_root, current_link=args.current_link,
+                                      release_verifier=args.release_verifier)
+    RETARGET.verify_source_release(release_args)
+    old_evidence = RETARGET.verify_hmac(
+        secure_read(Path(tuple_value["previousEvidencePath"]), "old baseline evidence"),
+        RETARGET.OLD_EVIDENCE_SCHEMA, RETARGET.OLD_EVIDENCE_FIELDS, key, "old baseline evidence")
+    db = RETARGET.verify_database(args, old_evidence, key)
+    if db != tuple_value.get("schemaLedger") or db.get("otherClientBackends") != 0:
+        fail("live read-only schema/session proof differs from prepared retarget receipt")
+    services = RETARGET.verify_services(args)
+    if services != tuple_value.get("services"):
+        fail("launchd fence state differs from prepared retarget receipt")
+    proof, shadow, proof_sha, backup_sha, backup_bytes = RETARGET.verify_backup_shadow(
+        args, source_sha, candidate_sha, db["databaseIdentity"])
+    if (proof_sha != evidence.get("backupProofSHA256")
+            or backup_sha != evidence.get("backupSHA256") or backup_bytes != evidence.get("backupBytes")
+            or RETARGET.digest(RETARGET.read_private(args.shadow_receipt, "shadow receipt")) != evidence.get("shadowReceiptSHA256")):
+        fail("fresh backup/shadow inputs no longer match the prepared candidate evidence")
+
+    lock_path = args.journal.with_name(".retarget-consume.lock")
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        lock_info = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.geteuid() or stat.S_IMODE(lock_info.st_mode) != 0o600:
+            fail("retarget lock must be owner-only mode 0600")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        current_again = secure_read(args.journal, "active transition journal")
+        if current_again != previous_raw:
+            fail("active transition journal changed during retarget verification")
+        evidence_again = secure_read(Path(tuple_value["previousEvidencePath"]), "active prior evidence")
+        if sha(evidence_again) != tuple_value.get("previousEvidenceSHA256"):
+            fail("active prior evidence changed during retarget verification")
+        if args.current_link.resolve(strict=True) != (args.releases_root / source_sha).resolve(strict=True):
+            fail("current symlink changed before atomic retarget switch")
+        RETARGET.verify_source_release(release_args)
+        old_evidence = RETARGET.verify_hmac(evidence_again, RETARGET.OLD_EVIDENCE_SCHEMA,
+                                            RETARGET.OLD_EVIDENCE_FIELDS, key, "old baseline evidence")
+        db = RETARGET.verify_database(args, old_evidence, key)
+        if db != tuple_value.get("schemaLedger") or db.get("otherClientBackends") != 0:
+            fail("schema/session proof changed before atomic retarget switch")
+        if RETARGET.verify_services(args) != tuple_value.get("services"):
+            fail("service fence state changed before atomic retarget switch")
+        _, _, proof_sha, backup_sha, backup_bytes = RETARGET.verify_backup_shadow(
+            args, source_sha, candidate_sha, db["databaseIdentity"])
+        if (proof_sha != evidence.get("backupProofSHA256")
+                or backup_sha != evidence.get("backupSHA256") or backup_bytes != evidence.get("backupBytes")
+                or RETARGET.digest(RETARGET.read_private(args.shadow_receipt, "shadow receipt")) != evidence.get("shadowReceiptSHA256")):
+            fail("fresh backup/shadow inputs changed before atomic retarget switch")
+        try:
+            os.link(args.journal, archive)
+        except FileExistsError:
+            if secure_read(archive, "archived previous transition journal") != previous_raw:
+                fail("retarget history archive name is occupied by different bytes")
+        parent_fd = os.open(args.journal.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        fd, temp_name = tempfile.mkstemp(prefix=".transition-retarget.", dir=args.journal.parent)
+        temp = Path(temp_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb", closefd=False) as out:
+                out.write(new_journal_raw)
+                out.flush()
+                os.fsync(fd)
+            os.close(fd)
+            if secure_read(args.journal, "active transition journal before atomic switch") != previous_raw:
+                fail("active journal changed before atomic switch")
+            os.replace(temp, args.journal)
+            parent_fd = os.open(args.journal.parent, os.O_RDONLY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+        finally:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(lock_fd)
+    print(json.dumps({"status": "activated", "journal": str(args.journal),
+                      "evidence": new_journal["sourceEvidencePath"], "history": str(archive)}, sort_keys=True))
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("bundle", type=Path)
+    result.add_argument("--candidate-sha", required=True)
+    result.add_argument("--journal", type=Path, required=True)
+    result.add_argument("--backup-proof", type=Path, required=True)
+    result.add_argument("--backup-artifact", type=Path, required=True)
+    result.add_argument("--shadow-receipt", type=Path, required=True)
+    result.add_argument("--releases-root", type=Path, required=True)
+    result.add_argument("--release-verifier", type=Path, required=True)
+    result.add_argument("--current-link", type=Path, required=True)
+    result.add_argument("--psql", type=Path, default=Path("/usr/bin/psql"))
+    result.add_argument("--launchctl", type=Path, default=Path("/bin/launchctl"))
+    result.add_argument("--api-binary", type=Path, required=True)
+    result.add_argument("--host-agent-binary", type=Path, required=True)
+    return result
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(perform(parser().parse_args()))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)

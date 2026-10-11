@@ -142,6 +142,63 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "verified")
 
+    def test_v3_candidate_versioned_evidence_verifies_carried_forward_v2_baseline(self):
+        prior_value = json.loads(self.evidence.read_text())
+        prior_value["candidateSHA"] = "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"
+        prior_unsigned = {key: item for key, item in prior_value.items() if key != "signature"}
+        prior_canonical = json.dumps(prior_unsigned, sort_keys=True, separators=(",", ":")).encode()
+        prior_value["signature"] = "hmac-sha256:" + hmac.new(
+            KEY, b"norn.recovered-forward-evidence/v2\0" + prior_canonical, hashlib.sha256).hexdigest()
+        prior_raw = strict_dump(prior_value)
+        prior_path = self.root / "transition.json.source-evidence.json"
+        self.private(prior_path, prior_raw)
+        versioned_dir = self.root / ("retarget-" + "e" * 40)
+        versioned_dir.mkdir(mode=0o700)
+        versioned_dir.chmod(0o700)
+        new_candidate = "e" * 40
+        artifact_raw = self.artifact.read_bytes()
+        proof_raw = self.proof.read_bytes()
+        shadow = json.loads(self.shadow.read_text())
+        shadow["candidateSHA"] = new_candidate
+        shadow_raw = strict_dump(shadow)
+        self.shadow.write_bytes(shadow_raw)
+        prior = json.loads(prior_raw)
+        value = {key: item for key, item in prior.items() if key != "signature"}
+        value.update({
+            "schema": "norn.recovered-forward-evidence/v3",
+            "candidateSHA": new_candidate,
+            "preservationCapture": "carried-forward-verified",
+            "carriedForwardEvidenceSHA256": sha(prior_raw),
+            "carriedForwardEvidencePath": str(prior_path.resolve()),
+            "backupProofSHA256": sha(proof_raw),
+            "backupSHA256": sha(artifact_raw),
+            "backupBytes": len(artifact_raw),
+            "shadowReceiptSHA256": sha(shadow_raw),
+        })
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        value["signature"] = "hmac-sha256:" + hmac.new(
+            KEY, b"norn.recovered-forward-evidence/v3\0" + canonical, hashlib.sha256).hexdigest()
+        self.evidence = self.private(versioned_dir / "source-evidence.json", strict_dump(value))
+        result = subprocess.run(
+            [str(SCRIPT), str(self.evidence), sha(self.evidence.read_bytes()), TRANSITION,
+             SOURCE, new_candidate, str(self.proof), str(self.artifact), str(self.shadow)],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "verified")
+        value["carriedForwardEvidenceSHA256"] = "0" * 64
+        canonical = json.dumps({k: v for k, v in value.items() if k != "signature"}, sort_keys=True, separators=(",", ":")).encode()
+        value["signature"] = "hmac-sha256:" + hmac.new(
+            KEY, b"norn.recovered-forward-evidence/v3\0" + canonical, hashlib.sha256).hexdigest()
+        self.evidence.write_bytes(strict_dump(value))
+        result = subprocess.run(
+            [str(SCRIPT), str(self.evidence), sha(self.evidence.read_bytes()), TRANSITION,
+             SOURCE, new_candidate, str(self.proof), str(self.artifact), str(self.shadow)],
+            env=self.env, capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("prior evidence digest mismatch", result.stderr)
+
     def test_duplicate_keys_are_rejected_in_every_json_boundary(self):
         evidence_raw = self.evidence.read_text()
         self.evidence.write_text(evidence_raw.replace('"schema":', '"schema":"duplicate","schema":', 1))
@@ -179,7 +236,7 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         self.evidence.write_bytes(strict_dump(value))
         result = self.verify()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fields or schema are not exact", result.stderr)
+        self.assertIn("source evidence fields are not exact", result.stderr)
 
 
 if __name__ == "__main__":

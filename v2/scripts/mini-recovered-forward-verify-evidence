@@ -13,12 +13,20 @@ from pathlib import Path
 
 
 SCHEMA = "norn.recovered-forward-evidence/v2"
+V3_SCHEMA = "norn.recovered-forward-evidence/v3"
 FIELDS = {
     "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
     "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256",
     "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
     "backupBytes", "shadowReceiptSHA256", "incidentCandidateSHA", "incidentBeforeDigest",
     "beforeDigest", "signature",
+}
+V3_FIELDS = {
+    "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+    "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+    "reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest",
+    "preservationCapture", "carriedForwardEvidenceSHA256", "carriedForwardEvidencePath",
+    "backupProofSHA256", "backupSHA256", "backupBytes", "shadowReceiptSHA256", "signature",
 }
 
 
@@ -85,14 +93,51 @@ def main() -> int:
     if digest(raw) != str(expected_sha):
         raise ValueError("source evidence digest mismatch")
     value = strict_json(raw, "source evidence")
+    schema = value.get("schema")
     signature = value.pop("signature", None)
-    if set(value) | {"signature"} != FIELDS or value.get("schema") != SCHEMA:
-        raise ValueError("source evidence fields or schema are not exact")
+    if schema == SCHEMA:
+        fields = FIELDS
+    elif schema == V3_SCHEMA:
+        fields = V3_FIELDS
+    else:
+        raise ValueError("source evidence schema is unsupported")
+    if set(value) | {"signature"} != fields:
+        raise ValueError("source evidence fields are not exact")
     signed = dict(value)
     canonical = json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
-    expected_signature = "hmac-sha256:" + hmac.new(key, SCHEMA.encode() + b"\0" + canonical, hashlib.sha256).hexdigest()
+    expected_signature = "hmac-sha256:" + hmac.new(key, schema.encode() + b"\0" + canonical, hashlib.sha256).hexdigest()
     if not isinstance(signature, str) or not hmac.compare_digest(signature, expected_signature):
         raise ValueError("source evidence signature does not verify")
+    if schema == V3_SCHEMA:
+        if value.get("preservationCapture") != "carried-forward-verified":
+            raise ValueError("version 3 evidence must identify carried-forward preservation capture")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(value.get("carriedForwardEvidenceSHA256", ""))):
+            raise ValueError("version 3 evidence prior evidence digest is invalid")
+        bundle = evidence_path.parent
+        transition_root = bundle.parent
+        expected_prior = (transition_root / "transition.json.source-evidence.json").resolve(strict=True)
+        bundle_info = bundle.lstat()
+        if (not stat.S_ISDIR(bundle_info.st_mode) or bundle_info.st_uid != os.geteuid() or
+                stat.S_IMODE(bundle_info.st_mode) != 0o700 or
+                bundle.name != f"retarget-{value.get('candidateSHA')}" or
+                evidence_path.name != "source-evidence.json" or
+                transition_root.is_symlink() or transition_root.stat().st_uid != os.geteuid() or
+                stat.S_IMODE(transition_root.stat().st_mode) != 0o700 or
+                Path(value.get("carriedForwardEvidencePath", "")) != expected_prior):
+            raise ValueError("version 3 evidence path is outside its exact versioned transition bundle")
+        prior_raw = private(expected_prior, "prior candidate-bound source evidence")
+        if digest(prior_raw) != value.get("carriedForwardEvidenceSHA256"):
+            raise ValueError("version 3 evidence prior evidence digest mismatch")
+        prior = strict_json(prior_raw, "prior candidate-bound source evidence")
+        if set(prior) != FIELDS or prior.get("schema") != SCHEMA:
+            raise ValueError("prior candidate-bound evidence schema or fields are invalid")
+        prior = verify_signature(prior, SCHEMA, key, "prior candidate-bound evidence")
+        carried_fields = ("transitionId", "sourceSHA", "databaseIdentity", "recoveryFenceSHA256",
+                          "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+                          "reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest")
+        if (prior.get("candidateSHA") != "85fb2830ac18a711b2e3e20de45c1adcbbd4935d" or
+                any(prior.get(name) != value.get(name) for name in carried_fields)):
+            raise ValueError("version 3 evidence does not preserve the exact 85fb baseline fields")
     if (value.get("transitionId"), value.get("sourceSHA"), value.get("candidateSHA")) != (str(transition), str(source), str(candidate)):
         raise ValueError("source evidence does not bind the exact transition and release SHAs")
     if (not isinstance(value.get("transitionId"), str) or
@@ -104,7 +149,11 @@ def main() -> int:
             not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", value["databaseIdentity"]) or
             type(value.get("backupBytes")) is not int or value["backupBytes"] <= 0):
         raise ValueError("source evidence identity or byte-count types are invalid")
-    for name in FIELDS - {"schema", "transitionId", "sourceSHA", "candidateSHA", "incidentCandidateSHA", "databaseIdentity", "backupBytes", "signature"}:
+    digest_fields = (FIELDS if schema == SCHEMA else V3_FIELDS) - {
+        "schema", "transitionId", "sourceSHA", "candidateSHA", "incidentCandidateSHA", "databaseIdentity",
+        "backupBytes", "signature", "preservationCapture", "carriedForwardEvidencePath",
+    }
+    for name in digest_fields:
         if not isinstance(value.get(name), str) or not re.fullmatch(r"[0-9a-f]{64}", value[name]):
             raise ValueError(f"source evidence digest is invalid: {name}")
     proof_raw = private(proof_path, "backup proof")

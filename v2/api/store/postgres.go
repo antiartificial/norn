@@ -573,13 +573,17 @@ func ControlSchemaMigrations() []SchemaMigration {
 }
 
 func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
+	return newControlSchemaMigrator(db, SchemaMigratorOptions{})
+}
+
+func newControlSchemaMigrator(db *DB, options SchemaMigratorOptions) (*SchemaMigrator, error) {
 	if db == nil || db.Pool == nil {
 		return nil, fmt.Errorf("control schema database is unavailable")
 	}
 	migrator, err := NewSchemaMigrator(db.Pool, ControlSchemaMigrations(), BinarySchemaCompatibility{
 		ReaderVersion: ControlSchemaReaderVersion,
 		WriterVersion: ControlSchemaWriterVersion,
-	}, SchemaMigratorOptions{})
+	}, options)
 	if err != nil {
 		return nil, err
 	}
@@ -591,12 +595,14 @@ func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
 // maintenance lane. Its caller must use ConnectMigration so this process owns
 // exactly one pool connection while the transaction proves database quiescence.
 func NewQuiescentControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
-	migrator, err := NewControlSchemaMigrator(db)
-	if err != nil {
-		return nil, err
-	}
-	migrator.requireQuiescentControlDB = true
-	return migrator, nil
+	return NewQuiescentControlSchemaMigratorWithOptions(db, SchemaMigratorOptions{})
+}
+
+// NewQuiescentControlSchemaMigratorWithOptions retains the strict quiescence
+// contract by default. Callers must opt into any narrowly scoped preservation.
+func NewQuiescentControlSchemaMigratorWithOptions(db *DB, options SchemaMigratorOptions) (*SchemaMigrator, error) {
+	options.RequireQuiescentControlDB = true
+	return newControlSchemaMigrator(db, options)
 }
 
 // Migrate retains the compatibility entry point for existing tests and tools

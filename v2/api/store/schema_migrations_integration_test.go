@@ -217,13 +217,13 @@ func TestSchemaMigratorLockTimeoutAndRelease(t *testing.T) {
 func TestSchemaMigratorQuiescentControlDatabaseGate(t *testing.T) {
 	pool := schemaMigrationIsolatedDatabasePools(t, 1)[0]
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `CREATE TABLE operations (id TEXT PRIMARY KEY, status TEXT NOT NULL)`); err != nil {
+	if _, err := pool.Exec(ctx, `CREATE TABLE operations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	definitions := []SchemaMigration{{Version: 1, Name: "quiescent marker", SQL: `CREATE TABLE quiescent_marker (id INTEGER PRIMARY KEY)`, MinimumReaderVersion: 1, MinimumWriterVersion: 1}}
 	migrator := newSchemaTestMigrator(t, pool, definitions, BinarySchemaCompatibility{ReaderVersion: 1, WriterVersion: 1}, SchemaMigratorOptions{RequireQuiescentControlDB: true})
 
-	if _, err := pool.Exec(ctx, `INSERT INTO operations(id, status) VALUES ('active', 'running')`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO operations(id, kind, status) VALUES ('active', 'app.deploy', 'running')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := migrator.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "nonterminal control operations") {
@@ -265,6 +265,87 @@ func TestSchemaMigratorQuiescentControlDatabaseGate(t *testing.T) {
 	other.Close()
 	if _, err := migrator.Migrate(ctx); err != nil {
 		t.Fatalf("quiescent migration after drain: %v", err)
+	}
+}
+
+func TestSchemaMigratorQuiescentControlDatabaseAllowsOnlyQueuedFleetGitHubApplyDispatch(t *testing.T) {
+	pool := schemaMigrationIsolatedDatabasePools(t, 1)[0]
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE operations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO operations(id, kind, status) VALUES
+			('queued-fleet-dispatch-one', 'fleet.github.apply-dispatch', 'queued'),
+			('queued-fleet-dispatch-two', 'fleet.github.apply-dispatch', 'queued')`); err != nil {
+		t.Fatal(err)
+	}
+	definitions := []SchemaMigration{{Version: 1, Name: "quiescent marker", SQL: `CREATE TABLE quiescent_marker (id INTEGER PRIMARY KEY)`, MinimumReaderVersion: 1, MinimumWriterVersion: 1}}
+	migrator := newSchemaTestMigrator(t, pool, definitions, BinarySchemaCompatibility{ReaderVersion: 1, WriterVersion: 1}, SchemaMigratorOptions{RequireQuiescentControlDB: true, PreserveQueuedFleetApplyDispatch: true})
+
+	if _, err := migrator.Migrate(ctx); err != nil {
+		t.Fatalf("migration with preserved queued Fleet dispatch receipts: %v", err)
+	}
+	var markerPresent bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('quiescent_marker') IS NOT NULL`).Scan(&markerPresent); err != nil {
+		t.Fatal(err)
+	}
+	if !markerPresent {
+		t.Fatal("migration with preserved queued Fleet dispatch receipts did not run DDL")
+	}
+	var preserved int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM operations
+		WHERE kind = 'fleet.github.apply-dispatch' AND status = 'queued'`).Scan(&preserved); err != nil {
+		t.Fatal(err)
+	}
+	if preserved != 2 {
+		t.Fatalf("preserved queued Fleet dispatch receipts = %d, want 2", preserved)
+	}
+}
+
+func TestSchemaMigratorQuiescentControlDatabaseRejectsAllOtherNonterminalOperations(t *testing.T) {
+	tests := []struct {
+		name   string
+		kind   string
+		status string
+	}{
+		{name: "queued Fleet dispatch without preservation", kind: "fleet.github.apply-dispatch", status: "queued"},
+		{name: "running Fleet dispatch", kind: "fleet.github.apply-dispatch", status: "running"},
+		{name: "queued Fleet pull request", kind: "fleet.github.pull-request", status: "queued"},
+		{name: "ordinary queued operation", kind: "app.deploy", status: "queued"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pool := schemaMigrationIsolatedDatabasePools(t, 1)[0]
+			ctx := context.Background()
+			if _, err := pool.Exec(ctx, `CREATE TABLE operations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO operations(id, kind, status) VALUES ('nonterminal', $1, $2)`, test.kind, test.status); err != nil {
+				t.Fatal(err)
+			}
+			definitions := []SchemaMigration{{Version: 1, Name: "quiescent marker", SQL: `CREATE TABLE quiescent_marker (id INTEGER PRIMARY KEY)`, MinimumReaderVersion: 1, MinimumWriterVersion: 1}}
+			migrator := newSchemaTestMigrator(t, pool, definitions, BinarySchemaCompatibility{ReaderVersion: 1, WriterVersion: 1}, SchemaMigratorOptions{RequireQuiescentControlDB: true})
+
+			if _, err := migrator.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "nonterminal control operations") {
+				t.Fatalf("%s migration = %v, want quiescence refusal", test.name, err)
+			}
+			var markerPresent bool
+			if err := pool.QueryRow(ctx, `SELECT to_regclass('quiescent_marker') IS NOT NULL`).Scan(&markerPresent); err != nil {
+				t.Fatal(err)
+			}
+			if markerPresent {
+				t.Fatal("quiescence refusal ran migration DDL")
+			}
+			var gotKind, gotStatus string
+			if err := pool.QueryRow(ctx, `SELECT kind, status FROM operations WHERE id = 'nonterminal'`).Scan(&gotKind, &gotStatus); err != nil {
+				t.Fatal(err)
+			}
+			if gotKind != test.kind || gotStatus != test.status {
+				t.Fatalf("nonterminal receipt changed to kind=%q status=%q, want kind=%q status=%q", gotKind, gotStatus, test.kind, test.status)
+			}
+		})
 	}
 }
 

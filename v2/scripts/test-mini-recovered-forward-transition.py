@@ -113,9 +113,12 @@ class RecoveredForwardWrapperTests(unittest.TestCase):
         }
         journal.write_bytes(WRAPPER.canonical(record))
         journal.chmod(0o600)
-        self.assertEqual(WRAPPER.load_journal(journal, self.transition, self.source, self.candidate, "7" * 64), record)
+        evidence_path = journal.with_name(journal.name + ".source-evidence.json")
+        self.assertEqual(WRAPPER.load_journal(journal, self.transition, self.source, self.candidate, "7" * 64,
+                                              evidence_path), record)
         with self.assertRaisesRegex(SystemExit, "sourceEvidenceSHA256"):
-            WRAPPER.load_journal(journal, self.transition, self.source, self.candidate, "8" * 64)
+            WRAPPER.load_journal(journal, self.transition, self.source, self.candidate, "8" * 64,
+                                 evidence_path)
 
     def test_atomic_private_create_is_owner_only_and_never_overwrites(self):
         directory = self.root / "recovered-forward"

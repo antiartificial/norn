@@ -18,6 +18,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from typing import Any
 
 
 EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v2"
+EVIDENCE_V3_SCHEMA = "norn.recovered-forward-evidence/v3"
 RECEIPT_SCHEMA = "norn.recovered-forward-preservation/v1"
 ADOPTION_SCHEMA = "norn.recovered-baseline-adoption/v2"
 TRANSITION_SCHEMA = "norn.recovered-forward-transition/v1"
@@ -38,6 +40,13 @@ EVIDENCE_FIELDS = {
     "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
     "backupBytes", "shadowReceiptSHA256", "incidentCandidateSHA", "incidentBeforeDigest",
     "beforeDigest", "signature",
+}
+EVIDENCE_V3_FIELDS = {
+    "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+    "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+    "reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest",
+    "preservationCapture", "carriedForwardEvidenceSHA256", "carriedForwardEvidencePath",
+    "backupProofSHA256", "backupSHA256", "backupBytes", "shadowReceiptSHA256", "signature",
 }
 RECEIPT_FIELDS = {
     "schema", "transitionId", "candidateSHA", "sourceEvidenceSHA256", "beforeDigest",
@@ -339,12 +348,15 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backup-proof", required=True, type=Path)
     parser.add_argument("--backup-artifact", required=True, type=Path)
     parser.add_argument("--shadow-receipt", required=True, type=Path)
+    parser.add_argument("--retarget-bundle", type=Path,
+                        help="optional explicit path to the deterministic candidate retarget bundle")
     parser.add_argument("--api", default=os.environ.get("NORN_API_BASE", "http://127.0.0.1:8800"))
     parser.add_argument("--platform-upgrade-test-bin", help=argparse.SUPPRESS)
     return parser
 
 
-def load_journal(path: Path, transition_id: str, source_sha: str, candidate_sha: str, evidence_sha: str) -> dict[str, Any] | None:
+def load_journal(path: Path, transition_id: str, source_sha: str, candidate_sha: str, evidence_sha: str,
+                 evidence_path: Path) -> dict[str, Any] | None:
     if not path.exists() and not path.is_symlink():
         return None
     raw = secure_read(path, "recovered-forward transition journal")
@@ -352,7 +364,7 @@ def load_journal(path: Path, transition_id: str, source_sha: str, candidate_sha:
     expected = {
         "schema": TRANSITION_SCHEMA, "transitionID": transition_id, "sourceSHA": source_sha,
         "candidateReleaseSHA": candidate_sha,
-        "sourceEvidencePath": str(path.with_name(path.name + ".source-evidence.json")),
+        "sourceEvidencePath": str(evidence_path),
         "sourceEvidenceSHA256": evidence_sha,
     }
     if type(record) is not dict or record.get("schema") != TRANSITION_SCHEMA or record.get("state") not in TRANSITION_PHASES:
@@ -363,6 +375,21 @@ def load_journal(path: Path, transition_id: str, source_sha: str, candidate_sha:
     return record
 
 
+def journal_evidence_path(journal: Path, candidate_sha: str, record: dict[str, Any] | None) -> Path:
+    root = journal.parent
+    if record is None:
+        return journal.with_name(journal.name + ".source-evidence.json")
+    raw = record.get("sourceEvidencePath")
+    fixed = journal.with_name(journal.name + ".source-evidence.json")
+    versioned = root / f"retarget-{candidate_sha}" / "source-evidence.json"
+    if raw not in {str(fixed), str(versioned)}:
+        fail("journal source evidence path is outside the exact fixed or candidate-versioned transition paths")
+    if Path(raw).is_symlink() or (Path(raw).parent != root and
+                                  (Path(raw).parent.parent != root or Path(raw).parent.is_symlink())):
+        fail("journal source evidence path traverses a symlink")
+    return Path(raw)
+
+
 def sign_or_validate_evidence(args: argparse.Namespace, paths: dict[str, Path], key: bytes, api: str, token: str,
                                adoption: dict[str, Any], source_evidence: dict[str, bytes], adoption_raw: bytes,
                                proof: dict[str, Any], proof_raw: bytes, artifact_sha: str, artifact_bytes: int,
@@ -370,7 +397,13 @@ def sign_or_validate_evidence(args: argparse.Namespace, paths: dict[str, Path], 
     evidence_path = paths["evidence"]
     if evidence_path.exists() or evidence_path.is_symlink():
         raw = secure_read(evidence_path, "immutable recovered-forward source evidence")
-        evidence = verify_hmac_document(raw, EVIDENCE_SCHEMA, key, "recovered-forward source evidence", EVIDENCE_FIELDS)
+        value = load_json_bytes(raw, "recovered-forward source evidence")
+        if value.get("schema") == EVIDENCE_V3_SCHEMA:
+            evidence = verify_hmac_document(raw, EVIDENCE_V3_SCHEMA, key,
+                                            "recovered-forward source evidence", EVIDENCE_V3_FIELDS)
+        else:
+            evidence = verify_hmac_document(raw, EVIDENCE_SCHEMA, key,
+                                            "recovered-forward source evidence", EVIDENCE_FIELDS)
         if (evidence.get("transitionId") != args.transition_id or evidence.get("sourceSHA") != args.source_sha
                 or evidence.get("candidateSHA") != args.candidate_sha):
             fail("existing immutable evidence belongs to another transition or candidate")
@@ -562,12 +595,64 @@ def run(argv: list[str] | None = None) -> int:
 
     adoption, retained, adoption_raw = adoption_evidence(home, key, args.source_sha)
     journal_present = journal.exists() or journal.is_symlink()
-    # Do not let a malformed or unrelated journal suppress backup freshness
-    # checks. The exact evidence digest is checked by load_journal below.
+    journal_probe: dict[str, Any] | None = None
     if journal_present:
         if journal.is_symlink():
             fail("recovered-forward transition journal cannot be a symlink")
-        journal_probe = load_json_bytes(secure_read(journal, "recovered-forward transition journal"), "recovered-forward transition journal")
+        journal_probe = load_json_bytes(secure_read(journal, "recovered-forward transition journal"),
+                                        "recovered-forward transition journal")
+        if (type(journal_probe) is not dict or journal_probe.get("schema") != TRANSITION_SCHEMA
+                or journal_probe.get("state") not in TRANSITION_PHASES
+                or journal_probe.get("transitionID") != args.transition_id
+                or journal_probe.get("sourceSHA") != args.source_sha):
+            fail("existing journal does not authorize this exact source/transition resume")
+        if journal_probe.get("candidateReleaseSHA") != args.candidate_sha:
+            prepare = platform_script.parent / "mini-recovered-forward-retarget"
+            consumer = platform_script.parent / "mini-recovered-forward-retarget-consume"
+            release_verifier = Path(os.environ.get("NORN_RELEASE_VERIFY_HOOK", ""))
+            psql = Path(shutil.which("psql") or "")
+            launchctl = Path(shutil.which("launchctl") or "")
+            api_fence_bin = Path(os.environ.get("NORN_RECOVERED_FORWARD_API_FENCE_BIN", str(home / "go/bin/norn-api")))
+            host_agent_bin = Path(os.environ.get("NORN_HOST_AGENT_BIN", str(home / ".config/norn/host/bin/norn-host-agent")))
+            if (not prepare.is_file() or prepare.is_symlink() or not os.access(prepare, os.X_OK)
+                    or not consumer.is_file() or consumer.is_symlink() or not os.access(consumer, os.X_OK)
+                    or not release_verifier.is_absolute() or not release_verifier.is_file()
+                    or not psql.is_absolute() or not psql.is_file()
+                    or not launchctl.is_absolute() or not launchctl.is_file()):
+                fail("candidate-signed retarget helpers or required read-only verification tools are unavailable")
+            expected_bundle = transition_dir / f"retarget-{args.candidate_sha}"
+            if args.retarget_bundle is not None and args.retarget_bundle != expected_bundle:
+                fail("explicit retarget bundle must be the deterministic candidate-versioned transition child")
+            old_evidence_path = Path(str(journal_probe.get("sourceEvidencePath", "")))
+            prepare_command = [str(prepare), args.candidate_sha, "--source-sha", args.source_sha,
+                       "--transition-id", args.transition_id, "--journal", str(journal),
+                       "--evidence", str(old_evidence_path), "--backup-proof", str(args.backup_proof.resolve()),
+                       "--backup-artifact", str(args.backup_artifact.resolve()),
+                       "--shadow-receipt", str(args.shadow_receipt.resolve()), "--current-link", str(home / "norn/current"),
+                       "--releases-root", str((home / "norn/releases").resolve()),
+                       "--release-verifier", str(release_verifier.resolve()), "--output-parent", str(transition_dir),
+                       "--psql", str(psql.resolve()), "--launchctl", str(launchctl.resolve()),
+                       "--api-binary", str(api_fence_bin.resolve()), "--host-agent-binary", str(host_agent_bin.resolve())]
+            prepared = subprocess.run(prepare_command, env=os.environ.copy(), capture_output=True, text=True, check=False)
+            if prepared.returncode:
+                fail("candidate-signed guarded retarget preparation failed: " + prepared.stderr.strip())
+            command = [str(consumer), str(expected_bundle), "--candidate-sha", args.candidate_sha,
+                       "--journal", str(journal), "--releases-root", str((home / "norn/releases").resolve()),
+                       "--release-verifier", str(release_verifier.resolve()), "--current-link", str((home / "norn/current")),
+                       "--backup-proof", str(args.backup_proof.resolve()), "--backup-artifact", str(args.backup_artifact.resolve()),
+                       "--shadow-receipt", str(args.shadow_receipt.resolve()), "--psql", str(psql.resolve()),
+                       "--launchctl", str(launchctl.resolve()), "--api-binary", str(api_fence_bin.resolve()),
+                       "--host-agent-binary", str(host_agent_bin.resolve())]
+            consumed = subprocess.run(command, env=os.environ.copy(), capture_output=True, text=True, check=False)
+            if consumed.returncode:
+                fail("guarded retarget bundle activation failed: " + consumed.stderr.strip())
+            journal_probe = load_json_bytes(secure_read(journal, "activated retarget journal"), "activated retarget journal")
+            journal_present = True
+
+    evidence_path = journal_evidence_path(journal, args.candidate_sha, journal_probe)
+    # Do not let a malformed or unrelated journal suppress backup freshness
+    # checks. The exact evidence digest is checked by load_journal below.
+    if journal_present:
         if (type(journal_probe) is not dict or journal_probe.get("schema") != TRANSITION_SCHEMA
                 or journal_probe.get("state") not in TRANSITION_PHASES
                 or journal_probe.get("transitionID") != args.transition_id
@@ -594,7 +679,8 @@ def run(argv: list[str] | None = None) -> int:
     if verified.returncode or verified.stdout.strip() != "verified":
         fail("signed source evidence or one of its immutable dependencies failed verification: " + verified.stderr.strip())
 
-    journal_value = load_journal(journal, args.transition_id, args.source_sha, args.candidate_sha, evidence_sha)
+    journal_value = load_journal(journal, args.transition_id, args.source_sha, args.candidate_sha, evidence_sha,
+                                 evidence_path)
     if not journal_value:
         validate_unjournaled_source(api, token, proof, evidence)
     if journal_value and journal_value["state"] == "candidate-promoted":

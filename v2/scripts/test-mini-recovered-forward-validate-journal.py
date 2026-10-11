@@ -31,7 +31,7 @@ class RecoveredForwardJournalTest(unittest.TestCase):
             "transitionID": "fixture-001",
             "sourceSHA": "a" * 40,
             "candidateReleaseSHA": "b" * 40,
-            "sourceEvidencePath": "/tmp/transition.json.source-evidence.json",
+            "sourceEvidencePath": str(self.root / "transition.json.source-evidence.json"),
             "sourceEvidenceSHA256": "c" * 64,
             "backupProofPath": "/tmp/backup-proof.json",
             "backupArtifactPath": "/tmp/backup.dump",
@@ -43,10 +43,10 @@ class RecoveredForwardJournalTest(unittest.TestCase):
         self.journal.write_text(json.dumps(value or self.record), encoding="utf-8")
         self.journal.chmod(mode)
 
-    def invoke(self):
+    def invoke(self, evidence_path=None):
         return subprocess.run(
             [str(SCRIPT), str(self.journal), self.record["transitionID"], self.record["sourceSHA"],
-             self.record["candidateReleaseSHA"], self.record["sourceEvidencePath"],
+             self.record["candidateReleaseSHA"], evidence_path or self.record["sourceEvidencePath"],
              self.record["sourceEvidenceSHA256"], self.record["backupProofPath"],
              self.record["backupArtifactPath"], self.record["shadowReceiptPath"]],
             capture_output=True, text=True, env=os.environ.copy(),
@@ -88,6 +88,20 @@ class RecoveredForwardJournalTest(unittest.TestCase):
         result = self.invoke()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("mode-0600", result.stderr)
+
+    def test_candidate_versioned_evidence_path_is_allowed_only_in_exact_bundle(self):
+        bundle = self.root / ("retarget-" + self.record["candidateReleaseSHA"])
+        bundle.mkdir(mode=0o700)
+        bundle.chmod(0o700)
+        value = {**self.record, "sourceEvidencePath": str(bundle / "source-evidence.json")}
+        self.write(value)
+        result = self.invoke(value["sourceEvidencePath"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for invalid in (str(self.root / "other" / "source-evidence.json"),
+                        str(self.root / ("retarget-" + "f" * 40) / "source-evidence.json")):
+            with self.subTest(path=invalid):
+                self.write({**value, "sourceEvidencePath": invalid})
+                self.assertNotEqual(self.invoke(invalid).returncode, 0)
 
 
 if __name__ == "__main__":

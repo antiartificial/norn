@@ -6,6 +6,7 @@ import os
 import re
 import stat
 import sys
+from pathlib import Path
 
 
 PHASES = {
@@ -46,6 +47,18 @@ def main() -> int:
         raise ValueError("journal source/candidate SHA is invalid")
     if not re.fullmatch(r"[0-9a-f]{64}", evidence_sha):
         raise ValueError("journal source evidence digest is invalid")
+    root = Path(path).parent
+    fixed = root / (Path(path).name + ".source-evidence.json")
+    versioned = root / ("retarget-" + candidate) / "source-evidence.json"
+    evidence_path = Path(evidence)
+    if evidence_path not in (fixed, versioned):
+        raise ValueError("journal evidence path is outside the fixed or candidate-versioned transition location")
+    if root.is_symlink() or (evidence_path.parent != root and evidence_path.parent.is_symlink()):
+        raise ValueError("journal evidence path traverses a symlink")
+    if evidence_path == versioned:
+        info = evidence_path.parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("versioned evidence directory must be owner-only mode 0700")
     phase = value.get("state")
     if phase not in PHASES:
         raise ValueError("journal phase is not a supported recovered-forward resume phase")

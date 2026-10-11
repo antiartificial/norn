@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+"""Prepare a guarded, auditable recovered-forward candidate retarget.
+
+This command is intentionally a preparation step: it never changes the active
+transition journal, current release symlink, database, launchd jobs, or source
+evidence. It verifies the exact legacy-fenced tuple and atomically emits a
+versioned bundle for the caller's explicit resume path.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import hmac
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+from pathlib import Path
+from typing import Any
+
+
+SOURCE_CANDIDATE = "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"
+JOURNAL_SCHEMA = "norn.recovered-forward-transition/v1"
+OLD_EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v2"
+EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v3"
+RETARGET_SCHEMA = "norn.recovered-forward-retarget/v1"
+PROOF_SCHEMA = "norn.legacy-control-backup/v1"
+SHADOW_SCHEMA = "norn.m5-signed-shadow-launchagent-rehearsal/v2"
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+OLD_EVIDENCE_FIELDS = {
+    "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+    "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256",
+    "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
+    "backupBytes", "shadowReceiptSHA256", "incidentCandidateSHA", "incidentBeforeDigest",
+    "beforeDigest", "signature",
+}
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def strict_json(raw: bytes, label: str) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                fail(f"{label} has duplicate JSON field {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=unique)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"{label} is not valid strict JSON: {error}")
+    if type(value) is not dict:
+        fail(f"{label} must be a JSON object")
+    return value
+
+
+def read_private(path: Path, label: str, *, max_bytes: int = 64 * 1024) -> bytes:
+    if not path.is_absolute():
+        fail(f"{label} path must be absolute")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError as error:
+        fail(f"cannot safely open {label}: {error}")
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            fail(f"{label} must be an invoking-user-owned mode-0600 regular file")
+        if info.st_size <= 0 or info.st_size > max_bytes:
+            fail(f"{label} is empty or too large")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            fail(f"{label} is too large")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def verify_hmac(raw: bytes, schema: str, fields: set[str], key: bytes, label: str) -> dict[str, Any]:
+    value = strict_json(raw, label)
+    if set(value) != fields or value.get("schema") != schema:
+        fail(f"{label} fields or schema are not exact")
+    signature = value.pop("signature", None)
+    expected = "hmac-sha256:" + hmac.new(key, schema.encode() + b"\0" + canonical(value), hashlib.sha256).hexdigest()
+    if not isinstance(signature, str) or not hmac.compare_digest(signature, expected):
+        fail(f"{label} HMAC signature does not verify")
+    value["signature"] = signature
+    return value
+
+
+def utc(value: Any, label: str) -> dt.datetime:
+    if not isinstance(value, str):
+        fail(f"{label} timestamp is missing")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        fail(f"{label} timestamp is invalid")
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        fail(f"{label} timestamp must be UTC")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def private_artifact(path: Path, label: str) -> tuple[bytes, str, int]:
+    if not path.is_absolute():
+        fail(f"{label} path must be absolute")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError as error:
+        fail(f"cannot safely open {label}: {error}")
+    h = hashlib.sha256()
+    size = 0
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            fail(f"{label} must be an invoking-user-owned mode-0600 regular file")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                size += len(chunk)
+                h.update(chunk)
+    finally:
+        os.close(fd)
+    return b"", h.hexdigest(), size
+
+
+def verify_source_binding(args: argparse.Namespace, key: bytes) -> tuple[dict[str, Any], bytes, Path]:
+    if args.journal.is_symlink():
+        fail("active transition journal cannot be a symlink")
+    try:
+        directory_info = args.journal.parent.lstat()
+    except OSError as error:
+        fail(f"active transition directory is unavailable: {error}")
+    if (not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != os.geteuid()
+            or stat.S_IMODE(directory_info.st_mode) != 0o700):
+        fail("active transition directory must be invoking-user-owned mode 0700")
+    journal_raw = read_private(args.journal, "active transition journal")
+    journal = strict_json(journal_raw, "active transition journal")
+    if (journal.get("schema") != JOURNAL_SCHEMA or journal.get("state") != "legacy-fenced"
+            or journal.get("candidateReleaseSHA") != SOURCE_CANDIDATE
+            or journal.get("sourceSHA") != args.source_sha or journal.get("transitionID") != args.transition_id):
+        fail("retarget is allowed only from the exact source-bound 85fb legacy-fenced journal")
+    evidence_path = Path(journal.get("sourceEvidencePath", ""))
+    if (not evidence_path.is_absolute() or evidence_path.parent != args.journal.parent
+            or evidence_path.name != args.journal.name + ".source-evidence.json"
+            or evidence_path.resolve(strict=True) != args.evidence.resolve(strict=True)):
+        fail("journal source evidence path differs from the explicitly supplied immutable evidence")
+    evidence_raw = read_private(evidence_path, "old candidate-bound source evidence")
+    evidence = verify_hmac(evidence_raw, OLD_EVIDENCE_SCHEMA, OLD_EVIDENCE_FIELDS, key, "old source evidence")
+    if (evidence.get("transitionId") != args.transition_id or evidence.get("sourceSHA") != args.source_sha
+            or evidence.get("candidateSHA") != SOURCE_CANDIDATE
+            or journal.get("sourceEvidenceSHA256") != digest(evidence_raw)):
+        fail("old journal and signed evidence do not bind the exact source/85fb tuple")
+    return journal, evidence, evidence_path
+
+
+def verify_backup_shadow(args: argparse.Namespace, source_sha: str, candidate_sha: str,
+                         expected_database: str) -> tuple[dict[str, Any], dict[str, Any], str, str, int]:
+    proof_raw = read_private(args.backup_proof, "fresh protected backup proof")
+    proof = strict_json(proof_raw, "fresh protected backup proof")
+    fields = {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "backupBytes", "createdAt"}
+    if (set(proof) != fields or proof.get("schema") != PROOF_SCHEMA or proof.get("sourceReleaseSHA") != source_sha
+            or proof.get("databaseIdentity") != expected_database):
+        fail("fresh backup proof does not bind the exact source and database identity")
+    if not HEX64.fullmatch(str(proof.get("backupSHA256", ""))) or type(proof.get("backupBytes")) is not int or proof["backupBytes"] <= 0:
+        fail("fresh backup proof digest or byte count is invalid")
+    backup_time = utc(proof.get("createdAt"), "backup")
+    age = (dt.datetime.now(dt.timezone.utc) - backup_time).total_seconds()
+    max_age = int(os.environ.get("NORN_LEGACY_BACKUP_MAX_AGE_SECONDS", "3600"))
+    if age < -300 or age > max_age:
+        fail("fresh backup proof is outside the permitted age")
+    _, backup_sha, backup_bytes = private_artifact(args.backup_artifact, "fresh protected backup artifact")
+    if (backup_sha != proof["backupSHA256"] or backup_bytes != proof["backupBytes"]
+            or not HEX64.fullmatch(backup_sha)):
+        fail("fresh backup artifact does not match its proof")
+    shadow_raw = read_private(args.shadow_receipt, "fresh candidate-bound shadow receipt")
+    shadow = strict_json(shadow_raw, "fresh candidate-bound shadow receipt")
+    shadow_fields = {"schema", "completedAt", "exitCode", "candidateSHA", "shadowLabel", "shadowPort", "runtimeClaim", "privateRestoreClaim", "backupSHA256", "backupBytes"}
+    shadow_time = utc(shadow.get("completedAt"), "shadow rehearsal")
+    if (set(shadow) != shadow_fields or shadow.get("schema") != SHADOW_SCHEMA or type(shadow.get("exitCode")) is not int
+            or shadow.get("exitCode") != 0 or shadow.get("candidateSHA") != candidate_sha
+            or shadow.get("runtimeClaim") != "passed" or shadow.get("privateRestoreClaim") != "passed"
+            or shadow.get("backupSHA256") != backup_sha or shadow.get("backupBytes") != backup_bytes
+            or not isinstance(shadow.get("shadowLabel"), str) or not shadow["shadowLabel"]
+            or type(shadow.get("shadowPort")) is not int or not 1 <= shadow["shadowPort"] <= 65535
+            or shadow_time <= backup_time or shadow_time > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)):
+        fail("shadow rehearsal does not bind a fresh passing restore to the exact new candidate and backup")
+    return proof, shadow, digest(proof_raw), backup_sha, backup_bytes
+
+
+def verify_source_release(args: argparse.Namespace) -> Path:
+    if not HEX40.fullmatch(args.source_sha) or not HEX40.fullmatch(args.candidate_sha) or args.source_sha == args.candidate_sha:
+        fail("source and new candidate must be different exact lowercase commit SHAs")
+    source = args.releases_root / args.source_sha
+    candidate = args.releases_root / args.candidate_sha
+    for release, expected in ((source, args.source_sha), (candidate, args.candidate_sha)):
+        if not release.is_dir() or release.is_symlink():
+            fail(f"release {expected} is missing or unsafe")
+        env_file = release / "release.env"
+        if not env_file.is_file() or env_file.is_symlink():
+            fail(f"release {expected} has no regular release identity")
+        matches = re.findall(r"^NORN_RELEASE_SHA=([0-9a-f]{40})$", env_file.read_text(encoding="utf-8"), re.M)
+        if matches != [expected]:
+            fail(f"release {expected} identity file does not match its directory")
+        result = subprocess.run([str(args.release_verifier), str(release), str(release / "release.json")],
+                                capture_output=True, text=True, check=False)
+        if result.returncode:
+            fail(f"signed release verification failed for {expected} (exit {result.returncode})")
+    current = args.current_link
+    if not current.is_symlink():
+        fail("current release path is not a symlink")
+    resolved = current.resolve(strict=True)
+    if resolved != source.resolve(strict=True):
+        fail("current release symlink no longer resolves to the exact journaled source release")
+    return candidate
+
+
+def verify_database(args: argparse.Namespace, old_evidence: dict[str, Any], key: bytes) -> dict[str, Any]:
+    url = os.environ.get("NORN_DATABASE_URL", "")
+    if not url or len(key) < 32:
+        fail("database URL and audit signing key are required for read-only retarget checks")
+    identity = "hmac-sha256:" + hmac.new(key, b"norn.database-identity/v1\0" + url.encode(), hashlib.sha256).hexdigest()
+    if identity != old_evidence.get("databaseIdentity"):
+        fail("live database URL identity differs from the old signed Mini preservation baseline")
+    query = "SELECT COALESCE(MAX(version),0),COUNT(*),COUNT(*) FILTER (WHERE version IN (48,49)),COUNT(*) FILTER (WHERE version NOT BETWEEN 1 AND 47),(SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend') FROM norn_schema_migrations"
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.path.strip("/") or parsed.fragment:
+        fail("NORN_DATABASE_URL must identify one PostgreSQL database")
+    params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if any(len(values) != 1 for values in params.values()):
+        fail("NORN_DATABASE_URL repeats a PostgreSQL parameter")
+    query_env = {
+        "host": "PGHOST", "hostaddr": "PGHOSTADDR", "port": "PGPORT", "passfile": "PGPASSFILE",
+        "sslmode": "PGSSLMODE", "sslrootcert": "PGSSLROOTCERT", "sslcert": "PGSSLCERT",
+        "sslkey": "PGSSLKEY", "sslpassword": "PGSSLPASSWORD", "sslcrl": "PGSSLCRL",
+        "sslcrldir": "PGSSLCRLDIR", "sslnegotiation": "PGSSLNEGOTIATION", "gssencmode": "PGGSSENCMODE",
+        "channel_binding": "PGCHANNELBINDING", "connect_timeout": "PGCONNECT_TIMEOUT",
+        "target_session_attrs": "PGTARGETSESSIONATTRS", "application_name": "PGAPPNAME",
+    }
+    if set(params) - set(query_env):
+        fail("NORN_DATABASE_URL has unsupported PostgreSQL connection parameters")
+    socket_host = params.get("host", [""])[0]
+    host = socket_host or parsed.hostname
+    if not host or (socket_host.startswith("/") and not Path(socket_host).is_dir()):
+        fail("NORN_DATABASE_URL has no usable PostgreSQL host")
+    try:
+        port = int(params.get("port", [parsed.port or 5432])[0])
+    except ValueError:
+        fail("NORN_DATABASE_URL has an invalid PostgreSQL port")
+    if not 1 <= port <= 65535:
+        fail("NORN_DATABASE_URL has an invalid PostgreSQL port")
+    pg_env = {name: value for name, value in os.environ.items() if not name.startswith(("PG", "NORN_"))}
+    pg_env.update({"PGHOST": host, "PGPORT": str(port), "PGDATABASE": urllib.parse.unquote(parsed.path.strip("/")),
+                   "PGUSER": urllib.parse.unquote(parsed.username or ""),
+                   "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
+                   "PGOPTIONS": "-c default_transaction_read_only=on"})
+    for param, env_name in query_env.items():
+        if param in params:
+            pg_env[env_name] = params[param][0]
+    result = subprocess.run([str(args.psql), "-X", "-A", "-t", "-F", "|", "-v", "ON_ERROR_STOP=1", "-c", query],
+                            capture_output=True, text=True, check=False, env=pg_env)
+    if result.returncode:
+        fail(f"read-only schema ledger query failed (exit {result.returncode})")
+    rows = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if rows != ["47|47|0|0|0"]:
+        fail("database schema ledger is not exactly complete through 47, or later/unknown migrations or other client sessions exist")
+    return {"databaseIdentity": identity, "schemaMax": 47, "schemaRows": 47, "futureRows": 0, "unknownRows": 0,
+            "otherClientBackends": 0}
+
+
+def verify_services(args: argparse.Namespace) -> dict[str, Any]:
+    result = subprocess.run([str(args.launchctl), "list"], capture_output=True, text=True, check=False)
+    if result.returncode:
+        fail("cannot read launchd service state")
+    found: dict[str, dict[str, str]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[2] in {"com.norn.api", "com.norn.host-agent"}:
+            found[parts[2]] = {"pid": parts[0], "status": parts[1]}
+    for label in ("com.norn.api", "com.norn.host-agent"):
+        state = found.get(label)
+        if not state or state != {"pid": "-", "status": "78"}:
+            fail(f"{label} is not verifiably stopped at the exit-78 legacy fence")
+    for label, binary in (("com.norn.api", args.api_binary), ("com.norn.host-agent", args.host_agent_binary)):
+        try:
+            run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            fail(f"cannot prove {label} fence binary: {error}")
+        if run.returncode != 78 or run.stdout.strip() != "norn legacy baseline fence active; candidate recovery is required":
+            fail(f"{label} fence binary does not return the exact exit-78 fence sentinel")
+    return found
+
+
+def sign_document(value: dict[str, Any], key: bytes) -> bytes:
+    result = dict(value)
+    schema = str(result["schema"])
+    result["signature"] = "hmac-sha256:" + hmac.new(key, schema.encode() + b"\0" + canonical(value), hashlib.sha256).hexdigest()
+    return canonical(result) + b"\n"
+
+
+def atomic_bundle(parent: Path, name: str, files: dict[str, bytes], key: bytes | None = None,
+                  expected_tuple: dict[str, Any] | None = None) -> Path:
+    if parent.is_symlink() or not parent.is_dir():
+        fail("retarget output parent must be a real directory")
+    info = parent.stat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        fail("retarget output directory must be invoking-user-owned mode 0700")
+    target = parent / name
+    if target.exists() or target.is_symlink():
+        if key is None or expected_tuple is None:
+            fail("versioned retarget bundle already exists")
+        if target.is_symlink() or not target.is_dir():
+            fail("existing versioned retarget bundle is not a real directory")
+        info = target.lstat()
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            fail("existing versioned retarget bundle must be invoking-user-owned mode 0700")
+        existing: dict[str, bytes] = {}
+        for filename in files:
+            path = target / filename
+            existing[filename] = read_private(path, f"existing {filename}")
+        tuple_value = verify_hmac(existing["retarget.json"], RETARGET_SCHEMA,
+                                  set(expected_tuple) | {"signature"}, key, "existing retarget tuple")
+        comparable_expected = dict(expected_tuple)
+        comparable_existing = dict(tuple_value)
+        comparable_existing.pop("signature", None)
+        comparable_existing.pop("createdAt", None)
+        comparable_expected.pop("createdAt", None)
+        if comparable_existing != comparable_expected:
+            fail("existing versioned retarget bundle is bound to different inputs")
+        for filename, raw in files.items():
+            if filename != "retarget.json" and existing[filename] != raw:
+                fail(f"existing versioned retarget bundle differs from freshly verified {filename}")
+        return target
+    temp = Path(tempfile.mkdtemp(prefix=".retarget-", dir=parent))
+    try:
+        os.chmod(temp, 0o700)
+        for filename, raw in files.items():
+            path = temp / filename
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "wb", closefd=False) as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(fd)
+            finally:
+                os.close(fd)
+        directory_fd = os.open(temp, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        os.rename(temp, target)
+        parent_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        return target
+    except Exception:
+        if temp.exists():
+            for child in temp.iterdir():
+                child.unlink()
+            temp.rmdir()
+        raise
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("candidate_sha")
+    result.add_argument("--source-sha", required=True)
+    result.add_argument("--transition-id", required=True)
+    result.add_argument("--journal", type=Path, required=True)
+    result.add_argument("--evidence", type=Path, required=True)
+    result.add_argument("--backup-proof", type=Path, required=True)
+    result.add_argument("--backup-artifact", type=Path, required=True)
+    result.add_argument("--shadow-receipt", type=Path, required=True)
+    result.add_argument("--current-link", type=Path, required=True)
+    result.add_argument("--releases-root", type=Path, required=True)
+    result.add_argument("--release-verifier", type=Path, required=True)
+    result.add_argument("--output-parent", type=Path, required=True)
+    result.add_argument("--psql", type=Path, default=Path("/usr/bin/psql"))
+    result.add_argument("--launchctl", type=Path, default=Path("/bin/launchctl"))
+    result.add_argument("--api-binary", type=Path, required=True)
+    result.add_argument("--host-agent-binary", type=Path, required=True)
+    return result
+
+
+def run(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    if len(key) < 32:
+        fail("NORN_AUDIT_SIGNING_KEY must contain at least 32 bytes")
+    if not HEX40.fullmatch(args.candidate_sha) or args.candidate_sha == SOURCE_CANDIDATE:
+        fail("new candidate SHA must be exact lowercase hex and differ from the old 85fb candidate")
+    for path, label in ((args.releases_root, "release root"), (args.output_parent, "output parent"),
+                        (args.journal.parent, "journal directory"), (args.evidence.parent, "evidence directory"),
+                        (args.backup_proof, "backup proof"), (args.backup_artifact, "backup artifact"),
+                        (args.shadow_receipt, "shadow receipt"), (args.release_verifier, "release verifier"),
+                        (args.api_binary, "API fence binary"), (args.host_agent_binary, "host-agent fence binary")):
+        try:
+            canonical_path = path.resolve(strict=True)
+        except OSError as error:
+            fail(f"{label} path is unavailable: {error}")
+        if not path.is_absolute() or path != canonical_path or path.is_symlink():
+            fail(f"{label} path must be absolute, canonical, and not a symlink")
+    if not args.current_link.is_absolute() or args.current_link.parent.resolve(strict=True) != args.current_link.parent:
+        fail("current symlink path must be absolute with a canonical parent directory")
+    journal, old_evidence, evidence_path = verify_source_binding(args, key)
+    candidate_release = verify_source_release(args)
+    database = verify_database(args, old_evidence, key)
+    proof, shadow, proof_sha, backup_sha, backup_bytes = verify_backup_shadow(
+        args, args.source_sha, args.candidate_sha, database["databaseIdentity"])
+    services = verify_services(args)
+    now = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    old_evidence_sha = digest(read_private(evidence_path, "old candidate-bound source evidence"))
+    new_evidence = {
+        "schema": EVIDENCE_SCHEMA,
+        "transitionId": args.transition_id,
+        "sourceSHA": args.source_sha,
+        "candidateSHA": args.candidate_sha,
+        "databaseIdentity": database["databaseIdentity"],
+        "recoveryFenceSHA256": old_evidence["recoveryFenceSHA256"],
+        "adoptionReceiptSHA256": old_evidence["adoptionReceiptSHA256"],
+        "incidentBindingSHA256": old_evidence["incidentBindingSHA256"],
+        "ledgerSHA256": old_evidence["ledgerSHA256"],
+        "reconciliationSHA256": old_evidence["reconciliationSHA256"],
+        "incidentCandidateSHA": old_evidence["incidentCandidateSHA"],
+        "incidentBeforeDigest": old_evidence["incidentBeforeDigest"],
+        "beforeDigest": old_evidence["beforeDigest"],
+        "preservationCapture": "carried-forward-verified",
+        "carriedForwardEvidenceSHA256": old_evidence_sha,
+        "carriedForwardEvidencePath": str(evidence_path.resolve(strict=True)),
+        "backupProofSHA256": proof_sha,
+        "backupSHA256": backup_sha,
+        "backupBytes": backup_bytes,
+        "shadowReceiptSHA256": digest(read_private(args.shadow_receipt, "fresh shadow receipt")),
+    }
+    bundle_name = f"retarget-{args.candidate_sha}"
+    bundle = args.output_parent / bundle_name
+    new_evidence_path = bundle / "source-evidence.json"
+    new_journal = dict(journal)
+    new_journal.update({
+        "candidateReleaseSHA": args.candidate_sha,
+        "sourceEvidencePath": str(new_evidence_path),
+        "sourceEvidenceSHA256": "pending-signed-evidence-digest",
+        "backupProofPath": str(args.backup_proof.resolve()),
+        "backupArtifactPath": str(args.backup_artifact.resolve()),
+        "shadowReceiptPath": str(args.shadow_receipt.resolve()),
+        "state": "legacy-fenced",
+    })
+    evidence_raw = sign_document(new_evidence, key)
+    new_journal["sourceEvidenceSHA256"] = digest(evidence_raw)
+    tuple_value = {
+        "schema": RETARGET_SCHEMA,
+        "transitionID": args.transition_id,
+        "sourceSHA": args.source_sha,
+        "previousCandidateSHA": SOURCE_CANDIDATE,
+        "candidateSHA": args.candidate_sha,
+        "previousJournalSHA256": digest(read_private(args.journal, "active transition journal")),
+        "previousEvidenceSHA256": old_evidence_sha,
+        "previousEvidencePath": str(evidence_path.resolve(strict=True)),
+        "candidateReleasePath": str(candidate_release.resolve()),
+        "journalPath": str(args.journal.resolve()),
+        "versionedJournalPath": str(bundle / "transition.json"),
+        "versionedEvidencePath": str(new_evidence_path),
+        "versionedJournalSHA256": digest(canonical(new_journal) + b"\n"),
+        "versionedEvidenceSHA256": digest(evidence_raw),
+        "backupProofPath": str(args.backup_proof.resolve()),
+        "backupArtifactPath": str(args.backup_artifact.resolve()),
+        "shadowReceiptPath": str(args.shadow_receipt.resolve()),
+        "databaseIdentity": database["databaseIdentity"],
+        "schemaLedger": database,
+        "services": services,
+        "preservationCapture": "carried-forward-verified",
+        "createdAt": now,
+    }
+    tuple_raw = sign_document(tuple_value, key)
+    files = {
+        "source-evidence.json": evidence_raw,
+        "transition.json": canonical(new_journal) + b"\n",
+        "retarget.json": tuple_raw,
+        "previous-transition.json": read_private(args.journal, "active transition journal"),
+    }
+    result = atomic_bundle(args.output_parent, bundle_name, files, key, tuple_value)
+    print(json.dumps({"status": "prepared", "bundle": str(result), "journal": str(result / "transition.json"),
+                      "evidence": str(result / "source-evidence.json"), "retarget": str(result / "retarget.json"),
+                      "preservationCapture": "carried-forward-verified"}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(run())
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)
