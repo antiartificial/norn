@@ -693,10 +693,11 @@ def run(argv: list[str] | None = None) -> int:
 
     env = os.environ.copy()
     env["NORN_API_BASE"] = api
+    env["NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE"] = args.transition_id
     # The shell lane validates its own journal phase and decides whether this
     # is initial execution or safe exact-candidate phase recovery.
     if not journal_value or journal_value["state"] not in PRESERVATION_PHASES:
-        invoke_platform(platform_script, "recovered-forward", [
+        invoke_platform(platform_script, "recovered-forward-controller", [
             args.candidate_sha, "--source-sha", args.source_sha, "--transition-id", args.transition_id,
             "--source-evidence", str(evidence_path), "--source-evidence-sha256", evidence_sha,
             "--backup-proof", str(args.backup_proof), "--backup-artifact", str(args.backup_artifact),

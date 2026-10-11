@@ -55,8 +55,23 @@ CURRENT_REQUIRED_BINARIES = frozenset({
     "platform-release-verify-github",
     "platform-upgrade",
 })
+PRE_M5_REQUIRED_BINARIES = frozenset({
+    "host-runtime",
+    "norn",
+    "norn-api",
+    "norn-effect-runner",
+    "norn-host-agent",
+    "norn-ingress-observer",
+    "norn-ingress-publisher",
+    "platform-release-manifest",
+    "platform-release-artifact",
+    "platform-release-fetch-github",
+    "platform-release-verify-github",
+    "platform-upgrade",
+})
 REQUIRED_BINARY_LAYOUTS = frozenset({
     LEGACY_REQUIRED_BINARIES,
+    PRE_M5_REQUIRED_BINARIES,
     CURRENT_REQUIRED_BINARIES,
 })
 ALLOWED_ROOT_ENTRIES = {

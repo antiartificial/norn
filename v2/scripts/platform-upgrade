@@ -106,6 +106,12 @@ if [[ -z "$mode" || "$mode" == "-h" || "$mode" == "--help" ]]; then
 fi
 shift || true
 
+internal_recovered_forward_controller=false
+if [[ "$mode" == "recovered-forward-controller" ]]; then
+  internal_recovered_forward_controller=true
+  mode="recovered-forward"
+fi
+
 case "$mode" in
   preflight|upgrade|legacy-baseline|legacy-baseline-finalize|recovered-forward|recovered-forward-finalize|recovered-baseline-adopt|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch|mini-protected-backup|mini-signed-shadow) ;;
   *) usage >&2; exit 2 ;;
@@ -227,6 +233,9 @@ if [[ "$mode" == "recovered-forward" ]]; then
   recovered_forward_evidence_path_valid "$recovered_source_evidence" "$ref" "$recovered_transition_root" || fail "recovered-forward source evidence path is not fixed or exact-candidate-versioned"
   [[ "$recovered_source_evidence_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "recovered-forward requires the exact source-evidence SHA-256"
   [[ -n "$recovered_backup_proof" && -n "$recovered_backup_artifact" && -n "$recovered_shadow_receipt" ]] || fail "recovered-forward requires backup proof, backup artifact, and signed shadow receipt"
+fi
+if [[ "$internal_recovered_forward_controller" == true ]]; then
+  [[ -n "${NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE:-}" && "$NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE" == "$recovered_transition_id" ]] || fail "recovered-forward controller mode requires the exact signed transition-wrapper handoff"
 fi
 if [[ "$mode" == "recovered-forward-finalize" ]]; then
   while [[ "$#" -gt 0 ]]; do
@@ -376,7 +385,7 @@ PY
           [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
           case "${recovered_early_args[1]}" in
             upgrade) fail "recovered baseline requires the guarded recovered-forward transition; ordinary upgrade is prohibited" ;;
-            preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-finalize) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+            preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
             recovered-baseline-adopt)
               recovered_adopter_release="$(python3 - "${recovered_early_args[0]}" "$releases" <<'PY'
 import os, sys
@@ -1703,45 +1712,15 @@ recovered_forward_validate_preflight() {
   export NORN_LEGACY_BASELINE_CANDIDATE_SHA="$ref"
 }
 
-# A newer signed candidate may need to retarget the already-authorized journal
-# before the shell controller can validate its own candidate binding. Dispatch
-# only the one known legacy-fenced journal from the prior Mini attempt; the
-# signed candidate wrapper performs the full evidence, release, backup, shadow,
-# and retarget-tuple verification before changing it. Once retargeted, the
-# recursive managed-controller call sees the new SHA and continues normally.
-recovered_forward_dispatch_exact_retarget() {
-  local candidate_sha="$1" journal="$HOME/.config/norn/recovered-forward/transition.json"
+# The signed candidate wrapper owns exact evidence validation and journal
+# retargeting. It then calls this same signed controller in internal mode,
+# authenticated by the transition ID set in the wrapper's child environment.
+recovered_forward_dispatch_transition() {
   local wrapper="$script_dir/mini-recovered-forward-transition"
-  local match_status=0
-  [[ -f "$journal" && ! -L "$journal" ]] || return 0
+  [[ "$internal_recovered_forward_controller" == true ]] && return 0
   [[ -x "$wrapper" && ! -L "$wrapper" ]] || fail "signed recovered-forward retarget wrapper is unavailable"
-  python3 - "$journal" "$candidate_sha" <<'PY' || match_status=$?
-import json, os, stat, sys
-path, candidate = sys.argv[1:]
-info = os.lstat(path)
-if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-        or stat.S_IMODE(info.st_mode) != 0o600):
-    raise SystemExit("journal is not a private regular file")
-with open(path, encoding="utf-8") as source:
-    value = json.load(source)
-if (type(value) is dict
-        and value.get("schema") == "norn.recovered-forward-transition/v1"
-        and value.get("state") == "legacy-fenced"
-        and value.get("sourceSHA") == "26147c39a554b73b6761a371edee5a9591c81d3f"
-        and value.get("candidateReleaseSHA") == "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"
-        and candidate != value.get("candidateReleaseSHA")):
-    raise SystemExit(0)
-raise SystemExit(1)
-PY
-  # Python uses exit 0 for the exact known journal and exit 1 for every other
-  # state. A malformed or unreadable journal must fail closed in the ordinary
-  # validator below, not be treated as permission to retarget.
-  if [[ "$match_status" -ne 0 ]]; then
-    [[ -r "$journal" ]] || fail "recovered-forward journal cannot be safely inspected"
-    return 0
-  fi
-  log "dispatching exact signed-candidate retarget for the retained Mini journal"
-  exec "$wrapper" "$candidate_sha" --source-sha "$recovered_source_sha" \
+  log "dispatching the exact signed-candidate recovered-forward wrapper"
+  exec "$wrapper" "$ref" --source-sha "$recovered_source_sha" \
     --transition-id "$recovered_transition_id" --backup-proof "$recovered_backup_proof" \
     --backup-artifact "$recovered_backup_artifact" --shadow-receipt "$recovered_shadow_receipt"
 }
@@ -3444,7 +3423,7 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
       case "$recovered_env_mode" in
         upgrade) fail "recovered baseline requires the guarded recovered-forward transition; ordinary upgrade is prohibited" ;;
-        preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-finalize) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+        preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
         recovered-baseline-adopt) [[ "$recovered_env_command" == "$platform_script_bin" || "$recovered_env_command" == "$releases"/*/bin/platform-upgrade ]] || fail "recovered baseline adoption child is not an immutable release script" ;;
         *) fail "recovered baseline rejects env-exec child mode $recovered_env_mode" ;;
       esac
@@ -3505,7 +3484,7 @@ if [[ "$mode" == "legacy-baseline" ]]; then
   stop_candidate
   promote_legacy_baseline_release
 elif [[ "$mode" == "recovered-forward" ]]; then
-  recovered_forward_dispatch_exact_retarget "$ref"
+  recovered_forward_dispatch_transition
   recovered_forward_validate_preflight
   recovered_forward_resume_or_start
 elif [[ "$mode" == "upgrade" ]]; then
