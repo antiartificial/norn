@@ -264,15 +264,16 @@ cp -RP "$release" "$candidate_copy"
 release="$candidate_copy"
 api="$release/bin/norn-api"
 [[ -x $manifest && -x $artifact && -x $api && -f $release/release.env ]] || { remove_scratch "$scratch"; echo 'candidate release or trusted verifier is incomplete' >&2; exit 2; }
-read -r sha version < <(RELEASE_ENV="$release/release.env" python3 - <<'PY'
+identity="$(RELEASE_ENV="$release/release.env" python3 - <<'PY'
 import os, re
 rows = dict(row.rstrip('\n').split('=', 1) for row in open(os.environ['RELEASE_ENV'], encoding='utf-8') if '=' in row)
 sha, version = rows.get('NORN_RELEASE_SHA',''), rows.get('NORN_RELEASE_VERSION','')
-if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-platform(?:-[0-9]+-g[0-9a-f]{7,40})?', version): raise SystemExit(2)
+if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?-platform(?:-[0-9]+-g[0-9a-f]{7,40})?', version): raise SystemExit(2)
 if '-g' in version and not sha.startswith(version.rsplit('-g',1)[1]): raise SystemExit(2)
 print(sha, version)
 PY
-)
+)" || { echo 'candidate release identity is invalid' >&2; exit 2; }
+read -r sha version <<<"$identity"
 [[ $(basename "$source_release") == "$sha" ]] || { echo 'candidate release directory does not match its signed SHA' >&2; exit 1; }
 [[ $("$manifest" verify --release "$release" --expected-sha "$sha") == signed ]] || { echo 'candidate manifest is not signed' >&2; exit 1; }
 "$artifact" verify --release-dir "$release" --public-key "$public_key" --quiet

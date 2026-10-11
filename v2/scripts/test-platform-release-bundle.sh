@@ -7,14 +7,7 @@ sha="$(git -C "$repo" rev-parse HEAD)"
 source_epoch="$(git -C "$repo" show -s --format=%ct "$sha")"
 created_at="$(git -C "$repo" show -s --format=%cI "$sha")"
 described="$(git -C "$repo" describe --tags --exclude='platform-*' "$sha")"
-if [[ "$described" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-(control|platform)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]; then
-  version="${BASH_REMATCH[1]}-platform${BASH_REMATCH[3]}"
-elif [[ "$described" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]; then
-  version="${BASH_REMATCH[1]}-platform${BASH_REMATCH[2]}"
-else
-  echo "unsupported platform version description: $described" >&2
-  exit 1
-fi
+version="$(python3 "$repo/v2/scripts/platform-release-artifact" version-from-tag "$described")"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/norn-release-bundle-test.XXXXXX")"
 cleanup() {

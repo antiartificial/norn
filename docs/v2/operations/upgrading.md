@@ -69,8 +69,11 @@ from `master` with that exact 40-character SHA. Approve only the matching
 OS/architecture bundle jobs succeed.
 
 Assign the release a version-first operator label in the established
-`v<major>.<minor>.<patch>-platform[-<distance>-g<shortsha>]` form, for example
-`v2.21.0-platform` or `v2.21.0-platform-3-g1a2b3c4`.
+`v<major>.<minor>.<patch>-platform[-<distance>-g<shortsha>]` form, or for a
+candidate `v<major>.<minor>.<patch>-rc.<n>-platform[-<distance>-g<shortsha>]`.
+For example: `v2.21.0-platform`, `v2.21.0-platform-3-g1a2b3c4`, or
+`v3.0.0-rc.1-platform`. Candidate GitHub Releases must be marked prerelease
+consistently with the signed bundle version; stable releases remain stable.
 Release history in the API, CLI, web UI, and native clients should lead with
 that value and show a short SHA only as supporting provenance. Do not rename
 the immutable GitHub tag, full-SHA release directory, manifest binding, or

@@ -31,6 +31,10 @@ not package, sign, or publish release assets.
 Release history has a separate, human-facing identity. Use the optional
 `displayVersion` label, such as `v2.21.0-platform` or the Git-describe form
 `v2.21.0-platform-3-g1a2b3c4`, in the API, CLI, dashboard, and native clients.
+Release candidates use `v<major>.<minor>.<patch>-rc.<n>-platform` (with the
+same optional Git-describe suffix), and remain prereleases through signing,
+publication, fetch, and display. An RC label is not a stable release or a GA
+claim.
 Retain the signed manifest's `version`, and present the
 abbreviated SHA as secondary provenance rather than the release name. This
 display convention does not replace the immutable identity: GitHub tags remain
