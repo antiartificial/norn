@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
-import json
 import hashlib
+import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -47,6 +48,24 @@ LEGACY_BINARIES = (
 
 
 class PlatformReleaseManifestTests(unittest.TestCase):
+    def test_protected_publisher_installs_every_current_script_helper(self) -> None:
+        workflow = Path(__file__).resolve().parents[2] / ".github/workflows/platform-release.yml"
+        text = workflow.read_text(encoding="utf-8")
+        match = re.search(r"for helper in \\\n(?P<body>.*?)\n\s*do", text, re.DOTALL)
+        self.assertIsNotNone(match, "protected release helper install loop was not found")
+        installed = {
+            line.strip().removesuffix("\\").strip()
+            for line in match.group("body").splitlines()
+            if line.strip()
+        }
+        go_built = {
+            "norn", "norn-api", "norn-effect-runner", "norn-host-agent",
+            "norn-ingress-observer", "norn-ingress-publisher",
+        }
+        script_helpers = set(BINARIES) - go_built
+        missing = sorted(script_helpers - installed)
+        self.assertFalse(missing, f"publisher omits helpers: {missing}")
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
