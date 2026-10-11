@@ -230,10 +230,10 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $release == /* && -d $release && ! -L $release && $public_key == /* && -f $public_key && ! -L $public_key ]] || usage
 [[ -n ${NORN_REHEARSAL_BACKUP_ARTIFACT:-} && -n ${NORN_REHEARSAL_BACKUP_PROOF:-} && -z ${NORN_REHEARSAL_SOURCE_DATABASE_URL:-} ]] || { echo 'signed shadow rehearsal requires protected backup mode without a source URL' >&2; exit 2; }
-root=$(cd "$(dirname "$0")/../.." && pwd)
+script_dir=$(cd "$(dirname "$0")" && pwd)
 source_release=$release
-manifest="$root/v2/scripts/platform-release-manifest"
-artifact="$root/v2/scripts/platform-release-artifact"
+manifest="$script_dir/platform-release-manifest"
+artifact="$script_dir/platform-release-artifact"
 receipt=${NORN_M5_SHADOW_RECEIPT:-}
 [[ $receipt == /* && ! -e $receipt && -d $(dirname "$receipt") ]] || { echo 'NORN_M5_SHADOW_RECEIPT must be a new absolute path in an existing directory' >&2; exit 2; }
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/norn-m5-signed-shadow.XXXXXX")
@@ -330,4 +330,4 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 export NORN_M5_SHADOW_ROOT="$scratch" NORN_M5_SHADOW_LABEL="$label" NORN_M5_SHADOW_DB_SESSION="$db_session" NORN_M5_SHADOW_PORT="$port" NORN_M5_SHADOW_VERSION="$version" NORN_M5_SHADOW_API="$api" NORN_M5_SHADOW_RELEASE="$release" NORN_M5_SHADOW_SHA="$sha" NORN_M5_SHADOW_MANIFEST="$manifest" NORN_M5_SHADOW_ARTIFACT="$artifact" NORN_M5_SHADOW_PUBLIC_KEY="$public_key" NORN_M5_SHADOW_SESSION="$session" NORN_M5_SHADOW_HANDOFF_TOKEN="$token" NORN_M5_SHADOW_BOOTSTRAPPED_FILE="$bootstrapped" NORN_M5_SHADOW_RUNTIME_ATTEMPTED_FILE="$runtime_attempted" NORN_M5_SHADOW_RUNTIME_PASSED_FILE="$runtime_passed"
 export NORN_M5_SHADOW_PLIST="$scratch/$label.plist" NORN_M5_SHADOW_ENV="$scratch/runtime.env" NORN_M5_SHADOW_LAUNCHER="$scratch/launch-shadow-api"
-NORN_CANDIDATE_SHA="$sha" NORN_CANDIDATE_VERSION="$version" NORN_REHEARSAL_SHADOW_COMMAND="$hook" "$root/v2/scripts/mini-private-copy-rehearsal" "$api"
+NORN_CANDIDATE_SHA="$sha" NORN_CANDIDATE_VERSION="$version" NORN_REHEARSAL_SHADOW_COMMAND="$hook" "$script_dir/mini-private-copy-rehearsal" "$api"
