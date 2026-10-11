@@ -59,6 +59,10 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "platform-release-artifact",
             "platform-release-fetch-github",
             "platform-release-verify-github",
+            "mini-create-protected-backup",
+            "mini-verify-protected-backup",
+            "mini-private-copy-rehearsal",
+            "mini-signed-shadow-launchagent-rehearsal",
         ):
             shutil.copy2(SCRIPT_DIR / name, scripts / name)
         self.write("v2/scripts/host-runtime", "#!/usr/bin/env bash\nexit 0\n", executable=True)
