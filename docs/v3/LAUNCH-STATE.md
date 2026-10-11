@@ -5,29 +5,48 @@
 The v3 launch has two separate tracks. **The Mini can be upgraded and run v3
 without a Fleet cluster.** It remains a single-node Norn API using its existing
 unmanaged PostgreSQL. It does not need Fleet etcd members or Fleet management
-nodes. Connecting Mini to Fleet is an optional later integration: configure the
-Fleet API only when there is a running Fleet to observe or operate.
+nodes. Fleet integration is optional and can be configured after a Fleet
+exists. In the current implementation, Mini reads a local `NORN_FLEET_CONFIG`
+document and uses its protected GitHub App/workflow bridge for Fleet operations;
+it does not require a direct connection to a Fleet-node API. Neither that
+integration nor Fleet availability is a Mini startup or upgrade prerequisite.
 
-The Mini track is: merge the Mini drain correction, publish and verify the
-exact signed platform release, take and verify a fresh Mini-local recovery
-copy, run the protected Mini transition/upgrade, then verify API version,
+The Mini track is: publish and verify the exact signed platform release, take
+and verify a fresh Mini-local recovery copy, run the protected Mini
+transition/upgrade, then verify API version,
 health, database access, preserved applications, and host assurance. Fleet
 deployment, etcd quorum, ingress, workload/scale testing, and teardown remain
 separate Fleet acceptance milestones; none is a prerequisite for upgrading the
 Mini.
 
-As of 2026-10-11, PR [#137](https://github.com/antiartificial/norn/pull/137)
-was merged as `02095664e69c885c28ecef20ba65d7261e2f3134`, and its immutable
-signed prerelease was published as
-[`platform-02095664e69c885c28ecef20ba65d7261e2f3134`](https://github.com/antiartificial/norn/releases/tag/platform-02095664e69c885c28ecef20ba65d7261e2f3134).
-The Mini imported and signature-verified that exact release. Its preflight
-then refused before migration because the live PostgreSQL schema was at 47
-while the candidate requires at least 49. No live promotion or migration was
-performed. A follow-up correction is in review to apply Mini-only drain rules
-to the standard signed upgrade path used by the Mini's recovered-baseline
-state; queued Fleet dispatch receipts alone must not block the Mini upgrade.
+As of 2026-10-11, the Mini drain corrections in PRs
+[#137](https://github.com/antiartificial/norn/pull/137) and
+[#138](https://github.com/antiartificial/norn/pull/138) are merged. The signed
+rehearsal correction in PR
+[#140](https://github.com/antiartificial/norn/pull/140) is also merged as
+`a059f2e5b42e8df30c3fe4460cbd6455a0ea4722`. Its immutable signed prerelease is
+[`platform-a059f2e5b42e8df30c3fe4460cbd6455a0ea4722`](https://github.com/antiartificial/norn/releases/tag/platform-a059f2e5b42e8df30c3fe4460cbd6455a0ea4722).
+The Mini imported and signature-verified that exact release. A fresh Mini-local
+backup and a signed private-database/LaunchAgent shadow rehearsal passed. The
+live upgrade then stopped before migration or promotion: the candidate raises
+the PostgreSQL writer floor from 31 to 32, and the ordinary restart lane cannot
+prove that every old writer is fenced. A prior transition is recorded as
+`candidate-postflight-failed`; its signed adoption receipt supports forward
+work but does not authorize replay of the old one-way procedure or prove live
+writer quiescence. Mini remains on its prior signed release and schema 47.
+The next Mini-specific engineering gate is a separately journaled,
+interruption-tested recovered-forward transition that proves all writers are
+quiesced before migration and only moves forward. Fleet deployment, Fleet
+management nodes, and Fleet etcd are not prerequisites for this Mini update.
 
-Observed 2026-10-06 00:17 UTC. This is the single current handoff for the
+At 18:49 UTC, direct SSH to Mini and loopback API checks reconfirmed source
+`26147c39a554b73b6761a371edee5a9591c81d3f`, version
+`v2.20.0-platform-72-g26147c39`, schema 47 with writer floor 31, health `ok`,
+and active single-node runtime services including PostgreSQL, Consul, and
+Nomad. The direct IP path worked; the `mini.tail113139.ts.net` alias did not
+resolve from this Mac. No live mutation was performed.
+
+Observed 2026-10-11. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
 owner sign-offs. Recheck external state before any new mutation.
@@ -488,20 +507,20 @@ running Fleet qualification.
 | M2 profiles and retention | 50% | Mini uses development/PostgreSQL; separate-node restore, provider retention and legacy binding review remain. |
 | M3 etcd Fleet | 45% | Local three-member rehearsals and live five-node provider creation exist; no bootstrapped etcd membership, quorum, fault/restore, alarm, rotation or soak proof. |
 | M4 capacity and ingress | 40% | Local admission and two-ingress fixtures exist; no live route, placement, loaded 2→3→2 or drain proof. |
-| M5 Mini upgrade rehearsal | 35% | Mini runs v3 source, but the original one-way transition lacks its before snapshot. Rehearse on a representative private current backup. |
+| M5 Mini upgrade rehearsal | 55% | Exact signed candidate imported; fresh backup proof and signed private restore/LaunchAgent rehearsal passed. Live schema migration and promotion remain blocked until a recovered-forward lane proves all old writers are quiesced. |
 | M6 running upgrades and app DB | 25% | Journals and local transfer fixtures exist; protected running upgrade and app DB cutover/interruption proof remain. |
 | M7 mobility | 30% | Isolated Mini fixture web/worker/tick and private restore comparison passed. No Fleet target or complete move exists. |
-| M8 release qualification | 32% | Protected exact-SHA authorization, UI build, and all four platform bundle builds passed; publish is awaiting environment review and credential rotation. Mini promotion, provider-backed fitness, soak/fault results, and owner sign-off remain. |
+| M8 release qualification | 40% | Exact-SHA signed prerelease published and verified; live Mini promotion, Fleet provider-backed fitness, soak/fault results, and owner sign-off remain. |
 | M9 adoption | 10% | Mini API runs v3 code; Fleet and controlled application adoption are absent. |
 
 ## Next actions
 
-1. Revoke and replace the exposed release-check PAT, update
-   `NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN`, then review the pending run (or
-   rerun it for exact SHA `1ca28934034c48f28aed4b97b6d4971d69b642e3` if the
-   current run fails). Verify the immutable signed tag, target SHA, and all
-   platform assets, then import and promote that release on Mini through its
-   managed signed-upgrade path.
+1. Implement and qualify the separate recovered-forward Mini transition for
+   the exact adopted recovery state. It must bind the signed candidate, fresh
+   backup/restore evidence, adoption receipt, source release and schema, fence
+   both API and host-agent writers, prove writer quiescence, journal
+   interruption/retry safely, and prohibit rollback to the old writer. Then
+   take fresh preflight evidence and promote the exact signed release on Mini.
 2. Supply fresh staging-only DigitalOcean/state secrets and the protected
    runner inputs listed by `scripts/setup doctor --environment staging`. The
    retired pilot's credentials and approvals are not reusable.
@@ -509,7 +528,8 @@ running Fleet qualification.
    path before authorizing a new billable Fleet pilot. Require automatic Fleet,
    management and backend cleanup with preserved receipts and a final-zero
    observation within a new approved budget and time envelope.
-4. Prove live Fleet state: three etcd members/quorum, Consul/Nomad enrollment,
+4. Independently, when the local Mini release work is complete, prove live
+   Fleet state: three etcd members/quorum, Consul/Nomad enrollment,
    two ingresses and trusted public TLS, a staging workload with write/read,
    fault and restore, and loaded 2→3→2 scaling and drain. Complete the separate
    protected retirement proof for the pilot.

@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -15,6 +20,8 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -170,11 +177,16 @@ func main() {
 		serveLegacyBaselineMaintenance(cfg, db, databaseID, schemaStatus, startupCfg)
 		return
 	}
+	if os.Getenv("NORN_RECOVERED_FORWARD_MAINTENANCE") == "true" {
+		serveRecoveredForwardMaintenance(cfg, db, databaseID, schemaStatus, startupCfg)
+		return
+	}
 	// A held legacy-baseline fence is a durable maintenance state.  A reboot or
 	// an accidentally cleared launchd environment must never turn it into a
 	// normal writer-bearing process.  Only the protected launcher supplies the
 	// exact transition ID after it has verified preservation.
 	var legacyActivationFence *store.RuntimeMutationFence
+	var recoveredForwardActivation *recoveredForwardActivation
 	if fence, active, fenceErr := db.RuntimeMutationFenceState(context.Background()); fenceErr != nil {
 		log.Fatalf("legacy baseline fence state: %v", fenceErr)
 	} else if active && strings.HasPrefix(fence.Owner, "legacy-baseline:") {
@@ -186,13 +198,19 @@ func main() {
 			log.Fatalf("legacy baseline maintenance fence remains active (owner=%q epoch=%d); recover through the exact protected transition", fence.Owner, fence.Epoch)
 		}
 		legacyActivationFence = &fence
+	} else if active && strings.HasPrefix(fence.Owner, "recovered-forward:") {
+		activation, activationErr := validateRecoveredForwardActivation(cfg, db, databaseID, SourceSHA, fence, os.Getenv)
+		if activationErr != nil {
+			log.Fatalf("recovered-forward maintenance fence remains active (owner=%q epoch=%d): %v", fence.Owner, fence.Epoch, activationErr)
+		}
+		recoveredForwardActivation = activation
 	}
 	// Initializing the Apple runtime can start its VM. Preserve the durable
 	// handoff fence until its exact candidate is admitted; the Mini lane uses
 	// Nomad/Consul, so fail closed rather than permit an unproven local-runtime
 	// side effect before that release boundary.
-	if legacyActivationFence != nil && cfg.WorkloadConnector == connector.AppleContainer {
-		log.Fatal("legacy baseline activation does not permit apple-container before the exact fence release")
+	if (legacyActivationFence != nil || recoveredForwardActivation != nil) && cfg.WorkloadConnector == connector.AppleContainer {
+		log.Fatal("protected maintenance activation does not permit apple-container before the exact fence release")
 	}
 	if startupCfg.SchemaMode == startup.SchemaModeMigrateOnly {
 		log.Printf("schema migration complete at version %d", schemaStatus.CurrentMigrationVersion)
@@ -288,10 +306,12 @@ func main() {
 			log.Printf("WARNING: operation recovery: %v", err)
 		}
 	}
-	if legacyActivationFence == nil {
+	if legacyActivationFence == nil && recoveredForwardActivation == nil {
 		recoverRuntimeState()
-	} else {
+	} else if legacyActivationFence != nil {
 		log.Println("legacy baseline recovery deferred until exact activation fence release")
+	} else {
+		log.Println("recovered-forward recovery deferred until exact activation fence release")
 	}
 	if cfg.IsFleetAuthorityOnly() {
 		serveFleetAuthorityOnly(cfg, db)
@@ -371,7 +391,6 @@ func main() {
 	}
 	ws := hub.New(allowedOrigins)
 	ws.SetStore(db)
-	go ws.Run()
 
 	beaconSvc := beacon.New(db, ws, beacon.Config{
 		Environment: cfg.BeaconEnvironment,
@@ -591,6 +610,20 @@ func main() {
 		log.Printf("legacy baseline transition %q activated at runtime admission boundary", strings.TrimSpace(os.Getenv("NORN_LEGACY_BASELINE_ACTIVATE_TRANSITION_ID")))
 		recoverRuntimeState()
 	}
+	if recoveredForwardActivation != nil {
+		if err := db.ReleaseRuntimeMutationFence(context.Background(), recoveredForwardActivation.fence); err != nil {
+			log.Fatalf("recovered-forward activation fence: %v", err)
+		}
+		if active, err := db.RuntimeMutationFenceActive(context.Background()); err != nil || active {
+			log.Fatalf("recovered-forward activation fence did not clear: active=%t err=%v", active, err)
+		}
+		log.Printf("recovered-forward transition %q activated candidate %s at runtime admission boundary", recoveredForwardActivation.transitionID, recoveredForwardActivation.candidateSHA)
+		recoverRuntimeState()
+	}
+	// The durable event poller is a watcher too; don't start it until any
+	// recovered-forward/legacy admission fence has been released by this exact
+	// candidate. Ordinary startup reaches here with no held transition fence.
+	go ws.Run()
 	// This writes the durable evidence reserve policy. A legacy-baseline
 	// candidate may write it only after its exact binary identity released the
 	// held fence, leaving the preservation comparison free of candidate writes.
@@ -1123,6 +1156,590 @@ func validLegacyBaselineSourceSHA(value string) bool {
 		}
 	}
 	return true
+}
+
+const (
+	recoveredForwardEvidenceSchema    = "norn.recovered-forward-evidence/v1"
+	recoveredForwardReceiptSchema     = "norn.recovered-forward-preservation/v1"
+	recoveredForwardHeldReasonPrefix  = "preserve recovered-forward:"
+	recoveredForwardFinalReasonPrefix = "recovered-forward finalized:"
+	recoveredForwardStatusPath        = "/api/v1/platform/recovered-forward/status"
+	recoveredForwardPreservationPath  = "/api/v1/platform/recovered-forward/preservation"
+	recoveredForwardFinalizePath      = "/api/v1/platform/recovered-forward/finalize"
+)
+
+var recoveredForwardDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+type recoveredForwardEvidence struct {
+	Schema                string `json:"schema"`
+	TransitionID          string `json:"transitionId"`
+	SourceSHA             string `json:"sourceSHA"`
+	CandidateSHA          string `json:"candidateSHA"`
+	DatabaseIdentity      string `json:"databaseIdentity"`
+	RecoveryFenceSHA256   string `json:"recoveryFenceSHA256"`
+	AdoptionReceiptSHA256 string `json:"adoptionReceiptSHA256"`
+	IncidentBindingSHA256 string `json:"incidentBindingSHA256"`
+	LedgerSHA256          string `json:"ledgerSHA256"`
+	ReconciliationSHA256  string `json:"reconciliationSHA256"`
+	BackupProofSHA256     string `json:"backupProofSHA256"`
+	BackupSHA256          string `json:"backupSHA256"`
+	BackupBytes           int64  `json:"backupBytes"`
+	ShadowReceiptSHA256   string `json:"shadowReceiptSHA256"`
+	BeforeDigest          string `json:"beforeDigest"`
+	Signature             string `json:"signature"`
+}
+
+type recoveredForwardPreservationReceipt struct {
+	Schema               string `json:"schema"`
+	TransitionID         string `json:"transitionId"`
+	CandidateSHA         string `json:"candidateSHA"`
+	SourceEvidenceSHA256 string `json:"sourceEvidenceSHA256"`
+	BeforeDigest         string `json:"beforeDigest"`
+	AfterDigest          string `json:"afterDigest"`
+	PreservationMatched  bool   `json:"preservationMatched"`
+	FinalizedAt          string `json:"finalizedAt"`
+	Signature            string `json:"signature"`
+}
+
+type recoveredForwardFinalizeRequest struct {
+	TransitionID        string          `json:"transitionId"`
+	Owner               string          `json:"owner"`
+	Epoch               int64           `json:"epoch"`
+	PreservationReceipt json.RawMessage `json:"preservationReceipt"`
+}
+
+type recoveredForwardActivation struct {
+	transitionID string
+	candidateSHA string
+	fence        store.RuntimeMutationFence
+}
+
+func recoveredForwardEnv(getenv func(string) string, suffix string) string {
+	return strings.TrimSpace(getenv("NORN_RECOVERED_FORWARD_" + suffix))
+}
+
+func validateRecoveredForwardEvidence(path, expectedFileSHA, expectedSourceSHA, expectedCandidateSHA, databaseID string, cfg *config.Config) (recoveredForwardEvidence, string, error) {
+	var evidence recoveredForwardEvidence
+	data, fileSHA, err := readOwnerOnlySignedJSON(path, expectedFileSHA, recoveredForwardEvidenceSchema, cfg.AuditSigningKey, &evidence)
+	if err != nil {
+		return evidence, "", fmt.Errorf("source evidence: %w", err)
+	}
+	if !validLegacyBaselineTransitionID(evidence.TransitionID) || evidence.SourceSHA != expectedSourceSHA ||
+		!validLegacyBaselineSourceSHA(evidence.SourceSHA) || evidence.CandidateSHA != expectedCandidateSHA ||
+		!validLegacyBaselineSourceSHA(evidence.CandidateSHA) || evidence.DatabaseIdentity != databaseID ||
+		evidence.BackupBytes <= 0 || !recoveredForwardDigestPattern.MatchString(evidence.BeforeDigest) {
+		return evidence, "", fmt.Errorf("source evidence transition, source/candidate, database identity, backup size, or baseline digest binding is invalid")
+	}
+	for label, value := range map[string]string{
+		"recovery fence":   evidence.RecoveryFenceSHA256,
+		"adoption receipt": evidence.AdoptionReceiptSHA256,
+		"incident binding": evidence.IncidentBindingSHA256,
+		"ledger":           evidence.LedgerSHA256,
+		"reconciliation":   evidence.ReconciliationSHA256,
+		"backup proof":     evidence.BackupProofSHA256,
+		"backup artifact":  evidence.BackupSHA256,
+		"shadow receipt":   evidence.ShadowReceiptSHA256,
+	} {
+		if !recoveredForwardDigestPattern.MatchString(value) {
+			return evidence, "", fmt.Errorf("source evidence %s digest is invalid", label)
+		}
+	}
+	_ = data // The raw content is hashed by readOwnerOnlySignedJSON and returned as fileSHA.
+	return evidence, fileSHA, nil
+}
+
+func validateRecoveredForwardReceipt(raw []byte, cfg *config.Config, evidence recoveredForwardEvidence, evidenceSHA, candidateSHA string) (recoveredForwardPreservationReceipt, string, error) {
+	var receipt recoveredForwardPreservationReceipt
+	if len(raw) == 0 || len(raw) > 64<<10 {
+		return receipt, "", fmt.Errorf("preservation receipt is empty or too large")
+	}
+	if err := decodeExactSignedJSON(raw, recoveredForwardReceiptSchema, cfg.AuditSigningKey, &receipt); err != nil {
+		return receipt, "", fmt.Errorf("preservation receipt: %w", err)
+	}
+	if receipt.TransitionID != evidence.TransitionID || receipt.CandidateSHA != candidateSHA ||
+		receipt.SourceEvidenceSHA256 != evidenceSHA || receipt.BeforeDigest != evidence.BeforeDigest ||
+		!recoveredForwardDigestPattern.MatchString(receipt.BeforeDigest) || receipt.AfterDigest != receipt.BeforeDigest ||
+		!receipt.PreservationMatched {
+		return receipt, "", fmt.Errorf("preservation receipt does not match the exact transition, candidate, source evidence, and unchanged baseline")
+	}
+	finalizedAt, err := time.Parse(time.RFC3339, receipt.FinalizedAt)
+	if err != nil || finalizedAt.Location() != time.UTC || finalizedAt.Format(time.RFC3339) != receipt.FinalizedAt {
+		return receipt, "", fmt.Errorf("preservation receipt timestamp must be canonical UTC RFC3339")
+	}
+	sum := sha256.Sum256(raw)
+	return receipt, hex.EncodeToString(sum[:]), nil
+}
+
+// readOwnerOnlySignedJSON verifies a regular owner-only file, its exact raw
+// digest, strict JSON shape and a domain-separated HMAC over canonical sorted
+// compact JSON with the signature field omitted.
+func readOwnerOnlySignedJSON(path, expectedSHA, schema, key string, destination any) ([]byte, string, error) {
+	if !filepath.IsAbs(path) || !recoveredForwardDigestPattern.MatchString(expectedSHA) {
+		return nil, "", fmt.Errorf("an absolute evidence path and exact lowercase SHA-256 are required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !recoveredForwardOwnedByCurrentUser(info) {
+		return nil, "", fmt.Errorf("evidence must be a regular owner-only mode-0600 file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !os.SameFile(info, openedInfo) {
+		return nil, "", fmt.Errorf("evidence file changed while opening")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 64<<10+1))
+	if err != nil || len(data) > 64<<10 {
+		return nil, "", fmt.Errorf("evidence file is unreadable or too large")
+	}
+	sum := sha256.Sum256(data)
+	fileSHA := hex.EncodeToString(sum[:])
+	if subtle.ConstantTimeCompare([]byte(fileSHA), []byte(expectedSHA)) != 1 {
+		return nil, "", fmt.Errorf("evidence file digest does not match the protected binding")
+	}
+	if err := decodeExactSignedJSON(data, schema, key, destination); err != nil {
+		return nil, "", err
+	}
+	return data, fileSHA, nil
+}
+
+func decodeExactSignedJSON(data []byte, schema, key string, destination any) error {
+	if len(key) < 32 {
+		return fmt.Errorf("audit signing key must contain at least 32 bytes")
+	}
+	if err := decodeExactJSON(data, destination); err != nil {
+		return err
+	}
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var actualSchema, signature string
+	if err := json.Unmarshal(fields["schema"], &actualSchema); err != nil || actualSchema != schema {
+		return fmt.Errorf("signed document schema must be %q", schema)
+	}
+	if err := json.Unmarshal(fields["signature"], &signature); err != nil || !strings.HasPrefix(signature, "hmac-sha256:") {
+		return fmt.Errorf("signed document signature format is invalid")
+	}
+	delete(fields, "signature")
+	canonical, err := json.Marshal(fields) // encoding/json sorts map keys and compacts values.
+	if err != nil {
+		return err
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte(schema + "\x00"))
+	_, _ = mac.Write(canonical)
+	provided, err := hex.DecodeString(strings.TrimPrefix(signature, "hmac-sha256:"))
+	if err != nil || len(provided) != sha256.Size || subtle.ConstantTimeCompare(provided, mac.Sum(nil)) != 1 {
+		return fmt.Errorf("signed document HMAC verification failed")
+	}
+	return nil
+}
+
+// decodeExactJSON rejects duplicate object keys and non-exact JSON field
+// spellings before decoding. encoding/json otherwise accepts case-insensitive
+// struct field matches and silently keeps the last duplicate value.
+func decodeExactJSON(data []byte, destination any) error {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return fmt.Errorf("invalid JSON shape: %w", err)
+	}
+	typeOf := reflect.TypeOf(destination)
+	if typeOf == nil || typeOf.Kind() != reflect.Pointer || typeOf.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("JSON destination must be a struct pointer")
+	}
+	allowed := make(map[string]struct{}, typeOf.Elem().NumField())
+	for index := 0; index < typeOf.Elem().NumField(); index++ {
+		field := typeOf.Elem().Field(index)
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		allowed[name] = struct{}{}
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return fmt.Errorf("JSON document must be an object")
+	}
+	for name := range fields {
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("JSON field spelling is not exact or is unknown: %s", name)
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return fmt.Errorf("invalid JSON shape: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := scanJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
+}
+
+func scanJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("object key is not a string")
+			}
+			if _, ok := seen[key]; ok {
+				return fmt.Errorf("duplicate JSON object key: %s", key)
+			}
+			seen[key] = struct{}{}
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim('}') {
+			return fmt.Errorf("invalid JSON object terminator")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim(']') {
+			return fmt.Errorf("invalid JSON array terminator")
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter")
+	}
+	return nil
+}
+
+func serveRecoveredForwardMaintenance(cfg *config.Config, db *store.DB, databaseID string, schemaStatus store.SchemaStatus, startupCfg startup.Config) {
+	h, err := newRecoveredForwardMaintenanceHandler(cfg, db, databaseID, schemaStatus, startupCfg, os.Getenv)
+	if err != nil {
+		log.Fatalf("recovered-forward maintenance: %v", err)
+	}
+	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+	go func() {
+		log.Printf("norn %s recovered-forward Mini preservation listening on %s", Version, srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("recovered-forward maintenance server: %v", err)
+		}
+	}()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	_ = srv.Shutdown(shutdownCtx)
+}
+
+func newRecoveredForwardMaintenanceHandler(cfg *config.Config, db *store.DB, databaseID string, schemaStatus store.SchemaStatus, startupCfg startup.Config, getenv func(string) string) (http.Handler, error) {
+	if startupCfg.StartupMode != startup.ModeActive || startupCfg.SchemaMode != startup.SchemaModeCheck {
+		return nil, fmt.Errorf("recovered-forward maintenance requires active/check startup")
+	}
+	if err := validatePassiveBind(cfg.BindAddr); err != nil {
+		return nil, fmt.Errorf("recovered-forward maintenance requires a loopback bind: %w", err)
+	}
+	if len(cfg.APIToken) < 32 || len(cfg.AuditSigningKey) < 32 {
+		return nil, fmt.Errorf("recovered-forward maintenance requires strong API and audit signing keys")
+	}
+	transitionID := recoveredForwardEnv(getenv, "TRANSITION_ID")
+	candidateSHA := recoveredForwardEnv(getenv, "CANDIDATE_SHA")
+	sourceSHA := recoveredForwardEnv(getenv, "SOURCE_SHA")
+	evidencePath := recoveredForwardEnv(getenv, "SOURCE_EVIDENCE_PATH")
+	evidenceDigest := recoveredForwardEnv(getenv, "SOURCE_EVIDENCE_SHA256")
+	receiptPath := recoveredForwardEnv(getenv, "PRESERVATION_RECEIPT_PATH")
+	if !validLegacyBaselineTransitionID(transitionID) || !validLegacyBaselineSourceSHA(candidateSHA) ||
+		candidateSHA != SourceSHA || !validLegacyBaselineSourceSHA(sourceSHA) || evidencePath == "" || receiptPath == "" {
+		return nil, fmt.Errorf("recovered-forward maintenance requires exact transition, source, candidate, evidence, and receipt bindings")
+	}
+	evidence, sourceEvidenceSHA, err := validateRecoveredForwardEvidence(evidencePath, evidenceDigest, sourceSHA, candidateSHA, databaseID, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if evidence.TransitionID != transitionID {
+		return nil, fmt.Errorf("source evidence transition ID differs from the protected transition")
+	}
+	owner := "recovered-forward:" + transitionID
+	heldReason := recoveredForwardHeldReasonPrefix + sourceEvidenceSHA
+	fence, active, err := db.RuntimeMutationFenceState(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("recovered-forward maintenance fence state: %w", err)
+	}
+	if !active {
+		fence, err = db.AcquireRuntimeMutationFence(context.Background(), owner, heldReason)
+		if err != nil {
+			return nil, fmt.Errorf("recovered-forward maintenance fence acquisition: %w", err)
+		}
+	} else if fence.Owner != owner {
+		return nil, fmt.Errorf("recovered-forward fence belongs to %q at epoch %d", fence.Owner, fence.Epoch)
+	}
+	finalized := false
+	if fence.Reason != heldReason {
+		prefix := recoveredForwardFinalReasonPrefix + sourceEvidenceSHA + ":"
+		if !strings.HasPrefix(fence.Reason, prefix) {
+			return nil, fmt.Errorf("recovered-forward fence reason does not bind the verified source evidence")
+		}
+		persistedReceiptSHA := strings.TrimPrefix(fence.Reason, prefix)
+		if !recoveredForwardDigestPattern.MatchString(persistedReceiptSHA) {
+			return nil, fmt.Errorf("persisted recovered-forward receipt digest is malformed")
+		}
+		receiptRaw, actualSHA, receiptErr := readOwnerOnlySignedJSON(receiptPath, persistedReceiptSHA, recoveredForwardReceiptSchema, cfg.AuditSigningKey, &recoveredForwardPreservationReceipt{})
+		if receiptErr != nil || actualSHA != persistedReceiptSHA {
+			return nil, fmt.Errorf("persisted recovered-forward preservation receipt could not be verified: %v", receiptErr)
+		}
+		if _, _, receiptErr = validateRecoveredForwardReceipt(receiptRaw, cfg, evidence, sourceEvidenceSHA, candidateSHA); receiptErr != nil {
+			return nil, fmt.Errorf("persisted recovered-forward preservation receipt is invalid: %w", receiptErr)
+		}
+		finalized = true
+	}
+	nomadClient, err := nomad.NewClient(cfg.NomadAddr)
+	if err != nil {
+		return nil, fmt.Errorf("recovered-forward maintenance nomad observer: %w", err)
+	}
+	consulClient, err := consul.NewClient(cfg.ConsulAddr)
+	if err != nil {
+		return nil, fmt.Errorf("recovered-forward maintenance consul observer: %w", err)
+	}
+	readHandler := handler.New(db, nomadClient, consulClient, nil, cfg, nil, nil, nil, nil, nil, nil)
+	readHandler.ConfigureWorkloads(connector.NewNomadConsul(nomadClient, consulClient), nil, nil)
+	var finalizedMu sync.Mutex
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.Method != http.MethodGet && req.Method != http.MethodHead && req.Method != http.MethodOptions && !(req.Method == http.MethodPost && req.URL.Path == recoveredForwardFinalizePath) {
+				http.Error(w, "recovered-forward preservation maintenance is active", http.StatusServiceUnavailable)
+				return
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			authorization := req.Header.Get("Authorization")
+			if !strings.HasPrefix(authorization, "Bearer ") || subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authorization, "Bearer ")), []byte(cfg.APIToken)) != 1 {
+				http.Error(w, "a valid bearer token is required", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	status := func(w http.ResponseWriter, _ *http.Request) {
+		finalizedMu.Lock()
+		isFinalized := finalized
+		finalizedMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok", "maintenance": "recovered-forward-preservation", "transitionId": transitionID,
+			"owner": owner, "epoch": fence.Epoch, "finalized": isFinalized,
+			"sourceEvidenceSHA256": sourceEvidenceSHA, "sourceSHA": sourceSHA, "candidateSHA": candidateSHA,
+			"runtimeTopology": "single-node-mini", "fleetAPIConsulted": false, "etcdConsulted": false,
+			"schema": schemaPayload(Version, databaseID, schemaStatus, startupCfg),
+		})
+	}
+	r.Get("/api/health", readHandler.Health)
+	r.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": Version, "sourceSha": SourceSHA})
+	})
+	r.Get("/api/schema", status)
+	r.Get(recoveredForwardStatusPath, status)
+	r.Get(recoveredForwardPreservationPath, status)
+	// These are the exact Mini-local read surfaces consumed by the protected
+	// stable_state digest: API app specs/allocations, service manifest and the
+	// health endpoint's Nomad/Consul workload observations. No Fleet/etcd client
+	// is constructed or queried by this maintenance server.
+	r.Get("/api/apps", readHandler.ListApps)
+	r.Get("/api/services/manifest", readHandler.ServiceManifest)
+	r.Post(recoveredForwardFinalizePath, func(w http.ResponseWriter, req *http.Request) {
+		finalizedMu.Lock()
+		if finalized {
+			finalizedMu.Unlock()
+			http.Error(w, "recovered-forward maintenance was already finalized", http.StatusConflict)
+			return
+		}
+		var request recoveredForwardFinalizeRequest
+		body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 72<<10))
+		if err != nil || decodeExactJSON(body, &request) != nil {
+			finalizedMu.Unlock()
+			http.Error(w, "invalid exact recovered-forward finalize request", http.StatusBadRequest)
+			return
+		}
+		if request.TransitionID != transitionID || request.Owner != owner || request.Epoch != fence.Epoch || len(request.PreservationReceipt) == 0 {
+			finalizedMu.Unlock()
+			http.Error(w, "exact transition ID, owner, epoch, and signed preservation receipt are required", http.StatusBadRequest)
+			return
+		}
+		_, receiptSHA, err := validateRecoveredForwardReceipt(request.PreservationReceipt, cfg, evidence, sourceEvidenceSHA, candidateSHA)
+		if err != nil {
+			finalizedMu.Unlock()
+			http.Error(w, "preservation receipt rejected: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := writeOwnerOnlyFileAtomically(receiptPath, request.PreservationReceipt); err != nil {
+			finalizedMu.Unlock()
+			http.Error(w, "could not persist verified preservation receipt", http.StatusInternalServerError)
+			return
+		}
+		if err := db.MarkRecoveredForwardFinalizationRequested(req.Context(), fence, sourceEvidenceSHA, receiptSHA); err != nil {
+			finalizedMu.Unlock()
+			http.Error(w, "recovered-forward fence ownership was lost", http.StatusConflict)
+			return
+		}
+		finalized = true
+		finalizedMu.Unlock()
+		status(w, req)
+	})
+	return r, nil
+}
+
+func writeOwnerOnlyFileAtomically(path string, data []byte) error {
+	if !filepath.IsAbs(path) || len(data) == 0 || len(data) > 64<<10 {
+		return fmt.Errorf("receipt destination must be absolute and payload bounded")
+	}
+	parent := filepath.Dir(path)
+	parentInfo, err := os.Lstat(parent)
+	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || parentInfo.Mode().Perm() != 0o700 || !recoveredForwardOwnedByCurrentUser(parentInfo) {
+		return fmt.Errorf("receipt parent must be a non-symlink mode-0700 directory")
+	}
+	if existingInfo, statErr := os.Lstat(path); statErr == nil {
+		if !existingInfo.Mode().IsRegular() || existingInfo.Mode().Perm() != 0o600 || !recoveredForwardOwnedByCurrentUser(existingInfo) {
+			return fmt.Errorf("existing receipt is not a regular owner-only file")
+		}
+		existing, readErr := os.ReadFile(path)
+		if readErr == nil && hmac.Equal(existing, data) {
+			return nil
+		}
+		return fmt.Errorf("receipt destination already exists with different contents")
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	tmp, err := os.CreateTemp(parent, ".recovered-forward-receipt-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	if err := directory.Sync(); err != nil {
+		directory.Close()
+		return err
+	}
+	if err := directory.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func recoveredForwardOwnedByCurrentUser(info os.FileInfo) bool {
+	stat := reflect.ValueOf(info.Sys())
+	if !stat.IsValid() {
+		return false
+	}
+	if stat.Kind() == reflect.Pointer {
+		if stat.IsNil() {
+			return false
+		}
+		stat = stat.Elem()
+	}
+	uid := stat.FieldByName("Uid")
+	if !uid.IsValid() {
+		return false
+	}
+	switch uid.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return uid.Uint() == uint64(os.Geteuid())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return uid.Int() == int64(os.Geteuid())
+	default:
+		return false
+	}
+}
+
+func validateRecoveredForwardActivation(cfg *config.Config, db *store.DB, databaseID, embeddedCandidateSHA string, fence store.RuntimeMutationFence, getenv func(string) string) (*recoveredForwardActivation, error) {
+	transitionID := recoveredForwardEnv(getenv, "TRANSITION_ID")
+	activateID := recoveredForwardEnv(getenv, "ACTIVATE_TRANSITION_ID")
+	sourceSHA := recoveredForwardEnv(getenv, "SOURCE_SHA")
+	candidateSHA := recoveredForwardEnv(getenv, "CANDIDATE_SHA")
+	evidencePath := recoveredForwardEnv(getenv, "SOURCE_EVIDENCE_PATH")
+	evidenceDigest := recoveredForwardEnv(getenv, "SOURCE_EVIDENCE_SHA256")
+	receiptPath := recoveredForwardEnv(getenv, "PRESERVATION_RECEIPT_PATH")
+	receiptDigest := recoveredForwardEnv(getenv, "PRESERVATION_RECEIPT_SHA256")
+	if !validLegacyBaselineTransitionID(transitionID) || activateID != transitionID || fence.Owner != "recovered-forward:"+transitionID ||
+		!validLegacyBaselineSourceSHA(sourceSHA) || !validLegacyBaselineSourceSHA(candidateSHA) || candidateSHA != embeddedCandidateSHA ||
+		!validLegacyBaselineSourceSHA(embeddedCandidateSHA) || !recoveredForwardDigestPattern.MatchString(receiptDigest) {
+		return nil, fmt.Errorf("exact transition, source, candidate, receipt, and activation bindings are required")
+	}
+	evidence, evidenceSHA, err := validateRecoveredForwardEvidence(evidencePath, evidenceDigest, sourceSHA, candidateSHA, databaseID, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if evidence.TransitionID != transitionID {
+		return nil, fmt.Errorf("source evidence transition ID differs from the activation transition")
+	}
+	receiptRaw, actualReceiptSHA, err := readOwnerOnlySignedJSON(receiptPath, receiptDigest, recoveredForwardReceiptSchema, cfg.AuditSigningKey, &recoveredForwardPreservationReceipt{})
+	if err != nil {
+		return nil, fmt.Errorf("preservation receipt: %w", err)
+	}
+	_, verifiedReceiptSHA, err := validateRecoveredForwardReceipt(receiptRaw, cfg, evidence, evidenceSHA, candidateSHA)
+	if err != nil || actualReceiptSHA != verifiedReceiptSHA {
+		return nil, fmt.Errorf("preservation receipt binding failed: %v", err)
+	}
+	expectedReason := recoveredForwardFinalReasonPrefix + evidenceSHA + ":" + actualReceiptSHA
+	if fence.Reason != expectedReason {
+		return nil, fmt.Errorf("persisted recovered-forward fence reason does not bind verified source and preservation receipt")
+	}
+	return &recoveredForwardActivation{transitionID: transitionID, candidateSHA: candidateSHA, fence: fence}, nil
 }
 
 func validateControlSecurity(cfg *config.Config) error {

@@ -14,9 +14,11 @@ The initial v3 release supports two independent deployment paths:
 
 The existing Mini can run v3 as a single-node development control plane on its
 existing PostgreSQL database. It does not need a Fleet, etcd, or management
-nodes to operate. It may connect to a running Fleet through Fleet's API when
-Fleet integration is configured; that connection is optional and independent
-of upgrading or running Norn on the Mini.
+nodes to operate. Fleet integration is optional and independent of upgrading
+or running Norn on Mini. In the current implementation, Mini reads a local
+`NORN_FLEET_CONFIG` document and uses its protected GitHub App/workflow bridge
+for Fleet operations; the Mini does not require a direct connection to a
+Fleet-node API.
 
 The disposable DigitalOcean Fleet is a separate staging exercise for fresh
 bootstrap, quorum, workload communication, scaling and teardown. Its etcd and

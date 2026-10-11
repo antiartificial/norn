@@ -44,7 +44,11 @@ local development rehearsal but can move between review and upgrade.
 
 Mini runs Norn as a single node with its existing PostgreSQL database. It does
 not require the Fleet management or etcd nodes; Fleet is an independent staging
-environment that Mini can connect to through the Fleet API when it is online.
+environment. Optional Fleet integration can be configured separately: the
+current Mini implementation reads a local `NORN_FLEET_CONFIG` document and
+uses a protected GitHub App/workflow bridge for Fleet operations. It does not
+need a direct connection to a Fleet-node API, and this integration is not an
+upgrade prerequisite.
 
 For the Mini bootstrap lane, use the installed managed script through the
 authenticated runtime wrapper so the encrypted API environment is loaded only
