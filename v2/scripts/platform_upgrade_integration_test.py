@@ -48,9 +48,16 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         dispatch = source.split('elif [[ "$mode" == "recovered-forward" ]]; then', 1)[1].split(
             'elif [[ "$mode" == "upgrade" ]]; then', 1
         )[0]
+        self.assertLess(dispatch.index("recovered_forward_dispatch_exact_retarget"), dispatch.index("recovered_forward_validate_preflight"))
         self.assertIn("recovered_forward_validate_preflight", dispatch)
         self.assertIn("recovered_forward_resume_or_start", dispatch)
         self.assertNotIn("automatic replay is refused", dispatch)
+        retarget = source.split("recovered_forward_dispatch_exact_retarget() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('"state") == "legacy-fenced"', retarget)
+        self.assertIn('"sourceSHA") == "26147c39a554b73b6761a371edee5a9591c81d3f"', retarget)
+        self.assertIn('"candidateReleaseSHA") == "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"', retarget)
+        self.assertIn('exec "$wrapper" "$candidate_sha"', retarget)
+        self.assertIn('--transition-id "$recovered_transition_id"', retarget)
         resume = source.split("recovered_forward_resume_or_start() {", 1)[1].split("\n}", 1)[0]
         self.assertLess(resume.index("acquire_promotion_lock"), resume.index('if [[ -e "$transition_state_path" ]]'))
         for phase in (
