@@ -2887,9 +2887,20 @@ recovered_forward_resume_or_start() {
       recovered_forward_ensure_host_agent_fenced
       legacy_baseline_write_fence_state "host-agent-fenced"
       phase="host-agent-fenced" ;;
-    host-agent-fenced|legacy-fenced|api-fencing)
+    host-agent-fenced)
       recovered_forward_ensure_host_agent_fenced
       legacy_baseline_require_drained
+      recovered_forward_ensure_api_fenced
+      phase="legacy-fenced" ;;
+    api-fencing|legacy-fenced)
+      # api-fencing is journaled only after the authenticated operation drain
+      # succeeds and the exact serving API PID is frozen. legacy-fenced is
+      # written after its binary is replaced and the listener is gone. On
+      # resume the source API is intentionally unavailable, so repeating the
+      # HTTP drain check would make a safely fenced transition unrecoverable.
+      # Revalidate both process fences below and proceed from this durable
+      # post-drain boundary.
+      recovered_forward_ensure_host_agent_fenced
       recovered_forward_ensure_api_fenced
       phase="legacy-fenced" ;;
     migration-started|schema-migrated|candidate-activation-started) ;;
