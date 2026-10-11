@@ -181,12 +181,14 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	ledger := filepath.Join(root, "ledger.json")
 	reconciliation := filepath.Join(root, "reconciliation.json")
 	for path, value := range map[string]map[string]any{
-		fence: {"schema": "norn.legacy-baseline-fence/v1", "state": "candidate-postflight-failed"},
-		ledger: {"schema": "norn.m5-protected-transition/v1", "state": "candidate-recovery-required"},
+		fence:          {"schema": "norn.legacy-baseline-fence/v1", "state": "candidate-postflight-failed"},
+		ledger:         {"schema": "norn.m5-protected-transition/v1", "state": "candidate-recovery-required"},
 		reconciliation: {"schema": "norn.m5-post-transition-reconciliation/v1"},
 	} {
 		data, err := json.Marshal(value)
-		if err != nil || os.WriteFile(path, data, 0o600) != nil { t.Fatal(err) }
+		if err != nil || os.WriteFile(path, data, 0o600) != nil {
+			t.Fatal(err)
+		}
 	}
 	missing := exec.Command(platformUpgradePath(t), "upgrade", "HEAD")
 	repo := filepath.Clean(filepath.Join(filepath.Dir(platformUpgradePath(t)), "..", ".."))
@@ -198,7 +200,9 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	legacy := exec.Command(platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "x")
 	legacy.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence)
 	out, err = legacy.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "permanently rejects legacy-baseline replay") { t.Fatalf("legacy replay escaped failed fence: %v %s", err, out) }
+	if err == nil || !strings.Contains(string(out), "permanently rejects legacy-baseline replay") {
+		t.Fatalf("legacy replay escaped failed fence: %v %s", err, out)
+	}
 }
 
 func TestPlatformUpgradeLegacyBaselineRequiresBackupArtifactBeforeBuild(t *testing.T) {
@@ -305,7 +309,7 @@ func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegac
 	if promoteStart < 0 || promoteEnd < 0 || strings.Contains(text[promoteStart:promoteStart+promoteEnd], "restore_release_artifacts") {
 		t.Fatal("legacy baseline promotion can restore an unfenced legacy release")
 	}
-	for _, required := range []string{"backup artifact must not be empty", "backup proof size does not match the backup artifact", "backup proof digest does not match the backup artifact", "legacy operation drain clear", "legacy service fenced", "candidate postflight failed; legacy binary remains fenced"} {
+	for _, required := range []string{"backup artifact must not be empty", "backup proof size does not match the backup artifact", "backup proof digest does not match the backup artifact", "Mini operation drain clear", "legacy service fenced", "candidate postflight failed; legacy binary remains fenced"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("legacy baseline is missing fail-closed guard %q", required)
 		}
@@ -460,6 +464,7 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
 	cmd.Env = append(cmd.Env,
 		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
+		"FAKE_ACTIVE_OPERATIONS_JSON="+queuedFleetDispatchReceiptsJSON(t, 7),
 		"FAKE_REQUIRE_AUTH_AFTER_PROMOTION=1",
 		"FAKE_FENCED="+fenced,
 		"FAKE_AGENT_FENCED="+agentFenced,
@@ -489,6 +494,24 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	if err != nil || !strings.Contains(string(state), `"state":"candidate-promoted"`) {
 		t.Fatalf("legacy fence state was not retained as promoted: %v %s", err, state)
 	}
+	if !strings.Contains(string(out), "preserving 7 queued Fleet GitHub dispatch receipt(s)") {
+		t.Fatalf("Mini transition did not report the preserved Fleet receipts:\n%s", out)
+	}
+}
+
+func queuedFleetDispatchReceiptsJSON(t *testing.T, count int) string {
+	t.Helper()
+	operations := make([]map[string]string, count)
+	for i := range operations {
+		operations[i] = map[string]string{
+			"id": fmt.Sprintf("fleet-dispatch-%d", i+1), "kind": "fleet.github.apply-dispatch", "status": "queued",
+		}
+	}
+	value, err := json.Marshal(map[string]any{"count": count, "operations": operations})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(value)
 }
 
 func TestPlatformUpgradeLegacyBaselineRejectsSessionOnlyStartupModeBeforeAnyFence(t *testing.T) {
@@ -809,21 +832,41 @@ func TestPlatformUpgradeLegacyBaselineRejectsActiveOperationsBeforeFence(t *test
 		t.Fatal(err)
 	}
 	fenceState, fenced := filepath.Join(fixture.root, "legacy-fence-state.json"), filepath.Join(fixture.root, "legacy-fenced")
-	cmd := fixture.command(t)
-	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
-	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced, "FAKE_ACTIVE_OPERATION_COUNT=1")
-	out, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "requires zero active operations before fencing") {
-		t.Fatalf("active operations did not stop transition: %v\n%s", err, out)
-	}
-	if _, err := os.Stat(fenced); !os.IsNotExist(err) {
-		t.Fatalf("legacy was fenced before drain cleared: %v", err)
-	}
-	if _, err := os.Stat(fixture.migrationMarker); !os.IsNotExist(err) {
-		t.Fatalf("migration ran before drain cleared: %v", err)
-	}
-	if linked, err := os.Readlink(fixture.currentLink); err != nil || linked != fixture.previousRelease {
-		t.Fatalf("current release changed: %q %v", linked, err)
+	truncated := queuedFleetDispatchReceiptsJSON(t, 100)
+	for _, test := range []struct {
+		name, response, fakeCount, want string
+	}{
+		{name: "queued Mini operation", fakeCount: "1", want: "requires zero Mini-affecting active operations before fencing"},
+		{name: "running Fleet dispatch", response: `{"count":1,"operations":[{"id":"fleet-dispatch-running","kind":"fleet.github.apply-dispatch","status":"running"}]}`, want: "requires zero Mini-affecting active operations before fencing"},
+		{name: "malformed JSON", response: `{`, want: "cannot verify the legacy operation drain"},
+		{name: "inconsistent count", response: `{"count":2,"operations":[]}`, want: "cannot verify the legacy operation drain"},
+		{name: "duplicate IDs", response: `{"count":2,"operations":[{"id":"same","kind":"app.deploy","status":"queued"},{"id":"same","kind":"app.deploy","status":"queued"}]}`, want: "cannot verify the legacy operation drain"},
+		{name: "full response page", response: truncated, want: "cannot verify the legacy operation drain"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := fixture.command(t)
+			cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
+			cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced)
+			if test.fakeCount != "" {
+				cmd.Env = append(cmd.Env, "FAKE_ACTIVE_OPERATION_COUNT="+test.fakeCount)
+			}
+			if test.response != "" {
+				cmd.Env = append(cmd.Env, "FAKE_ACTIVE_OPERATIONS_JSON="+test.response)
+			}
+			out, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(out), test.want) {
+				t.Fatalf("queue fixture did not stop transition: err=%v\n%s", err, out)
+			}
+			if _, err := os.Stat(fenced); !os.IsNotExist(err) {
+				t.Fatalf("legacy was fenced before queue evidence passed: %v", err)
+			}
+			if _, err := os.Stat(fixture.migrationMarker); !os.IsNotExist(err) {
+				t.Fatalf("migration ran before queue evidence passed: %v", err)
+			}
+			if linked, err := os.Readlink(fixture.currentLink); err != nil || linked != fixture.previousRelease {
+				t.Fatalf("current release changed: %q %v", linked, err)
+			}
+		})
 	}
 }
 
@@ -1279,7 +1322,15 @@ case "$url" in
   */api/schema)
     printf '{"currentMigrationVersion":%s,"minimumReaderVersion":1,"minimumWriterVersion":%s,"version":"%s","startupContract":"norn.startup/v2","binarySchemaContract":{"readerVersion":1,"writerVersion":%s,"catalogMigrationVersion":%s,"catalogMinimumReaderVersion":1,"catalogMinimumWriterVersion":%s},"processId":4242,"processInstanceId":"11111111-1111-4111-8111-111111111111","databaseIdentity":"%s","startupMode":"active","schemaMode":"check","operationRecoveryEnabled":true,"operationWorkerEnabled":true,"nomadWatcherEnabled":true}\n' "$current_migration" "$minimum_writer" "$version" "$writer" "$catalog" "$minimum_writer" "$FAKE_DATABASE_IDENTITY"
     ;;
-  */api/operations/active*) printf '{"count":%s}\n' "${FAKE_ACTIVE_OPERATION_COUNT:-0}" ;;
+  */api/operations/active*)
+    if [[ -n "${FAKE_ACTIVE_OPERATIONS_JSON:-}" ]]; then
+      printf '%s\n' "$FAKE_ACTIVE_OPERATIONS_JSON"
+    else
+      count="${FAKE_ACTIVE_OPERATION_COUNT:-0}"
+      if [[ "$count" == "0" ]]; then operations='[]'; else operations='[{"id":"active-app-operation","kind":"app.deploy","status":"queued"}]'; fi
+      printf '{"count":%s,"operations":%s}\n' "$count" "$operations"
+    fi
+    ;;
   *) exit 22 ;;
 esac
 `)

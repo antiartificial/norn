@@ -1,5 +1,26 @@
 # Norn v3 launch state
 
+## Track boundaries (2026-10-11)
+
+The v3 launch has two separate tracks. **The Mini can be upgraded and run v3
+without a Fleet cluster.** It remains a single-node Norn API using its existing
+unmanaged PostgreSQL. It does not need Fleet etcd members or Fleet management
+nodes. Connecting Mini to Fleet is an optional later integration: configure the
+Fleet API only when there is a running Fleet to observe or operate.
+
+The Mini track is: merge the Mini drain correction, publish and verify the
+exact signed platform release, take and verify a fresh Mini-local recovery
+copy, run the protected Mini transition/upgrade, then verify API version,
+health, database access, preserved applications, and host assurance. Fleet
+deployment, etcd quorum, ingress, workload/scale testing, and teardown remain
+separate Fleet acceptance milestones; none is a prerequisite for upgrading the
+Mini.
+
+PR [#137](https://github.com/antiartificial/norn/pull/137) contains the drain
+correction. Its checks are green and it is mergeable, but it is still open, so
+the code is not yet in protected `master` and no release from that change has
+been published.
+
 Observed 2026-10-06 00:17 UTC. This is the single current handoff for the
 pragmatic deployment objective. The [milestone contract](execution-milestones.md)
 defines the exit criteria; percentages below are engineering estimates, not
@@ -7,12 +28,13 @@ owner sign-offs. Recheck external state before any new mutation.
 
 ## Current decision
 
-**Norn v3 is not deployed on Fleet.** The Mini runs v3 source through the v3 API,
-but its development profile and preserved applications do not qualify the Fleet
-or complete the release. Fleet remains the first launch track. The next Fleet
-attempt requires a new bounded pilot approval, fresh credentials, a repaired
-partial-apply/recovery lane, and a complete workload and failure proof. Do not
-reuse `pilot261004b` state, runner, keys or approvals.
+**Norn v3 is not deployed on Fleet.** Mini's single-node upgrade is independent
+of Fleet deployment. The Mini runs v3 source through the v3 API, but its
+development profile and preserved applications do not qualify the Fleet or
+complete the release. A Fleet attempt remains a separate acceptance run and
+requires fresh credentials, a repaired partial-apply/recovery lane, and a
+complete workload and failure proof. Do not reuse `pilot261004b` state, runner,
+keys or approvals.
 
 At 21:29 UTC, Norn PR [#123](https://github.com/antiartificial/norn/pull/123)
 merged to protected `master` as `1ca28934034c48f28aed4b97b6d4971d69b642e3`.

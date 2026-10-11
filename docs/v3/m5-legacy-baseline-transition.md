@@ -58,10 +58,14 @@ v2/scripts/platform-upgrade legacy-baseline <candidate-ref> \
   --backup-artifact /absolute/private/path/control-backup.dump
 ```
 
-The command requires an authenticated API token, an exact zero active
-operation count, the launchd service PID, and the sole loopback API listener.
-It also verifies that the supervised legacy API artifact exactly equals the
-declared current release.
+The command requires an authenticated API token, zero Mini-affecting active
+operations, the launchd service PID, and the sole loopback API listener. It
+preserves queued `fleet.github.apply-dispatch` receipts in the shared control
+database because the Mini worker does not claim them and Fleet is an independent
+control plane. A running Fleet dispatch, malformed/truncated queue evidence, or
+any active Mini operation still blocks the transition. This exception does not
+reconcile or terminalize Fleet receipts. The command also verifies that the
+supervised legacy API artifact exactly equals the declared current release.
 
 ## Irreversible boundary
 
@@ -72,8 +76,8 @@ the listener is gone. It writes a persistent fence state file at
 legacy executable cannot be restarted through its normal launchd path after
 this point.
 
-Only after the fence and strict drain check does it run the candidate schema
-migration and passive candidate check. It promotes and postflights the
+Only after the fence and strict Mini-operation drain check does it run the
+candidate schema migration and passive candidate check. It promotes and postflights the
 candidate only after that check. A postflight failure records
 `candidate-postflight-failed` and keeps the legacy binary fenced. Repair or
 roll forward with a contract-aware candidate; do not restore or directly run

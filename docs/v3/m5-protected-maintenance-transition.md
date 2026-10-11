@@ -22,6 +22,12 @@ of every app spec plus allocation identities, routes, secret-reference names,
 service state, and periodic schedules from the live API and service manifest.
 Credential-bearing endpoint URLs are refused rather than persisted.
 
+The legacy-baseline operation drain is scoped to Mini-affecting work. Queued
+Fleet GitHub dispatch receipts remain in the shared PostgreSQL control store
+and do not block the Mini-only upgrade; running dispatches and Mini operations
+still block. This preserves receipt evidence without claiming Fleet/provider
+reconciliation or requiring a Fleet cluster to be online.
+
 The composer writes an owner-only proof-consumption record and ledger before
 the irreversible command. The consumption record is derived from the full
 backup proof and shadow receipt, so the same pair cannot be reused with a new

@@ -86,7 +86,10 @@ func runPlatformSmoke() error {
 	if err != nil {
 		return fmt.Errorf("platform ops: %w", err)
 	}
-	activeOperations := countActiveOperations(summary.Operations.Active, os.Getenv("NORN_DRAIN_EXCLUDE_OPERATION_ID"))
+	activeOperations, err := client.ActiveOperationCount(os.Getenv("NORN_DRAIN_EXCLUDE_OPERATION_ID"))
+	if err != nil {
+		return fmt.Errorf("active operations: %w", err)
+	}
 	if activeOperations > 0 {
 		return fmt.Errorf("%d active operation(s)", activeOperations)
 	}
@@ -130,17 +133,6 @@ func runPlatformSmoke() error {
 	fmt.Println()
 	fmt.Println("ok platform")
 	return nil
-}
-
-func countActiveOperations(operations []api.Operation, excludeID string) int {
-	excludeID = strings.TrimSpace(excludeID)
-	count := 0
-	for _, operation := range operations {
-		if excludeID == "" || operation.ID != excludeID {
-			count++
-		}
-	}
-	return count
 }
 
 type contextDBSmokeConfig struct {

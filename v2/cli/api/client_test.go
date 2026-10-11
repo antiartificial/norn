@@ -74,3 +74,25 @@ func TestDeviceEnrollmentAdministrationRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestActiveOperationCountUsesCompleteDrainEndpoint(t *testing.T) {
+	var requestURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":7,"operations":[]}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	got, err := client.ActiveOperationCount(" op-123 ")
+	if err != nil {
+		t.Fatalf("ActiveOperationCount() error = %v", err)
+	}
+	if got != 7 {
+		t.Fatalf("ActiveOperationCount() = %d, want 7", got)
+	}
+	if want := "GET /api/operations/active?excludeId=op-123"; requestURI != want {
+		t.Fatalf("request = %q, want %q", requestURI, want)
+	}
+}
