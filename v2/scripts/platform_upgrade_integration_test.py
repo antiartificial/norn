@@ -48,16 +48,18 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         dispatch = source.split('elif [[ "$mode" == "recovered-forward" ]]; then', 1)[1].split(
             'elif [[ "$mode" == "upgrade" ]]; then', 1
         )[0]
-        self.assertLess(dispatch.index("recovered_forward_dispatch_exact_retarget"), dispatch.index("recovered_forward_validate_preflight"))
+        self.assertLess(dispatch.index("recovered_forward_dispatch_transition"), dispatch.index("recovered_forward_validate_preflight"))
         self.assertIn("recovered_forward_validate_preflight", dispatch)
         self.assertIn("recovered_forward_resume_or_start", dispatch)
         self.assertNotIn("automatic replay is refused", dispatch)
-        retarget = source.split("recovered_forward_dispatch_exact_retarget() {", 1)[1].split("\n}", 1)[0]
-        self.assertIn('"state") == "legacy-fenced"', retarget)
-        self.assertIn('"sourceSHA") == "26147c39a554b73b6761a371edee5a9591c81d3f"', retarget)
-        self.assertIn('"candidateReleaseSHA") == "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"', retarget)
-        self.assertIn('exec "$wrapper" "$candidate_sha"', retarget)
-        self.assertIn('--transition-id "$recovered_transition_id"', retarget)
+        handoff = source.split("recovered_forward_dispatch_transition() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('exec "$wrapper" "$ref" --source-sha "$recovered_source_sha"', handoff)
+        self.assertIn('--transition-id "$recovered_transition_id"', handoff)
+        controller = source.split('elif [[ "$mode" == "recovered-forward" ]]; then', 1)[1].split(
+            'elif [[ "$mode" == "upgrade" ]]; then', 1
+        )[0]
+        self.assertIn("internal_recovered_forward_controller", source)
+        self.assertLess(controller.index("recovered_forward_dispatch_transition"), controller.index("recovered_forward_validate_preflight"))
         resume = source.split("recovered_forward_resume_or_start() {", 1)[1].split("\n}", 1)[0]
         self.assertLess(resume.index("acquire_promotion_lock"), resume.index('if [[ -e "$transition_state_path" ]]'))
         for phase in (
@@ -65,6 +67,11 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "migration-started", "schema-migrated", "candidate-activation-started",
         ):
             self.assertIn(phase, resume)
+
+    def test_signed_transition_wrapper_uses_internal_nonrecursive_controller_mode(self) -> None:
+        wrapper = (SCRIPT_DIR / "mini-recovered-forward-transition").read_text(encoding="utf-8")
+        self.assertIn('env["NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE"] = args.transition_id', wrapper)
+        self.assertIn('invoke_platform(platform_script, "recovered-forward-controller"', wrapper)
 
     def test_recovered_forward_alone_preserves_queued_fleet_apply_dispatches(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")

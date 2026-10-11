@@ -47,6 +47,20 @@ LEGACY_BINARIES = (
     "platform-release-verify-github",
     "platform-upgrade",
 )
+PRE_M5_BINARIES = (
+    "host-runtime",
+    "norn",
+    "norn-api",
+    "norn-effect-runner",
+    "norn-host-agent",
+    "norn-ingress-observer",
+    "norn-ingress-publisher",
+    "platform-release-artifact",
+    "platform-release-fetch-github",
+    "platform-release-manifest",
+    "platform-release-verify-github",
+    "platform-upgrade",
+)
 
 
 class PlatformReleaseManifestTests(unittest.TestCase):
@@ -214,6 +228,42 @@ class PlatformReleaseManifestTests(unittest.TestCase):
         legacy = self.legacy_release(signed=True)
 
         result = self.verify(legacy)
+        self.assertEqual(result.stdout.strip(), "signed")
+
+    def test_verify_accepts_signed_pre_m5_source_layout(self) -> None:
+        historical = self.root / "pre-m5-release"
+        self.populate_release(historical, BINARIES)
+        self.create(historical)
+        for path in sorted(historical.rglob("*"), reverse=True):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        historical.chmod(0o755)
+        for name in set(BINARIES) - set(PRE_M5_BINARIES):
+            (historical / "bin" / name).unlink()
+        manifest_path = historical / "release.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"]["binaries"] = {
+            path: digest for path, digest in manifest["artifacts"]["binaries"].items()
+            if path.removeprefix("bin/") in PRE_M5_BINARIES
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        signature_path = historical / "release.signature.json"
+        signature = json.loads(signature_path.read_text(encoding="utf-8"))
+        signatures = historical / "signatures"
+        signatures.mkdir()
+        detached_manifest = signatures / "legacy.manifest.json"
+        detached_signature = signatures / "legacy.manifest.sig"
+        detached_manifest.write_text("{}\n", encoding="utf-8")
+        detached_signature.write_bytes(b"detached-signature")
+        signature["status"] = "signed"
+        signature["artifacts"] = {
+            f"signatures/{path.name}": hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (detached_manifest, detached_signature)
+        }
+        signature["manifestSha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        signature_path.write_text(json.dumps(signature, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.seal(historical)
+
+        result = self.verify(historical)
         self.assertEqual(result.stdout.strip(), "signed")
 
     def test_create_rejects_legacy_binary_layout(self) -> None:
