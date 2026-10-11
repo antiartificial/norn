@@ -170,6 +170,8 @@ jobs:
             mini-private-copy-rehearsal \
             mini-protected-transition-rehearsal \
             mini-signed-shadow-launchagent-rehearsal \
+            mini-recovered-forward-retarget \
+            mini-recovered-forward-retarget-consume \
             mini-recovered-forward-transition \
             mini-recovered-forward-verify-evidence \
             mini-recovered-forward-validate-journal

@@ -183,6 +183,7 @@ class DoctorFixtureTest(unittest.TestCase):
         binaries = ("host-runtime", "norn", "norn-api", "norn-effect-runner", "norn-host-agent",
                     "norn-ingress-observer", "norn-ingress-publisher", "mini-create-protected-backup",
                     "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal",
+                    "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume",
                     "mini-recovered-forward-transition", "mini-recovered-forward-validate-journal",
                     "mini-recovered-forward-verify-evidence", "mini-signed-shadow-launchagent-rehearsal",
                     "mini-verify-protected-backup", "platform-release-artifact", "platform-release-fetch-github",

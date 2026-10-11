@@ -25,6 +25,8 @@ BINARIES = (
     "mini-create-protected-backup",
     "mini-private-copy-rehearsal",
     "mini-protected-transition-rehearsal",
+    "mini-recovered-forward-retarget",
+    "mini-recovered-forward-retarget-consume",
     "mini-recovered-forward-transition",
     "mini-recovered-forward-validate-journal",
     "mini-recovered-forward-verify-evidence",
