@@ -29,6 +29,7 @@ type platformRelease struct {
 }
 
 var semanticReleaseVersionPattern = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-(?:control|platform))?(-[0-9]+-g[0-9a-f]{7,40})?$`)
+var semanticReleaseCandidateVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+-platform(?:-[0-9]+-g[0-9a-f]{7,40})?$`)
 
 func (h *Handler) PlatformReleases(w http.ResponseWriter, r *http.Request) {
 	releasesDir := firstEnv("NORN_RELEASES_DIR", filepath.Join(homeDir(), "norn", "releases"))
@@ -129,6 +130,12 @@ func platformReleaseDisplayVersion(version, sha, nearestSemanticBase string) (di
 	if match := semanticReleaseVersionPattern.FindStringSubmatch(version); match != nil {
 		base := "v" + match[1] + "." + match[2] + "." + match[3]
 		return base + "-platform" + match[4], base
+	}
+	// A prerelease is already a meaningful, user-facing version. Keep the full
+	// candidate label and do not let its numeric base advance the stable release
+	// line used for timestamped transport-tag labels.
+	if semanticReleaseCandidateVersionPattern.MatchString(version) {
+		return version, ""
 	}
 	if strings.HasPrefix(version, "v") {
 		return version, ""

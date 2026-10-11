@@ -783,8 +783,8 @@ drain_check() {
 
 canonical_platform_version() {
   local candidate="$1"
-  if [[ "$candidate" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-(control|platform)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]; then
-    printf '%s-platform%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+  if [[ "$candidate" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?)-(control|platform)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]; then
+    printf '%s-platform%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[4]}"
     return
   fi
   if [[ "$candidate" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]; then
@@ -800,7 +800,7 @@ release_version_for_ref() {
   described="$(git -C "$repo" describe --tags --exclude='platform-*' "$release_ref" 2>/dev/null)" ||
     fail "release commit has no reachable version tag (expected v<major>.<minor>.<patch>-platform or -control)"
   display="$(canonical_platform_version "$described")"
-  [[ "$display" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-platform(-[0-9]+-g[0-9a-f]{7,40})?$ ]] ||
+  [[ "$display" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?-platform(-[0-9]+-g[0-9a-f]{7,40})?$ ]] ||
     fail "release tag does not produce a supported version-first platform label: $described"
   printf '%s\n' "$display"
 }

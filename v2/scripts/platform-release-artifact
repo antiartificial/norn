@@ -52,6 +52,18 @@ MAX_ASSET_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FILES = 200_000
 MAX_EXPANDED_BYTES = 8 * 1024 * 1024 * 1024
 TRANSPORT_METADATA_DIRECTORY = "signatures"
+RELEASE_TAG_RE = re.compile(
+    r"^(v[0-9]+\.[0-9]+\.[0-9]+)(-rc\.[1-9][0-9]*)?(?:-(control|platform))?"
+    r"(-[0-9]+-g[0-9a-f]{7,40})?$"
+)
+PLATFORM_VERSION_RE = re.compile(
+    r"^v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?-platform"
+    r"(?:-[0-9]+-g[0-9a-f]{7,40})?$"
+)
+SEMVER_RC_PLATFORM_VERSION_RE = re.compile(
+    r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"-rc\.(?:0|[1-9][0-9]*)-platform(?:-[0-9]+-g[0-9a-f]{7,40})?$"
+)
 
 
 class ArtifactError(RuntimeError):
@@ -62,6 +74,33 @@ class GitHubHTTPError(ArtifactError):
     def __init__(self, status: int):
         super().__init__(f"GitHub API request failed with HTTP {status}")
         self.status = status
+
+
+def _platform_version_from_tag(description: str) -> str:
+    """Map a version-first source tag description to the platform label."""
+    match = RELEASE_TAG_RE.fullmatch(description)
+    if not match:
+        raise ArtifactError(f"unsupported platform version description: {description}")
+    base, prerelease, channel, distance = match.groups()
+    if prerelease:
+        source_version = f"{base}{prerelease}"
+        if channel not in ("control", "platform") or not re.fullmatch(
+            r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+            r"-rc\.[1-9][0-9]*",
+            source_version,
+        ):
+            raise ArtifactError(f"unsupported SemVer prerelease source tag: {description}")
+    return f"{base}{prerelease or ''}-platform{distance or ''}"
+
+
+def _is_prerelease_version(version: str) -> bool:
+    if "-rc." in version:
+        if not SEMVER_RC_PLATFORM_VERSION_RE.fullmatch(version):
+            raise ArtifactError(f"signed platform version is malformed: {version}")
+        return True
+    if not PLATFORM_VERSION_RE.fullmatch(version):
+        raise ArtifactError(f"signed platform version is malformed: {version}")
+    return False
 
 
 def _sha256_file(path: Path) -> str:
@@ -623,6 +662,37 @@ def verify_bundle(bundle: Path, public_key: Path) -> dict[str, object]:
     return manifest
 
 
+def _bundle_release_channel(bundle: Path, public_key: Path) -> bool:
+    """Return the prerelease channel from the signature-bound release.env."""
+    manifest = verify_bundle(bundle, public_key)
+    archive_path = _asset_path(bundle, manifest["archive"])
+    try:
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            matches = [member for member in archive.getmembers() if member.name == "release.env"]
+            if len(matches) != 1 or not matches[0].isfile() or matches[0].size > 64 * 1024:
+                raise ArtifactError("signed release archive has no valid release.env")
+            stream = archive.extractfile(matches[0])
+            if stream is None:
+                raise ArtifactError("cannot read signed release.env")
+            payload = stream.read(64 * 1024 + 1)
+    except (tarfile.TarError, OSError) as exc:
+        raise ArtifactError("release archive is invalid") from exc
+    if len(payload) > 64 * 1024:
+        raise ArtifactError("signed release.env exceeds the size limit")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ArtifactError("signed release.env is not UTF-8") from exc
+    versions = [
+        line.partition("=")[2]
+        for line in text.splitlines()
+        if line.startswith("NORN_RELEASE_VERSION=")
+    ]
+    if len(versions) != 1:
+        raise ArtifactError("signed release.env must contain one platform version")
+    return _is_prerelease_version(versions[0])
+
+
 def _verify_installed(release: Path, public_key: Path) -> dict[str, object]:
     if release.is_symlink():
         raise ArtifactError("installed release directory must not be a symlink")
@@ -891,6 +961,10 @@ def fetch_bundle(repository: str, selector: str, cache_dir: Path, public_key: Pa
         client.download_asset(assets[base + ".tar.gz"], staging / (base + ".tar.gz"), int(manifest["archive"]["size"]))  # type: ignore[index]
         client.download_asset(assets[base + ".sbom.spdx.json"], staging / (base + ".sbom.spdx.json"), int(manifest["sbom"]["size"]))  # type: ignore[index]
         verify_bundle(staging, public_key)
+        signed_prerelease = _bundle_release_channel(staging, public_key)
+        github_prerelease = release.get("prerelease")
+        if not isinstance(github_prerelease, bool) or github_prerelease != signed_prerelease:
+            raise ArtifactError("GitHub release prerelease flag does not match the signed platform version")
         _atomic_directory_no_replace(staging, destination)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1038,6 +1112,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
 
+    version_from_tag = commands.add_parser(
+        "version-from-tag", help="map a version-first source tag description to its platform version"
+    )
+    version_from_tag.add_argument("description")
+
+    channel = commands.add_parser(
+        "channel", help="verify a bundle and print prerelease or stable from signed release metadata"
+    )
+    channel.add_argument("--bundle-dir", required=True)
+    channel.add_argument("--public-key", required=True)
+
     package = commands.add_parser("package", help="create an unsigned deterministic release bundle")
     package.add_argument("--release-dir", required=True)
     package.add_argument("--output-dir", required=True, help="new directory to create atomically; it must not exist")
@@ -1083,7 +1168,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "package":
+        if args.command == "version-from-tag":
+            result = _platform_version_from_tag(args.description)
+        elif args.command == "channel":
+            result = "prerelease" if _bundle_release_channel(
+                _path_arg(args.bundle_dir), _path_arg(args.public_key).resolve(strict=True)
+            ) else "stable"
+        elif args.command == "package":
             result = package_release(args)
         elif args.command == "sign":
             result = sign_bundle(_path_arg(args.bundle_dir))

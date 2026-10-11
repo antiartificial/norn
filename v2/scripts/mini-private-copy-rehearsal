@@ -21,7 +21,7 @@ expected_version=${NORN_CANDIDATE_VERSION:-}
 # expected_sha. Keep that immutable binding outside this rehearsal while
 # refusing a free-form value here. A describe-style suffix, when present,
 # must identify the supplied SHA as well.
-[[ $expected_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+-platform(-[0-9]+-g[0-9a-f]{7,40})?$ ]] || usage
+[[ $expected_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?-platform(-[0-9]+-g[0-9a-f]{7,40})?$ ]] || usage
 if [[ $expected_version == *-g* ]]; then
   version_sha=${expected_version##*-g}
   [[ $expected_sha == "$version_sha"* ]] || usage

@@ -134,16 +134,7 @@ jobs:
             echo "A version tag such as v2.21.0-platform or v2.21.0-control must be reachable from the release commit." >&2
             exit 1
           }
-          if [[ "$described" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-(control|platform)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]
-          then
-            version="${BASH_REMATCH[1]}-platform${BASH_REMATCH[3]}"
-          elif [[ "$described" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]
-          then
-            version="${BASH_REMATCH[1]}-platform${BASH_REMATCH[2]}"
-          else
-            echo "The nearest non-transport tag does not produce a supported version-first platform label: $described" >&2
-            exit 1
-          fi
+          version="$(python3 v2/scripts/platform-release-artifact version-from-tag "$described")"
           release="$RUNNER_TEMP/release"
           bundle="$RUNNER_TEMP/bundle"
           mkdir -p "$release/bin" "$release/ui"
@@ -292,6 +283,25 @@ jobs:
             exit 1
           }
 
+          release_channel=""
+          for bundle in release-bundles/platform-*
+          do
+            bundle_channel="$(python3 v2/scripts/platform-release-artifact channel \
+              --bundle-dir "$bundle" --public-key "$public_key")"
+            if [[ -z "$release_channel" ]]; then
+              release_channel="$bundle_channel"
+            elif [[ "$release_channel" != "$bundle_channel" ]]; then
+              echo "platform bundles disagree on their signed release channel" >&2
+              exit 1
+            fi
+          done
+          [[ "$release_channel" == "stable" || "$release_channel" == "prerelease" ]] || {
+            echo "could not determine signed platform release channel" >&2
+            exit 1
+          }
+          prerelease="false"
+          [[ "$release_channel" != "prerelease" ]] || prerelease="true"
+
           tag="platform-$REQUESTED_SHA"
           # A retry may resume only an unpublished draft for this exact tag and
           # target. Every retained asset is downloaded and compared byte for
@@ -307,17 +317,24 @@ jobs:
               echo "existing draft targets a different commit" >&2
               exit 1
             }
+            [[ "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .prerelease)" == "$prerelease" ]] || {
+              echo "existing draft prerelease channel differs from the signed bundle version" >&2
+              exit 1
+            }
           else
             if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1
             then
               echo "refusing to reuse a standalone tag: $tag" >&2
               exit 1
             fi
+            create_channel=()
+            [[ "$prerelease" != "true" ]] || create_channel+=(--prerelease)
             gh release create "$tag" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$REQUESTED_SHA" \
               --title "Norn platform $REQUESTED_SHA" \
               --notes "Immutable, Ed25519-signed Norn platform bundles for $REQUESTED_SHA." \
+              "${create_channel[@]}" \
               --draft
           fi
           trap 'echo "Publish failed; the incomplete draft is retained for a verified resume on the next exact-SHA run." >&2' ERR
@@ -368,6 +385,10 @@ jobs:
             }
           done
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .prerelease)" == "$prerelease" ]] || {
+            echo "published GitHub release prerelease channel differs from the signed bundle version" >&2
+            exit 1
+          }
           [[ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isImmutable --jq .isImmutable)" == "true" ]] || {
             echo "published release did not become immutable" >&2
             exit 1

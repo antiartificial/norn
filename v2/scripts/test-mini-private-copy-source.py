@@ -131,6 +131,31 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.capture.exists(), result.stderr)
 
+    def test_v3_release_candidate_labels_are_accepted_and_bound_to_sha(self):
+        query = urllib.parse.urlencode({"host": str(self.root)})
+        for version in ("v3.0.0-rc.1-platform", "v3.0.0-rc.12-platform-40-gaaaaaaaa"):
+            with self.subTest(version=version):
+                result = self.run_source(query, {"NORN_CANDIDATE_VERSION": version})
+                # The fake pg_dump exits 23 after receiving the source URL. That
+                # proves label validation accepted the candidate before any DB
+                # work while preserving the existing source-isolation contract.
+                self.assertEqual(result.returncode, 23, result.stderr)
+                self.assertTrue(self.capture.exists())
+
+    def test_malformed_v3_release_candidate_labels_fail_before_dump(self):
+        query = urllib.parse.urlencode({"host": str(self.root)})
+        for version in (
+            "v3.0.0-rc.0-platform",
+            "v3.0.0-rc.x-platform",
+            "v3.0.0-rc.1.2-platform",
+            "v3.0.0-rc.1-platform-extra",
+            "v3.0.0-platform-rc.1",
+        ):
+            with self.subTest(version=version):
+                result = self.run_source(query, {"NORN_CANDIDATE_VERSION": version})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.capture.exists(), result.stderr)
+
     def test_more_than_28_tables_reaches_the_last_table_primary_key_gate(self):
         self.install_table_fixture()
         tables = [f"table_{number:02d}" for number in range(59)]

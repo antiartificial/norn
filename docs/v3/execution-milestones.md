@@ -7,20 +7,33 @@ contract and exit criteria.
 
 ## Release contract
 
-Initial v3 must pass both paths:
+The initial v3 release supports two independent deployment paths:
 
 1. Existing single-machine Mini: v2/PostgreSQL → v3/PostgreSQL, preserving running workloads and application data.
 2. Empty DigitalOcean HA Fleet: fresh v3 with three etcd members on the control nodes and independent application databases.
 
-These are engineering milestones within one v3 release, not mandatory intermediate production releases. No general PG↔etcd control conversion is required to complete either path. Keep that as a later capability. A targeted v2 prerequisite release is needed only if the inspected Mini version cannot safely upgrade directly.
+The existing Mini can run v3 as a single-node development control plane on its
+existing PostgreSQL database. It does not need a Fleet, etcd, or management
+nodes to operate. It may connect to a running Fleet through Fleet's API when
+Fleet integration is configured; that connection is optional and independent
+of upgrading or running Norn on the Mini.
+
+The disposable DigitalOcean Fleet is a separate staging exercise for fresh
+bootstrap, quorum, workload communication, scaling and teardown. Its etcd and
+management-node requirements apply to that Fleet deployment, not to the Mini.
+These paths share release qualification but are not prerequisites for one
+another. No general PG↔etcd control conversion is required. A targeted v2
+prerequisite release is needed only if the inspected Mini version cannot safely
+upgrade directly.
 
 The Mini is a development machine. Its v3 upgrade may use a fresh control backup
 in a directory on that Mini, with a verified private restore and a recorded
 rollback decision. Loss of the Mini or its storage may also lose that backup;
 this release makes no Mini disaster-recovery RPO or RTO claim. Off-host,
 bounded-loss recovery is a separate production qualification, not an M0/M5
-Mini prerequisite. The immediate deployment objective is the empty DO Fleet;
-its etcd snapshots, restore, quorum and fault gates remain required.
+Mini prerequisite. The Mini upgrade can advance independently of Fleet
+provisioning. Fleet's etcd snapshots, restore, quorum and fault gates remain
+required before claiming that staging exercise complete.
 
 Application migration is separate from platform upgrade. The first release qualifies moving a representative Mini application to Fleet; moving every app is not a release gate. Keep the Mini and Fleet as independent control-plane identities. Transfer app definitions/data and selected provenance with an explicit mapping; do not clone the entire Mini control database into the live Fleet or run both as the same authority.
 

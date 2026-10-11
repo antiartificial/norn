@@ -78,6 +78,78 @@ func TestPlatformReleaseDisplayVersionPreservesDescribeDistance(t *testing.T) {
 	}
 }
 
+func TestPlatformReleasesPreservesCandidateLabelWithoutAdvancingStableBase(t *testing.T) {
+	releasesDir := t.TempDir()
+	t.Setenv("NORN_RELEASES_DIR", releasesDir)
+	t.Setenv("NORN_CURRENT_LINK", filepath.Join(t.TempDir(), "current"))
+
+	stableSHA := "1111111111111111111111111111111111111111"
+	candidateSHA := "2222222222222222222222222222222222222222"
+	transportSHA := "3333333333333333333333333333333333333333"
+	writeReleaseFixture(t, releasesDir, stableSHA, map[string]any{
+		"version": "v2.20.0-platform", "createdAt": "2026-10-10T10:00:00Z",
+	})
+	writeReleaseFixture(t, releasesDir, candidateSHA, map[string]any{
+		"version": "v3.0.0-rc.1-platform", "createdAt": "2026-10-10T11:00:00Z",
+	})
+	writeReleaseFixture(t, releasesDir, transportSHA, map[string]any{
+		"version": "platform-3333333333333333333333333333333333333333-1-g3333333", "createdAt": "2026-10-10T12:00:00Z",
+	})
+
+	recorder := httptest.NewRecorder()
+	(&Handler{}).PlatformReleases(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/releases", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response platformReleaseList
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Releases) != 3 {
+		t.Fatalf("release count = %d, want 3", len(response.Releases))
+	}
+	// The API sorts newest first. The RC remains verbatim, while a later
+	// transport tag still inherits the last GA semantic base, v2.20.0.
+	if got, want := response.Releases[1].DisplayVersion, "v3.0.0-rc.1-platform"; got != want {
+		t.Errorf("candidate displayVersion = %q, want %q", got, want)
+	}
+	if got, want := response.Releases[0].DisplayVersion, "v2.20.0-platform-g3333333"; got != want {
+		t.Errorf("transport displayVersion after candidate = %q, want %q", got, want)
+	}
+}
+
+func TestPlatformReleaseDisplayVersionDoesNotTreatCandidateAsStableBase(t *testing.T) {
+	display, base := platformReleaseDisplayVersion("v3.0.0-rc.1-platform", "2222222222222222222222222222222222222222", "v2.20.0")
+	if display != "v3.0.0-rc.1-platform" || base != "" {
+		t.Fatalf("display = %q, base = %q; want exact candidate label and no stable base", display, base)
+	}
+}
+
+func TestPlatformReleaseDisplayVersionPreservesOnlyCurrentRCConvention(t *testing.T) {
+	for _, version := range []string{
+		"v3.0.0-rc.1-platform",
+		"v3.0.0-rc.1-platform-34-g29158d0",
+	} {
+		display, base := platformReleaseDisplayVersion(version, "2222222222222222222222222222222222222222", "v2.20.0")
+		if display != version || base != "" {
+			t.Errorf("version %q: display = %q, base = %q; want verbatim label and no stable base", version, display, base)
+		}
+	}
+}
+
+func TestPlatformReleaseDisplayVersionDoesNotClassifyMalformedRCAsCandidate(t *testing.T) {
+	for _, version := range []string{
+		"v3.0.0-preview.1-platform",
+		"v3.0.0-rc.preview-platform",
+		"v3.0.0-rc.1-control",
+	} {
+		display, base := platformReleaseDisplayVersion(version, "2222222222222222222222222222222222222222", "v2.20.0")
+		if display != version || base != "" {
+			t.Errorf("malformed candidate %q: display = %q, base = %q; want original label and no stable base", version, display, base)
+		}
+	}
+}
+
 func writeReleaseFixture(t *testing.T, releasesDir, name string, metadata map[string]any) {
 	t.Helper()
 	dir := filepath.Join(releasesDir, name)

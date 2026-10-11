@@ -984,4 +984,15 @@ describe('App shell routing', () => {
     expect(screen.getByRole('dialog', { name: 'Rollback platform release' })).toBeInTheDocument()
     expect(screen.getByText(/Rollback to v2\.20\.0-platform-gprevious/)).toBeInTheDocument()
   })
+
+  it('shows a platform release candidate label verbatim', async () => {
+    installFetch({
+      '/api/platform/releases': () => json({ releases: [
+        { sha: 'candidate', version: 'v3.0.0-rc.1-platform', displayVersion: 'v3.0.0-rc.1-platform', createdAt: new Date().toISOString(), path: '/releases/candidate', current: true },
+      ] }),
+    })
+    renderApp('/platform/releases')
+    expect(await screen.findByText('v3.0.0-rc.1-platform')).toBeInTheDocument()
+    expect(screen.queryByText('v3.0.0-platform')).not.toBeInTheDocument()
+  })
 })

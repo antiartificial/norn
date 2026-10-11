@@ -97,7 +97,7 @@ class PlatformReleaseArtifactTests(unittest.TestCase):
         (self.release / "ui/index.html").write_text("<main>Norn</main>\n")
         (self.release / "ui/assets/app.js").write_text("export default 1\n")
         (self.release / "release.env").write_text(
-            f"NORN_RELEASE_SHA={SHA}\nNORN_RELEASE_VERSION=v2-test\nNORN_RELEASE_CREATED_AT=2026-08-26T20:00:00Z\nNORN_UI_DIR=ui\n"
+            f"NORN_RELEASE_SHA={SHA}\nNORN_RELEASE_VERSION=v2.20.0-platform\nNORN_RELEASE_CREATED_AT=2026-08-26T20:00:00Z\nNORN_UI_DIR=ui\n"
         )
         self._run(
             MANIFEST,
@@ -180,6 +180,46 @@ class PlatformReleaseArtifactTests(unittest.TestCase):
         next(bundle.glob("*.manifest.sig")).unlink()
         self._run(ARTIFACT, "sign", "--bundle-dir", str(bundle), env=self.signing_env)
 
+    def _bundle_for_version(self, version: str, name: str) -> Path:
+        (self.release / "release.env").write_text(
+            f"NORN_RELEASE_SHA={SHA}\nNORN_RELEASE_VERSION={version}\n"
+            "NORN_RELEASE_CREATED_AT=2026-08-26T20:00:00Z\nNORN_UI_DIR=ui\n"
+        )
+        self._run(
+            MANIFEST,
+            "create",
+            "--release", str(self.release),
+            "--source", str(self.source),
+            "--sha", SHA,
+            "--version", version,
+            "--created-at", "2026-08-26T20:00:00Z",
+            "--os", "linux",
+            "--arch", "amd64",
+            "--go-version", "go1.test",
+            "--node-version", "v24.19.0",
+            "--node-required", "v24.19.0",
+            "--pnpm-version", "10.32.1",
+            "--pnpm-required", "10.32.1",
+            "--go-flag=-trimpath",
+            "--go-ldflag=-buildid=",
+            "--cgo-enabled", "0",
+            "--source-date-epoch", "1787792400",
+        )
+        bundle = self.root / name
+        self._run(
+            ARTIFACT,
+            "package",
+            "--release-dir", str(self.release),
+            "--output-dir", str(bundle),
+            "--commit", SHA,
+            "--os", "linux",
+            "--arch", "amd64",
+            "--repository", "antiartificial/norn",
+            "--source-date-epoch", "1787792400",
+        )
+        self._run(ARTIFACT, "sign", "--bundle-dir", str(bundle), env=self.signing_env)
+        return bundle
+
     def test_round_trip_import_passes_local_and_external_verifiers(self) -> None:
         self._verify_bundle()
         releases = self.root / "releases"
@@ -209,6 +249,96 @@ class PlatformReleaseArtifactTests(unittest.TestCase):
             success=False,
         )
         self.assertIn("already exists", duplicate.stderr)
+
+    def test_stable_and_rc_source_tag_version_mapping(self) -> None:
+        cases = {
+            "v2.20.0-control": "v2.20.0-platform",
+            "v2.20.0-platform-3-gabcdef012345": "v2.20.0-platform-3-gabcdef012345",
+            "v3.0.0-rc.2-control": "v3.0.0-rc.2-platform",
+            "v3.0.0-rc.2-platform-4-gabcdef0": "v3.0.0-rc.2-platform-4-gabcdef0",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                result = self._run(ARTIFACT, "version-from-tag", source)
+                self.assertEqual(result.stdout.strip(), expected)
+        for malformed in (
+            "v3.0.0-rc.x-control",
+            "v3.0.0-rc.2-other",
+            "v3.0.0-rc.2",
+            "v3.0.0-rc.02-control",
+            "v3.0.0-beta.1-control",
+            "v3.0.0-rc.2-control-1-gabc",
+        ):
+            with self.subTest(malformed=malformed):
+                result = self._run(ARTIFACT, "version-from-tag", malformed, success=False)
+                self.assertIn("unsupported", result.stderr)
+
+    def test_fetch_rejects_github_prerelease_channel_mismatch_for_signed_rc(self) -> None:
+        rc_bundle = self._bundle_for_version("v3.0.0-rc.2-platform", "rc-bundle")
+        assets = {path.name: path.read_bytes() for path in rc_bundle.iterdir() if path.is_file()}
+        published_channel = {"prerelease": True}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                if handler.path == "/repos/antiartificial/norn":
+                    body = json.dumps({"private": False}).encode()
+                    content_type = "application/json"
+                elif handler.path == f"/repos/antiartificial/norn/releases/tags/platform-{SHA}":
+                    body = json.dumps({
+                        "tag_name": f"platform-{SHA}",
+                        "draft": False,
+                        "prerelease": published_channel["prerelease"],
+                        "assets": [
+                            {"name": name, "size": len(data), "url": f"{server_url}/assets/{index}"}
+                            for index, (name, data) in enumerate(sorted(assets.items()))
+                        ],
+                    }).encode()
+                    content_type = "application/json"
+                elif handler.path.startswith("/assets/"):
+                    index = int(handler.path.rsplit("/", 1)[1])
+                    body = sorted(assets.items())[index][1]
+                    content_type = "application/octet-stream"
+                else:
+                    handler.send_error(404)
+                    return
+                handler.send_response(200)
+                handler.send_header("Content-Type", content_type)
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server_url = f"http://127.0.0.1:{server.server_port}"
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        env = {
+            key: value for key, value in os.environ.items()
+            if key not in {"NORN_RELEASE_GITHUB_TOKEN", "NORN_RELEASE_GITHUB_TOKEN_FILE", "GH_TOKEN"}
+        }
+        env.update({
+            "NORN_RELEASE_GITHUB_API_URL": server_url,
+            "NORN_RELEASE_ALLOW_INSECURE_LOCALHOST": "1",
+            "NORN_OPENSSL": str(self.openssl_guard),
+        })
+        args = (
+            "fetch", "--repository", "antiartificial/norn", "--commit", SHA,
+            "--public-key", str(self.public_key), "--os", "linux", "--arch", "amd64",
+        )
+        try:
+            self._run(ARTIFACT, *args, "--cache-dir", str(self.root / "rc-cache"), env=env)
+            self.assertTrue((self.root / "rc-cache" / SHA / "linux-amd64").is_dir())
+            published_channel["prerelease"] = False
+            mismatch = self._run(
+                ARTIFACT, *args, "--cache-dir", str(self.root / "mismatch-cache"), env=env, success=False
+            )
+            self.assertIn("prerelease flag does not match the signed platform version", mismatch.stderr)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_import_seals_release_root_after_atomic_publication(self) -> None:
         releases = self.root / "sealed-releases"
@@ -305,6 +435,7 @@ class PlatformReleaseArtifactTests(unittest.TestCase):
                     body = json.dumps({
                         "tag_name": f"platform-{SHA}",
                         "draft": False,
+                        "prerelease": False,
                         "assets": [
                             {"name": name, "size": len(data), "url": f"{server_url}/assets/{index}"}
                             for index, (name, data) in enumerate(sorted(assets.items()))
@@ -448,6 +579,7 @@ class PlatformReleaseArtifactTests(unittest.TestCase):
                     body = json.dumps({
                         "tag_name": f"platform-{SHA}",
                         "draft": False,
+                        "prerelease": False,
                         "assets": [
                             {"name": name, "size": len(data), "url": f"{server_url}/assets/{index}"}
                             for index, (name, data) in enumerate(sorted(assets.items()))

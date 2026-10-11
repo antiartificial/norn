@@ -18,7 +18,7 @@ class SignedShadowGuardTests(unittest.TestCase):
         values = os.environ.copy(); values.update(env or {})
         return subprocess.run([str(SCRIPT), *args], text=True, capture_output=True, env=values)
 
-    def cleanup_harness(self, root, private_copy_body):
+    def cleanup_harness(self, root, private_copy_body, candidate_version='v1.2.3-platform'):
         scripts = root / 'repo' / 'v2' / 'scripts'; scripts.mkdir(parents=True)
         harness = scripts / SCRIPT.name; shutil.copy2(SCRIPT, harness)
         for name, body in {
@@ -30,7 +30,7 @@ class SignedShadowGuardTests(unittest.TestCase):
         sha = 'c' * 40
         release = root / sha; (release / 'bin').mkdir(parents=True)
         (release / 'release.env').write_text(
-            f'NORN_RELEASE_SHA={sha}\nNORN_RELEASE_VERSION=v1.2.3-platform\n', encoding='utf-8')
+            f'NORN_RELEASE_SHA={sha}\nNORN_RELEASE_VERSION={candidate_version}\n', encoding='utf-8')
         api = release / 'bin' / 'norn-api'; api.write_text('#!/bin/sh\n', encoding='utf-8'); api.chmod(0o700)
         key = root / 'key'; key.write_text('fixture', encoding='utf-8')
         scratch = root / 'scratch'; scratch.mkdir()
@@ -47,6 +47,31 @@ class SignedShadowGuardTests(unittest.TestCase):
             'NORN_M5_SHADOW_RECEIPT': str(receipt),
         })
         return harness, release, key, scratch, receipt, env
+
+    def test_accepts_v3_rc_candidate_labels_and_passes_exact_identity_to_private_copy(self):
+        for version in ('v3.0.0-rc.1-platform', 'v3.0.0-rc.12-platform-40-gcccccccc'):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                harness, release, key, scratch, receipt, env = self.cleanup_harness(
+                    root, 'exit 23\n', candidate_version=version)
+                result = subprocess.run([str(harness), 'run', '--candidate-release', str(release),
+                                         '--public-key', str(key)], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 23, result.stderr)
+                self.assertEqual(json.loads(receipt.read_text())['candidateSHA'], 'c' * 40)
+                self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_rejects_malformed_v3_rc_candidate_labels_before_private_copy(self):
+        for version in ('v3.0.0-rc.0-platform', 'v3.0.0-rc.x-platform',
+                        'v3.0.0-rc.1.2-platform', 'v3.0.0-rc.1-platform-extra'):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                harness, release, key, scratch, receipt, env = self.cleanup_harness(
+                    root, 'exit 23\n', candidate_version=version)
+                result = subprocess.run([str(harness), 'run', '--candidate-release', str(release),
+                                         '--public-key', str(key)], env=env, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(23, result.returncode)
+                self.assertEqual(list(scratch.iterdir()), [])
 
     def test_requires_opt_in_before_reading_targets(self):
         result = self.invoke('run', '--candidate-release', '/missing', '--public-key', '/missing')
