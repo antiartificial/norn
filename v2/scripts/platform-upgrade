@@ -745,6 +745,51 @@ active_operation_count() {
   printf '%s\n' "$response" | sed -n 's/.*"count":[[:space:]]*\([0-9][0-9]*\).*/\1/p'
 }
 
+# The Mini's control database can also hold Fleet GitHub delivery receipts.
+# Those records are not claimed by the Mini operation worker and do not mutate
+# Mini workloads. Preserve queued apply-dispatch receipts across the Mini-only
+# v2-to-v3 schema transition, while requiring every Mini operation and every
+# running Fleet dispatch to drain. The API returns at most 100 rows, so a full
+# page is ambiguous and must fail closed.
+legacy_baseline_mini_operation_counts() {
+  local response
+  response="$(api_get "/api/operations/active" 2>/dev/null)" || return 2
+  printf '%s\n' "$response" | python3 -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+    operations = value["operations"]
+    count = value["count"]
+    if not isinstance(operations, list) or type(count) is not int or count != len(operations):
+        raise ValueError("active operation response is inconsistent")
+    if len(operations) >= 100:
+        raise ValueError("active operation response may be truncated")
+    active = ignored = 0
+    seen = set()
+    excluded_id = sys.argv[1]
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise ValueError("active operation entry is malformed")
+        operation_id = operation.get("id")
+        kind = operation.get("kind")
+        status = operation.get("status")
+        if not all(isinstance(item, str) and item for item in (operation_id, kind)) or status not in ("queued", "running"):
+            raise ValueError("active operation identity or status is malformed")
+        if operation_id in seen:
+            raise ValueError("active operation response contains duplicate IDs")
+        seen.add(operation_id)
+        if operation_id == excluded_id:
+            continue
+        if kind == "fleet.github.apply-dispatch" and status == "queued":
+            ignored += 1
+        else:
+            active += 1
+    print(active, ignored)
+except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(2)
+' "$drain_exclude_operation_id"
+}
+
 drain_check() {
   case "$drain_mode" in
     force)
@@ -1353,13 +1398,15 @@ PY
 legacy_baseline_require_drained() {
   [[ "$drain_mode" == "fail" ]] || fail "legacy-baseline requires NORN_DRAIN_MODE=fail"
   [[ -n "${NORN_TOKEN:-${NORN_API_TOKEN:-}}" ]] || fail "legacy-baseline requires an authenticated operation-drain token"
-  local count
-  if ! count="$(active_operation_count)"; then
+  local evidence count preserved_fleet_receipts
+  if ! evidence="$(legacy_baseline_mini_operation_counts)"; then
     fail "legacy-baseline cannot verify the legacy operation drain"
   fi
+  read -r count preserved_fleet_receipts <<<"$evidence"
   [[ "$count" =~ ^[0-9]+$ ]] || fail "legacy-baseline received an invalid legacy operation count"
-  [[ "$count" == "0" ]] || fail "legacy-baseline requires zero active operations before fencing"
-  log "legacy operation drain clear"
+  [[ "$preserved_fleet_receipts" =~ ^[0-9]+$ ]] || fail "legacy-baseline received an invalid Fleet receipt count"
+  [[ "$count" == "0" ]] || fail "legacy-baseline requires zero Mini-affecting active operations before fencing"
+  log "Mini operation drain clear; preserving $preserved_fleet_receipts queued Fleet GitHub dispatch receipt(s)"
 }
 
 legacy_baseline_require_durable_startup_mode() {

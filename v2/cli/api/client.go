@@ -1094,6 +1094,26 @@ func (c *Client) PlatformOps() (*PlatformOpsSummary, error) {
 	return &summary, nil
 }
 
+// ActiveOperationCount reads the complete drain surface. PlatformOps is a
+// recent-activity view and may contain only a bounded window of operations.
+func (c *Client) ActiveOperationCount(excludeID string) (int, error) {
+	values := url.Values{}
+	if excludeID = strings.TrimSpace(excludeID); excludeID != "" {
+		values.Set("excludeId", excludeID)
+	}
+	path := "/api/operations/active"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := c.get(path, &result); err != nil {
+		return 0, err
+	}
+	return result.Count, nil
+}
+
 func (c *Client) ObservabilityBundle() (*ObservabilityBundle, error) {
 	var bundle ObservabilityBundle
 	if err := c.get("/api/observability/bundle", &bundle); err != nil {

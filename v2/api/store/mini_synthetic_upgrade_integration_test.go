@@ -21,6 +21,8 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 			VALUES ('token-synthetic','device-synthetic','fixture-operator','["app:read"]',now(),now()+interval '1 day');
 		INSERT INTO operations(id,kind,app,status,payload,metadata,lock_generation)
 			VALUES ('operation-synthetic','app.deploy','synthetic-app','succeeded','{"image":"sha256:synthetic"}','{"receipt":"synthetic-receipt"}',4);
+		INSERT INTO operations(id,kind,app,status,payload,metadata,lock_generation)
+			VALUES ('fleet-dispatch-synthetic','fleet.github.apply-dispatch','','queued','{"planId":"synthetic-plan","url":"https://example.invalid/run/1"}','{"receipt":"synthetic-fleet-receipt"}',0);
 		INSERT INTO deployments(id,app,commit_sha,image_tag,saga_id,status)
 			VALUES ('deployment-synthetic','synthetic-app','synthetic-commit','sha256:synthetic','saga-synthetic','succeeded');
 		INSERT INTO deployment_regions(deployment_id,region,nomad_region,status,desired_weight,active_weight)
@@ -70,6 +72,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 		'device', (SELECT jsonb_build_object('id',id,'name',name,'publicKey',public_key) FROM access_devices WHERE id='device-synthetic'),
 		'token', (SELECT jsonb_build_object('jti',jti,'device',device_id,'scopes',scopes) FROM access_tokens WHERE jti='token-synthetic'),
 		'operation', (SELECT jsonb_build_object('id',id,'status',status,'receipt',metadata->>'receipt','generation',lock_generation) FROM operations WHERE id='operation-synthetic'),
+		'fleetDispatch', (SELECT jsonb_build_object('id',id,'kind',kind,'status',status,'planId',payload->>'planId','url',payload->>'url','receipt',metadata->>'receipt') FROM operations WHERE id='fleet-dispatch-synthetic'),
 		'deployment', (SELECT jsonb_build_object('id',id,'app',app,'commit',commit_sha,'image',image_tag,'saga',saga_id,'status',status) FROM deployments WHERE id='deployment-synthetic'),
 		'region', (SELECT jsonb_build_object('region',region,'nomadRegion',nomad_region,'desiredWeight',desired_weight,'activeWeight',active_weight) FROM deployment_regions WHERE deployment_id='deployment-synthetic'),
 		'step', (SELECT jsonb_build_object('step',step,'marker',metadata->>'marker') FROM deployment_steps WHERE deployment_id='deployment-synthetic'),
@@ -199,5 +202,9 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	repeat, err := migrator.Migrate(ctx)
 	if err != nil || len(repeat.AppliedVersions) != 0 {
 		t.Fatalf("repeat migration status=%+v error=%v", repeat, err)
+	}
+	var final string
+	if err := pool.QueryRow(ctx, legacyRead).Scan(&final); err != nil || final != before {
+		t.Fatalf("Mini control records, including queued Fleet receipts, changed across the full migration: %v before=%s final=%s", err, before, final)
 	}
 }
