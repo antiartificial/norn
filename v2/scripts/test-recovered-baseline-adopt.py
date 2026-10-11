@@ -79,6 +79,8 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         })
         self.receipt = self.home / ".config" / "norn" / ".norn-recovered-baseline-adoption.json"
         shutil.copy2(SCRIPT, self.adopter / "bin" / "platform-upgrade")
+        self.managed_script = self.root / "host" / "bin" / "platform-upgrade"
+        write(self.managed_script, SCRIPT.read_bytes(), 0o755)
         self.shims = self.root / "shims"
         self.shims.mkdir()
         self.repo = self.root / "repo"
@@ -146,9 +148,16 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertIn("adoption receipt is required", altered.stderr)
 
     def test_failed_fence_blocks_early_dispatch_but_keeps_canonical_agent_startable(self):
+        self.env["NORN_PLATFORM_SCRIPT_BIN"] = str(self.managed_script)
+        sops = write(self.shims / "sops", "#!/bin/sh\nexit 0\n", 0o755)
+        self.env["NORN_SOPS_BIN"] = str(sops)
         arbitrary = self.run_script("env-exec", "/bin/sh", "-c", "exit 0")
         self.assertNotEqual(arbitrary.returncode, 0)
         self.assertIn("rejects env-exec child mode", arbitrary.stderr)
+        rejected_evidence_child = self.run_script(
+            "env-exec", str(self.managed_script), "mini-protected-backup", "unexpected-argument")
+        self.assertNotEqual(rejected_evidence_child.returncode, 0)
+        self.assertIn("API env file not found", rejected_evidence_child.stderr)
         proxy = self.run_script("proxy-switch", "19999")
         self.assertNotEqual(proxy.returncode, 0)
         self.assertIn("blocks proxy switching", proxy.stderr)
@@ -159,7 +168,7 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         api_env = write(self.home / ".config" / "norn" / "api.env.enc.json", "encrypted")
         sops = write(self.shims / "sops", "#!/bin/sh\nprintf '{}\\n'\n", 0o755)
         self.env.update({"NORN_API_ENV_FILE": str(api_env), "NORN_SOPS_BIN": str(sops),
-                         "NORN_PLATFORM_SCRIPT_BIN": str(self.root / "host" / "bin" / "platform-upgrade"),
+                         "NORN_PLATFORM_SCRIPT_BIN": str(self.managed_script),
                          "NORN_HOST_RUNTIME_BIN": str(self.root / "host" / "bin" / "host-runtime")})
         canonical = self.run_script("env-exec", str(self.managed_agent), "--repo", str(self.repo),
                                     "--platform-script", self.env["NORN_PLATFORM_SCRIPT_BIN"],

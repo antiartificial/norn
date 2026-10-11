@@ -19,7 +19,7 @@ class SignedShadowGuardTests(unittest.TestCase):
         return subprocess.run([str(SCRIPT), *args], text=True, capture_output=True, env=values)
 
     def cleanup_harness(self, root, private_copy_body, candidate_version='v1.2.3-platform'):
-        scripts = root / 'repo' / 'v2' / 'scripts'; scripts.mkdir(parents=True)
+        scripts = root / 'release' / 'bin'; scripts.mkdir(parents=True)
         harness = scripts / SCRIPT.name; shutil.copy2(SCRIPT, harness)
         for name, body in {
             'platform-release-manifest': "#!/bin/sh\nprintf 'signed\\n'\n",

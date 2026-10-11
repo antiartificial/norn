@@ -22,6 +22,10 @@ VERIFY_ADAPTER = SCRIPT_DIR / "platform-release-verify-github"
 SHA = "a" * 40
 BINARIES = (
     "host-runtime",
+    "mini-create-protected-backup",
+    "mini-private-copy-rehearsal",
+    "mini-signed-shadow-launchagent-rehearsal",
+    "mini-verify-protected-backup",
     "norn",
     "norn-api",
     "norn-effect-runner",

@@ -14,6 +14,8 @@ Usage:
   platform-upgrade rollback <sha-prefix>
   platform-upgrade smoke
   platform-upgrade env-exec -- <command> [args...]
+  platform-upgrade mini-protected-backup
+  platform-upgrade mini-signed-shadow <candidate-sha>
   platform-upgrade startup-contract <norn-api-binary>
   platform-upgrade proxy-plan
   platform-upgrade proxy-status
@@ -87,7 +89,7 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|legacy-baseline|legacy-baseline-finalize|recovered-baseline-adopt|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch) ;;
+  preflight|upgrade|legacy-baseline|legacy-baseline-finalize|recovered-baseline-adopt|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|rebuild|proxy-switch|mini-protected-backup|mini-signed-shadow) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -269,7 +271,7 @@ PY
     case "$mode" in
       legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
       proxy-switch) fail "recovered baseline blocks proxy switching while the failed fence is retained" ;;
-      preflight|upgrade) recovered_baseline_receipt_validate || fail "recovered baseline adoption receipt is required and must validate before ordinary forward mutation" ;;
+      preflight|upgrade|mini-protected-backup|mini-signed-shadow) recovered_baseline_receipt_validate || fail "recovered baseline adoption receipt is required and must validate before Mini evidence work" ;;
       env-exec)
         recovered_early_args=("$@")
         [[ "${recovered_early_args[0]:-}" == "--" ]] && recovered_early_args=("${recovered_early_args[@]:1}")
@@ -283,7 +285,7 @@ PY
         else
           [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
           case "${recovered_early_args[1]}" in
-            preflight|upgrade) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+            preflight|upgrade|mini-protected-backup|mini-signed-shadow) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
             recovered-baseline-adopt)
               recovered_adopter_release="$(python3 - "${recovered_early_args[0]}" "$releases" <<'PY'
 import os, sys
@@ -601,6 +603,86 @@ if "NORN_API_TOKEN" not in env and "NORN_API_BEARER_TOKEN" in env:
     env["NORN_API_TOKEN"] = env["NORN_API_BEARER_TOKEN"]
 os.execvpe(argv[0], argv, env)
 PY
+}
+
+mini_evidence_root="$HOME/.config/norn/m5-v3-rc1"
+mini_evidence_backup_dir="$mini_evidence_root/backup"
+mini_evidence_receipt_dir="$mini_evidence_root/receipts"
+
+mini_current_release_sha() {
+  [[ -L "$current_link" ]] || fail "Mini evidence requires a current release symlink"
+  local current_release
+  current_release="$(current_release_target)"
+  [[ -n "$current_release" && "$current_release" == "$releases"/* && -f "$current_release/release.env" ]] || fail "Mini current release is outside the immutable release root"
+  python3 - "$current_release/release.env" <<'PY'
+import re, sys
+values = dict(line.strip().split("=", 1) for line in open(sys.argv[1], encoding="utf-8") if "=" in line)
+sha = values.get("NORN_RELEASE_SHA", "")
+if not re.fullmatch(r"[0-9a-f]{40}", sha): raise SystemExit("current release has no exact source SHA")
+print(sha)
+PY
+}
+
+run_mini_protected_backup() {
+  [[ "$#" == 0 ]] || fail "mini-protected-backup accepts no arguments"
+  [[ -n "${NORN_DATABASE_URL:-}" && -n "${NORN_AUDIT_SIGNING_KEY:-}" ]] || fail "Mini protected backup requires the authenticated runtime environment"
+  local source_sha helper
+  source_sha="$(mini_current_release_sha)"
+  helper="$script_dir/mini-create-protected-backup"
+  [[ -f "$helper" && -x "$helper" && ! -L "$helper" ]] || fail "signed release does not include the protected Mini backup helper"
+  [[ -d "$mini_evidence_backup_dir" && ! -L "$mini_evidence_backup_dir" ]] || fail "Mini protected backup directory must already exist"
+  "$helper" --legacy-release "$source_sha" --output-dir "$mini_evidence_backup_dir"
+}
+
+run_mini_signed_shadow() {
+  [[ "$#" == 1 && "$1" =~ ^[0-9a-f]{40}$ ]] || fail "mini-signed-shadow requires one full candidate SHA"
+  [[ -n "${NORN_AUDIT_SIGNING_KEY:-}" && -n "${NORN_RELEASE_PUBLIC_KEY:-}" ]] || fail "Mini signed shadow requires the authenticated runtime environment and pinned release key"
+  local source_sha candidate_sha candidate_release backup_proof backup_artifact receipt stamp helper
+  source_sha="$(mini_current_release_sha)"
+  candidate_sha="$1"
+  candidate_release="$releases/$candidate_sha"
+  [[ -d "$candidate_release" && ! -L "$candidate_release" ]] || fail "signed shadow candidate is not imported"
+  [[ "$("$manifest_helper" verify --release "$candidate_release" --expected-sha "$candidate_sha")" == signed ]] || fail "signed shadow candidate verification failed"
+  [[ -d "$mini_evidence_backup_dir" && ! -L "$mini_evidence_backup_dir" ]] || fail "Mini protected backup directory is missing"
+  [[ -d "$mini_evidence_receipt_dir" && ! -L "$mini_evidence_receipt_dir" ]] || fail "Mini evidence receipt directory is missing"
+  local backup_selection
+  backup_selection="$(python3 - "$mini_evidence_backup_dir" "$source_sha" "${NORN_LEGACY_BACKUP_MAX_AGE_SECONDS:-3600}" <<'PY'
+import datetime, glob, json, os, re, sys
+root, source_sha, max_age_text = sys.argv[1:]
+try: max_age = int(max_age_text)
+except ValueError: raise SystemExit("invalid backup evidence age limit")
+now = datetime.datetime.now(datetime.timezone.utc)
+candidates = []
+for proof in glob.glob(os.path.join(root, "*.proof.json")):
+    artifact = proof[:-len(".proof.json")] + ".dump"
+    try:
+        with open(proof, encoding="utf-8") as source: value = json.load(source)
+        created = datetime.datetime.fromisoformat(value["createdAt"].replace("Z", "+00:00"))
+        age = (now - created.astimezone(datetime.timezone.utc)).total_seconds()
+        if (value.get("schema") == "norn.legacy-control-backup/v1"
+                and value.get("sourceReleaseSHA") == source_sha
+                and os.path.isfile(artifact) and not os.path.islink(proof)
+                and not os.path.islink(artifact) and 0 <= age <= max_age):
+            candidates.append((created, proof, artifact))
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        continue
+if not candidates: raise SystemExit("no fresh protected backup exists for the current Mini release")
+_, proof, artifact = max(candidates)
+print(proof, artifact)
+PY
+  )" || fail "cannot select fresh protected backup evidence for the signed shadow"
+  read -r backup_proof backup_artifact <<<"$backup_selection"
+  "$script_dir/mini-verify-protected-backup" "$backup_proof" "$backup_artifact" "$source_sha" >/dev/null || fail "protected Mini backup verification failed"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
+  receipt="$mini_evidence_receipt_dir/shadow-$stamp.json"
+  helper="$script_dir/mini-signed-shadow-launchagent-rehearsal"
+  [[ -f "$helper" && -x "$helper" && ! -L "$helper" ]] || fail "signed release does not include the Mini shadow rehearsal helper"
+  NORN_M5_SIGNED_SHADOW_REHEARSAL=1 \
+  NORN_REHEARSAL_BACKUP_ARTIFACT="$backup_artifact" \
+  NORN_REHEARSAL_BACKUP_PROOF="$backup_proof" \
+  NORN_REHEARSAL_LEGACY_RELEASE_SHA="$source_sha" \
+  NORN_M5_SHADOW_RECEIPT="$receipt" \
+    "$helper" run --candidate-release "$candidate_release" --public-key "$NORN_RELEASE_PUBLIC_KEY"
 }
 
 current_proxy_upstream() {
@@ -1180,6 +1262,10 @@ build_release_into() {
   install -m 0755 "$worktree/v2/scripts/platform-release-artifact" "$target/bin/platform-release-artifact"
   install -m 0755 "$worktree/v2/scripts/platform-release-fetch-github" "$target/bin/platform-release-fetch-github"
   install -m 0755 "$worktree/v2/scripts/platform-release-verify-github" "$target/bin/platform-release-verify-github"
+  install -m 0755 "$worktree/v2/scripts/mini-create-protected-backup" "$target/bin/mini-create-protected-backup"
+  install -m 0755 "$worktree/v2/scripts/mini-verify-protected-backup" "$target/bin/mini-verify-protected-backup"
+  install -m 0755 "$worktree/v2/scripts/mini-private-copy-rehearsal" "$target/bin/mini-private-copy-rehearsal"
+  install -m 0755 "$worktree/v2/scripts/mini-signed-shadow-launchagent-rehearsal" "$target/bin/mini-signed-shadow-launchagent-rehearsal"
   install -m 0755 "$worktree/v2/scripts/host-runtime" "$target/bin/host-runtime"
 
   cat > "$target/release.env" <<EOF
@@ -2395,7 +2481,7 @@ sync_managed_host_artifacts() {
     fail "release is missing platform-release-manifest"
   fi
   local release_helper
-  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github; do
+  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-signed-shadow-launchagent-rehearsal; do
     if [[ -f "$target/bin/$release_helper" ]]; then
       atomic_install_file "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || return 1
     elif [[ "$strict" == "true" ]]; then
@@ -2416,7 +2502,7 @@ sync_managed_host_artifacts() {
     cmp -s "$target/bin/norn" "$host_cli_bin" || fail "managed host CLI verification failed"
     cmp -s "$target/bin/platform-upgrade" "$platform_script_bin" || fail "managed platform script verification failed"
     cmp -s "$target/bin/platform-release-manifest" "$(dirname "$platform_script_bin")/platform-release-manifest" || fail "managed platform manifest helper verification failed"
-    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github; do
+    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-signed-shadow-launchagent-rehearsal; do
       cmp -s "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || fail "managed $release_helper verification failed"
     done
     cmp -s "$target/bin/host-runtime" "$host_runtime_bin" || fail "managed host runtime verification failed"
@@ -2709,7 +2795,7 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       recovered_env_command="${recovered_env_args[0]}"; recovered_env_mode="${recovered_env_args[1]}"
       [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
       case "$recovered_env_mode" in
-        preflight|upgrade) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+        preflight|upgrade|mini-protected-backup|mini-signed-shadow) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
         recovered-baseline-adopt) [[ "$recovered_env_command" == "$platform_script_bin" || "$recovered_env_command" == "$releases"/*/bin/platform-upgrade ]] || fail "recovered baseline adoption child is not an immutable release script" ;;
         *) fail "recovered baseline rejects env-exec child mode $recovered_env_mode" ;;
       esac
@@ -2722,6 +2808,16 @@ fi
 
 if [[ "$mode" == "recovered-baseline-adopt" ]]; then
   recovered_baseline_adopt
+  exit 0
+fi
+
+if [[ "$mode" == "mini-protected-backup" ]]; then
+  run_mini_protected_backup "$@"
+  exit 0
+fi
+
+if [[ "$mode" == "mini-signed-shadow" ]]; then
+  run_mini_signed_shadow "$@"
   exit 0
 fi
 

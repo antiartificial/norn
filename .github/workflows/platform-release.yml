@@ -164,7 +164,11 @@ jobs:
             platform-release-fetch-github \
             platform-release-manifest \
             platform-release-verify-github \
-            platform-upgrade
+            platform-upgrade \
+            mini-create-protected-backup \
+            mini-verify-protected-backup \
+            mini-private-copy-rehearsal \
+            mini-signed-shadow-launchagent-rehearsal
           do
             install -m 0755 "v2/scripts/$helper" "$release/bin/$helper"
           done

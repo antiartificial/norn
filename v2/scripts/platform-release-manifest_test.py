@@ -13,6 +13,10 @@ SCRIPT = Path(__file__).with_name("platform-release-manifest")
 SHA = "1" * 40
 BINARIES = (
     "host-runtime",
+    "mini-create-protected-backup",
+    "mini-private-copy-rehearsal",
+    "mini-signed-shadow-launchagent-rehearsal",
+    "mini-verify-protected-backup",
     "norn",
     "norn-api",
     "norn-effect-runner",

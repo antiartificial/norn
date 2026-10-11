@@ -33,6 +33,7 @@ func TestPlatformReleaseLaneIncludesSignedV3Bundle(t *testing.T) {
 	for _, required := range []string{
 		"refs/heads/master", "git merge-base --is-ancestor", "platform-release",
 		"norn-effect-runner", "norn-ingress-observer", "norn-ingress-publisher", "platform-release-fetch-github", "platform-release-verify-github",
+		"mini-create-protected-backup", "mini-verify-protected-backup", "mini-private-copy-rehearsal", "mini-signed-shadow-launchagent-rehearsal",
 		"-X main.SourceSHA=$REQUESTED_SHA",
 	} {
 		if !strings.Contains(string(workflow), required) {
@@ -49,6 +50,8 @@ func TestPlatformReleaseLaneIncludesSignedV3Bundle(t *testing.T) {
 	for _, helper := range []string{
 		"platform-release-artifact", "platform-release-fetch-github",
 		"platform-release-manifest", "platform-release-verify-github",
+		"mini-create-protected-backup", "mini-verify-protected-backup",
+		"mini-private-copy-rehearsal", "mini-signed-shadow-launchagent-rehearsal",
 	} {
 		if _, err := os.Stat(filepath.Join(root, "v2", "scripts", helper)); err != nil {
 			t.Errorf("signed release helper %s is missing: %v", helper, err)
@@ -937,7 +940,7 @@ trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `
 	writeTestScript(t, filepath.Join(target, "bin", "norn-api"), apiScript)
-	for _, name := range []string{"norn", "norn-host-agent", "norn-ingress-observer", "norn-ingress-publisher", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "host-runtime"} {
+	for _, name := range []string{"norn", "norn-host-agent", "norn-ingress-observer", "norn-ingress-publisher", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "mini-create-protected-backup", "mini-verify-protected-backup", "mini-private-copy-rehearsal", "mini-signed-shadow-launchagent-rehearsal", "host-runtime"} {
 		writeTestScript(t, filepath.Join(target, "bin", name), "#!/usr/bin/env bash\nexit 0\n")
 	}
 	writeTestScript(t, filepath.Join(previous, "bin", "norn-api"), strings.ReplaceAll(apiScript, "v2.21.0-platform", "v2.19.0-platform"))
@@ -1309,7 +1312,7 @@ case " $* " in
   *" worktree add "*)
     worktree="${6}"
     mkdir -p "$worktree/v2/api" "$worktree/v2/cli" "$worktree/v2/scripts"
-    for helper in platform-upgrade platform-release-manifest platform-release-artifact platform-release-fetch-github platform-release-verify-github host-runtime; do
+    for helper in platform-upgrade platform-release-manifest platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-signed-shadow-launchagent-rehearsal host-runtime; do
       printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree/v2/scripts/$helper"
       chmod +x "$worktree/v2/scripts/$helper"
     done

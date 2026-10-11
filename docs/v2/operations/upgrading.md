@@ -40,6 +40,34 @@ norn platform queue-smoke
 Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
 local development rehearsal but can move between review and upgrade.
 
+### Mini single-node v3 transition
+
+Mini runs Norn as a single node with its existing PostgreSQL database. It does
+not require the Fleet management or etcd nodes; Fleet is an independent staging
+environment that Mini can connect to through the Fleet API when it is online.
+
+For the Mini bootstrap lane, use the installed managed script through the
+authenticated runtime wrapper so the encrypted API environment is loaded only
+for the child process. The signed release must include the evidence helpers.
+After importing and verifying the exact candidate release, capture a fresh
+protected database backup and rehearse that candidate against a private shadow
+restore before running the standard upgrade:
+
+```bash
+norn platform env -- /Users/0xadb/.config/norn/host/bin/platform-upgrade mini-protected-backup
+norn platform env -- /Users/0xadb/.config/norn/host/bin/platform-upgrade mini-signed-shadow <full-candidate-sha>
+norn platform env -- /Users/0xadb/.config/norn/host/bin/platform-upgrade preflight <full-candidate-sha>
+norn platform env -- /Users/0xadb/.config/norn/host/bin/platform-upgrade upgrade <full-candidate-sha>
+```
+
+Do not run the backup or shadow helpers from an unsigned checkout on Mini.
+Keep the backup fresh, verify the shadow receipt names the exact candidate and
+passes both private-restore and runtime claims, and inspect the preflight result
+before the database-changing upgrade. A schema migration requirement can be a
+valid reason for ordinary upgrade after those gates; it is not evidence that
+the live database was migrated. Smoke and host-assurance checks are still
+required afterward.
+
 ## macOS and Homebrew Maintenance
 
 Homebrew owns executable installation; Norn owns the cloudflared service
