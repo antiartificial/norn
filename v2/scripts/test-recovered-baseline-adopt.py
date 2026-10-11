@@ -149,6 +149,8 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
 
     def test_failed_fence_blocks_early_dispatch_but_keeps_canonical_agent_startable(self):
         self.env["NORN_PLATFORM_SCRIPT_BIN"] = str(self.managed_script)
+        sops = write(self.shims / "sops", "#!/bin/sh\nexit 0\n", 0o755)
+        self.env["NORN_SOPS_BIN"] = str(sops)
         arbitrary = self.run_script("env-exec", "/bin/sh", "-c", "exit 0")
         self.assertNotEqual(arbitrary.returncode, 0)
         self.assertIn("rejects env-exec child mode", arbitrary.stderr)
