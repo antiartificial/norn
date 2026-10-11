@@ -28,15 +28,16 @@ from pathlib import Path
 from typing import Any
 
 
-EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v1"
+EVIDENCE_SCHEMA = "norn.recovered-forward-evidence/v2"
 RECEIPT_SCHEMA = "norn.recovered-forward-preservation/v1"
-ADOPTION_SCHEMA = "norn.recovered-baseline-adoption/v1"
+ADOPTION_SCHEMA = "norn.recovered-baseline-adoption/v2"
 TRANSITION_SCHEMA = "norn.recovered-forward-transition/v1"
 EVIDENCE_FIELDS = {
     "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
     "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256",
     "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
-    "backupBytes", "shadowReceiptSHA256", "beforeDigest", "signature",
+    "backupBytes", "shadowReceiptSHA256", "incidentCandidateSHA", "incidentBeforeDigest",
+    "beforeDigest", "signature",
 }
 RECEIPT_FIELDS = {
     "schema", "transitionId", "candidateSHA", "sourceEvidenceSHA256", "beforeDigest",
@@ -212,13 +213,13 @@ def digest(value: Any) -> str:
 
 
 def adoption_evidence(home: Path, key: bytes, source_sha: str) -> tuple[dict[str, Any], dict[str, bytes], bytes]:
-    receipt_path = home / ".config/norn/.norn-recovered-baseline-adoption.json"
+    receipt_path = home / ".config/norn/.norn-recovered-baseline-adoption-v2.json"
     receipt_raw = secure_read(receipt_path, "recovered-baseline adoption receipt")
     adoption = verify_hmac_document(receipt_raw, ADOPTION_SCHEMA, key, "recovered-baseline adoption receipt", {
-        "schema", "candidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256",
+        "schema", "sourceSHA", "incidentCandidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256",
         "legacyFence", "ledger", "reconciliation", "preservationProven", "signature",
     })
-    if adoption.get("candidateSHA") != source_sha or adoption.get("preservationProven") is not False:
+    if adoption.get("sourceSHA") != source_sha or adoption.get("preservationProven") is not False:
         fail("adoption receipt does not bind the exact current source and unproven preservation state")
     if not HEX40.fullmatch(str(adoption.get("adopterSHA", ""))) or not HEX64.fullmatch(str(adoption.get("incidentBindingSHA256", ""))) or not HEX64.fullmatch(str(adoption.get("preservationUnprovenReasonSHA256", ""))):
         fail("adoption receipt adopter or incident digest bindings are malformed")
@@ -241,13 +242,16 @@ def adoption_evidence(home: Path, key: bytes, source_sha: str) -> tuple[dict[str
     if (fence.get("schema") != "norn.legacy-baseline-fence/v1" or fence.get("state") != "candidate-postflight-failed"
             or not HEX40.fullmatch(str(fence.get("legacyReleaseSHA", "")))):
         fail("retained legacy fence is not the exact failed candidate-postflight state")
+    incident_candidate = adoption.get("incidentCandidateSHA")
+    if not HEX40.fullmatch(str(incident_candidate or "")):
+        fail("adoption receipt incident candidate SHA is malformed")
     if (ledger.get("schema") != "norn.m5-protected-transition/v1" or ledger.get("state") != "candidate-recovery-required"
-            or ledger.get("legacyReleaseSHA") != fence.get("legacyReleaseSHA") or ledger.get("candidateSHA") != source_sha
+            or ledger.get("legacyReleaseSHA") != fence.get("legacyReleaseSHA") or ledger.get("candidateSHA") != incident_candidate
             or ledger.get("upgradeExitCode") != 1 or not HEX64.fullmatch(str(ledger.get("beforeDigest", "")))):
         fail("retained protected-transition ledger is not bound to the exact failed source")
     release, transition = reconciliation.get("release"), reconciliation.get("transition")
     if (reconciliation.get("schema") != "norn.m5-post-transition-reconciliation/v1" or type(release) is not dict or type(transition) is not dict
-            or release.get("sha") != source_sha or release.get("verified") is not True
+            or release.get("sha") != incident_candidate or release.get("verified") is not True
             or transition.get("beforeDigest") != ledger.get("beforeDigest")
             or transition.get("ledgerState") != "candidate-recovery-required"
             or transition.get("matchesBefore") is not False or transition.get("upgradeExitCode") != 1):
@@ -388,8 +392,11 @@ def sign_or_validate_evidence(args: argparse.Namespace, paths: dict[str, Path], 
     preservation = load_preservation_module()
     before_state = preservation.stable_state(api, token)
     before_digest = preservation.digest(before_state)
-    if before_digest != load_json_bytes(source_evidence["ledger"], "retained transition ledger").get("beforeDigest"):
-        fail("current Mini workload/data state no longer matches the retained pre-transition baseline")
+    incident_ledger = load_json_bytes(source_evidence["ledger"], "retained transition ledger")
+    incident_candidate = adoption.get("incidentCandidateSHA")
+    incident_before_digest = incident_ledger.get("beforeDigest")
+    if not HEX40.fullmatch(str(incident_candidate or "")) or not HEX64.fullmatch(str(incident_before_digest or "")):
+        fail("retained failed-transition identity or baseline digest is malformed")
     references = adoption
     evidence = {
         "schema": EVIDENCE_SCHEMA,
@@ -406,6 +413,8 @@ def sign_or_validate_evidence(args: argparse.Namespace, paths: dict[str, Path], 
         "backupSHA256": artifact_sha,
         "backupBytes": artifact_bytes,
         "shadowReceiptSHA256": sha256(shadow_raw),
+        "incidentCandidateSHA": incident_candidate,
+        "incidentBeforeDigest": incident_before_digest,
         "beforeDigest": before_digest,
     }
     raw = signed_document(evidence, key)

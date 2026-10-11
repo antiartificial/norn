@@ -2,6 +2,7 @@
 """Exercise the recovered-baseline gate through the real platform script."""
 
 import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -14,9 +15,10 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("platform-upgrade")
 LEGACY = "a5da8ef15d12e9eca7561e90b90d96f6dc652a21"
-CANDIDATE = "e7301f779041cd22f1872090323d3b8ed5c4611b"
+SOURCE = "26147c39a554b73b6761a371edee5a9591c81d3f"
+INCIDENT_CANDIDATE = "e7301f779041cd22f1872090323d3b8ed5c4611b"
 ADOPTER = "a" * 40
-VERSION = "v2.20.0-platform-62-ge7301f77"
+VERSION = "v2.20.0-platform-72-g26147c39"
 
 
 def write(path: Path, content: str | bytes, mode: int = 0o600) -> Path:
@@ -39,9 +41,9 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.home.mkdir(mode=0o700)
         (self.home / ".config" / "norn").mkdir(parents=True, mode=0o700)
         self.releases = self.root / "releases"
-        self.current = self.releases / CANDIDATE
+        self.current = self.releases / SOURCE
         self.adopter = self.releases / ADOPTER
-        for release, sha in ((self.current, CANDIDATE), (self.adopter, ADOPTER)):
+        for release, sha in ((self.current, SOURCE), (self.adopter, ADOPTER)):
             (release / "bin").mkdir(parents=True)
             write(release / "release.env", f"NORN_RELEASE_SHA={sha}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
             write(release / "release.json", "{}\n", 0o644)
@@ -60,24 +62,40 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         })
         self.ledger = write_json(self.home / ".config" / "norn" / "ledger.json", {
             "schema": "norn.m5-protected-transition/v1", "state": "candidate-recovery-required",
-            "legacyReleaseSHA": LEGACY, "candidateSHA": CANDIDATE, "upgradeExitCode": 1,
+            "legacyReleaseSHA": LEGACY, "candidateSHA": INCIDENT_CANDIDATE, "upgradeExitCode": 1,
             "beforeDigest": "b" * 64,
         })
         self.reconciliation = write_json(self.home / ".config" / "norn" / "reconciliation.json", {
             "schema": "norn.m5-post-transition-reconciliation/v1",
-            "release": {"sha": CANDIDATE, "verified": True},
+            "release": {"sha": INCIDENT_CANDIDATE, "verified": True},
             "transition": {"beforeDigest": "b" * 64, "ledgerState": "candidate-recovery-required",
                            "matchesBefore": False, "upgradeExitCode": 1},
         })
         self.binding = write_json(self.home / ".config" / "norn" / "binding.json", {
-            "schema": "norn.recovered-baseline-incident-binding/v1", "candidateSHA": CANDIDATE,
+            "schema": "norn.recovered-baseline-incident-binding/v2", "sourceSHA": SOURCE,
+            "incidentCandidateSHA": INCIDENT_CANDIDATE,
             "legacyFence": self.item(self.fence), "ledger": self.item(self.ledger),
             "reconciliation": self.item(self.reconciliation),
         })
         self.reason = write_json(self.home / ".config" / "norn" / "reason.json", {
             "reason": "Accept recovered signed runtime as a new baseline; historical preservation is unproven."
         })
-        self.receipt = self.home / ".config" / "norn" / ".norn-recovered-baseline-adoption.json"
+        self.receipt = self.home / ".config" / "norn" / ".norn-recovered-baseline-adoption-v2.json"
+        self.old_receipt = self.home / ".config" / "norn" / ".norn-recovered-baseline-adoption.json"
+        historical = {
+            "schema": "norn.recovered-baseline-adoption/v1", "candidateSHA": INCIDENT_CANDIDATE,
+            "adopterSHA": ADOPTER,
+            "incidentBindingSHA256": hashlib.sha256(self.binding.read_bytes()).hexdigest(),
+            "preservationUnprovenReasonSHA256": hashlib.sha256(self.reason.read_bytes()).hexdigest(),
+            "legacyFence": self.item(self.fence), "ledger": self.item(self.ledger),
+            "reconciliation": self.item(self.reconciliation), "preservationProven": False,
+        }
+        canonical = json.dumps(historical, sort_keys=True, separators=(",", ":")).encode()
+        historical["signature"] = "hmac-sha256:" + hmac.new(
+            b"fixture-audit-signing-key-32-characters", b"norn.recovered-baseline-adoption/v1\0" + canonical,
+            hashlib.sha256).hexdigest()
+        write_json(self.old_receipt, historical)
+        self.old_receipt_bytes = self.old_receipt.read_bytes()
         shutil.copy2(SCRIPT, self.adopter / "bin" / "platform-upgrade")
         self.managed_script = self.root / "host" / "bin" / "platform-upgrade"
         write(self.managed_script, SCRIPT.read_bytes(), 0o755)
@@ -118,21 +136,26 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
 
     def adopt(self) -> subprocess.CompletedProcess:
         return self.run_script("recovered-baseline-adopt", "--incident-binding", str(self.binding),
-                               "--receipt", str(self.receipt), "--expected-current-sha", CANDIDATE,
+                               "--receipt", str(self.receipt), "--expected-current-sha", SOURCE,
                                "--accept-preservation-unproven", "--reason-file", str(self.reason))
 
-    def test_signed_candidate_adopts_e730_version_without_source_sha(self):
+    def test_current_source_adopts_distinct_failed_candidate_without_rewriting_history(self):
         result = self.adopt()
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads(self.receipt.read_text())
         self.assertIs(receipt["preservationProven"], False)
-        self.assertEqual(receipt["candidateSHA"], CANDIDATE)
+        self.assertEqual(receipt["sourceSHA"], SOURCE)
+        self.assertEqual(receipt["incidentCandidateSHA"], INCIDENT_CANDIDATE)
         self.assertEqual(stat.S_IMODE(self.receipt.stat().st_mode), 0o600)
+        self.assertEqual(self.old_receipt.read_bytes(), self.old_receipt_bytes)
         # An otherwise valid preflight can move past the incident gate. The
         # deliberately absent repo then stops it before release preparation.
         next_step = self.run_script("preflight", "HEAD")
         self.assertNotIn("adoption receipt is required", next_step.stderr)
         self.assertNotEqual(next_step.returncode, 0)
+        ordinary_upgrade = self.run_script("upgrade", "HEAD")
+        self.assertNotEqual(ordinary_upgrade.returncode, 0)
+        self.assertIn("ordinary upgrade is prohibited", ordinary_upgrade.stderr)
         replay = self.run_script("legacy-baseline-finalize", "--transition-id", "fabricated")
         self.assertNotEqual(replay.returncode, 0)
         self.assertIn("permanently rejects legacy-baseline replay", replay.stderr)
@@ -147,6 +170,59 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertNotEqual(altered.returncode, 0)
         self.assertIn("adoption receipt is required", altered.stderr)
 
+    def test_valid_historical_v1_receipt_cannot_authorize_current_work(self):
+        result = self.run_script("preflight", "HEAD")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("adoption receipt is required", result.stderr)
+        self.assertFalse(self.receipt.exists())
+        self.assertEqual(self.old_receipt.read_bytes(), self.old_receipt_bytes)
+
+    def test_v2_receipt_cannot_authorize_a_different_current_release(self):
+        self.assertEqual(self.adopt().returncode, 0)
+        self.current_link.unlink()
+        self.current_link.symlink_to(self.adopter)
+        result = self.run_script("preflight", "HEAD")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("adoption receipt is required", result.stderr)
+
+    def test_validly_signed_v2_receipt_cannot_rebind_failed_incident_identity(self):
+        self.assertEqual(self.adopt().returncode, 0)
+        receipt = json.loads(self.receipt.read_text())
+        receipt.pop("signature")
+        receipt["incidentCandidateSHA"] = "f" * 40
+        canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        receipt["signature"] = "hmac-sha256:" + hmac.new(
+            b"fixture-audit-signing-key-32-characters",
+            b"norn.recovered-baseline-adoption/v2\0" + canonical, hashlib.sha256).hexdigest()
+        write_json(self.receipt, receipt)
+        result = self.run_script("preflight", "HEAD")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("adoption receipt is required", result.stderr)
+
+    def test_rejects_incident_candidate_that_does_not_match_failed_ledger(self):
+        binding = json.loads(self.binding.read_text())
+        binding["incidentCandidateSHA"] = "f" * 40
+        write_json(self.binding, binding)
+        result = self.adopt()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed transition ledger semantic binding is invalid", result.stderr)
+        self.assertFalse(self.receipt.exists())
+
+    def test_rejects_cross_bound_reconciliation_even_with_matching_current_source(self):
+        write_json(self.reconciliation, {
+            "schema": "norn.m5-post-transition-reconciliation/v1",
+            "release": {"sha": SOURCE, "verified": True},
+            "transition": {"beforeDigest": "b" * 64, "ledgerState": "candidate-recovery-required",
+                           "matchesBefore": False, "upgradeExitCode": 1},
+        })
+        binding = json.loads(self.binding.read_text())
+        binding["reconciliation"] = self.item(self.reconciliation)
+        write_json(self.binding, binding)
+        result = self.adopt()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed reconciliation semantic binding is invalid", result.stderr)
+        self.assertFalse(self.receipt.exists())
+
     def test_failed_fence_blocks_early_dispatch_but_keeps_canonical_agent_startable(self):
         self.env["NORN_PLATFORM_SCRIPT_BIN"] = str(self.managed_script)
         sops = write(self.shims / "sops", "#!/bin/sh\nexit 0\n", 0o755)
@@ -160,7 +236,13 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertIn("API env file not found", rejected_evidence_child.stderr)
         proxy = self.run_script("proxy-switch", "19999")
         self.assertNotEqual(proxy.returncode, 0)
-        self.assertIn("blocks proxy switching", proxy.stderr)
+        self.assertIn("blocks proxy changes", proxy.stderr)
+        proxy_render = self.run_script("proxy-render", "HEAD")
+        self.assertNotEqual(proxy_render.returncode, 0)
+        self.assertIn("blocks proxy changes", proxy_render.stderr)
+        ordinary_upgrade = self.run_script("env-exec", str(self.managed_script), "upgrade", "HEAD")
+        self.assertNotEqual(ordinary_upgrade.returncode, 0)
+        self.assertIn("ordinary upgrade is prohibited", ordinary_upgrade.stderr)
 
         agent_body = "#!/bin/sh\nexit 23\n"
         write(self.current / "bin" / "norn-host-agent", agent_body, 0o755)
@@ -185,7 +267,7 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.env.pop("NORN_AUDIT_SIGNING_KEY", None)
         command = [str(managed_script), "env-exec", "--", str(self.adopter / "bin" / "platform-upgrade"),
                    "recovered-baseline-adopt", "--incident-binding", str(self.binding),
-                   "--receipt", str(self.receipt), "--expected-current-sha", CANDIDATE,
+                   "--receipt", str(self.receipt), "--expected-current-sha", SOURCE,
                    "--accept-preservation-unproven", "--reason-file", str(self.reason)]
         result = subprocess.run(command, env=self.env, text=True, capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)

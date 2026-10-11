@@ -12,12 +12,13 @@ import datetime as dt
 from pathlib import Path
 
 
-SCHEMA = "norn.recovered-forward-evidence/v1"
+SCHEMA = "norn.recovered-forward-evidence/v2"
 FIELDS = {
     "schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
     "recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256",
     "ledgerSHA256", "reconciliationSHA256", "backupProofSHA256", "backupSHA256",
-    "backupBytes", "shadowReceiptSHA256", "beforeDigest", "signature",
+    "backupBytes", "shadowReceiptSHA256", "incidentCandidateSHA", "incidentBeforeDigest",
+    "beforeDigest", "signature",
 }
 
 
@@ -98,11 +99,12 @@ def main() -> int:
             not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}", value["transitionId"]) or
             not re.fullmatch(r"[0-9a-f]{40}", value["sourceSHA"]) or
             not re.fullmatch(r"[0-9a-f]{40}", value["candidateSHA"]) or
+            not re.fullmatch(r"[0-9a-f]{40}", str(value.get("incidentCandidateSHA", ""))) or
             not isinstance(value.get("databaseIdentity"), str) or
             not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", value["databaseIdentity"]) or
             type(value.get("backupBytes")) is not int or value["backupBytes"] <= 0):
         raise ValueError("source evidence identity or byte-count types are invalid")
-    for name in FIELDS - {"schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity", "backupBytes", "signature"}:
+    for name in FIELDS - {"schema", "transitionId", "sourceSHA", "candidateSHA", "incidentCandidateSHA", "databaseIdentity", "backupBytes", "signature"}:
         if not isinstance(value.get(name), str) or not re.fullmatch(r"[0-9a-f]{64}", value[name]):
             raise ValueError(f"source evidence digest is invalid: {name}")
     proof_raw = private(proof_path, "backup proof")
@@ -140,16 +142,17 @@ def main() -> int:
     now = dt.datetime.now(dt.timezone.utc)
     if shadow_time <= backup_time or shadow_time > now + dt.timedelta(minutes=5):
         raise ValueError("shadow receipt time must follow the backup and not be in the future")
-    adoption_path = Path.home() / ".config/norn/.norn-recovered-baseline-adoption.json"
+    adoption_path = Path.home() / ".config/norn/.norn-recovered-baseline-adoption-v2.json"
     adoption_raw = private(adoption_path, "recovered-baseline adoption receipt")
     adoption = strict_json(adoption_raw, "adoption receipt")
-    adoption_fields = {"schema", "candidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}
-    if set(adoption) != adoption_fields or adoption.get("schema") != "norn.recovered-baseline-adoption/v1" or adoption.get("preservationProven") is not False:
+    adoption_fields = {"schema", "sourceSHA", "incidentCandidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}
+    if set(adoption) != adoption_fields or adoption.get("schema") != "norn.recovered-baseline-adoption/v2" or adoption.get("preservationProven") is not False:
         raise ValueError("adoption receipt fields or schema are not exact")
-    verify_signature(adoption, "norn.recovered-baseline-adoption/v1", key, "adoption receipt")
+    verify_signature(adoption, "norn.recovered-baseline-adoption/v2", key, "adoption receipt")
     if value.get("adoptionReceiptSHA256") != digest(adoption_raw):
         raise ValueError("source evidence adoption receipt digest mismatch")
-    if (not re.fullmatch(r"[0-9a-f]{40}", str(adoption.get("candidateSHA", ""))) or
+    if (not re.fullmatch(r"[0-9a-f]{40}", str(adoption.get("sourceSHA", ""))) or
+            not re.fullmatch(r"[0-9a-f]{40}", str(adoption.get("incidentCandidateSHA", ""))) or
             not re.fullmatch(r"[0-9a-f]{40}", str(adoption.get("adopterSHA", ""))) or
             not re.fullmatch(r"[0-9a-f]{64}", str(adoption.get("incidentBindingSHA256", ""))) or
             not re.fullmatch(r"[0-9a-f]{64}", str(adoption.get("preservationUnprovenReasonSHA256", "")))):
@@ -163,6 +166,28 @@ def main() -> int:
             raise ValueError(f"adoption {receipt_name} changed")
     if value.get("incidentBindingSHA256") != adoption.get("incidentBindingSHA256"):
         raise ValueError("source evidence incident binding digest mismatch")
+    if (adoption.get("sourceSHA") != value.get("sourceSHA") or
+            adoption.get("incidentCandidateSHA") != value.get("incidentCandidateSHA")):
+        raise ValueError("source evidence does not bind current source and historical failed candidate separately")
+    ledger = strict_json(private(Path(adoption["ledger"]["path"]), "adoption ledger"), "adoption ledger")
+    fence = strict_json(private(Path(adoption["legacyFence"]["path"]), "adoption legacy fence"), "adoption legacy fence")
+    reconciliation = strict_json(private(Path(adoption["reconciliation"]["path"]), "adoption reconciliation"), "adoption reconciliation")
+    incident_transition = reconciliation.get("transition")
+    incident_release = reconciliation.get("release")
+    if (fence.get("schema") != "norn.legacy-baseline-fence/v1" or
+            fence.get("state") != "candidate-postflight-failed" or
+            not re.fullmatch(r"[0-9a-f]{40}", str(fence.get("legacyReleaseSHA", ""))) or
+            ledger.get("legacyReleaseSHA") != fence.get("legacyReleaseSHA") or
+            ledger.get("candidateSHA") != value.get("incidentCandidateSHA") or
+            ledger.get("beforeDigest") != value.get("incidentBeforeDigest") or
+            ledger.get("state") != "candidate-recovery-required" or ledger.get("upgradeExitCode") != 1 or
+            not isinstance(incident_release, dict) or incident_release.get("sha") != value.get("incidentCandidateSHA") or
+            incident_release.get("verified") is not True or not isinstance(incident_transition, dict) or
+            incident_transition.get("beforeDigest") != value.get("incidentBeforeDigest") or
+            incident_transition.get("matchesBefore") is not False or
+            incident_transition.get("ledgerState") != "candidate-recovery-required" or
+            incident_transition.get("upgradeExitCode") != 1):
+        raise ValueError("source evidence does not preserve the exact failed incident baseline binding")
     print("verified")
     return 0
 
