@@ -1122,6 +1122,90 @@ func TestPlatformUpgradeCompatibleServingWriterExecutesMigrationAndPromotion(t *
 	}
 }
 
+func TestPlatformUpgradeDrainPreservesQueuedFleetDispatchAndBlocksOtherWork(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   string
+		wantError  string
+		wantOutput string
+	}{
+		{
+			name:       "queued Fleet dispatch receipt is preserved",
+			response:   `{"count":1,"operations":[{"id":"fleet-dispatch-queued","kind":"fleet.github.apply-dispatch","status":"queued"}]}`,
+			wantOutput: "Mini operation drain clear; preserving 1 queued Fleet GitHub dispatch receipt(s)",
+		},
+		{
+			name:      "queued Mini operation still blocks",
+			response:  `{"count":1,"operations":[{"id":"mini-deploy","kind":"app.deploy","status":"queued"}]}`,
+			wantError: "1 Mini-affecting active operation(s)",
+		},
+		{
+			name:      "running Fleet dispatch still blocks",
+			response:  `{"count":1,"operations":[{"id":"fleet-dispatch-running","kind":"fleet.github.apply-dispatch","status":"running"}]}`,
+			wantError: "1 Mini-affecting active operation(s)",
+		},
+		{
+			name:      "malformed queue evidence fails closed",
+			response:  `{`,
+			wantError: "cannot verify the Mini operation drain",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newSchemaTransitionFixture(t, 2)
+			cmd := fixture.command(t)
+			cmd.Env = append(cmd.Env, "FAKE_ACTIVE_OPERATIONS_JSON="+test.response)
+			out, err := cmd.CombinedOutput()
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(string(out), test.wantError) {
+					t.Fatalf("upgrade did not refuse with %q: err=%v\n%s", test.wantError, err, out)
+				}
+				if _, statErr := os.Stat(fixture.migrationMarker); !os.IsNotExist(statErr) {
+					t.Fatalf("schema migration ran after drain refusal: %v\n%s", statErr, out)
+				}
+				linked, linkErr := os.Readlink(fixture.currentLink)
+				if linkErr != nil || linked != fixture.previousRelease {
+					t.Fatalf("current release changed after drain refusal: link=%q err=%v\n%s", linked, linkErr, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Mini upgrade with only a queued Fleet receipt failed: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), test.wantOutput) {
+				t.Fatalf("upgrade did not report preserved Fleet receipt: want %q\n%s", test.wantOutput, out)
+			}
+			if _, statErr := os.Stat(fixture.migrationMarker); statErr != nil {
+				t.Fatalf("Mini upgrade did not migrate after ignoring the queued Fleet receipt: %v\n%s", statErr, out)
+			}
+		})
+	}
+}
+
+func TestPlatformUpgradeDrainRejectsUnauthenticatedBeforeMutation(t *testing.T) {
+	fixture := newSchemaTransitionFixture(t, 2)
+	cmd := fixture.command(t)
+	cmd.Env = append(cmd.Env, "FAKE_ACTIVE_OPERATIONS_JSON=not-requested", "NORN_TOKEN=")
+	filtered := cmd.Env[:0]
+	for _, item := range cmd.Env {
+		if !strings.HasPrefix(item, "NORN_API_TOKEN=") {
+			filtered = append(filtered, item)
+		}
+	}
+	cmd.Env = filtered
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "authenticated operation-drain token is required") {
+		t.Fatalf("upgrade did not refuse without authenticated drain evidence: err=%v\n%s", err, out)
+	}
+	if _, statErr := os.Stat(fixture.migrationMarker); !os.IsNotExist(statErr) {
+		t.Fatalf("schema migration ran without authenticated drain evidence: %v\n%s", statErr, out)
+	}
+	linked, linkErr := os.Readlink(fixture.currentLink)
+	if linkErr != nil || linked != fixture.previousRelease {
+		t.Fatalf("current release changed without authenticated drain evidence: link=%q err=%v\n%s", linked, linkErr, out)
+	}
+}
+
 func TestPlatformUpgradeRejectsUnboundServingIdentityBeforeMigration(t *testing.T) {
 	t.Run("launchd pid mismatch", func(t *testing.T) {
 		fixture := newSchemaTransitionFixture(t, 2)

@@ -736,24 +736,19 @@ api_get() {
   fi
 }
 
-active_operation_count() {
-  local response path="/api/operations/active"
+# The Mini's control database can also hold Fleet GitHub delivery receipts.
+# Those records are not claimed by the Mini operation worker and do not mutate
+# Mini workloads. Preserve queued apply-dispatch receipts across a Mini-only
+# platform upgrade, while requiring every Mini operation and every running
+# Fleet dispatch to drain. The API returns at most 100 rows, so a full page is
+# ambiguous and must fail closed.
+mini_active_operation_counts() {
+  local response
+  local path="/api/operations/active"
   if [[ -n "$drain_exclude_operation_id" ]]; then
     path="${path}?excludeId=${drain_exclude_operation_id}"
   fi
   response="$(api_get "$path" 2>/dev/null)" || return 2
-  printf '%s\n' "$response" | sed -n 's/.*"count":[[:space:]]*\([0-9][0-9]*\).*/\1/p'
-}
-
-# The Mini's control database can also hold Fleet GitHub delivery receipts.
-# Those records are not claimed by the Mini operation worker and do not mutate
-# Mini workloads. Preserve queued apply-dispatch receipts across the Mini-only
-# v2-to-v3 schema transition, while requiring every Mini operation and every
-# running Fleet dispatch to drain. The API returns at most 100 rows, so a full
-# page is ambiguous and must fail closed.
-legacy_baseline_mini_operation_counts() {
-  local response
-  response="$(api_get "/api/operations/active" 2>/dev/null)" || return 2
   printf '%s\n' "$response" | python3 -c '
 import json, sys
 try:
@@ -800,30 +795,33 @@ drain_check() {
     *) fail "invalid NORN_DRAIN_MODE: $drain_mode" ;;
   esac
 
-  local count
-  if ! count="$(active_operation_count)"; then
-    log "operation drain check unavailable; continuing"
-    return
+  [[ -n "${NORN_TOKEN:-${NORN_API_TOKEN:-}}" ]] || fail "authenticated operation-drain token is required"
+  local evidence count preserved_fleet_receipts
+  if ! evidence="$(mini_active_operation_counts)"; then
+    fail "cannot verify the Mini operation drain"
   fi
-  count="${count:-0}"
+  read -r count preserved_fleet_receipts <<<"$evidence"
+  [[ "$count" =~ ^[0-9]+$ ]] || fail "received an invalid Mini operation count"
+  [[ "$preserved_fleet_receipts" =~ ^[0-9]+$ ]] || fail "received an invalid Fleet receipt count"
   if [[ "$count" == "0" ]]; then
-    log "operation drain clear"
+    log "Mini operation drain clear; preserving $preserved_fleet_receipts queued Fleet GitHub dispatch receipt(s)"
     return
   fi
   if [[ "$drain_mode" == "fail" ]]; then
-    fail "$count active operation(s); set NORN_DRAIN_MODE=wait or force to continue"
+    fail "$count Mini-affecting active operation(s); set NORN_DRAIN_MODE=wait or force to continue"
   fi
 
-  log "waiting for $count active operation(s)"
+  log "waiting for $count Mini-affecting active operation(s); preserving $preserved_fleet_receipts queued Fleet GitHub dispatch receipt(s)"
   while [[ "$count" != "0" ]]; do
     sleep 5
-    if ! count="$(active_operation_count)"; then
-      log "operation drain check unavailable while waiting; continuing"
-      return
+    if ! evidence="$(mini_active_operation_counts)"; then
+      fail "Mini operation drain check unavailable while waiting"
     fi
-    count="${count:-0}"
+    read -r count preserved_fleet_receipts <<<"$evidence"
+    [[ "$count" =~ ^[0-9]+$ ]] || fail "received an invalid Mini operation count while waiting"
+    [[ "$preserved_fleet_receipts" =~ ^[0-9]+$ ]] || fail "received an invalid Fleet receipt count while waiting"
   done
-  log "operation drain clear"
+  log "Mini operation drain clear; preserving $preserved_fleet_receipts queued Fleet GitHub dispatch receipt(s)"
 }
 
 canonical_platform_version() {
@@ -1399,7 +1397,7 @@ legacy_baseline_require_drained() {
   [[ "$drain_mode" == "fail" ]] || fail "legacy-baseline requires NORN_DRAIN_MODE=fail"
   [[ -n "${NORN_TOKEN:-${NORN_API_TOKEN:-}}" ]] || fail "legacy-baseline requires an authenticated operation-drain token"
   local evidence count preserved_fleet_receipts
-  if ! evidence="$(legacy_baseline_mini_operation_counts)"; then
+  if ! evidence="$(mini_active_operation_counts)"; then
     fail "legacy-baseline cannot verify the legacy operation drain"
   fi
   read -r count preserved_fleet_receipts <<<"$evidence"
