@@ -1094,8 +1094,12 @@ func (c *Client) PlatformOps() (*PlatformOpsSummary, error) {
 	return &summary, nil
 }
 
-// ActiveOperationCount reads the complete drain surface. PlatformOps is a
-// recent-activity view and may contain only a bounded window of operations.
+// ActiveOperationCount reads the complete drain surface used by platform
+// smoke. Queued Fleet apply-dispatch receipts are retained in Norn's shared
+// control database, but do not mutate Mini workloads and are preserved by the
+// Mini platform-upgrade drain. A running Fleet dispatch and every other active
+// operation still block smoke. PlatformOps is a recent-activity view and may
+// contain only a bounded window of operations.
 func (c *Client) ActiveOperationCount(excludeID string) (int, error) {
 	values := url.Values{}
 	if excludeID = strings.TrimSpace(excludeID); excludeID != "" {
@@ -1106,12 +1110,34 @@ func (c *Client) ActiveOperationCount(excludeID string) (int, error) {
 		path += "?" + encoded
 	}
 	var result struct {
-		Count int `json:"count"`
+		Count      int         `json:"count"`
+		Operations []Operation `json:"operations"`
 	}
 	if err := c.get(path, &result); err != nil {
 		return 0, err
 	}
-	return result.Count, nil
+	if result.Count != len(result.Operations) || len(result.Operations) >= 100 {
+		return 0, fmt.Errorf("active operation response is inconsistent or may be truncated")
+	}
+	active := 0
+	seen := make(map[string]struct{}, len(result.Operations))
+	for _, operation := range result.Operations {
+		if operation.ID == "" || operation.Kind == "" || (operation.Status != "queued" && operation.Status != "running") {
+			return 0, fmt.Errorf("active operation response contains a malformed entry")
+		}
+		if _, exists := seen[operation.ID]; exists {
+			return 0, fmt.Errorf("active operation response contains duplicate IDs")
+		}
+		seen[operation.ID] = struct{}{}
+		if operation.ID == strings.TrimSpace(excludeID) {
+			continue
+		}
+		if operation.Kind == "fleet.github.apply-dispatch" && operation.Status == "queued" {
+			continue
+		}
+		active++
+	}
+	return active, nil
 }
 
 func (c *Client) ObservabilityBundle() (*ObservabilityBundle, error) {

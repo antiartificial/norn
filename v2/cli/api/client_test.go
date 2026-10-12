@@ -75,24 +75,49 @@ func TestDeviceEnrollmentAdministrationRoutes(t *testing.T) {
 	}
 }
 
-func TestActiveOperationCountUsesCompleteDrainEndpoint(t *testing.T) {
+func TestActiveOperationCountMatchesMiniUpgradeDrainSemantics(t *testing.T) {
 	var requestURI string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestURI = r.Method + " " + r.URL.RequestURI()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"count":7,"operations":[]}`))
+		_, _ = w.Write([]byte(`{"count":4,"operations":[
+			{"id":"fleet-queued","kind":"fleet.github.apply-dispatch","status":"queued"},
+			{"id":"fleet-running","kind":"fleet.github.apply-dispatch","status":"running"},
+			{"id":"app-queued","kind":"app.deploy","status":"queued"},
+			{"id":"excluded","kind":"platform.smoke","status":"running"}
+		]}`))
 	}))
 	defer server.Close()
 
 	client := New(server.URL)
-	got, err := client.ActiveOperationCount(" op-123 ")
+	got, err := client.ActiveOperationCount(" excluded ")
 	if err != nil {
 		t.Fatalf("ActiveOperationCount() error = %v", err)
 	}
-	if got != 7 {
-		t.Fatalf("ActiveOperationCount() = %d, want 7", got)
+	if got != 2 {
+		t.Fatalf("ActiveOperationCount() = %d, want 2", got)
 	}
-	if want := "GET /api/operations/active?excludeId=op-123"; requestURI != want {
+	if want := "GET /api/operations/active?excludeId=excluded"; requestURI != want {
 		t.Fatalf("request = %q, want %q", requestURI, want)
+	}
+}
+
+func TestActiveOperationCountFailsClosedOnInconsistentOrTruncatedResponse(t *testing.T) {
+	for name, body := range map[string]string{
+		"inconsistent": `{"count":2,"operations":[{"id":"one","kind":"app.deploy","status":"queued"}]}`,
+		"truncated":    `{"count":100,"operations":[]}`,
+		"malformed":    `{"count":1,"operations":[{"id":"one","kind":"app.deploy","status":"done"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			if _, err := New(server.URL).ActiveOperationCount(""); err == nil {
+				t.Fatal("ActiveOperationCount() error = nil, want fail-closed error")
+			}
+		})
 	}
 }
