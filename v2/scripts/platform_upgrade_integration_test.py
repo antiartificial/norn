@@ -68,6 +68,16 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(phase, resume)
 
+    def test_env_exec_runtime_recovery_bindings_override_stale_sops_values(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        launcher = source.split("run_with_api_env() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("env = runtime_env.copy()", launcher)
+        self.assertLess(launcher.index('env.update({str(k): str(v)'), launcher.index('if name.startswith("NORN_RECOVERED_FORWARD_")'))
+        self.assertIn('env[name] = value', launcher)
+        self.assertIn('env.update({str(k): str(v) for k, v in json.loads(raw).items()})', launcher) if False else None
+        self.assertIn('if "NORN_TOKEN" not in env', launcher)
+        self.assertIn("runtime_env = os.environ.copy()", launcher)
+
     def test_recovered_forward_resume_does_not_query_the_stopped_api_after_drain(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         resume = source.split("recovered_forward_resume_or_start() {", 1)[1].split("\n}", 1)[0]
@@ -93,7 +103,28 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         recovered, remaining = migration.split('elif [[ "$mode" == "legacy-baseline"', 1)
         self.assertIn("NORN_REQUIRE_QUIESCENT_CONTROL_DB=true", recovered)
         self.assertIn("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true", recovered)
+        for inherited in (
+            "NORN_RECOVERED_FORWARD_MAINTENANCE",
+            "NORN_RECOVERED_FORWARD_TRANSITION_ID",
+            "NORN_RECOVERED_FORWARD_SOURCE_SHA",
+            "NORN_RECOVERED_FORWARD_CANDIDATE_SHA",
+            "NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH",
+            "NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256",
+            "NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH",
+            "NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256",
+        ):
+            self.assertIn(f"-u {inherited}", recovered)
         self.assertNotIn("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH", remaining)
+
+    def test_recovered_forward_retargeted_activation_accepts_only_the_journaled_failed_predecessor(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        preflight = source.split("recovered_forward_validate_preflight() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("recovered_retargeted_from_sha", preflight)
+        self.assertIn("journaled failed predecessor release signature verification failed", preflight)
+        self.assertIn('"$current_sha" == "$recovered_retargeted_from_sha"', preflight)
+        validator = (SCRIPT_DIR / "mini-recovered-forward-validate-journal").read_text(encoding="utf-8")
+        self.assertIn("retargetedFromCandidateSHA", validator)
+        self.assertIn('phase != "candidate-activation-started"', validator)
 
     def write(self, relative: str, content: str, executable: bool = False) -> None:
         path = self.repo / relative

@@ -121,6 +121,108 @@ func TestRecoveredForwardSignedEvidenceRejectsMutationAndPermissions(t *testing.
 	}
 }
 
+func TestRecoveredForwardV3EvidenceVerifiesBoundedCarryForwardChain(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		transition = "pilot-recovered-forward-v3"
+		source     = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		priorSHA   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		currentSHA = "cccccccccccccccccccccccccccccccccccccccc"
+	)
+	digests := func(prefix string) map[string]string {
+		return map[string]string{
+			"recoveryFenceSHA256":   recoveredForwardTestDigest(prefix + "-fence"),
+			"adoptionReceiptSHA256": recoveredForwardTestDigest(prefix + "-adoption"),
+			"incidentBindingSHA256": recoveredForwardTestDigest(prefix + "-incident"),
+			"ledgerSHA256":          recoveredForwardTestDigest(prefix + "-ledger"),
+			"reconciliationSHA256":  recoveredForwardTestDigest(prefix + "-reconciliation"),
+			"incidentCandidateSHA":  priorSHA,
+			"incidentBeforeDigest":  recoveredForwardTestDigest(prefix + "-incident-before"),
+			"beforeDigest":          recoveredForwardTestDigest(prefix + "-before"),
+		}
+	}
+	baseline := digests("baseline")
+	priorFields := map[string]any{
+		"schema": recoveredForwardEvidenceSchemaV2, "transitionId": transition, "sourceSHA": source,
+		"candidateSHA": priorSHA, "databaseIdentity": "hmac-sha256:" + recoveredForwardTestDigest("database"),
+		"backupProofSHA256": recoveredForwardTestDigest("backup-proof"),
+		"backupSHA256":      recoveredForwardTestDigest("backup"), "backupBytes": int64(8192),
+		"shadowReceiptSHA256": recoveredForwardTestDigest("shadow"),
+	}
+	for key, value := range baseline {
+		priorFields[key] = value
+	}
+	priorRaw := recoveredForwardSignJSON(t, recoveredForwardEvidenceSchemaV2, priorFields)
+	priorPath := filepath.Join(root, "transition.json.source-evidence.json")
+	if err := os.WriteFile(priorPath, priorRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priorDigest := sha256.Sum256(priorRaw)
+	priorDigestHex := hex.EncodeToString(priorDigest[:])
+	bundle := filepath.Join(root, "retarget-"+currentSHA)
+	if err := os.Mkdir(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	currentFields := map[string]any{
+		"schema": recoveredForwardEvidenceSchemaV3, "transitionId": transition, "sourceSHA": source,
+		"candidateSHA": currentSHA, "databaseIdentity": priorFields["databaseIdentity"],
+		"preservationCapture": "carried-forward-verified", "carriedForwardEvidenceSHA256": priorDigestHex,
+		"carriedForwardEvidencePath": priorPath,
+		"backupProofSHA256":          recoveredForwardTestDigest("backup-proof-current"),
+		"backupSHA256":               recoveredForwardTestDigest("backup-current"), "backupBytes": int64(16384),
+		"shadowReceiptSHA256": recoveredForwardTestDigest("shadow-current"),
+	}
+	for key, value := range baseline {
+		currentFields[key] = value
+	}
+	currentRaw := recoveredForwardSignJSON(t, recoveredForwardEvidenceSchemaV3, currentFields)
+	currentPath := filepath.Join(bundle, "source-evidence.json")
+	if err := os.WriteFile(currentPath, currentRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	currentDigest := sha256.Sum256(currentRaw)
+	cfg := &config.Config{AuditSigningKey: recoveredForwardTestAuditKey}
+	parsed, gotDigest, err := validateRecoveredForwardEvidence(currentPath, hex.EncodeToString(currentDigest[:]), source, currentSHA, "hmac-sha256:"+recoveredForwardTestDigest("database"), cfg)
+	if err != nil || gotDigest != hex.EncodeToString(currentDigest[:]) || parsed.CandidateSHA != currentSHA {
+		t.Fatalf("valid v3 carry-forward chain failed: evidence=%+v digest=%s err=%v", parsed, gotDigest, err)
+	}
+
+	// A changed prior artifact must fail even when the current candidate evidence
+	// remains correctly signed and continues to name the original byte digest.
+	priorFields["beforeDigest"] = recoveredForwardTestDigest("tampered-baseline")
+	if err := os.WriteFile(priorPath, recoveredForwardSignJSON(t, recoveredForwardEvidenceSchemaV2, priorFields), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := validateRecoveredForwardEvidence(currentPath, hex.EncodeToString(currentDigest[:]), source, currentSHA, "hmac-sha256:"+recoveredForwardTestDigest("database"), cfg); err == nil || !strings.Contains(err.Error(), "digest does not match") {
+		t.Fatalf("tampered carried-forward evidence was accepted: %v", err)
+	}
+}
+
+func TestRecoveredForwardEvidenceSchemasRejectCrossVersionFields(t *testing.T) {
+	fields := map[string]any{
+		"schema": recoveredForwardEvidenceSchemaV2, "transitionId": "fixture-001",
+		"sourceSHA": strings.Repeat("b", 40), "candidateSHA": strings.Repeat("a", 40),
+		"databaseIdentity":    "hmac-sha256:" + strings.Repeat("d", 64),
+		"recoveryFenceSHA256": strings.Repeat("1", 64), "adoptionReceiptSHA256": strings.Repeat("2", 64),
+		"incidentBindingSHA256": strings.Repeat("3", 64), "ledgerSHA256": strings.Repeat("4", 64),
+		"reconciliationSHA256": strings.Repeat("5", 64), "backupProofSHA256": strings.Repeat("6", 64),
+		"backupSHA256": strings.Repeat("7", 64), "backupBytes": int64(1),
+		"shadowReceiptSHA256": strings.Repeat("8", 64), "incidentCandidateSHA": strings.Repeat("9", 40),
+		"incidentBeforeDigest": strings.Repeat("a", 64), "beforeDigest": strings.Repeat("b", 64),
+		"carriedForwardEvidencePath": "/tmp/evidence.json",
+	}
+	raw := recoveredForwardSignJSON(t, recoveredForwardEvidenceSchemaV2, fields)
+	if recoveredForwardEvidenceHasExactFields(raw, recoveredForwardEvidenceSchemaV2) {
+		t.Fatal("version 2 evidence accepted a version 3 carry-forward field")
+	}
+}
+
 func TestRecoveredForwardJSONRejectsDuplicateAndCaseFoldedFields(t *testing.T) {
 	fields := map[string]any{
 		"schema": recoveredForwardEvidenceSchema, "transitionId": "fixture-001",

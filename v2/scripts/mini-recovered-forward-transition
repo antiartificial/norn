@@ -580,6 +580,7 @@ def run(argv: list[str] | None = None) -> int:
     evidence_path = transition_dir / "transition.json.source-evidence.json"
     receipt_path = transition_dir / "preservation-receipt.json"
     api = api_base(args.api)
+    api_port = urllib.parse.urlsplit(api).port or 80
     token = os.environ.get("NORN_TOKEN") or os.environ.get("NORN_API_TOKEN", "")
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
     if len(token) < 32 or len(key) < 32:
@@ -632,6 +633,7 @@ def run(argv: list[str] | None = None) -> int:
                        "--releases-root", str((home / "norn/releases").resolve()),
                        "--release-verifier", str(release_verifier.resolve()), "--output-parent", str(transition_dir),
                        "--psql", str(psql.resolve()), "--launchctl", str(launchctl.resolve()),
+                       "--api-port", str(api_port),
                        "--api-binary", str(api_fence_bin.resolve()), "--host-agent-binary", str(host_agent_bin.resolve())]
             prepared = subprocess.run(prepare_command, env=os.environ.copy(), capture_output=True, text=True, check=False)
             if prepared.returncode:
@@ -642,6 +644,7 @@ def run(argv: list[str] | None = None) -> int:
                        "--backup-proof", str(args.backup_proof.resolve()), "--backup-artifact", str(args.backup_artifact.resolve()),
                        "--shadow-receipt", str(args.shadow_receipt.resolve()), "--psql", str(psql.resolve()),
                        "--launchctl", str(launchctl.resolve()), "--api-binary", str(api_fence_bin.resolve()),
+                       "--api-port", str(api_port),
                        "--host-agent-binary", str(host_agent_bin.resolve())]
             consumed = subprocess.run(command, env=os.environ.copy(), capture_output=True, text=True, check=False)
             if consumed.returncode:

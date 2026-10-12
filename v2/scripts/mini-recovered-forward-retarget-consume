@@ -31,7 +31,7 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(RETARGET)
 
 TUPLE_FIELDS = {
-    "schema", "transitionID", "sourceSHA", "previousCandidateSHA", "candidateSHA",
+    "schema", "transitionID", "sourceSHA", "previousCandidateSHA", "previousJournalState", "candidateSHA",
     "previousJournalSHA256", "previousEvidenceSHA256", "previousEvidencePath", "candidateReleasePath", "journalPath",
     "versionedJournalPath", "versionedEvidencePath", "versionedJournalSHA256", "versionedEvidenceSHA256",
     "backupProofPath", "backupArtifactPath",
@@ -87,6 +87,9 @@ def verify_bundle(args: argparse.Namespace, key: bytes) -> tuple[dict[str, Any],
     if (not RETARGET.HEX40.fullmatch(str(previous_candidate or ""))
             or previous_candidate in {tuple_value.get("sourceSHA"), args.candidate_sha}):
         fail("retarget tuple previous candidate identity is malformed or conflicts with this transition")
+    previous_state = tuple_value.get("previousJournalState")
+    if previous_state not in {"legacy-fenced", "candidate-postflight-failed"}:
+        fail("retarget tuple previous journal state is unsupported")
     journal_raw = secure_read(journal_path, "versioned journal")
     journal = RETARGET.strict_json(journal_raw, "versioned journal")
     evidence_raw = secure_read(evidence_path, "versioned evidence")
@@ -104,10 +107,12 @@ def verify_bundle(args: argparse.Namespace, key: bytes) -> tuple[dict[str, Any],
             or tuple_value.get("candidateReleasePath") != str((args.releases_root / args.candidate_sha).resolve(strict=True))
             or tuple_value.get("preservationCapture") != "carried-forward-verified"):
         fail("retarget tuple does not bind this exact candidate and versioned bundle")
-    if (journal.get("schema") != RETARGET.JOURNAL_SCHEMA or journal.get("state") != "legacy-fenced"
+    expected_journal_state = "candidate-activation-started" if previous_state == "candidate-postflight-failed" else "legacy-fenced"
+    if (journal.get("schema") != RETARGET.JOURNAL_SCHEMA or journal.get("state") != expected_journal_state
             or journal.get("transitionID") != tuple_value.get("transitionID")
             or journal.get("sourceSHA") != tuple_value.get("sourceSHA")
             or journal.get("candidateReleaseSHA") != args.candidate_sha
+            or journal.get("retargetedFromCandidateSHA") != previous_candidate
             or journal.get("sourceEvidencePath") != str(evidence_path)
             or journal.get("sourceEvidenceSHA256") != sha(evidence_raw)):
         fail("versioned journal differs from the signed retarget tuple or evidence")
@@ -143,7 +148,7 @@ def verify_bundle(args: argparse.Namespace, key: bytes) -> tuple[dict[str, Any],
             or old_evidence.get("candidateSHA") != previous_candidate
             or old_evidence.get("transitionId") != tuple_value.get("transitionID")
             or old_evidence.get("sourceSHA") != tuple_value.get("sourceSHA")
-            or old_journal.get("state") != "legacy-fenced"
+            or old_journal.get("state") != previous_state
             or old_evidence.get("beforeDigest") != evidence.get("beforeDigest")
             or old_evidence.get("databaseIdentity") != evidence.get("databaseIdentity")):
         fail("preserved prior journal/evidence does not prove the exact previous fenced baseline")
@@ -189,9 +194,12 @@ def perform(args: argparse.Namespace) -> int:
     # Recheck live state immediately before archiving/switching.
     source_sha = tuple_value["sourceSHA"]
     candidate_sha = tuple_value["candidateSHA"]
-    if args.current_link.resolve(strict=True) != (args.releases_root / source_sha).resolve(strict=True):
-        fail("current symlink no longer resolves to the exact source release")
+    expected_previous = (args.releases_root / source_sha if tuple_value["previousJournalState"] == "legacy-fenced"
+                         else args.releases_root / tuple_value["previousCandidateSHA"])
+    if args.current_link.resolve(strict=True) != expected_previous.resolve(strict=True):
+        fail("current symlink no longer resolves to the exact journaled source or failed candidate")
     release_args = argparse.Namespace(source_sha=source_sha, previous_candidate_sha=tuple_value["previousCandidateSHA"], candidate_sha=candidate_sha,
+                                      previous_journal_state=tuple_value["previousJournalState"],
                                       releases_root=args.releases_root, current_link=args.current_link,
                                       release_verifier=args.release_verifier)
     RETARGET.verify_source_release(release_args)
@@ -205,6 +213,7 @@ def perform(args: argparse.Namespace) -> int:
                                             RETARGET.RETAINED_EVIDENCE_V3_FIELDS, key, "old baseline evidence")
     else:
         fail("old baseline evidence schema is unsupported")
+    args.previous_journal_state = tuple_value["previousJournalState"]
     db = RETARGET.verify_database(args, old_evidence, key)
     if db != tuple_value.get("schemaLedger") or db.get("otherClientBackends") != 0:
         fail("live read-only schema/session proof differs from prepared retarget receipt")
@@ -231,7 +240,7 @@ def perform(args: argparse.Namespace) -> int:
         evidence_again = secure_read(Path(tuple_value["previousEvidencePath"]), "active prior evidence")
         if sha(evidence_again) != tuple_value.get("previousEvidenceSHA256"):
             fail("active prior evidence changed during retarget verification")
-        if args.current_link.resolve(strict=True) != (args.releases_root / source_sha).resolve(strict=True):
+        if args.current_link.resolve(strict=True) != expected_previous.resolve(strict=True):
             fail("current symlink changed before atomic retarget switch")
         RETARGET.verify_source_release(release_args)
         old_schema = RETARGET.strict_json(evidence_again, "old baseline evidence").get("schema")
@@ -243,6 +252,7 @@ def perform(args: argparse.Namespace) -> int:
                                                 RETARGET.RETAINED_EVIDENCE_V3_FIELDS, key, "old baseline evidence")
         else:
             fail("old baseline evidence schema is unsupported")
+        args.previous_journal_state = tuple_value["previousJournalState"]
         db = RETARGET.verify_database(args, old_evidence, key)
         if db != tuple_value.get("schemaLedger") or db.get("otherClientBackends") != 0:
             fail("schema/session proof changed before atomic retarget switch")
@@ -306,6 +316,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--current-link", type=Path, required=True)
     result.add_argument("--psql", type=Path, default=Path("/usr/bin/psql"))
     result.add_argument("--launchctl", type=Path, default=Path("/bin/launchctl"))
+    result.add_argument("--lsof", type=Path, default=Path("/usr/sbin/lsof"))
+    result.add_argument("--api-port", type=int, default=8800)
     result.add_argument("--api-binary", type=Path, required=True)
     result.add_argument("--host-agent-binary", type=Path, required=True)
     return result

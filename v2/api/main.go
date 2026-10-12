@@ -1166,6 +1166,8 @@ func validLegacyBaselineSourceSHA(value string) bool {
 
 const (
 	recoveredForwardEvidenceSchema    = "norn.recovered-forward-evidence/v1"
+	recoveredForwardEvidenceSchemaV2  = "norn.recovered-forward-evidence/v2"
+	recoveredForwardEvidenceSchemaV3  = "norn.recovered-forward-evidence/v3"
 	recoveredForwardReceiptSchema     = "norn.recovered-forward-preservation/v1"
 	recoveredForwardHeldReasonPrefix  = "preserve recovered-forward:"
 	recoveredForwardFinalReasonPrefix = "recovered-forward finalized:"
@@ -1177,22 +1179,57 @@ const (
 var recoveredForwardDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type recoveredForwardEvidence struct {
-	Schema                string `json:"schema"`
-	TransitionID          string `json:"transitionId"`
-	SourceSHA             string `json:"sourceSHA"`
-	CandidateSHA          string `json:"candidateSHA"`
-	DatabaseIdentity      string `json:"databaseIdentity"`
-	RecoveryFenceSHA256   string `json:"recoveryFenceSHA256"`
-	AdoptionReceiptSHA256 string `json:"adoptionReceiptSHA256"`
-	IncidentBindingSHA256 string `json:"incidentBindingSHA256"`
-	LedgerSHA256          string `json:"ledgerSHA256"`
-	ReconciliationSHA256  string `json:"reconciliationSHA256"`
-	BackupProofSHA256     string `json:"backupProofSHA256"`
-	BackupSHA256          string `json:"backupSHA256"`
-	BackupBytes           int64  `json:"backupBytes"`
-	ShadowReceiptSHA256   string `json:"shadowReceiptSHA256"`
-	BeforeDigest          string `json:"beforeDigest"`
-	Signature             string `json:"signature"`
+	Schema                       string `json:"schema"`
+	TransitionID                 string `json:"transitionId"`
+	SourceSHA                    string `json:"sourceSHA"`
+	CandidateSHA                 string `json:"candidateSHA"`
+	DatabaseIdentity             string `json:"databaseIdentity"`
+	RecoveryFenceSHA256          string `json:"recoveryFenceSHA256"`
+	AdoptionReceiptSHA256        string `json:"adoptionReceiptSHA256"`
+	IncidentBindingSHA256        string `json:"incidentBindingSHA256"`
+	LedgerSHA256                 string `json:"ledgerSHA256"`
+	ReconciliationSHA256         string `json:"reconciliationSHA256"`
+	BackupProofSHA256            string `json:"backupProofSHA256"`
+	BackupSHA256                 string `json:"backupSHA256"`
+	BackupBytes                  int64  `json:"backupBytes"`
+	ShadowReceiptSHA256          string `json:"shadowReceiptSHA256"`
+	BeforeDigest                 string `json:"beforeDigest"`
+	IncidentCandidateSHA         string `json:"incidentCandidateSHA"`
+	IncidentBeforeDigest         string `json:"incidentBeforeDigest"`
+	PreservationCapture          string `json:"preservationCapture"`
+	CarriedForwardEvidenceSHA256 string `json:"carriedForwardEvidenceSHA256"`
+	CarriedForwardEvidencePath   string `json:"carriedForwardEvidencePath"`
+	Signature                    string `json:"signature"`
+}
+
+var recoveredForwardEvidenceFields = map[string]map[string]struct{}{
+	recoveredForwardEvidenceSchema: fieldSet(
+		"schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+		"recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+		"reconciliationSHA256", "backupProofSHA256", "backupSHA256", "backupBytes",
+		"shadowReceiptSHA256", "beforeDigest", "signature",
+	),
+	recoveredForwardEvidenceSchemaV2: fieldSet(
+		"schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+		"recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+		"reconciliationSHA256", "backupProofSHA256", "backupSHA256", "backupBytes",
+		"shadowReceiptSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest", "signature",
+	),
+	recoveredForwardEvidenceSchemaV3: fieldSet(
+		"schema", "transitionId", "sourceSHA", "candidateSHA", "databaseIdentity",
+		"recoveryFenceSHA256", "adoptionReceiptSHA256", "incidentBindingSHA256", "ledgerSHA256",
+		"reconciliationSHA256", "incidentCandidateSHA", "incidentBeforeDigest", "beforeDigest",
+		"preservationCapture", "carriedForwardEvidenceSHA256", "carriedForwardEvidencePath",
+		"backupProofSHA256", "backupSHA256", "backupBytes", "shadowReceiptSHA256", "signature",
+	),
+}
+
+func fieldSet(fields ...string) map[string]struct{} {
+	result := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		result[field] = struct{}{}
+	}
+	return result
 }
 
 type recoveredForwardPreservationReceipt struct {
@@ -1226,9 +1263,12 @@ func recoveredForwardEnv(getenv func(string) string, suffix string) string {
 
 func validateRecoveredForwardEvidence(path, expectedFileSHA, expectedSourceSHA, expectedCandidateSHA, databaseID string, cfg *config.Config) (recoveredForwardEvidence, string, error) {
 	var evidence recoveredForwardEvidence
-	data, fileSHA, err := readOwnerOnlySignedJSON(path, expectedFileSHA, recoveredForwardEvidenceSchema, cfg.AuditSigningKey, &evidence)
+	data, fileSHA, schema, err := readOwnerOnlySignedRecoveredForwardEvidence(path, expectedFileSHA, cfg.AuditSigningKey, &evidence)
 	if err != nil {
 		return evidence, "", fmt.Errorf("source evidence: %w", err)
+	}
+	if !recoveredForwardEvidenceHasExactFields(data, schema) {
+		return evidence, "", fmt.Errorf("source evidence fields are not exact for schema %q", schema)
 	}
 	if !validLegacyBaselineTransitionID(evidence.TransitionID) || evidence.SourceSHA != expectedSourceSHA ||
 		!validLegacyBaselineSourceSHA(evidence.SourceSHA) || evidence.CandidateSHA != expectedCandidateSHA ||
@@ -1250,8 +1290,190 @@ func validateRecoveredForwardEvidence(path, expectedFileSHA, expectedSourceSHA, 
 			return evidence, "", fmt.Errorf("source evidence %s digest is invalid", label)
 		}
 	}
-	_ = data // The raw content is hashed by readOwnerOnlySignedJSON and returned as fileSHA.
+	if schema != recoveredForwardEvidenceSchema {
+		if !validLegacyBaselineSourceSHA(evidence.IncidentCandidateSHA) ||
+			!recoveredForwardDigestPattern.MatchString(evidence.IncidentBeforeDigest) {
+			return evidence, "", fmt.Errorf("source evidence incident candidate or baseline binding is invalid")
+		}
+	}
+	if schema == recoveredForwardEvidenceSchemaV3 {
+		if evidence.PreservationCapture != "carried-forward-verified" ||
+			!recoveredForwardDigestPattern.MatchString(evidence.CarriedForwardEvidenceSHA256) {
+			return evidence, "", fmt.Errorf("version 3 source evidence lacks a valid carried-forward preservation binding")
+		}
+		if err := verifyRecoveredForwardEvidenceChain(path, evidence, cfg.AuditSigningKey); err != nil {
+			return evidence, "", fmt.Errorf("source evidence carry-forward chain: %w", err)
+		}
+	}
 	return evidence, fileSHA, nil
+}
+
+func readOwnerOnlySignedRecoveredForwardEvidence(path, expectedSHA, key string, evidence *recoveredForwardEvidence) ([]byte, string, string, error) {
+	if !filepath.IsAbs(path) || !recoveredForwardDigestPattern.MatchString(expectedSHA) {
+		return nil, "", "", fmt.Errorf("an absolute evidence path and exact lowercase SHA-256 are required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !recoveredForwardOwnedByCurrentUser(info) {
+		return nil, "", "", fmt.Errorf("evidence must be a regular owner-only mode-0600 file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !os.SameFile(info, openedInfo) {
+		return nil, "", "", fmt.Errorf("evidence file changed while opening")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 64<<10+1))
+	if err != nil || len(data) > 64<<10 {
+		return nil, "", "", fmt.Errorf("evidence file is unreadable or too large")
+	}
+	sum := sha256.Sum256(data)
+	fileSHA := hex.EncodeToString(sum[:])
+	if subtle.ConstantTimeCompare([]byte(fileSHA), []byte(expectedSHA)) != 1 {
+		return nil, "", "", fmt.Errorf("evidence file digest does not match the protected binding")
+	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return nil, "", "", err
+	}
+	var topLevel map[string]json.RawMessage
+	if err := json.Unmarshal(data, &topLevel); err != nil || topLevel == nil {
+		return nil, "", "", fmt.Errorf("signed evidence must be a JSON object")
+	}
+	var schema string
+	if err := json.Unmarshal(topLevel["schema"], &schema); err != nil {
+		return nil, "", "", fmt.Errorf("signed evidence schema is missing")
+	}
+	fields, ok := recoveredForwardEvidenceFields[schema]
+	if !ok {
+		return nil, "", "", fmt.Errorf("signed document schema is unsupported")
+	}
+	if err := decodeExactJSON(data, evidence); err != nil {
+		return nil, "", "", err
+	}
+	if err := decodeExactSignedJSON(data, schema, key, evidence); err != nil {
+		return nil, "", "", err
+	}
+	var actual map[string]json.RawMessage
+	if err := json.Unmarshal(data, &actual); err != nil || len(actual) != len(fields) {
+		return nil, "", "", fmt.Errorf("signed evidence field set is not exact")
+	}
+	for field := range actual {
+		if _, ok := fields[field]; !ok {
+			return nil, "", "", fmt.Errorf("signed evidence field set is not exact: %s", field)
+		}
+	}
+	return data, fileSHA, schema, nil
+}
+
+func recoveredForwardEvidenceHasExactFields(data []byte, schema string) bool {
+	expected, ok := recoveredForwardEvidenceFields[schema]
+	if !ok {
+		return false
+	}
+	var actual map[string]json.RawMessage
+	if json.Unmarshal(data, &actual) != nil || len(actual) != len(expected) {
+		return false
+	}
+	for field := range actual {
+		if _, ok := expected[field]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func verifyRecoveredForwardEvidenceChain(path string, evidence recoveredForwardEvidence, key string) error {
+	evidencePath := filepath.Clean(path)
+	resolvedEvidencePath, err := filepath.EvalSymlinks(evidencePath)
+	if err != nil || resolvedEvidencePath != evidencePath {
+		return fmt.Errorf("version 3 evidence path must be canonical and contain no symlinks")
+	}
+	bundle := filepath.Dir(evidencePath)
+	root := filepath.Dir(bundle)
+	rootInfo, err := os.Lstat(root)
+	if err != nil || rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() || rootInfo.Mode().Perm() != 0o700 || !recoveredForwardOwnedByCurrentUser(rootInfo) {
+		return fmt.Errorf("version 3 transition root must be invoking-user-owned mode 0700")
+	}
+	if filepath.Base(bundle) != "retarget-"+evidence.CandidateSHA || filepath.Base(evidencePath) != "source-evidence.json" {
+		return fmt.Errorf("version 3 evidence path is outside its exact candidate bundle")
+	}
+	bundleInfo, err := os.Lstat(bundle)
+	if err != nil || bundleInfo.Mode()&os.ModeSymlink != 0 || !bundleInfo.IsDir() || bundleInfo.Mode().Perm() != 0o700 || !recoveredForwardOwnedByCurrentUser(bundleInfo) {
+		return fmt.Errorf("version 3 candidate bundle must be invoking-user-owned mode 0700")
+	}
+	baseline := evidence
+	expectedPath := evidence.CarriedForwardEvidencePath
+	expectedSHA := evidence.CarriedForwardEvidenceSHA256
+	seen := map[string]struct{}{evidence.CandidateSHA: {}}
+	for depth := 0; depth < 32; depth++ {
+		priorPath := filepath.Clean(expectedPath)
+		if !filepath.IsAbs(expectedPath) || priorPath != expectedPath {
+			return fmt.Errorf("prior evidence path must be absolute and canonical")
+		}
+		resolvedPriorPath, err := filepath.EvalSymlinks(priorPath)
+		if err != nil || resolvedPriorPath != priorPath {
+			return fmt.Errorf("prior evidence path must contain no symlinks")
+		}
+		priorInfo, err := os.Lstat(priorPath)
+		if err != nil || priorInfo.Mode()&os.ModeSymlink != 0 || !priorInfo.Mode().IsRegular() || priorInfo.Mode().Perm() != 0o600 || !recoveredForwardOwnedByCurrentUser(priorInfo) {
+			return fmt.Errorf("prior evidence must be an invoking-user-owned mode-0600 regular file")
+		}
+		priorDir := filepath.Dir(priorPath)
+		fixedPath := filepath.Join(root, "transition.json.source-evidence.json")
+		priorCandidate := ""
+		if priorPath != fixedPath {
+			if filepath.Dir(priorDir) != root || filepath.Base(priorPath) != "source-evidence.json" {
+				return fmt.Errorf("prior evidence path is outside the fixed or versioned transition bundle")
+			}
+			name := filepath.Base(priorDir)
+			if len(name) != len("retarget-")+40 || !strings.HasPrefix(name, "retarget-") {
+				return fmt.Errorf("prior evidence directory is not candidate-versioned")
+			}
+			priorCandidate = strings.TrimPrefix(name, "retarget-")
+			if !validLegacyBaselineSourceSHA(priorCandidate) {
+				return fmt.Errorf("prior evidence candidate identity is invalid")
+			}
+			priorBundle, err := os.Lstat(priorDir)
+			if err != nil || priorBundle.Mode()&os.ModeSymlink != 0 || !priorBundle.IsDir() || priorBundle.Mode().Perm() != 0o700 || !recoveredForwardOwnedByCurrentUser(priorBundle) {
+				return fmt.Errorf("prior evidence bundle must be invoking-user-owned mode 0700")
+			}
+			if _, duplicate := seen[priorCandidate]; duplicate {
+				return fmt.Errorf("prior evidence chain repeats a candidate identity")
+			}
+			seen[priorCandidate] = struct{}{}
+		}
+		var prior recoveredForwardEvidence
+		priorRaw, priorSHA, priorSchema, err := readOwnerOnlySignedRecoveredForwardEvidence(priorPath, expectedSHA, key, &prior)
+		if err != nil {
+			return fmt.Errorf("prior evidence failed verification: %w", err)
+		}
+		_ = priorRaw
+		if priorSchema != recoveredForwardEvidenceSchemaV2 && priorSchema != recoveredForwardEvidenceSchemaV3 {
+			return fmt.Errorf("prior evidence must use version 2 or version 3 schema")
+		}
+		if priorSHA != expectedSHA || prior.TransitionID != baseline.TransitionID || prior.SourceSHA != baseline.SourceSHA ||
+			prior.DatabaseIdentity != baseline.DatabaseIdentity || prior.RecoveryFenceSHA256 != baseline.RecoveryFenceSHA256 ||
+			prior.AdoptionReceiptSHA256 != baseline.AdoptionReceiptSHA256 || prior.IncidentBindingSHA256 != baseline.IncidentBindingSHA256 ||
+			prior.LedgerSHA256 != baseline.LedgerSHA256 || prior.ReconciliationSHA256 != baseline.ReconciliationSHA256 ||
+			prior.IncidentCandidateSHA != baseline.IncidentCandidateSHA || prior.IncidentBeforeDigest != baseline.IncidentBeforeDigest ||
+			prior.BeforeDigest != baseline.BeforeDigest || (priorCandidate != "" && prior.CandidateSHA != priorCandidate) {
+			return fmt.Errorf("prior evidence does not preserve the exact source baseline")
+		}
+		if priorSchema == recoveredForwardEvidenceSchemaV2 {
+			if priorPath != fixedPath {
+				return fmt.Errorf("initial version 2 source evidence must use the fixed transition path")
+			}
+			return nil
+		}
+		if prior.PreservationCapture != "carried-forward-verified" || !recoveredForwardDigestPattern.MatchString(prior.CarriedForwardEvidenceSHA256) {
+			return fmt.Errorf("prior version 3 evidence lacks a valid carry-forward binding")
+		}
+		expectedPath = prior.CarriedForwardEvidencePath
+		expectedSHA = prior.CarriedForwardEvidenceSHA256
+	}
+	return fmt.Errorf("version 3 evidence chain exceeds the 32-candidate safety limit")
 }
 
 func validateRecoveredForwardReceipt(raw []byte, cfg *config.Config, evidence recoveredForwardEvidence, evidenceSHA, candidateSHA string) (recoveredForwardPreservationReceipt, string, error) {

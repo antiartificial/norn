@@ -62,7 +62,12 @@ def main() -> int:
     phase = value.get("state")
     if phase not in PHASES:
         raise ValueError("journal phase is not a supported recovered-forward resume phase")
-    print(phase)
+    retargeted_from = value.get("retargetedFromCandidateSHA", "")
+    if retargeted_from:
+        if (phase != "candidate-activation-started" or not re.fullmatch(r"[0-9a-f]{40}", retargeted_from)
+                or retargeted_from in {source, candidate}):
+            raise ValueError("journal retarget predecessor is invalid for this phase")
+    print(phase + "\t" + (retargeted_from or "-"))
     return 0
 
 
