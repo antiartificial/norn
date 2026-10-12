@@ -195,7 +195,7 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	writeTestScript(t, filepath.Join(gitShimDir, "git"), fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
-  *" describe --tags --exclude=platform-* HEAD "*) printf 'v3.0.0-rc.1-control\\n' ;;
+  *" describe --tags --exclude=platform-* HEAD "*) printf 'v3.0.0-rc.1-control\n' ;;
   *) exec %q "$@" ;;
 esac
 `, gitPath))
