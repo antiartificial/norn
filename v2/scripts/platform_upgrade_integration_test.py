@@ -71,11 +71,12 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
     def test_env_exec_runtime_recovery_bindings_override_stale_sops_values(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         launcher = source.split("run_with_api_env() {", 1)[1].split("\n}\n", 1)[0]
-        self.assertLess(launcher.index('env = {str(k): str(v)'), launcher.index('if name.startswith("NORN_RECOVERED_FORWARD_")'))
+        self.assertIn("env = runtime_env.copy()", launcher)
+        self.assertLess(launcher.index('env.update({str(k): str(v)'), launcher.index('if name.startswith("NORN_RECOVERED_FORWARD_")'))
         self.assertIn('env[name] = value', launcher)
         self.assertIn('env.update({str(k): str(v) for k, v in json.loads(raw).items()})', launcher) if False else None
         self.assertIn('if "NORN_TOKEN" not in env', launcher)
-        self.assertIn('env = {str(k): str(v) for k, v in json.loads(raw).items()}', launcher)
+        self.assertIn("runtime_env = os.environ.copy()", launcher)
 
     def test_recovered_forward_resume_does_not_query_the_stopped_api_after_drain(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
