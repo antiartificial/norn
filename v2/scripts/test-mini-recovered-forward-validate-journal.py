@@ -59,7 +59,21 @@ class RecoveredForwardJournalTest(unittest.TestCase):
                 self.write(value)
                 result = self.invoke()
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(), phase)
+                self.assertEqual(result.stdout.strip(), phase + "\t-")
+
+    def test_retargeted_candidate_can_resume_after_postflight_failure(self):
+        previous = "d" * 40
+        for phase in ("candidate-activation-started", "candidate-postflight-failed"):
+            with self.subTest(phase=phase):
+                self.write({**self.record, "state": phase, "retargetedFromCandidateSHA": previous})
+                result = self.invoke()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), phase + "\t" + previous)
+
+        for phase in ("prepared", "candidate-preservation-pending", "candidate-promoted"):
+            with self.subTest(phase=phase):
+                self.write({**self.record, "state": phase, "retargetedFromCandidateSHA": previous})
+                self.assertNotEqual(self.invoke().returncode, 0)
 
     def test_altered_identity_paths_and_unsupported_phase_refuse_resume(self):
         cases = [
