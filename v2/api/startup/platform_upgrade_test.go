@@ -180,6 +180,10 @@ func TestPlatformUpgradeRecoveredBaselineAdoptionIsNarrowAndEarlyGated(t *testin
 
 func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t *testing.T) {
 	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	fence := filepath.Join(root, "fence.json")
 	ledger := filepath.Join(root, "ledger.json")
 	reconciliation := filepath.Join(root, "reconciliation.json")
@@ -195,9 +199,9 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	}
 	missing := exec.Command(platformUpgradePath(t), "upgrade", "HEAD")
 	repo := filepath.Clean(filepath.Join(filepath.Dir(platformUpgradePath(t)), "..", ".."))
-	missing.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
+	missing.Env = append(os.Environ(), "HOME="+home, "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
 	out, err := missing.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "ordinary upgrade is prohibited") || strings.Contains(string(out), "building") {
+	if err == nil || !strings.Contains(string(out), "completed recovered-forward file bindings") || strings.Contains(string(out), "building") {
 		t.Fatalf("ordinary upgrade was not refused before release preparation: %v %s", err, out)
 	}
 	preflight := exec.Command(platformUpgradePath(t), "preflight", "HEAD")
@@ -946,7 +950,7 @@ trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `
 	writeTestScript(t, filepath.Join(target, "bin", "norn-api"), apiScript)
-	for _, name := range []string{"norn", "norn-host-agent", "norn-ingress-observer", "norn-ingress-publisher", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "mini-create-protected-backup", "mini-verify-protected-backup", "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal", "mini-signed-shadow-launchagent-rehearsal", "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume", "mini-recovered-forward-transition", "mini-recovered-forward-verify-evidence", "mini-recovered-forward-validate-journal", "host-runtime"} {
+	for _, name := range []string{"norn", "norn-host-agent", "norn-ingress-observer", "norn-ingress-publisher", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "mini-create-protected-backup", "mini-verify-protected-backup", "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal", "mini-signed-shadow-launchagent-rehearsal", "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume", "mini-recovered-forward-transition", "mini-recovered-forward-verify-evidence", "mini-recovered-forward-validate-journal", "mini-recovered-forward-completed-gate", "host-runtime"} {
 		writeTestScript(t, filepath.Join(target, "bin", name), "#!/usr/bin/env bash\nexit 0\n")
 	}
 	writeTestScript(t, filepath.Join(previous, "bin", "norn-api"), strings.ReplaceAll(apiScript, "v2.21.0-platform", "v2.19.0-platform"))
@@ -1318,7 +1322,7 @@ case " $* " in
   *" worktree add "*)
     worktree="${6}"
     mkdir -p "$worktree/v2/api" "$worktree/v2/cli" "$worktree/v2/scripts"
-	    for helper in platform-upgrade platform-release-manifest platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal host-runtime; do
+	    for helper in platform-upgrade platform-release-manifest platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal mini-recovered-forward-completed-gate host-runtime; do
       printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree/v2/scripts/$helper"
       chmod +x "$worktree/v2/scripts/$helper"
     done

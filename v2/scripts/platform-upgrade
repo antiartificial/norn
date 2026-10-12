@@ -1434,6 +1434,7 @@ build_release_into() {
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-transition" "$target/bin/mini-recovered-forward-transition"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-verify-evidence" "$target/bin/mini-recovered-forward-verify-evidence"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-validate-journal" "$target/bin/mini-recovered-forward-validate-journal"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-completed-gate" "$target/bin/mini-recovered-forward-completed-gate"
   install -m 0755 "$worktree/v2/scripts/host-runtime" "$target/bin/host-runtime"
 
   cat > "$target/release.env" <<EOF

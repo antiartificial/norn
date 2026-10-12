@@ -152,6 +152,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "mini-recovered-forward-transition",
             "mini-recovered-forward-verify-evidence",
             "mini-recovered-forward-validate-journal",
+            "mini-recovered-forward-completed-gate",
         ):
             shutil.copy2(SCRIPT_DIR / name, scripts / name)
         self.write("v2/scripts/host-runtime", "#!/usr/bin/env bash\nexit 0\n", executable=True)
