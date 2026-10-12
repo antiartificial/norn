@@ -194,10 +194,11 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	}
 	writeTestScript(t, filepath.Join(gitShimDir, "git"), fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
-case " $* " in
-  *" describe --tags --exclude=platform-* HEAD "*) printf 'v3.0.0-rc.1-control\n' ;;
-  *) exec %q "$@" ;;
-esac
+if [[ "${1:-}" == "-C" && "${3:-}" == "describe" ]]; then
+  printf 'v3.0.0-rc.1-control\n'
+  exit 0
+fi
+exec %q "$@"
 `, gitPath))
 	fence := filepath.Join(root, "fence.json")
 	ledger := filepath.Join(root, "ledger.json")
