@@ -734,7 +734,7 @@ func TestReconcileObservedPilotApplyAcceptsOnlyStableBoundRun(t *testing.T) {
 	approved := &Dispatch{PlanRunID: observedPilotPlanRunID, PlanSHA: observedPilotPlanSHA, ApprovedHeadSHA: observedPilotHeadSHA, PilotRunID: "pilot261006c"}
 	inputs := map[string]string{"fleet_environment": "disposable/fleet/nyc3", "pilot_run_id": "pilot261006c", "plan_run_id": "37893643367", "plan_sha256": observedPilotPlanSHA, "norn_plan_id": observedPilotPlanID, "dispatch_nonce": observedPilotNonce, "allow_destructive": "true", "approval_envelope_sha256": ""}
 	planRun := applyRun{ID: observedPilotPlanRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotPlanRunID), Event: "workflow_dispatch", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/plan.yml@main", Name: "plan", Status: "completed", Conclusion: "success", RunAttempt: 1}
-	applyRun := applyRun{ID: observedPilotRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotRunID), Event: "workflow_dispatch", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/apply.yml", Name: "apply", DisplayTitle: observedPilotTitle, Status: "completed", Conclusion: "cancelled", RunAttempt: 1, Inputs: inputs}
+	applyRun := applyRun{ID: observedPilotRunID, HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", observedPilotRepository, observedPilotRunID), Event: "workflow_dispatch", HeadSHA: observedPilotHeadSHA, HeadBranch: "main", Path: ".github/workflows/apply.yml", Name: observedPilotTitle, DisplayTitle: observedPilotTitle, Status: "completed", Conclusion: "cancelled", RunAttempt: 1, Inputs: inputs}
 	applyRun.Repository.FullName = observedPilotRepository
 	applyRun.Actor.Login, applyRun.Actor.Type = "norn-fleet-pilot-antiartificial[bot]", "Bot"
 	labels := []string{"self-hosted", "norn-fleet-protected", "norn-pilot-pilot261006c", "Linux"}
@@ -802,6 +802,8 @@ func TestReconcileObservedPilotApplyAcceptsOnlyStableBoundRun(t *testing.T) {
 					value.Inputs["extra"] = "unexpected"
 				case "changed head":
 					value.HeadSHA = strings.Repeat("0", 40)
+				case "wrong workflow name":
+					value.Name = "unrelated workflow title"
 				case "exact input set":
 					value.Inputs = cloneStringMap(inputs)
 				}
@@ -877,7 +879,7 @@ func TestReconcileObservedPilotApplyAcceptsOnlyStableBoundRun(t *testing.T) {
 	}{
 		{"changed run snapshot", "run", 1}, {"changed job snapshot", "jobs", 1}, {"rerun", "", 2},
 		{"mismatched artifact", "artifact mismatch", 1},
-		{"wrong nonce input", "wrong nonce input", 1}, {"wrong plan input", "wrong plan input", 1},
+		{"wrong workflow name", "wrong workflow name", 1}, {"wrong nonce input", "wrong nonce input", 1}, {"wrong plan input", "wrong plan input", 1},
 		{"wrong fleet input", "wrong fleet input", 1}, {"extra input", "extra input", 1}, {"changed head", "changed head", 1},
 		{"extra job", "extra job", 1}, {"duplicate job", "duplicate job", 1}, {"missing job", "missing job", 1},
 		{"failed admission", "bad admission", 1}, {"wrong runner", "wrong runner", 1},
