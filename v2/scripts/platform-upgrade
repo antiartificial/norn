@@ -408,7 +408,10 @@ PY
       legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
       recovered-forward|recovered-forward-finalize) recovered_baseline_receipt_validate || fail "recovered-forward requires the exact valid adoption receipt before Mini transition work" ;;
       proxy-switch|proxy-render) fail "recovered baseline blocks proxy changes while the failed fence is retained" ;;
-      upgrade) fail "recovered baseline requires the guarded recovered-forward transition; ordinary upgrade is prohibited" ;;
+      # The later finalized-recovery gate validates the completed journal,
+      # both signed releases, preservation evidence, and the live runtime
+      # before ordinary forward-upgrade preparation can begin.
+      upgrade) : ;;
       preflight|mini-protected-backup|mini-signed-shadow) recovered_baseline_receipt_validate || fail "recovered baseline adoption receipt is required and must validate before Mini evidence work" ;;
       env-exec)
         recovered_early_args=("$@")
@@ -423,7 +426,7 @@ PY
         else
           [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
           case "${recovered_early_args[1]}" in
-            upgrade) fail "recovered baseline requires the guarded recovered-forward transition; ordinary upgrade is prohibited" ;;
+            upgrade) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
             preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
             recovered-baseline-adopt)
               recovered_adopter_release="$(python3 - "${recovered_early_args[0]}" "$releases" <<'PY'
@@ -1431,6 +1434,7 @@ build_release_into() {
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-transition" "$target/bin/mini-recovered-forward-transition"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-verify-evidence" "$target/bin/mini-recovered-forward-verify-evidence"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-validate-journal" "$target/bin/mini-recovered-forward-validate-journal"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-completed-gate" "$target/bin/mini-recovered-forward-completed-gate"
   install -m 0755 "$worktree/v2/scripts/host-runtime" "$target/bin/host-runtime"
 
   cat > "$target/release.env" <<EOF
@@ -3185,7 +3189,7 @@ sync_managed_host_artifacts() {
     fail "release is missing platform-release-manifest"
   fi
   local release_helper
-  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
+  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal mini-recovered-forward-completed-gate; do
     if [[ -f "$target/bin/$release_helper" ]]; then
       atomic_install_file "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || return 1
     elif [[ "$strict" == "true" ]]; then
@@ -3206,7 +3210,7 @@ sync_managed_host_artifacts() {
     cmp -s "$target/bin/norn" "$host_cli_bin" || fail "managed host CLI verification failed"
     cmp -s "$target/bin/platform-upgrade" "$platform_script_bin" || fail "managed platform script verification failed"
     cmp -s "$target/bin/platform-release-manifest" "$(dirname "$platform_script_bin")/platform-release-manifest" || fail "managed platform manifest helper verification failed"
-    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal; do
+    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal mini-recovered-forward-completed-gate; do
       cmp -s "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || fail "managed $release_helper verification failed"
     done
     cmp -s "$target/bin/host-runtime" "$host_runtime_bin" || fail "managed host runtime verification failed"
@@ -3491,6 +3495,53 @@ PY
   log "recovered baseline adoption receipt recorded; preservation remains unproven"
 }
 
+recovered_forward_completed_candidate_validate() {
+  local fields transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha
+  local token health_json version_json schema_json expected_version version_file schema_file verifier
+  fields="$("$script_dir/mini-recovered-forward-completed-gate" "$recovered_journal_path" "$current_link" "$releases" "$HOME/.config/norn/recovered-forward/preservation-receipt.json")" || fail "completed recovered-forward file bindings do not verify"
+  IFS=$'\t' read -r transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha <<<"$fields"
+  [[ "$legacy_record_state" == "candidate-postflight-failed" ]] || fail "completed recovery gate requires the retained failed-incident sentinel"
+  recovered_baseline_receipt_validate || fail "completed recovery requires the exact signed adoption receipt"
+  recovered_forward_evidence_path_valid "$evidence" "$candidate" "$recovered_transition_root" || fail "recovered-forward source evidence path is not candidate-bound"
+  recovered_transition_id="$transition"
+  recovered_source_sha="$source"
+  recovered_source_evidence="$evidence"
+  recovered_source_evidence_sha256="$evidence_sha"
+  recovered_backup_proof="$backup_proof"
+  recovered_backup_artifact="$backup_artifact"
+  recovered_shadow_receipt="$shadow_receipt"
+  recovered_preservation_receipt="$HOME/.config/norn/recovered-forward/preservation-receipt.json"
+  recovered_preservation_receipt_sha256="$preservation_sha"
+  release="$releases/$candidate"
+  verify_release "$releases/$source" "$source"
+  verify_release "$release" "$candidate"
+  [[ -n "$release_verify_hook" && -x "$release_verify_hook" ]] || fail "signed external release verification is required for completed recovery"
+  "$release_verify_hook" "$releases/$source" "$releases/$source/release.json" || fail "recovered-forward source signature verification failed"
+  "$release_verify_hook" "$release" "$release/release.json" || fail "recovered-forward candidate signature verification failed"
+  verifier="$script_dir/mini-recovered-forward-verify-evidence"
+  [[ -x "$verifier" ]] || fail "recovered-forward signed evidence verifier is unavailable"
+  [[ "$(NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" "$verifier" "$evidence" "$evidence_sha" "$transition" "$source" "$candidate" "$backup_proof" "$backup_artifact" "$shadow_receipt")" == "verified" ]] || fail "recovered-forward signed source evidence no longer verifies"
+  token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
+  [[ -n "$token" ]] || fail "completed-recovery upgrade authorization requires an authenticated API environment"
+  wait_health "$api_base" 10 "" "$token" || fail "Mini API is not healthy under the completed recovered-forward candidate"
+  health_json="$(curl -fsS -H "Authorization: Bearer $token" "$api_base/api/health")" || fail "Mini API health evidence is unavailable"
+  version_json="$(curl -fsS -H "Authorization: Bearer $token" "$api_base/api/version")" || fail "Mini API version evidence is unavailable"
+  schema_json="$(curl -fsS -H "Authorization: Bearer $token" "$api_base/api/schema")" || fail "Mini API schema evidence is unavailable"
+  printf '%s\n' "$health_json" | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v.get("status")=="ok", "Mini health is not ok"; assert v.get("runtimeMutationFence")=="inactive", "Mini mutation fence is active"' || fail "Mini API is not in a normal active state"
+  expected_version="$(release_version "$release")"
+  version_file="$(mktemp "${TMPDIR:-/tmp}/norn-forward-version.XXXXXX")"
+  schema_file="$(mktemp "${TMPDIR:-/tmp}/norn-forward-schema.XXXXXX")"
+  chmod 0600 "$version_file" "$schema_file"
+  printf '%s\n' "$version_json" >"$version_file"
+  printf '%s\n' "$schema_json" >"$schema_file"
+  if ! validate_active_responses "$expected_version" "$version_file" "$schema_file" "$candidate"; then
+    rm -f "$version_file" "$schema_file"
+    fail "Mini API version/schema do not match the exact promoted candidate"
+  fi
+  rm -f "$version_file" "$schema_file"
+  legacy_baseline_host_agent_is_running_candidate || fail "Mini host agent is not stably running from the exact promoted release"
+}
+
 if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
   case "$mode" in
     recovered-baseline-adopt|releases|startup-contract|proxy-status|proxy-plan|smoke) ;;
@@ -3501,7 +3552,7 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       recovered_env_command="${recovered_env_args[0]}"; recovered_env_mode="${recovered_env_args[1]}"
       [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
       case "$recovered_env_mode" in
-        upgrade) fail "recovered baseline requires the guarded recovered-forward transition; ordinary upgrade is prohibited" ;;
+        upgrade) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
         preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
         recovered-baseline-adopt) [[ "$recovered_env_command" == "$platform_script_bin" || "$recovered_env_command" == "$releases"/*/bin/platform-upgrade ]] || fail "recovered baseline adoption child is not an immutable release script" ;;
         *) fail "recovered baseline rejects env-exec child mode $recovered_env_mode" ;;
@@ -3509,6 +3560,7 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       ;;
     legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
     rollback|rebuild|proxy-switch|proxy-render) fail "recovered baseline permits no rollback or proxy changes before recovered-forward completion" ;;
+    upgrade) recovered_forward_completed_candidate_validate || fail "a later forward upgrade requires fully verified completed recovery evidence" ;;
     *) recovered_baseline_receipt_validate || fail "recovered baseline adoption receipt is required and must validate before ordinary forward mutation" ;;
   esac
 fi

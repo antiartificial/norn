@@ -251,6 +251,7 @@ jobs:
           python3 v2/scripts/test-mini-private-copy-source.py
           python3 v2/scripts/test-legacy-baseline-doctor.py
           python3 v2/scripts/test-recovered-baseline-adopt.py
+          python3 v2/scripts/test-mini-recovered-forward-completed-gate.py
 
   web:
     name: web

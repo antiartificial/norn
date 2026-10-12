@@ -185,7 +185,8 @@ class DoctorFixtureTest(unittest.TestCase):
                     "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal",
                     "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume",
                     "mini-recovered-forward-transition", "mini-recovered-forward-validate-journal",
-                    "mini-recovered-forward-verify-evidence", "mini-signed-shadow-launchagent-rehearsal",
+                    "mini-recovered-forward-verify-evidence", "mini-recovered-forward-completed-gate",
+                    "mini-signed-shadow-launchagent-rehearsal",
                     "mini-verify-protected-backup", "platform-release-artifact", "platform-release-fetch-github",
                     "platform-release-manifest", "platform-release-verify-github", "platform-upgrade")
         for sha in (legacy_sha, candidate_sha):

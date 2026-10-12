@@ -180,6 +180,26 @@ func TestPlatformUpgradeRecoveredBaselineAdoptionIsNarrowAndEarlyGated(t *testin
 
 func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t *testing.T) {
 	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	gitShimDir := filepath.Join(root, "shims")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(gitShimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestScript(t, filepath.Join(gitShimDir, "git"), fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-C" && "${3:-}" == "describe" ]]; then
+  printf 'v3.0.0-rc.1-control\n'
+  exit 0
+fi
+exec %q "$@"
+`, gitPath))
 	fence := filepath.Join(root, "fence.json")
 	ledger := filepath.Join(root, "ledger.json")
 	reconciliation := filepath.Join(root, "reconciliation.json")
@@ -195,13 +215,13 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	}
 	missing := exec.Command(platformUpgradePath(t), "upgrade", "HEAD")
 	repo := filepath.Clean(filepath.Join(filepath.Dir(platformUpgradePath(t)), "..", ".."))
-	missing.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
+	missing.Env = append(os.Environ(), "HOME="+home, "PATH="+gitShimDir+string(os.PathListSeparator)+os.Getenv("PATH"), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
 	out, err := missing.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "ordinary upgrade is prohibited") || strings.Contains(string(out), "building") {
+	if err == nil || !strings.Contains(string(out), "completed recovered-forward file bindings") || strings.Contains(string(out), "building") {
 		t.Fatalf("ordinary upgrade was not refused before release preparation: %v %s", err, out)
 	}
 	preflight := exec.Command(platformUpgradePath(t), "preflight", "HEAD")
-	preflight.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
+	preflight.Env = append(os.Environ(), "PATH="+gitShimDir+string(os.PathListSeparator)+os.Getenv("PATH"), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
 	out, err = preflight.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "adoption receipt is required") || strings.Contains(string(out), "building") {
 		t.Fatalf("missing receipt did not fail evidence preflight: %v %s", err, out)
@@ -946,7 +966,7 @@ trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `
 	writeTestScript(t, filepath.Join(target, "bin", "norn-api"), apiScript)
-	for _, name := range []string{"norn", "norn-host-agent", "norn-ingress-observer", "norn-ingress-publisher", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "mini-create-protected-backup", "mini-verify-protected-backup", "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal", "mini-signed-shadow-launchagent-rehearsal", "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume", "mini-recovered-forward-transition", "mini-recovered-forward-verify-evidence", "mini-recovered-forward-validate-journal", "host-runtime"} {
+	for _, name := range []string{"norn", "norn-host-agent", "norn-ingress-observer", "norn-ingress-publisher", "norn-effect-runner", "platform-upgrade", "platform-release-manifest", "platform-release-artifact", "platform-release-fetch-github", "platform-release-verify-github", "mini-create-protected-backup", "mini-verify-protected-backup", "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal", "mini-signed-shadow-launchagent-rehearsal", "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume", "mini-recovered-forward-transition", "mini-recovered-forward-verify-evidence", "mini-recovered-forward-validate-journal", "mini-recovered-forward-completed-gate", "host-runtime"} {
 		writeTestScript(t, filepath.Join(target, "bin", name), "#!/usr/bin/env bash\nexit 0\n")
 	}
 	writeTestScript(t, filepath.Join(previous, "bin", "norn-api"), strings.ReplaceAll(apiScript, "v2.21.0-platform", "v2.19.0-platform"))
@@ -1318,7 +1338,7 @@ case " $* " in
   *" worktree add "*)
     worktree="${6}"
     mkdir -p "$worktree/v2/api" "$worktree/v2/cli" "$worktree/v2/scripts"
-	    for helper in platform-upgrade platform-release-manifest platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal host-runtime; do
+	    for helper in platform-upgrade platform-release-manifest platform-release-artifact platform-release-fetch-github platform-release-verify-github mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal mini-recovered-forward-completed-gate host-runtime; do
       printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree/v2/scripts/$helper"
       chmod +x "$worktree/v2/scripts/$helper"
     done
