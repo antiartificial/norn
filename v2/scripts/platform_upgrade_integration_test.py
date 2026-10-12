@@ -129,6 +129,20 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             self.assertIn(f"-u {inherited}", recovered)
         self.assertNotIn("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH", remaining)
 
+    def test_migrate_only_children_clear_stale_platform_maintenance_flags(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        migration = source.split("run_schema_migration() {", 1)[1].split("\n}\n", 1)[0]
+        branches = (
+            migration.split('if [[ "$mode" == "recovered-forward" ]]; then', 1)[1].split(
+                'elif [[ "$mode" == "legacy-baseline"', 1
+            )[0],
+            migration.split('elif [[ "$mode" == "legacy-baseline"', 1)[1].split("\n  else\n", 1)[0],
+            migration.split("\n  else\n", 1)[1],
+        )
+        for branch in branches:
+            self.assertIn("-u NORN_RECOVERED_FORWARD_MAINTENANCE", branch)
+            self.assertIn("-u NORN_LEGACY_BASELINE_MAINTENANCE", branch)
+
     def test_recovered_forward_retargeted_activation_accepts_only_the_journaled_failed_predecessor(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         preflight = source.split("recovered_forward_validate_preflight() {", 1)[1].split("\n}", 1)[0]
