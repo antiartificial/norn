@@ -2565,21 +2565,18 @@ run_schema_migration() {
 
 validate_current_rollback_target() {
   [[ -L "$current_link" ]] || return 0
-  local previous_release saved_release saved_version saved_sha
+  # This check temporarily validates the currently active release as a
+  # candidate. Keep those values local so they cannot replace the requested
+  # release/SHA in the surrounding upgrade flow, including on early failure.
+  local previous_release release sha version
   previous_release="$(readlink "$current_link")"
   [[ -d "$previous_release" ]] || fail "current release link does not identify a rollback-capable release: $previous_release"
-  saved_release="$release"
-  saved_version="$version"
-  saved_sha="$sha"
   release="$previous_release"
   sha="$(basename "$previous_release")"
   version="$(release_version "$previous_release")"
   probe_startup_contract "$previous_release/bin/norn-api"
   candidate_preflight
   stop_candidate
-  release="$saved_release"
-  version="$saved_version"
-  sha="$saved_sha"
   log "rollback target supports the startup contract and current schema"
 }
 
@@ -3500,7 +3497,9 @@ PY
 }
 
 recovered_forward_completed_candidate_validate() {
-  local fields transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha
+  # The validator inspects the journaled recovery candidate, while the caller
+  # still needs its requested forward-upgrade release and SHA after this check.
+  local fields transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha release
   local token health_json version_json schema_json expected_version version_file schema_file verifier
   fields="$("$script_dir/mini-recovered-forward-completed-gate" "$recovered_journal_path" "$current_link" "$releases" "$HOME/.config/norn/recovered-forward/preservation-receipt.json")" || fail "completed recovered-forward file bindings do not verify"
   IFS=$'\t' read -r transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha <<<"$fields"
