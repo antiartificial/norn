@@ -181,9 +181,24 @@ func TestPlatformUpgradeRecoveredBaselineAdoptionIsNarrowAndEarlyGated(t *testin
 func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
+	gitShimDir := filepath.Join(root, "shims")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(gitShimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestScript(t, filepath.Join(gitShimDir, "git"), fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" describe --tags --exclude=platform-* HEAD "*) printf 'v3.0.0-rc.1-control\\n' ;;
+  *) exec %q "$@" ;;
+esac
+`, gitPath))
 	fence := filepath.Join(root, "fence.json")
 	ledger := filepath.Join(root, "ledger.json")
 	reconciliation := filepath.Join(root, "reconciliation.json")
@@ -199,13 +214,13 @@ func TestPlatformUpgradeRecoveredBaselineReceiptGatesBeforeReleasePreparation(t 
 	}
 	missing := exec.Command(platformUpgradePath(t), "upgrade", "HEAD")
 	repo := filepath.Clean(filepath.Join(filepath.Dir(platformUpgradePath(t)), "..", ".."))
-	missing.Env = append(os.Environ(), "HOME="+home, "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
+	missing.Env = append(os.Environ(), "HOME="+home, "PATH="+gitShimDir+string(os.PathListSeparator)+os.Getenv("PATH"), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
 	out, err := missing.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "completed recovered-forward file bindings") || strings.Contains(string(out), "building") {
 		t.Fatalf("ordinary upgrade was not refused before release preparation: %v %s", err, out)
 	}
 	preflight := exec.Command(platformUpgradePath(t), "preflight", "HEAD")
-	preflight.Env = append(os.Environ(), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
+	preflight.Env = append(os.Environ(), "PATH="+gitShimDir+string(os.PathListSeparator)+os.Getenv("PATH"), "NORN_LEGACY_FENCE_STATE_PATH="+fence, "NORN_PLATFORM_REPO="+repo)
 	out, err = preflight.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "adoption receipt is required") || strings.Contains(string(out), "building") {
 		t.Fatalf("missing receipt did not fail evidence preflight: %v %s", err, out)
