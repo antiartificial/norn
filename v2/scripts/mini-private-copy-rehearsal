@@ -410,7 +410,10 @@ health = json.loads(os.environ["PASSIVE_HEALTH_JSON"])
 version = json.loads(os.environ["PASSIVE_VERSION_JSON"])
 schema = json.loads(os.environ["SCHEMA_JSON"])
 assert health["status"] == "passive"
-assert version == {"version": expected_version}
+assert version.get("version") == expected_version
+source_sha = version.get("sourceSha")
+if source_sha is not None and source_sha != os.environ["NORN_CANDIDATE_SHA"]:
+    raise SystemExit("passive candidate source SHA does not match the signed candidate")
 assert schema["version"] == expected_version
 assert schema["startupContract"] == "norn.startup/v2"
 assert schema["startupMode"] == "passive"

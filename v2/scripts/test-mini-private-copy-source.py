@@ -221,7 +221,7 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
             for argument in "$@"; do case "$argument" in http*) url=$argument;; esac; done
             case "$url" in
               */api/health) printf '{"status":"passive"}\n';;
-              */api/version) printf '{"version":"v2.20.0-platform-40-gaaaaaaaa"}\n';;
+              */api/version) printf '{"version":"v2.20.0-platform-40-gaaaaaaaa","sourceSha":"%s"}\n' "${NORN_TEST_VERSION_SOURCE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}";;
               */api/schema) printf '{"version":"v2.20.0-platform-40-gaaaaaaaa","startupContract":"norn.startup/v2","startupMode":"passive","schemaMode":"check","currentMigrationVersion":49,"minimumReaderVersion":5,"minimumWriterVersion":32,"operationRecoveryEnabled":false,"operationWorkerEnabled":false,"nomadWatcherEnabled":false}\n';;
               *) exit 1;;
             esac
@@ -252,6 +252,7 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
             "NORN_REHEARSAL_POSTGRES_BIN": str(self.postgres_bin),
             "NORN_REHEARSAL_SOURCE_DATABASE_URL": "postgresql://norn@/norn_private?" + urllib.parse.urlencode({"host": str(self.root)}),
             "NORN_TEST_PSQL_LOG": str(psql_log),
+            "NORN_TEST_VERSION_SOURCE_SHA": SHA,
             "PATH": str(tools) + os.pathsep + os.environ.get("PATH", ""),
         }
         result = subprocess.run([str(SCRIPT), str(self.candidate)], env=env, capture_output=True, text=True, timeout=20)
@@ -262,6 +263,12 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
         self.assertNotIn('FROM public."norn_schema_compatibility"', queries)
         self.assertIn("migration_metadata_tables=norn_schema_migrations,norn_schema_compatibility-validated", result.stdout)
         self.assertIn("fingerprinted_tables=1", result.stdout)
+
+        env["NORN_TEST_VERSION_SOURCE_SHA"] = "b" * 40
+        mismatched = subprocess.run([str(SCRIPT), str(self.candidate)], env=env, capture_output=True,
+                                    text=True, timeout=20)
+        self.assertNotEqual(mismatched.returncode, 0)
+        self.assertIn("passive candidate source SHA does not match the signed candidate", mismatched.stderr)
 
     def test_term_after_private_scratch_setup_preserves_nonzero_signal_status(self):
         dump = self.postgres_bin / "pg_dump"
