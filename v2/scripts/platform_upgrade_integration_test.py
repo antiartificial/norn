@@ -68,6 +68,19 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(phase, resume)
 
+    def test_recovery_validation_keeps_the_requested_upgrade_target_scoped(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        completed = source.split("recovered_forward_completed_candidate_validate() {", 1)[1].split("\n}", 1)[0]
+        rollback = source.split("validate_current_rollback_target() {", 1)[1].split("\n}", 1)[0]
+
+        # Both functions inspect a different release before the requested
+        # target is promoted. Bash function assignments are otherwise global;
+        # a leak pairs the active release path with the requested SHA.
+        self.assertRegex(completed, r"(?m)^\s*local .*\brelease\b")
+        self.assertRegex(rollback, r"(?m)^\s*local .*\brelease\b.*\bsha\b.*\bversion\b")
+        self.assertIn('release="$releases/$candidate"', completed)
+        self.assertIn('release="$previous_release"', rollback)
+
     def test_env_exec_runtime_recovery_bindings_override_stale_sops_values(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         launcher = source.split("run_with_api_env() {", 1)[1].split("\n}\n", 1)[0]
