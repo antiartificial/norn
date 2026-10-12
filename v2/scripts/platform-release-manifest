@@ -70,9 +70,34 @@ PRE_M5_REQUIRED_BINARIES = frozenset({
     "platform-release-verify-github",
     "platform-upgrade",
 })
+PRE_COMPLETED_RECOVERY_GATE_BINARIES = frozenset({
+    "host-runtime",
+    "norn",
+    "norn-api",
+    "norn-effect-runner",
+    "norn-host-agent",
+    "norn-ingress-observer",
+    "norn-ingress-publisher",
+    "mini-create-protected-backup",
+    "mini-verify-protected-backup",
+    "mini-private-copy-rehearsal",
+    "mini-protected-transition-rehearsal",
+    "mini-recovered-forward-retarget",
+    "mini-recovered-forward-retarget-consume",
+    "mini-recovered-forward-transition",
+    "mini-recovered-forward-validate-journal",
+    "mini-recovered-forward-verify-evidence",
+    "mini-signed-shadow-launchagent-rehearsal",
+    "platform-release-manifest",
+    "platform-release-artifact",
+    "platform-release-fetch-github",
+    "platform-release-verify-github",
+    "platform-upgrade",
+})
 REQUIRED_BINARY_LAYOUTS = frozenset({
     LEGACY_REQUIRED_BINARIES,
     PRE_M5_REQUIRED_BINARIES,
+    PRE_COMPLETED_RECOVERY_GATE_BINARIES,
     CURRENT_REQUIRED_BINARIES,
 })
 ALLOWED_ROOT_ENTRIES = {

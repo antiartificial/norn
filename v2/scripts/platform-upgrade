@@ -2464,6 +2464,8 @@ candidate_preflight() {
   pushd "$repo" >/dev/null
   if [[ "$upgrade_mode" == "proxy" ]]; then
     nohup env \
+      -u NORN_RECOVERED_FORWARD_MAINTENANCE \
+      -u NORN_LEGACY_BASELINE_MAINTENANCE \
       NORN_PORT="$candidate_port" \
       NORN_BIND_ADDR=127.0.0.1 \
       NORN_UI_DIR="$release/ui" \
@@ -2475,6 +2477,8 @@ candidate_preflight() {
       "$release/bin/norn-api" >"$release_log_dir/proxy-candidate-api.log" 2>&1 &
   else
     env \
+    -u NORN_RECOVERED_FORWARD_MAINTENANCE \
+    -u NORN_LEGACY_BASELINE_MAINTENANCE \
     NORN_PORT="$candidate_port" \
     NORN_BIND_ADDR=127.0.0.1 \
     NORN_UI_DIR="$release/ui" \
