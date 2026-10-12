@@ -955,6 +955,10 @@ func TestPlatformUpgradeRollbackExecutesPassiveCheckThenFreshActiveRestart(t *te
 	contract := `{"name":"norn.startup/v2","schemaModes":["auto","check","migrate-only"],"startupModes":["active","passive"],"passiveRoutes":["/api/health","/api/version","/api/schema"],"schemaContract":{"readerVersion":1,"writerVersion":3,"catalogMigrationVersion":3,"catalogMinimumReaderVersion":1,"catalogMinimumWriterVersion":3}}`
 	apiScript := `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${NORN_STARTUP_MODE:-}" == "passive" && ( "${NORN_RECOVERED_FORWARD_MAINTENANCE:-}" == "true" || "${NORN_LEGACY_BASELINE_MAINTENANCE:-}" == "true" ) ]]; then
+  echo "stale maintenance mode leaked into candidate" >&2
+  exit 31
+fi
 case "${1:-}" in
   --norn-startup-contract) printf '%s\n' '` + contract + `'; exit 0 ;;
   --fake-version) printf '%s\n' 'v2.21.0-platform'; exit 0 ;;
@@ -1025,6 +1029,8 @@ exit 2
 		"NORN_RELEASE_LOGS_DIR="+filepath.Join(root, "release-logs"),
 		"NORN_ALLOW_LEGACY_RELEASES=true",
 		"NORN_DRAIN_MODE=force",
+		"NORN_RECOVERED_FORWARD_MAINTENANCE=true",
+		"NORN_LEGACY_BASELINE_MAINTENANCE=true",
 		"NORN_API_BASE=http://127.0.0.1:19999",
 		"NORN_CANDIDATE_PORT=19998",
 	)
