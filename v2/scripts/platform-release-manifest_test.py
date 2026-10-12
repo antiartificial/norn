@@ -17,6 +17,7 @@ BINARIES = (
     "mini-create-protected-backup",
     "mini-private-copy-rehearsal",
     "mini-protected-transition-rehearsal",
+    "mini-recovered-forward-completed-gate",
     "mini-recovered-forward-retarget",
     "mini-recovered-forward-retarget-consume",
     "mini-recovered-forward-transition",

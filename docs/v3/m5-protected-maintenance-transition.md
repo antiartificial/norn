@@ -81,5 +81,12 @@ It separately binds the historical incident digest for audit. The new
 transition can therefore prove preservation from the accepted current source
 without claiming that the earlier failed attempt preserved its older baseline.
 While the failed fence remains, ordinary `platform-upgrade upgrade` is
-prohibited, including through `env-exec`; only the journaled recovered-forward
-path can migrate, promote, and finalize.
+prohibited until the recovered-forward journal reaches `candidate-promoted`.
+After promotion, a later protected forward upgrade is allowed only when the
+owner-only journal and adoption receipt still verify, the exact source and
+candidate signatures and signed transition evidence verify, the preservation
+receipt matches its journaled digest, the current symlink still points to that
+candidate, and the live API/schema and host agent prove the same active release.
+The retained failed-fence file remains unchanged as the incident record. The
+eligibility check does not authorize rollback, legacy-baseline replay, proxy
+changes, or an `env-exec` escape from the canonical platform-upgrade path.

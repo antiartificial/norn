@@ -97,8 +97,12 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         write_json(self.old_receipt, historical)
         self.old_receipt_bytes = self.old_receipt.read_bytes()
         shutil.copy2(SCRIPT, self.adopter / "bin" / "platform-upgrade")
+        shutil.copy2(Path(__file__).with_name("mini-recovered-forward-completed-gate"),
+                     self.adopter / "bin" / "mini-recovered-forward-completed-gate")
         self.managed_script = self.root / "host" / "bin" / "platform-upgrade"
         write(self.managed_script, SCRIPT.read_bytes(), 0o755)
+        shutil.copy2(Path(__file__).with_name("mini-recovered-forward-completed-gate"),
+                     self.managed_script.parent / "mini-recovered-forward-completed-gate")
         self.shims = self.root / "shims"
         self.shims.mkdir()
         self.repo = self.root / "repo"
@@ -155,7 +159,7 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertNotEqual(next_step.returncode, 0)
         ordinary_upgrade = self.run_script("upgrade", "HEAD")
         self.assertNotEqual(ordinary_upgrade.returncode, 0)
-        self.assertIn("ordinary upgrade is prohibited", ordinary_upgrade.stderr)
+        self.assertIn("completed recovered-forward file bindings", ordinary_upgrade.stderr)
         replay = self.run_script("legacy-baseline-finalize", "--transition-id", "fabricated")
         self.assertNotEqual(replay.returncode, 0)
         self.assertIn("permanently rejects legacy-baseline replay", replay.stderr)
@@ -240,14 +244,16 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         proxy_render = self.run_script("proxy-render", "HEAD")
         self.assertNotEqual(proxy_render.returncode, 0)
         self.assertIn("blocks proxy changes", proxy_render.stderr)
+        api_env = write(self.home / ".config" / "norn" / "api.env.enc.json", "encrypted")
+        sops = write(self.shims / "sops", "#!/bin/sh\nprintf '{\"NORN_TOKEN\":\"fixture-token\",\"NORN_AUDIT_SIGNING_KEY\":\"fixture-audit-signing-key-32-characters\"}\\n'\n", 0o755)
+        self.env.update({"NORN_API_ENV_FILE": str(api_env), "NORN_SOPS_BIN": str(sops)})
         ordinary_upgrade = self.run_script("env-exec", str(self.managed_script), "upgrade", "HEAD")
         self.assertNotEqual(ordinary_upgrade.returncode, 0)
-        self.assertIn("ordinary upgrade is prohibited", ordinary_upgrade.stderr)
+        self.assertIn("completed recovered-forward file bindings", ordinary_upgrade.stderr)
 
         agent_body = "#!/bin/sh\nexit 23\n"
         write(self.current / "bin" / "norn-host-agent", agent_body, 0o755)
         write(self.managed_agent, agent_body, 0o755)
-        api_env = write(self.home / ".config" / "norn" / "api.env.enc.json", "encrypted")
         sops = write(self.shims / "sops", "#!/bin/sh\nprintf '{}\\n'\n", 0o755)
         self.env.update({"NORN_API_ENV_FILE": str(api_env), "NORN_SOPS_BIN": str(sops),
                          "NORN_PLATFORM_SCRIPT_BIN": str(self.managed_script),
