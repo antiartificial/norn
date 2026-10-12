@@ -64,7 +64,11 @@ def main() -> int:
         raise ValueError("journal phase is not a supported recovered-forward resume phase")
     retargeted_from = value.get("retargetedFromCandidateSHA", "")
     if retargeted_from:
-        if (phase != "candidate-activation-started" or not re.fullmatch(r"[0-9a-f]{40}", retargeted_from)
+        # Keep the predecessor binding while the retargeted candidate moves
+        # from activation into its failed-postflight resume phase. A retry
+        # must still prove which candidate this one replaced.
+        if (phase not in {"candidate-activation-started", "candidate-postflight-failed"}
+                or not re.fullmatch(r"[0-9a-f]{40}", retargeted_from)
                 or retargeted_from in {source, candidate}):
             raise ValueError("journal retarget predecessor is invalid for this phase")
     print(phase + "\t" + (retargeted_from or "-"))

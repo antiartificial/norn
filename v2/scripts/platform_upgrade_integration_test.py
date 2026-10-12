@@ -124,7 +124,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertIn('"$current_sha" == "$recovered_retargeted_from_sha"', preflight)
         validator = (SCRIPT_DIR / "mini-recovered-forward-validate-journal").read_text(encoding="utf-8")
         self.assertIn("retargetedFromCandidateSHA", validator)
-        self.assertIn('phase != "candidate-activation-started"', validator)
+        self.assertIn('phase not in {"candidate-activation-started", "candidate-postflight-failed"}', validator)
 
     def write(self, relative: str, content: str, executable: bool = False) -> None:
         path = self.repo / relative
