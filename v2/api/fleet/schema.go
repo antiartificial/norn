@@ -104,27 +104,31 @@ type Inventory struct {
 }
 
 type PlanRequest struct {
-	Desired  *int   `json:"desired,omitempty"`
-	Size     string `json:"size,omitempty"`
-	Strategy string `json:"strategy,omitempty"`
-	Reason   string `json:"reason,omitempty"`
+	Desired            *int   `json:"desired,omitempty"`
+	Size               string `json:"size,omitempty"`
+	Strategy           string `json:"strategy,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	TemporaryRunnerSSH *bool  `json:"temporaryRunnerSSH,omitempty"`
 }
 
 type CapacityPlan struct {
-	SchemaVersion string    `json:"schemaVersion"`
-	ID            string    `json:"id"`
-	Cluster       string    `json:"cluster"`
-	Pool          string    `json:"pool"`
-	Current       NodePool  `json:"current"`
-	Proposed      NodePool  `json:"proposed"`
-	Action        string    `json:"action"`
-	Strategy      string    `json:"strategy"`
-	Reason        string    `json:"reason,omitempty"`
-	SourceDigest  string    `json:"sourceDigest"`
-	WorkflowURL   string    `json:"workflowUrl,omitempty"`
-	Findings      []Finding `json:"findings"`
-	Digest        string    `json:"digest"`
-	Signature     string    `json:"signature,omitempty"`
+	SchemaVersion string   `json:"schemaVersion"`
+	ID            string   `json:"id"`
+	Cluster       string   `json:"cluster"`
+	Pool          string   `json:"pool"`
+	Current       NodePool `json:"current"`
+	Proposed      NodePool `json:"proposed"`
+	Action        string   `json:"action"`
+	Strategy      string   `json:"strategy"`
+	Reason        string   `json:"reason,omitempty"`
+	SourceDigest  string   `json:"sourceDigest"`
+	WorkflowURL   string   `json:"workflowUrl,omitempty"`
+	// TemporaryRunnerSSH is an explicit, plan-digest-bound exception for the
+	// initial cold-start route. Nil preserves the protected workflow default.
+	TemporaryRunnerSSH *bool     `json:"temporaryRunnerSSH,omitempty"`
+	Findings           []Finding `json:"findings"`
+	Digest             string    `json:"digest"`
+	Signature          string    `json:"signature,omitempty"`
 }
 
 const ReconciliationSchemaVersion = "norn.fleet-reconciliation/v1"

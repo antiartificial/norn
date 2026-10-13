@@ -91,7 +91,7 @@ func (h *Handler) CreateFleetGitHubPullRequest(w http.ResponseWriter, r *http.Re
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	result, err := h.fleetGitHub.CreatePullRequest(r.Context(), typed.ID, typed.Digest, typed.Pool, typed.Action, typed.Proposed, typed.SourceDigest)
+	result, err := h.fleetGitHub.CreatePullRequest(r.Context(), typed.ID, typed.Digest, typed.Pool, typed.Action, typed.Proposed, typed.SourceDigest, typed.TemporaryRunnerSSH)
 	if errors.Is(err, githubapp.ErrStalePlan) {
 		if _, finishErr := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.pull-request", model.OperationFailed, "fleet pull request was not created because the plan is stale", map[string]interface{}{"planId": plan.ID, "outcome": "stale-plan"}); finishErr != nil {
 			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "stale plan outcome could not be durably recorded; retry safely")
@@ -192,7 +192,7 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "stored fleet capacity plan is invalid")
 			return
 		}
-		observed, err = h.fleetGitHub.ReconcilePullRequest(r.Context(), typed.ID, typed.Digest, typed.Pool, typed.Action, typed.Proposed, typed.SourceDigest)
+		observed, err = h.fleetGitHub.ReconcilePullRequest(r.Context(), typed.ID, typed.Digest, typed.Pool, typed.Action, typed.Proposed, typed.SourceDigest, typed.TemporaryRunnerSSH)
 	} else {
 		binding, bindErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 		if bindErr != nil {

@@ -3217,6 +3217,7 @@ components:
         size: { type: string }
         strategy: { type: string, enum: [blueGreen, rolling] }
         reason: { type: string, maxLength: 1000 }
+        temporaryRunnerSSH: { type: boolean, description: Explicit, plan-bound initial cold-start SSH route choice. Omit to retain the protected workflow default. }
     FleetReconciliationRequest:
       type: object
       additionalProperties: false

@@ -747,7 +747,7 @@ func buildCapacityPlan(inventory *fleet.Inventory, poolName string, current flee
 		findings = append(findings, fleet.Finding{Severity: "warning", Code: "fleet.plan.unsigned-development", Field: "signature", Message: "plan is durable but unsigned because NORN_AUDIT_SIGNING_KEY is not configured", Remediation: "Production mode requires an audit signing key."})
 	}
 	id := uuid.NewString()
-	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: id, Cluster: inventory.Document.Cluster.Name, Pool: poolName, Current: current, Proposed: proposed, Action: action, Strategy: strategy, Reason: strings.TrimSpace(request.Reason), SourceDigest: inventory.Digest, WorkflowURL: inventory.Document.Metadata.WorkflowURL, Findings: findings}
+	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: id, Cluster: inventory.Document.Cluster.Name, Pool: poolName, Current: current, Proposed: proposed, Action: action, Strategy: strategy, Reason: strings.TrimSpace(request.Reason), SourceDigest: inventory.Digest, WorkflowURL: inventory.Document.Metadata.WorkflowURL, TemporaryRunnerSSH: request.TemporaryRunnerSSH, Findings: findings}
 	sort.SliceStable(plan.Findings, func(i, j int) bool { return plan.Findings[i].Code < plan.Findings[j].Code })
 	unsigned, _ := canonicalCapacityPlan(plan)
 	sum := sha256.Sum256(unsigned)

@@ -621,7 +621,7 @@ func buildEtcdCapacityPlan(inventory *fleet.Inventory, pool string, current flee
 	if action == "replace" {
 		findings = append(findings, fleet.Finding{Severity: "info", Code: "fleet.plan.blue-green.required", Field: "strategy", Message: "new nodes must enroll and pass readiness before old nodes drain"})
 	}
-	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: uuid.NewString(), Cluster: inventory.Document.Cluster.Name, Pool: pool, Current: current, Proposed: proposed, Action: action, Strategy: strategy, Reason: strings.TrimSpace(request.Reason), SourceDigest: inventory.Digest, WorkflowURL: inventory.Document.Metadata.WorkflowURL, Findings: findings}
+	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: uuid.NewString(), Cluster: inventory.Document.Cluster.Name, Pool: pool, Current: current, Proposed: proposed, Action: action, Strategy: strategy, Reason: strings.TrimSpace(request.Reason), SourceDigest: inventory.Digest, WorkflowURL: inventory.Document.Metadata.WorkflowURL, TemporaryRunnerSSH: request.TemporaryRunnerSSH, Findings: findings}
 	sort.SliceStable(plan.Findings, func(i, j int) bool { return plan.Findings[i].Code < plan.Findings[j].Code })
 	canonical := *plan
 	canonical.Findings = append([]fleet.Finding(nil), plan.Findings...)

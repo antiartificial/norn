@@ -21,6 +21,7 @@ var (
 	fleetSize                   string
 	fleetStrategy               string
 	fleetReason                 string
+	fleetTemporaryRunnerSSH     bool
 	fleetIdempotencyKey         string
 	fleetAllowDestructive       bool
 	fleetGitHubReconcileKind    string
@@ -50,6 +51,7 @@ func init() {
 		command.Flags().StringVar(&fleetSize, "size", "", "Proposed immutable provider VM size")
 		command.Flags().StringVar(&fleetStrategy, "strategy", "", "Replacement strategy: blueGreen or rolling")
 		command.Flags().StringVar(&fleetReason, "reason", "", "Operator reason recorded with the durable plan")
+		command.Flags().BoolVar(&fleetTemporaryRunnerSSH, "temporary-runner-ssh", true, "Enable the temporary runner SSH route; set false only for a reviewed cold start")
 		command.Flags().StringVar(&fleetIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 	}
 	if err := fleetReplaceCmd.MarkFlagRequired("size"); err != nil {
@@ -355,7 +357,12 @@ func fleetPlanCommand(use, short, forcedStrategy string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		op, err := client.PlanFleetCapacity(args[0], desired, fleetSize, strategy, fleetReason, key)
+		var temporaryRunnerSSH *bool
+		if cmd.Flags().Changed("temporary-runner-ssh") {
+			value := fleetTemporaryRunnerSSH
+			temporaryRunnerSSH = &value
+		}
+		op, err := client.PlanFleetCapacity(args[0], desired, fleetSize, strategy, fleetReason, temporaryRunnerSSH, key)
 		if err != nil {
 			return fmt.Errorf("fleet plan: %w", err)
 		}

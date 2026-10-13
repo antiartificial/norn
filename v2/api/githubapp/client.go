@@ -275,7 +275,7 @@ func (c *Client) Status(ctx context.Context) Status {
 	return status
 }
 
-func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string) (*PullRequest, error) {
+func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string, temporaryRunnerSSH *bool) (*PullRequest, error) {
 	token, err := c.installationToken(ctx, map[string]string{"contents": "write", "pull_requests": "write"})
 	if err != nil {
 		return nil, err
@@ -303,7 +303,7 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	var receiptPath string
 	var receipt []byte
 	if noDesiredChange {
-		receiptPath, receipt, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed)
+		receiptPath, receipt, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed, temporaryRunnerSSH)
 		if err != nil {
 			return nil, err
 		}
@@ -1518,26 +1518,28 @@ func (c *Client) putContentAt(ctx context.Context, token, repoPath, branch, sha,
 // write: a deterministic, plan-ID-addressed receipt. It exists solely when the
 // validated desired node pool already equals the proposal, so a first cold
 // create still has an honest, reviewable PR without formatting churn.
-func planReviewReceipt(planID, planDigest, sourceDigest, poolName, action string, proposed fleet.NodePool) (string, []byte, error) {
+func planReviewReceipt(planID, planDigest, sourceDigest, poolName, action string, proposed fleet.NodePool, temporaryRunnerSSH *bool) (string, []byte, error) {
 	if !planIDRe.MatchString(planID) || !strings.HasPrefix(planDigest, "sha256:") || !strings.HasPrefix(sourceDigest, "sha256:") || !sha256Re.MatchString(strings.TrimPrefix(planDigest, "sha256:")) || !sha256Re.MatchString(strings.TrimPrefix(sourceDigest, "sha256:")) || poolName == "" || action == "" {
 		return "", nil, fmt.Errorf("plan review receipt inputs are invalid")
 	}
 	receipt := struct {
-		SchemaVersion string         `json:"schemaVersion"`
-		PlanID        string         `json:"planID"`
-		PlanDigest    string         `json:"planDigest"`
-		SourceDigest  string         `json:"sourceDigest"`
-		NodePool      string         `json:"nodePool"`
-		Action        string         `json:"action"`
-		Proposed      fleet.NodePool `json:"proposed"`
+		SchemaVersion      string         `json:"schemaVersion"`
+		PlanID             string         `json:"planID"`
+		PlanDigest         string         `json:"planDigest"`
+		SourceDigest       string         `json:"sourceDigest"`
+		NodePool           string         `json:"nodePool"`
+		Action             string         `json:"action"`
+		Proposed           fleet.NodePool `json:"proposed"`
+		TemporaryRunnerSSH *bool          `json:"temporaryRunnerSSH,omitempty"`
 	}{
-		SchemaVersion: "norn.fleet-plan-review-receipt/v1",
-		PlanID:        strings.ToLower(planID),
-		PlanDigest:    planDigest,
-		SourceDigest:  sourceDigest,
-		NodePool:      poolName,
-		Action:        action,
-		Proposed:      proposed,
+		SchemaVersion:      "norn.fleet-plan-review-receipt/v1",
+		PlanID:             strings.ToLower(planID),
+		PlanDigest:         planDigest,
+		SourceDigest:       sourceDigest,
+		NodePool:           poolName,
+		Action:             action,
+		Proposed:           proposed,
+		TemporaryRunnerSSH: temporaryRunnerSSH,
 	}
 	encoded, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {

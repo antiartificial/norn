@@ -30,14 +30,15 @@ const fleetGitHubPullRequestOperationKind = "fleet.github.pull-request"
 // deterministic Fleet PR. The later GitHub call must use these values rather
 // than a new copy of the capacity plan.
 type FleetGitHubPullRequestReservation struct {
-	PlanID       string         `json:"planId"`
-	PlanDigest   string         `json:"planDigest"`
-	SourceDigest string         `json:"sourceDigest"`
-	Pool         string         `json:"pool"`
-	Action       string         `json:"action"`
-	Proposed     fleet.NodePool `json:"proposed"`
-	OperationID  string         `json:"operationId"`
-	CreatedAt    time.Time      `json:"createdAt"`
+	PlanID             string         `json:"planId"`
+	PlanDigest         string         `json:"planDigest"`
+	SourceDigest       string         `json:"sourceDigest"`
+	Pool               string         `json:"pool"`
+	Action             string         `json:"action"`
+	Proposed           fleet.NodePool `json:"proposed"`
+	TemporaryRunnerSSH *bool          `json:"temporaryRunnerSSH,omitempty"`
+	OperationID        string         `json:"operationId"`
+	CreatedAt          time.Time      `json:"createdAt"`
 }
 
 func (s *V3OperationStore) fleetGitHubPullRequestKey(planID string) string {
@@ -211,7 +212,7 @@ func validateFleetGitHubPullRequestPlanBinding(plan model.Operation, operation m
 	if err := json.Unmarshal(encodedPlan, &typedPlan); err != nil || typedPlan.ID != plan.ID || typedPlan.Digest == "" || typedPlan.SourceDigest == "" || typedPlan.Pool == "" || typedPlan.Action == "" {
 		return fmt.Errorf("fleet GitHub pull-request requires a complete immutable capacity plan payload")
 	}
-	expected := FleetGitHubPullRequestReservation{PlanID: typedPlan.ID, PlanDigest: typedPlan.Digest, SourceDigest: typedPlan.SourceDigest, Pool: typedPlan.Pool, Action: typedPlan.Action, Proposed: typedPlan.Proposed}
+	expected := FleetGitHubPullRequestReservation{PlanID: typedPlan.ID, PlanDigest: typedPlan.Digest, SourceDigest: typedPlan.SourceDigest, Pool: typedPlan.Pool, Action: typedPlan.Action, Proposed: typedPlan.Proposed, TemporaryRunnerSSH: typedPlan.TemporaryRunnerSSH}
 	if !sameFleetGitHubPullRequestReservation(expected, reservation) {
 		return fmt.Errorf("Fleet GitHub pull-request reservation does not match the immutable capacity plan")
 	}
@@ -221,19 +222,20 @@ func validateFleetGitHubPullRequestPlanBinding(plan model.Operation, operation m
 	}
 	var payload struct {
 		FleetGitHub struct {
-			PlanID       string         `json:"planId"`
-			PlanDigest   string         `json:"planDigest"`
-			SourceDigest string         `json:"sourceDigest"`
-			Pool         string         `json:"pool"`
-			Action       string         `json:"action"`
-			Proposed     fleet.NodePool `json:"proposed"`
+			PlanID             string         `json:"planId"`
+			PlanDigest         string         `json:"planDigest"`
+			SourceDigest       string         `json:"sourceDigest"`
+			Pool               string         `json:"pool"`
+			Action             string         `json:"action"`
+			Proposed           fleet.NodePool `json:"proposed"`
+			TemporaryRunnerSSH *bool          `json:"temporaryRunnerSSH,omitempty"`
 		} `json:"fleetGitHub"`
 	}
 	if err := json.Unmarshal(encodedOperation, &payload); err != nil {
 		return fmt.Errorf("signed Fleet GitHub pull-request payload does not match the immutable capacity plan")
 	}
 	intent := payload.FleetGitHub
-	if !sameFleetGitHubPullRequestReservation(expected, FleetGitHubPullRequestReservation{PlanID: intent.PlanID, PlanDigest: intent.PlanDigest, SourceDigest: intent.SourceDigest, Pool: intent.Pool, Action: intent.Action, Proposed: intent.Proposed}) {
+	if !sameFleetGitHubPullRequestReservation(expected, FleetGitHubPullRequestReservation{PlanID: intent.PlanID, PlanDigest: intent.PlanDigest, SourceDigest: intent.SourceDigest, Pool: intent.Pool, Action: intent.Action, Proposed: intent.Proposed, TemporaryRunnerSSH: intent.TemporaryRunnerSSH}) {
 		return fmt.Errorf("signed Fleet GitHub pull-request payload does not match the immutable capacity plan")
 	}
 	return nil
@@ -247,7 +249,7 @@ func validateStoredFleetGitHubPullRequestReservation(value FleetGitHubPullReques
 }
 
 func sameFleetGitHubPullRequestReservation(left, right FleetGitHubPullRequestReservation) bool {
-	return left.PlanID == right.PlanID && left.PlanDigest == right.PlanDigest && left.SourceDigest == right.SourceDigest && left.Pool == right.Pool && left.Action == right.Action && reflect.DeepEqual(left.Proposed, right.Proposed)
+	return left.PlanID == right.PlanID && left.PlanDigest == right.PlanDigest && left.SourceDigest == right.SourceDigest && left.Pool == right.Pool && left.Action == right.Action && reflect.DeepEqual(left.Proposed, right.Proposed) && reflect.DeepEqual(left.TemporaryRunnerSSH, right.TemporaryRunnerSSH)
 }
 
 // VerifyFleetGitHubPullRequestReservation re-proves the signed intent before
