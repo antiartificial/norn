@@ -567,6 +567,12 @@ def build_receipt(evidence: dict[str, Any], evidence_sha: str, candidate_sha: st
 
 def run(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
+    # Keep the retained key out of the process environment by default. It is
+    # forwarded only to the isolated generation verifier below, before any
+    # live mutation or finalization child is launched.
+    historical_key = os.environ.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "")
+    if historical_key and len(historical_key.encode()) < 32:
+        fail("NORN_AUDIT_HISTORICAL_SIGNING_KEY must contain at least 32 bytes when supplied")
     if not HEX40.fullmatch(args.candidate_sha) or not HEX40.fullmatch(args.source_sha):
         fail("source and candidate SHA must be exact lowercase 40-character commits")
     if args.source_sha == args.candidate_sha:
@@ -725,6 +731,9 @@ def run(argv: list[str] | None = None) -> int:
         if (not prepare_generation.is_file() or prepare_generation.is_symlink()
                 or not os.access(prepare_generation, os.X_OK)):
             fail("candidate-signed recovered-forward generation preparer is unavailable")
+        prepare_env = os.environ.copy()
+        if historical_key:
+            prepare_env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = historical_key
         prepared = subprocess.run([
             str(prepare_generation), "prepare", "--root", str(transition_dir),
             "--transition-id", args.transition_id, "--source-sha", args.source_sha,
@@ -734,7 +743,9 @@ def run(argv: list[str] | None = None) -> int:
             "--shadow-receipt", str(args.shadow_receipt.resolve()),
             "--current-link", str((home / "norn/current").absolute()),
             "--releases-root", str((home / "norn/releases").resolve()),
-        ], env=os.environ.copy(), capture_output=True, text=True, check=False)
+        ], env=prepare_env, capture_output=True, text=True, check=False)
+        prepare_env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+        historical_key = ""
         if prepared.returncode:
             fail("evidence-preserving recovered-forward generation preparation failed: " + prepared.stderr.strip())
         try:

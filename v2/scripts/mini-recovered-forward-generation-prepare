@@ -198,7 +198,8 @@ def release_identity(releases: Path, sha: str, label: str) -> None:
         fail(f"{label} immutable release identity does not match its directory")
 
 
-def completed_predecessor(root: Path, releases: Path, key: bytes) -> dict[str, Any]:
+def completed_predecessor(root: Path, releases: Path, key: bytes,
+                          historical_key: bytes) -> dict[str, Any]:
     journal_path = root / "transition.json"
     receipt_path = root / "preservation-receipt.json"
     journal_raw = private_bytes(journal_path, "legacy recovered-forward journal")
@@ -238,11 +239,16 @@ def completed_predecessor(root: Path, releases: Path, key: bytes) -> dict[str, A
     if journal.get("preservationReceiptSHA256") != hashlib.sha256(receipt_raw).hexdigest():
         fail("legacy journal preservation receipt digest changed")
 
-    env = os.environ.copy()
-    env["NORN_AUDIT_SIGNING_KEY"] = key.decode("utf-8")
+    # The old preservation receipt was signed under the historical key. Keep
+    # the active key available separately: the predecessor evidence may bind
+    # the current adoption receipt, which remains signed by the active key.
+    historical_env = os.environ.copy()
+    historical_env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+    historical_env["NORN_AUDIT_SIGNING_KEY"] = key.decode("utf-8")
+    historical_env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = historical_key.decode("utf-8")
     gate = subprocess.run(
         [str(COMPLETED_GATE), str(journal_path), str(root / "current"), str(releases), str(receipt_path), "--historical"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        env=historical_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
     )
     if gate.returncode:
         fail("historical completed-recovery gate failed: " + gate.stderr.strip())
@@ -264,7 +270,7 @@ def completed_predecessor(root: Path, releases: Path, key: bytes) -> dict[str, A
     verify = subprocess.run(
         [str(EVIDENCE_VERIFIER), str(evidence_path), evidence_digest, transition, source, candidate,
          str(proof_path), str(artifact_path), str(shadow_path)],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        env=historical_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
     )
     if verify.returncode or verify.stdout.strip() != "verified":
         fail("legacy signed evidence verifier failed: " + verify.stderr.strip())
@@ -334,12 +340,15 @@ def checked_generation_dir(path: Path, expected_files: dict[str, bytes]) -> None
 
 
 def verify_generation_evidence(generation: Path, args: argparse.Namespace, evidence_digest: str, key: bytes) -> None:
+    env = os.environ.copy()
+    env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+    env["NORN_AUDIT_SIGNING_KEY"] = key.decode("utf-8")
     result = subprocess.run(
         [str(EVIDENCE_VERIFIER), str(generation / "transition.json.source-evidence.json"), evidence_digest,
          args.transition_id, args.source_sha, args.candidate_sha,
          str(generation / "backup-proof.json"), str(args.backup_artifact),
          str(generation / "shadow-receipt.json")],
-        env={**os.environ, "NORN_AUDIT_SIGNING_KEY": key.decode("utf-8")},
+        env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
     )
     if result.returncode or result.stdout.strip() != "verified":
@@ -348,8 +357,15 @@ def verify_generation_evidence(generation: Path, args: argparse.Namespace, evide
 
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    # Capture then remove the historical key before any later subprocess can
+    # inherit it. It is used only for the immutable predecessor verification.
+    historical_key = os.environ.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "").encode()
     if len(key) < 32:
         fail("NORN_AUDIT_SIGNING_KEY must contain at least 32 bytes")
+    if historical_key and len(historical_key) < 32:
+        fail("NORN_AUDIT_HISTORICAL_SIGNING_KEY must contain at least 32 bytes when supplied")
+    if not historical_key:
+        historical_key = key
     if not TRANSITION_ID.fullmatch(args.transition_id):
         fail("new transition ID is invalid")
     if not HEX40.fullmatch(args.source_sha) or not HEX40.fullmatch(args.candidate_sha) or args.source_sha == args.candidate_sha:
@@ -359,7 +375,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     releases = args.releases_root.resolve(strict=True)
     release_identity(releases, args.source_sha, "new source")
     release_identity(releases, args.candidate_sha, "new candidate")
-    predecessor = completed_predecessor(root, releases, key)
+    predecessor = completed_predecessor(root, releases, key, historical_key)
 
     inputs = {
         "transition.json.source-evidence.json": private_bytes(args.source_evidence, "new source evidence"),

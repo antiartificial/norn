@@ -182,8 +182,11 @@ def main() -> int:
         raise ValueError("usage: mini-recovered-forward-verify-evidence evidence sha transition source candidate backup-proof backup-artifact shadow-receipt")
     evidence_path, expected_sha, transition, source, candidate, proof_path, artifact_path, shadow_path = map(Path, sys.argv[1:])
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    evidence_key = os.environ.get("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "").encode() or key
     if len(key) < 32:
         raise ValueError("audit signing key is unavailable")
+    if len(evidence_key) < 32:
+        raise ValueError("historical audit signing key is invalid")
     raw = private(evidence_path, "source evidence")
     if digest(raw) != str(expected_sha):
         raise ValueError("source evidence digest mismatch")
@@ -200,7 +203,7 @@ def main() -> int:
         raise ValueError("source evidence fields are not exact")
     signed = dict(value)
     canonical = json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
-    expected_signature = "hmac-sha256:" + hmac.new(key, schema.encode() + b"\0" + canonical, hashlib.sha256).hexdigest()
+    expected_signature = "hmac-sha256:" + hmac.new(evidence_key, schema.encode() + b"\0" + canonical, hashlib.sha256).hexdigest()
     if not isinstance(signature, str) or not hmac.compare_digest(signature, expected_signature):
         raise ValueError("source evidence signature does not verify")
     if schema == V3_SCHEMA:
@@ -215,7 +218,7 @@ def main() -> int:
                 bundle.name != f"retarget-{value.get('candidateSHA')}" or
                 evidence_path.name != "source-evidence.json"):
             raise ValueError("version 3 evidence path is outside its exact versioned transition bundle")
-        verify_carried_forward_chain(value, evidence_path, key)
+        verify_carried_forward_chain(value, evidence_path, evidence_key)
     if (value.get("transitionId"), value.get("sourceSHA"), value.get("candidateSHA")) != (str(transition), str(source), str(candidate)):
         raise ValueError("source evidence does not bind the exact transition and release SHAs")
     if (not isinstance(value.get("transitionId"), str) or
