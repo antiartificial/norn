@@ -187,6 +187,23 @@ class RecoveredForwardWrapperTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "executable regular file"):
             WRAPPER.resolve_platform_script(self.candidate, self.root, helper)
 
+    def test_normal_wrapper_cannot_resume_fenced_candidate_with_repair_controller(self):
+        candidate = self.root / "norn" / "releases" / self.candidate
+        candidate_bin = candidate / "bin"
+        candidate_bin.mkdir(parents=True)
+        (candidate / "release.env").write_text(f"NORN_RELEASE_SHA={self.candidate}\n")
+        repair_sha = "c" * 40
+        repair_bin = self.root / "norn" / "releases" / repair_sha / "bin"
+        repair_bin.mkdir(parents=True)
+        repair_helper = repair_bin / "mini-recovered-forward-transition"
+        repair_helper.write_text("signed repair release fixture")
+        (repair_bin.parent / "release.env").write_text(f"NORN_RELEASE_SHA={repair_sha}\n")
+        controller = repair_bin / "platform-upgrade"
+        controller.write_text("new controller fixture")
+        controller.chmod(0o700)
+        with self.assertRaisesRegex(SystemExit, "exact candidate release"):
+            WRAPPER.resolve_platform_script(self.candidate, self.root, repair_helper)
+
     def test_test_controller_override_stays_hermetically_gated(self):
         controller = self.root / "controller"
         controller.write_text("fixture")

@@ -156,6 +156,37 @@ class GenerationResolverTest(unittest.TestCase):
         self.assertEqual(result["sourceSHA"], self.source)
         self.assertEqual(result["candidateSHA"], self.candidate)
 
+    def test_historical_generation_key_with_distinct_current_authorization_key(self) -> None:
+        self.install_generation()
+        current = b"different-current-audit-signing-key-32bytes"
+        selected = RESOLVER.resolve_with_audit_keys(self.root, current, self.key)
+        self.assertEqual(selected["candidateSHA"], self.candidate)
+        with self.assertRaisesRegex(ValueError, "HMAC"):
+            RESOLVER.resolve_with_audit_keys(self.root, current, b"wrong-historical-key-32bytes-at-least")
+
+    def test_fenced_phase_requires_explicit_repair_selection(self) -> None:
+        generation, _, _, _ = self.install_generation()
+        journal_path = generation / "transition.json"
+        journal = json.loads(journal_path.read_bytes())
+        journal["state"] = "host-agent-fencing"
+        self.write_private(journal_path, RESOLVER.canonical(journal) + b"\n")
+        with self.assertRaisesRegex(ValueError, "state is unsupported"):
+            RESOLVER.resolve(self.root, self.key)
+        selected = RESOLVER.resolve(self.root, self.key, allow_repair_phase=True)
+        self.assertEqual(selected["candidateSHA"], self.candidate)
+        journal["state"] = "schema-migrated"
+        self.write_private(journal_path, RESOLVER.canonical(journal) + b"\n")
+        with self.assertRaisesRegex(ValueError, "state is unsupported"):
+            RESOLVER.resolve(self.root, self.key)
+        self.assertEqual(RESOLVER.resolve(self.root, self.key, allow_repair_phase=True)["candidateSHA"], self.candidate)
+        journal["state"] = "candidate-promoted"
+        self.write_private(journal_path, RESOLVER.canonical(journal) + b"\n")
+        self.assertEqual(RESOLVER.resolve(self.root, self.key)["candidateSHA"], self.candidate)
+        journal["state"] = "unknown-phase"
+        self.write_private(journal_path, RESOLVER.canonical(journal) + b"\n")
+        with self.assertRaisesRegex(ValueError, "state is unsupported"):
+            RESOLVER.resolve(self.root, self.key, allow_repair_phase=True)
+
     def test_candidate_versioned_predecessor_evidence_resolves(self) -> None:
         generation, manifest_path, _, _ = self.install_generation()
         retarget_dir = self.root / f"retarget-{'2' * 40}"

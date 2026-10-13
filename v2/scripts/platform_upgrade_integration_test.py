@@ -197,6 +197,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "mini-recovered-forward-retarget",
             "mini-recovered-forward-retarget-consume",
             "mini-recovered-forward-transition",
+            "mini-recovered-forward-controller-repair",
             "mini-recovered-forward-verify-evidence",
             "mini-recovered-forward-validate-journal",
             "mini-recovered-forward-completed-gate",

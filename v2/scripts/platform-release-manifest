@@ -46,6 +46,7 @@ CURRENT_REQUIRED_BINARIES = frozenset({
     "mini-recovered-forward-retarget",
     "mini-recovered-forward-retarget-consume",
     "mini-recovered-forward-transition",
+    "mini-recovered-forward-controller-repair",
     "mini-recovered-forward-validate-journal",
     "mini-recovered-forward-verify-evidence",
     "mini-recovered-forward-completed-gate",
@@ -99,12 +100,17 @@ PRE_COMPLETED_RECOVERY_GATE_BINARIES = frozenset({
 PRE_GENERATION_ROLLOVER_BINARIES = CURRENT_REQUIRED_BINARIES - {
     "mini-recovered-forward-generation-prepare",
     "mini-recovered-forward-generation-resolve",
+    "mini-recovered-forward-controller-repair",
+}
+PRE_CONTROLLER_REPAIR_BINARIES = CURRENT_REQUIRED_BINARIES - {
+    "mini-recovered-forward-controller-repair",
 }
 REQUIRED_BINARY_LAYOUTS = frozenset({
     LEGACY_REQUIRED_BINARIES,
     PRE_M5_REQUIRED_BINARIES,
     PRE_COMPLETED_RECOVERY_GATE_BINARIES,
     PRE_GENERATION_ROLLOVER_BINARIES,
+    PRE_CONTROLLER_REPAIR_BINARIES,
     CURRENT_REQUIRED_BINARIES,
 })
 ALLOWED_ROOT_ENTRIES = {

@@ -178,11 +178,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 resolve_recovered_generation() {
   local base_root="$1" resolver="$script_dir/mini-recovered-forward-generation-resolve"
   local pointer="$base_root/active-generation.json" output fields
+  local resolver_args=(--root "$base_root")
+  if [[ "${internal_recovered_forward_repair:-false}" == true ]]; then
+    resolver_args+=(--allow-repair-phase)
+  fi
   if [[ ! -x "$resolver" ]]; then
     [[ ! -e "$pointer" && ! -L "$pointer" ]] || fail "active recovered-forward generation pointer exists but its signed resolver is unavailable"
     return 0
   fi
-  output="$(NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" "$resolver" --root "$base_root")" \
+  output="$(NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" "$resolver" "${resolver_args[@]}")" \
     || fail "active recovered-forward generation does not verify"
   fields="$(python3 -c 'import json,sys
 v=json.load(sys.stdin)
@@ -205,8 +209,13 @@ fi
 shift || true
 
 internal_recovered_forward_controller=false
+internal_recovered_forward_repair=false
 if [[ "$mode" == "recovered-forward-controller" ]]; then
   internal_recovered_forward_controller=true
+  mode="recovered-forward"
+elif [[ "$mode" == "recovered-forward-repair-controller" ]]; then
+  internal_recovered_forward_controller=true
+  internal_recovered_forward_repair=true
   mode="recovered-forward"
 fi
 
@@ -350,7 +359,9 @@ if [[ "$mode" == "recovered-forward" ]]; then
   [[ -n "$recovered_backup_proof" && -n "$recovered_backup_artifact" && -n "$recovered_shadow_receipt" ]] || fail "recovered-forward requires backup proof, backup artifact, and signed shadow receipt"
 fi
 if [[ "$internal_recovered_forward_controller" == true ]]; then
-  [[ -n "${NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE:-}" && "$NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE" == "$recovered_transition_id" ]] || fail "recovered-forward controller mode requires the exact signed transition-wrapper handoff"
+  if [[ "$internal_recovered_forward_repair" != true ]]; then
+    [[ -n "${NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE:-}" && "$NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE" == "$recovered_transition_id" ]] || fail "recovered-forward controller mode requires the exact signed transition-wrapper handoff"
+  fi
 fi
 if [[ "$mode" == "recovered-forward-finalize" ]]; then
   while [[ "$#" -gt 0 ]]; do
@@ -869,6 +880,9 @@ raw = subprocess.check_output([sops_bin, "--decrypt", "--output-type", "json", o
 runtime_env = os.environ.copy()
 env = runtime_env.copy()
 env.update({str(k): str(v) for k, v in json.loads(raw).items()})
+# Historical receipt verification is controller-local. Never pass the retired
+# key into candidate API, migration, or normal env-exec children.
+env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
 # SOPS remains authoritative for normal application configuration. Recovered-
 # forward transition bindings are short-lived runtime inputs from the signed
 # journal/controller, however; letting stale encrypted values override them
@@ -1553,6 +1567,7 @@ build_release_into() {
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-retarget" "$target/bin/mini-recovered-forward-retarget"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-retarget-consume" "$target/bin/mini-recovered-forward-retarget-consume"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-transition" "$target/bin/mini-recovered-forward-transition"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-controller-repair" "$target/bin/mini-recovered-forward-controller-repair"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-verify-evidence" "$target/bin/mini-recovered-forward-verify-evidence"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-validate-journal" "$target/bin/mini-recovered-forward-validate-journal"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-completed-gate" "$target/bin/mini-recovered-forward-completed-gate"
@@ -3154,8 +3169,22 @@ recovered_forward_resume_or_start() {
   if [[ -e "$transition_state_path" ]]; then
     recovered_forward_load_start_journal
     phase="$recovered_phase"
+    if [[ "$internal_recovered_forward_repair" == true ]]; then
+      case "$phase" in
+        host-agent-fencing|host-agent-fenced|api-fencing|legacy-fenced|migration-started|schema-migrated|candidate-activation-started) ;;
+        *) fail "signed controller repair is limited to pre-promotion phases" ;;
+      esac
+      [[ -n "${NORN_RECOVERED_FORWARD_REPAIR_AUTH:-}" ]] || fail "signed controller repair authorization is missing"
+      local repair_helper="$script_dir/mini-recovered-forward-controller-repair"
+      [[ -x "$repair_helper" && ! -L "$repair_helper" ]] || fail "signed controller repair helper is unavailable"
+      "$repair_helper" verify --authorization "$NORN_RECOVERED_FORWARD_REPAIR_AUTH" \
+        --candidate "$ref" --source "$recovered_source_sha" --transition "$recovered_transition_id" \
+        --journal "$transition_state_path" --controller "$script_dir/platform-upgrade" \
+        || fail "signed controller repair authorization did not verify under the promotion lock"
+    fi
     log "resuming exact recovered-forward transition $recovered_transition_id from durable phase $phase"
   else
+    [[ "$internal_recovered_forward_repair" != true ]] || fail "signed controller repair requires the existing exact journal"
     legacy_baseline_require_drained
     legacy_baseline_require_durable_startup_mode
     legacy_baseline_write_fence_state "prepared"
@@ -3407,6 +3436,14 @@ sync_managed_host_artifacts() {
       fail "release is missing $release_helper"
     fi
   done
+  # Older signed candidates predate controller repair. They remain valid
+  # recovery targets; install this helper only when the release contains it.
+  if [[ -f "$target/bin/mini-recovered-forward-controller-repair" ]]; then
+    atomic_install_file "$target/bin/mini-recovered-forward-controller-repair" "$(dirname "$platform_script_bin")/mini-recovered-forward-controller-repair" || return 1
+    if [[ "$strict" == true ]]; then
+      cmp -s "$target/bin/mini-recovered-forward-controller-repair" "$(dirname "$platform_script_bin")/mini-recovered-forward-controller-repair" || fail "managed controller repair helper verification failed"
+    fi
+  fi
   if [[ -f "$target/bin/host-runtime" ]]; then
     atomic_install_file "$target/bin/host-runtime" "$host_runtime_bin" || return 1
   elif [[ "$strict" == "true" ]]; then

@@ -44,7 +44,7 @@ build_go v2/api "$release/bin/norn-ingress-observer" ./cmd/norn-ingress-observer
 build_go v2/api "$release/bin/norn-ingress-publisher" ./cmd/norn-ingress-publisher "-buildid="
 build_go v2/api "$release/bin/norn-effect-runner" ./cmd/norn-effect-runner "-buildid="
 build_go v2/cli "$release/bin/norn" . "-buildid= -X norn/v2/cli/cmd.Version=$version"
-for helper in host-runtime platform-release-artifact platform-release-fetch-github platform-release-manifest platform-release-verify-github platform-upgrade mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal mini-recovered-forward-completed-gate mini-recovered-forward-generation-prepare mini-recovered-forward-generation-resolve; do
+for helper in host-runtime platform-release-artifact platform-release-fetch-github platform-release-manifest platform-release-verify-github platform-upgrade mini-create-protected-backup mini-verify-protected-backup mini-private-copy-rehearsal mini-protected-transition-rehearsal mini-signed-shadow-launchagent-rehearsal mini-recovered-forward-retarget mini-recovered-forward-retarget-consume mini-recovered-forward-transition mini-recovered-forward-controller-repair mini-recovered-forward-verify-evidence mini-recovered-forward-validate-journal mini-recovered-forward-completed-gate mini-recovered-forward-generation-prepare mini-recovered-forward-generation-resolve; do
   install -m 0755 "$repo/v2/scripts/$helper" "$release/bin/$helper"
 done
 cat > "$release/release.env" <<EOF

@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Authorize one signed controller to resume an exact fenced Mini transition.
+
+This is deliberately separate from the candidate-pinned normal wrapper. The
+target candidate and its evidence never change; only controller code changes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import hmac
+import importlib.machinery
+import importlib.util
+import json
+import os
+import plistlib
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
+
+SCHEMA = "norn.recovered-forward-controller-repair/v1"
+FIELDS = {"schema", "controllerSHA", "candidateSHA", "sourceSHA", "transitionID",
+          "pointerSHA256", "manifestSHA256", "journalSHA256", "evidenceSHA256",
+          "generationID", "currentReleaseSHA", "signature"}
+FENCE = (b'#!/usr/bin/env bash\nprintf "norn legacy baseline fence active; '
+         b'candidate recovery is required\\n" >&2\nexit 78\n')
+HEX40 = re.compile(r"[0-9a-f]{40}\Z")
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+REPAIR_PHASES = {"host-agent-fencing", "host-agent-fenced", "api-fencing",
+                 "legacy-fenced", "migration-started", "schema-migrated",
+                 "candidate-activation-started"}
+SOURCE_API_PHASES = {"host-agent-fencing", "host-agent-fenced"}
+
+
+def fail(message: str) -> None:
+    raise ValueError(message)
+
+
+def strict(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail("duplicate field in repair document: " + key)
+        result[key] = value
+    return result
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def owned(path: Path, label: str, mode: int = 0o600, limit: int = 65536) -> bytes:
+    if not path.is_absolute():
+        fail(label + " must be absolute")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != mode or not 0 < info.st_size <= limit):
+            fail(label + " must be an owned regular file with exact mode and bounded size")
+        raw = os.read(fd, limit + 1)
+        if len(raw) != info.st_size:
+            fail(label + " changed during read")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def json_object(raw: bytes, label: str):
+    value = json.loads(raw, object_pairs_hook=strict)
+    if type(value) is not dict:
+        fail(label + " must be a JSON object")
+    return value
+
+
+def digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def release(root: Path, sha: str, verifier: Path) -> Path:
+    if not HEX40.fullmatch(sha):
+        fail("release SHA must be exact")
+    path = root / sha
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        fail("signed release directory is unavailable")
+    env = (path / "release.env").read_text()
+    if "NORN_RELEASE_SHA=" + sha not in env.splitlines():
+        fail("signed release identity differs from its directory")
+    result = subprocess.run([str(verifier), str(path), str(path / "release.json")],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode:
+        fail("external signature verification failed for " + sha)
+    return path
+
+
+def module(path: Path):
+    loader = importlib.machinery.SourceFileLoader("norn_generation_resolver_repair", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        fail("signed generation resolver could not load")
+    value = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(value)
+    return value
+
+
+def configured_verifier(home: Path) -> Path:
+    config = home / ".config/norn/release.env"
+    raw = owned(config, "signed release configuration", 0o600, 16384)
+    values = {}
+    for line in raw.decode().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            fail("signed release configuration has an invalid line")
+        key, value = line.split("=", 1)
+        if key in values:
+            fail("signed release configuration repeats a key")
+        values[key] = value
+    name = values.get("NORN_RELEASE_VERIFY_HOOK", "")
+    path = Path(name)
+    if not name or not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        fail("owner-only release configuration lacks an external verifier")
+    supplied = os.environ.get("NORN_RELEASE_VERIFY_HOOK", name)
+    if supplied != name:
+        fail("release verifier differs from the owner-only configuration")
+    return path
+
+
+def allowed_current_releases(phase: str, journal: dict, releases: Path,
+                             source: str, candidate: str, verifier: Path) -> set[Path]:
+    allowed = {releases / source}
+    if phase == "candidate-activation-started":
+        allowed.add(releases / candidate)
+        predecessor = journal.get("retargetedFromCandidateSHA", "")
+        if predecessor:
+            if (not isinstance(predecessor, str) or not HEX40.fullmatch(predecessor)
+                    or predecessor in {source, candidate}):
+                fail("journaled retarget predecessor is invalid")
+            release(releases, predecessor, verifier)
+            allowed.add(releases / predecessor)
+    elif journal.get("retargetedFromCandidateSHA"):
+        fail("retarget predecessor is invalid before candidate activation")
+    return allowed
+
+
+def checked_state(args, key: bytes):
+    if len(key) < 32:
+        fail("audit signing key must contain at least 32 bytes")
+    controller = args.controller
+    if controller.name != "platform-upgrade" or controller.parent.name != "bin":
+        fail("repair controller must be an installed platform-upgrade")
+    releases = controller.parent.parent.parent
+    controller_sha = controller.parent.parent.name
+    if not HEX40.fullmatch(controller_sha) or controller != releases / controller_sha / "bin/platform-upgrade":
+        fail("repair controller path is not canonical")
+    controller_info = controller.lstat()
+    helper = Path(__file__)
+    helper_info = helper.lstat()
+    if (not stat.S_ISREG(controller_info.st_mode) or stat.S_ISLNK(controller_info.st_mode)
+            or not stat.S_ISREG(helper_info.st_mode) or stat.S_ISLNK(helper_info.st_mode)
+            or helper != controller.parent / "mini-recovered-forward-controller-repair"
+            or not os.access(controller, os.X_OK)):
+        fail("repair helper and controller must be regular executables in the same signed release")
+    home = Path.home()
+    verifier = configured_verifier(home)
+    controller_release = release(releases, controller_sha, verifier)
+    if controller_release == releases / args.candidate:
+        fail("controller substitution requires a distinct signed release")
+    release(releases, args.source, verifier)
+    release(releases, args.candidate, verifier)
+
+    root = home / ".config/norn/recovered-forward"
+    resolver = module(controller.parent / "mini-recovered-forward-generation-resolve")
+    historical_key = os.environ.get("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "").encode()
+    selected = resolver.resolve_with_audit_keys(root, key, historical_key, allow_repair_phase=True)
+    if (selected.get("selection") != "generation" or selected.get("transitionID") != args.transition
+            or selected.get("sourceSHA") != args.source or selected.get("candidateSHA") != args.candidate
+            or selected.get("journalPath") != str(args.journal)):
+        fail("active signed generation is not the exact repair target")
+    generation = Path(selected["generationPath"])
+    if args.journal != generation / "transition.json":
+        fail("repair journal path is outside the selected generation")
+    pointer_raw = owned(root / "active-generation.json", "active generation pointer")
+    manifest_raw = owned(generation / "generation.json", "signed generation manifest")
+    journal_raw = owned(args.journal, "transition journal")
+    manifest = json_object(manifest_raw, "signed generation manifest")
+    journal = json_object(journal_raw, "transition journal")
+    phase = journal.get("state")
+    if (phase not in REPAIR_PHASES or journal.get("transitionID") != args.transition
+            or journal.get("sourceSHA") != args.source or journal.get("candidateReleaseSHA") != args.candidate):
+        fail("repair requires an exact resumable pre-promotion journal")
+    evidence_path = Path(manifest["sourceEvidencePath"])
+    evidence_raw = owned(evidence_path, "signed source evidence")
+    evidence_sha = digest(evidence_raw)
+    if (evidence_sha != manifest["sourceEvidenceSHA256"]
+            or evidence_sha != journal["sourceEvidenceSHA256"]):
+        fail("signed source evidence changed")
+    evidence_verifier = controller.parent / "mini-recovered-forward-verify-evidence"
+    result = subprocess.run([str(evidence_verifier), str(evidence_path), evidence_sha,
+                             args.transition, args.source, args.candidate,
+                             manifest["backupProofPath"], manifest["backupArtifactPath"],
+                             manifest["shadowReceiptPath"]],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode or result.stdout.strip() != "verified":
+        fail("signed source evidence does not verify")
+
+    current = home / "norn/current"
+    allowed_current = allowed_current_releases(phase, journal, releases, args.source, args.candidate, verifier)
+    if not current.is_symlink() or current.resolve(strict=True) not in allowed_current:
+        fail("Mini current release is not valid for the journaled phase")
+    current_sha = current.resolve(strict=True).name
+    host = home / ".config/norn/host/bin/norn-host-agent"
+    if owned(host, "durable host-agent fence", 0o755, 1024) != FENCE:
+        fail("managed host-agent is not the exact durable fence")
+    label = "com.norn.host-agent"
+    plist = home / "Library/LaunchAgents/com.norn.host-agent.plist"
+    plist_info = plist.lstat()
+    if (not stat.S_ISREG(plist_info.st_mode) or stat.S_ISLNK(plist_info.st_mode)
+            or plist_info.st_uid != os.geteuid() or stat.S_IMODE(plist_info.st_mode) & 0o022):
+        fail("host-agent LaunchAgent plist is unsafe")
+    with plist.open("rb") as stream:
+        job = plistlib.load(stream)
+    program = home / ".config/norn/host/bin/platform-upgrade"
+    arguments = job.get("ProgramArguments")
+    if (job.get("Label") != label or not isinstance(arguments, list) or str(host) not in arguments
+            or not arguments or Path(arguments[0]).resolve() != program.resolve()):
+        fail("host-agent LaunchAgent is not bound to the managed fence path")
+    launched = subprocess.run(["launchctl", "print", f"gui/{os.geteuid()}/{label}"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if launched.returncode == 0:
+        paths = re.findall(r"^\s*path\s*=\s*(.+?)\s*$", launched.stdout, re.MULTILINE)
+        if len(paths) != 1 or Path(paths[0]).resolve() != plist.resolve():
+            fail("loaded host-agent LaunchAgent differs from the owned plist")
+    # The source API is live only before its own fence. Later phases rely on
+    # the durable journal, exact binaries and the controller's phase-specific
+    # checks while holding the promotion lock.
+    if phase in SOURCE_API_PHASES:
+        api = os.environ.get("NORN_API_BASE", "http://127.0.0.1:8800").rstrip("/")
+        if api != "http://127.0.0.1:8800":
+            fail("repair requires the direct Mini loopback API")
+        with urllib.request.urlopen(api + "/api/version", timeout=8) as response:
+            version = json.load(response)
+        with urllib.request.urlopen(api + "/api/health", timeout=8) as response:
+            health = json.load(response)
+        if version.get("sourceSha") != args.source or health.get("status") != "ok":
+            fail("source API is not healthy and serving the exact source")
+    return {
+        "schema": SCHEMA, "controllerSHA": controller_sha, "candidateSHA": args.candidate,
+        "sourceSHA": args.source, "transitionID": args.transition,
+        "pointerSHA256": digest(pointer_raw), "manifestSHA256": digest(manifest_raw),
+        "journalSHA256": digest(journal_raw), "evidenceSHA256": evidence_sha,
+        "generationID": selected["generationID"], "currentReleaseSHA": current_sha,
+    }, manifest
+
+
+def signature(payload, key):
+    return "hmac-sha256:" + hmac.new(key, SCHEMA.encode() + b"\0" + canonical(payload), hashlib.sha256).hexdigest()
+
+
+def create(path: Path, document: dict, key: bytes):
+    if path.exists() or path.is_symlink():
+        fail("repair authorization already exists; inspect it before retrying")
+    parent = path.parent
+    info = parent.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        fail("repair authorization parent must be owner-only")
+    record = dict(document, signature=signature(document, key))
+    fd, temporary = tempfile.mkstemp(prefix=".controller-repair.", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(canonical(record))
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+        os.unlink(temporary)
+        directory_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def verify_authorization(path: Path, expected: dict, key: bytes) -> None:
+    raw = owned(path, "repair authorization")
+    record = json_object(raw, "repair authorization")
+    if set(record) != FIELDS or record.get("schema") != SCHEMA:
+        fail("repair authorization fields are not exact")
+    signed = dict(record)
+    recorded_signature = signed.pop("signature")
+    if not isinstance(recorded_signature, str) or not hmac.compare_digest(recorded_signature, signature(signed, key)):
+        fail("repair authorization HMAC does not verify")
+    if signed != expected:
+        fail("repair authorization is stale or points to another signed controller")
+
+
+def parser():
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("action", choices=("prepare", "verify"))
+    for option in ("authorization", "candidate", "source", "transition", "journal", "controller"):
+        result.add_argument("--" + option, required=option != "authorization",
+                            type=Path if option in {"authorization", "journal", "controller"} else str)
+    return result
+
+
+def main():
+    args = parser().parse_args()
+    key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    expected, manifest = checked_state(args, key)
+    authorization = args.journal.parent / ("controller-repair-" + expected["journalSHA256"]
+                                         + "-" + expected["currentReleaseSHA"] + ".json")
+    if args.authorization is not None and args.authorization != authorization:
+        fail("repair authorization path is not fixed to the selected generation")
+    if args.action == "prepare":
+        if authorization.exists() or authorization.is_symlink():
+            # A crash before the first journal advance may retry exactly this
+            # authorization. Any changed journal, release, or pointer fails.
+            verify_authorization(authorization, expected, key)
+        else:
+            create(authorization, expected, key)
+        env = os.environ.copy()
+        env["NORN_RECOVERED_FORWARD_REPAIR_AUTH"] = str(authorization)
+        command = [str(args.controller), "recovered-forward-repair-controller", args.candidate,
+                   "--source-sha", args.source, "--transition-id", args.transition,
+                   "--source-evidence", manifest["sourceEvidencePath"],
+                   "--source-evidence-sha256", manifest["sourceEvidenceSHA256"],
+                   "--backup-proof", manifest["backupProofPath"],
+                   "--backup-artifact", manifest["backupArtifactPath"],
+                   "--shadow-receipt", manifest["shadowReceiptPath"]]
+        os.execve(args.controller, command, env)
+    verify_authorization(authorization, expected, key)
+    print("verified")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)

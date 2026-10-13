@@ -159,7 +159,8 @@ def utc_timestamp(value: Any, label: str) -> None:
         fail(f"{label} timestamp must be UTC")
 
 
-def resolve(root: Path, key: bytes, pointer_path: Path | None = None) -> dict[str, Any]:
+def resolve(root: Path, key: bytes, pointer_path: Path | None = None,
+            *, allow_repair_phase: bool = False) -> dict[str, Any]:
     root = owner_directory(root, "recovered-forward root")
     active_pointer = pointer_path is None
     if pointer_path is None:
@@ -249,6 +250,9 @@ def resolve(root: Path, key: bytes, pointer_path: Path | None = None) -> dict[st
         "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent",
         "candidate-normal-active-pending-host-agent-restart", "candidate-promoted",
     }
+    if allow_repair_phase:
+        allowed_states.update({"host-agent-fencing", "host-agent-fenced", "api-fencing",
+                               "legacy-fenced", "migration-started", "schema-migrated"})
     if journal.get("state") not in allowed_states:
         fail("active generation journal state is unsupported")
 
@@ -339,12 +343,30 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--root", type=Path,
                         default=Path.home() / ".config/norn/recovered-forward")
+    result.add_argument("--allow-repair-phase", action="store_true",
+                        help="read-only preflight for signed controller repair")
     return result
+
+
+def resolve_with_audit_keys(root: Path, current_key: bytes, historical_key: bytes,
+                            *, allow_repair_phase: bool = False) -> dict[str, Any]:
+    try:
+        return resolve(root, current_key, allow_repair_phase=allow_repair_phase)
+    except ValueError as current_error:
+        if not historical_key or hmac.compare_digest(current_key, historical_key):
+            raise
+        try:
+            return resolve(root, historical_key, allow_repair_phase=allow_repair_phase)
+        except ValueError:
+            raise current_error
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    selection = resolve(args.root, os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode())
+    selection = resolve_with_audit_keys(
+        args.root, os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode(),
+        os.environ.get("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "").encode(),
+        allow_repair_phase=args.allow_repair_phase)
     print(json.dumps(selection, sort_keys=True, separators=(",", ":")))
     return 0
 

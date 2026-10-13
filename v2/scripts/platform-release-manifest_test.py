@@ -23,6 +23,7 @@ BINARIES = (
     "mini-recovered-forward-retarget",
     "mini-recovered-forward-retarget-consume",
     "mini-recovered-forward-transition",
+    "mini-recovered-forward-controller-repair",
     "mini-recovered-forward-validate-journal",
     "mini-recovered-forward-verify-evidence",
     "mini-signed-shadow-launchagent-rehearsal",
@@ -65,10 +66,10 @@ PRE_M5_BINARIES = (
     "platform-upgrade",
 )
 PRE_COMPLETED_RECOVERY_GATE_BINARIES = tuple(
-    name for name in BINARIES if name not in {"mini-recovered-forward-completed-gate", "mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve"}
+    name for name in BINARIES if name not in {"mini-recovered-forward-completed-gate", "mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve", "mini-recovered-forward-controller-repair"}
 )
 PRE_GENERATION_ROLLOVER_BINARIES = tuple(
-    name for name in BINARIES if name not in {"mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve"}
+    name for name in BINARIES if name not in {"mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve", "mini-recovered-forward-controller-repair"}
 )
 
 
@@ -229,7 +230,7 @@ class PlatformReleaseManifestTests(unittest.TestCase):
         )
         self.assertEqual(
             sorted(manifest["artifacts"]["binaries"]),
-            [f"bin/{name}" for name in BINARIES],
+            sorted(f"bin/{name}" for name in BINARIES),
         )
         self.assertEqual(len(manifest["ui"]["treeSha256"]), 64)
 
