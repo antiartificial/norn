@@ -96,10 +96,15 @@ PRE_COMPLETED_RECOVERY_GATE_BINARIES = frozenset({
     "platform-release-verify-github",
     "platform-upgrade",
 })
+PRE_GENERATION_ROLLOVER_BINARIES = CURRENT_REQUIRED_BINARIES - {
+    "mini-recovered-forward-generation-prepare",
+    "mini-recovered-forward-generation-resolve",
+}
 REQUIRED_BINARY_LAYOUTS = frozenset({
     LEGACY_REQUIRED_BINARIES,
     PRE_M5_REQUIRED_BINARIES,
     PRE_COMPLETED_RECOVERY_GATE_BINARIES,
+    PRE_GENERATION_ROLLOVER_BINARIES,
     CURRENT_REQUIRED_BINARIES,
 })
 ALLOWED_ROOT_ENTRIES = {
