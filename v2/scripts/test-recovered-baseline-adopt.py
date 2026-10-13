@@ -251,7 +251,9 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.env.update({"NORN_API_ENV_FILE": str(api_env), "NORN_SOPS_BIN": str(sops)})
         candidate_script = self.adopter / "bin" / "platform-upgrade"
         candidate_wrapper = self.adopter / "bin" / "mini-recovered-forward-transition"
-        self.env["NORN_PLATFORM_SCRIPT_BIN"] = str(candidate_script)
+        # Candidate validation must use the signed sibling of the wrapper;
+        # this variable stays bound to the managed host-tool install target.
+        self.env["NORN_PLATFORM_SCRIPT_BIN"] = str(self.managed_script)
         helper_args = (ADOPTER, "--source-sha", SOURCE, "--transition-id", "fixture-transition",
                        "--backup-proof", str(self.root / "missing-proof.json"),
                        "--backup-artifact", str(self.root / "missing-backup.dump"),
@@ -260,6 +262,7 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertNotIn("recovered baseline rejects env-exec child mode", allowed_wrapper.stderr)
         self.assertNotIn("invalid arguments", allowed_wrapper.stderr)
         self.assertIn("recovered-forward generation resolver is unavailable", allowed_wrapper.stderr)
+        self.assertEqual(self.env["NORN_PLATFORM_SCRIPT_BIN"], str(self.managed_script))
         wrong_sha = self.run_script("env-exec", str(candidate_wrapper), "f" * 40, *helper_args[1:])
         self.assertNotEqual(wrong_sha.returncode, 0)
         self.assertIn("invalid arguments", wrong_sha.stderr)
