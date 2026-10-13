@@ -60,6 +60,36 @@ class SignedShadowGuardTests(unittest.TestCase):
                 self.assertEqual(json.loads(receipt.read_text())['candidateSHA'], 'c' * 40)
                 self.assertEqual(list(scratch.iterdir()), [])
 
+    def test_candidate_snapshot_preserves_signed_release_modes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            harness, release, key, scratch, receipt, env = self.cleanup_harness(root, 'exit 23\n')
+            (release / 'release.env').chmod(0o400)
+            (release / 'bin' / 'norn-api').chmod(0o500)
+            (release / 'bin').chmod(0o500)
+            release.chmod(0o500)
+            verifier = harness.parent / 'platform-release-manifest'
+            verifier.write_text("""#!/usr/bin/env python3
+import os, stat, sys
+from pathlib import Path
+source = Path(os.environ['NORN_M5_TEST_SOURCE_RELEASE'])
+copy = Path(sys.argv[sys.argv.index('--release') + 1])
+if stat.S_IMODE(source.lstat().st_mode) != stat.S_IMODE(copy.lstat().st_mode):
+    raise SystemExit('candidate snapshot changed the signed release root mode')
+for path in source.rglob('*'):
+    target = copy / path.relative_to(source)
+    if stat.S_IMODE(path.lstat().st_mode) != stat.S_IMODE(target.lstat().st_mode):
+        raise SystemExit('candidate snapshot changed a signed release mode')
+print('signed')
+""", encoding='utf-8')
+            verifier.chmod(0o700)
+            env['NORN_M5_TEST_SOURCE_RELEASE'] = str(release)
+            result = subprocess.run([str(harness), 'run', '--candidate-release', str(release),
+                                     '--public-key', str(key)], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertEqual(json.loads(receipt.read_text())['exitCode'], 23)
+            self.assertEqual(list(scratch.iterdir()), [])
+
     def test_rejects_malformed_v3_rc_candidate_labels_before_private_copy(self):
         for version in ('v3.0.0-rc.0-platform', 'v3.0.0-rc.x-platform',
                         'v3.0.0-rc.1.2-platform', 'v3.0.0-rc.1-platform-extra'):
