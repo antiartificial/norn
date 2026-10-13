@@ -95,6 +95,76 @@ if path==versioned:
 PY
 }
 
+# Permit only the signed candidate's sibling transition wrapper through the
+# protected env-exec lane. It needs the API runtime environment to validate
+# evidence before it calls the candidate platform controller.
+recovered_forward_transition_child_validate() {
+  [[ "$#" -ge 2 ]] || fail "recovered-forward transition child requires its candidate SHA and argument list"
+  local child="$1" candidate_sha="$2"; shift 2
+  local candidate_platform="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
+  local release_root="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
+  local verifier="${NORN_RELEASE_VERIFY_HOOK:-}"
+  [[ -n "$verifier" && "$verifier" == /* && -x "$verifier" && ! -L "$verifier" ]] \
+    || fail "recovered-forward transition child requires the pinned external release verifier"
+python3 - "$child" "$candidate_platform" "$release_root" "$candidate_sha" "$@" <<'PY' || fail "recovered-forward transition child is not inside the exact candidate release or has invalid arguments"
+import json, os, re, stat, sys
+child, platform, root_text = map(os.path.abspath, sys.argv[1:4])
+requested_sha = sys.argv[4]
+args = sys.argv[5:]
+root = os.path.abspath(os.path.expanduser(root_text))
+sha = os.path.basename(os.path.dirname(os.path.dirname(platform)))
+release = os.path.join(root, sha)
+expected_platform = os.path.join(release, "bin", "platform-upgrade")
+expected_child = os.path.join(release, "bin", "mini-recovered-forward-transition")
+if (not re.fullmatch(r"[0-9a-f]{40}", sha) or platform != expected_platform or child != expected_child):
+    raise SystemExit(1)
+for path, kind in ((root, stat.S_ISDIR), (release, stat.S_ISDIR),
+                   (os.path.join(release, "bin"), stat.S_ISDIR),
+                   (platform, stat.S_ISREG), (child, stat.S_ISREG),
+                   (os.path.join(release, "release.env"), stat.S_ISREG),
+                   (os.path.join(release, "release.json"), stat.S_ISREG)):
+    try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode) or not kind(info.st_mode) or info.st_uid != os.geteuid():
+            raise SystemExit(1)
+        if os.path.realpath(path) != path:
+            raise SystemExit(1)
+    except OSError:
+        raise SystemExit(1)
+if not os.access(platform, os.X_OK) or not os.access(child, os.X_OK):
+    raise SystemExit(1)
+values = {}
+for line in open(os.path.join(release, "release.env"), encoding="utf-8"):
+    if "=" in line:
+        key, value = line.rstrip("\n").split("=", 1)
+        values[key] = value
+try:
+    manifest = json.load(open(os.path.join(release, "release.json"), encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+if values.get("NORN_RELEASE_SHA") != sha or manifest.get("sha") != sha:
+    raise SystemExit(1)
+if requested_sha != sha:
+    raise SystemExit(1)
+allowed = {"--source-sha", "--transition-id", "--backup-proof", "--backup-artifact",
+           "--shadow-receipt", "--retarget-bundle", "--api"}
+required = {"--source-sha", "--transition-id", "--backup-proof", "--backup-artifact", "--shadow-receipt"}
+seen = set()
+index = 0
+while index < len(args):
+    name = args[index]
+    if name not in allowed or name in seen or index + 1 >= len(args) or not args[index + 1] or args[index + 1].startswith("--"):
+        raise SystemExit(1)
+    seen.add(name)
+    index += 2
+if not required.issubset(seen):
+    raise SystemExit(1)
+PY
+  "$verifier" "$(dirname "$(dirname "$candidate_platform")")" \
+    "$(dirname "$(dirname "$candidate_platform")")/release.json" >/dev/null \
+    || fail "recovered-forward transition child candidate signature verification failed"
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 not found"
 }
@@ -465,10 +535,13 @@ PY
           [[ "${#recovered_agent_args[@]}" -eq 4 && "${recovered_agent_args[0]}" == "--platform-script" && "${recovered_agent_args[1]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" && "${recovered_agent_args[2]}" == "--host-script" && "${recovered_agent_args[3]}" == "${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}" ]] || fail "recovered baseline rejects noncanonical host-agent startup"
         else
           [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
-          case "${recovered_early_args[1]}" in
-            upgrade) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
-            preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
-            recovered-baseline-adopt)
+          if [[ "$(basename "${recovered_early_args[0]}")" == "mini-recovered-forward-transition" ]]; then
+            recovered_forward_transition_child_validate "${recovered_early_args[0]}" "${recovered_early_args[1]}" "${recovered_early_args[@]:2}"
+          else
+            case "${recovered_early_args[1]}" in
+              upgrade) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+              preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "${recovered_early_args[0]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+              recovered-baseline-adopt)
               recovered_adopter_release="$(python3 - "${recovered_early_args[0]}" "$releases" <<'PY'
 import os, sys
 child = os.path.realpath(sys.argv[1]); root = os.path.realpath(sys.argv[2])
@@ -489,9 +562,10 @@ PY
               [[ "$(python3 "${NORN_RELEASE_MANIFEST_HELPER:-$script_dir/platform-release-manifest}" verify --release "$recovered_adopter_release" --expected-sha "$recovered_adopter_sha")" == "signed" ]] || fail "recovered baseline adoption child is not a signed release"
               [[ -n "${NORN_RELEASE_VERIFY_HOOK:-}" && -x "${NORN_RELEASE_VERIFY_HOOK}" ]] || fail "recovered baseline adoption requires an external release verifier"
               "${NORN_RELEASE_VERIFY_HOOK}" "$recovered_adopter_release" "$recovered_adopter_release/release.json" || fail "recovered baseline adoption external verification failed"
-              ;;
-            *) fail "recovered baseline rejects env-exec child mode ${recovered_early_args[1]}" ;;
-          esac
+                ;;
+              *) fail "recovered baseline rejects env-exec child mode ${recovered_early_args[1]}" ;;
+            esac
+        fi
         fi
         ;;
       *) : ;;
@@ -3603,13 +3677,17 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       [[ "${recovered_env_args[0]:-}" == "--" ]] && recovered_env_args=("${recovered_env_args[@]:1}")
       [[ "${#recovered_env_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
       recovered_env_command="${recovered_env_args[0]}"; recovered_env_mode="${recovered_env_args[1]}"
-      [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
-      case "$recovered_env_mode" in
-        upgrade) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
-        preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
-        recovered-baseline-adopt) [[ "$recovered_env_command" == "$platform_script_bin" || "$recovered_env_command" == "$releases"/*/bin/platform-upgrade ]] || fail "recovered baseline adoption child is not an immutable release script" ;;
-        *) fail "recovered baseline rejects env-exec child mode $recovered_env_mode" ;;
-      esac
+      if [[ "$(basename "$recovered_env_command")" == "mini-recovered-forward-transition" ]]; then
+        recovered_forward_transition_child_validate "$recovered_env_command" "$recovered_env_mode" "${recovered_env_args[@]:2}"
+      else
+        [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
+        case "$recovered_env_mode" in
+          upgrade) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+          preflight|mini-protected-backup|mini-signed-shadow|recovered-forward|recovered-forward-controller|recovered-forward-finalize) [[ "$recovered_env_command" == "$platform_script_bin" ]] || fail "recovered baseline requires the canonical managed platform-upgrade child" ;;
+          recovered-baseline-adopt) [[ "$recovered_env_command" == "$platform_script_bin" || "$recovered_env_command" == "$releases"/*/bin/platform-upgrade ]] || fail "recovered baseline adoption child is not an immutable release script" ;;
+          *) fail "recovered baseline rejects env-exec child mode $recovered_env_mode" ;;
+        esac
+      fi
       ;;
     legacy-baseline|legacy-baseline-finalize) fail "recovered baseline permanently rejects legacy-baseline replay" ;;
     rollback|rebuild|proxy-switch|proxy-render) fail "recovered baseline permits no rollback or proxy changes before recovered-forward completion" ;;
