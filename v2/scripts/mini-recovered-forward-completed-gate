@@ -28,9 +28,10 @@ def private_file(path: Path, label: str) -> bytes:
 
 
 def main() -> int:
-    if len(sys.argv) != 5:
-        raise ValueError("usage: mini-recovered-forward-completed-gate journal current-link releases preservation-receipt")
-    journal_path, current_link, releases, preservation_path = map(Path, sys.argv[1:])
+    historical = len(sys.argv) == 6 and sys.argv[5] == "--historical"
+    if len(sys.argv) not in (5, 6) or (len(sys.argv) == 6 and not historical):
+        raise ValueError("usage: mini-recovered-forward-completed-gate journal current-link releases preservation-receipt [--historical]")
+    journal_path, current_link, releases, preservation_path = map(Path, sys.argv[1:5])
     journal_raw = private_file(journal_path, "recovered-forward journal")
     value = json.loads(journal_raw, object_pairs_hook=unique_object)
     if type(value) is not dict or value.get("schema") != "norn.recovered-forward-transition/v1":
@@ -46,12 +47,13 @@ def main() -> int:
         if not re.fullmatch(r"[0-9a-f]{40}", identity):
             raise ValueError("recovered-forward release identity is invalid")
     current_link = current_link.absolute()
-    if not current_link.is_symlink():
-        raise ValueError("Mini current release must remain an exact symlink")
     release_root = releases.resolve(strict=True)
-    current_target = current_link.resolve(strict=True)
-    if current_target != release_root / candidate:
-        raise ValueError("Mini current release no longer points to the exact promoted recovery candidate")
+    if not historical:
+        if not current_link.is_symlink():
+            raise ValueError("Mini current release must remain an exact symlink")
+        current_target = current_link.resolve(strict=True)
+        if current_target != release_root / candidate:
+            raise ValueError("Mini current release no longer points to the exact promoted recovery candidate")
     paths = {}
     for field in ("sourceEvidencePath", "backupProofPath", "backupArtifactPath", "shadowReceiptPath"):
         raw = value.get(field)
@@ -63,8 +65,15 @@ def main() -> int:
     for digest in (evidence_digest, preservation_digest):
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("recovered-forward evidence digest is invalid")
-    expected_preservation = Path.home() / ".config/norn/recovered-forward/preservation-receipt.json"
-    if Path(value.get("preservationReceiptPath", "")).absolute() != expected_preservation.absolute():
+    expected_preservation = Path(value.get("preservationReceiptPath", ""))
+    supplied_preservation = preservation_path.absolute()
+    expected_legacy = Path.home() / ".config/norn/recovered-forward/preservation-receipt.json"
+    allowed_generation_parent = expected_legacy.parent / "generations"
+    if (not expected_preservation.is_absolute()
+            or expected_preservation.absolute() != supplied_preservation
+            or (expected_preservation != expected_legacy and
+                (expected_preservation.name != "preservation-receipt.json"
+                 or expected_preservation.parent.parent != allowed_generation_parent))):
         raise ValueError("recovered-forward preservation receipt path is not canonical")
     preservation_raw = private_file(preservation_path, "preservation receipt")
     if hashlib.sha256(preservation_raw).hexdigest() != preservation_digest:
