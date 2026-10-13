@@ -25,6 +25,8 @@ assert SPEC and SPEC.loader
 EVIDENCE_TESTS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EVIDENCE_TESTS)
 KEY = EVIDENCE_TESTS.KEY
+HISTORICAL_KEY = b"fixture-historical-audit-signing-key"
+WRONG_KEY = b"fixture-wrong-audit-signing-key-000"
 SOURCE = EVIDENCE_TESTS.SOURCE
 OLD_CANDIDATE = EVIDENCE_TESTS.CANDIDATE
 NEW_CANDIDATE = "e" * 40
@@ -137,6 +139,24 @@ class GenerationPrepareTest(unittest.TestCase):
     def invoke(self):
         return subprocess.run(self.args, env=self.env, capture_output=True, text=True, timeout=15)
 
+    def use_historical_predecessor(self):
+        # Preserve the active adoption receipt bytes. The predecessor evidence
+        # has its own historical signature but still binds that active receipt.
+        value = json.loads(self.old_evidence.read_bytes())
+        value.pop("signature")
+        evidence_raw = sign(value, HISTORICAL_KEY)
+        private(self.old_evidence, evidence_raw)
+        receipt = json.loads(self.old_receipt.read_bytes())
+        receipt.pop("signature")
+        receipt["sourceEvidenceSHA256"] = hashlib.sha256(evidence_raw).hexdigest()
+        receipt_raw = sign(receipt, HISTORICAL_KEY)
+        private(self.old_receipt, receipt_raw)
+        journal = json.loads(self.old_journal.read_bytes())
+        journal["sourceEvidenceSHA256"] = hashlib.sha256(evidence_raw).hexdigest()
+        journal["preservationReceiptSHA256"] = hashlib.sha256(receipt_raw).hexdigest()
+        private(self.old_journal, dump(journal))
+        self.env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = HISTORICAL_KEY.decode()
+
     def test_prepares_verified_generation_with_pointer_last_and_is_idempotent(self):
         fixed_before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in
                         (self.old_journal, self.old_evidence, self.old_receipt)}
@@ -219,6 +239,64 @@ class GenerationPrepareTest(unittest.TestCase):
         # validates signed historical evidence and immutable releases without consulting it.
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_mixed_historical_and_active_keys_succeed_and_preserve_predecessor_bytes(self):
+        self.use_historical_predecessor()
+        predecessor_bytes = {path: path.read_bytes() for path in
+                             (self.old_journal, self.old_evidence, self.old_receipt)}
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({path: path.read_bytes() for path in predecessor_bytes}, predecessor_bytes)
+        generation = self.root / "generations" / json.loads(result.stdout)["generationID"]
+        manifest = json.loads((generation / "generation.json").read_bytes())
+        self.assertEqual(manifest["predecessorReceiptSHA256"], hashlib.sha256(predecessor_bytes[self.old_receipt]).hexdigest())
+        resolver = Path(__file__).with_name("mini-recovered-forward-generation-resolve")
+        active_only_env = {**self.env, "NORN_AUDIT_SIGNING_KEY": KEY.decode()}
+        active_only_env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+        resolved = subprocess.run([str(resolver), "--root", str(self.root)], env=active_only_env,
+                                  capture_output=True, text=True, timeout=15)
+        self.assertEqual(resolved.returncode, 0, resolved.stderr)
+        self.assertEqual(json.loads(resolved.stdout)["selection"], "generation")
+
+    def test_missing_or_wrong_historical_key_fails_before_pointer_creation(self):
+        self.use_historical_predecessor()
+        self.env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY")
+        missing = self.invoke()
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("signature does not verify", missing.stderr)
+        self.assertFalse((self.root / "active-generation.json").exists())
+        self.assertFalse((self.root / "generations").exists())
+
+        self.env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = WRONG_KEY.decode()
+        wrong = self.invoke()
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertIn("signature does not verify", wrong.stderr)
+        self.assertFalse((self.root / "active-generation.json").exists())
+        self.assertFalse((self.root / "generations").exists())
+
+    def test_tampered_predecessor_receipt_fails_with_historical_key(self):
+        self.use_historical_predecessor()
+        receipt = json.loads(self.old_receipt.read_bytes())
+        receipt["afterDigest"] = "5" * 64
+        raw = dump(receipt)
+        private(self.old_receipt, raw)
+        journal = json.loads(self.old_journal.read_bytes())
+        journal["preservationReceiptSHA256"] = hashlib.sha256(raw).hexdigest()
+        private(self.old_journal, dump(journal))
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("signature does not verify", result.stderr)
+        self.assertFalse((self.root / "active-generation.json").exists())
+        self.assertFalse((self.root / "generations").exists())
+
+    def test_wrong_active_key_still_rejects_current_adoption_binding(self):
+        self.use_historical_predecessor()
+        self.env["NORN_AUDIT_SIGNING_KEY"] = WRONG_KEY.decode()
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("signature does not verify", result.stderr)
+        self.assertFalse((self.root / "active-generation.json").exists())
+        self.assertFalse((self.root / "generations").exists())
 
     def test_candidate_versioned_predecessor_evidence_is_preserved_and_accepted(self):
         versioned_dir = self.root / f"retarget-{OLD_CANDIDATE}"

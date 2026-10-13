@@ -110,6 +110,22 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertIn('env["NORN_RECOVERED_FORWARD_WRAPPER_ACTIVE"] = args.transition_id', wrapper)
         self.assertIn('invoke_platform(platform_script, "recovered-forward-controller"', wrapper)
 
+    def test_historical_audit_key_is_forwarded_only_to_generation_verification(self) -> None:
+        wrapper = (SCRIPT_DIR / "mini-recovered-forward-transition").read_text(encoding="utf-8")
+        run = wrapper.split("def run(argv: list[str] | None = None) -> int:", 1)[1]
+        self.assertIn('historical_key = os.environ.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "")', run)
+        self.assertLess(run.index('historical_key = os.environ.pop('), run.index('env=os.environ.copy()'))
+        self.assertIn('prepare_env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = historical_key', run)
+        self.assertIn('prepare_env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)', run)
+        self.assertIn('historical_key = ""', run)
+        self.assertLess(run.index('historical_key = ""'), run.index('invoke_platform(platform_script, "recovered-forward-controller"'))
+        self.assertLess(run.index('historical_key = ""'), run.index('invoke_platform(platform_script, "recovered-forward-finalize"'))
+
+        prepare = (SCRIPT_DIR / "mini-recovered-forward-generation-prepare").read_text(encoding="utf-8")
+        self.assertIn('historical_key = os.environ.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "").encode()', prepare)
+        new_evidence = prepare.split("def verify_generation_evidence(", 1)[1].split("\ndef prepare(", 1)[0]
+        self.assertIn('env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)', new_evidence)
+
     def test_recovered_forward_alone_preserves_queued_fleet_apply_dispatches(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         migration = source.split("run_schema_migration() {", 1)[1].split("\n}\n", 1)[0]

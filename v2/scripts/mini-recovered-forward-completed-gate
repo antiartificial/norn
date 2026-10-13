@@ -78,7 +78,9 @@ def main() -> int:
     preservation_raw = private_file(preservation_path, "preservation receipt")
     if hashlib.sha256(preservation_raw).hexdigest() != preservation_digest:
         raise ValueError("recovered-forward preservation receipt digest changed")
-    audit_key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
+    audit_key = os.environ.get("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "").encode()
+    if not audit_key:
+        audit_key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
     if not audit_key:
         raise ValueError("audit signing key is unavailable for the preservation receipt")
     receipt = json.loads(preservation_raw, object_pairs_hook=unique_object)

@@ -90,3 +90,14 @@ candidate, and the live API/schema and host agent prove the same active release.
 The retained failed-fence file remains unchanged as the incident record. The
 eligibility check does not authorize rollback, legacy-baseline replay, proxy
 changes, or an `env-exec` escape from the canonical platform-upgrade path.
+
+When preparing a new immutable recovered-forward generation after audit-key
+rotation, the active `NORN_AUDIT_SIGNING_KEY` continues to verify the current
+adoption receipt and sign new evidence, generation manifests, and pointers.
+If the completed predecessor's preservation receipt and source evidence were
+signed with the retained prior key, provide that value through the optional
+`NORN_AUDIT_HISTORICAL_SIGNING_KEY` protected environment input for this
+preparation. It is used only for predecessor verification; it is never used
+to sign new artifacts or passed to mutation/finalization children. If omitted,
+predecessor verification uses the active key. Neither key belongs on a command
+line or in logs, and historical receipts remain byte-for-byte unchanged.
