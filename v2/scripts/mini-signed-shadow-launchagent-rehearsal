@@ -256,7 +256,7 @@ try:
 finally: os.close(fd)
 PY
 public_key="$key_copy"
-cp -RP "$release" "$candidate_copy"
+cp -pRP "$release" "$candidate_copy"
 [[ -z $(find "$candidate_copy" -type l -print -quit) ]] || { remove_scratch "$scratch"; echo 'candidate release snapshot contains a symbolic link' >&2; exit 2; }
 release="$candidate_copy"
 api="$release/bin/norn-api"
