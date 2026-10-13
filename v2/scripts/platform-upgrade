@@ -101,7 +101,11 @@ PY
 recovered_forward_transition_child_validate() {
   [[ "$#" -ge 2 ]] || fail "recovered-forward transition child requires its candidate SHA and argument list"
   local child="$1" candidate_sha="$2"; shift 2
-  local candidate_platform="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
+  # Keep candidate identity independent from NORN_PLATFORM_SCRIPT_BIN, which
+  # remains the managed host-tool install target for the transition controller.
+  # The wrapper is allowed only beside the platform controller in its exact
+  # signed candidate release.
+  local candidate_platform="$(dirname "$child")/platform-upgrade"
   local release_root="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
   local verifier="${NORN_RELEASE_VERIFY_HOOK:-}"
   [[ -n "$verifier" && "$verifier" == /* && -x "$verifier" && ! -L "$verifier" ]] \
