@@ -2,7 +2,7 @@
 
 This is a narrow recovery procedure for transition `mini-v3-20261013-3602e7e3`, source `3da50fe3a3c9f37d64e24c03a7dcfea94153da58`, target `3602e7e3d5fe5c0ef333b4041580d48ec15b24c5`, and the selected generation journal. It changes the controller code used to resume that target; it does not retarget the journal or active generation. Run it as the Mini owner only after the controller repair release is merged, published, and externally verified. Set `CONTROLLER_SHA` to that exact signed release's full SHA.
 
-The old managed `platform-upgrade preflight` can reject the in-progress generation before fetching a new release. The following command imports the new release using the existing signed artifact fetch/import tools, independently verifies it, then starts its signed repair helper. It reads the current and historical audit keys from their owner-only SOPS files into process memory and environment; it does not print either key or place one in command arguments. Run on Mini as `0xadb`, with its normal SOPS and GitHub release access available. Do not run it from a shell with tracing enabled.
+The old managed `platform-upgrade preflight` can reject the in-progress generation before fetching a new release. The following command imports the new release using the existing signed artifact fetch/import tools, independently verifies it, then runs the signed D-only repair, preservation, and finalization sequence. It reads the current audit key from the owner-only SOPS file into process memory and environment; it does not print the key or place it in command arguments. This generation's source evidence verifies with the current key; the historical key must not be supplied. Run on Mini as `0xadb`, with its normal SOPS and GitHub release access available. Do not run it from a shell with tracing enabled.
 
 ```sh
 CONTROLLER_SHA=<full-40-character-published-repair-release-sha> python3 - <<'PY'
@@ -64,21 +64,20 @@ def decrypted(path):
     private(path)
     return json.loads(subprocess.check_output([sops, "--decrypt", "--output-type", "json", str(path)]))
 active = decrypted(home / ".config/norn/api.env.enc.json")
-historical = decrypted(home / ".config/norn/recovered-forward/api.env.recovered-forward.enc.json")
-if not active.get("NORN_AUDIT_SIGNING_KEY") or not historical.get("NORN_AUDIT_SIGNING_KEY"):
-    raise SystemExit("active or historical audit key is unavailable")
+if not active.get("NORN_AUDIT_SIGNING_KEY"):
+    raise SystemExit("current audit key is unavailable")
 env.update({str(key): str(value) for key, value in active.items()})
 env.update(settings)
-env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = str(historical["NORN_AUDIT_SIGNING_KEY"])
+env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
 env["PATH"] = "/Applications/Postgres.app/Contents/Versions/latest/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 if "NORN_TOKEN" not in env and "NORN_API_BEARER_TOKEN" in env:
     env["NORN_TOKEN"] = env["NORN_API_BEARER_TOKEN"]
 helper = releases / controller / "bin/mini-recovered-forward-controller-repair"
 journal = home / ".config/norn/recovered-forward/generations" / generation / "transition.json"
-os.execve(helper, [str(helper), "prepare", "--controller", str(releases / controller / "bin/platform-upgrade"),
+os.execve(helper, [str(helper), "run", "--controller", str(releases / controller / "bin/platform-upgrade"),
                    "--source", source, "--candidate", candidate,
                    "--transition", transition, "--journal", str(journal)], env)
 PY
 ```
 
-The helper checks the signed controller/source/target releases, selected generation and evidence, phase-specific Mini runtime, and durable host fence. It writes a private HMAC authorization tied to the exact journal and current-release digests. The controller rechecks that authorization under the promotion lock before any transition action. If interrupted in another pre-promotion phase, rerun the same command: the next authorization binds the new journal digest. If postflight reports a failure, stop and inspect the retained journal and Mini health before any further action.
+The helper checks the signed controller/source/target releases, selected generation and evidence, phase-specific Mini runtime, and durable host fence. It writes a private HMAC authorization tied to the exact journal and current-release digests; the D controller rechecks it under the promotion lock. The helper then captures the unchanged candidate preservation receipt and invokes only D's finalizer. It stages the signed GUI API launcher under maintenance, uses the receipt-bound one-process normal activation, and restores the original API LaunchAgent after promotion. If interrupted, rerun this same command: each durable phase resumes only its validated next step. Keep the journal, signed plist record, and receipt intact if a verification fails; inspect the error before retrying.

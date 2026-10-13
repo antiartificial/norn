@@ -4,6 +4,12 @@
 import importlib.machinery
 import importlib.util
 import json
+import hmac
+import hashlib
+import plistlib
+import subprocess
+from argparse import Namespace
+from subprocess import CompletedProcess
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,6 +107,207 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "signature failed"):
                 REPAIR.allowed_current_releases("candidate-activation-started", journal,
                                                 releases, source, candidate, verifier)
+
+    def test_failed_postflight_requires_candidate_current_even_with_predecessor(self):
+        releases = self.directory / "releases"
+        source, candidate, predecessor = "a" * 40, "b" * 40, "d" * 40
+        with patch.object(REPAIR, "release", return_value=releases / predecessor):
+            allowed = REPAIR.allowed_current_releases(
+                "candidate-postflight-failed", {"retargetedFromCandidateSHA": predecessor},
+                releases, source, candidate, self.directory / "verifier")
+        self.assertEqual(allowed, {releases / candidate})
+
+    def test_plist_stage_normal_restore_survive_each_atomic_crash_seam(self):
+        plist = self.directory / "com.norn.api.plist"
+        original = plistlib.dumps({
+            "Label": "com.norn.api",
+            "ProgramArguments": [str(Path.home() / "bin/norn-api-sops-launcher")],
+            "EnvironmentVariables": {"NORN_STARTUP_MODE": "active", "NORN_SCHEMA_MODE": "check"},
+        })
+        plist.write_bytes(original)
+        plist.chmod(0o644)
+        journal = self.directory / "transition.json"
+        manifest = {"sourceEvidencePath": str(self.directory / "transition.json.source-evidence.json"),
+                    "sourceEvidenceSHA256": self.expected["evidenceSHA256"]}
+        with patch.object(REPAIR, "api_plist_path", return_value=plist), patch.object(
+                REPAIR, "verify_launchers", return_value=("a" * 64, "b" * 64)):
+            REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+            maintenance = plist.read_bytes()
+            self.assertNotEqual(maintenance, original)
+            self.assertEqual(plistlib.loads(maintenance)["EnvironmentVariables"]["NORN_RECOVERED_FORWARD_MAINTENANCE"], "true")
+            self.assertEqual(plistlib.loads(maintenance)["ProgramArguments"],
+                             [str(SCRIPT.with_name("mini-recovered-forward-api-launcher"))])
+            journal.write_bytes(b'{"state":"candidate-postflight-failed"}')
+            journal.chmod(0o600)
+            inherited = plistlib.loads(maintenance)["EnvironmentVariables"]
+            with patch.dict("os.environ", inherited):
+                REPAIR.verify_launcher_runtime(journal, self.expected, manifest, self.key)
+            with patch.dict("os.environ", {"NORN_RECOVERED_FORWARD_MAINTENANCE": "true"}):
+                with self.assertRaisesRegex(ValueError, "inherited recovery bindings"):
+                    REPAIR.verify_launcher_runtime(journal, self.expected, manifest, self.key)
+            # Crash after the signed sidecar but before the plist replace.
+            plist.write_bytes(original)
+            REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+            self.assertEqual(plist.read_bytes(), maintenance)
+            # Crash after plist replace and before launchd bootstrap.
+            REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+            self.assertEqual(plist.read_bytes(), maintenance)
+            with self.assertRaisesRegex((OSError, ValueError), "preservation receipt"):
+                REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-normal")
+            self.assertEqual(plist.read_bytes(), maintenance)
+            payload = {"schema": "norn.recovered-forward-preservation/v1",
+                       "transitionId": self.expected["transitionID"],
+                       "candidateSHA": self.expected["candidateSHA"],
+                       "sourceEvidenceSHA256": self.expected["evidenceSHA256"],
+                       "beforeDigest": "f" * 64, "afterDigest": "f" * 64,
+                       "preservationMatched": True, "finalizedAt": "2026-10-13T21:00:00Z"}
+            signature = "hmac-sha256:" + hmac.new(self.key, payload["schema"].encode() + b"\0"
+                                                  + REPAIR.canonical(payload), hashlib.sha256).hexdigest()
+            receipt = journal.parent / "preservation-receipt.json"
+            receipt.write_bytes(REPAIR.canonical(dict(payload, signature=signature)))
+            receipt.chmod(0o600)
+            REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-normal")
+            normal = plist.read_bytes()
+            self.assertNotEqual(normal, maintenance)
+            normal_environment = plistlib.loads(normal)["EnvironmentVariables"]
+            self.assertNotIn("NORN_RECOVERED_FORWARD_MAINTENANCE", normal_environment)
+            self.assertEqual(normal_environment["NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID"], self.expected["transitionID"])
+            journal.write_bytes(b'{"state":"candidate-normal-activation-pending"}')
+            with patch.dict("os.environ", normal_environment):
+                REPAIR.verify_launcher_runtime(journal, self.expected, manifest, self.key)
+            # Crash after normal plist replacement and before bootstrap.
+            REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-normal")
+            self.assertEqual(plist.read_bytes(), normal)
+            REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-restore")
+            self.assertEqual(plist.read_bytes(), original)
+            # Crash after original plist restoration and before journal promotion.
+            REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-restore")
+            self.assertEqual(plist.read_bytes(), original)
+
+    def test_plist_tamper_or_changed_transition_fails_closed(self):
+        plist = self.directory / "com.norn.api.plist"
+        plist.write_bytes(plistlib.dumps({"Label": "com.norn.api",
+                                          "ProgramArguments": [str(Path.home() / "bin/norn-api-sops-launcher")]}))
+        plist.chmod(0o644)
+        journal = self.directory / "transition.json"
+        manifest = {"sourceEvidencePath": str(self.directory / "transition.json.source-evidence.json"),
+                    "sourceEvidenceSHA256": self.expected["evidenceSHA256"]}
+        with patch.object(REPAIR, "api_plist_path", return_value=plist), patch.object(
+                REPAIR, "verify_launchers", return_value=("a" * 64, "b" * 64)):
+            REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+            with self.assertRaisesRegex(ValueError, "another transition"):
+                REPAIR.stage_plist(journal, dict(self.expected, transitionID="other-transition"), manifest, self.key)
+            plist.write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "neither the signed original nor"):
+                REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+
+    def test_d_only_runner_sequences_repair_preservation_and_finalization(self):
+        journal = self.directory / "transition.json"
+        journal.write_text('{"state":"candidate-postflight-failed"}')
+        journal.chmod(0o600)
+        args = Namespace(candidate=self.expected["candidateSHA"], source=self.expected["sourceSHA"],
+                         transition=self.expected["transitionID"], journal=journal,
+                         controller=self.directory / "platform-upgrade", authorization=None)
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[1] == "prepare":
+                journal.write_text('{"state":"candidate-preservation-pending"}')
+            elif command[1] == "recovered-forward-finalize":
+                journal.write_text('{"state":"candidate-promoted"}')
+            return CompletedProcess(command, 0)
+
+        with patch.object(REPAIR.subprocess, "run", side_effect=run):
+            REPAIR.run_recovery(args)
+        self.assertEqual([command[1] for command in calls],
+                         ["prepare", "preserve", "recovered-forward-finalize"])
+        self.assertEqual(calls[2][0], str(args.controller))
+        # A retry after finalization invokes only D's idempotent cleanup.
+        calls.clear()
+        with patch.object(REPAIR.subprocess, "run", side_effect=run):
+            REPAIR.run_recovery(args)
+        self.assertEqual([command[1] for command in calls], ["recovered-forward-finalize"])
+
+    def test_d_only_runner_stops_at_failed_substep_without_wrong_finalizer(self):
+        journal = self.directory / "transition.json"
+        journal.write_text('{"state":"candidate-preservation-pending"}')
+        journal.chmod(0o600)
+        args = Namespace(candidate=self.expected["candidateSHA"], source=self.expected["sourceSHA"],
+                         transition=self.expected["transitionID"], journal=journal,
+                         controller=self.directory / "platform-upgrade", authorization=None)
+        with patch.object(REPAIR.subprocess, "run", return_value=CompletedProcess([], 2)) as called:
+            with self.assertRaisesRegex(ValueError, "preservation stopped"):
+                REPAIR.run_recovery(args)
+        called.assert_called_once()
+        self.assertEqual(called.call_args.args[0][1], "preserve")
+
+    def test_loaded_idle_original_job_is_booted_out_before_signed_stage(self):
+        platform = SCRIPT.with_name("platform-upgrade").read_text()
+        restart = platform.split("restart_api() {\n", 1)[1].split("\n}\n", 1)[0]
+        plist = self.directory / "com.norn.api.plist"
+        original_launcher = str(Path.home() / "bin/norn-api-sops-launcher")
+        plist.write_bytes(plistlib.dumps({"Label": "com.norn.api", "ProgramArguments": [original_launcher]}))
+        script = f'''set -e
+mode=recovered-forward
+internal_recovered_forward_repair=true
+api_launch_plist={str(plist)!r}
+api_launch_program={original_launcher!r}
+script_dir={str(SCRIPT.parent)!r}
+launch_label=com.norn.api
+legacy_api_path=/tmp/norn-api
+loaded=1
+launchctl() {{
+  case "$1" in
+    print) if [[ "$loaded" == 1 ]]; then printf 'program = %s\\n' "$api_launch_program"; else return 113; fi ;;
+    bootout) echo bootout; loaded=0 ;;
+    kickstart) echo kickstart ;;
+  esac
+}}
+legacy_baseline_validate_launchd_binding() {{ :; }}
+recovered_forward_api_plist_action() {{ [[ "$loaded" == 0 ]] || return 1; echo "$1"; }}
+legacy_baseline_bootstrap_launchd_service() {{ [[ "$loaded" == 0 ]] || return 1; [[ "$4" == "$script_dir/mini-recovered-forward-api-launcher" ]] || return 1; echo bootstrap-signed; }}
+fail() {{ echo "$*" >&2; exit 1; }}
+restart_api() {{
+{restart}
+}}
+restart_api
+'''
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["bootout", "plist-stage", "bootstrap-signed", "kickstart"])
+
+    def test_host_restart_phase_does_not_regress_before_candidate_install(self):
+        platform = SCRIPT.with_name("platform-upgrade").read_text()
+        finalizer = platform.split("recovered_forward_finalize_release() {\n", 1)[1].split("\n}\n", 1)[0]
+        tail = finalizer.split('validate_active_responses "$version" "$final_version_file" "$final_schema_file" "$sha"', 1)[1]
+        self.assertIn('if [[ "$recovered_phase" != "candidate-normal-active-pending-host-agent-restart" ]]; then\n'
+                      '    legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent"', tail)
+        self.assertLess(tail.index('legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent-restart"'),
+                        tail.index("restart_fenced_host_agent"))
+
+    def test_candidate_host_binary_is_allowed_only_after_restart_intent(self):
+        journal = self.directory / "transition.json"
+        args = Namespace(action="run", journal=journal, authorization=None)
+        observed = []
+        def checked(*_args, **kwargs):
+            observed.append(kwargs["allow_candidate_host"])
+            raise RuntimeError("state checked")
+        for phase, allowed in (("candidate-postflight-failed", False),
+                               ("candidate-preservation-pending", False),
+                               ("candidate-normal-active-pending-host-agent", False),
+                               ("candidate-normal-active-pending-host-agent-restart", True),
+                               ("candidate-promoted", True)):
+            journal.write_text(json.dumps({"state": phase}))
+            journal.chmod(0o600)
+            with self.subTest(phase=phase), patch.object(REPAIR, "parser") as parser, \
+                    patch.object(REPAIR, "checked_state", side_effect=checked), \
+                    patch.dict("os.environ", {"NORN_AUDIT_SIGNING_KEY": self.key.decode()}):
+                parser.return_value.parse_args.return_value = args
+                with self.assertRaisesRegex(RuntimeError, "state checked"):
+                    REPAIR.main()
+                self.assertEqual(observed.pop(), allowed)
+
 
 
 if __name__ == "__main__":

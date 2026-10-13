@@ -1,0 +1,54 @@
+#!/usr/bin/python3
+"""Launch only the exact signed Mini recovery candidate with plist-bound inputs."""
+
+import os
+import subprocess
+from pathlib import Path
+import json
+
+
+def main():
+    home = Path.home()
+    launcher = Path(__file__).resolve(strict=True)
+    helper = launcher.with_name("mini-recovered-forward-controller-repair")
+    controller = launcher.with_name("platform-upgrade")
+    runtime = os.environ.copy()
+    record = Path(runtime.get("NORN_RECOVERED_FORWARD_PLIST_RECORD_PATH", ""))
+    if not record.is_absolute() or record.name != "api-plist-maintenance.json":
+        raise SystemExit("signed Mini recovery plist record is missing")
+    raw = subprocess.check_output([
+        "/opt/homebrew/bin/sops", "--decrypt", "--output-type", "json",
+        str(home / ".config/norn/api.env.enc.json"),
+    ])
+    values = json.loads(raw)
+    env = runtime.copy()
+    for key, value in values.items():
+        name = str(key)
+        if (name.startswith("NORN_RECOVERED_FORWARD_") or name == "NORN_AUDIT_HISTORICAL_SIGNING_KEY"
+                or name in {"NORN_STARTUP_MODE", "NORN_SCHEMA_MODE"}):
+            continue
+        env[name] = str(value)
+    env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+    if len(env.get("NORN_AUDIT_SIGNING_KEY", "")) < 32:
+        raise SystemExit("current audit signing key is unavailable")
+    command = [
+        str(helper), "launcher-verify", "--candidate", runtime.get("NORN_RECOVERED_FORWARD_CANDIDATE_SHA", ""),
+        "--source", runtime.get("NORN_RECOVERED_FORWARD_SOURCE_SHA", ""),
+        "--transition", runtime.get("NORN_RECOVERED_FORWARD_TRANSITION_ID", ""),
+        "--journal", str(record.parent / "transition.json"), "--controller", str(controller),
+    ]
+    result = subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode:
+        raise SystemExit("signed Mini recovery launcher validation failed: " + result.stderr.strip())
+    env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+    env.setdefault("PGHOST", "127.0.0.1")
+    env.setdefault("PGUSER", "norn")
+    env.setdefault("PGPASSWORD", "norn")
+    postgres_bin = "/Applications/Postgres.app/Contents/Versions/latest/bin"
+    env["PATH"] = postgres_bin + os.pathsep + env.get("PATH", "")
+    binary = home / "go/bin/norn-api"
+    os.execve(binary, [str(binary)], env)
+
+
+if __name__ == "__main__":
+    main()

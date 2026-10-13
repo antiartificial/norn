@@ -1568,6 +1568,7 @@ build_release_into() {
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-retarget-consume" "$target/bin/mini-recovered-forward-retarget-consume"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-transition" "$target/bin/mini-recovered-forward-transition"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-controller-repair" "$target/bin/mini-recovered-forward-controller-repair"
+  install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-api-launcher" "$target/bin/mini-recovered-forward-api-launcher"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-verify-evidence" "$target/bin/mini-recovered-forward-verify-evidence"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-validate-journal" "$target/bin/mini-recovered-forward-validate-journal"
   install -m 0755 "$worktree/v2/scripts/mini-recovered-forward-completed-gate" "$target/bin/mini-recovered-forward-completed-gate"
@@ -2878,6 +2879,28 @@ PY
 }
 
 restart_api() {
+  if [[ "$mode" == "recovered-forward" && "$internal_recovered_forward_repair" == true ]]; then
+    local repair_loaded_state repair_loaded_program repair_disk_program
+    if repair_loaded_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+      repair_disk_program="$(python3 - "$api_launch_plist" <<'PY'
+import plistlib,sys
+with open(sys.argv[1],"rb") as source: print(plistlib.load(source)["ProgramArguments"][0])
+PY
+)" || fail "loaded idle API plist cannot be inspected before signed repair"
+      [[ "$repair_disk_program" == "$api_launch_program" || "$repair_disk_program" == "$script_dir/mini-recovered-forward-api-launcher" ]] \
+        || fail "loaded idle API plist program is not an allowed repair launcher"
+      legacy_baseline_validate_launchd_binding "$api_launch_plist" "$launch_label" "$legacy_api_path" "$repair_disk_program" "idle candidate API"
+      repair_loaded_program="$(awk '/^[[:space:]]*program = /{sub(/^[[:space:]]*program = /,""); print; exit}' <<<"$repair_loaded_state")"
+      [[ "$repair_loaded_program" == "$api_launch_program" || "$repair_loaded_program" == "$script_dir/mini-recovered-forward-api-launcher" ]] \
+        || fail "loaded idle API job cached an unknown launcher"
+      launchctl bootout "gui/$(id -u)/$launch_label" || fail "could not unload idle API job before signed maintenance plist staging"
+      ! launchctl print "gui/$(id -u)/$launch_label" >/dev/null 2>&1 || fail "idle API job remained loaded after bootout"
+    fi
+    recovered_forward_api_plist_action plist-stage || fail "signed maintenance API plist could not be staged"
+    legacy_baseline_bootstrap_launchd_service "$launch_label" "$api_launch_plist" "$legacy_api_path" "$script_dir/mini-recovered-forward-api-launcher" "candidate API"
+    launchctl kickstart -k "gui/$(id -u)/$launch_label" || fail "signed candidate API could not start from the maintenance plist"
+    return
+  fi
   launchctl unsetenv NORN_SKIP_DEPLOYMENT_RECOVERY >/dev/null 2>&1 || true
   launchctl unsetenv NORN_SKIP_OPERATION_RECOVERY >/dev/null 2>&1 || true
   launchctl unsetenv NORN_SKIP_OPERATION_WORKER >/dev/null 2>&1 || true
@@ -2906,6 +2929,53 @@ restart_api() {
     legacy_baseline_bootstrap_launchd_service "$launch_label" "$api_launch_plist" "$legacy_api_path" "$api_launch_program" "candidate API"
   fi
   launchctl kickstart -k "gui/$(id -u)/$launch_label"
+}
+
+recovered_forward_api_plist_action() {
+  local action="$1"
+  local helper="$script_dir/mini-recovered-forward-controller-repair"
+  [[ -x "$helper" && ! -L "$helper" ]] || fail "signed API plist recovery helper is unavailable"
+  local arguments=("$action" --candidate "$sha" --source "$recovered_source_sha" \
+    --transition "$recovered_transition_id" --journal "$transition_state_path" \
+    --controller "$script_dir/platform-upgrade")
+  if [[ "$action" == plist-stage ]]; then
+    [[ -n "${NORN_RECOVERED_FORWARD_REPAIR_AUTH:-}" ]] || fail "signed API plist staging requires exact controller authorization"
+    arguments+=(--authorization "$NORN_RECOVERED_FORWARD_REPAIR_AUTH")
+  fi
+  "$helper" "${arguments[@]}"
+}
+
+recovered_forward_restore_original_api_job() {
+  [[ "$recovered_phase" == "candidate-promoted" ]] || fail "original API job restoration requires promoted candidate journal"
+  recovered_forward_api_plist_action plist-restore || fail "signed original API plist restoration failed"
+  local gui_state api_state loaded_program api_port listener
+  gui_state="$(launchctl print "gui/$(id -u)")" || fail "cannot inspect Mini GUI launchd environment before API job restoration"
+  python3 -c 'import re,sys
+text=sys.stdin.read()
+match=re.search(r"^\tenvironment = \{\n(?P<body>.*?)^\t\}",text,re.M|re.S)
+if match is None or re.search(r"^\s*NORN_RECOVERED_FORWARD_[A-Z0-9_]+\s*=>",match.group("body"),re.M): raise SystemExit(1)' <<<"$gui_state" \
+    || fail "GUI launchd still contains recovered-forward variables; original launcher cannot safely resume"
+  if api_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+    legacy_baseline_validate_launchd_binding "$api_launch_plist" "$launch_label" "$legacy_api_path" "$api_launch_program" "normal candidate API"
+    loaded_program="$(awk '/^[[:space:]]*program = /{sub(/^[[:space:]]*program = /,""); print; exit}' <<<"$api_state")"
+    [[ "$loaded_program" == "$script_dir/mini-recovered-forward-api-launcher" || "$loaded_program" == "$api_launch_program" ]] \
+      || fail "loaded candidate API program is neither signed repair launcher nor restored launcher"
+    if [[ "$loaded_program" == "$api_launch_program" ]]; then
+      legacy_baseline_verify_normal_candidate "$version" "$sha" "$token"
+      return
+    fi
+    launchctl bootout "gui/$(id -u)/$launch_label" || fail "could not unload signed one-process API launcher after promotion"
+  fi
+  api_port="$(direct_loopback_api_port)" || fail "normal API restoration requires direct loopback binding"
+  for _ in $(seq 1 30); do
+    listener="$(lsof -nP -iTCP:"$api_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+    [[ -z "$listener" ]] && break
+    sleep 1
+  done
+  [[ -z "$listener" ]] || fail "signed one-process API listener survived launchd bootout"
+  legacy_baseline_bootstrap_launchd_service "$launch_label" "$api_launch_plist" "$legacy_api_path" "$api_launch_program" "normal candidate API"
+  launchctl kickstart -k "gui/$(id -u)/$launch_label" || fail "original candidate API launcher did not restart"
+  legacy_baseline_verify_normal_candidate "$version" "$sha" "$token"
 }
 
 finalize_legacy_baseline_release() {
@@ -3171,7 +3241,7 @@ recovered_forward_resume_or_start() {
     phase="$recovered_phase"
     if [[ "$internal_recovered_forward_repair" == true ]]; then
       case "$phase" in
-        host-agent-fencing|host-agent-fenced|api-fencing|legacy-fenced|migration-started|schema-migrated|candidate-activation-started) ;;
+        host-agent-fencing|host-agent-fenced|api-fencing|legacy-fenced|migration-started|schema-migrated|candidate-activation-started|candidate-postflight-failed) ;;
         *) fail "signed controller repair is limited to pre-promotion phases" ;;
       esac
       [[ -n "${NORN_RECOVERED_FORWARD_REPAIR_AUTH:-}" ]] || fail "signed controller repair authorization is missing"
@@ -3192,7 +3262,7 @@ recovered_forward_resume_or_start() {
   fi
 
   case "$phase" in
-    candidate-postflight-failed|candidate-preservation-pending|candidate-finalize-requested|candidate-normal-activation-pending|candidate-normal-active-pending-host-agent|candidate-normal-active-pending-host-agent-restart|candidate-promoted)
+    candidate-preservation-pending|candidate-finalize-requested|candidate-normal-activation-pending|candidate-normal-active-pending-host-agent|candidate-normal-active-pending-host-agent-restart|candidate-promoted)
       log "exact candidate is already promoted; outer evidence wrapper may resume preservation/finalization"
       return 0 ;;
     prepared|host-agent-fencing)
@@ -3215,7 +3285,7 @@ recovered_forward_resume_or_start() {
       recovered_forward_ensure_host_agent_fenced
       recovered_forward_ensure_api_fenced
       phase="legacy-fenced" ;;
-    migration-started|schema-migrated|candidate-activation-started) ;;
+    migration-started|schema-migrated|candidate-activation-started|candidate-postflight-failed) ;;
     *) fail "recovered-forward durable phase is not resumable: $phase" ;;
   esac
 
@@ -3233,7 +3303,32 @@ recovered_forward_resume_or_start() {
     legacy_baseline_write_fence_state "schema-migrated"
     phase="schema-migrated"
   fi
-  if [[ "$phase" == "schema-migrated" ]]; then
+  if [[ "$phase" == "candidate-postflight-failed" ]]; then
+    [[ "$internal_recovered_forward_repair" == true ]] || fail "failed candidate postflight requires an explicitly signed controller repair"
+    # This phase is after the only schema migration and artifact activation.
+    # Repeating either would cross the durable fence twice. Verify the exact
+    # candidate bytes and an unloaded, listener-free GUI job before restart.
+    [[ "$current_sha" == "$sha" ]] || fail "failed-postflight current release is not the signed candidate"
+    cmp -s "$release/bin/norn-api" "$legacy_api_path" || fail "failed-postflight managed API differs from the signed candidate"
+    local repair_api_port repair_listener
+    repair_api_port="$(direct_loopback_api_port)" || fail "failed-postflight requires a direct loopback API"
+    repair_listener="$(lsof -nP -iTCP:"$repair_api_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+    if [[ -n "$repair_listener" ]]; then
+      legacy_baseline_validate_launchd_binding "$api_launch_plist" "$launch_label" "$legacy_api_path" "$script_dir/mini-recovered-forward-api-launcher" "candidate API"
+      [[ "$(launchctl print "gui/$(id -u)/$launch_label" | awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}')" == "$repair_listener" ]] || fail "failed-postflight listener is not owned by the exact candidate GUI job"
+      postflight || fail "running candidate did not provide exact recovered-forward maintenance evidence"
+      recovered_forward_api_plist_action plist-stage || fail "running maintenance API plist could not be made crash-resumable"
+    else
+      restart_api
+      postflight || fail "signed GUI candidate restart did not produce exact maintenance postflight; fence remains held"
+    fi
+    if [[ "$recovered_phase" != "candidate-postflight-failed" ]]; then
+      legacy_baseline_write_fence_state "candidate-postflight-failed"
+      fail "candidate journal changed during signed GUI restart"
+    fi
+    legacy_baseline_write_fence_state "candidate-preservation-pending"
+    log "signed GUI candidate restart recovered exact maintenance postflight"
+  elif [[ "$phase" == "schema-migrated" ]]; then
     recovered_forward_ensure_host_agent_fenced
     recovered_forward_ensure_api_fenced
     candidate_preflight
@@ -3269,13 +3364,32 @@ PY
 )" || fail "preservation receipt is unsafe"
   local finalized="false"
   local normal_candidate_active="false"
+  local signed_plist_record="$recovered_transition_root/api-plist-maintenance.json"
+  if [[ "$script_dir" != "$releases/$sha/bin" && ! -f "$signed_plist_record" ]]; then
+    fail "cross-release finalization requires the signed API plist recovery record"
+  fi
   if [[ "$recovered_phase" == "candidate-promoted" ]]; then
-    legacy_baseline_verify_normal_candidate "$version" "$sha" "$token"
+    if [[ -f "$signed_plist_record" ]]; then recovered_forward_restore_original_api_job; else legacy_baseline_verify_normal_candidate "$version" "$sha" "$token"; fi
     if ! legacy_baseline_host_agent_is_running_candidate; then restart_fenced_host_agent; fi
     log "recovered-forward candidate was already fully promoted; verified exact runtime and host agent"
     return 0
   fi
-  if curl -fsS -H "Authorization: Bearer $token" "$api_base/api/v1/platform/recovered-forward/status" >"$status_file"; then
+  local resume_normal_without_listener=false
+  if [[ "$recovered_phase" == "candidate-normal-activation-pending" && -f "$signed_plist_record" ]]; then
+    local pending_api_port pending_listener
+    pending_api_port="$(direct_loopback_api_port)" || fail "pending normal activation requires direct loopback API"
+    pending_listener="$(lsof -nP -iTCP:"$pending_api_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+    if [[ -z "$pending_listener" ]]; then
+      # A crash after the maintenance API bootout cannot answer HTTP. The
+      # signed local receipt and journaled activation phase permit only the
+      # exact one-process normal launch, never a fresh finalize request.
+      recovered_forward_api_plist_action plist-normal || fail "unloaded normal activation lacks signed receipt/plist evidence"
+      resume_normal_without_listener=true
+    fi
+  fi
+  if [[ "$resume_normal_without_listener" == true ]]; then
+    :
+  elif curl -fsS -H "Authorization: Bearer $token" "$api_base/api/v1/platform/recovered-forward/status" >"$status_file"; then
     finalized="$(python3 - "$status_file" "$recovered_transition_id" "$recovered_source_sha" "$sha" "$recovered_source_evidence_sha256" <<'PY'
 import json,sys
 v=json.load(open(sys.argv[1],encoding="utf-8")); transition,source,candidate,evidence=sys.argv[2:]
@@ -3299,7 +3413,7 @@ PY
 import json,sys
 receipt_path,transition,owner,epoch=sys.argv[1:]
 receipt=json.load(open(receipt_path,encoding="utf-8"))
-      json.dump({"transitionId":transition,"owner":owner,"epoch":int(epoch),"preservationReceipt":receipt},sys.stdout,separators=(",",":"))
+json.dump({"transitionId":transition,"owner":owner,"epoch":int(epoch),"preservationReceipt":receipt},sys.stdout,separators=(",",":"))
 PY
       curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary "@$finalize_file" "$api_base/api/v1/platform/recovered-forward/finalize" >"$status_file" || fail "Mini rejected the exact recovered-forward preservation receipt"
       python3 - "$status_file" "$recovered_transition_id" "$recovered_preservation_receipt_sha256" <<'PY' || fail "Mini did not confirm durable recovered-forward finalization"
@@ -3325,28 +3439,55 @@ PY
     # API already verified and persisted the signed preservation receipt. The
     # exact one-process token binds source evidence plus receipt digest at the
     # database fence release boundary.
-    launchctl unsetenv NORN_RECOVERED_FORWARD_MAINTENANCE >/dev/null 2>&1 || true
-    launchctl setenv NORN_STARTUP_MODE active
-    launchctl setenv NORN_SCHEMA_MODE check
-    launchctl setenv NORN_RECOVERED_FORWARD_TRANSITION_ID "$recovered_transition_id"
-    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_SHA "$recovered_source_sha"
-    launchctl setenv NORN_RECOVERED_FORWARD_CANDIDATE_SHA "$sha"
-    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH "$recovered_source_evidence"
-    launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256 "$recovered_source_evidence_sha256"
-    launchctl setenv NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH "$recovered_preservation_receipt"
-    launchctl setenv NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256 "$recovered_preservation_receipt_sha256"
-    launchctl setenv NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID "$recovered_transition_id"
+    if [[ -f "$signed_plist_record" ]]; then
+      recovered_forward_api_plist_action plist-normal || fail "signed normal activation API plist could not be staged"
+      if launchctl print "gui/$(id -u)/$launch_label" >/dev/null 2>&1; then
+        legacy_baseline_validate_launchd_binding "$api_launch_plist" "$launch_label" "$legacy_api_path" "$script_dir/mini-recovered-forward-api-launcher" "candidate API"
+        launchctl bootout "gui/$(id -u)/$launch_label" || fail "could not stop maintenance API before one-process activation"
+      fi
+      local normal_api_port normal_listener
+      normal_api_port="$(direct_loopback_api_port)" || fail "normal activation requires direct loopback API"
+      for _ in $(seq 1 30); do
+        normal_listener="$(lsof -nP -iTCP:"$normal_api_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+        [[ -z "$normal_listener" ]] && break
+        sleep 1
+      done
+      [[ -z "$normal_listener" ]] || fail "maintenance API listener remained after launchd bootout"
+      legacy_baseline_bootstrap_launchd_service "$launch_label" "$api_launch_plist" "$legacy_api_path" "$script_dir/mini-recovered-forward-api-launcher" "candidate API"
+    else
+      launchctl unsetenv NORN_RECOVERED_FORWARD_MAINTENANCE >/dev/null 2>&1 || true
+      launchctl setenv NORN_STARTUP_MODE active
+      launchctl setenv NORN_SCHEMA_MODE check
+      launchctl setenv NORN_RECOVERED_FORWARD_TRANSITION_ID "$recovered_transition_id"
+      launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_SHA "$recovered_source_sha"
+      launchctl setenv NORN_RECOVERED_FORWARD_CANDIDATE_SHA "$sha"
+      launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH "$recovered_source_evidence"
+      launchctl setenv NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256 "$recovered_source_evidence_sha256"
+      launchctl setenv NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH "$recovered_preservation_receipt"
+      launchctl setenv NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256 "$recovered_preservation_receipt_sha256"
+      launchctl setenv NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID "$recovered_transition_id"
+    fi
     launchctl kickstart -k "gui/$(id -u)/$launch_label" || fail "exact candidate API activation failed; the durable DB fence remains held"
-    launchctl unsetenv NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID >/dev/null 2>&1 || true
+    if [[ ! -f "$signed_plist_record" ]]; then launchctl unsetenv NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID >/dev/null 2>&1 || true; fi
   fi
   wait_health "$api_base" 45 "" "$token" || fail "candidate API did not become healthy after recovered-forward activation"
   local final_version_file="$status_file" final_schema_file="$finalize_file"
   curl -fsS -H "Authorization: Bearer $token" "$api_base/api/version" >"$final_version_file" || fail "candidate API version evidence unavailable after activation"
   curl -fsS -H "Authorization: Bearer $token" "$api_base/api/schema" >"$final_schema_file" || fail "candidate API schema evidence unavailable after activation"
   validate_active_responses "$version" "$final_version_file" "$final_schema_file" "$sha" || fail "exact recovered-forward candidate is not active after fence release"
-  legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent"
+  if [[ "$recovered_phase" != "candidate-normal-active-pending-host-agent-restart" ]]; then
+    legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent"
+  fi
+  # Persist the restart intent before replacing the fenced executable. A
+  # crash after installation can then verify either exact signed candidate
+  # bytes or the original fence, without widening earlier repair phases.
+  if [[ "$recovered_phase" != "candidate-normal-active-pending-host-agent-restart" ]]; then
+    legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent-restart"
+  fi
   restart_fenced_host_agent
   legacy_baseline_write_fence_state "candidate-promoted"
+  recovered_phase="candidate-promoted"
+  if [[ -f "$signed_plist_record" ]]; then recovered_forward_restore_original_api_job; fi
   for name in NORN_RECOVERED_FORWARD_MAINTENANCE NORN_RECOVERED_FORWARD_TRANSITION_ID NORN_RECOVERED_FORWARD_SOURCE_SHA NORN_RECOVERED_FORWARD_CANDIDATE_SHA NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_PATH NORN_RECOVERED_FORWARD_SOURCE_EVIDENCE_SHA256 NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_PATH NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256; do
     launchctl unsetenv "$name" >/dev/null 2>&1 || true
   done

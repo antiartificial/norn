@@ -184,7 +184,7 @@ class DoctorFixtureTest(unittest.TestCase):
                     "norn-ingress-observer", "norn-ingress-publisher", "mini-create-protected-backup",
                     "mini-private-copy-rehearsal", "mini-protected-transition-rehearsal",
                     "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume",
-                    "mini-recovered-forward-transition", "mini-recovered-forward-controller-repair",
+                    "mini-recovered-forward-transition", "mini-recovered-forward-controller-repair", "mini-recovered-forward-api-launcher",
                     "mini-recovered-forward-validate-journal",
                     "mini-recovered-forward-verify-evidence", "mini-recovered-forward-completed-gate",
                     "mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve",
