@@ -120,7 +120,8 @@ PY
 remove_scratch() {
   local path=$1
   if [[ -d $path ]]; then
-    find "$path" -type d -exec chmod u+w -- {} + 2>/dev/null || true
+    # macOS/BSD chmod treats -- as a filename. This is an absolute mktemp path.
+    find "$path" -type d -exec chmod u+w {} + 2>/dev/null || true
     rm -rf -- "$path"
   fi
 }
@@ -135,6 +136,8 @@ shadow_start() {
   [[ ${NORN_M5_SHADOW_LABEL:-} =~ ^com\.norn\.m5\.shadow\.[0-9a-f]{12}\.[0-9a-f]{16}$ ]] || { echo 'shadow label is invalid' >&2; return 2; }
   [[ ${NORN_M5_SHADOW_DB_SESSION:-} == "norn-m5-shadow-${NORN_M5_SHADOW_LABEL##*.}" ]] || { echo 'shadow database session does not match this run' >&2; return 2; }
   [[ ${NORN_M5_SHADOW_PORT:-} =~ ^[0-9]+$ && $NORN_M5_SHADOW_PORT -ge 1024 && $NORN_M5_SHADOW_PORT -le 65535 && $NORN_M5_SHADOW_PORT -ne 8800 ]] || { echo 'shadow port is invalid' >&2; return 2; }
+  [[ ${NORN_M5_SHADOW_SOURCE_RELEASE:-} == /* && -d ${NORN_M5_SHADOW_SOURCE_RELEASE:-} && ! -L ${NORN_M5_SHADOW_SOURCE_RELEASE:-} ]] || { echo 'shadow source release is unsafe' >&2; return 2; }
+  [[ $(basename "$NORN_M5_SHADOW_SOURCE_RELEASE") == "$NORN_M5_SHADOW_SHA" ]] || { echo 'shadow source release does not match the signed candidate' >&2; return 2; }
   NORN_M5_SHADOW_ROOT="$NORN_M5_SHADOW_ROOT" NORN_M5_SHADOW_SESSION="$NORN_M5_SHADOW_SESSION" NORN_M5_SHADOW_PLIST="$NORN_M5_SHADOW_PLIST" NORN_M5_SHADOW_ENV="$NORN_M5_SHADOW_ENV" NORN_M5_SHADOW_LAUNCHER="$NORN_M5_SHADOW_LAUNCHER" NORN_M5_SHADOW_API="$NORN_M5_SHADOW_API" NORN_M5_SHADOW_RELEASE="$NORN_M5_SHADOW_RELEASE" python3 - <<'PY'
 import os, stat
 root=os.path.realpath(os.environ['NORN_M5_SHADOW_ROOT'])
@@ -150,7 +153,9 @@ if session.st_uid != os.getuid() or stat.S_IMODE(session.st_mode) != 0o600: rais
 if not stat.S_ISDIR(release.st_mode) or release.st_uid != os.getuid() or not stat.S_ISREG(api.st_mode) or api.st_uid != os.getuid(): raise SystemExit('shadow signed snapshot ownership is unsafe')
 PY
   [[ $("$script_dir/platform-release-manifest" verify --release "$NORN_M5_SHADOW_RELEASE" --expected-sha "$NORN_M5_SHADOW_SHA") == signed ]] || { echo 'shadow candidate snapshot no longer verifies as signed' >&2; return 1; }
-  "$script_dir/platform-release-artifact" verify --release-dir "$NORN_M5_SHADOW_RELEASE" --public-key "$NORN_M5_SHADOW_PUBLIC_KEY" --quiet
+  # The artifact verifier requires the immutable release's canonical SHA path.
+  # The copied snapshot's content and mode are checked by the signed manifest.
+  "$script_dir/platform-release-artifact" verify --release-dir "$NORN_M5_SHADOW_SOURCE_RELEASE" --public-key "$NORN_M5_SHADOW_PUBLIC_KEY" --quiet
   [[ ${NORN_M5_SHADOW_PLIST:-} != "$HOME/Library/LaunchAgents"/* ]] || { echo 'shadow plist must not use the live LaunchAgents directory' >&2; return 2; }
   NORN_M5_SHADOW_IDENTITY_KEY="$session_identity_key" write_shadow_env "$NORN_M5_SHADOW_ENV"
   printf '#!/usr/bin/env bash\nset -a\n. %q\nset +a\nexec %q\n' "$NORN_M5_SHADOW_ENV" "$NORN_M5_SHADOW_API" >"$NORN_M5_SHADOW_LAUNCHER"
@@ -273,7 +278,7 @@ PY
 read -r sha version <<<"$identity"
 [[ $(basename "$source_release") == "$sha" ]] || { echo 'candidate release directory does not match its signed SHA' >&2; exit 1; }
 [[ $("$manifest" verify --release "$release" --expected-sha "$sha") == signed ]] || { echo 'candidate manifest is not signed' >&2; exit 1; }
-"$artifact" verify --release-dir "$release" --public-key "$public_key" --quiet
+"$artifact" verify --release-dir "$source_release" --public-key "$public_key" --quiet
 nonce=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
 label="com.norn.m5.shadow.${sha:0:12}.$nonce"
 db_session="norn-m5-shadow-$nonce"
@@ -325,6 +330,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
-export NORN_M5_SHADOW_ROOT="$scratch" NORN_M5_SHADOW_LABEL="$label" NORN_M5_SHADOW_DB_SESSION="$db_session" NORN_M5_SHADOW_PORT="$port" NORN_M5_SHADOW_VERSION="$version" NORN_M5_SHADOW_API="$api" NORN_M5_SHADOW_RELEASE="$release" NORN_M5_SHADOW_SHA="$sha" NORN_M5_SHADOW_MANIFEST="$manifest" NORN_M5_SHADOW_ARTIFACT="$artifact" NORN_M5_SHADOW_PUBLIC_KEY="$public_key" NORN_M5_SHADOW_SESSION="$session" NORN_M5_SHADOW_HANDOFF_TOKEN="$token" NORN_M5_SHADOW_BOOTSTRAPPED_FILE="$bootstrapped" NORN_M5_SHADOW_RUNTIME_ATTEMPTED_FILE="$runtime_attempted" NORN_M5_SHADOW_RUNTIME_PASSED_FILE="$runtime_passed"
+export NORN_M5_SHADOW_ROOT="$scratch" NORN_M5_SHADOW_LABEL="$label" NORN_M5_SHADOW_DB_SESSION="$db_session" NORN_M5_SHADOW_PORT="$port" NORN_M5_SHADOW_VERSION="$version" NORN_M5_SHADOW_API="$api" NORN_M5_SHADOW_RELEASE="$release" NORN_M5_SHADOW_SOURCE_RELEASE="$source_release" NORN_M5_SHADOW_SHA="$sha" NORN_M5_SHADOW_MANIFEST="$manifest" NORN_M5_SHADOW_ARTIFACT="$artifact" NORN_M5_SHADOW_PUBLIC_KEY="$public_key" NORN_M5_SHADOW_SESSION="$session" NORN_M5_SHADOW_HANDOFF_TOKEN="$token" NORN_M5_SHADOW_BOOTSTRAPPED_FILE="$bootstrapped" NORN_M5_SHADOW_RUNTIME_ATTEMPTED_FILE="$runtime_attempted" NORN_M5_SHADOW_RUNTIME_PASSED_FILE="$runtime_passed"
 export NORN_M5_SHADOW_PLIST="$scratch/$label.plist" NORN_M5_SHADOW_ENV="$scratch/runtime.env" NORN_M5_SHADOW_LAUNCHER="$scratch/launch-shadow-api"
 NORN_CANDIDATE_SHA="$sha" NORN_CANDIDATE_VERSION="$version" NORN_REHEARSAL_SHADOW_COMMAND="$hook" "$script_dir/mini-private-copy-rehearsal" "$api"

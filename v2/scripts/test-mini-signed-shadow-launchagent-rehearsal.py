@@ -90,6 +90,57 @@ print('signed')
             self.assertEqual(json.loads(receipt.read_text())['exitCode'], 23)
             self.assertEqual(list(scratch.iterdir()), [])
 
+    def test_artifact_verifier_uses_canonical_release_path_and_bsd_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private_copy = r'''set -eu
+private_root=$(mktemp -d "$TMPDIR/norn-mini-private-copy.fixture.XXXXXX")
+cleanup_private() {
+  find "$private_root" -type d -exec chmod u+w {} + 2>/dev/null || true
+  rm -rf "$private_root"
+}
+trap cleanup_private EXIT
+mkdir -m 700 "$private_root/socket"
+socket=$(python3 -c 'import os,sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$private_root/socket")
+NORN_REHEARSAL_PRIVATE_DATABASE_URL="postgresql://norn@/norn_private?host=$socket&port=55432&sslmode=disable" "$NORN_REHEARSAL_SHADOW_COMMAND"
+'''
+            harness, release, key, scratch, receipt, env = self.cleanup_harness(root, private_copy)
+            artifact = harness.parent / 'platform-release-artifact'
+            path_record = root / 'artifact-release-paths.txt'
+            artifact.write_text(r'''#!/bin/sh
+release_dir=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--release-dir" ]; then release_dir=$2; shift 2; else shift; fi
+done
+[ "$release_dir" = "$NORN_M5_TEST_SOURCE_RELEASE" ] || {
+  echo 'artifact verifier was not given the canonical release directory' >&2
+  exit 1
+}
+printf '%s\n' "$release_dir" >>"$NORN_M5_TEST_ARTIFACT_PATH_RECORD"
+''', encoding='utf-8')
+            artifact.chmod(0o700)
+            fake_bin = root / 'fake-bin'; fake_bin.mkdir()
+            (fake_bin / 'chmod').write_text('''#!/bin/sh
+for argument do
+  if [ "$argument" = "--" ]; then echo 'BSD chmod rejects --' >&2; exit 64; fi
+done
+exec /bin/chmod "$@"
+''', encoding='utf-8')
+            (fake_bin / 'launchctl').write_text('#!/bin/sh\nexit 42\n', encoding='utf-8')
+            (fake_bin / 'lsof').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            for path in fake_bin.iterdir(): path.chmod(0o700)
+            env.update({
+                'PATH': str(fake_bin) + os.pathsep + '/usr/local/bin:/usr/bin:/bin',
+                'NORN_M5_TEST_SOURCE_RELEASE': str(release),
+                'NORN_M5_TEST_ARTIFACT_PATH_RECORD': str(path_record),
+            })
+            result = subprocess.run([str(harness), 'run', '--candidate-release', str(release),
+                                     '--public-key', str(key)], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 42, result.stderr)
+            self.assertEqual(path_record.read_text().splitlines(), [str(release), str(release)])
+            self.assertEqual(json.loads(receipt.read_text())['runtimeClaim'], 'failed')
+            self.assertEqual(list(scratch.iterdir()), [])
+
     def test_rejects_malformed_v3_rc_candidate_labels_before_private_copy(self):
         for version in ('v3.0.0-rc.0-platform', 'v3.0.0-rc.x-platform',
                         'v3.0.0-rc.1.2-platform', 'v3.0.0-rc.1-platform-extra'):
@@ -241,7 +292,7 @@ print('signed')
                 'NORN_REHEARSAL_PRIVATE_DATABASE_URL': 'postgresql://norn@/norn_private?host=%2Fprivate',
                 'NORN_M5_SHADOW_PLIST': str(root / 'plist'), 'NORN_M5_SHADOW_ENV': str(root / 'env'),
                 'NORN_M5_SHADOW_LAUNCHER': str(root / 'launcher'), 'NORN_M5_SHADOW_API': str(api),
-                'NORN_M5_SHADOW_RELEASE': str(release), 'NORN_M5_SHADOW_SHA': 'a' * 40,
+                'NORN_M5_SHADOW_RELEASE': str(release), 'NORN_M5_SHADOW_SOURCE_RELEASE': str(release), 'NORN_M5_SHADOW_SHA': 'a' * 40,
                 'NORN_M5_SHADOW_MANIFEST': str(SCRIPT.parent / 'platform-release-manifest'), 'NORN_M5_SHADOW_ARTIFACT': str(SCRIPT.parent / 'platform-release-artifact'),
                 'NORN_M5_SHADOW_PUBLIC_KEY': str(key)})
         self.assertEqual(result.returncode, 1)
