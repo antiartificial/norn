@@ -497,9 +497,8 @@ re-run the same command with that key and the same inputs (the printed
   `norn fleet provider-evidence <plan-id> --source-attempt <attempt-id>
   --provider-evidence <file>` (admin, non-releasing) followed by
   `norn fleet converge <name> --resume`, or give up on the plan with
-  `norn fleet release <target-id> --mode abandon --expected-generation <n>
-  --provider-evidence <file>` or `norn fleet abandon <plan-id> --provider-evidence
-  <file>` (admin). The file is
+  `norn fleet release <target-id> --mode abandon --expected-generation <n> --provider-evidence <file>`
+  or `norn fleet abandon <plan-id> --provider-evidence <file>` (admin). The file is
   `{"provider":"digitalocean","dropletId":"...","status":"off|archive|not_found","observedAt":"<RFC 3339>","reference":"..."}`
   with a status you observed within the last hour. Norn cannot check that
   status: the evidence is your signed assertion, so look at the droplet
