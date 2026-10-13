@@ -565,6 +565,10 @@ def build_receipt(evidence: dict[str, Any], evidence_sha: str, candidate_sha: st
     return raw
 
 
+def requires_fresh_inputs(journal_present: bool, journal: dict[str, Any] | None) -> bool:
+    return not journal_present or (journal is not None and journal.get("state") == "prepared")
+
+
 def run(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
     # Keep the retained key out of the process environment by default. It is
@@ -649,7 +653,27 @@ def run(argv: list[str] | None = None) -> int:
             journal_probe = None
         elif (journal_probe.get("transitionID") != args.transition_id
                 or journal_probe.get("sourceSHA") != args.source_sha):
-            fail("existing journal does not authorize this exact source/transition resume")
+            if not (selection.get("selection") == "generation"
+                    and journal_probe.get("state") == "prepared"
+                    and journal_probe.get("sourceSHA") == args.source_sha
+                    and journal_probe.get("transitionID") != args.transition_id
+                    and journal_probe.get("candidateReleaseSHA") != args.candidate_sha):
+                fail("existing journal does not authorize this exact source/transition resume")
+            generation_inputs = transition_dir / (
+                ".generation-inputs-" + hashlib.sha256(
+                    f"{args.transition_id}\0{args.source_sha}\0{args.candidate_sha}".encode()
+                ).hexdigest()[:32]
+            )
+            if not generation_inputs.exists():
+                generation_inputs.mkdir(mode=0o700)
+            input_info = generation_inputs.lstat()
+            if (not stat.S_ISDIR(input_info.st_mode) or stat.S_ISLNK(input_info.st_mode)
+                    or input_info.st_uid != os.geteuid() or stat.S_IMODE(input_info.st_mode) != 0o700):
+                fail("recovered-forward generation preparation input directory must be owner-only mode 0700")
+            evidence_path = generation_inputs / "transition.json.source-evidence.json"
+            receipt_path = generation_inputs / "preservation-receipt.json"
+            journal_present = False
+            journal_probe = None
         if journal_probe is not None and journal_probe.get("candidateReleaseSHA") != args.candidate_sha:
             prepare = platform_script.parent / "mini-recovered-forward-retarget"
             consumer = platform_script.parent / "mini-recovered-forward-retarget-consume"
@@ -708,7 +732,8 @@ def run(argv: list[str] | None = None) -> int:
                 or journal_probe.get("sourceEvidencePath") != str(evidence_path)):
             fail("existing journal does not authorize resume of this exact source/candidate transition")
     proof, shadow, proof_raw, artifact_sha, artifact_bytes = verify_backup_and_shadow(
-        args, args.source_sha, args.candidate_sha, enforce_freshness=not journal_present)
+        args, args.source_sha, args.candidate_sha,
+        enforce_freshness=requires_fresh_inputs(journal_present, journal_probe))
     evidence, evidence_raw, evidence_sha = sign_or_validate_evidence(
         args, {"journal": journal, "evidence": evidence_path, "receipt": receipt_path}, key, api, token,
         adoption, retained, adoption_raw, proof, proof_raw, artifact_sha, artifact_bytes, shadow,

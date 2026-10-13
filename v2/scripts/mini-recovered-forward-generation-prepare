@@ -343,6 +343,79 @@ def fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def prepared_successor(root: Path, selected: dict[str, Any], pointer_raw: bytes,
+                       source_sha: str, candidate_sha: str,
+                       transition_id: str) -> dict[str, Any]:
+    """Verify that an active generation can be superseded before mutation.
+
+    The signed resolver proves the pointer, manifest, immutable inputs and
+    predecessor closure. This additional check intentionally permits rollover
+    only while the mutable journal is still at its initial prepared phase.
+    """
+    if selected.get("selection") != "generation":
+        fail("active generation pointer is incompatible with this exact preparation")
+    if selected.get("sourceSHA") != source_sha:
+        fail("prepared generation successor requires the same exact source SHA")
+    if selected.get("candidateSHA") == candidate_sha:
+        fail("active generation pointer is incompatible with this exact preparation")
+    if selected.get("transitionID") == transition_id:
+        fail("prepared generation successor requires a fresh transition ID")
+    journal_path = Path(str(selected.get("journalPath", "")))
+    journal_raw = private_bytes(journal_path, "active prepared generation journal")
+    journal = strict_json(journal_raw, "active prepared generation journal")
+    if journal.get("state") != "prepared":
+        fail("only an active prepared generation can be superseded")
+    receipt_path = Path(str(selected.get("preservationReceiptPath", "")))
+    if receipt_path.exists() or receipt_path.is_symlink():
+        fail("prepared generation has a preservation receipt and cannot be superseded")
+    pointer_digest = hashlib.sha256(pointer_raw).hexdigest()
+    generation_id = selected.get("generationID")
+    if not isinstance(generation_id, str) or not GENERATION_ID.fullmatch(generation_id):
+        fail("active prepared generation ID is invalid")
+    return {
+        "generationID": generation_id,
+        "generationPath": Path(str(selected["generationPath"])),
+        "pointerRaw": pointer_raw,
+        "pointerSHA256": pointer_digest,
+        "archivePath": root / f"active-generation.previous-{generation_id}-{pointer_digest}.json",
+    }
+
+
+def archive_pointer(successor: dict[str, Any]) -> None:
+    archive = successor["archivePath"]
+    expected = successor["pointerRaw"]
+    try:
+        atomic_file(archive, expected)
+        fsync_dir(archive.parent)
+    except FileExistsError:
+        if not hmac.compare_digest(private_bytes(archive, "archived active generation pointer"), expected):
+            fail("prepared generation pointer archive is occupied by different bytes")
+
+
+def verify_pointer_archives(root: Path, key: bytes, active_generation_id: str) -> set[str]:
+    archives = sorted(root.glob("active-generation.previous-*.json"), key=lambda item: item.name)
+    generation_ids: set[str] = set()
+    for archive in archives:
+        raw = private_bytes(archive, "prepared predecessor pointer archive")
+        value = RESOLVER.signed_document(raw, POINTER_SCHEMA, RESOLVER.POINTER_FIELDS, key,
+                                         "prepared predecessor pointer archive")
+        generation_id = value.get("generationID")
+        digest = hashlib.sha256(raw).hexdigest()
+        expected_name = f"active-generation.previous-{generation_id}-{digest}.json"
+        if (archive.name != expected_name or generation_id == active_generation_id
+                or not isinstance(generation_id, str) or not GENERATION_ID.fullmatch(generation_id)
+                or generation_id in generation_ids):
+            fail("prepared predecessor pointer archive identity is invalid")
+        archived = RESOLVER.resolve(root, key, archive)
+        journal = strict_json(private_bytes(Path(archived["journalPath"]),
+                                             "archived prepared generation journal"),
+                              "archived prepared generation journal")
+        if journal.get("state") != "prepared":
+            fail("archived generation is not an exact prepared predecessor")
+        generation_ids.add(generation_id)
+    return generation_ids
+
+
 def build_journal(args: argparse.Namespace, generation: Path, evidence_raw: bytes,
                   proof: Path, artifact: Path, shadow: Path) -> bytes:
     evidence_path = generation / "transition.json.source-evidence.json"
@@ -518,21 +591,27 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     }
     pointer_raw = sign(pointer_value, key)
     pointer_path = root / "active-generation.json"
+    successor: dict[str, Any] | None = None
 
     if pointer_path.exists() or pointer_path.is_symlink():
         check_current_source(args.current_link, releases, args.source_sha)
         selected = RESOLVER.resolve(root, key)
-        if selected.get("selection") != "generation" or selected.get("generationID") != generation_id:
-            fail("active generation pointer is incompatible with this exact preparation")
-        checked_generation_dir(generation, expected_files)
-        verify_generation_evidence(generation, args, evidence_digest, key)
         active_raw = private_bytes(pointer_path, "active generation pointer")
-        if not hmac.compare_digest(active_raw, pointer_raw):
-            fail("active generation pointer differs from the deterministic preparation")
-        return result(root, generation_id, generation, manifest_raw, active_raw)
+        if selected.get("selection") == "generation" and selected.get("generationID") == generation_id:
+            checked_generation_dir(generation, expected_files)
+            verify_generation_evidence(generation, args, evidence_digest, key)
+            if not hmac.compare_digest(active_raw, pointer_raw):
+                fail("active generation pointer differs from the deterministic preparation")
+            verify_pointer_archives(root, key, generation_id)
+            return result(root, generation_id, generation, manifest_raw, active_raw)
+        successor = prepared_successor(root, selected, active_raw, args.source_sha,
+                                       args.candidate_sha, args.transition_id)
 
     existing_entries = {item.name for item in generations.iterdir()}
     allowed = {generation_id, f".prepare-{generation_id}"}
+    if successor is not None:
+        allowed.add(successor["generationID"])
+        allowed.update(verify_pointer_archives(root, key, successor["generationID"]))
     if existing_entries - allowed:
         fail("unexpected generation orphan exists; refusing to activate a successor")
     staging = generations / f".prepare-{generation_id}"
@@ -559,7 +638,17 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     checked_generation_dir(generation, expected_files)
     verify_generation_evidence(generation, args, evidence_digest, key)
     check_current_source(args.current_link, releases, args.source_sha)
-    RESOLVER.resolve(root, key)  # pointer absent must select the immutable legacy paths
+    selected_before_publish = RESOLVER.resolve(root, key)
+    if successor is None:
+        if selected_before_publish.get("selection") != "legacy-fixed":
+            fail("active generation selection changed before publication")
+    else:
+        active_before_publish = private_bytes(pointer_path, "active generation pointer before successor publication")
+        if (selected_before_publish.get("selection") != "generation"
+                or selected_before_publish.get("generationID") != successor["generationID"]
+                or not hmac.compare_digest(active_before_publish, successor["pointerRaw"])):
+            fail("active prepared generation changed before successor publication")
+        archive_pointer(successor)
     temp_fd, temp_name = tempfile.mkstemp(prefix=".active-generation.", dir=root)
     try:
         os.fchmod(temp_fd, 0o600)
@@ -567,12 +656,18 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             stream.write(pointer_raw)
             stream.flush()
             os.fsync(stream.fileno())
-        try:
-            os.link(temp_name, pointer_path)
-        except FileExistsError:
-            selected = RESOLVER.resolve(root, key)
-            if selected.get("selection") != "generation" or selected.get("generationID") != generation_id:
-                fail("a conflicting active generation pointer appeared during preparation")
+        if successor is None:
+            try:
+                os.link(temp_name, pointer_path)
+            except FileExistsError:
+                selected = RESOLVER.resolve(root, key)
+                if selected.get("selection") != "generation" or selected.get("generationID") != generation_id:
+                    fail("a conflicting active generation pointer appeared during preparation")
+        else:
+            if not hmac.compare_digest(private_bytes(pointer_path, "active generation pointer before atomic successor switch"),
+                                       successor["pointerRaw"]):
+                fail("active prepared generation changed before atomic successor switch")
+            os.replace(temp_name, pointer_path)
         fsync_dir(root)
     finally:
         try:

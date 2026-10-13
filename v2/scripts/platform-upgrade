@@ -3065,7 +3065,23 @@ PY
 
 recovered_forward_resume_or_start() {
   local phase=""
+  local expected_generation_kind="$recovered_selected_generation_kind"
+  local expected_generation_id="$recovered_selected_generation_id"
+  local expected_journal_path="$recovered_journal_path"
+  local expected_receipt_path="$recovered_preservation_receipt"
+  local expected_selected_transition="$recovered_selected_transition_id"
+  local expected_selected_source="$recovered_selected_source_sha"
+  local expected_selected_candidate="$recovered_selected_candidate_sha"
   acquire_promotion_lock
+  resolve_recovered_generation "$recovered_base_root"
+  [[ "$recovered_selected_generation_kind" == "$expected_generation_kind" \
+      && "$recovered_selected_generation_id" == "$expected_generation_id" \
+      && "$recovered_journal_path" == "$expected_journal_path" \
+      && "$recovered_preservation_receipt" == "$expected_receipt_path" \
+      && "$recovered_selected_transition_id" == "$expected_selected_transition" \
+      && "$recovered_selected_source_sha" == "$expected_selected_source" \
+      && "$recovered_selected_candidate_sha" == "$expected_selected_candidate" ]] \
+    || fail "active recovered-forward generation changed before the promotion lock was acquired"
   if [[ -e "$transition_state_path" ]]; then
     recovered_forward_load_start_journal
     phase="$recovered_phase"

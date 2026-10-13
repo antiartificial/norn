@@ -62,6 +62,10 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertLess(controller.index("recovered_forward_dispatch_transition"), controller.index("recovered_forward_validate_preflight"))
         resume = source.split("recovered_forward_resume_or_start() {", 1)[1].split("\n}", 1)[0]
         self.assertLess(resume.index("acquire_promotion_lock"), resume.index('if [[ -e "$transition_state_path" ]]'))
+        self.assertLess(resume.index("acquire_promotion_lock"), resume.index('resolve_recovered_generation "$recovered_base_root"'))
+        self.assertLess(resume.index('resolve_recovered_generation "$recovered_base_root"'),
+                        resume.index('if [[ -e "$transition_state_path" ]]'))
+        self.assertIn("active recovered-forward generation changed before the promotion lock was acquired", resume)
         for phase in (
             "prepared", "host-agent-fencing", "host-agent-fenced", "api-fencing", "legacy-fenced",
             "migration-started", "schema-migrated", "candidate-activation-started",

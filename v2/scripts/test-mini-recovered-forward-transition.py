@@ -68,6 +68,15 @@ class RecoveredForwardWrapperTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "preservation digest changed"):
             WRAPPER.build_receipt(self.evidence, "7" * 64, self.candidate, "8" * 64, self.key)
 
+    def test_prepared_or_unjournaled_transition_requires_fresh_backup_and_shadow(self):
+        self.assertTrue(WRAPPER.requires_fresh_inputs(False, None))
+        self.assertTrue(WRAPPER.requires_fresh_inputs(True, {"state": "prepared"}))
+        self.assertFalse(WRAPPER.requires_fresh_inputs(True, {"state": "candidate-activation-started"}))
+        source = SCRIPT.read_text()
+        verification = source.index("enforce_freshness=requires_fresh_inputs")
+        mutation = source.index('invoke_platform(platform_script, "recovered-forward-controller"')
+        self.assertLess(verification, mutation)
+
     def test_receipt_rejects_duplicate_fields_and_wrong_hmac(self):
         raw = WRAPPER.signed_document({"schema": WRAPPER.RECEIPT_SCHEMA, "x": 1}, self.key)
         duplicate = raw[:-1] + b',"x":2}'
