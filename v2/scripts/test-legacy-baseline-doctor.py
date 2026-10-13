@@ -186,6 +186,7 @@ class DoctorFixtureTest(unittest.TestCase):
                     "mini-recovered-forward-retarget", "mini-recovered-forward-retarget-consume",
                     "mini-recovered-forward-transition", "mini-recovered-forward-validate-journal",
                     "mini-recovered-forward-verify-evidence", "mini-recovered-forward-completed-gate",
+                    "mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve",
                     "mini-signed-shadow-launchagent-rehearsal",
                     "mini-verify-protected-backup", "platform-release-artifact", "platform-release-fetch-github",
                     "platform-release-manifest", "platform-release-verify-github", "platform-upgrade")

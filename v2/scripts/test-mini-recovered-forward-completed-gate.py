@@ -80,6 +80,34 @@ class CompletedRecoveryGateTest(unittest.TestCase):
                               text=True, capture_output=True,
                               env={**os.environ, "HOME": str(self.home), "NORN_AUDIT_SIGNING_KEY": AUDIT_KEY}, timeout=10)
 
+    def test_generation_local_receipt_path_is_accepted(self):
+        generation = self.journal.parent / "generations" / "gen-test"
+        generation.mkdir(parents=True, mode=0o700)
+        journal = generation / "transition.json"
+        evidence = generation / "transition.json.source-evidence.json"
+        proof = generation / "backup-proof.json"
+        backup = generation / "backup.dump"
+        shadow = generation / "shadow-receipt.json"
+        receipt = generation / "preservation-receipt.json"
+        for source, target in ((self.evidence, evidence), (self.proof, proof),
+                               (self.backup, backup), (self.shadow, shadow),
+                               (self.preservation, receipt)):
+            write(target, source.read_bytes())
+        value = dict(self.value)
+        value.update({
+            "sourceEvidencePath": str(evidence),
+            "backupProofPath": str(proof),
+            "backupArtifactPath": str(backup),
+            "shadowReceiptPath": str(shadow),
+            "preservationReceiptPath": str(receipt),
+        })
+        write(journal, json.dumps(value, sort_keys=True) + "\n")
+        result = subprocess.run([str(SCRIPT), str(journal), str(self.current), str(self.releases), str(receipt)],
+                                text=True, capture_output=True,
+                                env={**os.environ, "HOME": str(self.home), "NORN_AUDIT_SIGNING_KEY": AUDIT_KEY}, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.rstrip("\n").split("\t")[0], value["transitionID"])
+
     def test_exact_promoted_candidate_and_preservation_receipt_pass(self):
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)

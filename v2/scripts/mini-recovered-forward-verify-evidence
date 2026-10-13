@@ -39,6 +39,31 @@ def private(path: Path, label: str) -> bytes:
     return path.read_bytes()
 
 
+def private_digest(path: Path, label: str) -> tuple[str, int]:
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError(f"{label} must be absolute and not a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size <= 0):
+            raise ValueError(f"{label} must be a nonempty owner-only mode-0600 regular file")
+        value = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            value.update(chunk)
+            total += len(chunk)
+        if total != info.st_size:
+            raise ValueError(f"{label} changed while it was being read")
+        return value.hexdigest(), total
+    finally:
+        os.close(descriptor)
+
+
 def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -210,7 +235,7 @@ def main() -> int:
         if not isinstance(value.get(name), str) or not re.fullmatch(r"[0-9a-f]{64}", value[name]):
             raise ValueError(f"source evidence digest is invalid: {name}")
     proof_raw = private(proof_path, "backup proof")
-    artifact_raw = private(artifact_path, "backup artifact")
+    artifact_sha, artifact_bytes = private_digest(artifact_path, "backup artifact")
     shadow_raw = private(shadow_path, "shadow receipt")
     proof = strict_json(proof_raw, "backup proof")
     shadow = strict_json(shadow_raw, "shadow receipt")
@@ -223,7 +248,7 @@ def main() -> int:
             not isinstance(proof.get("databaseIdentity"), str) or
             not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", proof["databaseIdentity"])):
         raise ValueError("backup proof identity, digest, or byte-count types are invalid")
-    if proof.get("sourceReleaseSHA") != str(source) or proof.get("backupSHA256") != digest(artifact_raw) or proof.get("backupBytes") != len(artifact_raw):
+    if proof.get("sourceReleaseSHA") != str(source) or proof.get("backupSHA256") != artifact_sha or proof.get("backupBytes") != artifact_bytes:
         raise ValueError("backup proof and artifact do not bind the exact source")
     if value.get("backupProofSHA256") != digest(proof_raw) or value.get("backupSHA256") != proof.get("backupSHA256") or value.get("backupBytes") != proof.get("backupBytes"):
         raise ValueError("source evidence backup binding mismatch")

@@ -175,7 +175,9 @@ jobs:
             mini-recovered-forward-transition \
             mini-recovered-forward-verify-evidence \
             mini-recovered-forward-validate-journal \
-            mini-recovered-forward-completed-gate
+            mini-recovered-forward-completed-gate \
+            mini-recovered-forward-generation-prepare \
+            mini-recovered-forward-generation-resolve
           do
             install -m 0755 "v2/scripts/$helper" "$release/bin/$helper"
           done

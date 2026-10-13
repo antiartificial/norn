@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Resolve the selected recovered-forward generation without mutating it."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import hmac
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+from typing import Any
+
+
+POINTER_SCHEMA = "norn.recovered-forward-active-generation/v1"
+MANIFEST_SCHEMA = "norn.recovered-forward-generation/v1"
+POINTER_FIELDS = {
+    "schema", "generationID", "generationPath", "generationManifestPath",
+    "generationManifestSHA256", "transitionID", "sourceSHA", "candidateSHA",
+    "activatedAt", "signature",
+}
+MANIFEST_FIELDS = {
+    "schema", "generationID", "generationPath", "transitionID", "sourceSHA",
+    "candidateSHA", "journalPath", "preservationReceiptPath", "createdAt", "signature",
+    "sourceEvidencePath", "sourceEvidenceSHA256", "backupProofPath", "backupProofSHA256",
+    "backupArtifactPath", "backupArtifactSHA256", "backupArtifactBytes",
+    "shadowReceiptPath", "shadowReceiptSHA256",
+    "predecessorState", "predecessorTransitionID", "predecessorSourceSHA", "predecessorCandidateSHA",
+    "predecessorJournalPath", "predecessorJournalSHA256", "predecessorEvidencePath",
+    "predecessorEvidenceSHA256", "predecessorReceiptPath", "predecessorReceiptSHA256",
+}
+GENERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+TRANSITION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$")
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+MAX_DOCUMENT_BYTES = 64 * 1024
+
+
+def fail(message: str) -> None:
+    raise ValueError(message)
+
+
+def canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def strict_json(raw: bytes, label: str) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                fail(f"{label} contains duplicate field {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=unique)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"{label} is not strict JSON: {error}")
+    if type(value) is not dict:
+        fail(f"{label} must be a JSON object")
+    return value
+
+
+def owner_directory(path: Path, label: str) -> Path:
+    if not path.is_absolute():
+        fail(f"{label} must be absolute")
+    try:
+        info = path.lstat()
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700
+            or resolved != path):
+        fail(f"{label} must be a canonical invoking-user-owned mode-0700 directory")
+    return resolved
+
+
+def owner_document(path: Path, label: str) -> bytes:
+    if not path.is_absolute():
+        fail(f"{label} must be absolute")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        fail(f"cannot safely open {label}: {error}")
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size <= 0
+                or info.st_size > MAX_DOCUMENT_BYTES):
+            fail(f"{label} must be a nonempty invoking-user-owned mode-0600 regular file")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(MAX_DOCUMENT_BYTES + 1)
+        if len(raw) > MAX_DOCUMENT_BYTES:
+            fail(f"{label} exceeds the {MAX_DOCUMENT_BYTES}-byte limit")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def owner_artifact_metadata(path: Path, expected_bytes: Any, label: str) -> None:
+    if not path.is_absolute() or path.is_symlink() or path.resolve(strict=True) != path:
+        fail(f"{label} must be absolute and not a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        fail(f"cannot safely open {label}: {error}")
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or type(expected_bytes) is not int
+                or expected_bytes <= 0 or info.st_size != expected_bytes):
+            fail(f"{label} mode, owner, or byte count does not match the generation manifest")
+    finally:
+        os.close(fd)
+
+
+def signed_document(raw: bytes, schema: str, fields: set[str], key: bytes, label: str) -> dict[str, Any]:
+    if len(key) < 32:
+        fail("NORN_AUDIT_SIGNING_KEY must contain at least 32 bytes")
+    value = strict_json(raw, label)
+    if set(value) != fields or value.get("schema") != schema:
+        fail(f"{label} schema or fields are not exact")
+    signature = value.get("signature")
+    unsigned = dict(value)
+    del unsigned["signature"]
+    expected = "hmac-sha256:" + hmac.new(key, schema.encode() + b"\0" + canonical(unsigned), hashlib.sha256).hexdigest()
+    if not isinstance(signature, str) or not hmac.compare_digest(signature, expected):
+        fail(f"{label} HMAC signature does not verify")
+    return value
+
+
+def utc_timestamp(value: Any, label: str) -> None:
+    if not isinstance(value, str):
+        fail(f"{label} timestamp is missing")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        fail(f"{label} timestamp is invalid")
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        fail(f"{label} timestamp must be UTC")
+
+
+def resolve(root: Path, key: bytes) -> dict[str, Any]:
+    root = owner_directory(root, "recovered-forward root")
+    pointer_path = root / "active-generation.json"
+    if not pointer_path.exists() and not pointer_path.is_symlink():
+        return {
+            "selection": "legacy-fixed",
+            "root": str(root),
+            "generationID": None,
+            "generationPath": str(root),
+            "generationManifestPath": None,
+            "generationManifestSHA256": None,
+            "journalPath": str(root / "transition.json"),
+            "preservationReceiptPath": str(root / "preservation-receipt.json"),
+        }
+
+    pointer_raw = owner_document(pointer_path, "active generation pointer")
+    pointer = signed_document(pointer_raw, POINTER_SCHEMA, POINTER_FIELDS, key, "active generation pointer")
+    generation_id = pointer.get("generationID")
+    transition_id = pointer.get("transitionID")
+    source_sha = pointer.get("sourceSHA")
+    candidate_sha = pointer.get("candidateSHA")
+    manifest_digest = pointer.get("generationManifestSHA256")
+    if (not isinstance(generation_id, str) or not GENERATION_ID.fullmatch(generation_id)
+            or generation_id in {".", ".."}):
+        fail("active generation ID is invalid")
+    if not isinstance(transition_id, str) or not TRANSITION_ID.fullmatch(transition_id):
+        fail("active generation transition ID is invalid")
+    if not isinstance(source_sha, str) or not HEX40.fullmatch(source_sha):
+        fail("active generation source SHA is invalid")
+    if not isinstance(candidate_sha, str) or not HEX40.fullmatch(candidate_sha) or candidate_sha == source_sha:
+        fail("active generation candidate SHA is invalid")
+    if not isinstance(manifest_digest, str) or not HEX64.fullmatch(manifest_digest):
+        fail("active generation manifest digest is invalid")
+    utc_timestamp(pointer.get("activatedAt"), "active generation activation")
+
+    generations = owner_directory(root / "generations", "recovered-forward generations directory")
+    expected_generation = generations / generation_id
+    generation = owner_directory(expected_generation, "active generation directory")
+    expected_manifest = generation / "generation.json"
+    if pointer.get("generationPath") != str(generation):
+        fail("active generation path is not the canonical generation-ID path")
+    if pointer.get("generationManifestPath") != str(expected_manifest):
+        fail("active generation manifest path is not canonical")
+
+    manifest_raw = owner_document(expected_manifest, "active generation manifest")
+    if not hmac.compare_digest(hashlib.sha256(manifest_raw).hexdigest(), manifest_digest):
+        fail("active generation manifest digest does not match the pointer")
+    manifest = signed_document(manifest_raw, MANIFEST_SCHEMA, MANIFEST_FIELDS, key, "active generation manifest")
+    utc_timestamp(manifest.get("createdAt"), "active generation manifest creation")
+    expected = {
+        "generationID": generation_id,
+        "generationPath": str(generation),
+        "transitionID": transition_id,
+        "sourceSHA": source_sha,
+        "candidateSHA": candidate_sha,
+        "journalPath": str(generation / "transition.json"),
+        "preservationReceiptPath": str(generation / "preservation-receipt.json"),
+    }
+    for field, expected_value in expected.items():
+        if manifest.get(field) != expected_value:
+            fail(f"active generation manifest binding changed: {field}")
+
+    # The mutable transition journal is not itself signed. Bind its immutable
+    # identity and evidence paths back to the HMAC-protected generation
+    # manifest every time the active pointer is resolved.
+    journal_path = Path(expected["journalPath"])
+    journal = strict_json(owner_document(journal_path, "active generation journal"), "active generation journal")
+    if (journal.get("schema") != "norn.recovered-forward-transition/v1"
+            or journal.get("transitionID") != transition_id
+            or journal.get("sourceSHA") != source_sha
+            or journal.get("candidateReleaseSHA") != candidate_sha
+            or journal.get("sourceEvidencePath") != manifest.get("sourceEvidencePath")
+            or journal.get("sourceEvidenceSHA256") != manifest.get("sourceEvidenceSHA256")
+            or journal.get("backupProofPath") != manifest.get("backupProofPath")
+            or journal.get("backupArtifactPath") != manifest.get("backupArtifactPath")
+            or journal.get("shadowReceiptPath") != manifest.get("shadowReceiptPath")
+            or journal.get("preservationReceiptPath") != expected["preservationReceiptPath"]):
+        fail("active generation journal does not match the signed pointer and manifest")
+    allowed_states = {
+        "prepared", "candidate-postflight-failed", "candidate-activation-started",
+        "candidate-preservation-pending", "candidate-finalize-requested",
+        "candidate-normal-activation-pending", "candidate-normal-active-pending-host-agent",
+        "candidate-normal-active-pending-host-agent-restart", "candidate-promoted",
+    }
+    if journal.get("state") not in allowed_states:
+        fail("active generation journal state is unsupported")
+
+    predecessor = {
+        "predecessorState": "candidate-promoted",
+        "predecessorJournalPath": str(root / "transition.json"),
+        "predecessorReceiptPath": str(root / "preservation-receipt.json"),
+    }
+    for field, expected_value in predecessor.items():
+        if manifest.get(field) != expected_value:
+            fail(f"active generation predecessor binding changed: {field}")
+    if (not isinstance(manifest.get("predecessorTransitionID"), str)
+            or not TRANSITION_ID.fullmatch(manifest["predecessorTransitionID"])
+            or not isinstance(manifest.get("predecessorSourceSHA"), str)
+            or not HEX40.fullmatch(manifest["predecessorSourceSHA"])
+            or not isinstance(manifest.get("predecessorCandidateSHA"), str)
+            or not HEX40.fullmatch(manifest["predecessorCandidateSHA"])):
+        fail("active generation predecessor release or transition identity is invalid")
+    for path_field, digest_field in (
+        ("predecessorJournalPath", "predecessorJournalSHA256"),
+        ("predecessorEvidencePath", "predecessorEvidenceSHA256"),
+        ("predecessorReceiptPath", "predecessorReceiptSHA256"),
+    ):
+        raw_path, expected_digest = manifest.get(path_field), manifest.get(digest_field)
+        if not isinstance(raw_path, str) or not isinstance(expected_digest, str) or not HEX64.fullmatch(expected_digest):
+            fail(f"active generation predecessor {path_field} or digest is invalid")
+        predecessor_path = Path(raw_path)
+        if (not predecessor_path.is_absolute() or predecessor_path.is_symlink()
+                or predecessor_path.resolve(strict=True) != predecessor_path
+                or root not in predecessor_path.parents):
+            fail(f"active generation predecessor {path_field} is outside the canonical root")
+        predecessor_raw = owner_document(predecessor_path, f"{path_field}")
+        if not hmac.compare_digest(hashlib.sha256(predecessor_raw).hexdigest(), expected_digest):
+            fail(f"active generation predecessor digest changed: {path_field}")
+    if manifest.get("predecessorEvidencePath") != manifest.get("predecessorJournalPath") + ".source-evidence.json":
+        fail("active generation predecessor evidence path is not the fixed legacy evidence path")
+
+    new_files = {
+        "sourceEvidencePath": str(generation / "transition.json.source-evidence.json"),
+        "backupProofPath": str(generation / "backup-proof.json"),
+        "shadowReceiptPath": str(generation / "shadow-receipt.json"),
+    }
+    for path_field, expected_path in new_files.items():
+        if manifest.get(path_field) != expected_path:
+            fail(f"active generation {path_field} is not canonical")
+    for path_field, digest_field in (
+        ("sourceEvidencePath", "sourceEvidenceSHA256"),
+        ("backupProofPath", "backupProofSHA256"),
+        ("shadowReceiptPath", "shadowReceiptSHA256"),
+    ):
+        expected_digest = manifest.get(digest_field)
+        if not isinstance(expected_digest, str) or not HEX64.fullmatch(expected_digest):
+            fail(f"active generation {digest_field} is invalid")
+        content = owner_document(Path(manifest[path_field]), f"active generation {path_field}")
+        if not hmac.compare_digest(hashlib.sha256(content).hexdigest(), expected_digest):
+            fail(f"active generation digest changed: {path_field}")
+    artifact_path = manifest.get("backupArtifactPath")
+    artifact_digest = manifest.get("backupArtifactSHA256")
+    if not isinstance(artifact_path, str) or not isinstance(artifact_digest, str) or not HEX64.fullmatch(artifact_digest):
+        fail("active generation backup artifact path or digest is invalid")
+    owner_artifact_metadata(Path(artifact_path), manifest.get("backupArtifactBytes"), "active generation backup artifact")
+
+    return {
+        "selection": "generation",
+        "root": str(root),
+        "generationID": generation_id,
+        "generationPath": str(generation),
+        "generationManifestPath": str(expected_manifest),
+        "generationManifestSHA256": manifest_digest,
+        "journalPath": expected["journalPath"],
+        "preservationReceiptPath": expected["preservationReceiptPath"],
+        "transitionID": transition_id,
+        "sourceSHA": source_sha,
+        "candidateSHA": candidate_sha,
+    }
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("--root", type=Path,
+                        default=Path.home() / ".config/norn/recovered-forward")
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    selection = resolve(args.root, os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode())
+    print(json.dumps(selection, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)

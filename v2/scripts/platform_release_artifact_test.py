@@ -31,6 +31,8 @@ BINARIES = (
     "mini-recovered-forward-validate-journal",
     "mini-recovered-forward-verify-evidence",
     "mini-recovered-forward-completed-gate",
+    "mini-recovered-forward-generation-prepare",
+    "mini-recovered-forward-generation-resolve",
     "mini-signed-shadow-launchagent-rehearsal",
     "mini-verify-protected-backup",
     "norn",
