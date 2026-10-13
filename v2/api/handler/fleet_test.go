@@ -113,6 +113,27 @@ func TestBuildCapacityPlanRequiresBlueGreenForSizeChangeAndSigns(t *testing.T) {
 	}
 }
 
+func TestBuildCapacityPlanBindsExplicitTemporaryRunnerSSH(t *testing.T) {
+	pool := fleet.NodePool{Size: "small", Min: 2, Desired: 2, Max: 8, Replacement: fleet.Replacement{Strategy: "blueGreen"}}
+	inventory := &fleet.Inventory{Digest: "sha256:source", Document: &fleet.Document{Cluster: fleet.Cluster{Name: "production-nyc3"}}}
+	disabled := false
+	plan, err := buildCapacityPlan(inventory, "app", pool, fleet.PlanRequest{TemporaryRunnerSSH: &disabled}, "audit-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.TemporaryRunnerSSH == nil || *plan.TemporaryRunnerSSH {
+		t.Fatalf("plan did not retain explicit false: %#v", plan.TemporaryRunnerSSH)
+	}
+	if !New(nil, nil, nil, nil, &config.Config{Profile: "production", AuditSigningKey: "audit-key"}, nil, nil, nil, nil, nil, nil).verifyCapacityPlan(plan) {
+		t.Fatal("signed plan with explicit SSH semantic was rejected")
+	}
+	enabled := true
+	plan.TemporaryRunnerSSH = &enabled
+	if New(nil, nil, nil, nil, &config.Config{Profile: "production", AuditSigningKey: "audit-key"}, nil, nil, nil, nil, nil, nil).verifyCapacityPlan(plan) {
+		t.Fatal("plan signature did not detect a temporary-runner-ssh change")
+	}
+}
+
 func TestFleetGitHubRequiresAnAuthenticCapacityPlan(t *testing.T) {
 	pool := fleet.NodePool{Size: "small", Min: 2, Desired: 2, Max: 8}
 	inventory := &fleet.Inventory{Digest: "sha256:source", Document: &fleet.Document{Cluster: fleet.Cluster{Name: "production-nyc3"}}}

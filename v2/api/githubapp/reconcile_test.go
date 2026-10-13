@@ -233,7 +233,7 @@ func TestReconcilePullRequestClassifiesObservedRemoteState(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			got, err := client.ReconcilePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", fleet.NodePool{}, "sha256:source")
+			got, err := client.ReconcilePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", fleet.NodePool{}, "sha256:source", nil)
 			if err != nil || got.Outcome != test.want {
 				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, test.want)
 			}
@@ -249,7 +249,7 @@ func TestReconcilePullRequestRejectsTamperedBranchAndAbsenceRace(t *testing.T) {
 	}
 	const planID = "11111111-1111-4111-8111-111111111111"
 	planDigest := "sha256:" + strings.Repeat("a", 64)
-	receiptPath, expectedBranch, err := planReviewReceipt(planID, planDigest, fleet.Digest(document), "app", "scale", parsed.NodePools["app"])
+	receiptPath, expectedBranch, err := planReviewReceipt(planID, planDigest, fleet.Digest(document), "app", "scale", parsed.NodePools["app"], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestReconcilePullRequestRejectsTamperedBranchAndAbsenceRace(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			got, err := client.ReconcilePullRequest(context.Background(), planID, planDigest, "app", "scale", parsed.NodePools["app"], fleet.Digest(document))
+			got, err := client.ReconcilePullRequest(context.Background(), planID, planDigest, "app", "scale", parsed.NodePools["app"], fleet.Digest(document), nil)
 			if err != nil || got.Outcome != tc.want {
 				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, tc.want)
 			}
@@ -364,7 +364,7 @@ func TestCreatePullRequestClassifiesPrewriteAndExistingBranchFailures(t *testing
 					http.NotFound(w, r)
 				}
 			}))
-			_, err := client.CreatePullRequest(context.Background(), planID, "sha256:x", "app", "scale", proposed, fleet.Digest(tc.main))
+			_, err := client.CreatePullRequest(context.Background(), planID, "sha256:x", "app", "scale", proposed, fleet.Digest(tc.main), nil)
 			if tc.want != nil && !errorsIs(err, tc.want) {
 				t.Fatalf("error=%v", err)
 			}

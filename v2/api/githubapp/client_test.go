@@ -198,14 +198,14 @@ nodePools:
 		}
 	}))
 	proposed := fleet.NodePool{Size: "s-4vcpu-8gb", Min: 2, Desired: 3, Max: 8, Replacement: fleet.Replacement{Strategy: "blueGreen", RequireCapacityHeadroom: true, RequireReadiness: true}}
-	result, err := client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, fleet.Digest(document))
+	result, err := client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, fleet.Digest(document), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Number != 7 || result.Branch != branch || updatedDesired != 3 {
 		t.Fatalf("result=%#v desired=%d", result, updatedDesired)
 	}
-	_, err = client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64))
+	_, err = client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64), nil)
 	if !errorsIs(err, ErrStalePlan) {
 		t.Fatalf("stale plan error = %v", err)
 	}
@@ -309,25 +309,52 @@ nodePools:
 	}))
 	firstPlanID := "33333333-3333-4333-8333-333333333333"
 	secondPlanID := "44444444-4444-4444-8444-444444444444"
-	first, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest)
+	first, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest); err != nil {
+	if _, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil); err != nil {
 		t.Fatalf("durable reuse of same no-op plan failed: %v", err)
 	}
-	second, err := client.CreatePullRequest(context.Background(), secondPlanID, planDigest, "app", "scale", proposed, sourceDigest)
+	second, err := client.CreatePullRequest(context.Background(), secondPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Number == second.Number || len(receipts) != 2 || configWrites != 0 {
 		t.Fatalf("receipt PRs=%#v/%#v receipts=%d configWrites=%d", first, second, len(receipts), configWrites)
 	}
-	if _, err := client.CreatePullRequest(context.Background(), "55555555-5555-4555-8555-555555555555", planDigest, "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64)); !errorsIs(err, ErrStalePlan) {
+	if _, err := client.CreatePullRequest(context.Background(), "55555555-5555-4555-8555-555555555555", planDigest, "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64), nil); !errorsIs(err, ErrStalePlan) {
 		t.Fatalf("no-op stale source error = %v", err)
 	}
 	if len(receipts) != 2 {
 		t.Fatalf("stale no-op plan wrote a receipt")
+	}
+}
+
+func TestPlanReviewReceiptBindsExplicitTemporaryRunnerSSH(t *testing.T) {
+	planID := "66666666-6666-4666-8666-666666666666"
+	planDigest := "sha256:" + strings.Repeat("a", 64)
+	sourceDigest := "sha256:" + strings.Repeat("b", 64)
+	value := false
+	_, encoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, &value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt struct {
+		TemporaryRunnerSSH *bool `json:"temporaryRunnerSSH"`
+	}
+	if err := json.Unmarshal(encoded, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.TemporaryRunnerSSH == nil || *receipt.TemporaryRunnerSSH {
+		t.Fatalf("receipt did not bind explicit false: %s", encoded)
+	}
+	_, defaultEncoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(defaultEncoded), "temporaryRunnerSSH") {
+		t.Fatalf("default receipt unexpectedly overrides protected workflow default: %s", defaultEncoded)
 	}
 }
 

@@ -121,3 +121,31 @@ func TestActiveOperationCountFailsClosedOnInconsistentOrTruncatedResponse(t *tes
 		})
 	}
 }
+
+func TestPlanFleetCapacityBindsExplicitTemporaryRunnerSSH(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/fleet/node-pools/control/plan" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Idempotency-Key") != "plan-key" {
+			t.Fatalf("idempotency key=%q", r.Header.Get("Idempotency-Key"))
+		}
+		var request struct {
+			TemporaryRunnerSSH *bool `json:"temporaryRunnerSSH"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.TemporaryRunnerSSH == nil || *request.TemporaryRunnerSSH {
+			t.Fatalf("request did not bind explicit false: %#v", request.TemporaryRunnerSSH)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"plan-1"}`))
+	}))
+	defer server.Close()
+
+	disabled := false
+	if _, err := New(server.URL).PlanFleetCapacity("control", nil, "", "", "cold start", &disabled, "plan-key"); err != nil {
+		t.Fatal(err)
+	}
+}

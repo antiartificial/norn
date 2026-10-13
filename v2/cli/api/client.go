@@ -2031,10 +2031,13 @@ func (c *Client) RerunFleetApply(planID string, allowDestructive bool, approvalE
 	return &operation, nil
 }
 
-func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason, idempotencyKey string) (*Operation, error) {
+func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason string, temporaryRunnerSSH *bool, idempotencyKey string) (*Operation, error) {
 	request := map[string]interface{}{"size": size, "strategy": strategy, "reason": reason}
 	if desired != nil {
 		request["desired"] = *desired
+	}
+	if temporaryRunnerSSH != nil {
+		request["temporaryRunnerSSH"] = *temporaryRunnerSSH
 	}
 	body, err := json.Marshal(request)
 	if err != nil {

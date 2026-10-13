@@ -31,7 +31,7 @@ type lostResponsePullRequester struct {
 	result               githubapp.PullRequest
 }
 
-func (f *lostResponsePullRequester) ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.Reconciliation, error) {
+func (f *lostResponsePullRequester) ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool) (*githubapp.Reconciliation, error) {
 	if f.calls == 0 {
 		return &githubapp.Reconciliation{Outcome: "verified-no-write"}, nil
 	}
@@ -41,7 +41,7 @@ func (f *lostResponsePullRequester) ReconcilePullRequest(context.Context, string
 	return &githubapp.Reconciliation{Outcome: "remote-success", PullRequest: &f.result}, nil
 }
 
-func (f *lostResponsePullRequester) CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.PullRequest, error) {
+func (f *lostResponsePullRequester) CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool) (*githubapp.PullRequest, error) {
 	f.calls++
 	if f.calls == 1 {
 		return nil, errors.New("GitHub created PR but response was lost")

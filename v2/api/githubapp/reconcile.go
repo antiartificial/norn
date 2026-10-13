@@ -40,7 +40,7 @@ type ApplyRunObservation struct {
 // ReconcilePullRequest observes the deterministic branch and PR after an
 // uncertain write. It requires the same exact content as CreatePullRequest,
 // including the immutable review receipt when desired topology is unchanged.
-func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string) (*Reconciliation, error) {
+func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string, temporaryRunnerSSH *bool) (*Reconciliation, error) {
 	token, err := c.installationToken(ctx, map[string]string{"contents": "read", "pull_requests": "read"})
 	if err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, p
 	var title = fmt.Sprintf("Fleet: %s %s", action, poolName)
 	var body = fmt.Sprintf("Norn capacity plan `%s`\n\nDigest: `%s`\n\nThis pull request changes desired infrastructure only. Provider and state credentials remain in the protected runner.", planID, planDigest)
 	if unchanged {
-		repoPath, expected, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed)
+		repoPath, expected, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed, temporaryRunnerSSH)
 		body = fmt.Sprintf("Norn capacity plan `%s`\n\nDigest: `%s`\n\nDesired topology is already exactly the proposed configuration. This pull request adds the immutable Norn review receipt only; it does not manufacture a topology change. Provider and state credentials remain in the protected runner.", planID, planDigest)
 	} else {
 		document.NodePools[poolName] = proposed

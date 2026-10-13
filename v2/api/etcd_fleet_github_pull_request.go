@@ -27,8 +27,8 @@ import (
 )
 
 type etcdFleetGitHubPullRequester interface {
-	CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.PullRequest, error)
-	ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.Reconciliation, error)
+	CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool) (*githubapp.PullRequest, error)
+	ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool) (*githubapp.Reconciliation, error)
 }
 
 func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3OperationStore, github etcdFleetGitHubPullRequester) http.HandlerFunc {
@@ -101,7 +101,7 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_terminal", "fleet pull request reservation is terminal")
 			return
 		}
-		observed, reconcileErr := github.ReconcilePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest)
+		observed, reconcileErr := github.ReconcilePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest, reservation.TemporaryRunnerSSH)
 		if reconcileErr != nil || observed == nil || observed.Outcome == "ambiguous" {
 			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub could not authoritatively reconcile the fleet pull request")
 			return
@@ -129,7 +129,7 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub reconciliation did not prove that no pull request was written")
 			return
 		}
-		result, createErr := github.CreatePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest)
+		result, createErr := github.CreatePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest, reservation.TemporaryRunnerSSH)
 		if createErr != nil || !validEtcdFleetGitHubPullRequest(cfg, reservation, result) {
 			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub could not create or recover the fleet pull request")
 			return
@@ -159,8 +159,8 @@ func acceptEtcdFleetGitHubPullRequest(ctx context.Context, operations *etcdstore
 	if err != nil {
 		return store.AcceptedOperation{}, etcdstore.FleetGitHubPullRequestReservation{}, err
 	}
-	reservation := etcdstore.FleetGitHubPullRequestReservation{PlanID: plan.ID, PlanDigest: typed.Digest, SourceDigest: typed.SourceDigest, Pool: typed.Pool, Action: typed.Action, Proposed: typed.Proposed}
-	payload := map[string]interface{}{"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest, "pool": typed.Pool, "action": typed.Action, "proposed": typed.Proposed}
+	reservation := etcdstore.FleetGitHubPullRequestReservation{PlanID: plan.ID, PlanDigest: typed.Digest, SourceDigest: typed.SourceDigest, Pool: typed.Pool, Action: typed.Action, Proposed: typed.Proposed, TemporaryRunnerSSH: typed.TemporaryRunnerSSH}
+	payload := map[string]interface{}{"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest, "pool": typed.Pool, "action": typed.Action, "proposed": typed.Proposed, "temporaryRunnerSSH": typed.TemporaryRunnerSSH}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.github.pull-request", Ref: plan.ID, Status: model.OperationQueued, Source: "etcd-normal-fleet", Risk: "GitOps mutation only; provider credentials remain in the repository-scoped GitHub App", Message: "Fleet GitHub pull request reserved", Payload: map[string]interface{}{"fleetGitHub": payload}, Metadata: map[string]interface{}{}, StartedAt: now, UpdatedAt: now, MaxAttempts: 1}
 	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/fleet-github", Subject: plan.ID}, Kind: op.Kind, Resource: plan.ID, Key: "protected-plan-receipt/v1"}, Operation: op, Audit: store.AcceptanceAuditContext{CredentialID: principal.TokenID, DeviceID: principal.DeviceID, Source: "etcd-normal-fleet", Scopes: append([]string(nil), principal.Scopes...)}, Semantics: map[string]interface{}{"fleetGitHub": payload}}
