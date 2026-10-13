@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
@@ -14,6 +15,173 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPlatformUpgradeFenceRecognitionDoesNotExecuteManagedBinary(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	start := strings.Index(text, "legacy_baseline_is_fence_binary() {")
+	if start < 0 {
+		t.Fatal("could not find fence recognition helper")
+	}
+	endMarker := "\n}\n\nlegacy_baseline_fence_host_agent()"
+	end := strings.Index(text[start:], endMarker)
+	if end < 0 {
+		t.Fatal("could not isolate fence recognition helper")
+	}
+	helper := text[start : start+end+3]
+	harness := filepath.Join(t.TempDir(), "fence-recognition")
+	writeTestScript(t, harness, "#!/usr/bin/env bash\nset -euo pipefail\nrequire_cmd() { command -v \"$1\" >/dev/null; }\n"+helper+"\nlegacy_baseline_is_fence_binary \"$1\"\n")
+
+	exact := filepath.Join(t.TempDir(), "exact-fence")
+	writeTestScript(t, exact, "#!/usr/bin/env bash\nprintf \"norn legacy baseline fence active; candidate recovery is required\\n\" >&2\nexit 78\n")
+	if out, err := exec.Command(harness, exact).CombinedOutput(); err != nil {
+		t.Fatalf("exact fence bytes were rejected: %v\n%s", err, out)
+	}
+
+	marker := filepath.Join(t.TempDir(), "executed")
+	hanging := filepath.Join(t.TempDir(), "source-host-agent")
+	writeTestScript(t, hanging, "#!/usr/bin/env bash\n: > \"$FENCE_EXEC_MARKER\"\ntrap '' TERM\nwhile :; do sleep 1; done\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, harness, hanging)
+	cmd.Env = append(os.Environ(), "FENCE_EXEC_MARKER="+marker)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("non-fence host agent was accepted: %s", out)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("fence recognition executed and hung the managed host-agent binary")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("fence recognition executed the managed host-agent binary: %v", err)
+	}
+
+}
+
+func TestPlatformUpgradeQuiescenceRejectsAlreadyOrphanedManagedAgent(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	start := strings.Index(text, "legacy_baseline_is_fence_binary()")
+	if start < 0 {
+		t.Fatal("fence helper is missing")
+	}
+	end := strings.Index(text[start:], "legacy_baseline_fence_host_agent()")
+	if end < 0 {
+		t.Fatal("quiescence helper boundary is missing")
+	}
+	helpers := text[start : start+end]
+	root := t.TempDir()
+	managed := filepath.Join(root, "norn-host-agent")
+	nearMatch := managed + "-other"
+	orphan := exec.Command("bash", "-c", `exec -a "$1" /bin/sleep 300`, "--", managed)
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	near := exec.Command("bash", "-c", `exec -a "$1" /bin/sleep 300`, "--", nearMatch)
+	if err := near.Start(); err != nil {
+		_ = orphan.Process.Kill()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = orphan.Process.Kill()
+		_ = near.Process.Kill()
+		_ = orphan.Wait()
+		_ = near.Wait()
+	})
+	time.Sleep(100 * time.Millisecond)
+	if err := exec.Command("kill", "-0", strconv.Itoa(orphan.Process.Pid)).Run(); err != nil {
+		t.Fatalf("orphan fixture exited before fence replacement: %v", err)
+	}
+	fence := "#!/usr/bin/env bash\nprintf \"norn legacy baseline fence active; candidate recovery is required\\n\" >&2\nexit 78\n"
+	if err := os.WriteFile(managed, []byte(fence), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shimDir := filepath.Join(root, "shim")
+	if err := os.Mkdir(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestScript(t, filepath.Join(shimDir, "launchctl"), "#!/usr/bin/env bash\nexit 3\n")
+	harness := filepath.Join(root, "quiesce")
+	writeTestScript(t, harness, "#!/usr/bin/env bash\nset -euo pipefail\nrequire_cmd() { command -v \"$1\" >/dev/null; }\nfail() { printf '%s\\n' \"$1\" >&2; exit 1; }\nhost_agent_label=com.norn.host-agent\n"+helpers+"\nif [[ \"${2:-}\" == scan ]]; then legacy_baseline_host_agent_processes \"$1\"; else legacy_baseline_quiesce_launchd_service com.norn.host-agent /unused \"$1\" /unused test-agent TERM; fi\n")
+	scan := exec.Command(harness, managed, "scan")
+	scan.Env = append(os.Environ(), "PATH="+shimDir+":"+os.Getenv("PATH"))
+	scanOut, scanErr := scan.CombinedOutput()
+	if scanErr != nil || !strings.Contains(string(scanOut), strconv.Itoa(orphan.Process.Pid)+":") {
+		process, _ := exec.Command("ps", "-o", "pid=,ppid=,command=", "-p", strconv.Itoa(orphan.Process.Pid)).CombinedOutput()
+		t.Fatalf("exact process enumeration missed already-orphaned agent: err=%v\nscan=%s\nps=%s", scanErr, scanOut, process)
+	}
+	cmd := exec.Command(harness, managed)
+	cmd.Env = append(os.Environ(), "PATH="+shimDir+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), strconv.Itoa(orphan.Process.Pid)+":") {
+		t.Fatalf("already-orphaned exact managed agent was not rejected: err=%v\n%s", err, out)
+	}
+	if strings.Contains(string(out), strconv.Itoa(near.Process.Pid)+":") {
+		t.Fatalf("near-match process was mistaken for the managed agent:\n%s", out)
+	}
+	if err := orphan.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = orphan.Wait()
+	cmd = exec.Command(harness, managed)
+	cmd.Env = append(os.Environ(), "PATH="+shimDir+":"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("near-match process alone blocked quiescence: %v\n%s", err, out)
+	}
+}
+
+func TestPlatformUpgradeRecoveredForwardResumeQuiescesLaunchdBeforeContinuing(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	start := strings.Index(text, "recovered_forward_ensure_host_agent_fenced()")
+	if start < 0 {
+		t.Fatal("recovered-forward host-agent fence helper is missing")
+	}
+	end := strings.Index(text[start:], "recovered_forward_resume_or_start()")
+	if end < 0 {
+		t.Fatal("recovered-forward fence recovery helpers are missing")
+	}
+	resume := text[start : start+end]
+	for _, required := range []string{
+		`legacy_baseline_quiesce_launchd_service "$host_agent_label"`,
+		`legacy_baseline_quiesce_launchd_service "$launch_label"`,
+		`[[ -z "$listener" ]] || fail "recovered-forward API fence is installed but a listener remains"`,
+	} {
+		if !strings.Contains(resume, required) {
+			t.Fatalf("recovered-forward resume is missing fence respawn guard %q", required)
+		}
+	}
+}
+
+func TestPlatformUpgradeValidatesLaunchdPlistBeforeBootstrap(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	start := strings.Index(text, "legacy_baseline_bootstrap_launchd_service()")
+	if start < 0 {
+		t.Fatal("launchd bootstrap helper is missing")
+	}
+	end := strings.Index(text[start:], "legacy_baseline_fence_host_agent()")
+	if end < 0 {
+		t.Fatal("launchd bootstrap helper is missing")
+	}
+	helper := text[start : start+end]
+	validate := strings.Index(helper, "legacy_baseline_validate_launchd_plist")
+	bootstrap := strings.Index(helper, `launchctl bootstrap`)
+	if validate < 0 || bootstrap < 0 || validate > bootstrap {
+		t.Fatal("launchd plist is not validated before bootstrap executes it")
+	}
+}
 
 func platformUpgradePath(t *testing.T) string {
 	t.Helper()
@@ -369,7 +537,7 @@ func TestPlatformUpgradeLegacyBaselinePreservesFenceUntilExactFinalize(t *testin
 	restart := text[restartStart : restartStart+restartEnd]
 	install := strings.Index(restart, "atomic_install_file \"$candidate_agent\" \"$host_agent_bin\"")
 	kickstart := strings.Index(restart, "launchctl kickstart -k")
-	if install < 0 || kickstart < 0 || install > kickstart || !strings.Contains(restart, "fence_status") {
+	if install < 0 || kickstart < 0 || install > kickstart || !strings.Contains(restart, "legacy_baseline_is_fence_binary") {
 		t.Fatal("host-agent fence is not verified and replaced only for the exact validated kickstart")
 	}
 	finalizeStart := strings.Index(text, "finalize_legacy_baseline_release()")
@@ -423,6 +591,7 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 	writeTestScript(t, sopsPath, "#!/bin/sh\nprintf '%s\\n' '{\"NORN_STARTUP_MODE\":\"active\",\"NORN_SCHEMA_MODE\":\"check\"}'\n")
 	launcher := writeLauncherContract(t, fixture.root, apiEnv)
 	launchPlist := writeLaunchPlist(t, fixture.root, launcher, "active", "auto")
+	hostLaunchPlist := writeHostAgentPlist(t, fixture.root, filepath.Join(fixture.root, "host", "platform-upgrade"), filepath.Join(fixture.root, "host", "norn-host-agent"))
 	legacyProcess := exec.Command("sleep", "300")
 	if err := legacyProcess.Start(); err != nil {
 		t.Fatal(err)
@@ -436,9 +605,28 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 		_ = legacyProcess.Process.Kill()
 		<-legacyExited
 	})
-	agentProcess := exec.Command("sleep", "300")
+	managedAgent := filepath.Join(fixture.root, "host", "norn-host-agent")
+	sourceAgent := filepath.Join(fixture.previousRelease, "bin", "norn-host-agent")
+	agentBody := "#!/usr/bin/env bash\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n"
+	writeTestScript(t, managedAgent, agentBody)
+	writeTestScript(t, sourceAgent, agentBody)
+	agentChildPIDFile := filepath.Join(fixture.root, "source-host-agent-child-pid")
+	agentProcess := exec.Command("bash", "-c", `"$1" & child=$!; printf '%s\n' "$child" > "$2"; wait "$child"`, "--", managedAgent, agentChildPIDFile)
 	if err := agentProcess.Start(); err != nil {
 		t.Fatal(err)
+	}
+	var agentChildPID int
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		value, readErr := os.ReadFile(agentChildPIDFile)
+		if readErr == nil {
+			agentChildPID, readErr = strconv.Atoi(strings.TrimSpace(string(value)))
+			if readErr == nil {
+				break
+			}
+		}
+	}
+	if agentChildPID == 0 {
+		t.Fatal("source host-agent child did not start")
 	}
 	agentExited := make(chan struct{})
 	go func() {
@@ -447,6 +635,7 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 	}()
 	t.Cleanup(func() {
 		_ = agentProcess.Process.Kill()
+		_ = exec.Command("kill", "-KILL", strconv.Itoa(agentChildPID)).Run()
 		<-agentExited
 	})
 	restartedAgentPID := filepath.Join(fixture.root, "restarted-host-agent-pid")
@@ -469,11 +658,26 @@ case "${1:-}" in
   setenv|unsetenv) exit 0 ;;
   print)
     if [[ "${2:-}" == *com.norn.host-agent ]]; then
-      if [[ -f "$FAKE_RESTARTED_AGENT_PID" ]]; then pid="$(cat "$FAKE_RESTARTED_AGENT_PID")"; elif ! kill -0 "$FAKE_HOST_AGENT_PID" >/dev/null 2>&1; then exit 0; else pid="$FAKE_HOST_AGENT_PID"; fi
-    elif ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1 && [[ ! -f "$FAKE_ACTIVE_STATE" ]]; then exit 0
+      [[ ! -f "$FAKE_HOST_UNLOADED" ]] || exit 3
+      if [[ -f "$FAKE_RESTARTED_AGENT_PID" ]]; then pid="$(cat "$FAKE_RESTARTED_AGENT_PID")";
+      elif ! kill -0 "$FAKE_HOST_AGENT_PID" >/dev/null 2>&1; then
+        if [[ "${FAKE_RESPAWN_FENCE:-0}" == 1 ]]; then pid="$FAKE_FENCE_RESPAWN_PID"; else exit 0; fi
+      else pid="$FAKE_HOST_AGENT_PID"; fi
+    elif ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1 && [[ ! -f "$FAKE_ACTIVE_STATE" ]]; then
+      if [[ "${FAKE_RESPAWN_API_FENCE:-0}" == 1 && ! -f "$FAKE_API_RESPAWN_SEEN" ]]; then
+        : > "$FAKE_API_RESPAWN_SEEN"; pid="$FAKE_API_FENCE_RESPAWN_PID"
+      else pid=0; fi
     else pid="$FAKE_LEGACY_PID"; fi
-    if [[ "${2:-}" == *com.norn.api ]]; then printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_PLIST" "$pid";
-    else printf 'service = {\n\tpid = %s\n}\n' "$pid"; fi
+    if [[ "${2:-}" == *com.norn.api ]]; then [[ ! -f "$FAKE_API_UNLOADED" ]] || exit 3; printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_PLIST" "$pid";
+    else printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_HOST_PLIST" "$pid"; fi
+    exit 0 ;;
+  bootout)
+    if [[ "${2:-}" == *com.norn.host-agent ]]; then : > "$FAKE_HOST_UNLOADED"; /bin/kill -TERM "$FAKE_HOST_AGENT_PID";
+    else : > "$FAKE_API_UNLOADED"; /bin/kill -KILL "$FAKE_LEGACY_PID"; fi
+    exit 0 ;;
+  bootstrap)
+    plist="${3:-}"
+    if [[ "$plist" == "$FAKE_HOST_PLIST" ]]; then rm -f "$FAKE_HOST_UNLOADED"; else rm -f "$FAKE_API_UNLOADED"; fi
     exit 0 ;;
   kill)
     if [[ "${3:-}" == *com.norn.host-agent ]]; then : > "$FAKE_AGENT_FENCED"; /bin/kill -TERM "$FAKE_HOST_AGENT_PID"; else : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; fi
@@ -498,12 +702,23 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 		"FAKE_FENCED="+fenced,
 		"FAKE_AGENT_FENCED="+agentFenced,
 		"FAKE_PLIST="+launchPlist,
+		"FAKE_HOST_PLIST="+hostLaunchPlist,
+		"FAKE_HOST_UNLOADED="+filepath.Join(fixture.root, "host-unloaded"),
+		"FAKE_API_UNLOADED="+filepath.Join(fixture.root, "api-unloaded"),
+		"NORN_HOST_AGENT_PLIST="+hostLaunchPlist,
+		"NORN_API_LAUNCH_PLIST="+launchPlist,
+		"NORN_API_LAUNCH_PROGRAM="+launcher,
 		"NORN_API_ENV_FILE="+apiEnv,
 		"NORN_SOPS_BIN="+sopsPath,
 		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid),
 		fmt.Sprintf("FAKE_HOST_AGENT_PID=%d", agentProcess.Process.Pid),
 		fmt.Sprintf("FAKE_RESTART_AGENT_PID=%d", restartedAgent.Process.Pid),
 		"FAKE_RESTARTED_AGENT_PID="+restartedAgentPID,
+		"FAKE_RESPAWN_FENCE=1",
+		"FAKE_FENCE_RESPAWN_PID=999999",
+		"FAKE_RESPAWN_API_FENCE=1",
+		"FAKE_API_FENCE_RESPAWN_PID=999998",
+		"FAKE_API_RESPAWN_SEEN="+filepath.Join(fixture.root, "api-fence-respawn-seen"),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -525,6 +740,15 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	}
 	if !strings.Contains(string(out), "preserving 7 queued Fleet GitHub dispatch receipt(s)") {
 		t.Fatalf("Mini transition did not report the preserved Fleet receipts:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.root, "host-unloaded")); !os.IsNotExist(err) {
+		t.Fatalf("host-agent launchd job was not bootstrapped after candidate install: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.root, "api-unloaded")); !os.IsNotExist(err) {
+		t.Fatalf("API launchd job was not bootstrapped after candidate install: %v", err)
+	}
+	if err := exec.Command("kill", "-0", strconv.Itoa(agentChildPID)).Run(); err == nil {
+		t.Fatal("source host-agent child survived launchd bootout")
 	}
 }
 
@@ -628,10 +852,11 @@ func TestPlatformUpgradeLegacyBaselineFinalizeResumesAfterNormalCandidateBeforeH
 	if err := os.WriteFile(fenceState, state, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fence := "#!/usr/bin/env bash\nexit 78\n"
+	fence := "#!/usr/bin/env bash\nprintf \"norn legacy baseline fence active; candidate recovery is required\\n\" >&2\nexit 78\n"
 	if err := os.WriteFile(filepath.Join(fixture.root, "host", "norn-host-agent"), []byte(fence), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	hostLaunchPlist := writeHostAgentPlist(t, fixture.root, filepath.Join(fixture.root, "host", "platform-upgrade"), filepath.Join(fixture.root, "host", "norn-host-agent"))
 	// No normal API is serving yet. This models a crash after the durable
 	// activation-pending phase but before launchctl received its kickstart.
 	hostAgent := exec.Command("sleep", "300")
@@ -651,6 +876,7 @@ func TestPlatformUpgradeLegacyBaselineFinalizeResumesAfterNormalCandidateBeforeH
 set -euo pipefail
 case "${1:-}" in
   setenv|unsetenv) exit 0 ;;
+  bootstrap) : > "$FAKE_RESUME_HOST_AGENT_LOADED"; exit 0 ;;
   kickstart)
     if [[ "${*: -1}" == *com.norn.host-agent ]]; then
       : > "$FAKE_RESUME_HOST_AGENT_KICKED"
@@ -661,10 +887,11 @@ case "${1:-}" in
     exit 0 ;;
   print)
     if [[ "${2:-}" == *com.norn.host-agent ]]; then
+      [[ -f "$FAKE_RESUME_HOST_AGENT_LOADED" ]] || exit 3
       if [[ -f "$FAKE_RESUME_HOST_AGENT_KICKED" ]]; then
-        printf 'service = {\n\tpid = %s\n}\n' "$FAKE_RESUME_HOST_AGENT_PID"
+        printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_HOST_PLIST" "$FAKE_RESUME_HOST_AGENT_PID"
       else
-        printf 'service = {\n\tpid = 99999\n}\n'
+        printf 'service = {\n\tpath = %s\n\tpid = 99999\n}\n' "$FAKE_HOST_PLIST"
       fi
     else
       printf 'service = {\n\tpid = 4242\n}\n'
@@ -676,12 +903,15 @@ exit 2
 	first := fixture.command(t)
 	first.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
 	hostKickMarker := filepath.Join(fixture.root, "host-agent-kicked")
+	hostLoadedMarker := filepath.Join(fixture.root, "host-agent-loaded")
+	commonHostEnv := []string{"NORN_HOST_AGENT_PLIST=" + hostLaunchPlist, "FAKE_HOST_PLIST=" + hostLaunchPlist, "FAKE_RESUME_HOST_AGENT_LOADED=" + hostLoadedMarker}
 	first.Env = append(first.Env,
 		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
 		"NORN_M5_FINALIZE_CRASH_AFTER_NORMAL_CANDIDATE=1",
 		fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid),
 		"FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker,
 	)
+	first.Env = append(first.Env, commonHostEnv...)
 	out, err := first.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "interrupted after normal candidate verification") {
 		t.Fatalf("finalize crash point was not reached: err=%v\n%s", err, out)
@@ -696,6 +926,7 @@ exit 2
 	wrongSource := fixture.command(t)
 	wrongSource.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
 	wrongSource.Env = append(wrongSource.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_ACTIVE_SOURCE_SHA="+strings.Repeat("c", 40), fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid), "FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker)
+	wrongSource.Env = append(wrongSource.Env, commonHostEnv...)
 	out, err = wrongSource.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "active source SHA") {
 		t.Fatalf("finalize accepted a normal API serving a different candidate source SHA: err=%v\n%s", err, out)
@@ -706,6 +937,7 @@ exit 2
 	installCrash := fixture.command(t)
 	installCrash.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
 	installCrash.Env = append(installCrash.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "NORN_M5_FINALIZE_CRASH_AFTER_HOST_AGENT_INSTALL=1", fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid), "FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker)
+	installCrash.Env = append(installCrash.Env, commonHostEnv...)
 	out, err = installCrash.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "interrupted after candidate host-agent install before kickstart") {
 		t.Fatalf("host-agent install crash point was not reached: err=%v\n%s", err, out)
@@ -720,6 +952,7 @@ exit 2
 	retry := fixture.command(t)
 	retry.Args = []string{platformUpgradePath(t), "legacy-baseline-finalize", "--transition-id", "resume-finalize"}
 	retry.Env = append(retry.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, fmt.Sprintf("FAKE_RESUME_HOST_AGENT_PID=%d", hostAgent.Process.Pid), "FAKE_RESUME_HOST_AGENT_KICKED="+hostKickMarker)
+	retry.Env = append(retry.Env, commonHostEnv...)
 	out, err = retry.CombinedOutput()
 	if err != nil {
 		t.Fatalf("finalize retry did not resume the exact normal candidate and host-agent restart: %v\n%s", err, out)
@@ -768,6 +1001,7 @@ func TestPlatformUpgradeLegacyBaselinePostflightFailureKeepsLegacyFenced(t *test
 	writeTestScript(t, sopsPath, "#!/bin/sh\nprintf '{}\\n'\n")
 	launcher := writeLauncherContract(t, fixture.root, apiEnv)
 	launchPlist := writeLaunchPlist(t, fixture.root, launcher, "active", "check")
+	hostLaunchPlist := writeHostAgentPlist(t, fixture.root, filepath.Join(fixture.root, "host", "platform-upgrade"), filepath.Join(fixture.root, "host", "norn-host-agent"))
 	legacyProcess := exec.Command("sleep", "300")
 	if err := legacyProcess.Start(); err != nil {
 		t.Fatal(err)
@@ -794,11 +1028,20 @@ case "${1:-}" in
   setenv|unsetenv) exit 0 ;;
   print)
     if [[ "${2:-}" == *com.norn.host-agent ]]; then
-      ! kill -0 "$FAKE_HOST_AGENT_PID" >/dev/null 2>&1 && exit 0
-      printf 'service = {\n\tpid = %s\n}\n' "$FAKE_HOST_AGENT_PID"; exit 0
+      [[ ! -f "$FAKE_HOST_UNLOADED" ]] || exit 3
+      ! kill -0 "$FAKE_HOST_AGENT_PID" >/dev/null 2>&1 && exit 3
+      printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_HOST_PLIST" "$FAKE_HOST_AGENT_PID"; exit 0
     fi
-    if ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then exit 0; fi
+    [[ ! -f "$FAKE_API_UNLOADED" ]] || exit 3
+    if ! kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf 'service = {\n\tpath = %s\n\tpid = 0\n}\n' "$FAKE_PLIST"; exit 0; fi
     printf 'service = {\n\tpath = %s\n\tpid = %s\n}\n' "$FAKE_PLIST" "$FAKE_LEGACY_PID"; exit 0 ;;
+  bootout)
+    if [[ "${2:-}" == *com.norn.host-agent ]]; then : > "$FAKE_HOST_UNLOADED"; /bin/kill -TERM "$FAKE_HOST_AGENT_PID";
+    else : > "$FAKE_API_UNLOADED"; /bin/kill -KILL "$FAKE_LEGACY_PID"; fi
+    exit 0 ;;
+  bootstrap)
+    if [[ "${3:-}" == "$FAKE_HOST_PLIST" ]]; then rm -f "$FAKE_HOST_UNLOADED"; else rm -f "$FAKE_API_UNLOADED"; fi
+    exit 0 ;;
   kill)
     if [[ "${3:-}" == *com.norn.host-agent ]]; then : > "$FAKE_AGENT_FENCED"; else : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; fi
     exit 0 ;;
@@ -812,7 +1055,7 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 `)
 	cmd := fixture.command(t)
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
-	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced, "FAKE_AGENT_FENCED="+agentFenced, "FAKE_PLIST="+launchPlist, "NORN_API_ENV_FILE="+apiEnv, "NORN_SOPS_BIN="+sopsPath,
+	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced, "FAKE_AGENT_FENCED="+agentFenced, "FAKE_PLIST="+launchPlist, "FAKE_HOST_PLIST="+hostLaunchPlist, "FAKE_HOST_UNLOADED="+filepath.Join(fixture.root, "host-unloaded"), "FAKE_API_UNLOADED="+filepath.Join(fixture.root, "api-unloaded"), "NORN_HOST_AGENT_PLIST="+hostLaunchPlist, "NORN_API_LAUNCH_PLIST="+launchPlist, "NORN_API_LAUNCH_PROGRAM="+launcher, "NORN_API_ENV_FILE="+apiEnv, "NORN_SOPS_BIN="+sopsPath,
 		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid), fmt.Sprintf("FAKE_HOST_AGENT_PID=%d", agentProcess.Process.Pid))
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "candidate postflight failed") {
@@ -1077,6 +1320,18 @@ func writeLaunchPlist(t *testing.T, root, launcher, startupMode, schemaMode stri
 	value := `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Label</key><string>com.norn.api</string><key>ProgramArguments</key><array><string>` + launcher + `</string></array><key>EnvironmentVariables</key><dict>` + environment + `</dict></dict></plist>`
+	if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeHostAgentPlist(t *testing.T, root, platformScript, hostAgent string) string {
+	t.Helper()
+	path := filepath.Join(root, "com.norn.host-agent.plist")
+	value := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.norn.host-agent</string><key>ProgramArguments</key><array><string>` + platformScript + `</string><string>env-exec</string><string>` + hostAgent + `</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>`
 	if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
 		t.Fatal(err)
 	}
