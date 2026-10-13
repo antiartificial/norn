@@ -266,8 +266,16 @@ def resolve(root: Path, key: bytes) -> dict[str, Any]:
         predecessor_raw = owner_document(predecessor_path, f"{path_field}")
         if not hmac.compare_digest(hashlib.sha256(predecessor_raw).hexdigest(), expected_digest):
             fail(f"active generation predecessor digest changed: {path_field}")
-    if manifest.get("predecessorEvidencePath") != manifest.get("predecessorJournalPath") + ".source-evidence.json":
-        fail("active generation predecessor evidence path is not the fixed legacy evidence path")
+    predecessor_candidate = manifest.get("predecessorCandidateSHA")
+    if not isinstance(predecessor_candidate, str) or not HEX40.fullmatch(predecessor_candidate):
+        fail("active generation predecessor candidate identity is invalid")
+    fixed_evidence = root / "transition.json.source-evidence.json"
+    retargeted_evidence = root / f"retarget-{predecessor_candidate}" / "source-evidence.json"
+    evidence_path = Path(manifest["predecessorEvidencePath"])
+    if evidence_path not in (fixed_evidence, retargeted_evidence):
+        fail("active generation predecessor evidence path is not a supported canonical path")
+    if evidence_path == retargeted_evidence:
+        owner_directory(evidence_path.parent, "active generation predecessor evidence directory")
 
     new_files = {
         "sourceEvidencePath": str(generation / "transition.json.source-evidence.json"),

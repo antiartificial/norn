@@ -220,6 +220,35 @@ class GenerationPrepareTest(unittest.TestCase):
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_candidate_versioned_predecessor_evidence_is_preserved_and_accepted(self):
+        versioned_dir = self.root / f"retarget-{OLD_CANDIDATE}"
+        versioned_dir.mkdir(mode=0o700)
+        versioned_evidence = versioned_dir / "source-evidence.json"
+        versioned_evidence.write_bytes(self.old_evidence.read_bytes())
+        versioned_evidence.chmod(0o600)
+        journal = json.loads(self.old_journal.read_bytes())
+        journal["sourceEvidencePath"] = str(versioned_evidence)
+        private(self.old_journal, dump(journal))
+        old_bytes = {path: path.read_bytes() for path in (self.old_journal, versioned_evidence, self.old_receipt)}
+
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.root / "generations" / json.loads(result.stdout)["generationID"] / "generation.json").read_bytes())
+        self.assertEqual(manifest["predecessorEvidencePath"], str(versioned_evidence))
+        self.assertEqual({path: path.read_bytes() for path in old_bytes}, old_bytes)
+
+    def test_arbitrary_predecessor_evidence_path_is_rejected(self):
+        arbitrary = self.root / "other" / "source-evidence.json"
+        private(arbitrary, self.old_evidence.read_bytes())
+        journal = json.loads(self.old_journal.read_bytes())
+        journal["sourceEvidencePath"] = str(arbitrary)
+        private(self.old_journal, dump(journal))
+
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("supported canonical path", result.stderr)
+        self.assertFalse((self.root / "active-generation.json").exists())
+
     def test_source_link_must_be_exact_and_promotion_lock_must_be_available(self):
         self.current.unlink()
         self.current.symlink_to(self.releases / OLD_CANDIDATE)

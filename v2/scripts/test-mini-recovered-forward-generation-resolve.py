@@ -156,6 +156,45 @@ class GenerationResolverTest(unittest.TestCase):
         self.assertEqual(result["sourceSHA"], self.source)
         self.assertEqual(result["candidateSHA"], self.candidate)
 
+    def test_candidate_versioned_predecessor_evidence_resolves(self) -> None:
+        generation, manifest_path, _, _ = self.install_generation()
+        retarget_dir = self.root / f"retarget-{'2' * 40}"
+        retarget_dir.mkdir(mode=0o700)
+        evidence = retarget_dir / "source-evidence.json"
+        self.write_private(evidence, b"legacy evidence fixture")
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest.pop("signature")
+        manifest["predecessorEvidencePath"] = str(evidence)
+        manifest["predecessorEvidenceSHA256"] = hashlib.sha256(evidence.read_bytes()).hexdigest()
+        raw = self.sign(manifest)
+        self.write_private(manifest_path, raw)
+        pointer = self.root / "active-generation.json"
+        value = json.loads(pointer.read_bytes())
+        value.pop("signature")
+        value["generationManifestSHA256"] = hashlib.sha256(raw).hexdigest()
+        self.write_private(pointer, self.sign(value))
+        result = RESOLVER.resolve(self.root, self.key)
+        self.assertEqual(result["selection"], "generation")
+
+    def test_arbitrary_predecessor_evidence_path_is_rejected(self) -> None:
+        _, manifest_path, _, _ = self.install_generation()
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest.pop("signature")
+        arbitrary = self.root / "other" / "source-evidence.json"
+        arbitrary.parent.mkdir(mode=0o700)
+        self.write_private(arbitrary, b"legacy evidence fixture")
+        manifest["predecessorEvidencePath"] = str(arbitrary)
+        manifest["predecessorEvidenceSHA256"] = hashlib.sha256(arbitrary.read_bytes()).hexdigest()
+        raw = self.sign(manifest)
+        self.write_private(manifest_path, raw)
+        pointer = self.root / "active-generation.json"
+        value = json.loads(pointer.read_bytes())
+        value.pop("signature")
+        value["generationManifestSHA256"] = hashlib.sha256(raw).hexdigest()
+        self.write_private(pointer, self.sign(value))
+        with self.assertRaisesRegex(ValueError, "supported canonical path"):
+            RESOLVER.resolve(self.root, self.key)
+
     def test_mutated_journal_identity_does_not_follow_valid_signed_pointer(self) -> None:
         generation, _, _, _ = self.install_generation()
         journal_path = generation / "transition.json"

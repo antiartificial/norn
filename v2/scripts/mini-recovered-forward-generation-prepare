@@ -220,9 +220,14 @@ def completed_predecessor(root: Path, releases: Path, key: bytes) -> dict[str, A
             or not isinstance(source, str) or not HEX40.fullmatch(source)
             or not isinstance(candidate, str) or not HEX40.fullmatch(candidate)):
         fail("legacy journal transition or release identity is invalid")
-    evidence_path = root / "transition.json.source-evidence.json"
-    if journal.get("sourceEvidencePath") != str(evidence_path):
-        fail("legacy journal source evidence is not at the fixed legacy path")
+    fixed_evidence_path = root / "transition.json.source-evidence.json"
+    retargeted_evidence_path = root / f"retarget-{candidate}" / "source-evidence.json"
+    evidence_value = journal.get("sourceEvidencePath")
+    if evidence_value not in (str(fixed_evidence_path), str(retargeted_evidence_path)):
+        fail("legacy journal source evidence is not at a supported canonical path")
+    evidence_path = Path(evidence_value)
+    if evidence_path == retargeted_evidence_path:
+        owner_directory(evidence_path.parent, "legacy retargeted evidence directory")
     if journal.get("preservationReceiptPath") != str(receipt_path):
         fail("legacy journal preservation receipt is not at the fixed legacy path")
     evidence_raw = private_bytes(evidence_path, "legacy recovered-forward source evidence")
