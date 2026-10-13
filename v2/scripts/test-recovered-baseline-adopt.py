@@ -36,7 +36,7 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.home = self.root / "home"
         self.home.mkdir(mode=0o700)
         (self.home / ".config" / "norn").mkdir(parents=True, mode=0o700)
@@ -46,7 +46,7 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         for release, sha in ((self.current, SOURCE), (self.adopter, ADOPTER)):
             (release / "bin").mkdir(parents=True)
             write(release / "release.env", f"NORN_RELEASE_SHA={sha}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
-            write(release / "release.json", "{}\n", 0o644)
+            write(release / "release.json", json.dumps({"sha": sha, "version": VERSION}) + "\n", 0o644)
         self.current_link = self.root / "current"
         self.current_link.symlink_to(self.current)
         write(self.current / "bin" / "norn-api", "api-binary", 0o755)
@@ -97,6 +97,8 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         write_json(self.old_receipt, historical)
         self.old_receipt_bytes = self.old_receipt.read_bytes()
         shutil.copy2(SCRIPT, self.adopter / "bin" / "platform-upgrade")
+        shutil.copy2(Path(__file__).with_name("mini-recovered-forward-transition"),
+                     self.adopter / "bin" / "mini-recovered-forward-transition")
         shutil.copy2(Path(__file__).with_name("mini-recovered-forward-completed-gate"),
                      self.adopter / "bin" / "mini-recovered-forward-completed-gate")
         self.managed_script = self.root / "host" / "bin" / "platform-upgrade"
@@ -245,8 +247,37 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertNotEqual(proxy_render.returncode, 0)
         self.assertIn("blocks proxy changes", proxy_render.stderr)
         api_env = write(self.home / ".config" / "norn" / "api.env.enc.json", "encrypted")
-        sops = write(self.shims / "sops", "#!/bin/sh\nprintf '{\"NORN_TOKEN\":\"fixture-token\",\"NORN_AUDIT_SIGNING_KEY\":\"fixture-audit-signing-key-32-characters\"}\\n'\n", 0o755)
+        sops = write(self.shims / "sops", "#!/bin/sh\nprintf '{\"NORN_TOKEN\":\"fixture-token-with-at-least-thirty-two-characters\",\"NORN_AUDIT_SIGNING_KEY\":\"fixture-audit-signing-key-32-characters\"}\\n'\n", 0o755)
         self.env.update({"NORN_API_ENV_FILE": str(api_env), "NORN_SOPS_BIN": str(sops)})
+        candidate_script = self.adopter / "bin" / "platform-upgrade"
+        candidate_wrapper = self.adopter / "bin" / "mini-recovered-forward-transition"
+        self.env["NORN_PLATFORM_SCRIPT_BIN"] = str(candidate_script)
+        helper_args = (ADOPTER, "--source-sha", SOURCE, "--transition-id", "fixture-transition",
+                       "--backup-proof", str(self.root / "missing-proof.json"),
+                       "--backup-artifact", str(self.root / "missing-backup.dump"),
+                       "--shadow-receipt", str(self.root / "missing-shadow.json"))
+        allowed_wrapper = self.run_script("env-exec", str(candidate_wrapper), *helper_args)
+        self.assertNotIn("recovered baseline rejects env-exec child mode", allowed_wrapper.stderr)
+        self.assertNotIn("invalid arguments", allowed_wrapper.stderr)
+        self.assertIn("recovered-forward generation resolver is unavailable", allowed_wrapper.stderr)
+        wrong_sha = self.run_script("env-exec", str(candidate_wrapper), "f" * 40, *helper_args[1:])
+        self.assertNotEqual(wrong_sha.returncode, 0)
+        self.assertIn("invalid arguments", wrong_sha.stderr)
+        unknown_option = self.run_script("env-exec", str(candidate_wrapper), ADOPTER, *helper_args[1:], "--unexpected", "value")
+        self.assertNotEqual(unknown_option.returncode, 0)
+        self.assertIn("invalid arguments", unknown_option.stderr)
+        outside_wrapper = write(self.root / "outside" / "mini-recovered-forward-transition",
+                                candidate_wrapper.read_bytes(), 0o755)
+        rejected_wrapper = self.run_script("env-exec", str(outside_wrapper), *helper_args)
+        self.assertNotEqual(rejected_wrapper.returncode, 0)
+        self.assertIn("not inside the exact candidate release", rejected_wrapper.stderr)
+        symlink_wrapper = self.root / "outside" / "mini-recovered-forward-transition"
+        symlink_wrapper.unlink()
+        symlink_wrapper.symlink_to(candidate_wrapper)
+        rejected_symlink = self.run_script("env-exec", str(symlink_wrapper), *helper_args)
+        self.assertNotEqual(rejected_symlink.returncode, 0)
+        self.assertIn("not inside the exact candidate release", rejected_symlink.stderr)
+        self.env["NORN_PLATFORM_SCRIPT_BIN"] = str(self.managed_script)
         ordinary_upgrade = self.run_script("env-exec", str(self.managed_script), "upgrade", "HEAD")
         self.assertNotEqual(ordinary_upgrade.returncode, 0)
         self.assertIn("completed recovered-forward file bindings", ordinary_upgrade.stderr)
