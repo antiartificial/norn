@@ -178,9 +178,10 @@ def parse_utc(value: object, label: str) -> dt.datetime:
 
 
 def main() -> int:
-    if len(sys.argv) != 9:
-        raise ValueError("usage: mini-recovered-forward-verify-evidence evidence sha transition source candidate backup-proof backup-artifact shadow-receipt")
-    evidence_path, expected_sha, transition, source, candidate, proof_path, artifact_path, shadow_path = map(Path, sys.argv[1:])
+    if len(sys.argv) not in (9, 10):
+        raise ValueError("usage: mini-recovered-forward-verify-evidence evidence sha transition source candidate backup-proof backup-artifact shadow-receipt [adoption-receipt]")
+    evidence_path, expected_sha, transition, source, candidate, proof_path, artifact_path, shadow_path = map(Path, sys.argv[1:9])
+    explicit_adoption_path = Path(sys.argv[9]) if len(sys.argv) == 10 else None
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
     evidence_key = os.environ.get("NORN_AUDIT_HISTORICAL_SIGNING_KEY", "").encode() or key
     if len(key) < 32:
@@ -273,12 +274,20 @@ def main() -> int:
     if shadow_time <= backup_time or shadow_time > now + dt.timedelta(minutes=5):
         raise ValueError("shadow receipt time must follow the backup and not be in the future")
     adoption_path = Path.home() / ".config/norn/.norn-recovered-baseline-adoption-v2.json"
+    adoption_key = key
+    if explicit_adoption_path is not None:
+        expected_parent = Path.home() / ".config/norn"
+        if (explicit_adoption_path.parent != expected_parent or
+                not re.fullmatch(r"\.norn-recovered-baseline-adoption-v2\.json\.[A-Za-z0-9._-]{1,128}", explicit_adoption_path.name)):
+            raise ValueError("explicit adoption receipt must be an archived owner config receipt")
+        adoption_path = explicit_adoption_path
+        adoption_key = evidence_key
     adoption_raw = private(adoption_path, "recovered-baseline adoption receipt")
     adoption = strict_json(adoption_raw, "adoption receipt")
     adoption_fields = {"schema", "sourceSHA", "incidentCandidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}
     if set(adoption) != adoption_fields or adoption.get("schema") != "norn.recovered-baseline-adoption/v2" or adoption.get("preservationProven") is not False:
         raise ValueError("adoption receipt fields or schema are not exact")
-    verify_signature(adoption, "norn.recovered-baseline-adoption/v2", key, "adoption receipt")
+    verify_signature(adoption, "norn.recovered-baseline-adoption/v2", adoption_key, "adoption receipt")
     if value.get("adoptionReceiptSHA256") != digest(adoption_raw):
         raise ValueError("source evidence adoption receipt digest mismatch")
     if (not re.fullmatch(r"[0-9a-f]{40}", str(adoption.get("sourceSHA", ""))) or

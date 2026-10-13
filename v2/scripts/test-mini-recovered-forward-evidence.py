@@ -13,6 +13,7 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("mini-recovered-forward-verify-evidence")
 KEY = b"fixture-audit-signing-key-at-least-32-bytes"
+HISTORICAL_KEY = b"fixture-historical-audit-signing-key"
 SOURCE = "a" * 40
 CANDIDATE = "b" * 40
 INCIDENT_CANDIDATE = "c" * 40
@@ -253,6 +254,54 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         result = self.verify()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("adoption receipt digest mismatch", result.stderr)
+
+    def test_explicit_archived_adoption_receipt_uses_predecessor_key_and_exact_digest(self):
+        adoption = json.loads(self.adoption.read_bytes())
+        adoption.pop("signature")
+        archived = self.private(
+            self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json.previous-fixture",
+            b"pending",
+        )
+        archived_raw = json.dumps(adoption, sort_keys=True, separators=(",", ":")).encode()
+        archived_value = {**adoption}
+        archived_value["signature"] = "hmac-sha256:" + hmac.new(
+            HISTORICAL_KEY, b"norn.recovered-baseline-adoption/v2\0" + archived_raw,
+            hashlib.sha256,
+        ).hexdigest()
+        archived.write_bytes(strict_dump(archived_value))
+        evidence = json.loads(self.evidence.read_bytes())
+        evidence.pop("signature")
+        evidence["adoptionReceiptSHA256"] = sha(archived.read_bytes())
+        canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+        evidence["signature"] = "hmac-sha256:" + hmac.new(
+            HISTORICAL_KEY, b"norn.recovered-forward-evidence/v2\0" + canonical,
+            hashlib.sha256,
+        ).hexdigest()
+        self.evidence.write_bytes(strict_dump(evidence))
+        self.env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = HISTORICAL_KEY.decode()
+        result = self.verify(str(archived))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "verified")
+
+        archived.write_bytes(archived.read_bytes() + b" ")
+        result = self.verify(str(archived))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("adoption receipt digest mismatch", result.stderr)
+
+        invalid_archived = {**adoption, "signature": "hmac-sha256:" + "0" * 64}
+        archived.write_bytes(strict_dump(invalid_archived))
+        evidence["adoptionReceiptSHA256"] = sha(archived.read_bytes())
+        unsigned_evidence = {key: item for key, item in evidence.items() if key != "signature"}
+        evidence["signature"] = "hmac-sha256:" + hmac.new(
+            HISTORICAL_KEY,
+            b"norn.recovered-forward-evidence/v2\0" +
+            json.dumps(unsigned_evidence, sort_keys=True, separators=(",", ":")).encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self.evidence.write_bytes(strict_dump(evidence))
+        result = self.verify(str(archived))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("adoption receipt signature does not verify", result.stderr)
 
     def test_noncanonical_evidence_fields_and_bool_size_are_rejected(self):
         value = json.loads(self.evidence.read_text())
