@@ -336,7 +336,10 @@ fingerprinted_table_count=$(wc -l <"$before_file" | tr -d ' ')
 }
 
 run_migrate() {
-  NORN_DATABASE_URL=$private_database_url \
+  env \
+    -u NORN_RECOVERED_FORWARD_MAINTENANCE \
+    -u NORN_LEGACY_BASELINE_MAINTENANCE \
+    NORN_DATABASE_URL=$private_database_url \
     NORN_SCHEMA_MODE=migrate-only \
     NORN_STARTUP_MODE=active \
     NORN_SKIP_OPERATION_RECOVERY=true \
@@ -374,7 +377,10 @@ print(s.getsockname()[1])
 s.close()
 PY
 )
-NORN_DATABASE_URL=$private_database_url \
+env \
+  -u NORN_RECOVERED_FORWARD_MAINTENANCE \
+  -u NORN_LEGACY_BASELINE_MAINTENANCE \
+  NORN_DATABASE_URL=$private_database_url \
   NORN_SCHEMA_MODE=check \
   NORN_STARTUP_MODE=passive \
   NORN_BIND_ADDR=127.0.0.1 \

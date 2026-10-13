@@ -240,6 +240,10 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
             contract={json.dumps(candidate_contract)!r}
             def raise_exit(*_): raise SystemExit(0)
             if sys.argv[1:] == ['--norn-startup-contract']: print(contract); raise SystemExit(0)
+            if (os.environ.get('NORN_RECOVERED_FORWARD_MAINTENANCE') == 'true'
+                    or os.environ.get('NORN_LEGACY_BASELINE_MAINTENANCE') == 'true'):
+                print('stale maintenance mode leaked into private candidate', file=sys.stderr)
+                raise SystemExit(31)
             if os.environ.get('NORN_SCHEMA_MODE') == 'migrate-only': raise SystemExit(0)
             signal.signal(signal.SIGTERM, raise_exit)
             while True: time.sleep(1)
@@ -253,6 +257,8 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
             "NORN_REHEARSAL_SOURCE_DATABASE_URL": "postgresql://norn@/norn_private?" + urllib.parse.urlencode({"host": str(self.root)}),
             "NORN_TEST_PSQL_LOG": str(psql_log),
             "NORN_TEST_VERSION_SOURCE_SHA": SHA,
+            "NORN_RECOVERED_FORWARD_MAINTENANCE": "true",
+            "NORN_LEGACY_BASELINE_MAINTENANCE": "true",
             "PATH": str(tools) + os.pathsep + os.environ.get("PATH", ""),
         }
         result = subprocess.run([str(SCRIPT), str(self.candidate)], env=env, capture_output=True, text=True, timeout=20)
