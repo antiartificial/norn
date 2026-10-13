@@ -104,7 +104,7 @@ def owner_document(path: Path, label: str) -> bytes:
         os.close(fd)
 
 
-def owner_artifact_metadata(path: Path, expected_bytes: Any, label: str) -> None:
+def owner_artifact_metadata(path: Path, expected_bytes: Any, expected_digest: Any, label: str) -> None:
     if not path.is_absolute() or path.is_symlink() or path.resolve(strict=True) != path:
         fail(f"{label} must be absolute and not a symlink")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -116,8 +116,19 @@ def owner_artifact_metadata(path: Path, expected_bytes: Any, label: str) -> None
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or stat.S_IMODE(info.st_mode) != 0o600 or type(expected_bytes) is not int
-                or expected_bytes <= 0 or info.st_size != expected_bytes):
-            fail(f"{label} mode, owner, or byte count does not match the generation manifest")
+                or expected_bytes <= 0 or info.st_size != expected_bytes
+                or not isinstance(expected_digest, str) or not HEX64.fullmatch(expected_digest)):
+            fail(f"{label} mode, owner, byte count, or digest does not match the generation manifest")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+        if total != info.st_size or not hmac.compare_digest(digest.hexdigest(), expected_digest):
+            fail(f"{label} byte count or digest does not match the generation manifest")
     finally:
         os.close(fd)
 
@@ -148,10 +159,15 @@ def utc_timestamp(value: Any, label: str) -> None:
         fail(f"{label} timestamp must be UTC")
 
 
-def resolve(root: Path, key: bytes) -> dict[str, Any]:
+def resolve(root: Path, key: bytes, pointer_path: Path | None = None) -> dict[str, Any]:
     root = owner_directory(root, "recovered-forward root")
-    pointer_path = root / "active-generation.json"
-    if not pointer_path.exists() and not pointer_path.is_symlink():
+    active_pointer = pointer_path is None
+    if pointer_path is None:
+        pointer_path = root / "active-generation.json"
+    elif (not pointer_path.is_absolute() or pointer_path.parent != root
+          or pointer_path.resolve(strict=True) != pointer_path):
+        fail("recovered-forward generation pointer path is not canonical")
+    if active_pointer and not pointer_path.exists() and not pointer_path.is_symlink():
         return {
             "selection": "legacy-fixed",
             "root": str(root),
@@ -163,8 +179,9 @@ def resolve(root: Path, key: bytes) -> dict[str, Any]:
             "preservationReceiptPath": str(root / "preservation-receipt.json"),
         }
 
-    pointer_raw = owner_document(pointer_path, "active generation pointer")
-    pointer = signed_document(pointer_raw, POINTER_SCHEMA, POINTER_FIELDS, key, "active generation pointer")
+    pointer_label = "active generation pointer" if active_pointer else "archived generation pointer"
+    pointer_raw = owner_document(pointer_path, pointer_label)
+    pointer = signed_document(pointer_raw, POINTER_SCHEMA, POINTER_FIELDS, key, pointer_label)
     generation_id = pointer.get("generationID")
     transition_id = pointer.get("transitionID")
     source_sha = pointer.get("sourceSHA")
@@ -300,7 +317,8 @@ def resolve(root: Path, key: bytes) -> dict[str, Any]:
     artifact_digest = manifest.get("backupArtifactSHA256")
     if not isinstance(artifact_path, str) or not isinstance(artifact_digest, str) or not HEX64.fullmatch(artifact_digest):
         fail("active generation backup artifact path or digest is invalid")
-    owner_artifact_metadata(Path(artifact_path), manifest.get("backupArtifactBytes"), "active generation backup artifact")
+    owner_artifact_metadata(Path(artifact_path), manifest.get("backupArtifactBytes"), artifact_digest,
+                            "active generation backup artifact")
 
     return {
         "selection": "generation",

@@ -30,6 +30,8 @@ WRONG_KEY = b"fixture-wrong-audit-signing-key-000"
 SOURCE = EVIDENCE_TESTS.SOURCE
 OLD_CANDIDATE = EVIDENCE_TESTS.CANDIDATE
 NEW_CANDIDATE = "e" * 40
+SUCCESSOR_CANDIDATE = "f" * 40
+THIRD_CANDIDATE = "9" * 40
 OLD_TRANSITION = EVIDENCE_TESTS.TRANSITION
 NEW_TRANSITION = "mini-v3-forward-next"
 
@@ -71,7 +73,7 @@ class GenerationPrepareTest(unittest.TestCase):
         self.root.mkdir(parents=True, mode=0o700)
         self.root.chmod(0o700)
         self.releases = self.base / "releases"
-        for sha in (SOURCE, OLD_CANDIDATE, NEW_CANDIDATE):
+        for sha in (SOURCE, OLD_CANDIDATE, NEW_CANDIDATE, SUCCESSOR_CANDIDATE, THIRD_CANDIDATE):
             release = self.releases / sha
             release.mkdir(parents=True)
             (release / "release.env").write_text(f"NORN_RELEASE_SHA={sha}\n")
@@ -138,6 +140,25 @@ class GenerationPrepareTest(unittest.TestCase):
 
     def invoke(self):
         return subprocess.run(self.args, env=self.env, capture_output=True, text=True, timeout=15)
+
+    def select_successor(self, candidate=SUCCESSOR_CANDIDATE, suffix="successor"):
+        transition = NEW_TRANSITION + "-" + suffix
+        shadow = json.loads(self.new_shadow.read_text())
+        shadow["candidateSHA"] = candidate
+        successor_shadow = private(self.base / f"{suffix}-shadow.json", dump(shadow))
+        evidence = json.loads(self.new_evidence.read_text())
+        evidence.pop("signature")
+        evidence["transitionId"] = transition
+        evidence["candidateSHA"] = candidate
+        evidence["shadowReceiptSHA256"] = hashlib.sha256(successor_shadow.read_bytes()).hexdigest()
+        successor_evidence = private(self.base / f"{suffix}-evidence.json", sign(evidence))
+        replacements = {
+            self.args[self.args.index("--transition-id") + 1]: transition,
+            self.args[self.args.index("--candidate-sha") + 1]: candidate,
+            self.args[self.args.index("--source-evidence") + 1]: str(successor_evidence),
+            self.args[self.args.index("--shadow-receipt") + 1]: str(successor_shadow),
+        }
+        self.args = [replacements.get(value, value) for value in self.args]
 
     def use_historical_predecessor(self):
         # Preserve the current adoption receipt. The predecessor keeps its
@@ -383,6 +404,139 @@ class GenerationPrepareTest(unittest.TestCase):
         second = self.invoke()
         self.assertNotEqual(second.returncode, 0)
         self.assertIn("active generation pointer is incompatible", second.stderr)
+
+    def test_prepared_generation_can_roll_forward_without_rewriting_predecessor(self):
+        first = self.invoke()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        first_generation = self.root / "generations" / first_result["generationID"]
+        first_bytes = {path: path.read_bytes() for path in first_generation.iterdir()}
+        old_pointer = (self.root / "active-generation.json").read_bytes()
+
+        self.select_successor()
+        second = self.invoke()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_result = json.loads(second.stdout)
+        self.assertNotEqual(second_result["generationID"], first_result["generationID"])
+        self.assertEqual({path: path.read_bytes() for path in first_bytes}, first_bytes)
+        archive = self.root / (
+            f"active-generation.previous-{first_result['generationID']}-"
+            f"{hashlib.sha256(old_pointer).hexdigest()}.json"
+        )
+        self.assertEqual(archive.read_bytes(), old_pointer)
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+
+        retry = self.invoke()
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(json.loads(retry.stdout), second_result)
+
+        archive.write_bytes(archive.read_bytes() + b" ")
+        tampered_retry = self.invoke()
+        self.assertNotEqual(tampered_retry.returncode, 0)
+        self.assertIn("pointer archive identity is invalid", tampered_retry.stderr)
+
+    def test_only_exact_prepared_generation_can_be_superseded(self):
+        first = self.invoke()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        journal = Path(first_result["journalPath"])
+        value = json.loads(journal.read_text())
+        value["state"] = "candidate-activation-started"
+        private(journal, dump(value))
+        self.select_successor()
+
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("only an active prepared generation", result.stderr)
+        active = json.loads((self.root / "active-generation.json").read_text())
+        self.assertEqual(active["generationID"], first_result["generationID"])
+
+    def test_archived_pointer_revalidates_full_manifest_and_evidence_closure(self):
+        first = self.invoke()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        first_generation = self.root / "generations" / first_result["generationID"]
+        self.select_successor()
+        second = self.invoke()
+        self.assertEqual(second.returncode, 0, second.stderr)
+
+        manifest = first_generation / "generation.json"
+        manifest_raw = manifest.read_bytes()
+        manifest.write_bytes(manifest_raw + b" ")
+        broken_manifest = self.invoke()
+        self.assertNotEqual(broken_manifest.returncode, 0)
+        self.assertIn("manifest digest does not match", broken_manifest.stderr)
+        manifest.write_bytes(manifest_raw)
+
+        evidence = first_generation / "transition.json.source-evidence.json"
+        evidence_raw = evidence.read_bytes()
+        evidence.write_bytes(evidence_raw + b" ")
+        broken_evidence = self.invoke()
+        self.assertNotEqual(broken_evidence.returncode, 0)
+        self.assertIn("generation digest changed", broken_evidence.stderr)
+        evidence.write_bytes(evidence_raw)
+
+        artifact_raw = self.fixture.artifact.read_bytes()
+        self.fixture.artifact.write_bytes(b"X" + artifact_raw[1:])
+        resolver = Path(__file__).with_name("mini-recovered-forward-generation-resolve")
+        same_size_artifact = subprocess.run([str(resolver), "--root", str(self.root)], env=self.env,
+                                            capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(same_size_artifact.returncode, 0)
+        self.assertIn("artifact byte count or digest does not match", same_size_artifact.stderr)
+        self.fixture.artifact.write_bytes(artifact_raw)
+
+    def test_repeated_prepared_successors_preserve_a_to_b_to_c_history(self):
+        first = self.invoke()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        first_generation = self.root / "generations" / first_result["generationID"]
+        first_bytes = {path: path.read_bytes() for path in first_generation.iterdir()}
+
+        self.select_successor()
+        second = self.invoke()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_result = json.loads(second.stdout)
+        second_generation = self.root / "generations" / second_result["generationID"]
+        second_bytes = {path: path.read_bytes() for path in second_generation.iterdir()}
+
+        self.select_successor(THIRD_CANDIDATE, "third")
+        third = self.invoke()
+        self.assertEqual(third.returncode, 0, third.stderr)
+        third_result = json.loads(third.stdout)
+        self.assertNotIn(third_result["generationID"], {first_result["generationID"], second_result["generationID"]})
+        self.assertEqual({path: path.read_bytes() for path in first_bytes}, first_bytes)
+        self.assertEqual({path: path.read_bytes() for path in second_bytes}, second_bytes)
+        self.assertEqual(len(list(self.root.glob("active-generation.previous-*.json"))), 2)
+
+        retry = self.invoke()
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(json.loads(retry.stdout), third_result)
+
+    def test_prepared_successor_refuses_same_transition_and_pointer_tamper(self):
+        first = self.invoke()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        self.select_successor()
+        transition_index = self.args.index("--transition-id") + 1
+        self.args[transition_index] = NEW_TRANSITION
+        evidence_path = Path(self.args[self.args.index("--source-evidence") + 1])
+        evidence = json.loads(evidence_path.read_text())
+        evidence.pop("signature")
+        evidence["transitionId"] = NEW_TRANSITION
+        private(evidence_path, sign(evidence))
+        same_transition = self.invoke()
+        self.assertNotEqual(same_transition.returncode, 0)
+        self.assertIn("fresh transition ID", same_transition.stderr)
+
+        pointer = self.root / "active-generation.json"
+        value = json.loads(pointer.read_text())
+        value["candidateSHA"] = SUCCESSOR_CANDIDATE
+        private(pointer, dump(value))
+        tampered = self.invoke()
+        self.assertNotEqual(tampered.returncode, 0)
+        self.assertIn("signature does not verify", tampered.stderr)
+        self.assertEqual(json.loads((self.root / "generations" / first_result["generationID"] /
+                                     "transition.json").read_text())["state"], "prepared")
 
 
 if __name__ == "__main__":
