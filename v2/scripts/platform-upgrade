@@ -591,11 +591,14 @@ if [[ "$mode" == "recovered-forward" || "$mode" == "recovered-forward-finalize" 
 fi
 host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}"
 host_agent_label="${NORN_HOST_AGENT_LABEL:-com.norn.host-agent}"
+host_agent_plist="${NORN_HOST_AGENT_PLIST:-$HOME/Library/LaunchAgents/$host_agent_label.plist}"
 host_agent_direct_exec="${NORN_HOST_AGENT_DIRECT_EXEC:-false}"
 host_cli_bin="${NORN_HOST_CLI_BIN:-$HOME/.config/norn/host/bin/norn}"
 platform_script_bin="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
 host_runtime_bin="${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}"
 launch_label="${NORN_LAUNCH_LABEL:-com.norn.api}"
+api_launch_plist="${NORN_API_LAUNCH_PLIST:-$HOME/Library/LaunchAgents/$launch_label.plist}"
+api_launch_program="${NORN_API_LAUNCH_PROGRAM:-$HOME/bin/norn-api-sops-launcher}"
 api_base="${NORN_API_BASE:-http://127.0.0.1:8800}"
 candidate_port="${NORN_CANDIDATE_PORT:-18800}"
 drain_mode="${NORN_DRAIN_MODE:-fail}"
@@ -2023,9 +2026,154 @@ finally:
 PY
 }
 
+legacy_baseline_is_fence_binary() {
+  local path="$1"
+  require_cmd python3
+  python3 - "$path" <<'PY' >/dev/null 2>&1
+import os, stat, sys
+
+path = sys.argv[1]
+expected = b'#!/usr/bin/env bash\nprintf "norn legacy baseline fence active; candidate recovery is required\\n" >&2\nexit 78\n'
+info = os.lstat(path)
+if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+        or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o755):
+    raise SystemExit(1)
+fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    opened = os.fstat(fd)
+    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+        raise SystemExit(1)
+    value = b""
+    while len(value) <= len(expected):
+        chunk = os.read(fd, len(expected) + 1 - len(value))
+        if not chunk:
+            break
+        value += chunk
+    if value != expected or os.fstat(fd).st_size != len(expected):
+        raise SystemExit(1)
+finally:
+    os.close(fd)
+PY
+}
+
+legacy_baseline_validate_launchd_plist() {
+  local plist="$1" label="$2" managed_path="$3" launch_program="$4" service_name="$5"
+  python3 - "$plist" "$label" "$managed_path" "$launch_program" <<'PY' || fail "$service_name plist is not the exact owned managed job"
+import os, plistlib, stat, sys
+plist, label, managed, launch_program = sys.argv[1:]
+info = os.lstat(plist)
+if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022: raise SystemExit("unsafe plist")
+with open(plist, "rb") as source: value = plistlib.load(source)
+args = value.get("ProgramArguments")
+if value.get("Label") != label or not isinstance(args, list) or not args or not all(isinstance(v, str) for v in args): raise SystemExit("label or arguments mismatch")
+if os.path.realpath(os.path.expanduser(args[0])) != os.path.realpath(os.path.expanduser(launch_program)): raise SystemExit("launch program mismatch")
+if label.endswith("host-agent") and managed not in args: raise SystemExit("managed host-agent path missing")
+PY
+}
+
+legacy_baseline_validate_launchd_binding() {
+  local plist="$1" label="$2" managed_path="$3" launch_program="$4" service_name="$5" launch_state
+  legacy_baseline_validate_launchd_plist "$plist" "$label" "$managed_path" "$launch_program" "$service_name"
+  launch_state="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)" || fail "$service_name launchd job is not loaded"
+  python3 - "$plist" "$launch_state" <<'PY' || fail "$service_name loaded launchd path differs from its validated plist"
+import os, re, sys
+plist, launch_state = sys.argv[1:]
+matches = re.findall(r"^\s*path\s*=\s*(.+?)\s*$", launch_state, re.MULTILINE)
+if len(matches) != 1 or os.path.realpath(matches[0]) != os.path.realpath(plist):
+    raise SystemExit(f"plist path mismatch: {matches!r} != {plist!r}; state={launch_state!r}")
+PY
+}
+
+legacy_baseline_host_agent_processes() {
+  local managed_path="$1"
+  python3 - "$managed_path" <<'PY'
+import os, shlex, shutil, subprocess, sys
+
+managed = os.path.realpath(sys.argv[1])
+interpreters = {"/bin/bash", "/bin/sh", "/usr/bin/bash", "/usr/bin/env"}
+def executable_path(value):
+    if os.path.isabs(value):
+        return os.path.realpath(value)
+    found = shutil.which(value)
+    return os.path.realpath(found) if found else value
+matches = []
+for line in subprocess.check_output(["ps", "-axo", "pid=,ppid=,command="], text=True).splitlines():
+    fields = line.strip().split(None, 2)
+    if len(fields) != 3:
+        continue
+    try:
+        pid, ppid = map(int, fields[:2])
+        argv = shlex.split(fields[2])
+    except (ValueError, TypeError):
+        continue
+    exact = bool(argv) and executable_path(argv[0]) == managed
+    interpreted = (len(argv) > 1 and executable_path(argv[0]) in interpreters
+                   and os.path.realpath(argv[1]) == managed)
+    env_interpreted = (len(argv) > 2 and executable_path(argv[0]) == "/usr/bin/env"
+                       and executable_path(argv[1]) in interpreters
+                       and os.path.realpath(argv[2]) == managed)
+    if exact or interpreted or env_interpreted:
+        matches.append((pid, ppid))
+for pid, ppid in sorted(matches):
+    print(f"{pid}:{ppid}")
+PY
+}
+
+legacy_baseline_quiesce_launchd_service() {
+  local label="$1" plist="$2" managed_path="$3" launch_program="$4" service_name="$5" signal="$6"
+  local launch_state pid="" child_pid="" child_command=""
+  if launch_state="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)"; then
+    legacy_baseline_validate_launchd_binding "$plist" "$label" "$managed_path" "$launch_program" "$service_name"
+    pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    if [[ "$label" == "$host_agent_label" && "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      require_cmd pgrep
+      require_cmd ps
+      child_pid="$(pgrep -P "$pid" | sort -u || true)"
+      if [[ -n "$child_pid" ]]; then
+        [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || fail "$service_name launchd wrapper has ambiguous children"
+        child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+        [[ "$child_command" == *"$managed_path"* ]] || fail "$service_name launchd child does not execute the managed host-agent path"
+      fi
+    fi
+    launchctl bootout "gui/$(id -u)/$label" || fail "could not boot out the fenced $service_name launchd job"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1; then /bin/kill -"$signal" "$pid" || fail "could not terminate the booted-out $service_name PID"; fi
+    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1; then
+      [[ "$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')" == "$child_command" ]] || fail "$service_name child identity changed after launchd bootout"
+      /bin/kill -TERM "$child_pid" || fail "could not terminate the booted-out $service_name child"
+    fi
+    for _ in $(seq 1 30); do
+      if { [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; } \
+          && { [[ -z "$child_pid" ]] || ! kill -0 "$child_pid" >/dev/null 2>&1; }; then break; fi
+      sleep 1
+    done
+    [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" >/dev/null 2>&1 || fail "booted-out $service_name PID remained running"
+    [[ -z "$child_pid" ]] || ! kill -0 "$child_pid" >/dev/null 2>&1 || fail "booted-out $service_name child remained running"
+  fi
+  launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && fail "$service_name launchd job remained loaded after bootout"
+  legacy_baseline_is_fence_binary "$managed_path" || fail "$service_name launchd job is unloaded without the exact durable fence"
+  if [[ "$label" == "$host_agent_label" ]]; then
+    local remaining_agents
+    remaining_agents="$(legacy_baseline_host_agent_processes "$managed_path")" || fail "could not enumerate exact managed host-agent processes after bootout"
+    [[ -z "$remaining_agents" ]] || fail "$service_name has exact managed-path process(es) outside the booted-out launchd job: $remaining_agents"
+  fi
+}
+
+legacy_baseline_bootstrap_launchd_service() {
+  local label="$1" plist="$2" managed_path="$3" launch_program="$4" service_name="$5" launch_state
+  if launch_state="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)"; then
+    legacy_baseline_validate_launchd_binding "$plist" "$label" "$managed_path" "$launch_program" "$service_name"
+    return
+  fi
+  legacy_baseline_validate_launchd_plist "$plist" "$label" "$managed_path" "$launch_program" "$service_name"
+  launchctl bootstrap "gui/$(id -u)" "$plist" || fail "could not bootstrap the exact $service_name launchd job"
+  launch_state="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)" || fail "$service_name launchd job disappeared after bootstrap"
+  [[ "$launch_state" == *"path ="* ]] || fail "$service_name launchd job did not report its durable plist path after bootstrap: $launch_state"
+  legacy_baseline_validate_launchd_binding "$plist" "$label" "$managed_path" "$launch_program" "$service_name"
+}
+
 legacy_baseline_fence_host_agent() {
   [[ -L "$current_link" ]] || fail "legacy-baseline requires a current release link"
-  local legacy_release legacy_agent launch_state agent_pid child_pid child_command observed_pid
+  local legacy_release legacy_agent launch_state agent_pid child_pid child_command
   legacy_release="$(readlink "$current_link")"
   legacy_agent="$legacy_release/bin/norn-host-agent"
   [[ -x "$legacy_agent" && -x "$host_agent_bin" ]] || fail "legacy-baseline requires both release and managed norn-host-agent binaries"
@@ -2051,20 +2199,9 @@ legacy_baseline_fence_host_agent() {
   fi
   legacy_baseline_write_fence_state "host-agent-fencing" "$agent_pid"
   legacy_baseline_install_fence_binary "$host_agent_bin"
-  if [[ -n "$child_pid" ]]; then /bin/kill -TERM "$child_pid"; fi
-  /bin/kill -TERM "$agent_pid" || fail "legacy host-agent fence is installed but wrapper termination failed"
-  for _ in $(seq 1 30); do
-    if ! kill -0 "$agent_pid" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
+  legacy_baseline_quiesce_launchd_service "$host_agent_label" "$host_agent_plist" "$host_agent_bin" "$platform_script_bin" "legacy host-agent" TERM
   if kill -0 "$agent_pid" >/dev/null 2>&1 || { [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1; }; then
     fail "legacy host-agent fence is installed but the original wrapper or child PID did not exit"
-  fi
-  if launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
-    observed_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-    [[ -z "$observed_pid" || "$observed_pid" == "0" ]] || fail "legacy host-agent respawned after its binary was fenced"
   fi
   log "legacy norn-host-agent fenced and stopped"
 }
@@ -2082,18 +2219,14 @@ restart_fenced_host_agent() {
   if cmp -s "$candidate_agent" "$host_agent_bin"; then
     log "candidate norn-host-agent was already installed before restart recovery"
   else
-    if "$host_agent_bin" >/dev/null 2>&1; then
-      fail "candidate API is healthy but the managed host-agent is neither the signed candidate nor the legacy fence"
-    else
-      local fence_status=$?
-      [[ "$fence_status" == "78" ]] || fail "candidate API is healthy but managed host-agent is neither the signed candidate nor the legacy fence"
-    fi
+    legacy_baseline_is_fence_binary "$host_agent_bin" || fail "candidate API is healthy but managed host-agent is neither the signed candidate nor the legacy fence"
     atomic_install_file "$candidate_agent" "$host_agent_bin" || fail "candidate API is healthy but could not install its signed norn-host-agent"
   fi
   cmp -s "$candidate_agent" "$host_agent_bin" || fail "candidate API is healthy but managed norn-host-agent does not match the signed candidate release"
   if [[ "${NORN_M5_FINALIZE_CRASH_AFTER_HOST_AGENT_INSTALL:-}" == "1" ]]; then
     fail "test hook: interrupted after candidate host-agent install before kickstart"
   fi
+  legacy_baseline_bootstrap_launchd_service "$host_agent_label" "$host_agent_plist" "$host_agent_bin" "$platform_script_bin" "candidate host-agent"
   launchctl kickstart -k "gui/$(id -u)/$host_agent_label" || fail "candidate API is healthy but norn-host-agent did not restart"
   local launch_state agent_pid child_pid child_command stable_pid stable_child_pid stable_child_command
   if ! launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
@@ -2172,23 +2305,12 @@ legacy_baseline_fence_service() {
     legacy_baseline_write_fence_state "legacy-fenced" "$legacy_pid"
   fi
   legacy_baseline_install_fence_binary "$legacy_api_path"
-  /bin/kill -KILL "$legacy_pid" || fail "legacy baseline fence is installed but the frozen legacy API PID could not be terminated"
-  for _ in $(seq 1 30); do
-    if ! kill -0 "$legacy_pid" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
+  legacy_baseline_quiesce_launchd_service "$launch_label" "$api_launch_plist" "$legacy_api_path" "$api_launch_program" "legacy API" KILL
   if kill -0 "$legacy_pid" >/dev/null 2>&1; then
     fail "legacy baseline fence is installed but the original legacy PID did not exit"
   fi
   listener_pids="$(lsof -nP -iTCP:"$active_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
   [[ -z "$listener_pids" ]] || fail "legacy baseline fence is installed but a control API listener remains"
-  if launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
-    local observed_pid
-    observed_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-    [[ -z "$observed_pid" || "$observed_pid" == "0" ]] || fail "legacy API respawned after its binary was fenced"
-  fi
   if [[ "$mode" == "recovered-forward" ]]; then
     legacy_baseline_write_fence_state "legacy-fenced"
   fi
@@ -2304,12 +2426,7 @@ legacy_baseline_verify_pending_candidate() {
   [[ -x "$candidate_agent" && -x "$host_agent_bin" ]] || fail "legacy baseline candidate host-agent binaries are unavailable"
   # The managed path must still be the durable fence until the exact
   # finalization has restarted and validated the normal candidate API.
-  if "$host_agent_bin" >/dev/null 2>&1; then
-    fail "legacy baseline host-agent fence is not installed"
-  else
-    local fence_status=$?
-    [[ "$fence_status" == "78" ]] || fail "legacy baseline managed host-agent is not the durable fence"
-  fi
+  legacy_baseline_is_fence_binary "$host_agent_bin" || fail "legacy baseline managed host-agent is not the durable fence"
 }
 
 legacy_baseline_verify_normal_candidate() {
@@ -2768,6 +2885,9 @@ restart_api() {
     launchctl unsetenv NORN_LEGACY_BASELINE_MAINTENANCE >/dev/null 2>&1 || true
     launchctl unsetenv NORN_LEGACY_BASELINE_TRANSITION_ID >/dev/null 2>&1 || true
   fi
+  if [[ "$mode" == "legacy-baseline" || "$mode" == "recovered-forward" ]]; then
+    legacy_baseline_bootstrap_launchd_service "$launch_label" "$api_launch_plist" "$legacy_api_path" "$api_launch_program" "candidate API"
+  fi
   launchctl kickstart -k "gui/$(id -u)/$launch_label"
 }
 
@@ -2926,16 +3046,9 @@ recovered_forward_load_start_journal() {
   legacy_finalize_transition_id="$recovered_transition_id"
 }
 
-recovered_forward_is_fence_binary() {
-  local path="$1" output status
-  [[ -x "$path" ]] || return 1
-  if output="$("$path" 2>&1)"; then status=0; else status=$?; fi
-  [[ "$status" == "78" && "$output" == "norn legacy baseline fence active; candidate recovery is required" ]]
-}
-
 recovered_forward_ensure_host_agent_fenced() {
   require_cmd launchctl
-  if ! recovered_forward_is_fence_binary "$host_agent_bin"; then
+  if ! legacy_baseline_is_fence_binary "$host_agent_bin"; then
     local launch_state pid source_agent orphans
     source_agent="$releases/$recovered_source_sha/bin/norn-host-agent"
     cmp -s "$source_agent" "$host_agent_bin" || fail "managed host-agent is neither the exact signed source nor the exact fence"
@@ -2955,35 +3068,7 @@ recovered_forward_ensure_host_agent_fenced() {
     fi
     return
   fi
-  local launch_state pid
-  if launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
-    pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
-      local recorded child
-      recorded="$(python3 - "$transition_state_path" <<'PY'
-import json,sys
-print(json.load(open(sys.argv[1],encoding="utf-8")).get("legacyPID",0))
-PY
-)" || fail "cannot read the recorded host-agent PID"
-      [[ "$pid" == "$recorded" ]] || fail "recovered-forward host-agent fence PID differs from its durable journal"
-      child="$(pgrep -P "$pid" | sort -u || true)"
-      if [[ -n "$child" ]]; then
-        [[ "$child" =~ ^[1-9][0-9]*$ ]] || fail "recovered-forward fenced host-agent has ambiguous child processes"
-        /bin/kill -TERM "$child" || fail "could not stop the journal-bound host-agent child"
-        for _ in $(seq 1 30); do
-          kill -0 "$child" >/dev/null 2>&1 || break
-          sleep 1
-        done
-        kill -0 "$child" >/dev/null 2>&1 && fail "journal-bound host-agent child remained after fence recovery"
-      fi
-      /bin/kill -TERM "$pid" || fail "could not stop the journal-bound fenced host-agent wrapper"
-      for _ in $(seq 1 30); do
-        kill -0 "$pid" >/dev/null 2>&1 || break
-        sleep 1
-      done
-      kill -0 "$pid" >/dev/null 2>&1 && fail "journal-bound host-agent PID remained after fence recovery"
-    fi
-  fi
+  legacy_baseline_quiesce_launchd_service "$host_agent_label" "$host_agent_plist" "$host_agent_bin" "$platform_script_bin" "recovered-forward host-agent" TERM
   log "verified recovered-forward host-agent fence is already installed and stopped"
 }
 
@@ -2991,27 +3076,9 @@ recovered_forward_ensure_api_fenced() {
   local port listener launch_state pid
   port="$(direct_loopback_api_port)" || fail "recovered-forward resume requires the direct Mini API listener"
   require_cmd lsof
-  if recovered_forward_is_fence_binary "$legacy_api_path"; then
+  if legacy_baseline_is_fence_binary "$legacy_api_path"; then
+    legacy_baseline_quiesce_launchd_service "$launch_label" "$api_launch_plist" "$legacy_api_path" "$api_launch_program" "recovered-forward API" KILL
     listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
-    if launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
-      pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-      if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
-        local recorded
-        recorded="$(python3 - "$transition_state_path" <<'PY'
-import json,sys
-print(json.load(open(sys.argv[1],encoding="utf-8")).get("legacyPID",0))
-PY
-)" || fail "cannot read the recorded API PID"
-        [[ "$pid" == "$recorded" && "$listener" == "$pid" ]] || fail "recovered-forward API fence PID/listener differs from the durable journal"
-        /bin/kill -KILL "$pid" || fail "could not terminate the journal-bound frozen source API"
-        for _ in $(seq 1 30); do
-          kill -0 "$pid" >/dev/null 2>&1 || break
-          sleep 1
-        done
-        kill -0 "$pid" >/dev/null 2>&1 && fail "journal-bound source API PID remained after fence recovery"
-        listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
-      fi
-    fi
     [[ -z "$listener" ]] || fail "recovered-forward API fence is installed but a listener remains"
     legacy_baseline_write_fence_state "legacy-fenced"
     return
