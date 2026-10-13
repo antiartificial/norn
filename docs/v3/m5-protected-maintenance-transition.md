@@ -97,7 +97,16 @@ adoption receipt and sign new evidence, generation manifests, and pointers.
 If the completed predecessor's preservation receipt and source evidence were
 signed with the retained prior key, provide that value through the optional
 `NORN_AUDIT_HISTORICAL_SIGNING_KEY` protected environment input for this
-preparation. It is used only for predecessor verification; it is never used
-to sign new artifacts or passed to mutation/finalization children. If omitted,
-predecessor verification uses the active key. Neither key belongs on a command
-line or in logs, and historical receipts remain byte-for-byte unchanged.
+preparation. The predecessor's adoption receipt is resolved separately: the
+generation preparer uses the fixed current receipt when its raw SHA-256 matches
+the predecessor evidence, otherwise it searches only owner-only archived
+siblings and accepts a receipt only when its raw digest matches that evidence.
+An archived receipt is verified with the predecessor evidence key; the current
+receipt and all new evidence remain verified with the active key. Identical
+archived copies are selected in deterministic filename order and are never
+rewritten. Missing, unsafe, digest-mismatched, or incorrectly signed receipts
+fail before a new generation pointer is activated. The historical key is used
+only for predecessor verification; it is never used to sign new artifacts or
+passed to mutation/finalization children. If omitted, predecessor verification
+uses the active key. Neither key belongs on a command line or in logs, and
+historical receipts remain byte-for-byte unchanged.

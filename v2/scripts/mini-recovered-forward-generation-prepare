@@ -198,6 +198,37 @@ def release_identity(releases: Path, sha: str, label: str) -> None:
         fail(f"{label} immutable release identity does not match its directory")
 
 
+def predecessor_adoption_receipt(evidence_path: Path, evidence_raw: bytes) -> Path | None:
+    """Resolve the exact adoption receipt bound by immutable predecessor evidence.
+
+    None means the fixed current receipt matches and must be verified with the
+    active audit key. An archived path is returned only when its raw bytes have
+    the exact digest already signed into predecessor evidence.
+    """
+    evidence = strict_json(evidence_raw, "legacy recovered-forward source evidence")
+    expected = evidence.get("adoptionReceiptSHA256")
+    if not isinstance(expected, str) or not HEX64.fullmatch(expected):
+        fail("legacy source evidence adoption receipt digest is invalid")
+    config = Path.home() / ".config/norn"
+    current = config / ".norn-recovered-baseline-adoption-v2.json"
+    if current.exists() or current.is_symlink():
+        if hashlib.sha256(private_bytes(current, "current recovered-baseline adoption receipt")).hexdigest() == expected:
+            return None
+    matches: list[Path] = []
+    prefix = ".norn-recovered-baseline-adoption-v2.json."
+    for candidate in sorted(config.glob(prefix + "*"), key=lambda item: item.name):
+        if not re.fullmatch(r"\.norn-recovered-baseline-adoption-v2\.json\.[A-Za-z0-9._-]{1,128}", candidate.name):
+            continue
+        raw = private_bytes(candidate, "archived recovered-baseline adoption receipt")
+        if hashlib.sha256(raw).hexdigest() == expected:
+            matches.append(candidate)
+    if not matches:
+        fail("no exact archived adoption receipt matches predecessor evidence digest")
+    # Identical retained copies are acceptable; deterministic selection keeps
+    # generation preparation reproducible without rewriting either record.
+    return matches[0]
+
+
 def completed_predecessor(root: Path, releases: Path, key: bytes,
                           historical_key: bytes) -> dict[str, Any]:
     journal_path = root / "transition.json"
@@ -236,6 +267,7 @@ def completed_predecessor(root: Path, releases: Path, key: bytes,
     evidence_digest = hashlib.sha256(evidence_raw).hexdigest()
     if journal.get("sourceEvidenceSHA256") != evidence_digest:
         fail("legacy journal source evidence digest changed")
+    archived_adoption = predecessor_adoption_receipt(evidence_path, evidence_raw)
     if journal.get("preservationReceiptSHA256") != hashlib.sha256(receipt_raw).hexdigest():
         fail("legacy journal preservation receipt digest changed")
 
@@ -267,9 +299,12 @@ def completed_predecessor(root: Path, releases: Path, key: bytes,
     shadow_path = Path(journal.get("shadowReceiptPath", ""))
     if not all(p.is_absolute() for p in (proof_path, artifact_path, shadow_path)):
         fail("legacy backup and shadow paths must be absolute")
+    verifier_args = [str(EVIDENCE_VERIFIER), str(evidence_path), evidence_digest, transition, source, candidate,
+                     str(proof_path), str(artifact_path), str(shadow_path)]
+    if archived_adoption is not None:
+        verifier_args.append(str(archived_adoption))
     verify = subprocess.run(
-        [str(EVIDENCE_VERIFIER), str(evidence_path), evidence_digest, transition, source, candidate,
-         str(proof_path), str(artifact_path), str(shadow_path)],
+        verifier_args,
         env=historical_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
     )
     if verify.returncode or verify.stdout.strip() != "verified":
@@ -355,6 +390,33 @@ def verify_generation_evidence(generation: Path, args: argparse.Namespace, evide
         fail("generation-local signed evidence and artifacts did not verify: " + result.stderr.strip())
 
 
+def verify_prepared_v2_input(args: argparse.Namespace, evidence_raw: bytes,
+                             proof: Path, artifact: Path, shadow: Path,
+                             key: bytes) -> None:
+    """Validate v2 evidence before creating generation state.
+
+    V3 evidence has a candidate-versioned path invariant and is validated after
+    it is placed at its final generation location. V2 evidence has no such path
+    binding, so validate it at the supplied immutable input path first.
+    """
+    value = strict_json(evidence_raw, "new source evidence")
+    if value.get("schema") != "norn.recovered-forward-evidence/v2":
+        return
+    digest = hashlib.sha256(evidence_raw).hexdigest()
+    env = os.environ.copy()
+    env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+    env["NORN_AUDIT_SIGNING_KEY"] = key.decode("utf-8")
+    result = subprocess.run(
+        [str(EVIDENCE_VERIFIER), str(args.source_evidence), digest,
+         args.transition_id, args.source_sha, args.candidate_sha,
+         str(proof), str(artifact), str(shadow)],
+        env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    if result.returncode or result.stdout.strip() != "verified":
+        fail("new signed evidence and artifacts did not verify: " + result.stderr.strip())
+
+
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
     # Capture then remove the historical key before any later subprocess can
@@ -385,6 +447,11 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     artifact_digest, artifact_bytes = private_file_digest(args.backup_artifact, "new backup artifact")
     proof_value = strict_json(inputs["backup-proof.json"], "new backup proof")
     shadow_value = strict_json(inputs["shadow-receipt.json"], "new shadow receipt")
+    if proof_value.get("sourceReleaseSHA") != args.source_sha or not shadow_value:
+        fail("new backup/shadow input binding is inconsistent")
+    verify_prepared_v2_input(args, inputs["transition.json.source-evidence.json"],
+                             args.backup_proof, args.backup_artifact,
+                             args.shadow_receipt, key)
     created_at = parse_timestamp(shadow_value.get("completedAt"), "new shadow receipt")
     input_digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in inputs.items()}
     input_digests["backup-artifact.bin"] = artifact_digest
@@ -438,9 +505,6 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     expected_files["generation.json"] = manifest_raw
 
     evidence_digest = input_digests["transition.json.source-evidence.json"]
-    if proof_value.get("sourceReleaseSHA") != args.source_sha or not shadow_value:
-        fail("new backup/shadow input binding is inconsistent")
-
     pointer_value = {
         "schema": POINTER_SCHEMA,
         "generationID": generation_id,

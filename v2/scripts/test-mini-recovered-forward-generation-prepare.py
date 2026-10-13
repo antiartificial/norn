@@ -140,10 +140,18 @@ class GenerationPrepareTest(unittest.TestCase):
         return subprocess.run(self.args, env=self.env, capture_output=True, text=True, timeout=15)
 
     def use_historical_predecessor(self):
-        # Preserve the active adoption receipt bytes. The predecessor evidence
-        # has its own historical signature but still binds that active receipt.
+        # Preserve the current adoption receipt. The predecessor keeps its
+        # historical receipt as a separate immutable, digest-addressed file;
+        # the new generation continues to bind the current active receipt.
+        adoption_path = self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json"
+        adoption = json.loads(adoption_path.read_bytes())
+        adoption.pop("signature")
+        archived_adoption = self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json.previous-fixture"
+        archived_raw = sign(adoption, HISTORICAL_KEY)
+        private(archived_adoption, archived_raw)
         value = json.loads(self.old_evidence.read_bytes())
         value.pop("signature")
+        value["adoptionReceiptSHA256"] = hashlib.sha256(archived_raw).hexdigest()
         evidence_raw = sign(value, HISTORICAL_KEY)
         private(self.old_evidence, evidence_raw)
         receipt = json.loads(self.old_receipt.read_bytes())
@@ -242,8 +250,11 @@ class GenerationPrepareTest(unittest.TestCase):
 
     def test_mixed_historical_and_active_keys_succeed_and_preserve_predecessor_bytes(self):
         self.use_historical_predecessor()
+        archived_adoption = self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json.previous-fixture"
+        current_adoption = self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json"
         predecessor_bytes = {path: path.read_bytes() for path in
-                             (self.old_journal, self.old_evidence, self.old_receipt)}
+                             (self.old_journal, self.old_evidence, self.old_receipt,
+                              archived_adoption, current_adoption)}
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({path: path.read_bytes() for path in predecessor_bytes}, predecessor_bytes)
@@ -257,6 +268,16 @@ class GenerationPrepareTest(unittest.TestCase):
                                   capture_output=True, text=True, timeout=15)
         self.assertEqual(resolved.returncode, 0, resolved.stderr)
         self.assertEqual(json.loads(resolved.stdout)["selection"], "generation")
+
+    def test_missing_exact_archived_adoption_fails_before_generation_or_pointer(self):
+        self.use_historical_predecessor()
+        archived_adoption = self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json.previous-fixture"
+        archived_adoption.write_bytes(archived_adoption.read_bytes() + b" ")
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no exact archived adoption receipt", result.stderr)
+        self.assertFalse((self.root / "active-generation.json").exists())
+        self.assertFalse((self.root / "generations").exists())
 
     def test_missing_or_wrong_historical_key_fails_before_pointer_creation(self):
         self.use_historical_predecessor()
