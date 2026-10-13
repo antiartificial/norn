@@ -67,6 +67,9 @@ PRE_M5_BINARIES = (
 PRE_COMPLETED_RECOVERY_GATE_BINARIES = tuple(
     name for name in BINARIES if name not in {"mini-recovered-forward-completed-gate", "mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve"}
 )
+PRE_GENERATION_ROLLOVER_BINARIES = tuple(
+    name for name in BINARIES if name not in {"mini-recovered-forward-generation-prepare", "mini-recovered-forward-generation-resolve"}
+)
 
 
 class PlatformReleaseManifestTests(unittest.TestCase):
@@ -294,6 +297,43 @@ class PlatformReleaseManifestTests(unittest.TestCase):
         signatures.mkdir()
         detached_manifest = signatures / "legacy.manifest.json"
         detached_signature = signatures / "legacy.manifest.sig"
+        detached_manifest.write_text("{}\n", encoding="utf-8")
+        detached_signature.write_bytes(b"detached-signature")
+        signature["status"] = "signed"
+        signature["artifacts"] = {
+            f"signatures/{path.name}": hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (detached_manifest, detached_signature)
+        }
+        signature["manifestSha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        signature_path.write_text(json.dumps(signature, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.seal(historical)
+
+        result = self.verify(historical)
+        self.assertEqual(result.stdout.strip(), "signed")
+
+    def test_verify_accepts_signed_pre_generation_rollover_layout(self) -> None:
+        historical = self.root / "pre-generation-rollover-release"
+        self.populate_release(historical, BINARIES)
+        self.create(historical)
+        for path in sorted(historical.rglob("*"), reverse=True):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        historical.chmod(0o755)
+        for name in set(BINARIES) - set(PRE_GENERATION_ROLLOVER_BINARIES):
+            (historical / "bin" / name).unlink()
+        self.assertTrue((historical / "bin/mini-recovered-forward-completed-gate").is_file())
+        manifest_path = historical / "release.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"]["binaries"] = {
+            path: digest for path, digest in manifest["artifacts"]["binaries"].items()
+            if path.removeprefix("bin/") in PRE_GENERATION_ROLLOVER_BINARIES
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        signature_path = historical / "release.signature.json"
+        signature = json.loads(signature_path.read_text(encoding="utf-8"))
+        signatures = historical / "signatures"
+        signatures.mkdir()
+        detached_manifest = signatures / "historical.manifest.json"
+        detached_signature = signatures / "historical.manifest.sig"
         detached_manifest.write_text("{}\n", encoding="utf-8")
         detached_signature.write_bytes(b"detached-signature")
         signature["status"] = "signed"
