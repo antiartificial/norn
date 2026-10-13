@@ -820,28 +820,36 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID, fleetEn
 	if err := c.requestWithVersion(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/pulls/%d", pr.Number)), nil, &pulls, pullMergeCommitAPIVersion); err != nil || pulls.MergedAt == "" || pulls.MergeCommitSHA == "" {
 		return nil, ErrNotReady
 	}
-	var runs struct {
-		WorkflowRuns []struct {
-			ID         int64  `json:"id"`
-			HeadSHA    string `json:"head_sha"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"workflow_runs"`
-	}
 	// A protected PR merge triggers the reviewed plan workflow with a push
 	// event for the merge commit, including disposable pilots. Keep discovery
-	// bound to that event and the exact merge SHA below.
-	query := "?event=push&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&status=success&per_page=100"
-	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.PlanWorkflow)+"/runs"+query), nil, &runs); err != nil {
-		return nil, err
-	}
-	for _, run := range runs.WorkflowRuns {
-		if run.HeadSHA != pulls.MergeCommitSHA || run.Status != "completed" || run.Conclusion != "success" {
-			continue
+	// bound to that event and the exact merge SHA below. GitHub's full 100-run
+	// response can exceed the client's bounded JSON read, so scan at most the
+	// same 100 runs in smaller pages.
+	const pageSize, maxPages = 25, 4
+	for page := 1; page <= maxPages; page++ {
+		var runs struct {
+			WorkflowRuns []struct {
+				ID         int64  `json:"id"`
+				HeadSHA    string `json:"head_sha"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"workflow_runs"`
 		}
-		planSHA, artifactErr := c.planArtifactSHA(ctx, token, run.ID, fleetEnvironment)
-		if artifactErr == nil {
-			return &Dispatch{PlanRunID: run.ID, PlanSHA: planSHA, ApprovedHeadSHA: pulls.MergeCommitSHA, PilotRunID: c.cfg.PilotRunID}, nil
+		query := fmt.Sprintf("?event=push&branch=%s&status=success&per_page=%d&page=%d", url.QueryEscape(c.cfg.DefaultBranch), pageSize, page)
+		if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.PlanWorkflow)+"/runs"+query), nil, &runs); err != nil {
+			return nil, err
+		}
+		for _, run := range runs.WorkflowRuns {
+			if run.HeadSHA != pulls.MergeCommitSHA || run.Status != "completed" || run.Conclusion != "success" {
+				continue
+			}
+			planSHA, artifactErr := c.planArtifactSHA(ctx, token, run.ID, fleetEnvironment)
+			if artifactErr == nil {
+				return &Dispatch{PlanRunID: run.ID, PlanSHA: planSHA, ApprovedHeadSHA: pulls.MergeCommitSHA, PilotRunID: c.cfg.PilotRunID}, nil
+			}
+		}
+		if len(runs.WorkflowRuns) < pageSize {
+			break
 		}
 	}
 	return nil, ErrNotReady

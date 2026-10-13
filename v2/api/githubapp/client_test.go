@@ -469,6 +469,68 @@ func TestPilotDispatchResolvesMergedPushPlanArtifact(t *testing.T) {
 	if got := planRunQuery.Get("event"); got != "push" {
 		t.Fatalf("pilot resolver selected event %q for the merged-main plan run", got)
 	}
+	if planRunQuery.Get("per_page") != "25" || planRunQuery.Get("page") != "1" {
+		t.Fatalf("pilot resolver requested an unbounded plan-run page: %v", planRunQuery)
+	}
+}
+
+func TestPilotDispatchFindsMergedPlanOnSecondBoundedPage(t *testing.T) {
+	planID := "43434343-4343-4434-8434-434343434343"
+	headSHA := strings.Repeat("b", 40)
+	planSHA := strings.Repeat("a", 64)
+	const pilotRunID = "pilot261012a"
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
+	entry, _ := zipWriter.Create("fleet-plan.sha256")
+	_, _ = entry.Write([]byte(planSHA + "\n"))
+	entry, _ = zipWriter.Create("pilot-run-id.txt")
+	_, _ = entry.Write([]byte(pilotRunID + "\n"))
+	_ = zipWriter.Close()
+	var pages []string
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+			fmt.Fprint(w, `[{"number":8,"html_url":"https://github.com/acme/norn-fleet/pull/8","state":"closed","merged_at":"2026-10-13T23:39:30Z"}]`)
+		case r.URL.Path == "/repos/acme/norn-fleet/pulls/8":
+			fmt.Fprintf(w, `{"merge_commit_sha":%q,"merged_at":"2026-10-13T23:39:30Z"}`, headSHA)
+		case strings.Contains(r.URL.Path, "/actions/workflows/plan.yml/runs"):
+			if r.URL.Query().Get("per_page") != "25" {
+				http.Error(w, "plan page is too large", http.StatusBadRequest)
+				return
+			}
+			page := r.URL.Query().Get("page")
+			pages = append(pages, page)
+			if page == "1" {
+				runs := make([]map[string]any, 25)
+				for index := range runs {
+					runs[index] = map[string]any{"id": index + 1, "head_sha": strings.Repeat("c", 40), "status": "completed", "conclusion": "success"}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+			} else if page == "2" {
+				fmt.Fprintf(w, `{"workflow_runs":[{"id":91,"head_sha":%q,"status":"completed","conclusion":"success"}]}`, headSHA)
+			} else {
+				http.Error(w, "unexpected plan page", http.StatusBadRequest)
+			}
+		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/91/artifacts":
+			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-disposable-fleet-nyc3-91","expired":false}]}`)
+		case r.URL.Path == "/repos/acme/norn-fleet/actions/artifacts/92/zip":
+			_, _ = w.Write(archive.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	client.cfg.PilotRunID = pilotRunID
+	client.cfg.ConfigPath = "environments/disposable/fleet/nyc3/cluster.yaml"
+	approved, err := client.ResolveApprovedPlan(context.Background(), planID, "disposable/fleet/nyc3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.PlanRunID != 91 || approved.PlanSHA != planSHA || !reflect.DeepEqual(pages, []string{"1", "2"}) {
+		t.Fatalf("approved=%#v pages=%v", approved, pages)
+	}
 }
 
 func TestRecoverBoundPlanDoesNotRecoverCancelledHashMatchedRun(t *testing.T) {
