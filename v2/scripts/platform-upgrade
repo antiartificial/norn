@@ -2136,10 +2136,12 @@ legacy_baseline_quiesce_launchd_service() {
       fi
     fi
     launchctl bootout "gui/$(id -u)/$label" || fail "could not boot out the fenced $service_name launchd job"
-    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1; then /bin/kill -"$signal" "$pid" || fail "could not terminate the booted-out $service_name PID"; fi
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      /bin/kill -"$signal" "$pid" 2>/dev/null || ! kill -0 "$pid" >/dev/null 2>&1 || fail "could not terminate the booted-out $service_name PID"
+    fi
     if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1; then
       [[ "$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')" == "$child_command" ]] || fail "$service_name child identity changed after launchd bootout"
-      /bin/kill -TERM "$child_pid" || fail "could not terminate the booted-out $service_name child"
+      /bin/kill -TERM "$child_pid" 2>/dev/null || ! kill -0 "$child_pid" >/dev/null 2>&1 || fail "could not terminate the booted-out $service_name child"
     fi
     for _ in $(seq 1 30); do
       if { [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; } \
