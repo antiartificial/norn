@@ -193,6 +193,7 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
         (self.postgres_bin / "postgres").chmod(0o700)
 
         psql_log = self.root / "fingerprint-queries.txt"
+        candidate_trace = self.root / "candidate-startup-modes.txt"
         psql = self.postgres_bin / "psql"
         psql.write_text(textwrap.dedent('''\
             #!/bin/sh
@@ -244,6 +245,8 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
                     or os.environ.get('NORN_LEGACY_BASELINE_MAINTENANCE') == 'true'):
                 print('stale maintenance mode leaked into private candidate', file=sys.stderr)
                 raise SystemExit(31)
+            with open(os.environ['NORN_TEST_CANDIDATE_TRACE'], 'a') as trace:
+                trace.write(os.environ.get('NORN_SCHEMA_MODE', '') + '/' + os.environ.get('NORN_STARTUP_MODE', '') + '\\n')
             if os.environ.get('NORN_SCHEMA_MODE') == 'migrate-only': raise SystemExit(0)
             signal.signal(signal.SIGTERM, raise_exit)
             while True: time.sleep(1)
@@ -256,6 +259,7 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
             "NORN_REHEARSAL_POSTGRES_BIN": str(self.postgres_bin),
             "NORN_REHEARSAL_SOURCE_DATABASE_URL": "postgresql://norn@/norn_private?" + urllib.parse.urlencode({"host": str(self.root)}),
             "NORN_TEST_PSQL_LOG": str(psql_log),
+            "NORN_TEST_CANDIDATE_TRACE": str(candidate_trace),
             "NORN_TEST_VERSION_SOURCE_SHA": SHA,
             "NORN_RECOVERED_FORWARD_MAINTENANCE": "true",
             "NORN_LEGACY_BASELINE_MAINTENANCE": "true",
@@ -263,6 +267,9 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
         }
         result = subprocess.run([str(SCRIPT), str(self.candidate)], env=env, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(candidate_trace.read_text().splitlines(), [
+            "migrate-only/active", "migrate-only/active", "check/passive",
+        ])
         queries = psql_log.read_text()
         self.assertIn('COPY (SELECT row_to_json(full_row)::text FROM (SELECT id FROM public."app_table"', queries)
         self.assertNotIn('FROM public."norn_schema_migrations"', queries)
