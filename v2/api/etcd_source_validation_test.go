@@ -12,11 +12,11 @@ import (
 
 type etcdHealthStub struct {
 	err error
-	key string
+	op  clientv3.Op
 }
 
-func (s *etcdHealthStub) Get(_ context.Context, key string, _ ...clientv3.OpOption) (*clientv3.GetResponse, error) {
-	s.key = key
+func (s *etcdHealthStub) Get(_ context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	s.op = clientv3.OpGet(key, opts...)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -29,8 +29,11 @@ func TestCheckEtcdSourceHealthUsesControlPrefixRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linearizable read: %v", err)
 	}
-	if client.key != "/norn/source-validation" {
-		t.Fatalf("read key=%q", client.key)
+	if got := string(client.op.KeyBytes()); got != "/norn/source-validation/" {
+		t.Fatalf("read key=%q", got)
+	}
+	if got, want := string(client.op.RangeBytes()), clientv3.GetPrefixRangeEnd("/norn/source-validation/"); got != want {
+		t.Fatalf("read range end=%q, want %q", got, want)
 	}
 }
 
@@ -57,8 +60,8 @@ func TestEtcdPassiveHealthTracksQuorumAfterStartup(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	ready := httptest.NewRecorder()
 	health.ServeHTTP(ready, request)
-	if ready.Code != http.StatusOK || client.key != "/norn/passive" {
-		t.Fatalf("initial passive health: status=%d read=%q", ready.Code, client.key)
+	if ready.Code != http.StatusOK || string(client.op.KeyBytes()) != "/norn/passive/" {
+		t.Fatalf("initial passive health: status=%d read=%q", ready.Code, client.op.KeyBytes())
 	}
 	schemaReady := httptest.NewRecorder()
 	schema.ServeHTTP(schemaReady, httptest.NewRequest(http.MethodGet, "/api/schema", nil))

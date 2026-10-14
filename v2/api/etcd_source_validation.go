@@ -56,10 +56,7 @@ func runEtcdSourceValidation(cfg *config.Config, backend startup.ControlBackendC
 		return fmt.Errorf("etcd client: %w", err)
 	}
 	defer client.Close()
-	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
-	_, err = client.Get(probeCtx, backend.EtcdPrefix, clientv3.WithLimit(1))
-	cancelProbe()
-	if err != nil {
+	if err := checkEtcdSourceHealth(context.Background(), client, backend.EtcdPrefix); err != nil {
 		return fmt.Errorf("etcd availability: %w", err)
 	}
 	operations, err := etcdstore.NewV3OperationStoreWithPolicy(client, backend.EtcdPrefix, cfg.ControlAuthority, signer, store.AcceptancePolicy{ReplayTTL: cfg.OperationReplayTTL})
@@ -141,7 +138,8 @@ func checkEtcdSourceHealth(parent context.Context, client etcdHealthClient, pref
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
-	_, err := client.Get(ctx, prefix, clientv3.WithLimit(1))
+	keyPrefix := strings.TrimSuffix(strings.TrimSpace(prefix), "/") + "/"
+	_, err := client.Get(ctx, keyPrefix, clientv3.WithPrefix(), clientv3.WithLimit(1))
 	return err
 }
 

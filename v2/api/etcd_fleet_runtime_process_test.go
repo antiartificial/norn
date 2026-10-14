@@ -71,6 +71,18 @@ func TestEtcdFleetRuntimeProductionTLSRBACProcess(t *testing.T) {
 	if err := backend.ValidateEtcdProductionTransport(); err != nil {
 		t.Fatalf("production etcd fixture does not meet transport contract: %v", err)
 	}
+	client, err := newEtcdClient(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	controlPrefix := strings.TrimSuffix(prefixBase, "/")
+	if _, err := client.Get(context.Background(), controlPrefix, clientv3.WithLimit(1)); err == nil || !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Fatalf("exact control-prefix read error=%v, want permission denied from descendant-only runtime role", err)
+	}
+	if err := checkEtcdSourceHealth(context.Background(), client, controlPrefix); err != nil {
+		t.Fatalf("runtime-role health read inside authorized descendant range: %v", err)
+	}
 	for _, databaseURL := range []string{"", "postgres://poisoned.invalid:1/never-open"} {
 		t.Run(map[bool]string{true: "poisoned PostgreSQL DSN", false: "absent PostgreSQL DSN"}[databaseURL != ""], func(t *testing.T) {
 			testEtcdFleetRuntimeProcess(t, databaseURL, etcdFleetRuntimeFixture{
