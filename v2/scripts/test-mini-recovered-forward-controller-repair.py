@@ -22,9 +22,27 @@ SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 assert SPEC and SPEC.loader
 REPAIR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REPAIR)
+LAUNCHER_SCRIPT = SCRIPT.with_name("mini-recovered-forward-api-launcher")
+LAUNCHER_LOADER = importlib.machinery.SourceFileLoader("mini_recovered_forward_api_launcher", str(LAUNCHER_SCRIPT))
+LAUNCHER_SPEC = importlib.util.spec_from_loader(LAUNCHER_LOADER.name, LAUNCHER_LOADER)
+assert LAUNCHER_SPEC and LAUNCHER_SPEC.loader
+LAUNCHER = importlib.util.module_from_spec(LAUNCHER_SPEC)
+LAUNCHER_SPEC.loader.exec_module(LAUNCHER)
 
 
 class ControllerRepairAuthorizationTest(unittest.TestCase):
+    def test_signed_launcher_loads_owner_only_public_key_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            config = home / ".config/norn/release.env"
+            config.parent.mkdir(parents=True)
+            config.write_text("NORN_RELEASE_PUBLIC_KEY=/private/release-public.pem\n")
+            config.chmod(0o600)
+            self.assertEqual(LAUNCHER.release_public_key(home), "/private/release-public.pem")
+            config.chmod(0o644)
+            with self.assertRaisesRegex(SystemExit, "owner-only"):
+                LAUNCHER.release_public_key(home)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.directory = Path(self.temp.name).resolve() / "generation"
