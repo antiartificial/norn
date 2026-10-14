@@ -1944,7 +1944,7 @@ legacy_baseline_write_fence_state() {
   NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT="$recovered_preservation_receipt" \
   NORN_RECOVERED_FORWARD_PRESERVATION_RECEIPT_SHA256="${recovered_preservation_receipt_sha256:-}" \
   python3 - "$transition_state_path" "$legacy_release_sha" "$pid" "$state" <<'PY' || fail "could not atomically persist transition state"
-import json, os, sys, tempfile
+import hashlib, json, os, stat, sys, tempfile
 path, sha, pid, state = sys.argv[1:]
 schema = os.environ.get("NORN_RECOVERED_FORWARD_JOURNAL_SCHEMA", "norn.legacy-baseline-fence/v1")
 directory = os.path.dirname(path)
@@ -1963,6 +1963,7 @@ try:
     sha = sha or record.get("legacyReleaseSHA", "")
     if not sha:
         raise SystemExit("legacy release provenance is missing")
+    prior_state = record.get("state")
     record.update({"schema":schema, "legacyReleaseSHA":sha,
                    "legacyPID":int(pid), "state":state})
     transition = os.environ.get("NORN_LEGACY_BASELINE_TRANSITION_ID", "") or record.get("transitionID", "")
@@ -1984,7 +1985,26 @@ try:
         for key, value in bindings.items():
             if value:
                 if key in record and record[key] != value:
-                    raise SystemExit("recovered-forward transition binding changed: " + key)
+                    first_preservation_digest = (
+                        key == "preservationReceiptSHA256" and record[key] == "" and
+                        prior_state == "candidate-preservation-pending" and state == "candidate-finalize-requested"
+                    )
+                    if not first_preservation_digest:
+                        raise SystemExit("recovered-forward transition binding changed: " + key)
+                    receipt_path = record.get("preservationReceiptPath", "")
+                    if not os.path.isabs(receipt_path):
+                        raise SystemExit("preservation receipt path is not absolute")
+                    receipt_fd = os.open(receipt_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    try:
+                        receipt_info = os.fstat(receipt_fd)
+                        if (not stat.S_ISREG(receipt_info.st_mode) or
+                                receipt_info.st_uid != os.geteuid() or
+                                stat.S_IMODE(receipt_info.st_mode) != 0o600 or
+                                not 0 < receipt_info.st_size <= 65536 or
+                                hashlib.sha256(os.read(receipt_fd, 65537)).hexdigest() != value):
+                            raise SystemExit("first preservation receipt digest is unverified")
+                    finally:
+                        os.close(receipt_fd)
                 record[key] = value
     os.write(fd, (json.dumps(record, separators=(",", ":")) + "\n").encode())
     os.fsync(fd)
