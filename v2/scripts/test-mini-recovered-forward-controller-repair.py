@@ -48,6 +48,26 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_signed_launcher_uses_imported_read_only_mode(self):
+        home = self.directory
+        original = home / "bin/norn-api-sops-launcher"
+        original.parent.mkdir()
+        original.write_bytes(b"original launcher")
+        original.chmod(0o700)
+        signed = home / "releases" / ("c" * 40) / "bin" / "mini-recovered-forward-api-launcher"
+        signed.parent.mkdir(parents=True)
+        signed.write_bytes(b"signed launcher")
+        signed.chmod(0o555)
+        controller = signed.parent / "platform-upgrade"
+        with patch.object(Path, "home", return_value=home), patch.object(
+                REPAIR, "ORIGINAL_LAUNCHER_SHA256", hashlib.sha256(original.read_bytes()).hexdigest()):
+            self.assertEqual(REPAIR.verify_launchers(controller), (
+                hashlib.sha256(original.read_bytes()).hexdigest(),
+                hashlib.sha256(signed.read_bytes()).hexdigest()))
+            signed.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "unsafe"):
+                REPAIR.verify_launchers(controller)
+
     def test_valid_authorization_is_private_and_cannot_be_reissued(self):
         REPAIR.create(self.path, self.expected, self.key)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)

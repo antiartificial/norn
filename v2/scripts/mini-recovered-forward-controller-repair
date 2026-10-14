@@ -107,7 +107,8 @@ def verify_launchers(controller: Path) -> tuple[str, str]:
     original = Path.home() / "bin/norn-api-sops-launcher"
     signed = controller.parent / "mini-recovered-forward-api-launcher"
     original_sha = owned_binary_digest(original, 0o700)
-    signed_sha = owned_binary_digest(signed)
+    # Imported signed-release helpers are deliberately read-only executable.
+    signed_sha = owned_binary_digest(signed, 0o555)
     if original_sha != ORIGINAL_LAUNCHER_SHA256:
         fail("original Mini API launcher bytes changed from the audited source")
     return original_sha, signed_sha
