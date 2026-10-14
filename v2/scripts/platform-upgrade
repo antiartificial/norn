@@ -3217,6 +3217,16 @@ PY
   log "recovered-forward installed the source API fence after confirming no service or listener remained"
 }
 
+recovered_forward_require_current_candidate() {
+  local current_target current_sha
+  [[ -L "$current_link" ]] || fail "failed-postflight current release link is unavailable"
+  current_target="$(cd "$(dirname "$current_link")" && cd "$(readlink "$current_link")" && pwd)" \
+    || fail "failed-postflight current release target is unavailable"
+  current_sha="$(release_sha "$current_target")"
+  [[ "$current_target" == "$release" && "$current_sha" == "$sha" ]] \
+    || fail "failed-postflight current release is not the signed candidate"
+}
+
 recovered_forward_resume_or_start() {
   local phase=""
   local expected_generation_kind="$recovered_selected_generation_kind"
@@ -3308,7 +3318,7 @@ recovered_forward_resume_or_start() {
     # This phase is after the only schema migration and artifact activation.
     # Repeating either would cross the durable fence twice. Verify the exact
     # candidate bytes and an unloaded, listener-free GUI job before restart.
-    [[ "$current_sha" == "$sha" ]] || fail "failed-postflight current release is not the signed candidate"
+    recovered_forward_require_current_candidate
     cmp -s "$release/bin/norn-api" "$legacy_api_path" || fail "failed-postflight managed API differs from the signed candidate"
     local repair_api_port repair_listener
     repair_api_port="$(direct_loopback_api_port)" || fail "failed-postflight requires a direct loopback API"

@@ -297,6 +297,44 @@ restart_api
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["bootout", "plist-stage", "bootstrap-signed", "kickstart"])
 
+    def test_failed_postflight_rebinds_exact_current_candidate_under_strict_shell(self):
+        platform = SCRIPT.with_name("platform-upgrade").read_text()
+        check = platform.split("recovered_forward_require_current_candidate() {\n", 1)[1].split("\n}\n", 1)[0]
+        releases = self.directory / "releases"
+        candidate = releases / ("b" * 40)
+        other = releases / ("c" * 40)
+        candidate.mkdir(parents=True)
+        other.mkdir()
+        (candidate / "release.env").write_text("NORN_RELEASE_SHA=" + candidate.name + "\n")
+        (other / "release.env").write_text("NORN_RELEASE_SHA=" + other.name + "\n")
+        current = self.directory / "current"
+        current.symlink_to(candidate)
+        script = f'''set -euo pipefail
+current_link={str(current)!r}
+release={str(candidate)!r}
+sha={candidate.name!r}
+fail() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+release_sha() {{ sed -n 's/^NORN_RELEASE_SHA=//p' "$1/release.env"; }}
+recovered_forward_require_current_candidate() {{
+{check}
+}}
+recovered_forward_require_current_candidate
+'''
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        current.unlink()
+        current.symlink_to(other)
+        (other / "release.env").write_text("NORN_RELEASE_SHA=" + candidate.name + "\n")
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not the signed candidate", result.stderr)
+        current.unlink()
+        current.symlink_to(candidate)
+        (candidate / "release.env").write_text("NORN_RELEASE_SHA=" + other.name + "\n")
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not the signed candidate", result.stderr)
+
     def test_host_restart_phase_does_not_regress_before_candidate_install(self):
         platform = SCRIPT.with_name("platform-upgrade").read_text()
         finalizer = platform.split("recovered_forward_finalize_release() {\n", 1)[1].split("\n}\n", 1)[0]
