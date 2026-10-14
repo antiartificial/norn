@@ -369,7 +369,7 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	_, _ = entry.Write([]byte(planSHA + "\n"))
 	_ = zipWriter.Close()
 	var dispatched map[string]any
-	var pullVersion, planVersion string
+	var pullVersion, planVersion, planEvent string
 	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/app" {
 			fmt.Fprint(w, `{"slug":"norn"}`)
@@ -392,6 +392,7 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 			fmt.Fprintf(w, `{"merge_commit_sha":%q,"merged_at":"2027-01-15T08:00:00Z"}`, headSHA)
 		case strings.Contains(r.URL.Path, "/actions/workflows/plan.yml/runs"):
 			planVersion = r.Header.Get("X-GitHub-Api-Version")
+			planEvent = r.URL.Query().Get("event")
 			fmt.Fprintf(w, `{"workflow_runs":[{"id":91,"head_sha":%q,"status":"completed","conclusion":"success"}]}`, headSHA)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/91/artifacts":
 			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-production-nyc3-91","expired":false}]}`)
@@ -410,8 +411,8 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pullVersion != pullMergeCommitAPIVersion || planVersion != apiVersion {
-		t.Fatalf("GitHub API versions: pull=%q plan=%q", pullVersion, planVersion)
+	if pullVersion != pullMergeCommitAPIVersion || planVersion != apiVersion || planEvent != "push" {
+		t.Fatalf("GitHub plan provenance: pullVersion=%q planVersion=%q event=%q", pullVersion, planVersion, planEvent)
 	}
 	result, err := client.DispatchBoundPlan(context.Background(), planID, "production/nyc3", true, approved, nonce)
 	if err != nil {
@@ -423,7 +424,7 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	}
 }
 
-func TestPilotDispatchResolvesMergedPushPlanArtifact(t *testing.T) {
+func TestPilotDispatchResolvesMergedManualPlanArtifact(t *testing.T) {
 	planID := "32323232-3232-4232-8232-323232323232"
 	planSHA := strings.Repeat("a", 64)
 	headSHA := strings.Repeat("b", 40)
@@ -466,7 +467,7 @@ func TestPilotDispatchResolvesMergedPushPlanArtifact(t *testing.T) {
 	if approved.PlanRunID != 91 || approved.PlanSHA != planSHA || approved.ApprovedHeadSHA != headSHA || approved.PilotRunID != pilotRunID {
 		t.Fatalf("resolved pilot plan = %#v", approved)
 	}
-	if got := planRunQuery.Get("event"); got != "push" {
+	if got := planRunQuery.Get("event"); got != "workflow_dispatch" {
 		t.Fatalf("pilot resolver selected event %q for the merged-main plan run", got)
 	}
 	if planRunQuery.Get("per_page") != "25" || planRunQuery.Get("page") != "1" {
@@ -497,6 +498,10 @@ func TestPilotDispatchFindsMergedPlanOnSecondBoundedPage(t *testing.T) {
 		case r.URL.Path == "/repos/acme/norn-fleet/pulls/8":
 			fmt.Fprintf(w, `{"merge_commit_sha":%q,"merged_at":"2026-10-13T23:39:30Z"}`, headSHA)
 		case strings.Contains(r.URL.Path, "/actions/workflows/plan.yml/runs"):
+			if r.URL.Query().Get("event") != "workflow_dispatch" {
+				http.Error(w, "pilot plan must be manually dispatched", http.StatusBadRequest)
+				return
+			}
 			if r.URL.Query().Get("per_page") != "25" {
 				http.Error(w, "plan page is too large", http.StatusBadRequest)
 				return

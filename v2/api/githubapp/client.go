@@ -820,11 +820,15 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID, fleetEn
 	if err := c.requestWithVersion(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/pulls/%d", pr.Number)), nil, &pulls, pullMergeCommitAPIVersion); err != nil || pulls.MergedAt == "" || pulls.MergeCommitSHA == "" {
 		return nil, ErrNotReady
 	}
-	// A protected PR merge triggers the reviewed plan workflow with a push
-	// event for the merge commit, including disposable pilots. Keep discovery
-	// bound to that event and the exact merge SHA below. GitHub's full 100-run
-	// response can exceed the client's bounded JSON read, so scan at most the
-	// same 100 runs in smaller pages.
+	// Disposable apply requires an explicitly dispatched plan. Other Fleet
+	// environments consume the protected push plan from the PR merge. In both
+	// cases, require the exact merged source SHA and the matching plan artifact.
+	// GitHub's full 100-run response can exceed the client's bounded JSON read,
+	// so scan at most the same 100 runs in smaller pages.
+	planEvent := "push"
+	if fleetEnvironment == "disposable/fleet/nyc3" || fleetEnvironment == "disposable/external-mac/nyc3" {
+		planEvent = "workflow_dispatch"
+	}
 	const pageSize, maxPages = 25, 4
 	for page := 1; page <= maxPages; page++ {
 		var runs struct {
@@ -835,7 +839,7 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID, fleetEn
 				Conclusion string `json:"conclusion"`
 			} `json:"workflow_runs"`
 		}
-		query := fmt.Sprintf("?event=push&branch=%s&status=success&per_page=%d&page=%d", url.QueryEscape(c.cfg.DefaultBranch), pageSize, page)
+		query := fmt.Sprintf("?event=%s&branch=%s&status=success&per_page=%d&page=%d", planEvent, url.QueryEscape(c.cfg.DefaultBranch), pageSize, page)
 		if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.PlanWorkflow)+"/runs"+query), nil, &runs); err != nil {
 			return nil, err
 		}
