@@ -146,15 +146,39 @@ func TestDatabaseRequiresExplicitNetworkAndDatabase(t *testing.T) {
 }
 
 func TestRequiredSecretFileReadsOnlyFileTransport(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "secret")
-	if err := os.WriteFile(path, []byte("value\n"), 0o400); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("MYSQL_DSN", "must-not-be-read")
-	t.Setenv("MYSQL_DSN_FILE", path)
-	value, err := requiredSecretFile("MYSQL_DSN_FILE")
-	if err != nil || value != "value" {
-		t.Fatalf("value=%q err=%v", value, err)
+	for _, test := range []struct {
+		name    string
+		data    string
+		want    string
+		wantErr bool
+	}{
+		{name: "raw", data: "10.83.1.8", want: "10.83.1.8"},
+		{name: "LF framed", data: "\n10.83.1.8\n\n", want: "10.83.1.8"},
+		{name: "CRLF framed", data: "\r\n10.83.1.8\r\n", want: "10.83.1.8"},
+		{name: "empty", wantErr: true},
+		{name: "line whitespace only", data: "\r\n\n", wantErr: true},
+		{name: "NUL", data: "value\x00", wantErr: true},
+		{name: "spaces preserved", data: "\r\n value \n", want: " value "},
+		{name: "oversized", data: strings.Repeat("x", 1<<20+1), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "secret")
+			if err := os.WriteFile(path, []byte(test.data), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("MYSQL_DSN_FILE", path)
+			value, err := requiredSecretFile("MYSQL_DSN_FILE")
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("accepted invalid secret %q", test.data)
+				}
+				return
+			}
+			if err != nil || value != test.want {
+				t.Fatalf("value=%q want=%q err=%v", value, test.want, err)
+			}
+		})
 	}
 	t.Setenv("MYSQL_DSN_FILE", "")
 	if _, err := requiredSecretFile("MYSQL_DSN_FILE"); err == nil {
