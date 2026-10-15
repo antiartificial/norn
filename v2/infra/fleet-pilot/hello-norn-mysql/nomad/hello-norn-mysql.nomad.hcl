@@ -184,7 +184,6 @@ EOT
 EOT
       }
 
-      kill_signal  = "SIGTERM"
       kill_timeout = "20s"
 
       resources {

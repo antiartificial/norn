@@ -115,7 +115,10 @@ The workload provides:
 
 Restrict synthetic write access to the reviewed load generator through the
 gateway. Keep metrics private. SIGTERM drains HTTP requests for up to 15 seconds;
-the InfraSpec allows 20 seconds before forced termination.
+the image declares SIGTERM as its stop signal, and the InfraSpec allows 20
+seconds before forced termination. Keep the Nomad task `kill_signal` unset so
+the Docker driver uses its idempotent stop path when a hard-rebooted client
+recovers an allocation whose container is already stopped.
 
 From outside the fleet, run the bounded probe and retain its JSON stdout:
 

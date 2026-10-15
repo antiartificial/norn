@@ -75,6 +75,38 @@ func TestRouteProofBodyMatchesPinnedInfraSpec(t *testing.T) {
 	}
 }
 
+func TestNomadStopContractUsesIdempotentDockerStop(t *testing.T) {
+	dockerfile, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerfile), "\nSTOPSIGNAL SIGTERM\n") {
+		t.Fatal("image must declare SIGTERM so Docker stop preserves graceful drain")
+	}
+
+	job, err := os.ReadFile("nomad/hello-norn-mysql.nomad.hcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(job), "kill_signal") {
+		t.Fatal("explicit Nomad kill_signal uses Docker kill, which is not idempotent for an already-stopped recovered container")
+	}
+	if !strings.Contains(string(job), `kill_timeout = "20s"`) || !strings.Contains(string(job), `shutdown_delay = "10s"`) {
+		t.Fatal("direct job must retain its bounded drain timing")
+	}
+
+	spec, err := os.ReadFile("infraspec.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(spec), "\n      signal:") {
+		t.Fatal("InfraSpec must leave the Docker stop signal to the image contract")
+	}
+	if !strings.Contains(string(spec), "\n      timeout: 20s\n") {
+		t.Fatal("InfraSpec must retain its bounded drain timeout")
+	}
+}
+
 func TestRecordRejectsInvalidIDBeforeDatabase(t *testing.T) {
 	s := &service{writeToken: []byte("0123456789abcdef0123456789abcdef")}
 	w := httptest.NewRecorder()

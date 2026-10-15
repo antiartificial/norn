@@ -50,7 +50,9 @@ processes:
       cpu: 200
       memory: 128
     drain:
-      signal: SIGTERM
+      # The image declares STOPSIGNAL SIGTERM. Leaving signal unset makes the
+      # Nomad Docker driver use its idempotent stop path after a hard reboot,
+      # including when Docker has already restored the container as stopped.
       timeout: 20s
     # Nomad derives nomad/jobs/hello-norn-mysql from this service job ID; the
     # source path is not configurable in InfraSpec. Every value is rendered as

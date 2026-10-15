@@ -13,4 +13,5 @@ FROM ${RUNTIME_IMAGE}
 COPY --from=build /out/hello-norn-mysql /hello-norn-mysql
 USER 65532:65532
 EXPOSE 8080
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["/hello-norn-mysql"]
