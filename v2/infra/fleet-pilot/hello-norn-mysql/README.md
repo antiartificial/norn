@@ -60,9 +60,16 @@ nomad job run -namespace=norn-pilot-EXACT_RUN_ID \
 The HCL deliberately has no MySQL server resource: the database remains a
 provider-managed dependency, and this job uses only the bootstrap-created
 Nomad and Consul substrate. The DigitalOcean load balancer passes TLS through
-on `:443` to Traefik's `websecure :443` entrypoint. The explicit router enables
-only this exact host's `/records/*` and `/version` routes; readiness stays
-private. Consul requires `/readyz`, while Nomad restarts a failed `/healthz`
+on `:443` to Traefik's `websecure :443` entrypoint. The public router enables
+only this exact host's `/records/*` and `/version` routes. A second router
+exposes `/readyz` only on the Fleet-owned `private-readiness` entrypoint, which
+binds the ingress host's inventory-validated VPC address and is absent from the
+provider load balancer. Its URL uses the reviewed public hostname for TLS,
+with private DNS (or an equivalent pinned host mapping) resolving that name
+only to the VPC address. Tailnet clients use the reviewed subnet route to that
+address; the listener does not bind a tailnet interface. Consul requires
+`/readyz`, while Nomad
+restarts a failed `/healthz`
 liveness check without restarting merely for a database readiness failure.
 The runtime workload rejects a missing or wrong `Authorization: Bearer` value
 before any database access, using a constant-time comparison. `GET /version`

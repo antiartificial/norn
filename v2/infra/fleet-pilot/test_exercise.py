@@ -130,6 +130,9 @@ class ProbeTests(unittest.TestCase):
         root = Path(__file__).parent / "hello-norn-mysql" / "nomad"
         runtime = (root / "hello-norn-mysql.nomad.hcl").read_text(encoding="utf-8")
         migration = (root / "hello-norn-mysql-migrate.nomad.hcl").read_text(encoding="utf-8")
+        self.assertIn("hello-norn-mysql-private-readyz.rule=Host(`${var.hostname}`) && Path(`/readyz`)", runtime)
+        self.assertIn("hello-norn-mysql-private-readyz.entrypoints=private-readiness", runtime)
+        self.assertNotIn("Path(`/readyz`)", runtime.split("hello-norn-mysql-private-readyz.rule", 1)[0])
         self.assertIn('destination          = "secrets/pilot-write-token"', runtime)
         self.assertIn("{{ .PILOT_WRITE_TOKEN.Value }}", runtime)
         self.assertNotIn("PILOT_WRITE_TOKEN={{", runtime)
