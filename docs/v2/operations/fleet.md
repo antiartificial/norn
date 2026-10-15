@@ -147,6 +147,8 @@ NORN_FLEET_GITHUB_PILOT_RUN_ID=<8-to-24 lowercase alphanumeric characters>
 Norn rejects every other disposable path, any non-staging control plane, and
 an absent or malformed run ID. Its GitHub status response and CLI surface the
 configured run ID so an operator can verify the lane before opening a PR.
+For a disposable ingress scale-up requiring the separate owner approval, pass its successful protected workflow run as `norn fleet github apply PLAN_UUID --scale-up-approval-run-id RUN_ID`. Norn binds the ID into the dispatch receipt and verifies the resulting GitHub workflow input. A replay with a different ID is rejected.
+
 The protected apply dispatch carries that same ID, and Norn persists it beside
 the plan run, artifact digest, main commit, and nonce hash. A later change to
 the configured pilot run cannot recover or re-dispatch the older binding.

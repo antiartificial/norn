@@ -21,6 +21,7 @@ type FleetGitHubDispatch struct {
 	PilotRunID             string
 	FleetEnvironment       string
 	AllowDestructive       bool
+	ScaleUpApprovalRunID   int64
 	DispatchNonceSHA256    string
 	ApprovalEnvelopeSHA256 string
 	DispatchState          string
@@ -33,7 +34,7 @@ type FleetGitHubDispatch struct {
 	UpdatedAt              time.Time
 }
 
-const fleetGitHubDispatchColumns = `plan_id, plan_run_id, plan_sha256, approved_head_sha, pilot_run_id, fleet_environment, allow_destructive, dispatch_nonce_sha256, approval_envelope_sha256, dispatch_state, submission_started_at, run_id, run_attempt, workflow_url, rerun_started_at, created_at, updated_at`
+const fleetGitHubDispatchColumns = `plan_id, plan_run_id, plan_sha256, approved_head_sha, pilot_run_id, fleet_environment, allow_destructive, scale_up_approval_run_id, dispatch_nonce_sha256, approval_envelope_sha256, dispatch_state, submission_started_at, run_id, run_attempt, workflow_url, rerun_started_at, created_at, updated_at`
 
 func (db *DB) GetFleetGitHubDispatch(ctx context.Context, planID string) (*FleetGitHubDispatch, error) {
 	if db == nil || db.Pool == nil {
@@ -50,8 +51,8 @@ func (db *DB) CreateFleetGitHubDispatch(ctx context.Context, item FleetGitHubDis
 		item.DispatchState = "prepared"
 	}
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO fleet_github_dispatches (`+fleetGitHubDispatchColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),now())`,
-		item.PlanID, item.PlanRunID, item.PlanSHA256, item.ApprovedHeadSHA, item.PilotRunID, item.FleetEnvironment, item.AllowDestructive, item.DispatchNonceSHA256, item.ApprovalEnvelopeSHA256, item.DispatchState, item.SubmissionStartedAt, item.RunID, item.RunAttempt, item.WorkflowURL, item.RerunStartedAt); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now(),now())`,
+		item.PlanID, item.PlanRunID, item.PlanSHA256, item.ApprovedHeadSHA, item.PilotRunID, item.FleetEnvironment, item.AllowDestructive, item.ScaleUpApprovalRunID, item.DispatchNonceSHA256, item.ApprovalEnvelopeSHA256, item.DispatchState, item.SubmissionStartedAt, item.RunID, item.RunAttempt, item.WorkflowURL, item.RerunStartedAt); err != nil {
 		return nil, err
 	}
 	return db.GetFleetGitHubDispatch(ctx, item.PlanID)
@@ -293,7 +294,7 @@ func (db *DB) DeletePreparedFleetGitHubDispatch(ctx context.Context, planID, non
 
 func scanFleetGitHubDispatch(row pgx.Row) (*FleetGitHubDispatch, error) {
 	var item FleetGitHubDispatch
-	if err := row.Scan(&item.PlanID, &item.PlanRunID, &item.PlanSHA256, &item.ApprovedHeadSHA, &item.PilotRunID, &item.FleetEnvironment, &item.AllowDestructive, &item.DispatchNonceSHA256, &item.ApprovalEnvelopeSHA256, &item.DispatchState, &item.SubmissionStartedAt, &item.RunID, &item.RunAttempt, &item.WorkflowURL, &item.RerunStartedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.PlanID, &item.PlanRunID, &item.PlanSHA256, &item.ApprovedHeadSHA, &item.PilotRunID, &item.FleetEnvironment, &item.AllowDestructive, &item.ScaleUpApprovalRunID, &item.DispatchNonceSHA256, &item.ApprovalEnvelopeSHA256, &item.DispatchState, &item.SubmissionStartedAt, &item.RunID, &item.RunAttempt, &item.WorkflowURL, &item.RerunStartedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &item, nil

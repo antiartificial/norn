@@ -33,12 +33,13 @@ const fleetGitHubDispatchOperationKind = "fleet.github.apply-dispatch"
 // FleetGitHubDispatchPreparation is private server state. DispatchNonce must
 // never be copied into an HTTP response, an operation payload, or a receipt.
 type FleetGitHubDispatchPreparation struct {
-	PlanID           string
-	PlanRunID        int64
-	PlanSHA256       string
-	ApprovedHeadSHA  string
-	FleetEnvironment string
-	AllowDestructive bool
+	PlanID               string
+	PlanRunID            int64
+	PlanSHA256           string
+	ApprovedHeadSHA      string
+	FleetEnvironment     string
+	AllowDestructive     bool
+	ScaleUpApprovalRunID int64
 	// OperationID is the signed pre-effect receipt. It is deliberately public
 	// provenance, unlike DispatchNonce.
 	OperationID         string
@@ -441,7 +442,7 @@ func validFleetGitHubDispatchPreparation(input FleetGitHubDispatchPreparation) b
 	_, planErr := uuid.Parse(input.PlanID)
 	return planErr == nil && input.PlanRunID > 0 && fleetLowerHex(input.PlanSHA256, 64) && fleetLowerHex(input.ApprovedHeadSHA, 40) &&
 		(input.FleetEnvironment == "staging/nyc3" || input.FleetEnvironment == "production/nyc3") &&
-		(input.DispatchNonce == "" || fleetLowerHex(input.DispatchNonce, 64)) &&
+		input.ScaleUpApprovalRunID >= 0 && (input.DispatchNonce == "" || fleetLowerHex(input.DispatchNonce, 64)) &&
 		(input.OperationID == "" || uuid.Validate(input.OperationID) == nil) &&
 		(input.DispatchNonceSHA256 == "" || fleetLowerHex(input.DispatchNonceSHA256, 64))
 }
@@ -449,7 +450,7 @@ func validFleetGitHubDispatchPreparation(input FleetGitHubDispatchPreparation) b
 func sameFleetGitHubDispatchPreparation(left, right FleetGitHubDispatchPreparation) bool {
 	return left.PlanID == right.PlanID && left.PlanRunID == right.PlanRunID && left.PlanSHA256 == right.PlanSHA256 &&
 		left.ApprovedHeadSHA == right.ApprovedHeadSHA && left.FleetEnvironment == right.FleetEnvironment &&
-		left.AllowDestructive == right.AllowDestructive
+		left.AllowDestructive == right.AllowDestructive && left.ScaleUpApprovalRunID == right.ScaleUpApprovalRunID
 }
 
 func validateFleetGitHubDispatchAcceptance(input store.OperationAcceptance, prepared FleetGitHubDispatchPreparation) error {
@@ -481,13 +482,14 @@ func validateFleetGitHubDispatchPlanBinding(plan model.Operation, operation mode
 			PlanRunID                                     int64
 			PlanSHA256, ApprovedHeadSHA, FleetEnvironment string
 			AllowDestructive                              bool
+			ScaleUpApprovalRunID                          int64
 		} `json:"fleetGitHub"`
 	}
 	if err := json.Unmarshal(encoded, &envelope); err != nil {
 		return fmt.Errorf("signed Fleet GitHub dispatch payload does not match immutable inputs")
 	}
 	payload := envelope.FleetGitHub
-	if payload.PlanID != prepared.PlanID || payload.PlanDigest != typed.Digest || payload.SourceDigest != typed.SourceDigest || payload.PlanRunID != prepared.PlanRunID || payload.PlanSHA256 != prepared.PlanSHA256 || payload.ApprovedHeadSHA != prepared.ApprovedHeadSHA || payload.FleetEnvironment != prepared.FleetEnvironment || payload.AllowDestructive != prepared.AllowDestructive {
+	if payload.PlanID != prepared.PlanID || payload.PlanDigest != typed.Digest || payload.SourceDigest != typed.SourceDigest || payload.PlanRunID != prepared.PlanRunID || payload.PlanSHA256 != prepared.PlanSHA256 || payload.ApprovedHeadSHA != prepared.ApprovedHeadSHA || payload.FleetEnvironment != prepared.FleetEnvironment || payload.AllowDestructive != prepared.AllowDestructive || payload.ScaleUpApprovalRunID != prepared.ScaleUpApprovalRunID {
 		return fmt.Errorf("signed Fleet GitHub dispatch payload does not match immutable inputs")
 	}
 	return nil

@@ -30,11 +30,12 @@ import (
 
 type etcdFleetGitHubDispatcher interface {
 	ResolveApprovedPlan(context.Context, string, string) (*githubapp.Dispatch, error)
-	DispatchBoundPlan(context.Context, string, string, bool, *githubapp.Dispatch, string) (*githubapp.Dispatch, error)
+	DispatchBoundScaleUpPlan(context.Context, string, string, bool, *githubapp.Dispatch, string, int64) (*githubapp.Dispatch, error)
 }
 
 type etcdFleetGitHubDispatchRequest struct {
-	AllowDestructive bool `json:"allowDestructive"`
+	AllowDestructive     bool  `json:"allowDestructive"`
+	ScaleUpApprovalRunID int64 `json:"scaleUpApprovalRunId,omitempty"`
 }
 
 // etcdFleetGitHubDispatch is registered by the normal etcd runtime only when
@@ -82,6 +83,10 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "fleet capacity plan is not a verified immutable plan")
 			return
 		}
+		if request.ScaleUpApprovalRunID < 0 || (request.ScaleUpApprovalRunID > 0 && (cfg.FleetGitHubPilotRunID == "" || typedPlan.Action != "scale" || typedPlan.Pool != "ingress" || typedPlan.Proposed.Desired <= typedPlan.Current.Desired)) {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scale_up_approval_run_id", "approval run ID requires a disposable ingress scale-up plan")
+			return
+		}
 		destructive := typedPlan.Action == "replace" || (typedPlan.Action == "scale" && typedPlan.Proposed.Desired < typedPlan.Current.Desired)
 		if destructive && !request.AllowDestructive {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_destructive_ack_required", "replacement and contraction plans require explicit allowDestructive acknowledgement")
@@ -109,7 +114,7 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
 				return
 			}
-			if prepared.OperationID == "" || prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
+			if prepared.OperationID == "" || prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive || prepared.ScaleUpApprovalRunID != request.ScaleUpApprovalRunID {
 				handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
 				return
 			}
@@ -146,7 +151,7 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 				handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_plan_unproven", "GitHub could not prove the approved immutable fleet plan")
 				return
 			}
-			_, prepared, prepErr = acceptEtcdFleetGitHubDispatch(r.Context(), operations, principal, plan, typedPlan, approved, environment, request.AllowDestructive)
+			_, prepared, prepErr = acceptEtcdFleetGitHubDispatch(r.Context(), operations, principal, plan, typedPlan, approved, environment, request.AllowDestructive, request.ScaleUpApprovalRunID)
 		}
 		if prepErr != nil {
 			if errors.Is(prepErr, store.ErrAcceptanceIndeterminate) {
@@ -161,7 +166,7 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
 			return
 		}
-		if prepared.OperationID == "" || prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
+		if prepared.OperationID == "" || prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive || prepared.ScaleUpApprovalRunID != request.ScaleUpApprovalRunID {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
 			return
 		}
@@ -169,8 +174,8 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_receipt_failed", "signed protected dispatch receipt is unavailable")
 			return
 		}
-		approved := &githubapp.Dispatch{PlanRunID: prepared.PlanRunID, PlanSHA: prepared.PlanSHA256, ApprovedHeadSHA: prepared.ApprovedHeadSHA}
-		result, dispatchErr := github.DispatchBoundPlan(r.Context(), planID, prepared.FleetEnvironment, prepared.AllowDestructive, approved, prepared.DispatchNonce)
+		approved := &githubapp.Dispatch{PlanRunID: prepared.PlanRunID, PlanSHA: prepared.PlanSHA256, ApprovedHeadSHA: prepared.ApprovedHeadSHA, PilotRunID: cfg.FleetGitHubPilotRunID}
+		result, dispatchErr := github.DispatchBoundScaleUpPlan(r.Context(), planID, prepared.FleetEnvironment, prepared.AllowDestructive, approved, prepared.DispatchNonce, prepared.ScaleUpApprovalRunID)
 		if dispatchErr != nil || !validEtcdFleetGitHubResult(cfg, result, approved) {
 			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_dispatch_unproven", "GitHub dispatch outcome is ambiguous or does not prove the protected workflow identity")
 			return
@@ -210,12 +215,12 @@ const fleetGitHubDispatchOperationKindMain = "fleet.github.apply-dispatch"
 // acceptEtcdFleetGitHubDispatch reserves a signed immutable operation before
 // the first external GitHub write. Its plan-scoped identity makes retries
 // recover the exact same receipt and private nonce.
-func acceptEtcdFleetGitHubDispatch(ctx context.Context, operations *etcdstore.V3OperationStore, principal handler.AccessPrincipal, plan *model.Operation, typed fleet.CapacityPlan, approved *githubapp.Dispatch, environment string, allowDestructive bool) (store.AcceptedOperation, etcdstore.FleetGitHubDispatchPreparation, error) {
+func acceptEtcdFleetGitHubDispatch(ctx context.Context, operations *etcdstore.V3OperationStore, principal handler.AccessPrincipal, plan *model.Operation, typed fleet.CapacityPlan, approved *githubapp.Dispatch, environment string, allowDestructive bool, scaleUpApprovalRunID int64) (store.AcceptedOperation, etcdstore.FleetGitHubDispatchPreparation, error) {
 	authority, err := operations.Authority(ctx)
 	if err != nil {
 		return store.AcceptedOperation{}, etcdstore.FleetGitHubDispatchPreparation{}, err
 	}
-	payload := map[string]interface{}{"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest, "planRunId": approved.PlanRunID, "planSha256": approved.PlanSHA, "approvedHeadSha": approved.ApprovedHeadSHA, "fleetEnvironment": environment, "allowDestructive": allowDestructive}
+	payload := map[string]interface{}{"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest, "planRunId": approved.PlanRunID, "planSha256": approved.PlanSHA, "approvedHeadSha": approved.ApprovedHeadSHA, "fleetEnvironment": environment, "allowDestructive": allowDestructive, "scaleUpApprovalRunID": scaleUpApprovalRunID}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.github.apply-dispatch", Ref: plan.ID, Status: model.OperationQueued, Source: "etcd-normal-fleet", Risk: "GitOps mutation only; provider credentials remain in protected GitHub environments", Message: "protected Fleet GitHub dispatch reserved", Payload: map[string]interface{}{"fleetGitHub": payload}, Metadata: map[string]interface{}{}, StartedAt: now, UpdatedAt: now, MaxAttempts: 1}
 	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/fleet-github", Subject: plan.ID}, Kind: op.Kind, Resource: plan.ID, Key: "protected-plan-receipt/v1"}, Operation: op, Audit: store.AcceptanceAuditContext{CredentialID: principal.TokenID, DeviceID: principal.DeviceID, Source: "etcd-normal-fleet", Scopes: append([]string(nil), principal.Scopes...)}, Semantics: map[string]interface{}{"fleetGitHub": payload}}
@@ -223,7 +228,7 @@ func acceptEtcdFleetGitHubDispatch(ctx context.Context, operations *etcdstore.V3
 	if err != nil {
 		return store.AcceptedOperation{}, etcdstore.FleetGitHubDispatchPreparation{}, err
 	}
-	return operations.AcceptFleetGitHubDispatch(ctx, acceptance, etcdstore.FleetGitHubDispatchPreparation{PlanID: plan.ID, PlanRunID: approved.PlanRunID, PlanSHA256: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, FleetEnvironment: environment, AllowDestructive: allowDestructive})
+	return operations.AcceptFleetGitHubDispatch(ctx, acceptance, etcdstore.FleetGitHubDispatchPreparation{PlanID: plan.ID, PlanRunID: approved.PlanRunID, PlanSHA256: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, FleetEnvironment: environment, AllowDestructive: allowDestructive, ScaleUpApprovalRunID: scaleUpApprovalRunID})
 }
 
 func validEtcdFleetGitHubApproved(value *githubapp.Dispatch) bool {

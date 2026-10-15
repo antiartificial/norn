@@ -145,6 +145,9 @@ func verifyObservedApplyInputs(run *applyRun, planID, fleetEnvironment string, a
 	if bound.PilotRunID != "" {
 		expected["pilot_run_id"] = bound.PilotRunID
 	}
+	if bound.ScaleUpApprovalRunID > 0 {
+		expected["scale_up_approval_run_id"] = fmt.Sprintf("%d", bound.ScaleUpApprovalRunID)
+	}
 	for key, want := range expected {
 		if run.Inputs[key] != want {
 			return fmt.Errorf("apply run input %s differs from protected dispatch", key)

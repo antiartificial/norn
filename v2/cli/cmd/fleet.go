@@ -24,6 +24,7 @@ var (
 	fleetTemporaryRunnerSSH     bool
 	fleetIdempotencyKey         string
 	fleetAllowDestructive       bool
+	fleetScaleUpApprovalRunID   int64
 	fleetGitHubReconcileKind    string
 	fleetDispatchNonceFile      string
 	fleetApprovalEnvelopeSHA256 string
@@ -37,6 +38,7 @@ func init() {
 	fleetGitHubReconcileCmd.Flags().StringVar(&fleetGitHubReconcileKind, "kind", "", "Reservation kind: pull-request or apply-dispatch")
 	_ = fleetGitHubReconcileCmd.MarkFlagRequired("kind")
 	fleetGitHubApplyCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
+	fleetGitHubApplyCmd.Flags().Int64Var(&fleetScaleUpApprovalRunID, "scale-up-approval-run-id", 0, "Protected owner-approval workflow run ID for disposable Fleet ingress scale-up")
 	fleetGitHubPrepareCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
 	fleetGitHubPrepareCmd.Flags().StringVar(&fleetDispatchNonceFile, "nonce-file", "", "New absolute 0600 file for the one-time external-Mac nonce")
 	fleetGitHubPrepareResetCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Match the original reviewed replacement or contraction acknowledgement")
@@ -211,7 +213,7 @@ var fleetGitHubPullRequestCmd = &cobra.Command{
 var fleetGitHubApplyCmd = &cobra.Command{
 	Use: "apply <plan-id>", Short: "Dispatch or recover the protected apply after review", Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		op, err := client.DispatchFleetApply(args[0], fleetAllowDestructive)
+		op, err := client.DispatchFleetApplyWithScaleUpApproval(args[0], fleetAllowDestructive, fleetScaleUpApprovalRunID)
 		if err != nil {
 			return fmt.Errorf("fleet GitHub apply: %w", err)
 		}
