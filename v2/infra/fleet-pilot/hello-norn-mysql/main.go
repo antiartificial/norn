@@ -94,7 +94,7 @@ func requiredSecretFile(envKey string) (string, error) {
 	if err != nil || len(data) == 0 || len(data) > 1<<20 {
 		return "", fmt.Errorf("read %s", envKey)
 	}
-	value := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+	value := strings.Trim(string(data), "\r\n")
 	if value == "" || strings.IndexByte(value, 0) >= 0 {
 		return "", fmt.Errorf("read %s", envKey)
 	}
