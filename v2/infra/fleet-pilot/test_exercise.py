@@ -139,6 +139,38 @@ class ProbeTests(unittest.TestCase):
         self.assertNotIn("PILOT_WRITE_TOKEN", migration)
         self.assertIn('shutdown_delay = "10s"', runtime)
 
+    def test_runtime_hcl_retries_only_get_routes(self):
+        runtime = (
+            Path(__file__).parent
+            / "hello-norn-mysql"
+            / "nomad"
+            / "hello-norn-mysql.nomad.hcl"
+        ).read_text(encoding="utf-8")
+        tags = {}
+        for line in runtime.splitlines():
+            stripped = line.strip()
+            if not (stripped.startswith('"traefik.') and stripped.endswith('",')):
+                continue
+            key, value = stripped[1:-2].split("=", 1)
+            self.assertNotIn(key, tags)
+            tags[key] = value
+
+        public_rule = "Host(`${var.hostname}`) && (PathPrefix(`/records/`) || Path(`/version`))"
+        self.assertEqual(tags["traefik.http.routers.hello-norn-mysql.rule"], public_rule)
+        self.assertNotIn("traefik.http.routers.hello-norn-mysql.middlewares", tags)
+        self.assertEqual(
+            tags["traefik.http.routers.hello-norn-mysql-read.rule"],
+            "Host(`${var.hostname}`) && Method(`GET`) && (PathPrefix(`/records/`) || Path(`/version`))",
+        )
+        self.assertEqual(tags["traefik.http.routers.hello-norn-mysql-read.priority"], "1000")
+        self.assertEqual(
+            tags["traefik.http.routers.hello-norn-mysql-read.middlewares"],
+            "hello-norn-mysql-read-retry",
+        )
+        self.assertEqual(tags["traefik.http.middlewares.hello-norn-mysql-read-retry.retry.attempts"], "2")
+        self.assertEqual(tags["traefik.http.middlewares.hello-norn-mysql-read-retry.retry.initialinterval"], "50ms")
+        self.assertFalse(any("retryNonIdempotentMethod" in key for key in tags))
+
     def test_fault_rejects_short_allocation_prefix(self):
         self.assertFalse(exercise.stop_pilot_allocation("aaaaaaaa", self.namespace))
 

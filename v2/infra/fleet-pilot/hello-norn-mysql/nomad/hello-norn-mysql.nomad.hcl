@@ -66,6 +66,15 @@ job "hello-norn-mysql" {
       }
       tags = [
         "traefik.enable=true",
+        # Retry only public reads whose selected backend disappears before it
+        # can answer. The original router below remains the write path.
+        "traefik.http.routers.hello-norn-mysql-read.rule=Host(`${var.hostname}`) && Method(`GET`) && (PathPrefix(`/records/`) || Path(`/version`))",
+        "traefik.http.routers.hello-norn-mysql-read.entrypoints=websecure",
+        "traefik.http.routers.hello-norn-mysql-read.tls=true",
+        "traefik.http.routers.hello-norn-mysql-read.priority=1000",
+        "traefik.http.routers.hello-norn-mysql-read.middlewares=hello-norn-mysql-read-retry",
+        "traefik.http.middlewares.hello-norn-mysql-read-retry.retry.attempts=2",
+        "traefik.http.middlewares.hello-norn-mysql-read-retry.retry.initialinterval=50ms",
         "traefik.http.routers.hello-norn-mysql.rule=Host(`${var.hostname}`) && (PathPrefix(`/records/`) || Path(`/version`))",
         "traefik.http.routers.hello-norn-mysql.entrypoints=websecure",
         "traefik.http.routers.hello-norn-mysql.tls=true",
