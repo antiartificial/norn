@@ -1947,7 +1947,14 @@ func (c *Client) CreateFleetPullRequest(planID string) (*Operation, error) {
 }
 
 func (c *Client) DispatchFleetApply(planID string, allowDestructive bool) (*Operation, error) {
-	body, err := json.Marshal(map[string]bool{"allowDestructive": allowDestructive})
+	return c.DispatchFleetApplyWithScaleUpApproval(planID, allowDestructive, 0)
+}
+
+func (c *Client) DispatchFleetApplyWithScaleUpApproval(planID string, allowDestructive bool, approvalRunID int64) (*Operation, error) {
+	if approvalRunID < 0 {
+		return nil, fmt.Errorf("scale-up approval run ID must be positive")
+	}
+	body, err := json.Marshal(map[string]any{"allowDestructive": allowDestructive, "scaleUpApprovalRunId": approvalRunID})
 	if err != nil {
 		return nil, err
 	}

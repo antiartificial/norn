@@ -172,7 +172,7 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	if err := json.Unmarshal(encodedPlan, &typedPlan); err != nil {
 		t.Fatal(err)
 	}
-	_, prepared, err := acceptEtcdFleetGitHubDispatch(context.Background(), operations, handler.AccessPrincipal{TokenID: "test", Source: handler.AccessPrincipalSourceManagedToken, Scopes: []string{handler.ScopeAPIWrite}}, storedPlan, typedPlan, &githubapp.Dispatch{PlanRunID: 7, PlanSHA: strings.Repeat("b", 64), ApprovedHeadSHA: ci.SHA}, "staging/nyc3", false)
+	_, prepared, err := acceptEtcdFleetGitHubDispatch(context.Background(), operations, handler.AccessPrincipal{TokenID: "test", Source: handler.AccessPrincipalSourceManagedToken, Scopes: []string{handler.ScopeAPIWrite}}, storedPlan, typedPlan, &githubapp.Dispatch{PlanRunID: 7, PlanSHA: strings.Repeat("b", 64), ApprovedHeadSHA: ci.SHA}, "staging/nyc3", false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

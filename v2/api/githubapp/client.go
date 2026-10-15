@@ -153,14 +153,15 @@ type PullRequest struct {
 }
 
 type Dispatch struct {
-	RunID           int64  `json:"runId"`
-	RunAttempt      int    `json:"runAttempt,omitempty"`
-	URL             string `json:"url"`
-	PlanRunID       int64  `json:"planRunId"`
-	PlanSHA         string `json:"planSha256"`
-	ApprovedHeadSHA string `json:"approvedHeadSha"`
-	PilotRunID      string `json:"pilotRunId,omitempty"`
-	Existing        bool   `json:"existing"`
+	RunID                int64  `json:"runId"`
+	RunAttempt           int    `json:"runAttempt,omitempty"`
+	URL                  string `json:"url"`
+	PlanRunID            int64  `json:"planRunId"`
+	PlanSHA              string `json:"planSha256"`
+	ApprovedHeadSHA      string `json:"approvedHeadSha"`
+	PilotRunID           string `json:"pilotRunId,omitempty"`
+	ScaleUpApprovalRunID int64  `json:"scaleUpApprovalRunId,omitempty"`
+	Existing             bool   `json:"existing"`
 }
 
 type apiError struct {
@@ -399,6 +400,21 @@ func (c *Client) DispatchBoundPlan(ctx context.Context, planID, fleetEnvironment
 	return c.dispatchBoundPlan(ctx, planID, fleetEnvironment, allowDestructive, approved, nonce, "")
 }
 
+// DispatchBoundScaleUpPlan binds the separate protected owner approval to the
+// signed dispatch reservation before any GitHub write.
+func (c *Client) DispatchBoundScaleUpPlan(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonce string, approvalRunID int64) (*Dispatch, error) {
+	if approved == nil || approvalRunID < 0 || (approvalRunID > 0 && (fleetEnvironment != "disposable/fleet/nyc3" || c.cfg.PilotRunID == "")) {
+		return nil, fmt.Errorf("scale-up approval run ID is invalid for this Fleet root")
+	}
+	bound := *approved
+	bound.ScaleUpApprovalRunID = approvalRunID
+	result, err := c.dispatchBoundPlan(ctx, planID, fleetEnvironment, allowDestructive, &bound, nonce, "")
+	if result != nil {
+		result.ScaleUpApprovalRunID = approvalRunID
+	}
+	return result, err
+}
+
 // DispatchBoundExternalMacPlan transmits the canonical owner-approval digest
 // alongside the transient nonce. The raw approval never enters Norn.
 func (c *Client) DispatchBoundExternalMacPlan(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonce, approvalEnvelopeSHA256 string) (*Dispatch, error) {
@@ -453,6 +469,9 @@ func (c *Client) dispatchBoundPlan(ctx context.Context, planID, fleetEnvironment
 		"norn_plan_id":      planID,
 		"allow_destructive": fmt.Sprintf("%t", allowDestructive),
 		"dispatch_nonce":    nonce,
+	}
+	if approved.ScaleUpApprovalRunID > 0 {
+		inputs["scale_up_approval_run_id"] = strconv.FormatInt(approved.ScaleUpApprovalRunID, 10)
 	}
 	if c.cfg.PilotRunID != "" {
 		inputs["pilot_run_id"] = c.cfg.PilotRunID
@@ -956,6 +975,9 @@ func (c *Client) findApplyRun(ctx context.Context, token, planID, fleetEnvironme
 		if err != nil {
 			return nil, err
 		}
+		if approved.ScaleUpApprovalRunID > 0 && candidate.DisplayTitle == applyRunDisplayTitle(fleetEnvironment, c.cfg.PilotRunID, planID, nonce) && candidate.Inputs["scale_up_approval_run_id"] != strconv.FormatInt(approved.ScaleUpApprovalRunID, 10) {
+			return nil, ErrDispatchAmbiguous
+		}
 		if err := c.verifyApplyRun(candidate, planID, fleetEnvironment, approved, nonce, appActor); err == nil {
 			return &Dispatch{RunID: candidate.ID, RunAttempt: candidate.RunAttempt, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID}, nil
 		}
@@ -1331,6 +1353,9 @@ func (c *Client) verifyApplyRun(run *applyRun, planID, fleetEnvironment string, 
 	if err := c.verifyApplyRunIdentity(run, approved, appActor); err != nil {
 		return err
 	}
+	if approved.ScaleUpApprovalRunID > 0 && run.Inputs["scale_up_approval_run_id"] != strconv.FormatInt(approved.ScaleUpApprovalRunID, 10) {
+		return fmt.Errorf("GitHub apply run has a different scale-up approval")
+	}
 	if run.DisplayTitle != applyRunDisplayTitle(fleetEnvironment, c.cfg.PilotRunID, planID, nonce) {
 		return fmt.Errorf("GitHub apply run does not carry the dispatch nonce")
 	}
@@ -1338,6 +1363,9 @@ func (c *Client) verifyApplyRun(run *applyRun, planID, fleetEnvironment string, 
 }
 
 func (c *Client) verifyApplyRunByNonceHash(run *applyRun, planID, fleetEnvironment string, approved *Dispatch, nonceHash, appActor string) error {
+	if approved != nil && approved.ScaleUpApprovalRunID > 0 && run != nil && run.Inputs["scale_up_approval_run_id"] != strconv.FormatInt(approved.ScaleUpApprovalRunID, 10) {
+		return fmt.Errorf("GitHub apply run has a different scale-up approval")
+	}
 	if err := c.verifyApplyRunIdentity(run, approved, appActor); err != nil {
 		return err
 	}

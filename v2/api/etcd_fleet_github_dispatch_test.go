@@ -33,7 +33,7 @@ type lostResponseFleetGitHub struct {
 func (f *lostResponseFleetGitHub) ResolveApprovedPlan(context.Context, string, string) (*githubapp.Dispatch, error) {
 	return &f.approved, nil
 }
-func (f *lostResponseFleetGitHub) DispatchBoundPlan(_ context.Context, _ string, _ string, _ bool, approved *githubapp.Dispatch, nonce string) (*githubapp.Dispatch, error) {
+func (f *lostResponseFleetGitHub) DispatchBoundScaleUpPlan(_ context.Context, _ string, _ string, _ bool, approved *githubapp.Dispatch, nonce string, _ int64) (*githubapp.Dispatch, error) {
 	if approved == nil || *approved != f.approved {
 		return nil, errors.New("unapproved dispatch")
 	}

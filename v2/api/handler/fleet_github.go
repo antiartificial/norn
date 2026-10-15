@@ -283,7 +283,8 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 }
 
 type fleetGitHubDispatchRequest struct {
-	AllowDestructive bool `json:"allowDestructive"`
+	ScaleUpApprovalRunID int64 `json:"scaleUpApprovalRunId,omitempty"`
+	AllowDestructive     bool  `json:"allowDestructive"`
 }
 
 // An external-Mac approval is produced off-host and binds only this digest and
@@ -553,7 +554,7 @@ func (h *Handler) ExecuteFleetGitHubApply(w http.ResponseWriter, r *http.Request
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "dispatched binding lacks the required external-Mac approval digest")
 			return
 		}
-		result := &githubapp.Dispatch{RunID: binding.RunID, URL: binding.WorkflowURL, PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID, Existing: true}
+		result := &githubapp.Dispatch{RunID: binding.RunID, URL: binding.WorkflowURL, PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID, ScaleUpApprovalRunID: binding.ScaleUpApprovalRunID, Existing: true}
 		h.recordCompletedFleetGitHubDispatch(w, r, principal, plan.ID, fleetEnvironment, request.AllowDestructive, result)
 		return
 	}
@@ -799,6 +800,14 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	if request.ScaleUpApprovalRunID < 0 || (request.ScaleUpApprovalRunID > 0 && (fleetEnvironment != "disposable/fleet/nyc3" || typed.Action != "scale" || typed.Pool != "ingress" || typed.Proposed.Desired <= typed.Current.Desired)) {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scale_up_approval_run_id", "approval run ID requires a disposable ingress scale-up plan")
+		return
+	}
+	if fleetEnvironment == "disposable/fleet/nyc3" && typed.Action == "scale" && typed.Pool == "ingress" && typed.Proposed.Desired > typed.Current.Desired && request.ScaleUpApprovalRunID == 0 {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_scale_up_approval_required", "disposable ingress scale-up requires a protected owner-approval run ID")
+		return
+	}
 	if !h.refuseAbandonedFleetPlan(w, r, plan.ID) {
 		return
 	}
@@ -814,7 +823,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not read the protected dispatch binding for the completed operation")
 			return
 		}
-		if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), request.AllowDestructive) {
+		if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), request.AllowDestructive) || binding.ScaleUpApprovalRunID != request.ScaleUpApprovalRunID {
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "the completed dispatch receipt belongs to a different current Fleet lane")
 			return
 		}
@@ -832,6 +841,10 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	defer release.Release()
 	r = r.WithContext(release.Context())
 	binding, bindingErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
+	if bindingErr == nil && binding.ScaleUpApprovalRunID != request.ScaleUpApprovalRunID {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different scale-up approval binding")
+		return
+	}
 	if bindingErr == nil && binding.DispatchState == "prepared" && binding.RunID == 0 {
 		// A prior call failed before its single permitted POST. The raw nonce was
 		// intentionally never retained, so discard this clear pre-submit state
@@ -862,7 +875,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		}
 		binding, bindingErr = h.db.CreateFleetGitHubDispatch(r.Context(), store.FleetGitHubDispatch{
 			PlanID: plan.ID, PlanRunID: approved.PlanRunID, PlanSHA256: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA,
-			PilotRunID: approved.PilotRunID, FleetEnvironment: fleetEnvironment, AllowDestructive: request.AllowDestructive, DispatchNonceSHA256: nonceHash, DispatchState: "prepared",
+			PilotRunID: approved.PilotRunID, FleetEnvironment: fleetEnvironment, AllowDestructive: request.AllowDestructive, ScaleUpApprovalRunID: request.ScaleUpApprovalRunID, DispatchNonceSHA256: nonceHash, DispatchState: "prepared",
 		})
 		if bindingErr != nil {
 			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not persist the protected dispatch binding")
@@ -872,7 +885,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not read the protected dispatch binding")
 		return
 	}
-	if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), request.AllowDestructive) {
+	if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), request.AllowDestructive) || binding.ScaleUpApprovalRunID != request.ScaleUpApprovalRunID {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
 		return
 	}
@@ -881,12 +894,15 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		h.recordCompletedFleetGitHubDispatch(w, r, principal, plan.ID, fleetEnvironment, request.AllowDestructive, result)
 		return
 	}
-	approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID}
+	approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID, ScaleUpApprovalRunID: binding.ScaleUpApprovalRunID}
 	if binding.DispatchState == "submitting" {
 		// The process may have died after the single permitted POST. Recover by
 		// matching only the durable nonce hash against exact GitHub run identity;
 		// never mint a new nonce or send another POST from this fenced state.
 		result, recoverErr := h.fleetGitHub.RecoverBoundPlan(r.Context(), plan.ID, fleetEnvironment, approved, binding.DispatchNonceSHA256)
+		if result != nil {
+			result.ScaleUpApprovalRunID = binding.ScaleUpApprovalRunID
+		}
 		if recoverErr != nil {
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_ambiguous", "the protected dispatch outcome is ambiguous; inspect the bound GitHub run before retrying")
 			return
@@ -913,7 +929,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	}
 	if _, err := h.ensureFleetGitHubReservation(r, principal, plan.ID, "fleet.github.apply-dispatch", map[string]interface{}{
 		"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest,
-		"pool": typed.Pool, "action": typed.Action, "allowDestructive": request.AllowDestructive,
+		"pool": typed.Pool, "action": typed.Action, "allowDestructive": request.AllowDestructive, "scaleUpApprovalRunID": binding.ScaleUpApprovalRunID,
 	}); err != nil {
 		writeOperationAcceptanceError(w, r, err)
 		return
@@ -924,7 +940,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	result, err := h.fleetGitHub.DispatchBoundPlan(r.Context(), plan.ID, fleetEnvironment, request.AllowDestructive, approved, nonce)
+	result, err := h.fleetGitHub.DispatchBoundScaleUpPlan(r.Context(), plan.ID, fleetEnvironment, request.AllowDestructive, approved, nonce, binding.ScaleUpApprovalRunID)
 	if errors.Is(err, githubapp.ErrNotReady) {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_plan_not_ready", "merge the fleet pull request and wait for its protected main-branch plan workflow to succeed")
 		return
@@ -946,7 +962,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 func (h *Handler) recordCompletedFleetGitHubDispatch(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, planID, fleetEnvironment string, allowDestructive bool, result *githubapp.Dispatch) {
 	payload := map[string]interface{}{
 		"planId": planID, "runId": result.RunID, "url": result.URL, "planRunId": result.PlanRunID,
-		"planSha256": result.PlanSHA, "approvedHeadSha": result.ApprovedHeadSHA, "pilotRunId": result.PilotRunID, "fleetEnvironment": fleetEnvironment, "allowDestructive": allowDestructive, "existing": result.Existing,
+		"planSha256": result.PlanSHA, "approvedHeadSha": result.ApprovedHeadSHA, "pilotRunId": result.PilotRunID, "fleetEnvironment": fleetEnvironment, "allowDestructive": allowDestructive, "scaleUpApprovalRunId": result.ScaleUpApprovalRunID, "existing": result.Existing,
 	}
 	reservation, err := h.ensureFleetGitHubReservation(r, principal, planID, "fleet.github.apply-dispatch", payload)
 	if err != nil {

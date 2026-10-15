@@ -923,7 +923,7 @@ norn fleet attempt retry <plan-id> <attempt-id> --runner-id NEW_RUN_ID --reason 
 norn fleet attempt cancel <plan-id> <attempt-id> --reason TEXT --revision N
 norn fleet github status
 norn fleet github pr <plan-id>
-norn fleet github apply <plan-id> [--allow-destructive]
+norn fleet github apply <plan-id> [--allow-destructive] [--scale-up-approval-run-id <run-id>]
 ```
 
 Initial cloud-runner setup lives in the private `norn-fleet` checkout:
