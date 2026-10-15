@@ -69,10 +69,15 @@ job "hello-norn-mysql" {
         "traefik.http.routers.hello-norn-mysql.rule=Host(`${var.hostname}`) && (PathPrefix(`/records/`) || Path(`/version`))",
         "traefik.http.routers.hello-norn-mysql.entrypoints=websecure",
         "traefik.http.routers.hello-norn-mysql.tls=true",
+        # External admission reaches this VPC-bound listener directly (or over
+        # the reviewed tailnet subnet route). The load balancer omits it.
+        "traefik.http.routers.hello-norn-mysql-private-readyz.rule=Host(`${var.hostname}`) && Path(`/readyz`)",
+        "traefik.http.routers.hello-norn-mysql-private-readyz.entrypoints=private-readiness",
+        "traefik.http.routers.hello-norn-mysql-private-readyz.tls=true",
       ]
 
-      # Readiness controls Consul/Traefik admission. The public router does
-      # not expose this path.
+      # Readiness controls Consul/Traefik admission. Only the separately
+      # firewalled private-readiness listener exposes this path.
       check {
         name     = "readyz"
         type     = "http"
@@ -128,7 +133,7 @@ job "hello-norn-mysql" {
         uid                  = 65532
         gid                  = 65532
         error_on_missing_key = true
-        data = <<-EOT
+        data                 = <<-EOT
 {{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
 {{ .MYSQL_DSN.Value }}
 {{ end }}
@@ -142,7 +147,7 @@ EOT
         uid                  = 65532
         gid                  = 65532
         error_on_missing_key = true
-        data = <<-EOT
+        data                 = <<-EOT
 {{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
 {{ .MYSQL_PINNED_IP.Value }}
 {{ end }}
@@ -156,7 +161,7 @@ EOT
         uid                  = 65532
         gid                  = 65532
         error_on_missing_key = true
-        data = <<-EOT
+        data                 = <<-EOT
 {{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
 {{ .PILOT_WRITE_TOKEN.Value }}
 {{ end }}
@@ -172,7 +177,7 @@ EOT
         uid                  = 65532
         gid                  = 65532
         error_on_missing_key = true
-        data = <<-EOT
+        data                 = <<-EOT
 {{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
 {{ .MYSQL_CA_PEM.Value }}
 {{ end }}
