@@ -1108,7 +1108,8 @@ func (s *fakeFleetGitHubServer) handleApplyRunsListLocked(w http.ResponseWriter)
 		if run.kind != "apply" {
 			continue
 		}
-		items = append(items, fmt.Sprintf(`{"id":%d}`, run.id))
+		items = append(items, fmt.Sprintf(`{"id":%d,"html_url":%q,"event":%q,"head_sha":%q,"head_branch":%q,"path":%q,"name":%q,"display_title":%q,"actor":{"login":%q,"type":%q}}`,
+			run.id, fmt.Sprintf("https://github.com/%s/actions/runs/%d", s.repo, run.id), run.event, run.headSHA, run.headBranch, run.path, run.name, run.displayTitle, run.actorLogin, run.actorType))
 	}
 	fmt.Fprintf(w, `{"workflow_runs":[%s]}`, strings.Join(items, ","))
 }
