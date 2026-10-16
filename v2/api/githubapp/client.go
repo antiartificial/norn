@@ -962,16 +962,18 @@ func (c *Client) planArtifactSHA(ctx context.Context, token string, runID int64,
 
 func (c *Client) findApplyRun(ctx context.Context, token, planID, fleetEnvironment string, approved *Dispatch, nonce, appActor string) (*Dispatch, error) {
 	var runs struct {
-		WorkflowRuns []struct {
-			ID int64 `json:"id"`
-		} `json:"workflow_runs"`
+		WorkflowRuns []applyRun `json:"workflow_runs"`
 	}
 	query := "?event=workflow_dispatch&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&per_page=100"
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/runs"+query), nil, &runs); err != nil {
 		return nil, err
 	}
-	for _, run := range runs.WorkflowRuns {
-		candidate, err := c.getApplyRun(ctx, token, run.ID)
+	var match *Dispatch
+	for _, listed := range runs.WorkflowRuns {
+		if c.verifyApplyRunIdentity(&listed, approved, appActor) != nil || listed.DisplayTitle != applyRunDisplayTitle(fleetEnvironment, c.cfg.PilotRunID, planID, nonce) {
+			continue
+		}
+		candidate, err := c.getApplyRun(ctx, token, listed.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -979,25 +981,37 @@ func (c *Client) findApplyRun(ctx context.Context, token, planID, fleetEnvironme
 			return nil, ErrDispatchAmbiguous
 		}
 		if err := c.verifyApplyRun(candidate, planID, fleetEnvironment, approved, nonce, appActor); err == nil {
-			return &Dispatch{RunID: candidate.ID, RunAttempt: candidate.RunAttempt, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID}, nil
+			if match != nil {
+				return nil, ErrDispatchAmbiguous
+			}
+			match = &Dispatch{RunID: candidate.ID, RunAttempt: candidate.RunAttempt, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID}
 		}
 	}
-	return nil, nil
+	return match, nil
 }
 
 func (c *Client) findApplyRunByNonceHash(ctx context.Context, token, planID, fleetEnvironment string, approved *Dispatch, nonceHash, appActor string) (*Dispatch, error) {
 	var runs struct {
-		WorkflowRuns []struct {
-			ID int64 `json:"id"`
-		} `json:"workflow_runs"`
+		WorkflowRuns []applyRun `json:"workflow_runs"`
 	}
 	query := "?event=workflow_dispatch&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&per_page=100"
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/runs"+query), nil, &runs); err != nil {
 		return nil, recoveryFailure("run-list")
 	}
 	var match *Dispatch
-	for _, run := range runs.WorkflowRuns {
-		candidate, err := c.getApplyRun(ctx, token, run.ID)
+	for _, listed := range runs.WorkflowRuns {
+		if c.verifyApplyRunIdentity(&listed, approved, appActor) != nil {
+			continue
+		}
+		environment, candidatePlanID, candidateNonce, ok := parseApplyRunDisplayTitle(listed.DisplayTitle, c.cfg.PilotRunID)
+		if !ok || environment != fleetEnvironment || candidatePlanID != planID {
+			continue
+		}
+		candidateHash := sha256.Sum256([]byte(candidateNonce))
+		if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(candidateHash[:])), []byte(nonceHash)) != 1 {
+			continue
+		}
+		candidate, err := c.getApplyRun(ctx, token, listed.ID)
 		if err != nil {
 			return nil, recoveryFailure("run-fetch")
 		}
