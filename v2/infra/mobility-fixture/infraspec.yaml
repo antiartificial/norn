@@ -12,14 +12,16 @@ env:
   DATA_DIR: /data
   WRITE_ENABLED: "false"
 databases:
-  - name: primary
+  # Database catalog logical names are global to a control plane. Keep this
+  # fixture distinct from ordinary application `primary` bindings.
+  - name: mobility-primary
     purpose: application
     capabilities: [runtime, migration, snapshot, restore, health]
     runtime:
       env: DATABASE_URL
       fileEnv: DATABASE_URL_FILE
 volumes:
-  - name: mobility-files
+  - name: m7-mobility-files
     mount: /data
 processes:
   web:

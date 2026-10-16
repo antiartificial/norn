@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# Run the M7 fixture through a control API which is deliberately separate from
+# the Mini's primary control process.  This is an operator tool: it never
+# creates databases, directories, credentials, or Nomad jobs by itself.
+set -euo pipefail
+
+die() { echo "mini-m7-isolated-control-runner: $*" >&2; exit 2; }
+
+require_private_dir() {
+  local path=$1 label=$2
+  [[ $path == /* && -d $path && ! -L $path ]] || die "$label must be an existing absolute directory"
+  PATH_TO_CHECK="$path" LABEL_TO_CHECK="$label" python3 - <<'PY'
+import os, stat
+p=os.environ['PATH_TO_CHECK']; s=os.lstat(p)
+if s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) != 0o700:
+    raise SystemExit(f"{os.environ['LABEL_TO_CHECK']} must be owner-only mode 0700")
+PY
+}
+
+require_private_file() {
+  local path=$1 label=$2
+  [[ $path == /* && -f $path && ! -L $path ]] || die "$label must be an existing absolute regular file"
+  PATH_TO_CHECK="$path" LABEL_TO_CHECK="$label" python3 - <<'PY'
+import os, stat
+p=os.environ['PATH_TO_CHECK']; s=os.lstat(p)
+if s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) != 0o600:
+    raise SystemExit(f"{os.environ['LABEL_TO_CHECK']} must be owner-only mode 0600")
+PY
+}
+
+require_fixture_catalog() {
+  local apps=$1
+  local fixture="$apps/v3-mobility-fixture"
+  [[ -d $fixture && ! -L $fixture && -f $fixture/infraspec.yaml && ! -L $fixture/infraspec.yaml ]] || die "apps directory must contain v3-mobility-fixture/infraspec.yaml"
+  APPS_TO_CHECK="$apps" python3 - <<'PY'
+import os
+root=os.environ['APPS_TO_CHECK']
+entries=sorted(os.listdir(root))
+if entries != ['v3-mobility-fixture']:
+    raise SystemExit('isolated app catalog must contain only v3-mobility-fixture')
+for base, dirs, files in os.walk(root):
+    for name in dirs + files:
+        if os.path.islink(os.path.join(base, name)):
+            raise SystemExit('isolated app catalog must not contain symlinks')
+PY
+  /usr/bin/grep -Eq '^name: v3-mobility-fixture$' "$fixture/infraspec.yaml" || die "fixture spec identity is wrong"
+  /usr/bin/grep -Eq '^  - name: mobility-primary$' "$fixture/infraspec.yaml" || die "fixture spec must use mobility-primary"
+}
+
+mode=${1:-}
+case "$mode" in bootstrap|catalog-bootstrap|preflight|run|render-env|probe-database) ;; *) die 'usage: bootstrap|catalog-bootstrap|preflight|run|render-env|probe-database' ;; esac
+[[ ${NORN_M7_ISOLATED_CONTROL_RUNNER:-} == 1 ]] || die 'set NORN_M7_ISOLATED_CONTROL_RUNNER=1 explicitly'
+
+: "${NORN_M7_CONTROL_ROOT:?set an owner-only run root}"
+: "${NORN_M7_CONTROL_APPS_DIR:?set the isolated fixture-only catalog directory}"
+: "${NORN_M7_CONTROL_SECRET_DIR:?set the isolated catalog secret directory}"
+: "${NORN_M7_CONTROL_ENV_FILE:?set the encrypted M7 control environment file}"
+: "${NORN_M7_PRIMARY_ENV_FILE:?set the encrypted primary API environment file for equality checks}"
+: "${NORN_M7_CONTROL_PORT:?set a dedicated loopback port}"
+: "${NORN_M7_CONTROL_PROFILE:?set the isolated catalog profile}"
+[[ ${NORN_M7_CONTROL_PROFILE} == mini-m7 ]] || die 'M7 control profile must be mini-m7'
+[[ ${NORN_M7_CONTROL_PORT} =~ ^[0-9]+$ && ${NORN_M7_CONTROL_PORT} -ge 1024 && ${NORN_M7_CONTROL_PORT} -le 65535 && ${NORN_M7_CONTROL_PORT} -ne 8800 ]] || die 'control port must be a non-primary unprivileged port'
+
+require_private_dir "$NORN_M7_CONTROL_ROOT" 'control root'
+require_private_dir "$NORN_M7_CONTROL_APPS_DIR" 'isolated apps directory'
+require_private_dir "$NORN_M7_CONTROL_SECRET_DIR" 'isolated database secret directory'
+require_private_file "$NORN_M7_CONTROL_ENV_FILE" 'encrypted M7 control environment'
+require_private_file "$NORN_M7_PRIMARY_ENV_FILE" 'encrypted primary API environment'
+require_fixture_catalog "$NORN_M7_CONTROL_APPS_DIR"
+[[ $NORN_M7_CONTROL_ROOT != "$NORN_M7_CONTROL_APPS_DIR" && $NORN_M7_CONTROL_ROOT != "$NORN_M7_CONTROL_SECRET_DIR" ]] || die 'run root, apps directory, and secret directory must differ'
+
+render_env() {
+  local runtime=$1 startup_mode=$2 schema_mode=$3 catalog_bound=$4
+  [[ ! -e $runtime && ! -L $runtime ]] || die 'runtime environment output already exists'
+  NORN_M7_ENCRYPTED_ENV="$NORN_M7_CONTROL_ENV_FILE" NORN_M7_PRIMARY_ENV="$NORN_M7_PRIMARY_ENV_FILE" \
+    NORN_M7_SOPS_BIN="${NORN_SOPS_BIN:-sops}" NORN_M7_RUNTIME_ENV="$runtime" \
+    NORN_M7_STARTUP_MODE="$startup_mode" NORN_M7_SCHEMA_MODE="$schema_mode" \
+    NORN_M7_CONTROL_PORT="$NORN_M7_CONTROL_PORT" NORN_M7_CONTROL_APPS_DIR="$NORN_M7_CONTROL_APPS_DIR" \
+    NORN_M7_CONTROL_SECRET_DIR="$NORN_M7_CONTROL_SECRET_DIR" NORN_M7_CONTROL_PROFILE="$NORN_M7_CONTROL_PROFILE" NORN_M7_CATALOG_BOUND="$catalog_bound" \
+    python3 - <<'PY'
+import hashlib, json, os, shlex, subprocess, urllib.parse
+
+def load(path):
+    raw=subprocess.check_output([os.environ['NORN_M7_SOPS_BIN'], '-d', '--output-type', 'json', path], text=True)
+    value=json.loads(raw)
+    if not isinstance(value, dict): raise SystemExit('encrypted environment must decrypt to a JSON object')
+    return value
+
+candidate=load(os.environ['NORN_M7_ENCRYPTED_ENV']); primary=load(os.environ['NORN_M7_PRIMARY_ENV'])
+required=('NORN_M7_DATABASE_URL','NORN_M7_API_TOKEN','NORN_M7_AUDIT_SIGNING_KEY','NORN_M7_NOMAD_ADDR','NORN_M7_CONSUL_ADDR')
+if any(not isinstance(candidate.get(k), str) or not candidate[k] for k in required):
+    raise SystemExit('M7 encrypted environment lacks a required dedicated control value')
+for key in ('NORN_API_TOKEN','NORN_AUDIT_SIGNING_KEY','NORN_DATABASE_URL'):
+    if not isinstance(primary.get(key), str) or not primary[key]: raise SystemExit('primary environment lacks required equality-check value')
+if candidate['NORN_M7_API_TOKEN'] == primary['NORN_API_TOKEN']: raise SystemExit('M7 API token reuses the primary API token')
+if candidate['NORN_M7_AUDIT_SIGNING_KEY'] == primary['NORN_AUDIT_SIGNING_KEY']: raise SystemExit('M7 audit key reuses the primary audit key')
+if len(candidate['NORN_M7_API_TOKEN']) < 32 or len(candidate['NORN_M7_AUDIT_SIGNING_KEY']) < 32: raise SystemExit('M7 control token and audit key must each be at least 32 bytes')
+def database_identity(raw):
+    db=urllib.parse.urlparse(raw)
+    query=urllib.parse.parse_qs(db.query, keep_blank_values=True)
+    try: port=db.port
+    except ValueError: raise SystemExit('database URL has an invalid port')
+    host=db.hostname or (query.get('host') or [''])[0]
+    if not host: raise SystemExit('database URL must identify an endpoint')
+    database=urllib.parse.unquote(db.path.lstrip('/'))
+    if not database: raise SystemExit('database URL must identify a database')
+    return (db.scheme.lower(), host.lower(), str(port or (query.get('port') or ['5432'])[0]), database)
+db=urllib.parse.urlparse(candidate['NORN_M7_DATABASE_URL'])
+if db.scheme not in ('postgres','postgresql') or not db.path.startswith('/norn_m7_'): raise SystemExit('M7 control database must use a dedicated norn_m7_ database')
+if database_identity(candidate['NORN_M7_DATABASE_URL']) == database_identity(primary['NORN_DATABASE_URL']): raise SystemExit('M7 control database reuses the primary endpoint and database')
+if candidate['NORN_M7_NOMAD_ADDR'].strip() == '' or candidate['NORN_M7_CONSUL_ADDR'].strip() == '': raise SystemExit('M7 must declare its Nomad and Consul endpoints')
+values={
+ 'NORN_DATABASE_URL':candidate['NORN_M7_DATABASE_URL'], 'NORN_API_TOKEN':candidate['NORN_M7_API_TOKEN'],
+ 'NORN_AUDIT_SIGNING_KEY':candidate['NORN_M7_AUDIT_SIGNING_KEY'], 'NORN_NOMAD_ADDR':candidate['NORN_M7_NOMAD_ADDR'],
+ 'NORN_CONSUL_ADDR':candidate['NORN_M7_CONSUL_ADDR'], 'NORN_BIND_ADDR':'127.0.0.1',
+ 'NORN_PORT':os.environ['NORN_M7_CONTROL_PORT'], 'NORN_APPS_DIR':os.environ['NORN_M7_CONTROL_APPS_DIR'],
+ 'NORN_APP_CATALOG_READ_ONLY':'true', 'NORN_REQUIRE_EXPLICIT_AUTH':'true',
+ 'NORN_STARTUP_MODE':os.environ['NORN_M7_STARTUP_MODE'], 'NORN_SCHEMA_MODE':os.environ['NORN_M7_SCHEMA_MODE'],
+ 'NORN_SKIP_DEPLOYMENT_RECOVERY':'true', 'NORN_SKIP_OPERATION_RECOVERY':'true',
+ 'NORN_SKIP_OPERATION_WORKER':'true' if os.environ['NORN_M7_STARTUP_MODE']=='passive' else 'false',
+ 'NORN_SKIP_NOMAD_WATCHER':'true' if os.environ['NORN_M7_STARTUP_MODE']=='passive' else 'false',
+ 'NORN_SKIP_ENGINE_WATCHER':'true' if os.environ['NORN_M7_STARTUP_MODE']=='passive' else 'false',
+}
+if os.environ['NORN_M7_CATALOG_BOUND'] == 'true':
+    values['NORN_DATABASE_PROFILE']=os.environ['NORN_M7_CONTROL_PROFILE']
+    values['NORN_DATABASE_SECRET_DIR']=os.environ['NORN_M7_CONTROL_SECRET_DIR']
+fd=os.open(os.environ['NORN_M7_RUNTIME_ENV'], os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+with os.fdopen(fd,'w',encoding='utf-8') as f:
+    for k,v in values.items(): f.write(f'{k}={shlex.quote(v)}\n')
+PY
+}
+
+probe_control_database() {
+  local runtime=$1 receipt=$2
+  [[ ! -e $receipt && ! -L $receipt ]] || die 'control database identity receipt already exists'
+  NORN_M7_RUNTIME_ENV="$runtime" NORN_M7_IDENTITY_RECEIPT="$receipt" NORN_M7_PSQL_BIN="${NORN_M7_PSQL_BIN:-psql}" /bin/bash -c 'set -a; . "$1"; set +a; exec python3 -' _ "$runtime" <<'PY'
+import json, os, subprocess, urllib.parse
+
+raw=os.environ['NORN_DATABASE_URL']; parsed=urllib.parse.urlparse(raw)
+query=urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+try: port=parsed.port
+except ValueError: raise SystemExit('database URL has an invalid port')
+database=urllib.parse.unquote(parsed.path.lstrip('/'))
+host=parsed.hostname or (query.get('host') or [''])[0]
+if not database or not host: raise SystemExit('database URL lacks an endpoint or database')
+env={'PATH':os.environ.get('PATH',''), 'PGHOST':host, 'PGPORT':str(port or (query.get('port') or ['5432'])[0]), 'PGDATABASE':database, 'PGUSER':urllib.parse.unquote(parsed.username or '')}
+if parsed.password is not None: env['PGPASSWORD']=urllib.parse.unquote(parsed.password)
+for source, target in (('sslmode','PGSSLMODE'), ('sslrootcert','PGSSLROOTCERT')):
+    if query.get(source): env[target]=query[source][0]
+output=subprocess.check_output([os.environ['NORN_M7_PSQL_BIN'],'-X','-w','-At','-F','\t','-c','SELECT current_database(), coalesce(inet_server_addr()::text, \'local-socket\'), coalesce(inet_server_port()::text, \'0\')'], env=env, text=True).strip().split('\t')
+if len(output) != 3 or output[0] != database: raise SystemExit('read-only database identity probe did not reach the declared M7 control database')
+payload={'schema':'norn.m7-control-database-identity/v1','database':output[0],'server':output[1],'port':output[2]}
+fd=os.open(os.environ['NORN_M7_IDENTITY_RECEIPT'],os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+with os.fdopen(fd,'w',encoding='utf-8') as f: json.dump(payload,f,sort_keys=True); f.write('\n')
+PY
+}
+
+if [[ $mode == render-env ]]; then
+  : "${2:?usage: render-env <output>}"
+  render_env "$2" passive check true
+  exit 0
+fi
+
+if [[ $mode == probe-database ]]; then
+  runtime="$NORN_M7_CONTROL_ROOT/runtime-probe.env"
+  render_env "$runtime" active check false
+  trap 'rm -f -- "$runtime"' EXIT
+  probe_control_database "$runtime" "$NORN_M7_CONTROL_ROOT/control-db-identity-probe.json"
+  exit 0
+fi
+
+: "${NORN_M7_CANDIDATE_RELEASE:?set the exact signed candidate release directory}"
+: "${NORN_M7_RELEASE_PUBLIC_KEY:?set the release verification public key}"
+require_private_file "$NORN_M7_RELEASE_PUBLIC_KEY" 'release verification public key'
+[[ $NORN_M7_CANDIDATE_RELEASE == /* && -d $NORN_M7_CANDIDATE_RELEASE && ! -L $NORN_M7_CANDIDATE_RELEASE ]] || die 'candidate release must be an absolute non-symlink directory'
+[[ -x $NORN_M7_CANDIDATE_RELEASE/bin/norn-api && ! -L $NORN_M7_CANDIDATE_RELEASE/bin/norn-api ]] || die 'candidate release lacks norn-api'
+sha=${NORN_M7_CANDIDATE_RELEASE##*/}
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || die 'candidate release directory must use its full 40-character SHA'
+canonical_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+"$canonical_root/v2/scripts/platform-release-manifest" verify --release "$NORN_M7_CANDIDATE_RELEASE" --expected-sha "$sha" | grep -qx signed || die 'candidate release is not a verified signed release'
+"$canonical_root/v2/scripts/platform-release-artifact" verify --release-dir "$NORN_M7_CANDIDATE_RELEASE" --public-key "$NORN_M7_RELEASE_PUBLIC_KEY" --quiet
+
+case "$mode" in
+  bootstrap) startup_mode=active; schema_mode=migrate-only; catalog_bound=false ;;
+  catalog-bootstrap) startup_mode=active; schema_mode=check; catalog_bound=false ;;
+  preflight) startup_mode=passive; schema_mode=check; catalog_bound=true ;;
+  run) startup_mode=active; schema_mode=auto; catalog_bound=true ;;
+esac
+runtime="$NORN_M7_CONTROL_ROOT/runtime-${mode}-${sha:0:12}.env"
+render_env "$runtime" "$startup_mode" "$schema_mode" "$catalog_bound"
+trap 'rm -f -- "$runtime"' EXIT
+
+if [[ $mode == bootstrap ]]; then
+  probe_control_database "$runtime" "$NORN_M7_CONTROL_ROOT/control-db-identity-${sha:0:12}.json"
+  # shellcheck disable=SC2016 # $1/$2 expand in the clean child shell.
+  env -i PATH="$PATH" /bin/bash -c 'set -a; . "$1"; set +a; exec "$2"' _ "$runtime" "$NORN_M7_CANDIDATE_RELEASE/bin/norn-api"
+  exit $?
+fi
+
+if [[ $mode == preflight ]]; then
+  # shellcheck disable=SC2016 # $1/$2 expand in the clean child shell.
+  env -i PATH="$PATH" /bin/bash -c 'set -a; . "$1"; set +a; exec "$2"' _ "$runtime" "$NORN_M7_CANDIDATE_RELEASE/bin/norn-api" &
+  pid=$!
+  trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -f -- "$runtime"' EXIT
+  for _ in $(seq 1 50); do curl -fsS "http://127.0.0.1:$NORN_M7_CONTROL_PORT/api/schema" >"$NORN_M7_CONTROL_ROOT/preflight-schema.json" 2>/dev/null && break; sleep 0.1; done
+  kill -0 "$pid" 2>/dev/null || die 'passive isolated API exited before serving schema'
+  [[ $(lsof -nP -iTCP:"$NORN_M7_CONTROL_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u) == "$pid" ]] || die 'isolated preflight port is not solely owned by its API process'
+  NORN_M7_SCHEMA="$NORN_M7_CONTROL_ROOT/preflight-schema.json" NORN_M7_PORT="$NORN_M7_CONTROL_PORT" python3 - <<'PY'
+import json, os
+v=json.load(open(os.environ['NORN_M7_SCHEMA']))
+if v.get('startupMode') != 'passive' or v.get('schemaMode') != 'check': raise SystemExit('preflight was not passive schema-check mode')
+if any(v.get(k) is not False for k in ('operationRecoveryEnabled','operationWorkerEnabled','nomadWatcherEnabled')): raise SystemExit('preflight enabled work execution')
+PY
+  kill "$pid"; wait "$pid" || true
+  echo "M7 isolated passive preflight passed on 127.0.0.1:$NORN_M7_CONTROL_PORT"
+  exit 0
+fi
+
+if [[ $mode == catalog-bootstrap ]]; then
+  echo "M7 isolated catalog bootstrap API: 127.0.0.1:$NORN_M7_CONTROL_PORT (profile intentionally unset; activate only mini-m7 catalog)" >&2
+else
+  echo "M7 isolated active API: 127.0.0.1:$NORN_M7_CONTROL_PORT (only its fixture catalog may submit operations)" >&2
+fi
+# Do not exec this child: the parent owns the generated plaintext env and must
+# run its EXIT cleanup after the controlled active process terminates.
+# shellcheck disable=SC2016 # $1/$2 expand in the clean child shell.
+env -i PATH="$PATH" /bin/bash -c 'set -a; . "$1"; set +a; exec "$2"' _ "$runtime" "$NORN_M7_CANDIDATE_RELEASE/bin/norn-api" &
+active_pid=$!
+# shellcheck disable=SC2329 # invoked through the signal/EXIT trap below.
+cleanup_active() {
+  local status=$?
+  if kill -0 "$active_pid" 2>/dev/null; then
+    kill "$active_pid" 2>/dev/null || true
+    wait "$active_pid" 2>/dev/null || true
+  fi
+  rm -f -- "$runtime"
+  return "$status"
+}
+trap cleanup_active EXIT HUP INT TERM
+if wait "$active_pid"; then active_status=0; else active_status=$?; fi
+exit "$active_status"
