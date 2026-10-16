@@ -201,9 +201,19 @@ func (f *processFleetGitHub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		dispatched := f.dispatches > 0
 		f.mu.Unlock()
-		runs := []map[string]int64{}
+		runs := []map[string]interface{}{}
 		if dispatched {
-			runs = append(runs, map[string]int64{"id": 93})
+			runs = append(runs, map[string]interface{}{
+				"id":            93,
+				"html_url":      "https://github.com/acme/norn-fleet/actions/runs/93",
+				"event":         "workflow_dispatch",
+				"head_sha":      f.headSHA,
+				"head_branch":   "main",
+				"path":          ".github/workflows/apply.yml",
+				"name":          "apply",
+				"display_title": "Apply staging/nyc3 Norn plan " + f.planID + " nonce " + f.nonce,
+				"actor":         map[string]string{"login": "norn[bot]", "type": "Bot"},
+			})
 		}
 		write(map[string]interface{}{"workflow_runs": runs})
 	case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/norn-fleet/actions/workflows/apply.yml/dispatches":
