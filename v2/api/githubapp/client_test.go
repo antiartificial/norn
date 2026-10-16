@@ -743,7 +743,7 @@ func TestFindApplyRunRequiresFullBoundWorkflowIdentity(t *testing.T) {
 	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("f", 64), ApprovedHeadSHA: headSHA}
 	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs") {
-			fmt.Fprint(w, `{"workflow_runs":[{"id":99}]}`)
+			fmt.Fprintf(w, `{"workflow_runs":[{"id":99,"html_url":"https://github.com/acme/norn-fleet/actions/runs/99","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@refs/heads/main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
 			return
 		}
 		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/99" {
@@ -755,6 +755,43 @@ func TestFindApplyRunRequiresFullBoundWorkflowIdentity(t *testing.T) {
 	run, err := client.findApplyRun(context.Background(), "installation-token", planID, "production/nyc3", approved, nonce, "norn[bot]")
 	if err != nil || run == nil || run.RunID != 99 {
 		t.Fatalf("environment-bound apply run = %#v, %v", run, err)
+	}
+}
+
+func TestFindApplyRunFetchesOnlyLocallyMatchedRuns(t *testing.T) {
+	planID := "34343434-3434-4434-8434-343434343434"
+	nonce := strings.Repeat("d", 64)
+	headSHA := strings.Repeat("e", 40)
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("f", 64), ApprovedHeadSHA: headSHA}
+	const matchedRunID = 199
+	getCount := 0
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs") {
+			var body strings.Builder
+			body.WriteString(`{"workflow_runs":[`)
+			for id := 100; id < matchedRunID; id++ {
+				if id > 100 {
+					body.WriteByte(',')
+				}
+				fmt.Fprintf(&body, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, id, id, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+strings.Repeat("a", 64))
+			}
+			if matchedRunID > 100 {
+				body.WriteByte(',')
+			}
+			fmt.Fprintf(&body, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, matchedRunID, matchedRunID, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprint(w, body.String())
+			return
+		}
+		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/199" {
+			getCount++
+			fmt.Fprintf(w, `{"id":199,"html_url":"https://github.com/acme/norn-fleet/actions/runs/199","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			return
+		}
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	run, err := client.findApplyRun(context.Background(), "installation-token", planID, "production/nyc3", approved, nonce, "norn[bot]")
+	if err != nil || run == nil || run.RunID != matchedRunID || getCount != 1 {
+		t.Fatalf("run=%#v err=%v fetched=%d", run, err, getCount)
 	}
 }
 
@@ -1062,7 +1099,7 @@ func TestDispatchLostResponseFindsExactRunWithoutSecondPost(t *testing.T) {
 			if listCount < 3 {
 				fmt.Fprint(w, `{"workflow_runs":[]}`)
 			} else {
-				fmt.Fprint(w, `{"workflow_runs":[{"id":93}]}`)
+				fmt.Fprintf(w, `{"workflow_runs":[{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
 			}
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/dispatches"):
 			postCount++
@@ -1132,7 +1169,7 @@ func TestRecoverBoundPlanFindsHashMatchedRunAfterCrashWithoutPosting(t *testing.
 			if listCount == 1 {
 				fmt.Fprint(w, `{"workflow_runs":[]}`)
 			} else {
-				fmt.Fprint(w, `{"workflow_runs":[{"id":92},{"id":93}]}`)
+				fmt.Fprintf(w, `{"workflow_runs":[{"id":92,"html_url":"https://github.com/acme/norn-fleet/actions/runs/92","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}},{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+strings.Repeat("d", 64), headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
 			}
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/92":
 			fmt.Fprintf(w, `{"id":92,"html_url":"https://github.com/acme/norn-fleet/actions/runs/92","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+strings.Repeat("d", 64))
@@ -1169,7 +1206,7 @@ func TestRecoverBoundPlanRejectsMultipleHashMatches(t *testing.T) {
 		}
 		switch {
 		case strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs"):
-			fmt.Fprint(w, `{"workflow_runs":[{"id":93},{"id":94}]}`)
+			fmt.Fprintf(w, `{"workflow_runs":[{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}},{"id":94,"html_url":"https://github.com/acme/norn-fleet/actions/runs/94","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93", r.URL.Path == "/repos/acme/norn-fleet/actions/runs/94":
 			id := strings.TrimPrefix(r.URL.Path, "/repos/acme/norn-fleet/actions/runs/")
 			fmt.Fprintf(w, `{"id":%s,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%s","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, id, id, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
