@@ -17,9 +17,9 @@ def nomad_json(arguments):
     return json.loads(result.stdout)
 
 
-def measure(nodes, allocations, expected_count):
+def measure(nodes, allocations, details, expected_count):
     """Reject unknown/partial topology instead of silently counting it as fit."""
-    if not isinstance(nodes, list) or not isinstance(allocations, list):
+    if not isinstance(nodes, list) or not isinstance(allocations, list) or not isinstance(details, list):
         raise ValueError("Nomad inventory is not a list")
     app = [n for n in nodes if isinstance(n, dict) and n.get("NodePool") == "app"]
     ready = [n for n in app if n.get("Status") == "ready" and n.get("SchedulingEligibility") == "eligible"]
@@ -34,11 +34,26 @@ def measure(nodes, allocations, expected_count):
             any(not isinstance(a.get("ID"), str) or not NODE_ID.fullmatch(a["ID"]) for a in running) or
             any(a.get("NodeID") not in ready_ids for a in running)):
         raise ValueError("two running workload allocations must occupy distinct ready app nodes")
+    by_id = {a["ID"]: a for a in running}
+    if (len(details) != 2 or any(not isinstance(d, dict) or not isinstance(d.get("ID"), str) or d["ID"] not in by_id for d in details) or
+            len({d["ID"] for d in details}) != 2):
+        raise ValueError("allocation detail inventory is incomplete")
+    for detail in details:
+        task = detail.get("TaskStates", {}).get("web") if isinstance(detail.get("TaskStates"), dict) else None
+        deployment = detail.get("DeploymentStatus")
+        job = detail.get("Job")
+        if (detail.get("JobID") != JOB or detail.get("Namespace") != NAMESPACE or
+                detail.get("ClientStatus") != "running" or detail.get("DesiredStatus") != "run" or
+                detail.get("NodeID") != by_id[detail["ID"]]["NodeID"] or
+                not isinstance(job, dict) or job.get("NodePool") != "app" or
+                not isinstance(task, dict) or task.get("State") != "running" or
+                not isinstance(deployment, dict) or deployment.get("Healthy") is not True):
+            raise ValueError("allocation task or Nomad deployment health differs")
     return {
         "appNodeCount": expected_count,
         "appNodeIDs": sorted(app_ids),
         "readyEligibleAppNodeIDs": sorted(ready_ids),
-        "runningAllocationIDs": sorted(a["ID"] for a in running),
+        "nomadHealthyAllocationIDs": sorted(a["ID"] for a in running),
         "runningAllocationNodeIDs": sorted(a["NodeID"] for a in running),
     }
 
@@ -51,9 +66,16 @@ def main():
     if (args.phase == "expanded") != (args.expected_count == 3):
         parser.error("expanded requires count 3; before/contracted require count 2")
     try:
+        nodes = nomad_json(["node", "status", "-json"])
+        allocations = nomad_json(["job", "allocs", "-namespace=" + NAMESPACE, "-json", JOB])
+        if not isinstance(allocations, list):
+            raise ValueError("job allocation inventory is not a list")
+        running = [a for a in allocations if isinstance(a, dict) and a.get("ClientStatus") == "running"]
+        if len(running) != 2:
+            raise ValueError("expected exactly two running service allocations")
+        details = [nomad_json(["alloc", "status", "-namespace=" + NAMESPACE, "-json", a["ID"]]) for a in running]
         evidence = measure(
-            nomad_json(["node", "status", "-json"]),
-            nomad_json(["job", "allocs", "-namespace=" + NAMESPACE, "-json", JOB]),
+            nodes, allocations, details,
             args.expected_count,
         )
     except (ValueError, KeyError, subprocess.SubprocessError, json.JSONDecodeError) as error:

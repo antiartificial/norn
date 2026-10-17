@@ -212,8 +212,8 @@ class ProbeTests(unittest.TestCase):
             return type("Result", (), {"returncode": 0, "stdout": json.dumps(value)})()
         run.side_effect = [
             result([{"ID": allocations[0], "ClientStatus": "running"}, {"ID": allocations[1], "ClientStatus": "running"}]),
-            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "CreateIndex": 10, "ModifyIndex": 11, "Job": {"NodePool": "app", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
-            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "22222222-2222-2222-2222-222222222222", "CreateIndex": 12, "ModifyIndex": 13, "Job": {"NodePool": "app", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "DesiredStatus": "run", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "CreateIndex": 10, "ModifyIndex": 11, "TaskStates": {"web": {"State": "running"}}, "DeploymentStatus": {"Healthy": True}, "Job": {"NodePool": "app", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "DesiredStatus": "run", "Namespace": self.namespace, "NodeID": "22222222-2222-2222-2222-222222222222", "CreateIndex": 12, "ModifyIndex": 13, "TaskStates": {"web": {"State": "running"}}, "DeploymentStatus": {"Healthy": True}, "Job": {"NodePool": "app", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
         ]
         proofs, verified = exercise.inventory_staging(image, "a" * 40, "staging.example.test", self.namespace, self.app_nodes)
         self.assertTrue(verified)
@@ -230,6 +230,20 @@ class ProbeTests(unittest.TestCase):
             exercise.inventory_staging(image, "a" * 40, "staging.example.test", self.namespace, frozenset({"not-a-node"})),
             ([], False),
         )
+
+    @patch("exercise.nomad_json")
+    def test_nomad_inventory_rejects_running_client_without_task_health(self, read):
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+        ids = ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+        read.side_effect = [
+            [{"ID": item, "ClientStatus": "running"} for item in ids],
+            {"ID": ids[0], "JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace,
+             "NodeID": sorted(self.app_nodes)[0], "TaskStates": {"web": {"State": "running"}},
+             "DeploymentStatus": {"Healthy": False},
+             "Job": {"NodePool": "app", "Meta": {"staging_image": image,
+                     "staging_source_version": self.source, "staging_hostname": "staging.example.test"}}},
+        ]
+        self.assertEqual(exercise.inventory_staging(image, self.source, "staging.example.test", self.namespace, self.app_nodes), ([], False))
 
     def test_app_node_ids_require_exact_two_uuid_json_array(self):
         good = json.dumps(sorted(self.app_nodes))
@@ -253,7 +267,7 @@ class ProbeTests(unittest.TestCase):
 
         run.side_effect = [
             result([{"ID": allocation, "ClientStatus": "running"}, {"ID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "ClientStatus": "running"}]),
-            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "Job": {"NodePool": "control", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "DesiredStatus": "run", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "Job": {"NodePool": "control", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
         ]
         proofs, verified = exercise.inventory_staging(image, "a" * 40, "staging.example.test", self.namespace, self.app_nodes)
         self.assertFalse(verified)
@@ -279,6 +293,52 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual(exercise.main(), 1)
             request.assert_not_called()
             self.assertFalse(json.loads(output.getvalue())["nomadEvidenceVerified"])
+
+    def test_fault_rejection_and_recovery_timeout_emit_structured_receipts_without_more_writes(self):
+        image = "ghcr.io/antiartificial/hello-norn-mysql@sha256:" + "a" * 64
+        old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        kept = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        argv = ["exercise.py", "--url", "https://staging.example.test", "--expected-image", image,
+                "--expected-source-version", self.source, "--expected-hostname", "staging.example.test",
+                "--namespace", self.namespace, "--app-node-ids-json", json.dumps(sorted(self.app_nodes)),
+                "--write-token-file", "/owner-only/token", "--fault-allocation", old]
+        pre = {"id": "a" * 32 + "-pre", "write": True, "read": True,
+               "allocation": old, "version": self.source}
+        topology = [{"allocation": old}, {"allocation": kept}]
+        for accepted, reason in ((False, "stop_not_accepted"), (True, "replacement_not_verified")):
+            with self.subTest(accepted=accepted), patch("sys.argv", argv), \
+                    patch("exercise.load_write_token", return_value="t" * 32), \
+                    patch("exercise.inventory_staging", return_value=(topology, True)), \
+                    patch("exercise.proof", return_value=pre), \
+                    patch("exercise.stop_staging_allocation", return_value=accepted), \
+                    patch("exercise.wait_for_recovery", return_value=([], [], False)) as recovery, \
+                    patch("exercise.exercise_load") as load, \
+                    patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(exercise.main(), 1)
+                receipt = json.loads(output.getvalue())
+                self.assertEqual(receipt["preDatabaseProof"], pre)
+                self.assertEqual(receipt["fault"]["failureReason"], reason)
+                self.assertEqual(receipt["requests"], 0)
+                self.assertFalse(receipt["postFaultReadbackVerified"])
+                load.assert_not_called()
+                if not accepted:
+                    recovery.assert_not_called()
+
+    def test_unverified_pre_write_cannot_trigger_fault(self):
+        image = "ghcr.io/antiartificial/hello-norn-mysql@sha256:" + "a" * 64
+        old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        argv = ["exercise.py", "--url", "https://staging.example.test", "--expected-image", image,
+                "--expected-source-version", self.source, "--expected-hostname", "staging.example.test",
+                "--namespace", self.namespace, "--app-node-ids-json", json.dumps(sorted(self.app_nodes)),
+                "--write-token-file", "/owner-only/token", "--fault-allocation", old]
+        with patch("sys.argv", argv), patch("exercise.load_write_token", return_value="t" * 32), \
+                patch("exercise.inventory_staging", return_value=([{"allocation": old}], True)), \
+                patch("exercise.proof", return_value={"id": "x", "write": False, "read": False}), \
+                patch("exercise.stop_staging_allocation") as stop, \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(exercise.main(), 1)
+            stop.assert_not_called()
+            self.assertEqual(json.loads(output.getvalue())["fault"]["failureReason"], "pre_write_not_verified")
 
     @patch("exercise.time.sleep")
     @patch("exercise.inventory_staging")

@@ -262,9 +262,9 @@ def proof(base, receipt, expected_source, allowed_allocations, write_token):
 
 
 def inventory_staging(expected_image, expected_source, expected_hostname, expected_namespace, expected_app_node_ids):
-    """Prove exactly two running, distinct app nodes for the reviewed job."""
+    """Prove two running, Nomad-healthy tasks on distinct reviewed app nodes."""
     if (not STAGING_NAMESPACE.fullmatch(expected_namespace) or not isinstance(expected_app_node_ids, frozenset) or
-            len(expected_app_node_ids) != 2 or any(not NODE_ID.fullmatch(item) for item in expected_app_node_ids)):
+            len(expected_app_node_ids) != 2 or any(not isinstance(item, str) or not NODE_ID.fullmatch(item) for item in expected_app_node_ids)):
         return [], False
     listed = nomad_json(["job", "allocs", "-namespace=" + expected_namespace, "-json", "hello-norn-mysql"])
     if not isinstance(listed, list):
@@ -275,7 +275,7 @@ def inventory_staging(expected_image, expected_source, expected_hostname, expect
     proofs = []
     for item in sorted(running, key=lambda value: value.get("ID", "")):
         allocation = item.get("ID", "")
-        if not ALLOCATION_ID.fullmatch(allocation):
+        if not isinstance(allocation, str) or not ALLOCATION_ID.fullmatch(allocation):
             return proofs, False
         body = nomad_json(["alloc", "status", "-namespace=" + expected_namespace, "-json", allocation])
         if not isinstance(body, dict):
@@ -286,11 +286,17 @@ def inventory_staging(expected_image, expected_source, expected_hostname, expect
         source = meta.get("staging_source_version", "") if isinstance(meta, dict) else ""
         hostname = meta.get("staging_hostname", "") if isinstance(meta, dict) else ""
         node_id = body.get("NodeID", "")
+        tasks = body.get("TaskStates")
+        web = tasks.get("web") if isinstance(tasks, dict) else None
+        deployment = body.get("DeploymentStatus")
         if (body.get("JobID") != "hello-norn-mysql" or body.get("ClientStatus") != "running" or
+                body.get("DesiredStatus") != "run" or
                 body.get("Namespace") != expected_namespace or not isinstance(node_id, str) or
                 not NODE_ID.fullmatch(node_id) or node_id not in expected_app_node_ids or
                 not isinstance(job, dict) or job.get("NodePool") != "app" or image != expected_image or
-                source != expected_source or hostname != expected_hostname):
+                source != expected_source or hostname != expected_hostname or
+                not isinstance(web, dict) or web.get("State") != "running" or
+                not isinstance(deployment, dict) or deployment.get("Healthy") is not True):
             return proofs, False
         proofs.append({
             "allocation": allocation,
@@ -299,6 +305,8 @@ def inventory_staging(expected_image, expected_source, expected_hostname, expect
             "nodeID": node_id,
             "nodePool": "app",
             "clientStatus": "running",
+            "taskState": "running",
+            "nomadDeploymentHealthy": True,
             "image": image,
             "sourceVersion": source,
             "hostname": hostname,
@@ -318,7 +326,8 @@ def wait_for_recovery(target, initial_ids, expected_image, expected_source, expe
         proofs, healthy = inventory_staging(expected_image, expected_source, expected_hostname, namespace, expected_app_node_ids)
         current_ids = {item["allocation"] for item in proofs}
         replacements = sorted(current_ids - initial_ids)
-        if healthy and isinstance(target_status, dict) and target_status.get("ClientStatus") != "running" and replacements:
+        if (healthy and isinstance(target_status, dict) and
+                target_status.get("ClientStatus") in ("complete", "failed", "lost") and replacements):
             return proofs, replacements, True
         time.sleep(1)
     return [], [], False
@@ -341,6 +350,22 @@ def percentile(rows, fraction):
     if not latencies:
         return None
     return round(latencies[min(len(latencies) - 1, int((len(latencies) - 1) * fraction))], 2)
+
+
+def early_failure_report(run_id, base, started_at, args, topology, pre, fault, reason):
+    """Emit a bounded failure receipt before another write on a failed path."""
+    fault["failureReason"] = reason
+    print(json.dumps({
+        "runId": run_id, "origin": base, "startedAt": started_at,
+        "endedAt": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "namespace": args.namespace, "nomadAllocations": topology,
+        "preFaultNomadEvidenceVerified": True, "nomadEvidenceVerified": False,
+        "preDatabaseProof": pre,
+        "postDatabaseProof": None, "requests": 0,
+        "acknowledgedWriteCount": int(pre["write"]),
+        "postFaultReadbackVerified": False, "fault": fault,
+    }, sort_keys=True))
+    return 1
 
 
 def main():
@@ -402,23 +427,30 @@ def main():
     written = [pre["id"]] if pre["write"] and pre["read"] else []
     allowed_ids = initial_ids
     fault = {"requested": bool(args.fault_allocation), "target": args.fault_allocation or "", "stopAccepted": False, "targetStopped": not bool(args.fault_allocation), "recovered": not bool(args.fault_allocation), "replacementAllocations": [], "publicReplacementAllocation": ""}
+    if not written:
+        return early_failure_report(run_id, base, started_at, args, topology, pre, fault, "pre_write_not_verified")
     if args.fault_allocation:
         fault["stopAccepted"] = args.fault_allocation in initial_ids and stop_staging_allocation(args.fault_allocation, args.namespace)
-        if fault["stopAccepted"]:
-            topology, replacements, topology_recovered = wait_for_recovery(
-                args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version,
-                args.expected_hostname, args.namespace, app_node_ids, args.recovery_seconds,
+        if not fault["stopAccepted"]:
+            return early_failure_report(run_id, base, started_at, args, topology, pre, fault, "stop_not_accepted")
+        recovered_topology, replacements, topology_recovered = wait_for_recovery(
+            args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version,
+            args.expected_hostname, args.namespace, app_node_ids, args.recovery_seconds,
+        )
+        fault["replacementAllocations"] = replacements
+        fault["targetStopped"] = topology_recovered
+        if not topology_recovered:
+            return early_failure_report(run_id, base, started_at, args, topology, pre, fault, "replacement_not_verified")
+        topology = recovered_topology
+        allowed_ids = {item["allocation"] for item in topology}
+        if written:
+            replacement, public_recovered = wait_for_public_replacement(
+                base, pre["id"], replacements, args.expected_source_version, args.recovery_seconds,
             )
-            fault["replacementAllocations"] = replacements
-            fault["targetStopped"] = topology_recovered
-            topology_verified = topology_recovered
-            allowed_ids = {item["allocation"] for item in topology} if topology_recovered else set()
-            if topology_recovered and written:
-                replacement, public_recovered = wait_for_public_replacement(
-                    base, pre["id"], replacements, args.expected_source_version, args.recovery_seconds
-                )
-                fault["publicReplacementAllocation"] = replacement
-                fault["recovered"] = public_recovered
+            fault["publicReplacementAllocation"] = replacement
+            fault["recovered"] = public_recovered
+            if not public_recovered:
+                return early_failure_report(run_id, base, started_at, args, topology, pre, fault, "public_replacement_not_verified")
 
     rows, aborted = exercise_load(
         base, run_id, args.rps, args.seconds, args.workers, written,

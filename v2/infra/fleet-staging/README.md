@@ -23,7 +23,11 @@ declarative deployment or upgrade capability.
 - The work Fleet has a provisioned application MySQL cluster with durable
   provider backup/restore evidence. Its firewall trusts the `app` pool tag.
 - Create exactly `norn-work-staging` in Nomad and grant a reviewed staging
-  operator only the required job/variable ACL. No `norn-pilot-*` namespace.
+  operator only the required job/variable ACL plus the Nomad node-status read
+  and `app` node-pool read capabilities for `measure_app_pool.py`.
+  The probe reads the cluster's app-pool node inventory, so its ACL may need a
+  separate short-lived, read-only operator token; do not broaden the web
+  job's identity. No `norn-pilot-*` namespace.
 - Build the application from a protected Norn source SHA and verify the
   digest's provenance and SBOM as described in
   `docs/v2/operations/hello-norn-mysql-bootstrap.md` from the repository root.
@@ -98,3 +102,7 @@ remain in their protected workflows with their own approvals and evidence.
 the before/after Nomad and protected-workflow receipts must independently bind
 those UUIDs to the reviewed app job. It does not alone prove a control-plane
 upgrade, provider scale, or exact cause of any public error.
+`measure_app_pool.py` and `exercise.py` require Nomad task state and
+`DeploymentStatus.Healthy=true` as well as distinct app hosts. That is Nomad
+health evidence, not a Consul or public-route assertion; the separate HTTPS
+exercise and ingress receipts must prove external availability.
