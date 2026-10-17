@@ -403,7 +403,7 @@ func (h *Handler) authorizeGitHubActionsClaims(c *githubActionsClaims, request g
 		return CIIdentity{}, fmt.Errorf("GitHub Actions ref, event, or environment is not allowlisted")
 	}
 	if request.Scope == ScopeFleetOperate || request.Scope == ScopeFleetExternalAdmission {
-		if !matchesRepository(c, []string{h.cfg.GitHubActionsFleetAllowedRepository}) || !matchesAny(c.Environment, h.cfg.GitHubActionsFleetAllowedEnvironments) || !matchesAny(request.Intent, h.cfg.GitHubActionsFleetAllowedIntents) || !matchesPinnedDirectWorkflow(c.WorkflowRef, c.WorkflowSHA, h.cfg.GitHubActionsFleetAllowedWorkflowRefs) {
+		if c.Ref != "refs/heads/main" || c.RefProtected != "true" || !matchesRepository(c, []string{h.cfg.GitHubActionsFleetAllowedRepository}) || !matchesAny(c.Environment, h.cfg.GitHubActionsFleetAllowedEnvironments) || !matchesAny(request.Intent, h.cfg.GitHubActionsFleetAllowedIntents) || !matchesPinnedDirectWorkflow(c.WorkflowRef, c.WorkflowSHA, c.Ref, h.cfg.GitHubActionsFleetAllowedWorkflowRefs) {
 			return CIIdentity{}, fmt.Errorf("GitHub Actions fleet identity is not allowlisted")
 		}
 	} else {
@@ -495,14 +495,15 @@ func workflowRefBindsSHA(ref, sha string) bool { return strings.HasSuffix(ref, "
 // claims: workflow_ref normally ends in the branch/tag that initiated the run,
 // while workflow_sha carries the immutable commit containing that workflow.
 // Operators still configure path@<full SHA>; authorization matches the path
-// and SHA independently instead of expecting a synthetic claim GitHub never
-// emits.
-func matchesPinnedDirectWorkflow(claimRef, claimSHA string, allowed []string) bool {
+// and SHA independently while requiring workflow_ref to name the same source
+// ref (protected main for Fleet), instead of expecting a synthetic claim GitHub
+// never emits.
+func matchesPinnedDirectWorkflow(claimRef, claimSHA, sourceRef string, allowed []string) bool {
 	if !fullSourceSHAPattern.MatchString(claimSHA) {
 		return false
 	}
 	claimSeparator := strings.LastIndexByte(claimRef, '@')
-	if claimSeparator <= 0 || claimSeparator == len(claimRef)-1 {
+	if claimSeparator <= 0 || claimRef[claimSeparator+1:] != sourceRef {
 		return false
 	}
 	claimPath := claimRef[:claimSeparator]
