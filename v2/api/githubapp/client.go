@@ -1585,7 +1585,7 @@ func planReviewReceipt(planID, planDigest, sourceDigest, poolName, action string
 		NodePool           string         `json:"nodePool"`
 		Action             string         `json:"action"`
 		Proposed           fleet.NodePool `json:"proposed"`
-		TemporaryRunnerSSH *bool          `json:"temporaryRunnerSSH,omitempty"`
+		TemporaryRunnerSSH bool           `json:"temporaryRunnerSSH"`
 	}{
 		SchemaVersion:      "norn.fleet-plan-review-receipt/v1",
 		PlanID:             strings.ToLower(planID),
@@ -1594,7 +1594,7 @@ func planReviewReceipt(planID, planDigest, sourceDigest, poolName, action string
 		NodePool:           poolName,
 		Action:             action,
 		Proposed:           proposed,
-		TemporaryRunnerSSH: temporaryRunnerSSH,
+		TemporaryRunnerSSH: temporaryRunnerSSH != nil && *temporaryRunnerSSH,
 	}
 	encoded, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
