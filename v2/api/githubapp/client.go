@@ -70,7 +70,8 @@ func (e *DispatchRecoveryFailure) Unwrap() error { return ErrDispatchAmbiguous }
 func recoveryFailure(stage string) error { return &DispatchRecoveryFailure{Stage: stage} }
 
 const (
-	applyRunDisplayTitleFormat      = "Apply %s Norn plan %s nonce %s"
+	// Fleet apply.yml includes the pilot slot even when staging leaves it empty.
+	applyRunDisplayTitleFormat      = "Apply %s pilot  Norn plan %s nonce %s"
 	pilotApplyRunDisplayTitleFormat = "Apply %s pilot %s Norn plan %s nonce %s"
 )
 
@@ -1415,7 +1416,7 @@ func parseApplyRunDisplayTitle(value, pilotRunID string) (environment, planID, n
 		return "", "", "", false
 	}
 	value = strings.TrimPrefix(value, "Apply ")
-	marker := planMarker
+	marker := " pilot " + planMarker
 	if pilotRunID != "" {
 		marker = " pilot " + pilotRunID + planMarker
 	}

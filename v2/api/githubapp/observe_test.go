@@ -81,9 +81,9 @@ func TestListPlanRunsBounded(t *testing.T) {
 			if i > 0 {
 				builder.WriteString(",")
 			}
-			fmt.Fprintf(&builder, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","display_title":"Apply production/nyc3 Norn plan %s nonce %s","status":"completed","conclusion":"success","run_attempt":1}`, 1000+i, 1000+i, planID, strings.Repeat("a", 64))
+			fmt.Fprintf(&builder, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","display_title":"Apply production/nyc3 pilot  Norn plan %s nonce %s","status":"completed","conclusion":"success","run_attempt":1}`, 1000+i, 1000+i, planID, strings.Repeat("a", 64))
 		}
-		fmt.Fprintf(&builder, `,{"id":2000,"html_url":"https://github.com/acme/norn-fleet/actions/runs/2000","display_title":"Apply production/nyc3 Norn plan %s nonce %s","status":"completed","conclusion":"success","run_attempt":1}`, otherPlanID, strings.Repeat("b", 64))
+		fmt.Fprintf(&builder, `,{"id":2000,"html_url":"https://github.com/acme/norn-fleet/actions/runs/2000","display_title":"Apply production/nyc3 pilot  Norn plan %s nonce %s","status":"completed","conclusion":"success","run_attempt":1}`, otherPlanID, strings.Repeat("b", 64))
 		builder.WriteString(`]}`)
 		fmt.Fprint(w, builder.String())
 	}))
@@ -224,7 +224,7 @@ func TestObserveApplyRunByNonceHashFailsClosed(t *testing.T) {
 func TestListPlanRunsExactTokenAndErrors(t *testing.T) {
 	planID := "66666666-6666-4666-8666-666666666666"
 	status := 0
-	body := fmt.Sprintf(`{"workflow_runs":[{"id":1,"html_url":"https://github.com/acme/norn-fleet/actions/runs/1","display_title":"Apply production/nyc3 Norn plan %s nonce %s","status":"completed","conclusion":"success","run_attempt":1},{"id":2,"html_url":"https://github.com/acme/norn-fleet/actions/runs/2","display_title":"Apply production/nyc3 Norn plan %s0 nonce %s","status":"in_progress","conclusion":null,"run_attempt":1}]}`, planID, strings.Repeat("a", 64), planID, strings.Repeat("b", 64))
+	body := fmt.Sprintf(`{"workflow_runs":[{"id":1,"html_url":"https://github.com/acme/norn-fleet/actions/runs/1","display_title":"Apply production/nyc3 pilot  Norn plan %s nonce %s","status":"completed","conclusion":"success","run_attempt":1},{"id":2,"html_url":"https://github.com/acme/norn-fleet/actions/runs/2","display_title":"Apply production/nyc3 pilot  Norn plan %s0 nonce %s","status":"in_progress","conclusion":null,"run_attempt":1}]}`, planID, strings.Repeat("a", 64), planID, strings.Repeat("b", 64))
 	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
 			return

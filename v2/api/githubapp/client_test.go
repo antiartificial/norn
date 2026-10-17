@@ -402,7 +402,7 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&dispatched)
 			fmt.Fprint(w, `{"workflow_run_id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93"}`)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 		default:
 			http.NotFound(w, r)
 		}
@@ -557,7 +557,7 @@ func TestRecoverBoundPlanDoesNotRecoverCancelledHashMatchedRun(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs"):
 			fmt.Fprint(w, `{"workflow_runs":[{"id":93}]}`)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"completed","conclusion":"cancelled","actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"completed","conclusion":"cancelled","actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 		default:
 			http.NotFound(w, r)
 		}
@@ -741,13 +741,14 @@ func TestFindApplyRunRequiresFullBoundWorkflowIdentity(t *testing.T) {
 	nonce := strings.Repeat("d", 64)
 	headSHA := strings.Repeat("e", 40)
 	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("f", 64), ApprovedHeadSHA: headSHA}
+	title := applyRunDisplayTitle("production/nyc3", "", planID, nonce)
 	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs") {
-			fmt.Fprintf(w, `{"workflow_runs":[{"id":99,"html_url":"https://github.com/acme/norn-fleet/actions/runs/99","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@refs/heads/main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"workflow_runs":[{"id":99,"html_url":"https://github.com/acme/norn-fleet/actions/runs/99","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml","name":%q,"display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, title, title)
 			return
 		}
 		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/99" {
-			fmt.Fprintf(w, `{"id":99,"html_url":"https://github.com/acme/norn-fleet/actions/runs/99","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@refs/heads/main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":99,"html_url":"https://github.com/acme/norn-fleet/actions/runs/99","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml","name":%q,"display_title":%q,"inputs":null,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, title, title)
 			return
 		}
 		http.NotFound(w, r)
@@ -773,18 +774,18 @@ func TestFindApplyRunFetchesOnlyLocallyMatchedRuns(t *testing.T) {
 				if id > 100 {
 					body.WriteByte(',')
 				}
-				fmt.Fprintf(&body, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, id, id, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+strings.Repeat("a", 64))
+				fmt.Fprintf(&body, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, id, id, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+strings.Repeat("a", 64))
 			}
 			if matchedRunID > 100 {
 				body.WriteByte(',')
 			}
-			fmt.Fprintf(&body, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, matchedRunID, matchedRunID, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(&body, `{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, matchedRunID, matchedRunID, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 			fmt.Fprint(w, body.String())
 			return
 		}
 		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/199" {
 			getCount++
-			fmt.Fprintf(w, `{"id":199,"html_url":"https://github.com/acme/norn-fleet/actions/runs/199","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":199,"html_url":"https://github.com/acme/norn-fleet/actions/runs/199","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 			return
 		}
 		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -1065,7 +1066,7 @@ func TestDispatchBoundPlanPrefersPersistedExactRun(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/77" {
-			fmt.Fprintf(w, `{"id":77,"html_url":%q,"event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, workflowURL, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":77,"html_url":%q,"event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, workflowURL, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 			return
 		}
 		t.Fatalf("unexpected recovery request: %s %s", r.Method, r.URL.Path)
@@ -1099,13 +1100,13 @@ func TestDispatchLostResponseFindsExactRunWithoutSecondPost(t *testing.T) {
 			if listCount < 3 {
 				fmt.Fprint(w, `{"workflow_runs":[]}`)
 			} else {
-				fmt.Fprintf(w, `{"workflow_runs":[{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+				fmt.Fprintf(w, `{"workflow_runs":[{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 			}
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/dispatches"):
 			postCount++
 			http.Error(w, "temporary gateway failure", http.StatusBadGateway)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1169,12 +1170,12 @@ func TestRecoverBoundPlanFindsHashMatchedRunAfterCrashWithoutPosting(t *testing.
 			if listCount == 1 {
 				fmt.Fprint(w, `{"workflow_runs":[]}`)
 			} else {
-				fmt.Fprintf(w, `{"workflow_runs":[{"id":92,"html_url":"https://github.com/acme/norn-fleet/actions/runs/92","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}},{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+strings.Repeat("d", 64), headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+				fmt.Fprintf(w, `{"workflow_runs":[{"id":92,"html_url":"https://github.com/acme/norn-fleet/actions/runs/92","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}},{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+strings.Repeat("d", 64), headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 			}
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/92":
-			fmt.Fprintf(w, `{"id":92,"html_url":"https://github.com/acme/norn-fleet/actions/runs/92","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+strings.Repeat("d", 64))
+			fmt.Fprintf(w, `{"id":92,"html_url":"https://github.com/acme/norn-fleet/actions/runs/92","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+strings.Repeat("d", 64))
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"completed","conclusion":"success","actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"completed","conclusion":"success","actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 		case r.Method == http.MethodPost:
 			postCount++
 			t.Fatal("hash-only recovery attempted a second workflow POST")
@@ -1206,10 +1207,10 @@ func TestRecoverBoundPlanRejectsMultipleHashMatches(t *testing.T) {
 		}
 		switch {
 		case strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs"):
-			fmt.Fprintf(w, `{"workflow_runs":[{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}},{"id":94,"html_url":"https://github.com/acme/norn-fleet/actions/runs/94","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"workflow_runs":[{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}},{"id":94,"html_url":"https://github.com/acme/norn-fleet/actions/runs/94","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}]}`, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93", r.URL.Path == "/repos/acme/norn-fleet/actions/runs/94":
 			id := strings.TrimPrefix(r.URL.Path, "/repos/acme/norn-fleet/actions/runs/")
-			fmt.Fprintf(w, `{"id":%s,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%s","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, id, id, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":%s,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%s","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, id, id, headSHA, "Apply production/nyc3 pilot  Norn plan "+planID+" nonce "+nonce)
 		case r.Method == http.MethodPost:
 			t.Fatal("hash-only recovery attempted a workflow POST")
 		default:
