@@ -65,7 +65,7 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	}
 	operatorToken := strings.TrimSpace(string(operatorBytes))
 	identities := etcdstore.NewAuthStore(client, prefix)
-	ci := &handler.CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", RunID: "7", RunAttempt: "1", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40), WorkflowSHA: strings.Repeat("a", 40), Ref: "refs/heads/main", RefType: "branch", EventName: "workflow_dispatch", Environment: "staging", SHA: strings.Repeat("c", 40), RefProtected: true, Intent: "apply"}
+	ci := &handler.CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", RunID: "7", RunAttempt: "1", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main", WorkflowSHA: strings.Repeat("a", 40), Ref: "refs/heads/main", RefType: "branch", EventName: "workflow_dispatch", Environment: "staging", SHA: strings.Repeat("c", 40), RefProtected: true, Intent: "apply"}
 	runnerToken, err := signedProcessManagedCIToken(secret, identities, ci)
 	if err != nil {
 		t.Fatal(err)
