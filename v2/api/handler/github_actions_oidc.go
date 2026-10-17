@@ -398,7 +398,8 @@ func githubJWKPublicKey(item githubJWK) (interface{}, error) {
 }
 
 func (h *Handler) authorizeGitHubActionsClaims(c *githubActionsClaims, request githubActionsExchangeRequest) (CIIdentity, error) {
-	if c.Environment != request.Environment || !matchesAny(c.Ref, h.cfg.GitHubActionsAllowedRefs) || !matchesAny(c.EventName, h.cfg.GitHubActionsAllowedEvents) {
+	fleetAuthorityEnvironmentAlias := h.cfg.IsFleetAuthorityOnly() && request.Scope == ScopeFleetOperate && request.Environment == "staging" && c.Environment == "work-staging"
+	if (c.Environment != request.Environment && !fleetAuthorityEnvironmentAlias) || !matchesAny(c.Ref, h.cfg.GitHubActionsAllowedRefs) || !matchesAny(c.EventName, h.cfg.GitHubActionsAllowedEvents) {
 		return CIIdentity{}, fmt.Errorf("GitHub Actions ref, event, or environment is not allowlisted")
 	}
 	if request.Scope == ScopeFleetOperate || request.Scope == ScopeFleetExternalAdmission {
@@ -422,7 +423,11 @@ func (h *Handler) authorizeGitHubActionsClaims(c *githubActionsClaims, request g
 			return CIIdentity{}, fmt.Errorf("GitHub Actions reusable workflow is not SHA pinned")
 		}
 	}
-	return CIIdentity{Provider: "github-actions", Repository: c.Repository, RepositoryID: c.RepositoryID, RepositoryOwnerID: c.RepositoryOwnerID, RepositoryVisibility: c.RepositoryVisibility, RunID: c.RunID, RunAttempt: c.RunAttempt, WorkflowRef: c.WorkflowRef, WorkflowSHA: c.WorkflowSHA, JobWorkflowRef: c.JobWorkflowRef, JobWorkflowSHA: c.JobWorkflowSHA, Ref: c.Ref, RefType: c.RefType, EventName: c.EventName, Environment: c.Environment, SHA: c.SHA, RefProtected: c.RefProtected == "true", Intent: request.Intent}, nil
+	ci := CIIdentity{Provider: "github-actions", Repository: c.Repository, RepositoryID: c.RepositoryID, RepositoryOwnerID: c.RepositoryOwnerID, RepositoryVisibility: c.RepositoryVisibility, RunID: c.RunID, RunAttempt: c.RunAttempt, WorkflowRef: c.WorkflowRef, WorkflowSHA: c.WorkflowSHA, JobWorkflowRef: c.JobWorkflowRef, JobWorkflowSHA: c.JobWorkflowSHA, Ref: c.Ref, RefType: c.RefType, EventName: c.EventName, Environment: request.Environment, SHA: c.SHA, RefProtected: c.RefProtected == "true", Intent: request.Intent}
+	if fleetAuthorityEnvironmentAlias {
+		ci.GitHubEnvironment = c.Environment
+	}
+	return ci, nil
 }
 
 // releaseExchangeLaneAllowed is deliberately narrower than configurable
