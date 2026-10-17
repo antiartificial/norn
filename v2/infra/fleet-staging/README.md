@@ -94,6 +94,11 @@ It emits no response bodies or credentials.
 `exercise.py --fault-allocation UUID` optionally tests one app allocation
 replacement. It does not kill a whole ingress node or mutate provider state.
 Never infer an ingress or Norn-version pass from an allocation-only result.
+If the stopped allocation fails to recover within the bounded wait, the
+exercise makes one five-second public read of its acknowledged pre-fault
+record and emits that result with `nomadProvenanceVerified=false`. A successful
+read is useful persistence evidence but cannot turn the failed replacement
+test into a pass.
 
 The scripts are intentionally read-only except the bounded synthetic writes
 and the optional exact allocation stop. Fleet scale and ingress fault actions

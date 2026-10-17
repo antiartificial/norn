@@ -312,6 +312,8 @@ class ProbeTests(unittest.TestCase):
                     patch("exercise.proof", return_value=pre), \
                     patch("exercise.stop_staging_allocation", return_value=accepted), \
                     patch("exercise.wait_for_recovery", return_value=([], [], False)) as recovery, \
+                    patch("exercise.best_effort_post_fault_readback", return_value={"attempted": True, "publicRecordRead": True,
+                           "allocation": kept, "sourceVersionMatches": True, "nomadProvenanceVerified": False}) as readback, \
                     patch("exercise.exercise_load") as load, \
                     patch("sys.stdout", new_callable=io.StringIO) as output:
                 self.assertEqual(exercise.main(), 1)
@@ -323,6 +325,23 @@ class ProbeTests(unittest.TestCase):
                 load.assert_not_called()
                 if not accepted:
                     recovery.assert_not_called()
+                    readback.assert_not_called()
+                else:
+                    readback.assert_called_once_with("https://staging.example.test", pre["id"], self.source)
+                    self.assertTrue(receipt["postFaultReadback"]["publicRecordRead"])
+                    self.assertFalse(receipt["postFaultReadback"]["nomadProvenanceVerified"])
+
+    def test_best_effort_post_fault_readback_is_bounded_and_never_claims_nomad_provenance(self):
+        record = "a" * 32 + "-pre"
+        payload = json.dumps({"id": record, "version": self.source, "allocation": self.allocation}).encode()
+        with patch("exercise.opener") as client:
+            client.return_value.open.return_value = Response(payload)
+            result = exercise.best_effort_post_fault_readback("https://staging.example.test", record, self.source)
+            self.assertTrue(result["publicRecordRead"])
+            self.assertFalse(result["nomadProvenanceVerified"])
+            self.assertEqual(client.return_value.open.call_args.kwargs["timeout"], 5)
+            client.return_value.open.return_value = Response(b" " * 65537)
+            self.assertFalse(exercise.best_effort_post_fault_readback("https://staging.example.test", record, self.source)["publicRecordRead"])
 
     def test_unverified_pre_write_cannot_trigger_fault(self):
         image = "ghcr.io/antiartificial/hello-norn-mysql@sha256:" + "a" * 64

@@ -352,7 +352,30 @@ def percentile(rows, fraction):
     return round(latencies[min(len(latencies) - 1, int((len(latencies) - 1) * fraction))], 2)
 
 
-def early_failure_report(run_id, base, started_at, args, topology, pre, fault, reason):
+def best_effort_post_fault_readback(base, record, expected_source):
+    """Make one bounded public read; do not claim Nomad provenance after timeout."""
+    observed = {"attempted": True, "publicRecordRead": False, "allocation": "",
+                "sourceVersionMatches": False, "nomadProvenanceVerified": False}
+    try:
+        with opener().open(urllib.request.Request(base + "/records/" + record, method="GET"), timeout=5) as response:
+            payload = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(payload) > MAX_RESPONSE_BYTES:
+                return observed
+            data = json.loads(payload)
+            if not isinstance(data, dict):
+                return observed
+            allocation = data.get("allocation")
+            observed["sourceVersionMatches"] = data.get("version") == expected_source
+            if isinstance(allocation, str) and ALLOCATION_ID.fullmatch(allocation):
+                observed["allocation"] = allocation
+            observed["publicRecordRead"] = (response.status == 200 and data.get("id") == record and
+                                            observed["sourceVersionMatches"] and bool(observed["allocation"]))
+    except (OSError, ValueError, urllib.error.HTTPError):
+        pass
+    return observed
+
+
+def early_failure_report(run_id, base, started_at, args, topology, pre, fault, reason, post_fault_readback=None):
     """Emit a bounded failure receipt before another write on a failed path."""
     fault["failureReason"] = reason
     print(json.dumps({
@@ -361,7 +384,8 @@ def early_failure_report(run_id, base, started_at, args, topology, pre, fault, r
         "namespace": args.namespace, "nomadAllocations": topology,
         "preFaultNomadEvidenceVerified": True, "nomadEvidenceVerified": False,
         "preDatabaseProof": pre,
-        "postDatabaseProof": None, "requests": 0,
+        "postDatabaseProof": None, "postFaultReadback": post_fault_readback,
+        "requests": 0,
         "acknowledgedWriteCount": int(pre["write"]),
         "postFaultReadbackVerified": False, "fault": fault,
     }, sort_keys=True))
@@ -440,7 +464,9 @@ def main():
         fault["replacementAllocations"] = replacements
         fault["targetStopped"] = topology_recovered
         if not topology_recovered:
-            return early_failure_report(run_id, base, started_at, args, topology, pre, fault, "replacement_not_verified")
+            readback = best_effort_post_fault_readback(base, pre["id"], args.expected_source_version)
+            return early_failure_report(run_id, base, started_at, args, topology, pre, fault,
+                                        "replacement_not_verified", readback)
         topology = recovered_topology
         allowed_ids = {item["allocation"] for item in topology}
         if written:
