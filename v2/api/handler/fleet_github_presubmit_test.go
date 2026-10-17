@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -164,5 +165,105 @@ func TestReconcileAbandonedPlanIsConflictNotServerError(t *testing.T) {
 	rec := post("/api/v1/fleet/plans/"+plan.ID+"/github/reconcile", fleetGitHubReconcileRequest{Kind: "apply-dispatch"})
 	if rec.Code != http.StatusConflict || decodeProblemCode(rec) != lifecycle.CodeFleetTargetHolderAbandoned {
 		t.Fatalf("reconcile of an abandoned plan = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReconcileAbandonedCanceledRunTerminalizesReservationWithoutRebinding(t *testing.T) {
+	p := newPGFenceHarness(t)
+	reg := p.RegisterTarget(lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "cancelled-before-execution", StateBackend: "s3://cancelled-before-execution/state"}, []string{"cluster:cancelled-before-execution"})
+	if reg.HTTPStatus != http.StatusCreated {
+		t.Fatalf("register: %+v", reg)
+	}
+	post := func(path string, body interface{}) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", TokenID: "token-cancelled", DeviceID: "device-cancelled", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeAPIWrite}})
+		rec := httptest.NewRecorder()
+		p.router.ServeHTTP(rec, req)
+		return rec
+	}
+	plan := p.SeedPlanOnCluster("scale", "cancelled-before-execution", "")
+	p.github.configure(plan.ID, "", fleettest.GitHubOutcomeAmbiguous)
+	if rec := post("/api/v1/fleet/plans/"+plan.ID+"/github/dispatch", fleetGitHubDispatchRequest{}); rec.Code != http.StatusBadGateway {
+		t.Fatalf("ambiguous dispatch = %d %s", rec.Code, rec.Body.String())
+	}
+	before, err := p.db.GetFleetGitHubDispatch(context.Background(), plan.ID)
+	if err != nil || before.DispatchState != "submitting" || before.RunID != 0 || before.RunAttempt != 0 {
+		t.Fatalf("before=%+v err=%v", before, err)
+	}
+	p.github.configure(plan.ID, "", fleettest.GitHubOutcomeSubmitted)
+	runID := p.github.cancelBeforeProviderExecution(plan.ID)
+	if runID == 0 {
+		t.Fatal("cancelled run was not materialized")
+	}
+	notAbandoned := post("/api/v1/fleet/plans/"+plan.ID+"/github/reconcile", fleetGitHubReconcileRequest{Kind: "apply-dispatch", ExactRunID: runID, ExactRunAttempt: 1})
+	if notAbandoned.Code != http.StatusConflict || decodeProblemCode(notAbandoned) != "fleet_github_reconcile_ambiguous" {
+		t.Fatalf("non-abandoned exact reconcile = %d %s", notAbandoned.Code, notAbandoned.Body.String())
+	}
+	unchanged, err := p.db.GetFleetGitHubDispatch(context.Background(), plan.ID)
+	if err != nil || unchanged.DispatchState != "submitting" || unchanged.RunID != 0 || unchanged.RunAttempt != 0 || unchanged.WorkflowURL != "" {
+		t.Fatalf("non-abandoned dispatch changed: %+v err=%v", unchanged, err)
+	}
+	var queuedStatus model.OperationStatus
+	if err := p.db.Pool.QueryRow(context.Background(), `SELECT status FROM operations WHERE kind='fleet.github.apply-dispatch' AND ref=$1`, plan.ID).Scan(&queuedStatus); err != nil || queuedStatus != model.OperationQueued {
+		t.Fatalf("non-abandoned reservation status=%s err=%v", queuedStatus, err)
+	}
+	p.AgeHolder(plan, lifecycle.AbandonMinimumAge+time.Hour)
+	if resp := p.AbandonPlan(plan); resp.HTTPStatus != http.StatusOK && resp.HTTPStatus != http.StatusCreated {
+		t.Fatalf("abandon: %+v", resp)
+	}
+	rec := post("/api/v1/fleet/plans/"+plan.ID+"/github/reconcile", fleetGitHubReconcileRequest{Kind: "apply-dispatch", ExactRunID: runID, ExactRunAttempt: 1})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("exact reconcile = %d %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Operation model.Operation `json:"operation"`
+		Outcome   string          `json:"outcome"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Outcome != "verified-cancelled-before-execution" || response.Operation.Status != model.OperationCanceled || response.Operation.Receipt == nil {
+		t.Fatalf("response=%+v", response)
+	}
+	after, err := p.db.GetFleetGitHubDispatch(context.Background(), plan.ID)
+	if err != nil || after.DispatchState != "submitting" || after.RunID != 0 || after.RunAttempt != 0 || after.WorkflowURL != "" {
+		t.Fatalf("after=%+v err=%v", after, err)
+	}
+}
+
+func TestReconcileCanceledRunRejectsBoundReservation(t *testing.T) {
+	p := newPGFenceHarness(t)
+	reg := p.RegisterTarget(lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "cancelled-bound", StateBackend: "s3://cancelled-bound/state"}, []string{"cluster:cancelled-bound"})
+	if reg.HTTPStatus != http.StatusCreated {
+		t.Fatalf("register: %+v", reg)
+	}
+	post := func(path string, body interface{}) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", TokenID: "token-cancelled-bound", DeviceID: "device-cancelled-bound", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeAPIWrite}})
+		rec := httptest.NewRecorder()
+		p.router.ServeHTTP(rec, req)
+		return rec
+	}
+	boundPlan := p.SeedPlanOnCluster("scale", "cancelled-bound", "")
+	p.github.configure(boundPlan.ID, "", fleettest.GitHubOutcomeAmbiguous)
+	if rec := post("/api/v1/fleet/plans/"+boundPlan.ID+"/github/dispatch", fleetGitHubDispatchRequest{}); rec.Code != http.StatusBadGateway {
+		t.Fatalf("bound-plan ambiguous dispatch = %d %s", rec.Code, rec.Body.String())
+	}
+	p.github.configure(boundPlan.ID, "", fleettest.GitHubOutcomeSubmitted)
+	boundRunID := p.github.cancelBeforeProviderExecution(boundPlan.ID)
+	bound, err := p.db.GetFleetGitHubDispatch(context.Background(), boundPlan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.db.FinishFleetGitHubDispatch(context.Background(), boundPlan.ID, bound.DispatchNonceSHA256, boundRunID, 1, fmt.Sprintf("https://github.com/%s/actions/runs/%d", pgConformanceRepository, boundRunID)); err != nil {
+		t.Fatal(err)
+	}
+	boundRec := post("/api/v1/fleet/plans/"+boundPlan.ID+"/github/reconcile", fleetGitHubReconcileRequest{Kind: "apply-dispatch", ExactRunID: boundRunID, ExactRunAttempt: 1})
+	if boundRec.Code != http.StatusConflict || decodeProblemCode(boundRec) != "fleet_github_reconcile_ambiguous" {
+		t.Fatalf("bound exact reconcile = %d %s", boundRec.Code, boundRec.Body.String())
 	}
 }

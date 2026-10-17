@@ -134,7 +134,9 @@ func (h *Handler) CreateFleetGitHubPullRequest(w http.ResponseWriter, r *http.Re
 }
 
 type fleetGitHubReconcileRequest struct {
-	Kind string `json:"kind"`
+	Kind            string `json:"kind"`
+	ExactRunID      int64  `json:"exactRunId,omitempty"`
+	ExactRunAttempt int64  `json:"exactRunAttempt,omitempty"`
 }
 
 func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http.Request) {
@@ -210,11 +212,31 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 		if binding.DispatchState == "prepared" && binding.RunID == 0 {
 			observed = &githubapp.Reconciliation{Outcome: "verified-no-write"}
 		} else {
-			approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID}
+			approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID, ScaleUpApprovalRunID: binding.ScaleUpApprovalRunID}
 			var recovered *githubapp.Dispatch
-			recovered, err = h.fleetGitHub.RecoverBoundPlan(r.Context(), plan.ID, binding.FleetEnvironment, approved, binding.DispatchNonceSHA256)
+			if request.ExactRunID != 0 || request.ExactRunAttempt != 0 {
+				if binding.DispatchState != "submitting" || binding.RunID != 0 || binding.RunAttempt != 0 || binding.WorkflowURL != "" || request.ExactRunID <= 0 || request.ExactRunAttempt != 1 {
+					WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_ambiguous", "exact cancelled-run reconciliation requires an unbound submitting reservation and run attempt 1")
+					return
+				}
+				abandoned, abandonedErr := h.db.IsFleetPlanAbandonedForPlan(r.Context(), plan.ID)
+				if abandonedErr != nil || !abandoned {
+					WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_ambiguous", "exact cancelled-run reconciliation requires the fleet plan to be permanently abandoned")
+					return
+				}
+				attempts, attemptsErr := h.db.ListFleetRunnerAttempts(r.Context(), plan.ID, 1)
+				if attemptsErr != nil || len(attempts) != 0 {
+					WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_ambiguous", "a durable runner attempt exists or could not be excluded")
+					return
+				}
+				observed, err = h.fleetGitHub.ReconcileCanceledBeforeExecution(r.Context(), plan.ID, binding.FleetEnvironment, binding.AllowDestructive, approved, binding.DispatchNonceSHA256, request.ExactRunID, request.ExactRunAttempt)
+			} else {
+				recovered, err = h.fleetGitHub.RecoverBoundPlan(r.Context(), plan.ID, binding.FleetEnvironment, approved, binding.DispatchNonceSHA256)
+			}
 			if err == nil {
-				observed = &githubapp.Reconciliation{Outcome: "recovered", Dispatch: recovered}
+				if observed == nil {
+					observed = &githubapp.Reconciliation{Outcome: "recovered", Dispatch: recovered}
+				}
 			} else {
 				// One exact cancelled pilot run is bound to immutable workflow, job,
 				// plan, artifact, and log evidence. The target apply was skipped and
@@ -271,6 +293,11 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 		}
 		status, message = model.OperationSucceeded, "protected fleet apply recovered by operator reconciliation"
 		result["runId"], result["url"], result["planRunId"], result["planSha256"], result["approvedHeadSha"] = observed.Dispatch.RunID, observed.Dispatch.URL, observed.Dispatch.PlanRunID, observed.Dispatch.PlanSHA, observed.Dispatch.ApprovedHeadSHA
+	}
+	if observed.CanceledRun != nil {
+		message = "fleet GitHub reservation canceled after the provider apply job was verified unexecuted"
+		result["runId"], result["runAttempt"], result["url"], result["conclusion"] = observed.CanceledRun.RunID, observed.CanceledRun.RunAttempt, observed.CanceledRun.URL, observed.CanceledRun.Conclusion
+		result["jobCount"], result["artifactCount"], result["providerApplyExecution"] = observed.CanceledRun.JobCount, observed.CanceledRun.ArtifactCount, "none-observed"
 	}
 	finished, err := h.finishFleetGitHubReservation(r.Context(), op.ID, plan.ID, kind, status, message, result)
 	if err != nil {

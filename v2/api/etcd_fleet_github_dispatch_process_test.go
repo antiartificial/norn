@@ -211,7 +211,7 @@ func (f *processFleetGitHub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				"head_branch":   "main",
 				"path":          ".github/workflows/apply.yml",
 				"name":          "apply",
-				"display_title": "Apply staging/nyc3 Norn plan " + f.planID + " nonce " + f.nonce,
+				"display_title": "Apply staging/nyc3 pilot  Norn plan " + f.planID + " nonce " + f.nonce,
 				"actor":         map[string]string{"login": "norn[bot]", "type": "Bot"},
 			})
 		}
@@ -242,7 +242,7 @@ func (f *processFleetGitHub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		nonce, planID := f.nonce, f.planID
 		f.mu.Unlock()
-		write(map[string]interface{}{"id": 93, "html_url": "https://github.com/acme/norn-fleet/actions/runs/93", "event": "workflow_dispatch", "head_sha": f.headSHA, "head_branch": "main", "path": ".github/workflows/apply.yml", "name": "apply", "display_title": "Apply staging/nyc3 Norn plan " + planID + " nonce " + nonce, "inputs": map[string]string{"fleet_environment": "staging/nyc3", "plan_run_id": "91", "plan_sha256": f.planSHA, "norn_plan_id": planID, "allow_destructive": "true", "dispatch_nonce": nonce}, "actor": map[string]string{"login": "norn[bot]", "type": "Bot"}})
+		write(map[string]interface{}{"id": 93, "html_url": "https://github.com/acme/norn-fleet/actions/runs/93", "event": "workflow_dispatch", "head_sha": f.headSHA, "head_branch": "main", "path": ".github/workflows/apply.yml", "name": "apply", "display_title": "Apply staging/nyc3 pilot  Norn plan " + planID + " nonce " + nonce, "inputs": map[string]string{"fleet_environment": "staging/nyc3", "plan_run_id": "91", "plan_sha256": f.planSHA, "norn_plan_id": planID, "allow_destructive": "true", "dispatch_nonce": nonce}, "actor": map[string]string{"login": "norn[bot]", "type": "Bot"}})
 	default:
 		http.NotFound(w, r)
 	}

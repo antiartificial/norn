@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -59,6 +60,57 @@ func TestObserveApplyRunByNonceHashMatchesOnlyBoundRun(t *testing.T) {
 
 	if _, err := client.ObserveApplyRunByNonceHash(context.Background(), planID, fleetEnvironment, approved, nonceHash, 3); err == nil {
 		t.Fatal("a nonexistent run attempt was accepted")
+	}
+}
+
+func TestReconcileCanceledBeforeExecutionRequiresStableZeroExecution(t *testing.T) {
+	planID := "22222222-2222-4222-8222-222222222222"
+	fleetEnvironment := "staging/nyc3"
+	nonce := strings.Repeat("a", 64)
+	sum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(sum[:])
+	headSHA := strings.Repeat("b", 40)
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("c", 64), ApprovedHeadSHA: headSHA}
+	runID := int64(39032894911)
+	run := fmt.Sprintf(`{"id":%d,"html_url":"https://github.com/acme/norn-fleet/actions/runs/%d","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"run_attempt":1,"status":"completed","conclusion":"cancelled","actor":{"login":"norn[bot]","type":"Bot"},"inputs":null}`, runID, runID, headSHA, fmt.Sprintf(applyRunDisplayTitleFormat, fleetEnvironment, planID, nonce))
+	jobs := fmt.Sprintf(`{"total_count":2,"jobs":[{"id":6,"run_id":%d,"run_attempt":1,"name":"pilot_admission","status":"completed","conclusion":"success","runner_id":1000019941,"runner_name":"GitHub Actions 1000019941","labels":["ubuntu-24.04"],"started_at":"2026-10-17T12:32:01Z","steps":[{"number":1,"name":"Set up job","status":"completed","conclusion":"success"},{"number":2,"name":"Require selected admission runner","status":"completed","conclusion":"success"},{"number":3,"name":"Run set -euo pipefail","status":"completed","conclusion":"success"},{"number":4,"name":"Complete job","status":"completed","conclusion":"success"}]},{"id":7,"run_id":%d,"run_attempt":1,"name":"apply","status":"completed","conclusion":"cancelled","runner_id":0,"runner_name":"","labels":["self-hosted","Linux","X64","norn-fleet-protected","norn-work-staging-fleet-effect"],"started_at":"2026-10-17T12:32:04Z","steps":[]}]}`, runID, runID)
+	artifacts := `{"total_count":0,"artifacts":[]}`
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
+			return
+		}
+		switch r.URL.Path {
+		case fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d", runID):
+			fmt.Fprint(w, run)
+		case fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d/jobs", runID):
+			fmt.Fprint(w, jobs)
+		case fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d/artifacts", runID):
+			fmt.Fprint(w, artifacts)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	client.cfg.Environment = "staging"
+	client.cfg.ConfigPath = "environments/staging/nyc3/cluster.yaml"
+	var decoded applyRun
+	if err := json.Unmarshal([]byte(run), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.verifyApplyRunByNonceHash(&decoded, planID, fleetEnvironment, approved, nonceHash, "norn[bot]"); err != nil {
+		t.Fatalf("fixture identity: %v", err)
+	}
+	result, err := client.ReconcileCanceledBeforeExecution(context.Background(), planID, fleetEnvironment, false, approved, nonceHash, runID, 1)
+	if err != nil || result.Outcome != "verified-cancelled-before-execution" || result.CanceledRun == nil || result.CanceledRun.RunID != runID || result.CanceledRun.JobCount != 2 {
+		t.Fatalf("reconciliation=%+v err=%v", result, err)
+	}
+
+	jobs = fmt.Sprintf(`{"total_count":2,"jobs":[{"id":6,"run_id":%d,"run_attempt":1,"name":"pilot_admission","status":"completed","conclusion":"success","runner_id":1000019941,"runner_name":"GitHub Actions 1000019941","labels":["ubuntu-24.04"],"started_at":"2026-10-17T12:32:01Z","steps":[{"number":1,"name":"Set up job","status":"completed","conclusion":"success"},{"number":2,"name":"Require selected admission runner","status":"completed","conclusion":"success"},{"number":3,"name":"Run set -euo pipefail","status":"completed","conclusion":"success"},{"number":4,"name":"Complete job","status":"completed","conclusion":"success"}]},{"id":7,"run_id":%d,"run_attempt":1,"name":"apply","status":"completed","conclusion":"cancelled","runner_id":99,"runner_name":"runner","labels":["self-hosted","Linux","X64","norn-fleet-protected","norn-work-staging-fleet-effect"],"started_at":"2026-10-17T12:32:04Z","steps":[]}]}`, runID, runID)
+	if _, err := client.ReconcileCanceledBeforeExecution(context.Background(), planID, fleetEnvironment, false, approved, nonceHash, runID, 1); err == nil {
+		t.Fatal("run whose job acquired a runner was accepted as unexecuted")
 	}
 }
 

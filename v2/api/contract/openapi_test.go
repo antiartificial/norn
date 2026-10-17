@@ -39,7 +39,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/apps/{id}/external-deployments/admit", "/api/v1/apps/{id}/external-deployments/cleanup",
 		"/api/v1/apps/{id}/external-deployments/reconcile",
 		"/api/v1/apps/{id}/external-deployments/context/{admissionId}",
-		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch", "/api/v1/fleet/plans/{planID}/github/prepare", "/api/v1/fleet/plans/{planID}/github/prepare/reset", "/api/v1/fleet/plans/{planID}/github/execute", "/api/v1/fleet/plans/{planID}/github/rerun",
+		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch", "/api/v1/fleet/plans/{planID}/github/prepare", "/api/v1/fleet/plans/{planID}/github/prepare/reset", "/api/v1/fleet/plans/{planID}/github/execute", "/api/v1/fleet/plans/{planID}/github/rerun", "/api/v1/fleet/plans/{planID}/github/reconcile",
 	} {
 		if _, ok := paths[required]; !ok {
 			t.Errorf("missing path %s", required)
@@ -220,6 +220,15 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		t.Error("fleet OIDC exchange must permit an omitted app")
 	}
 	walkRefs(t, document, document)
+}
+
+func TestFleetGitHubReconcileContractCarriesExactRunIdentity(t *testing.T) {
+	source := string(controlV1)
+	for _, field := range []string{"exactRunId", "exactRunAttempt"} {
+		if !strings.Contains(source, field) {
+			t.Fatalf("Fleet GitHub reconcile contract is missing %s", field)
+		}
+	}
 }
 
 func containsRequiredField(fields []interface{}, want string) bool {

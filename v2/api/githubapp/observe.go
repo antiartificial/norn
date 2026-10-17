@@ -8,10 +8,118 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 )
+
+type canceledRunJobs struct {
+	TotalCount int                 `json:"total_count"`
+	Jobs       []reconciliationJob `json:"jobs"`
+}
+
+type canceledRunArtifacts struct {
+	TotalCount int `json:"total_count"`
+	Artifacts  []struct {
+		ID int64 `json:"id"`
+	} `json:"artifacts"`
+}
+
+type canceledRunSnapshot struct {
+	Run       applyRun
+	Jobs      canceledRunJobs
+	Artifacts canceledRunArtifacts
+}
+
+// ReconcileCanceledBeforeExecution proves that the exact nonce-bound apply
+// run was cancelled after its fixed hosted admission job, but before the
+// provider-bearing apply job acquired a runner or executed a step. It is
+// lookup-only and makes no claim about provider state outside the workflow.
+func (c *Client) ReconcileCanceledBeforeExecution(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonceHash string, runID, runAttempt int64) (*Reconciliation, error) {
+	if (fleetEnvironment != "staging/nyc3" && fleetEnvironment != "production/nyc3") || fleetEnvironment != c.fleetRoot() || c.cfg.PilotRunID != "" || approved == nil || runID <= 0 || runAttempt != 1 || approved.PlanRunID <= 0 || approved.PilotRunID != "" || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !sha256Re.MatchString(nonceHash) {
+		return nil, ErrDispatchAmbiguous
+	}
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read"})
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	actor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	read := func() (canceledRunSnapshot, error) {
+		var snapshot canceledRunSnapshot
+		run, err := c.getApplyRun(ctx, token, runID)
+		if err != nil {
+			return snapshot, err
+		}
+		snapshot.Run = *run
+		if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d/jobs?filter=all&per_page=100", runID)), nil, &snapshot.Jobs); err != nil {
+			return snapshot, err
+		}
+		if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d/artifacts?per_page=100", runID)), nil, &snapshot.Artifacts); err != nil {
+			return snapshot, err
+		}
+		return snapshot, nil
+	}
+	first, err := read()
+	if err != nil {
+		return nil, fmt.Errorf("read cancelled run snapshot: %w", ErrDispatchAmbiguous)
+	}
+	second, err := read()
+	if err != nil || !reflect.DeepEqual(first, second) {
+		return nil, fmt.Errorf("cancelled run snapshot changed: %w", ErrDispatchAmbiguous)
+	}
+	run := &first.Run
+	if run.ID != runID || int64(run.RunAttempt) != runAttempt || run.Status != "completed" || run.Conclusion != "cancelled" || c.verifyApplyRunByNonceHash(run, planID, fleetEnvironment, approved, nonceHash, actor) != nil {
+		return nil, fmt.Errorf("cancelled run identity differs: %w", ErrDispatchAmbiguous)
+	}
+	_, _, nonce, ok := parseApplyRunDisplayTitle(run.DisplayTitle, c.cfg.PilotRunID)
+	// GitHub may return inputs:null for a cancelled workflow. The immutable
+	// title still binds the server-only nonce; when inputs are present, require
+	// the complete protected binding as an additional check.
+	if !ok || (len(run.Inputs) != 0 && verifyObservedApplyInputs(run, planID, fleetEnvironment, allowDestructive, approved, nonce) != nil) {
+		return nil, fmt.Errorf("cancelled run inputs differ: %w", ErrDispatchAmbiguous)
+	}
+	if first.Jobs.TotalCount != 2 || len(first.Jobs.Jobs) != 2 || first.Artifacts.TotalCount != len(first.Artifacts.Artifacts) || first.Artifacts.TotalCount != 0 {
+		return nil, fmt.Errorf("cancelled run job or artifact count differs: %w", ErrDispatchAmbiguous)
+	}
+	seenAdmission, seenApply := false, false
+	for _, job := range first.Jobs.Jobs {
+		if job.RunID != runID || int64(job.RunAttempt) != runAttempt || job.Status != "completed" {
+			return nil, fmt.Errorf("cancelled run job identity differs: %w", ErrDispatchAmbiguous)
+		}
+		switch job.Name {
+		case "pilot_admission":
+			expectedSteps := []string{"Set up job", "Require selected admission runner", "Run set -euo pipefail", "Complete job"}
+			if seenAdmission || job.Conclusion != "success" || job.RunnerID <= 0 || job.RunnerName != fmt.Sprintf("GitHub Actions %d", job.RunnerID) || job.StartedAt == "" || !reflect.DeepEqual(job.Labels, []string{"ubuntu-24.04"}) || len(job.Steps) != len(expectedSteps) {
+				return nil, fmt.Errorf("pilot admission job differs: %w", ErrDispatchAmbiguous)
+			}
+			for i, step := range job.Steps {
+				if step.Number != i+1 || step.Name != expectedSteps[i] || step.Status != "completed" || step.Conclusion != "success" {
+					return nil, fmt.Errorf("pilot admission step differs: %w", ErrDispatchAmbiguous)
+				}
+			}
+			seenAdmission = true
+		case "apply":
+			expectedLabels := []string{"self-hosted", "Linux", "X64", "norn-fleet-protected", "norn-work-staging-fleet-effect"}
+			if fleetEnvironment == "production/nyc3" {
+				expectedLabels = []string{"self-hosted", "norn-fleet"}
+			}
+			if seenApply || job.Conclusion != "cancelled" || job.RunnerID != 0 || job.RunnerName != "" || !reflect.DeepEqual(job.Labels, expectedLabels) || len(job.Steps) != 0 {
+				return nil, fmt.Errorf("provider apply job executed or differs: %w", ErrDispatchAmbiguous)
+			}
+			seenApply = true
+		default:
+			return nil, fmt.Errorf("unexpected cancelled run job: %w", ErrDispatchAmbiguous)
+		}
+	}
+	if !seenAdmission || !seenApply {
+		return nil, fmt.Errorf("required cancelled run jobs are absent: %w", ErrDispatchAmbiguous)
+	}
+	return &Reconciliation{Outcome: "verified-cancelled-before-execution", CanceledRun: &CanceledBeforeExecution{RunID: runID, RunAttempt: runAttempt, URL: run.HTMLURL, Conclusion: run.Conclusion, JobCount: first.Jobs.TotalCount, ArtifactCount: first.Artifacts.TotalCount, ObservedAt: c.now().UTC()}}, nil
+}
 
 // RunSummary is one entry of a bounded, unauthoritative listing snapshot used
 // only as break-glass abandon evidence. It does not verify the dispatch
