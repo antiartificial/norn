@@ -280,7 +280,7 @@ type RunnerAttemptStartRequest struct {
 	WorkflowURL             string `json:"workflowUrl,omitempty"`
 	HeartbeatTimeoutSeconds int    `json:"heartbeatTimeoutSeconds,omitempty"`
 	// Timing classification is derived by the protected runner from its reviewed
-	// provider-plan summary. cold_start requires exactly five creates; unknown is
+	// provider-plan summary. cold_start requires exactly five or seven creates; unknown is
 	// the conservative abstention class. It is advisory and never authorizes
 	// provider work.
 	OperationClass   string `json:"operationClass,omitempty"`

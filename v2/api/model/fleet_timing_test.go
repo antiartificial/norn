@@ -34,6 +34,10 @@ func TestFleetRunnerTimingClampsAndDoesNotEstimateUngroundedOrFailedWork(t *test
 	if unknown.Availability != FleetTimingUnavailable || unknown.OperationClass != FleetTimingUnclassified || unknown.EstimatedRemaining != nil {
 		t.Fatalf("ungrounded timing = %#v", unknown)
 	}
+	sevenNode := NewFleetRunnerTiming(cold, FleetTimingClassification{OperationClass: FleetTimingColdStart, CreatedNodeCount: 7}, started.Add(time.Minute))
+	if sevenNode.Availability != FleetTimingUnavailable || sevenNode.OperationClass != FleetTimingColdStart || sevenNode.EstimatedTotal != nil || sevenNode.EstimatedRemaining != nil || sevenNode.EstimatedCompletion != nil {
+		t.Fatalf("seven-node cold start inherited five-node estimate: %#v", sevenNode)
+	}
 	finished := started.Add(7 * time.Minute)
 	failed := &FleetRunnerAttempt{Status: FleetRunnerAttemptFailed, CurrentPhase: "nodes_configured", StartedAt: started, PhaseStartedAt: started, FinishedAt: &finished}
 	failureTiming := NewFleetRunnerTiming(failed, FleetTimingClassification{OperationClass: FleetTimingColdStart, CreatedNodeCount: 5}, started.Add(20*time.Minute))

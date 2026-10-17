@@ -3300,8 +3300,8 @@ components:
         resume: { type: boolean, default: false }
         workflowUrl: { type: string, format: uri }
         heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900, default: 120 }
-        operationClass: { type: string, enum: [cold_start, unknown], description: Optional protected-runner classification derived from the reviewed provider-plan summary. cold_start requires exactly five creates; unknown is a conservative abstention. }
-        createdNodeCount: { type: integer, minimum: 0, maximum: 1000, description: Optional reviewed provider-plan count. cold_start accepts exactly 5; unknown accepts 0 through 1000. }
+        operationClass: { type: string, enum: [cold_start, unknown], description: Optional protected-runner classification derived from the reviewed provider-plan summary. cold_start requires exactly five or seven creates; unknown is a conservative abstention. }
+        createdNodeCount: { type: integer, minimum: 0, maximum: 1000, description: Optional reviewed provider-plan count. cold_start accepts exactly 5 or 7; unknown accepts 0 through 1000. }
         approvalEnvelopeSHA256: { type: string, pattern: '^[0-9a-f]{64}$', description: External-Mac only canonical owner approval envelope digest; empty on ordinary Fleet lanes. }
         consumptionReceiptSHA256: { type: string, pattern: '^[0-9a-f]{64}$', description: External-Mac only signed consumption-marker digest; empty on ordinary Fleet lanes. }
     FleetTimingRange:
