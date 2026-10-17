@@ -59,6 +59,28 @@ func TestGitHubActionsFleetPolicyBindsNumericRepositoryIdentityAndIntent(t *test
 		t.Fatal("Fleet workflow path outside the pinned configuration was accepted")
 	}
 	claims.WorkflowRef = "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main"
+	for _, workflowRef := range []string{
+		"acme/norn-fleet/.github/workflows/apply.yml@refs/heads/feature",
+		"acme/norn-fleet/.github/workflows/apply.yml@refs/tags/v1",
+		"acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40),
+	} {
+		claims.WorkflowRef = workflowRef
+		if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"}); err == nil {
+			t.Fatalf("Fleet workflow ref %q outside protected main was accepted", workflowRef)
+		}
+	}
+	claims.WorkflowRef = "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main"
+	claims.RefProtected = "false"
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"}); err == nil {
+		t.Fatal("unprotected Fleet ref accepted")
+	}
+	claims.RefProtected = "true"
+	h.cfg.GitHubActionsAllowedRefs = []string{"refs/heads/main", "refs/heads/feature"}
+	claims.Ref = "refs/heads/feature"
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"}); err == nil {
+		t.Fatal("non-main Fleet source ref accepted despite broader general allowlist")
+	}
+	claims.Ref = "refs/heads/main"
 	claims.RepositoryID = "other"
 	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"}); err == nil {
 		t.Fatal("repository rename/reuse identity accepted")
