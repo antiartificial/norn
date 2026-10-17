@@ -63,6 +63,19 @@ profile requires live application-substrate admission that a management-only
 process intentionally does not own. Authority-only startup supplies its own
 fail-closed checks instead of inheriting permissive development defaults.
 
+For a work-account staging runner, set
+`NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS=work-staging` on the
+authority, with exactly one value. The legacy `staging` value also remains
+valid; a combined list is rejected at startup. The GitHub job must request
+the protected `work-staging` environment and send `environment: staging` in
+the Norn OIDC exchange. Norn checks the signed GitHub environment claim
+against the exact allowlist, then issues a `staging` Fleet token. Its CI
+identity records `environment: staging` for Fleet authorization and
+`githubEnvironment: work-staging` for source provenance. This setting must
+ship in a released authority binary and be configured on that authority
+before the work-staging workflow can exchange OIDC; editing the Fleet
+repository alone cannot enable it.
+
 In authority-only mode Norn now:
 
 1. Requires the explicit staging environment, explicit authentication, a

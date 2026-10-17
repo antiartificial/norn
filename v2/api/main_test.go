@@ -411,6 +411,11 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 	if err := validateControlSecurity(valid); err != nil {
 		t.Fatalf("valid Fleet authority-only config rejected: %v", err)
 	}
+	workStaging := *valid
+	workStaging.GitHubActionsFleetAllowedEnvironments = []string{"work-staging"}
+	if err := validateControlSecurity(&workStaging); err != nil {
+		t.Fatalf("dedicated work-staging GitHub environment rejected: %v", err)
+	}
 	for _, tt := range []struct {
 		name   string
 		mutate func(*config.Config)
@@ -420,6 +425,7 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 		{"requires verified database", func(c *config.Config) { c.DatabaseURL = "postgres://fleet-db/norn?sslmode=require" }},
 		{"requires runner recovery intent", func(c *config.Config) { c.GitHubActionsFleetAllowedIntents = []string{"apply"} }},
 		{"requires only staging Fleet environment", func(c *config.Config) { c.GitHubActionsFleetAllowedEnvironments = []string{"staging", "production"} }},
+		{"rejects multiple staging GitHub environments", func(c *config.Config) { c.GitHubActionsFleetAllowedEnvironments = []string{"staging", "work-staging"} }},
 		{"requires only protected main ref", func(c *config.Config) { c.GitHubActionsAllowedRefs = []string{"refs/heads/main", "refs/heads/release"} }},
 		{"requires exact Fleet repository tuple", func(c *config.Config) { c.GitHubActionsFleetAllowedRepository = "acme/other-fleet@101@202" }},
 		{"requires fixed GitHub App API", func(c *config.Config) { c.FleetGitHubAPIBaseURL = "https://github.example.test" }},
