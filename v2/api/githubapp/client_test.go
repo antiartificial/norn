@@ -353,8 +353,24 @@ func TestPlanReviewReceiptBindsExplicitTemporaryRunnerSSH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(defaultEncoded), "temporaryRunnerSSH") {
-		t.Fatalf("default receipt unexpectedly overrides protected workflow default: %s", defaultEncoded)
+	receipt.TemporaryRunnerSSH = nil
+	if err := json.Unmarshal(defaultEncoded, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.TemporaryRunnerSSH == nil || *receipt.TemporaryRunnerSSH {
+		t.Fatalf("default receipt did not explicitly bind false: %s", defaultEncoded)
+	}
+	value = true
+	_, enabledEncoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, &value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.TemporaryRunnerSSH = nil
+	if err := json.Unmarshal(enabledEncoded, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.TemporaryRunnerSSH == nil || !*receipt.TemporaryRunnerSSH {
+		t.Fatalf("explicit true was not retained: %s", enabledEncoded)
 	}
 }
 
