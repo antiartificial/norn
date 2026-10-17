@@ -1764,7 +1764,7 @@ paths:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
     post:
       operationId: reconcileFleetGitHubReservation
-      description: Read-only GitHub verification that seals a queued reservation as remote success or verified no-write. Ambiguous observations remain queued. Requires api:write.
+      description: Read-only GitHub verification that seals a queued reservation as remote success or verified no-write. exactRunId and exactRunAttempt may identify a cancelled staging apply run and prove that its provider-bearing job never acquired a runner or executed a step. Ambiguous observations remain queued. Requires api:write.
       requestBody:
         required: true
         content:
@@ -1772,7 +1772,10 @@ paths:
             schema:
               type: object
               required: [kind]
-              properties: { kind: { type: string, enum: [pull-request, apply-dispatch] } }
+              properties:
+                kind: { type: string, enum: [pull-request, apply-dispatch] }
+                exactRunId: { type: integer, format: int64, minimum: 1 }
+                exactRunAttempt: { type: integer, format: int64, enum: [1] }
       responses:
         '200': { description: Reconciliation observation and current operation }
         '400': { $ref: '#/components/responses/Problem' }

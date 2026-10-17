@@ -899,6 +899,7 @@ var (
 	fakeGHArtifactsRe  = regexp.MustCompile(`/runs/(\d+)/artifacts$`)
 	fakeGHArtifactZip  = regexp.MustCompile(`/artifacts/(\d+)/zip$`)
 	fakeGHRunByIDRe    = regexp.MustCompile(`/runs/(\d+)(?:/attempts/\d+)?$`)
+	fakeGHRunJobsRe    = regexp.MustCompile(`/runs/(\d+)/jobs$`)
 )
 
 func newFakeFleetGitHubServer(t *testing.T) *fakeFleetGitHubServer {
@@ -959,7 +960,7 @@ func (s *fakeFleetGitHubServer) createApplyRunLocked(planID, nonce string) int64
 	s.runs[id] = &fakeGHRun{
 		id: id, event: "workflow_dispatch", headSHA: fx.headSHA, headBranch: "main",
 		path: ".github/workflows/apply.yml", name: "apply",
-		displayTitle: fmt.Sprintf("Apply %s Norn plan %s nonce %s", pgConformanceEnvironment, planID, nonce),
+		displayTitle: fmt.Sprintf("Apply %s pilot  Norn plan %s nonce %s", pgConformanceEnvironment, planID, nonce),
 		status:       "in_progress", actorLogin: "norn[bot]", actorType: "Bot", runAttempt: 1, kind: "apply",
 		inputs: map[string]string{"norn_plan_id": planID, "dispatch_nonce": nonce, "fleet_environment": pgConformanceEnvironment},
 	}
@@ -999,6 +1000,18 @@ func (s *fakeFleetGitHubServer) setTerminal(runID int64, completed bool) {
 	}
 }
 
+func (s *fakeFleetGitHubServer) cancelBeforeProviderExecution(planID string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.runs {
+		if run.kind == "apply" && run.inputs["norn_plan_id"] == planID {
+			run.status, run.conclusion, run.inputs = "completed", "cancelled", nil
+			return run.id
+		}
+	}
+	return 0
+}
+
 // registerRecoverRun registers run as a "workflow_run"-triggered recover
 // workflow run bound to boundApplyRunID (ObserveRecoverRun's identity, which
 // accepts workflow_run unconditionally with no actor restriction).
@@ -1033,6 +1046,8 @@ func (s *fakeFleetGitHubServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleApplyDispatchLocked(w, r)
 	case strings.Contains(path, "/actions/workflows/apply.yml/runs"):
 		s.handleApplyRunsListLocked(w)
+	case fakeGHRunJobsRe.MatchString(path):
+		s.handleRunJobsLocked(w, fakeGHRunJobsRe.FindStringSubmatch(path)[1])
 	case fakeGHArtifactZip.MatchString(path):
 		s.handleArtifactZipLocked(w, fakeGHArtifactZip.FindStringSubmatch(path)[1])
 	case fakeGHArtifactsRe.MatchString(path):
@@ -1069,9 +1084,23 @@ func (s *fakeFleetGitHubServer) handlePlanRunsLocked(w http.ResponseWriter) {
 
 func (s *fakeFleetGitHubServer) handleArtifactsListLocked(w http.ResponseWriter, runIDStr string) {
 	runID, _ := strconv.ParseInt(runIDStr, 10, 64)
+	if _, ok := s.runs[runID]; ok {
+		fmt.Fprint(w, `{"total_count":0,"artifacts":[]}`)
+		return
+	}
 	fx := s.plans[s.runToPlan[runID]]
 	name := fmt.Sprintf("fleet-plan-%s-%d", strings.ReplaceAll(pgConformanceEnvironment, "/", "-"), runID)
 	fmt.Fprintf(w, `{"artifacts":[{"id":%d,"name":%q,"expired":false}]}`, fx.artifactID, name)
+}
+
+func (s *fakeFleetGitHubServer) handleRunJobsLocked(w http.ResponseWriter, runIDStr string) {
+	runID, _ := strconv.ParseInt(runIDStr, 10, 64)
+	run, ok := s.runs[runID]
+	if !ok || run.conclusion != "cancelled" {
+		http.NotFound(w, nil)
+		return
+	}
+	fmt.Fprintf(w, `{"total_count":2,"jobs":[{"id":6,"run_id":%d,"run_attempt":1,"name":"pilot_admission","status":"completed","conclusion":"success","runner_id":1000019941,"runner_name":"GitHub Actions 1000019941","labels":["ubuntu-24.04"],"started_at":"2026-10-17T12:32:01Z","steps":[{"number":1,"name":"Set up job","status":"completed","conclusion":"success"},{"number":2,"name":"Require selected admission runner","status":"completed","conclusion":"success"},{"number":3,"name":"Run set -euo pipefail","status":"completed","conclusion":"success"},{"number":4,"name":"Complete job","status":"completed","conclusion":"success"}]},{"id":7,"run_id":%d,"run_attempt":1,"name":"apply","status":"completed","conclusion":"cancelled","runner_id":0,"runner_name":"","labels":["self-hosted","norn-fleet"],"started_at":"2026-10-17T12:32:04Z","steps":[]}]}`, runID, runID)
 }
 
 func (s *fakeFleetGitHubServer) handleArtifactZipLocked(w http.ResponseWriter, artifactIDStr string) {

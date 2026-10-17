@@ -24,9 +24,20 @@ var (
 )
 
 type Reconciliation struct {
-	Outcome     string       `json:"outcome"`
-	PullRequest *PullRequest `json:"pullRequest,omitempty"`
-	Dispatch    *Dispatch    `json:"dispatch,omitempty"`
+	Outcome     string                   `json:"outcome"`
+	PullRequest *PullRequest             `json:"pullRequest,omitempty"`
+	Dispatch    *Dispatch                `json:"dispatch,omitempty"`
+	CanceledRun *CanceledBeforeExecution `json:"canceledRun,omitempty"`
+}
+
+type CanceledBeforeExecution struct {
+	RunID         int64     `json:"runId"`
+	RunAttempt    int64     `json:"runAttempt"`
+	URL           string    `json:"url"`
+	Conclusion    string    `json:"conclusion"`
+	JobCount      int       `json:"jobCount"`
+	ArtifactCount int       `json:"artifactCount"`
+	ObservedAt    time.Time `json:"observedAt"`
 }
 
 type ApplyRunObservation struct {
