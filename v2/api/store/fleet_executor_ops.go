@@ -135,10 +135,13 @@ func latestFleetExecutorAttempt(attempts []FleetExecutorAttemptFact) *FleetExecu
 
 // DecideFleetExecutorGrant applies the E5 grant admission for one executor
 // device (principalSubject = executor.PrincipalSubject(deviceID)): the
-// GrantTypes table for profile, then, for every phase except plan, a live
+// GrantTypes table for profile, then, for every lifecycle phase, a live
 // attempt owned by the device whose currentPhase equals the requested phase.
 // recover needs the latest attempt, live and owned, with retryOf set (a
-// recovery attempt). plan needs a converge plan. It returns the normalized
+// recovery attempt). plan needs a converge plan; preflight needs
+// provider_applying on an owned first attempt, or a live recovery attempt at
+// its current nonterminal phase.
+// It returns the normalized
 // request and the attempt (nil for plan). Refusals are *executor.Error.
 func DecideFleetExecutorGrant(request executor.CredentialGrantRequest, profile executor.GrantProfile, attempts []FleetExecutorAttemptFact, planIsConverge bool, principalSubject string, now time.Time) (executor.CredentialGrantRequest, *FleetExecutorAttemptFact, error) {
 	request = request.Normalize()
@@ -159,6 +162,17 @@ func DecideFleetExecutorGrant(request executor.CredentialGrantRequest, profile e
 	}
 	if attempt == nil || !attempt.Executor || principalSubject == "" || attempt.PrincipalSubject != principalSubject || !attempt.Live(now) {
 		return request, nil, executorRefusal(executor.CodeFleetCredentialGrantAttemptRequired, "a grant needs a live attempt of this plan owned by this device")
+	}
+	if request.Phase == executor.GrantPhasePreflight {
+		if attempt.CurrentPhase != "provider_applying" && (attempt.RetryOf == "" || attempt.CurrentPhase == "complete") {
+			return request, nil, executorRefusal(executor.CodeFleetCredentialGrantPhaseMismatch, "preflight requires provider_applying or a nonterminal recovery attempt")
+		}
+		if attempt.RetryOf != "" {
+			if latest := latestFleetExecutorAttempt(attempts); latest == nil || latest.ID != attempt.ID {
+				return request, nil, executorRefusal(executor.CodeFleetCredentialGrantAttemptRequired, "preflight requires the latest recovery attempt")
+			}
+		}
+		return request, attempt, nil
 	}
 	if request.Phase == executor.GrantPhaseRecover {
 		if latest := latestFleetExecutorAttempt(attempts); latest == nil || latest.ID != attempt.ID || attempt.RetryOf == "" {

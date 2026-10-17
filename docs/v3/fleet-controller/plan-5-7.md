@@ -335,6 +335,9 @@ The loop calls `POST /api/v1/fleet/plans/{id}/credential-grants
 {attemptId?, phase, types[]}` with its executor principal.
 
 Admission rules:
+- V3 private-input `preflight` is an attempt-bound grant while the owned
+  attempt is at `provider_applying`; it grants only bootstrap-dir and ssh-node.
+  A separate signed completion attestation is required before do-write.
 - For `provider_applying` and later phases, the attempt must be live and
   owned by this executor, and `phase` must equal `currentPhase`.
 - For `plan`, no attempt exists yet, but the plan must resolve to the
@@ -349,6 +352,7 @@ grant ID.
 | Phase | Allowed types |
 |---|---|
 | plan | do-read, spaces-rw (the lockfile needs write; `plan.yml:292` uses `use_lockfile=true`), repo-read (the loop's own `git fetch`) |
+| preflight (V3 attempt at `provider_applying`, including recovery) | bootstrap-dir, ssh-node; a separate signed completion attestation is required before do-write |
 | provider_applying | do-write, spaces-rw, norn-attempt |
 | `infrastructure_applied` … `readiness_verified` | spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt; do-read only if P2 measures that `fleet_hooks.py` needs it (apply.yml passes it at :987) |
 | recover | union of the rows above, plus repo-read (fetch at the start) |

@@ -217,6 +217,7 @@ func newOpsFixture(t *testing.T, profile executor.GrantProfile, phase string) *o
 	routes := NewFleetExecutorOpsRoutes(backend, opsTestSecret)
 	router := chi.NewRouter()
 	router.Post("/api/v1/fleet/plans/{planID}/credential-grants", routes.Grant)
+	router.Post("/api/v1/fleet/plans/{planID}/preflight-completions", routes.PreflightComplete)
 	router.Post("/api/v1/fleet/executor/stop-attestations", routes.StopAttestation)
 	router.Post("/api/v1/fleet/plans/{planID}/provider-evidence", routes.ProviderEvidence)
 	return &opsFixture{t: t, router: router, routes: routes, backend: backend, planID: planID, attempt: attempt, secret: opsTestSecret}
@@ -337,10 +338,8 @@ func TestFleetExecutorGrantRequiresLiveAttemptAndCurrentPhase(t *testing.T) {
 	requireProblem(t, f.grant(principal, "k5", unknown), http.StatusConflict, executor.CodeFleetCredentialGrantAttemptRequired)
 	f.backend.attempts[0].HeartbeatExpiresAt = time.Now().Add(-time.Second)
 	requireProblem(t, f.grant(principal, "k6", f.grantBody("infrastructure_applied", executor.CredNornAttempt)), http.StatusConflict, executor.CodeFleetCredentialGrantAttemptRequired)
-	// ... yet a lost response is still replayed after the lease moved on.
-	if rec := f.grant(principal, "k1", f.grantBody("infrastructure_applied", executor.CredDOWrite, executor.CredSpacesRW, executor.CredNornAttempt)); rec.Code != http.StatusOK {
-		t.Fatalf("replay after expiry: %d %s", rec.Code, rec.Body.String())
-	}
+	// A replay after attempt lease expiry cannot revive its credential.
+	requireProblem(t, f.grant(principal, "k1", f.grantBody("infrastructure_applied", executor.CredDOWrite, executor.CredSpacesRW, executor.CredNornAttempt)), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
 }
 
 func TestFleetExecutorGrantTypeTable(t *testing.T) {
@@ -383,16 +382,157 @@ func TestFleetExecutorGrantTypeTable(t *testing.T) {
 func TestFleetExecutorGrantRecoverAndEtcdProfile(t *testing.T) {
 	f := newOpsFixture(t, executor.GrantProfileV3, "provider_applying")
 	principal := opsExecutorPrincipal()
+	preflight := decodeGrant(t, f.grant(principal, "v-preflight", f.grantBody(executor.GrantPhasePreflight, executor.CredBootstrapDir, executor.CredSSHNode)))
+	completion := map[string]interface{}{"attemptId": f.attempt.ID, "grantId": preflight.GrantID, "evidenceDigest": "sha256:" + strings.Repeat("a", 64)}
+	if rec := fleetTargetDo(f.router, http.MethodPost, "/api/v1/fleet/plans/"+f.planID+"/preflight-completions", principal, "v-preflight-complete", completion); rec.Code != http.StatusCreated {
+		t.Fatalf("preflight completion: %d %s", rec.Code, rec.Body.String())
+	}
 	if rec := f.grant(principal, "v1", f.grantBody("provider_applying", executor.CredDOWrite, executor.CredSpacesRW, executor.CredNornAttempt)); rec.Code != http.StatusCreated {
 		t.Fatalf("provider_applying on the canonical list: %d %s", rec.Code, rec.Body.String())
 	}
 	requireProblem(t, f.grant(principal, "v2", f.grantBody("provider_applying", executor.CredDORead)), http.StatusForbidden, executor.CodeFleetCredentialTypeNotAllowed)
 	requireProblem(t, f.grant(principal, "v3", f.grantBody(executor.GrantPhaseRecover, executor.CredDORead)), http.StatusConflict, executor.CodeFleetCredentialGrantAttemptRequired)
 	f.backend.attempts[0].RetryOf = uuid.NewString()
-	rec := f.grant(principal, "v4", f.grantBody(executor.GrantPhaseRecover, executor.CredDORead, executor.CredDOWrite, executor.CredSpacesRW, executor.CredSpacesRead,
+	rec := f.grant(principal, "v4", f.grantBody(executor.GrantPhaseRecover, executor.CredDORead, executor.CredSpacesRW, executor.CredSpacesRead,
 		executor.CredSSHNode, executor.CredBootstrapDir, executor.CredReleaseGitHub, executor.CredNornAttempt))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("recover grant on a live recovery attempt: %d %s", rec.Code, rec.Body.String())
+	}
+	f.backend.attempts[0].CurrentPhase = "nodes_configured"
+	requireProblem(t, f.grant(principal, "v4", f.grantBody(executor.GrantPhaseRecover, executor.CredDORead, executor.CredSpacesRW, executor.CredSpacesRead,
+		executor.CredSSHNode, executor.CredBootstrapDir, executor.CredReleaseGitHub, executor.CredNornAttempt)), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
+}
+
+func TestFleetExecutorPreflightAttestationBeforeProviderGrant(t *testing.T) {
+	f := newOpsFixture(t, executor.GrantProfileV3, "provider_applying")
+	principal := opsExecutorPrincipal()
+	provider := f.grantBody("provider_applying", executor.CredDOWrite, executor.CredSpacesRW, executor.CredNornAttempt)
+	requireProblem(t, f.grant(principal, "provider-early", provider), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	request := f.grantBody(executor.GrantPhasePreflight, executor.CredBootstrapDir, executor.CredSSHNode)
+	rec := f.grant(principal, "preflight-1", request)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("preflight: %d %s", rec.Code, rec.Body.String())
+	}
+	grant := decodeGrant(t, rec)
+	if grant.GrantID == "" || grant.AttemptToken != "" || len(f.backend.registry.tokens) != 0 {
+		t.Fatalf("preflight must not mint an attempt credential: %+v", grant)
+	}
+	op := f.backend.ops.last(executor.KindCredentialGrant)
+	var payload executor.CredentialGrantPayload
+	if !decodeLedgerValueMap(op.Operation.Payload, &payload) || payload.Phase != executor.GrantPhasePreflight || payload.AttemptID != f.attempt.ID ||
+		strings.Join(payload.Types, ",") != "bootstrap-dir,ssh-node" {
+		t.Fatalf("preflight ledger payload: %+v", op.Operation.Payload)
+	}
+	// Grant issuance is insufficient. The executor must attest completed checks.
+	requireProblem(t, f.grant(principal, "provider-before-attestation", provider), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	if replay := f.grant(principal, "preflight-1", request); replay.Code != http.StatusOK {
+		t.Fatalf("preflight replay: %d %s", replay.Code, replay.Body.String())
+	}
+	completion := map[string]interface{}{"attemptId": f.attempt.ID, "grantId": grant.GrantID, "evidenceDigest": "sha256:" + strings.Repeat("a", 64)}
+	path := "/api/v1/fleet/plans/" + f.planID + "/preflight-completions"
+	rec = fleetTargetDo(f.router, http.MethodPost, path, principal, "complete-1", completion)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("preflight completion: %d %s", rec.Code, rec.Body.String())
+	}
+	if replay := fleetTargetDo(f.router, http.MethodPost, path, principal, "complete-1", completion); replay.Code != http.StatusOK {
+		t.Fatalf("preflight completion replay while current: %d %s", replay.Code, replay.Body.String())
+	}
+	if rec := f.grant(principal, "provider-1", provider); rec.Code != http.StatusCreated {
+		t.Fatalf("provider after attestation: %d %s", rec.Code, rec.Body.String())
+	}
+	requireProblem(t, fleetTargetDo(f.router, http.MethodPost, path, principal, "complete-1", completion), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	requireProblem(t, f.grant(principal, "preflight-1", request), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
+	requireProblem(t, f.grant(principal, "preflight-after-write", request), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	if rec := f.grant(principal, "provider-checkpoint", f.grantBody("provider_applying", executor.CredNornAttempt)); rec.Code != http.StatusCreated {
+		t.Fatalf("provider checkpoint grant: %d %s", rec.Code, rec.Body.String())
+	}
+	requireProblem(t, f.grant(principal, "provider-1", provider), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
+	f.backend.attempts[0].CurrentPhase = "infrastructure_applied"
+	requireProblem(t, f.grant(principal, "preflight-1", request), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
+}
+
+func TestFleetExecutorPreflightGrantReplayExpires(t *testing.T) {
+	f := newOpsFixture(t, executor.GrantProfileV3, "provider_applying")
+	principal := opsExecutorPrincipal()
+	base := time.Now().UTC().Truncate(time.Second)
+	f.routes.now = func() time.Time { return base }
+	f.backend.attempts[0].HeartbeatExpiresAt = base.Add(4 * time.Hour)
+	request := f.grantBody(executor.GrantPhasePreflight, executor.CredBootstrapDir, executor.CredSSHNode)
+	if rec := f.grant(principal, "expiry", request); rec.Code != http.StatusCreated {
+		t.Fatalf("preflight grant: %d %s", rec.Code, rec.Body.String())
+	}
+	f.routes.now = func() time.Time { return base.Add(executor.GrantTTL + time.Second) }
+	requireProblem(t, f.grant(principal, "expiry", request), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
+}
+
+func TestFleetExecutorPartialPreflightCannotBeAttested(t *testing.T) {
+	f := newOpsFixture(t, executor.GrantProfileV3, "provider_applying")
+	principal := opsExecutorPrincipal()
+	grant := decodeGrant(t, f.grant(principal, "partial", f.grantBody(executor.GrantPhasePreflight, executor.CredSSHNode)))
+	completion := map[string]interface{}{"attemptId": f.attempt.ID, "grantId": grant.GrantID, "evidenceDigest": "sha256:" + strings.Repeat("a", 64)}
+	path := "/api/v1/fleet/plans/" + f.planID + "/preflight-completions"
+	requireProblem(t, fleetTargetDo(f.router, http.MethodPost, path, principal, "partial-complete", completion), http.StatusConflict, executor.CodeFleetPreflightRequired)
+}
+
+func TestFleetExecutorRecoveryNeedsOwnPreflightBeforeProviderWrite(t *testing.T) {
+	f := newOpsFixture(t, executor.GrantProfileV3, "provider_applying")
+	principal := opsExecutorPrincipal()
+	source := f.attempt
+	source.Status = "failed"
+	recovery := f.attempt
+	recovery.ID, recovery.Attempt, recovery.RetryOf = uuid.NewString(), 2, source.ID
+	f.backend.attempts = []store.FleetExecutorAttemptFact{source, recovery}
+	recoverBody := map[string]interface{}{"attemptId": recovery.ID, "phase": executor.GrantPhaseRecover,
+		"types": []string{executor.CredDOWrite, executor.CredNornAttempt}}
+	requireProblem(t, f.grant(principal, "recover-early", recoverBody), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	// A later-phase recovery cannot recover provider-write access without a
+	// preflight bound to that recovery attempt.
+	f.backend.attempts[1].CurrentPhase = "nodes_configured"
+	requireProblem(t, f.grant(principal, "recover-later", recoverBody), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	f.backend.attempts[1].CurrentPhase = "provider_applying"
+	preflightBody := map[string]interface{}{"attemptId": recovery.ID, "phase": executor.GrantPhasePreflight,
+		"types": []string{executor.CredBootstrapDir, executor.CredSSHNode}}
+	preflight := decodeGrant(t, f.grant(principal, "recover-preflight", preflightBody))
+	completion := map[string]interface{}{"attemptId": recovery.ID, "grantId": preflight.GrantID,
+		"evidenceDigest": "sha256:" + strings.Repeat("b", 64)}
+	path := "/api/v1/fleet/plans/" + f.planID + "/preflight-completions"
+	if rec := fleetTargetDo(f.router, http.MethodPost, path, principal, "recover-complete", completion); rec.Code != http.StatusCreated {
+		t.Fatalf("recovery preflight completion: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.grant(principal, "recover-write", recoverBody); rec.Code != http.StatusCreated {
+		t.Fatalf("recovery provider write after own preflight: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFleetExecutorLaterRecoveryCanPreflightBeforeProviderWrite(t *testing.T) {
+	f := newOpsFixture(t, executor.GrantProfileV3, "nodes_configured")
+	principal := opsExecutorPrincipal()
+	source := f.attempt
+	source.Status = "failed"
+	recovery := f.attempt
+	recovery.ID, recovery.Attempt, recovery.RetryOf = uuid.NewString(), 2, source.ID
+	f.backend.attempts = []store.FleetExecutorAttemptFact{source, recovery}
+	preflight := decodeGrant(t, f.grant(principal, "later-preflight", map[string]interface{}{
+		"attemptId": recovery.ID, "phase": executor.GrantPhasePreflight,
+		"types": []string{executor.CredBootstrapDir, executor.CredSSHNode},
+	}))
+	f.backend.attempts[1].CurrentPhase = "nodes_enrolled"
+	requireProblem(t, f.grant(principal, "later-preflight", map[string]interface{}{
+		"attemptId": recovery.ID, "phase": executor.GrantPhasePreflight,
+		"types": []string{executor.CredBootstrapDir, executor.CredSSHNode},
+	}), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
+	f.backend.attempts[1].CurrentPhase = "nodes_configured"
+	completion := map[string]interface{}{"attemptId": recovery.ID, "grantId": preflight.GrantID,
+		"evidenceDigest": "sha256:" + strings.Repeat("c", 64)}
+	path := "/api/v1/fleet/plans/" + f.planID + "/preflight-completions"
+	if rec := fleetTargetDo(f.router, http.MethodPost, path, principal, "later-complete", completion); rec.Code != http.StatusCreated {
+		t.Fatalf("later recovery preflight completion: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.grant(principal, "later-write", map[string]interface{}{
+		"attemptId": recovery.ID, "phase": executor.GrantPhaseRecover,
+		"types": []string{executor.CredDOWrite, executor.CredNornAttempt},
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("later recovery provider write after own preflight: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -407,11 +547,8 @@ func TestFleetExecutorAttemptCredentialRevokedWithNextGrant(t *testing.T) {
 	if !f.backend.registry.revoked[firstClaims.Jti] || f.backend.registry.revoked[secondClaims.Jti] {
 		t.Fatalf("the previous phase's credential is revoked before the next is live: %+v", f.backend.registry.revoked)
 	}
-	// A replay of the superseded grant re-signs the same, revoked token ID: it
-	// mints nothing new.
-	if again := decodeGrant(t, f.grant(principal, "r1", f.grantBody("inventory_generated", executor.CredNornAttempt))); again.AttemptToken != first.AttemptToken || len(f.backend.registry.tokens) != 2 {
-		t.Fatalf("a replay must not mint: %d tokens", len(f.backend.registry.tokens))
-	}
+	// A superseded grant cannot be replayed into a later phase.
+	requireProblem(t, f.grant(principal, "r1", f.grantBody("inventory_generated", executor.CredNornAttempt)), http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed)
 	// A grant without norn-attempt still ends the previous grant's credential.
 	if rec := f.grant(principal, "r3", f.grantBody("nodes_configured", executor.CredSSHNode)); rec.Code != http.StatusCreated || !f.backend.registry.revoked[secondClaims.Jti] {
 		t.Fatalf("the next grant revokes the previous credential: %d %+v", rec.Code, f.backend.registry.revoked)

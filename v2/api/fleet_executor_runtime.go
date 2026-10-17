@@ -443,6 +443,7 @@ func registerEtcdFleetExecutorRoutes(router chi.Router, cfg *config.Config, iden
 	router.With(operate).Post("/api/v1/fleet/resources/{name}/converge", converge.Rescan)
 	router.With(operate).Post("/api/v1/fleet/plans/{planID}/converge/approve", converge.Approve)
 	router.With(execute).Post("/api/v1/fleet/plans/{planID}/credential-grants", ops.Grant)
+	router.With(execute).Post("/api/v1/fleet/plans/{planID}/preflight-completions", ops.PreflightComplete)
 	router.With(execute).Post("/api/v1/fleet/plans/{planID}/converge-refusals", ops.Refuse)
 	router.With(execute).Post("/api/v1/fleet/executor/stop-attestations", ops.StopAttestation)
 	router.With(admin).Post("/api/v1/fleet/plans/{planID}/provider-evidence", ops.ProviderEvidence)

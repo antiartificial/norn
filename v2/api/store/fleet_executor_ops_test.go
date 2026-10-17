@@ -53,6 +53,11 @@ func TestFleetExecutorGrantTypeTable(t *testing.T) {
 			if phase == executor.GrantPhaseRecover {
 				attempt.RetryOf = uuid.NewString()
 			}
+			facts := []FleetExecutorAttemptFact{attempt}
+			if phase == executor.GrantPhasePreflight {
+				attempt.CurrentPhase = "provider_applying"
+				facts = []FleetExecutorAttemptFact{attempt}
+			}
 			in := func(t string) bool {
 				for _, a := range allowed {
 					if a == t {
@@ -66,7 +71,7 @@ func TestFleetExecutorGrantTypeTable(t *testing.T) {
 				if phase != executor.GrantPhasePlan {
 					request.AttemptID = attempt.ID
 				}
-				_, _, err := DecideFleetExecutorGrant(request, profile, []FleetExecutorAttemptFact{attempt}, true, attempt.PrincipalSubject, time.Now())
+				_, _, err := DecideFleetExecutorGrant(request, profile, facts, true, attempt.PrincipalSubject, time.Now())
 				switch {
 				case in(credential) && err != nil:
 					t.Errorf("%s/%s/%s refused: %v", profile, phase, credential, err)
@@ -79,7 +84,7 @@ func TestFleetExecutorGrantTypeTable(t *testing.T) {
 			if phase != executor.GrantPhasePlan {
 				request.AttemptID = attempt.ID
 			}
-			if _, _, err := DecideFleetExecutorGrant(request, profile, []FleetExecutorAttemptFact{attempt}, true, attempt.PrincipalSubject, time.Now()); err != nil {
+			if _, _, err := DecideFleetExecutorGrant(request, profile, facts, true, attempt.PrincipalSubject, time.Now()); err != nil {
 				t.Errorf("%s/%s full set refused: %v", profile, phase, err)
 			}
 		}
@@ -153,6 +158,41 @@ func TestFleetExecutorGrantRequiresLiveAttemptAndCurrentPhase(t *testing.T) {
 	notLatest.Attempt = 0
 	if _, _, err := DecideFleetExecutorGrant(recoverRequest, profile, []FleetExecutorAttemptFact{older, notLatest}, false, recovery.PrincipalSubject, now); executorCode(t, err) != executor.CodeFleetCredentialGrantAttemptRequired {
 		t.Fatalf("recover grant on a superseded attempt: %v", err)
+	}
+}
+
+func TestFleetExecutorPreflightGrantRequiresOwnedInitialAttempt(t *testing.T) {
+	host := fleettest.NewExecutorHost()
+	now := time.Now()
+	live := opsAttempt(host, "provider_applying")
+	request := executor.CredentialGrantRequest{
+		AttemptID: live.ID, Phase: executor.GrantPhasePreflight,
+		Types: []string{executor.CredBootstrapDir, executor.CredSSHNode},
+	}
+	profile := executor.GrantProfileV3
+	if _, attempt, err := DecideFleetExecutorGrant(request, profile, []FleetExecutorAttemptFact{live}, false, live.PrincipalSubject, now); err != nil || attempt == nil || attempt.ID != live.ID {
+		t.Fatalf("preflight on the owned initial attempt: attempt=%v, err=%v", attempt, err)
+	}
+	terminal := live
+	terminal.Status = "succeeded"
+	githubLane := live
+	githubLane.Executor = false
+	advanced := live
+	advanced.CurrentPhase = "infrastructure_applied"
+	recovery := live
+	recovery.RetryOf = uuid.NewString()
+	for name, attempts := range map[string][]FleetExecutorAttemptFact{
+		"unknown":           nil,
+		"terminal executor": {terminal},
+		"live GitHub lane":  {githubLane},
+		"advanced":          {advanced},
+	} {
+		if _, _, err := DecideFleetExecutorGrant(request, profile, attempts, false, live.PrincipalSubject, now); err == nil {
+			t.Errorf("%s: want preflight refusal, got %v", name, err)
+		}
+	}
+	if _, attempt, err := DecideFleetExecutorGrant(request, profile, []FleetExecutorAttemptFact{recovery}, false, live.PrincipalSubject, now); err != nil || attempt == nil || attempt.ID != recovery.ID {
+		t.Fatalf("recovery at provider_applying also requires private-input preflight: %v", err)
 	}
 }
 

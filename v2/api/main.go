@@ -3122,6 +3122,7 @@ func fleetAuthorityOnlyRouterWithWatcher(cfg *config.Config, h *handler.Handler,
 		r.Post("/fleet/plans/{planID}/converge/approve", fleetConverge.Approve)
 		fleetExecutorOps := h.FleetExecutorOpsRoutes()
 		r.Post("/fleet/plans/{planID}/credential-grants", fleetExecutorOps.Grant)
+		r.Post("/fleet/plans/{planID}/preflight-completions", fleetExecutorOps.PreflightComplete)
 		r.Post("/fleet/plans/{planID}/converge-refusals", fleetExecutorOps.Refuse)
 		r.Post("/fleet/plans/{planID}/provider-evidence", fleetExecutorOps.ProviderEvidence)
 		r.Post("/fleet/executor/stop-attestations", fleetExecutorOps.StopAttestation)
