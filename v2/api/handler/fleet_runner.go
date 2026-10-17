@@ -607,7 +607,7 @@ func fleetTimingClassificationFromRequest(request fleet.RunnerAttemptStartReques
 	}
 	switch classification.OperationClass {
 	case model.FleetTimingColdStart:
-		if classification.CreatedNodeCount == 5 {
+		if classification.CreatedNodeCount == 5 || classification.CreatedNodeCount == 7 {
 			return classification, nil
 		}
 	case model.FleetTimingUnclassified:
@@ -615,7 +615,7 @@ func fleetTimingClassificationFromRequest(request fleet.RunnerAttemptStartReques
 			return classification, nil
 		}
 	}
-	return model.FleetTimingClassification{}, fmt.Errorf("operationClass must be cold_start with createdNodeCount exactly 5, unknown with createdNodeCount 0 through 1000, or both fields must be omitted")
+	return model.FleetTimingClassification{}, fmt.Errorf("operationClass must be cold_start with createdNodeCount exactly 5 or 7, unknown with createdNodeCount 0 through 1000, or both fields must be omitted")
 }
 
 func fleetRunnerTimingMetadata(classification model.FleetTimingClassification) map[string]interface{} {

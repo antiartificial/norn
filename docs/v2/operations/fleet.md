@@ -217,9 +217,11 @@ The active response can project elapsed and clamped remaining/completion
 ranges; success reports actual elapsed, while failed/cancelled/abandoned
 attempts retain the configured total but omit a remaining/completion promise.
 
+The protected runner may also classify an exactly seven-node staging cold start;
+Norn records that classification without projecting the five-node timing range.
 An `unknown` or legacy/missing classification is explicitly unavailable. Do not
 infer cold start from desired counts, a provider-empty observation, queue time,
-or a plan that cannot prove five creates. The estimate excludes
+or a plan that cannot prove the classified create count. The estimate excludes
 `review_approval`, `github_queue`, `dns_propagation`, and
 `application_migrations`; report those separately to operators.
 
@@ -229,7 +231,8 @@ Set expectations by milestone rather than presenting a single end-to-end ETA:
 |---|---|
 | Local validation and pull-request contract | Non-provider developer feedback; measure CI separately |
 | Review approval and GitHub queue | External/unbounded; excluded from Fleet cold-start timing |
-| Exact five-node staging cold start | Provisional 15–30 minutes from protected-runner start |
+| Exact five-node cold start | Provisional 15–30 minutes from protected-runner start |
+| Exact seven-node staging cold start | Classified, with no configured timing estimate |
 | First host-key or DNS identity gate | May stop safely and require provenance-linked recovery after out-of-band verification |
 | Routine scale/no-op/recovery | No reliable duration until comparable successful samples exist |
 | Application rollout and migrations | Separate Norn app operation and timing record |

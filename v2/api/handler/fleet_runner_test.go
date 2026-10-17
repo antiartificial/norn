@@ -49,11 +49,13 @@ func TestFleetRunnerStartValidation(t *testing.T) {
 }
 
 func TestFleetRunnerTimingClassificationIsBoundAndConservative(t *testing.T) {
-	valid := fleet.RunnerAttemptStartRequest{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: 5}
-	classification, err := fleetTimingClassificationFromRequest(valid)
-	if err != nil || classification.OperationClass != model.FleetTimingColdStart || classification.CreatedNodeCount != 5 {
-		t.Fatalf("classification=%#v err=%v", classification, err)
+	for _, count := range []int{5, 7} {
+		classification, err := fleetTimingClassificationFromRequest(fleet.RunnerAttemptStartRequest{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: count})
+		if err != nil || classification.OperationClass != model.FleetTimingColdStart || classification.CreatedNodeCount != count {
+			t.Fatalf("cold-start count=%d classification=%#v err=%v", count, classification, err)
+		}
 	}
+	classification := model.FleetTimingClassification{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: 7}
 	for _, count := range []int{0, 1000} {
 		unknown, err := fleetTimingClassificationFromRequest(fleet.RunnerAttemptStartRequest{OperationClass: model.FleetTimingUnclassified, CreatedNodeCount: count})
 		if err != nil || unknown.OperationClass != model.FleetTimingUnclassified || unknown.CreatedNodeCount != count {
@@ -61,7 +63,11 @@ func TestFleetRunnerTimingClassificationIsBoundAndConservative(t *testing.T) {
 		}
 	}
 	for _, request := range []fleet.RunnerAttemptStartRequest{
+		{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: 0},
 		{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: 4},
+		{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: 6},
+		{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: 8},
+		{OperationClass: model.FleetTimingColdStart, CreatedNodeCount: 1001},
 		{OperationClass: "scale_out", CreatedNodeCount: 5},
 		{CreatedNodeCount: 5},
 		{OperationClass: model.FleetTimingUnclassified, CreatedNodeCount: -1},
