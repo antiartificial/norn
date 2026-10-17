@@ -221,7 +221,8 @@ unchanged. Baselines A and C of section 1b apply to every route below.
 | `POST resources/{name}/converge` (rescan; no body, `Idempotency-Key`) | PG authority-only, etcd | non-CI `platform:operate`, or executor (exact `fleet:execute`) | none; never starts an attempt; records a plan only when the verified tip has no admissible converge plan | `fleet.capacity-plan` (`action: converge`) | E4a, E6 |
 | `POST plans/{id}/converge/approve` | both | `platform:operate`, non-CI, `Idempotency-Key` | none | `fleet.converge.approve` | E4a (route), E2 (fixtures) |
 | `POST resources/{name}/execution-mode` | both | `admin`, non-CI, `Idempotency-Key`, fence Free | none | `fleet.resource.execution-mode` | E4b |
-| `POST plans/{id}/credential-grants` | both | executor principal: managed token, exact `fleet:execute`, `CI==nil` | `plan`; `recover` with a live recovery attempt; else `phase == currentPhase` exactly (7b) | `fleet.credential-grant` | E5 |
+| `POST plans/{id}/credential-grants` | both | executor principal: managed token, exact `fleet:execute`, `CI==nil` | `plan`; V3 `preflight` with a live owned attempt at `provider_applying`, including recovery; `recover` with a live recovery attempt; else `phase == currentPhase` exactly (7b) | `fleet.credential-grant` | E5 |
+| `POST plans/{id}/preflight-completions` | V3 | executor principal, same device as its live attempt and latest unexpired `preflight` grant | `provider_applying`; required before any `do-write` grant at that phase | `fleet.preflight-complete` | E5 |
 | `POST executor/stop-attestations` | both | executor principal, same device as the source attempt | source attempt non-terminal or expired | `fleet.executor.stop-attestation` | E5 |
 
 Existing routes with executor-lane behavior:

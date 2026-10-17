@@ -497,8 +497,10 @@ func (s *FleetExecutorOpsRoutes) revokeSupersededAttemptTokens(ctx context.Conte
 
 // Grant is POST plans/{planID}/credential-grants (executor principal,
 // Idempotency-Key). It requires a live attempt owned by the calling device
-// whose currentPhase equals the requested phase (plan: no attempt; recover:
-// the latest recovery attempt), and types exactly within the GrantTypes
+// whose currentPhase equals the requested phase (plan: no attemptId;
+// preflight: an owned v3 attempt at provider_applying or an owned recovery
+// attempt at its current nonterminal phase; recover: the
+// latest recovery attempt), and types exactly within the GrantTypes
 // table of the attempt's backend. It records fleet.credential-grant and, for
 // norn-attempt, mints the attempt-bound credential (see the file comment).
 func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
@@ -533,7 +535,7 @@ func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
 		prior, err := resolver.ResolveIdentity(ctx, identity)
 		switch {
 		case err == nil:
-			s.replayGrant(w, r, identity, request, prior)
+			s.replayGrant(w, r, identity, request, principal, prior)
 			return
 		case !errors.Is(err, store.ErrAcceptanceNotFound):
 			writeOperationAcceptanceError(w, r, err)
@@ -559,6 +561,47 @@ func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
 		writeFleetExecutorOpsError(w, r, err)
 		return
 	}
+	if request.Phase == executor.GrantPhasePreflight {
+		grants, err := s.backend.FleetExecutorLedgerRows(ctx, executor.KindCredentialGrant, planID)
+		if err != nil {
+			writeFleetExecutorOpsError(w, r, err)
+			return
+		}
+		for _, row := range grants {
+			var previous executor.CredentialGrantPayload
+			if decodeLedgerValueMap(row.Payload, &previous) && previous.AttemptID == attempt.ID &&
+				(previous.Phase == "provider_applying" || previous.Phase == executor.GrantPhaseRecover) && grantIncludesType(previous.Types, executor.CredDOWrite) {
+				WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetPreflightRequired, "private-input preflight cannot restart after provider credentials were granted for this attempt")
+				return
+			}
+		}
+	}
+	if s.backend.GrantProfile() == executor.GrantProfileV3 && attempt != nil &&
+		(request.Phase == "provider_applying" || request.Phase == executor.GrantPhaseRecover) && grantIncludesType(request.Types, executor.CredDOWrite) {
+		rows, err := s.backend.FleetExecutorLedgerRows(ctx, executor.KindPreflightComplete, planID)
+		if err != nil {
+			writeFleetExecutorOpsError(w, r, err)
+			return
+		}
+		grants, err := s.backend.FleetExecutorLedgerRows(ctx, executor.KindCredentialGrant, planID)
+		if err != nil {
+			writeFleetExecutorOpsError(w, r, err)
+			return
+		}
+		var latestGrant executor.CredentialGrantPayload
+		for _, row := range grants {
+			_ = decodeLedgerValueMap(row.Payload, &latestGrant)
+		}
+		proved := false
+		for _, row := range rows {
+			var receipt executor.PreflightCompletePayload
+			proved = proved || (decodeLedgerValueMap(row.Payload, &receipt) && receipt.AttemptID == attempt.ID && receipt.DeviceID == principal.DeviceID && receipt.GrantID == latestGrant.GrantID)
+		}
+		if !proved || latestGrant.Phase != executor.GrantPhasePreflight || latestGrant.AttemptID != attempt.ID || latestGrant.AttemptPhase != attempt.CurrentPhase || latestGrant.DeviceID != principal.DeviceID || !latestGrant.ExpiresAt.After(now) {
+			WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetPreflightRequired, "the owned attempt needs an executor-attested private-input preflight before provider credentials")
+			return
+		}
+	}
 
 	grant := executor.CredentialGrantPayload{
 		GrantID: uuid.NewString(), PlanID: planID, Phase: request.Phase, Types: request.Types,
@@ -576,6 +619,7 @@ func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
 	var registry FleetAttemptCredentialRegistry
 	if attempt != nil {
 		grant.AttemptID = attempt.ID
+		grant.AttemptPhase = attempt.CurrentPhase
 	}
 	registry = s.backend.AttemptCredentials()
 	if grantIncludesAttemptCredential(request.Types) && (registry == nil || s.secret == "" || attempt == nil) {
@@ -636,6 +680,94 @@ func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
 	s.writeGrant(w, r, accepted, grant, token, repoToken)
 }
 
+// PreflightComplete records the trusted executor's assertion that its local
+// private-input checks completed. Norn verifies the grant and attempt binding;
+// it cannot inspect the private inputs or independently prove the checks.
+func (s *FleetExecutorOpsRoutes) PreflightComplete(w http.ResponseWriter, r *http.Request) {
+	principal, ok := s.requireExecutor(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := requirePlanID(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requireIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	if s.backend.GrantProfile() != executor.GrantProfileV3 {
+		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, "preflight completion is available only on the v3 executor profile")
+		return
+	}
+	var request executor.PreflightCompleteRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, err.Error())
+		return
+	}
+	if err := request.Validate(); err != nil {
+		writeExecutorError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+	payload := ledgerMap(executor.PreflightCompletePayload{PlanID: planID, DeviceID: principal.DeviceID, PreflightCompleteRequest: request})
+	identity, audit, ok := s.ledgerIdentity(w, r, principal, executor.KindPreflightComplete, planID, key)
+	if !ok {
+		return
+	}
+	var replay *store.AcceptedOperation
+	if resolver, can := s.backend.OperationStore().(store.OperationIdentityResolver); can {
+		prior, err := resolver.ResolveIdentity(ctx, identity)
+		switch {
+		case err == nil:
+			if !sameLedgerValue(prior.Operation.Payload, payload) {
+				writeOperationAcceptanceError(w, r, &store.AcceptanceConflictError{Identity: identity})
+				return
+			}
+			replay = &prior
+		case !errors.Is(err, store.ErrAcceptanceNotFound):
+			writeOperationAcceptanceError(w, r, err)
+			return
+		}
+	}
+	attempt, err := s.backend.FleetExecutorAttemptByID(ctx, request.AttemptID)
+	if err != nil {
+		writeFleetExecutorOpsError(w, r, err)
+		return
+	}
+	now := s.now()
+	if attempt == nil || attempt.PlanID != planID || !attempt.Executor || attempt.PrincipalSubject != executor.PrincipalSubject(principal.DeviceID) || !attempt.Live(now) ||
+		(attempt.CurrentPhase != "provider_applying" && (attempt.RetryOf == "" || attempt.CurrentPhase == "complete")) {
+		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetCredentialGrantAttemptRequired, "preflight completion needs a live owned first attempt at provider_applying or a nonterminal recovery attempt")
+		return
+	}
+	grants, err := s.backend.FleetExecutorLedgerRows(ctx, executor.KindCredentialGrant, planID)
+	if err != nil {
+		writeFleetExecutorOpsError(w, r, err)
+		return
+	}
+	var latest executor.CredentialGrantPayload
+	for _, row := range grants {
+		_ = decodeLedgerValueMap(row.Payload, &latest)
+	}
+	if latest.GrantID != request.GrantID || latest.AttemptID != request.AttemptID || latest.AttemptPhase != attempt.CurrentPhase || latest.DeviceID != principal.DeviceID || latest.Phase != executor.GrantPhasePreflight || !latest.ExpiresAt.After(now) ||
+		!grantIncludesType(latest.Types, executor.CredBootstrapDir) || !grantIncludesType(latest.Types, executor.CredSSHNode) {
+		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetPreflightRequired, "preflight completion needs the latest unexpired preflight grant of this owned attempt")
+		return
+	}
+	if replay != nil {
+		replay.Replayed = true
+		writeLedgerOperation(w, *replay)
+		return
+	}
+	accepted, err := s.acceptLedger(ctx, identity, audit, "executor private-input preflight attested", payload, map[string]interface{}{store.FleetExecutorAttesterMetadataKey: executor.PrincipalSubject(principal.DeviceID)})
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	writeLedgerOperation(w, accepted)
+}
+
 func (s *FleetExecutorOpsRoutes) rememberRepoToken(grantID string, entry repoTokenEntry) {
 	s.repoMu.Lock()
 	defer s.repoMu.Unlock()
@@ -680,14 +812,47 @@ func (s *FleetExecutorOpsRoutes) writeGrant(w http.ResponseWriter, r *http.Reque
 	writeJSONStatus(w, status, response)
 }
 
-// replayGrant answers a repeated Idempotency-Key from the ledger: the same
-// grant, and the same attempt credential re-signed from its durable record.
-func (s *FleetExecutorOpsRoutes) replayGrant(w http.ResponseWriter, r *http.Request, identity store.OperationRequestIdentity, request executor.CredentialGrantRequest, prior store.AcceptedOperation) {
+// replayGrant answers a repeated Idempotency-Key only while that grant is
+// unexpired, latest for the plan, and its attempt remains live and current.
+func (s *FleetExecutorOpsRoutes) replayGrant(w http.ResponseWriter, r *http.Request, identity store.OperationRequestIdentity, request executor.CredentialGrantRequest, principal AccessPrincipal, prior store.AcceptedOperation) {
 	var grant executor.CredentialGrantPayload
 	if !decodeLedgerValueMap(prior.Operation.Payload, &grant) || grant.PlanID != identity.Resource || grant.Phase != request.Phase ||
 		grant.AttemptID != request.AttemptID || strings.Join(grant.Types, ",") != strings.Join(request.Types, ",") {
 		writeOperationAcceptanceError(w, r, &store.AcceptanceConflictError{Identity: identity})
 		return
+	}
+	now := s.now()
+	if !grant.ExpiresAt.After(now) || grant.DeviceID != principal.DeviceID {
+		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed, "the credential grant has expired or belongs to another executor device")
+		return
+	}
+	rows, err := s.backend.FleetExecutorLedgerRows(r.Context(), executor.KindCredentialGrant, grant.PlanID)
+	if err != nil {
+		writeFleetExecutorOpsError(w, r, err)
+		return
+	}
+	var latest executor.CredentialGrantPayload
+	for _, row := range rows {
+		_ = decodeLedgerValueMap(row.Payload, &latest)
+	}
+	if latest.GrantID != grant.GrantID {
+		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed, "the credential grant has been superseded")
+		return
+	}
+	if grant.AttemptID != "" {
+		attempt, err := s.backend.FleetExecutorAttemptByID(r.Context(), grant.AttemptID)
+		if err != nil {
+			writeFleetExecutorOpsError(w, r, err)
+			return
+		}
+		if attempt == nil || attempt.PlanID != grant.PlanID || !attempt.Executor || attempt.PrincipalSubject != executor.PrincipalSubject(principal.DeviceID) || !attempt.Live(now) ||
+			((grant.Phase == executor.GrantPhaseRecover || grant.Phase == executor.GrantPhasePreflight) && grant.AttemptPhase != attempt.CurrentPhase) ||
+			(grant.Phase == executor.GrantPhaseRecover && attempt.RetryOf == "") ||
+			(grant.Phase != executor.GrantPhaseRecover && grant.Phase != executor.GrantPhasePreflight && attempt.CurrentPhase != grant.Phase) ||
+			(grant.Phase == executor.GrantPhasePreflight && attempt.CurrentPhase != "provider_applying" && (attempt.RetryOf == "" || attempt.CurrentPhase == "complete")) {
+			WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetCredentialGrantReplayClosed, "the credential grant's attempt is no longer live and current")
+			return
+		}
 	}
 	var token *store.AccessToken
 	if jti, _ := prior.Operation.Metadata[grantMetadataTokenID].(string); jti != "" {

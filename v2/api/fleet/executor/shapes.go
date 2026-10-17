@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,6 +69,7 @@ const (
 const (
 	KindConvergeApprove       = "fleet.converge.approve"
 	KindCredentialGrant       = "fleet.credential-grant"
+	KindPreflightComplete     = "fleet.preflight-complete"
 	KindStopAttestation       = "fleet.executor.stop-attestation"
 	KindResourceExecutionMode = "fleet.resource.execution-mode"
 	// KindConvergeRefusal records an executor refusal of a plan
@@ -110,6 +112,8 @@ const (
 	CodeFleetExecutorStopAttestationInvalid = "fleet_executor_stop_attestation_invalid"
 	CodeFleetCredentialGrantAttemptRequired = "fleet_credential_grant_attempt_required"
 	CodeFleetCredentialGrantPhaseMismatch   = "fleet_credential_grant_phase_mismatch"
+	CodeFleetCredentialGrantReplayClosed    = "fleet_credential_grant_replay_closed"
+	CodeFleetPreflightRequired              = "fleet_preflight_required"
 	CodeFleetCredentialTypeNotAllowed       = "fleet_credential_type_not_allowed"
 	// repo-read (ADR 0010): 503 when the GitHub App cannot mint the token;
 	// 409 when a replayed grant's token has expired or is no longer held.
@@ -144,6 +148,8 @@ var CodeStatus = map[string]int{
 	CodeFleetExecutorStopAttestationInvalid: 409,
 	CodeFleetCredentialGrantAttemptRequired: 409,
 	CodeFleetCredentialGrantPhaseMismatch:   409,
+	CodeFleetCredentialGrantReplayClosed:    409,
+	CodeFleetPreflightRequired:              409,
 	CodeFleetCredentialTypeNotAllowed:       403,
 	CodeFleetRepoTokenUnavailable:           503,
 	CodeFleetRepoTokenReplayExpired:         409,
@@ -374,6 +380,7 @@ var ExecutorRoutes = []string{
 	"GET /api/v1/fleet/plans/{planID}/reconciliations",
 	"POST /api/v1/fleet/plans/{planID}/reconciliations",
 	"POST /api/v1/fleet/plans/{planID}/credential-grants",
+	"POST /api/v1/fleet/plans/{planID}/preflight-completions",
 	"POST /api/v1/fleet/plans/{planID}/converge-refusals",
 	"POST /api/v1/fleet/executor/stop-attestations",
 	"POST /api/v1/auth/rotate",
@@ -511,9 +518,13 @@ const (
 // must equal the live attempt's currentPhase exactly; there is no alias.
 // GrantPhasePlan precedes any attempt. GrantPhaseRecover needs a live,
 // owned recovery attempt (retryOf set) and grants the union of the table.
+// GrantPhasePreflight lets an executor verify private bootstrap inputs after
+// it owns a live V3 attempt at provider_applying, including a recovery attempt,
+// but before it receives provider mutation credentials for that attempt.
 const (
-	GrantPhasePlan    = "plan"
-	GrantPhaseRecover = "recover"
+	GrantPhasePlan      = "plan"
+	GrantPhasePreflight = "preflight"
+	GrantPhaseRecover   = "recover"
 )
 
 // GrantProfile names the phase list of the backend that owns the attempt.
@@ -529,6 +540,7 @@ const (
 
 var (
 	planTypes          = []string{CredDORead, CredSpacesRW, CredRepoRead}
+	preflightTypes     = []string{CredBootstrapDir, CredSSHNode}
 	providerApplyTypes = []string{CredDOWrite, CredSpacesRW, CredNornAttempt}
 	// do-read in the post-apply phases is deliberately absent until P2 measures
 	// that fleet_hooks.py needs it (plan-5-7 section 2.3).
@@ -556,6 +568,7 @@ var GrantTypes = map[GrantProfile]map[string][]string{
 	},
 	GrantProfileV3: {
 		GrantPhasePlan:           planTypes,
+		GrantPhasePreflight:      preflightTypes,
 		"prechange_verified":     checkpointTypes,
 		"provider_applying":      providerApplyTypes,
 		"infrastructure_applied": postApplyTypes,
@@ -570,12 +583,39 @@ var GrantTypes = map[GrantProfile]map[string][]string{
 
 // CredentialGrantRequest is the body of
 // POST /api/v1/fleet/plans/{planID}/credential-grants (executor principal,
-// Idempotency-Key). AttemptID is required for every phase except
-// GrantPhasePlan.
+// Idempotency-Key). AttemptID is required for every phase except GrantPhasePlan.
 type CredentialGrantRequest struct {
 	AttemptID string   `json:"attemptId,omitempty"`
 	Phase     string   `json:"phase"`
 	Types     []string `json:"types"`
+}
+
+// PreflightCompleteRequest is an executor attestation that its local private
+// input checks completed. The digest identifies a non-secret validation
+// receipt; Norn verifies binding and order, not the private inputs themselves.
+type PreflightCompleteRequest struct {
+	AttemptID      string `json:"attemptId"`
+	GrantID        string `json:"grantId"`
+	EvidenceDigest string `json:"evidenceDigest"`
+}
+
+func (r PreflightCompleteRequest) Validate() error {
+	if _, err := uuid.Parse(r.AttemptID); err != nil {
+		return invalid("attemptId must be a UUID")
+	}
+	if _, err := uuid.Parse(r.GrantID); err != nil {
+		return invalid("grantId must be a UUID")
+	}
+	if !strings.HasPrefix(r.EvidenceDigest, "sha256:") || !sha256HexRe.MatchString(strings.TrimPrefix(r.EvidenceDigest, "sha256:")) {
+		return invalid("evidenceDigest must be sha256 followed by 64 lowercase hex characters")
+	}
+	return nil
+}
+
+type PreflightCompletePayload struct {
+	PlanID   string `json:"planId"`
+	DeviceID string `json:"deviceId"`
+	PreflightCompleteRequest
 }
 
 // CredentialGrantResponse is the 201/200 body. AttemptToken is present only
@@ -624,14 +664,17 @@ var AttemptCredentialRoutes = []string{
 // (Ref = plan ID). Types are sorted and deduplicated. DeviceID and TokenID
 // are the server-filled executor principal.
 type CredentialGrantPayload struct {
-	GrantID   string    `json:"grantId"`
-	PlanID    string    `json:"planId"`
-	AttemptID string    `json:"attemptId,omitempty"`
-	Phase     string    `json:"phase"`
-	Types     []string  `json:"types"`
-	DeviceID  string    `json:"deviceId"`
-	TokenID   string    `json:"tokenId"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	GrantID   string `json:"grantId"`
+	PlanID    string `json:"planId"`
+	AttemptID string `json:"attemptId,omitempty"`
+	// AttemptPhase binds recover and preflight grants to the attempt's phase
+	// when issued, even though their request phase is a pseudo-phase.
+	AttemptPhase string    `json:"attemptPhase,omitempty"`
+	Phase        string    `json:"phase"`
+	Types        []string  `json:"types"`
+	DeviceID     string    `json:"deviceId"`
+	TokenID      string    `json:"tokenId"`
+	ExpiresAt    time.Time `json:"expiresAt"`
 }
 
 // ProviderEvidence is the optional field added (omitempty) to the existing

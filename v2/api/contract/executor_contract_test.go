@@ -52,6 +52,7 @@ func TestExecutorPinnedShapesMatchOpenAPI(t *testing.T) {
 		"FleetConvergeApproveRequest":         reflect.TypeOf(executor.ApproveRequest{}),
 		"FleetExecutionModeRequest":           reflect.TypeOf(executor.ExecutionModeRequest{}),
 		"FleetCredentialGrantRequest":         reflect.TypeOf(executor.CredentialGrantRequest{}),
+		"FleetPreflightCompleteRequest":       reflect.TypeOf(executor.PreflightCompleteRequest{}),
 		"FleetCredentialGrant":                reflect.TypeOf(executor.CredentialGrantResponse{}),
 		"FleetProviderEvidence":               reflect.TypeOf(executor.ProviderEvidence{}),
 		"FleetProviderEvidenceRequest":        reflect.TypeOf(executor.ProviderEvidenceRequest{}),
@@ -107,6 +108,9 @@ func TestExecutorPinnedShapesMatchOpenAPI(t *testing.T) {
 	if !gotTypes[executor.CredRepoRead] {
 		t.Error("grant type enum omits repo-read")
 	}
+	if desc, _ := grantProps["attemptId"].(map[string]interface{})["description"].(string); !strings.Contains(desc, "except plan") || strings.Contains(desc, "preflight") {
+		t.Errorf("grant attemptId description is stale: %q", desc)
+	}
 	responseProps, _ := executorSchemaProps(t, doc, "FleetCredentialGrant")
 	if _, ok := responseProps["repoToken"]; !ok {
 		t.Error("FleetCredentialGrant omits repoToken")
@@ -128,13 +132,14 @@ func TestExecutorRoutesCodesAndReleaseEvidenceArePublished(t *testing.T) {
 	}
 	paths := doc["paths"].(map[string]interface{})
 	for path, op := range map[string]string{
-		"/api/v1/fleet/resources/{name}/converge":        "rescanFleetResourceConverge",
-		"/api/v1/fleet/resources/{name}/execution-mode":  "setFleetResourceExecutionMode",
-		"/api/v1/fleet/plans/{planID}/converge/approve":  "approveFleetConverge",
-		"/api/v1/fleet/plans/{planID}/credential-grants": "createFleetCredentialGrant",
-		"/api/v1/fleet/executor/stop-attestations":       "createFleetExecutorStopAttestation",
-		"/api/v1/fleet/plans/{planID}/converge-refusals": "createFleetConvergeRefusal",
-		"/api/v1/fleet/plans/{planID}/provider-evidence": "recordFleetProviderEvidence",
+		"/api/v1/fleet/resources/{name}/converge":            "rescanFleetResourceConverge",
+		"/api/v1/fleet/resources/{name}/execution-mode":      "setFleetResourceExecutionMode",
+		"/api/v1/fleet/plans/{planID}/converge/approve":      "approveFleetConverge",
+		"/api/v1/fleet/plans/{planID}/credential-grants":     "createFleetCredentialGrant",
+		"/api/v1/fleet/plans/{planID}/preflight-completions": "completeFleetPrivateInputPreflight",
+		"/api/v1/fleet/executor/stop-attestations":           "createFleetExecutorStopAttestation",
+		"/api/v1/fleet/plans/{planID}/converge-refusals":     "createFleetConvergeRefusal",
+		"/api/v1/fleet/plans/{planID}/provider-evidence":     "recordFleetProviderEvidence",
 	} {
 		item, ok := paths[path].(map[string]interface{})
 		if !ok {

@@ -120,7 +120,7 @@ func TestHolderNonceIsStableHex(t *testing.T) {
 }
 
 // TestGrantPhasesAreRealLifecyclePhases pins item 3: every grant phase other
-// than plan and recover is a real phase of the profile's list, and every
+// than plan, preflight and recover is a real phase of the profile's list, and every
 // phase with work has a row.
 func TestGrantPhasesAreRealLifecyclePhases(t *testing.T) {
 	for profile, lp := range map[GrantProfile]lifecycle.Profile{
@@ -135,7 +135,7 @@ func TestGrantPhasesAreRealLifecyclePhases(t *testing.T) {
 			}
 		}
 		for phase := range GrantTypes[profile] {
-			if phase != GrantPhasePlan && phase != GrantPhaseRecover && (!real[phase] || phase == "complete") {
+			if phase != GrantPhasePlan && phase != GrantPhasePreflight && phase != GrantPhaseRecover && (!real[phase] || phase == "complete") {
 				t.Errorf("%s: grant phase %s is not a working lifecycle phase", profile, phase)
 			}
 		}
@@ -153,6 +153,16 @@ func TestGrantTypeTable(t *testing.T) {
 		{legacy, CredentialGrantRequest{Phase: "plan", Types: []string{"do-read", "spaces-rw"}}, ""},
 		{legacy, CredentialGrantRequest{Phase: "plan", Types: []string{"do-write"}}, CodeFleetCredentialTypeNotAllowed},
 		{legacy, CredentialGrantRequest{Phase: "plan", AttemptID: id, Types: []string{"do-read"}}, CodeInvalidFleetExecutorRequest},
+		{legacy, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredBootstrapDir, CredSSHNode}}, CodeInvalidFleetExecutorRequest},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, Types: []string{CredBootstrapDir, CredSSHNode}}, CodeFleetCredentialGrantAttemptRequired},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredBootstrapDir, CredSSHNode}}, ""},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredDOWrite}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredDORead}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredSpacesRW}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredSpacesRead}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredReleaseGitHub}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredNornAttempt}}, CodeFleetCredentialTypeNotAllowed},
+		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredRepoRead}}, CodeFleetCredentialTypeNotAllowed},
 		{legacy, CredentialGrantRequest{Phase: "infrastructure_applied", Types: []string{"do-write"}}, CodeFleetCredentialGrantAttemptRequired},
 		{legacy, CredentialGrantRequest{Phase: "infrastructure_applied", AttemptID: id, Types: []string{"do-write", "spaces-rw", "norn-attempt"}}, ""},
 		{legacy, CredentialGrantRequest{Phase: "provider_applying", AttemptID: id, Types: []string{"do-write"}}, CodeInvalidFleetExecutorRequest},
@@ -180,6 +190,23 @@ func TestGrantTypeTable(t *testing.T) {
 	n := CredentialGrantRequest{Types: []string{"b", "a", "b"}}.Normalize()
 	if strings.Join(n.Types, ",") != "a,b" {
 		t.Fatalf("normalize = %v", n.Types)
+	}
+}
+
+func TestPreflightCompleteRequestValidation(t *testing.T) {
+	id := uuid.NewString()
+	good := PreflightCompleteRequest{AttemptID: id, GrantID: uuid.NewString(), EvidenceDigest: "sha256:" + strings.Repeat("a", 64)}
+	if err := good.Validate(); err != nil {
+		t.Fatalf("valid non-secret receipt digest: %v", err)
+	}
+	for _, bad := range []PreflightCompleteRequest{
+		{GrantID: good.GrantID, EvidenceDigest: good.EvidenceDigest},
+		{AttemptID: good.AttemptID, EvidenceDigest: good.EvidenceDigest},
+		{AttemptID: good.AttemptID, GrantID: good.GrantID, EvidenceDigest: "sha256:" + strings.Repeat("z", 64)},
+	} {
+		if err := bad.Validate(); err == nil {
+			t.Errorf("accepted invalid preflight completion: %+v", bad)
+		}
 	}
 }
 

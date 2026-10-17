@@ -582,7 +582,7 @@ paths:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
     post:
       operationId: createFleetCredentialGrant
-      description: Executor lane (ADR 0010). Records the signed operation fleet.credential-grant and returns its ID. Requires the executor principal (managed token, exact scope fleet:execute, not CI) and an Idempotency-Key. For every phase except plan the attempt must be live and owned by this executor; recover needs a recovery attempt, and every other phase must equal the attempt's currentPhase exactly (no alias). Each type must be allowed for the phase on the attempt's backend profile (PG legacy no-drain or canonical V3). Grants expire after 2 hours. A grant that includes norn-attempt also returns attemptToken, the attempt-bound credential (internal scope fleet:attempt, never requestable, not in the capabilities scope list) that the phase uses instead of the executor's device token; it reaches only its own attempt's GET, heartbeat and advance and the plan's reconciliations, expires with the grant, is revoked by the plan's next grant or by revoking the executor device, and is never stored in the ledger (only its token ID). A replay returns the same token ID re-signed. repo-read is allowed only for the plan and recover phases, and it returns repoToken, a short-lived GitHub App installation token restricted to the single configured repository with contents:read only, so the host holds no standing GitHub credential. It expires at GitHub's expiry (about 1 hour), never after the grant; the ledger records only that it was issued and its expiry. If the GitHub App is not configured or cannot mint, the grant answers 503 fleet_repo_token_unavailable. A replay of the same Idempotency-Key never mints a second token and returns the same token while unexpired, else 409 fleet_repo_token_replay_expired, so request a new grant with a new key
+      description: Executor lane (ADR 0010). Records signed fleet.credential-grant. Requires the executor principal (managed token, exact scope fleet:execute, not CI) and an Idempotency-Key. Plan needs a converge plan and no attemptId. V3 preflight requires a live owned first attempt at provider_applying or a nonterminal recovery attempt at its current phase, and permits only bootstrap-dir and ssh-node. A separate preflight-completions attestation for the same attempt and latest unexpired grant is required before provider_applying or any recover grant can include do-write. Recover needs a live owned recovery attempt; every lifecycle grant phase must match currentPhase exactly. Grant issuance and completion attest an executor's order and claim, not independent verification of private inputs. Each type must be allowed for the phase on its backend profile. Grants expire after 2 hours. Replays are refused after grant expiry, supersession, or attempt lease/phase change; recover and preflight grants persist the attempt phase at issuance to enforce that boundary. norn-attempt returns an attempt-bound credential with internal fleet:attempt scope, revoked by the next plan grant or device revocation. repo-read is allowed only for plan and recover and returns a short-lived configured-repository Contents-read GitHub App token; it is never stored in the ledger or logs. If GitHub cannot mint, the grant answers 503 fleet_repo_token_unavailable; a replay after repo token cache loss answers 409 fleet_repo_token_replay_expired.
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -593,6 +593,23 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/preflight-completions:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: completeFleetPrivateInputPreflight
+      description: Records a signed executor attestation that local private-input checks completed. Requires a live owned V3 first attempt at provider_applying or a nonterminal recovery attempt at its current phase, and its latest unexpired preflight grant containing both bootstrap-dir and ssh-node. Norn verifies identity, grant, and order; the executor is trusted for the validation result. The non-secret evidenceDigest binds its local receipt. Provider-write grants require this attestation for the same attempt and device.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetPreflightCompleteRequest' } } }
+      responses:
+        '200': { description: Replay of the same signed attestation, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Attestation recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/converge-refusals:
@@ -2060,7 +2077,7 @@ components:
       required: [phase, types]
       properties:
         attemptId: { type: string, format: uuid, description: Required for every phase except plan; forbidden for plan. }
-        phase: { type: string, enum: [plan, prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, recover] }
+        phase: { type: string, enum: [plan, preflight, prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, recover] }
         types:
           type: array
           minItems: 1
@@ -2073,6 +2090,14 @@ components:
         expiresAt: { type: string, format: date-time }
         repoToken: { type: string, description: 'Present only when types includes repo-read (plan and recover phases only). Bearer secret of a GitHub App installation token restricted to the configured repository with contents:read only; expires at GitHub''s expiry (about 1 hour) or the grant expiry, whichever is earlier. Never logged or stored in the ledger.' }
         attemptToken: { type: string, description: 'Present only when types includes norn-attempt. Bearer secret of the attempt-bound credential (managed token, single internal scope fleet:attempt, subject fleet-attempt:<attemptId>, no device claim, expires at expiresAt). Internal-only: it may call only the bound attempt''s GET, heartbeat and advance and the plan''s reconciliations, and cannot rotate. Never logged or stored in the ledger.' }
+    FleetPreflightCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [attemptId, grantId, evidenceDigest]
+      properties:
+        attemptId: { type: string, format: uuid }
+        grantId: { type: string, format: uuid }
+        evidenceDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: Digest of a non-secret executor validation receipt; Norn does not inspect private input values. }
     FleetProviderEvidenceRequest:
       type: object
       additionalProperties: false
@@ -2600,6 +2625,8 @@ components:
         - fleet_executor_stop_attestation_invalid
         - fleet_credential_grant_attempt_required
         - fleet_credential_grant_phase_mismatch
+        - fleet_credential_grant_replay_closed
+        - fleet_preflight_required
         - fleet_credential_type_not_allowed
         - fleet_repo_token_unavailable
         - fleet_repo_token_replay_expired

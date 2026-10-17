@@ -230,20 +230,35 @@ attester's. Ledger payload adds `planId` (server-derived from the attempt),
 executor principal. Body `{attemptId?, phase, types[]}`; response
 `{grantId, expiresAt, attemptToken?, repoToken?}`. Ledger payload `{grantId, planId, attemptId?, phase,
 types (sorted, unique), deviceId, tokenId, expiresAt}`, expiry 2 hours. Grant
-phases are the pseudo-phases `plan` (no attempt) and `recover` (a live recovery
-attempt; the union of all types), and otherwise **real lifecycle phase names**
+phases are the pseudo-phases `plan` (no attempt), `preflight` (a live owned
+V3 attempt at `provider_applying`, including recovery), and `recover` (a live recovery attempt; the
+union of all types), and otherwise **real lifecycle phase names**
 that must equal the attempt's `currentPhase` exactly. There is no alias. The table
 depends on the attempt's backend, because executor plans never drain:
 
 | Phase | PG (legacy no-drain list) | etcd (canonical list) |
 |---|---|---|
 | `plan` | do-read, spaces-rw, repo-read | same |
+| `preflight` | — | bootstrap-dir, ssh-node on a live owned first attempt at `provider_applying` or nonterminal recovery attempt at its current phase |
 | `prechange_verified` | — (not in the list) | norn-attempt |
 | `provider_applying` | — (not in the list) | do-write, spaces-rw, norn-attempt |
 | `infrastructure_applied` | do-write, spaces-rw, norn-attempt (tofu apply runs here; its checkpoint follows the apply) | spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt |
 | `inventory_generated` … `readiness_verified` | spaces-read, ssh-node, bootstrap-dir, release-github, norn-attempt | same |
 | `old_nodes_drained` | — | norn-attempt (evidence only) |
 | `recover` | union (including repo-read) | union (including repo-read) |
+
+Before a V3 `provider_applying` grant can include `do-write`, the executor
+records a signed `fleet.preflight-complete` attestation bound to its latest
+unexpired preflight grant and owned attempt. Its evidence digest identifies a
+non-secret local validation receipt. Norn verifies binding and order; the
+trusted executor performs the private checks and revokes their local grant
+files before requesting provider credentials. A grant alone does not prove
+validation completed. These ledger admission reads and writes are not an
+atomic cross-store transaction against a concurrent executor request; the
+protected single-loop executor and phase-file revocation remain the execution
+boundary. Recovery at any phase must attest its own fresh preflight before
+receiving `do-write`. Recover and preflight grants record the attempt phase at
+issuance; replay or completion after phase movement is refused.
 
 **`repo-read` (no GitHub credential on the host).** `norn-fleet` is private, so
 the executor must read it, but no deploy key or token is stored on the host. The
