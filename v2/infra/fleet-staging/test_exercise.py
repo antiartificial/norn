@@ -267,6 +267,19 @@ class ProbeTests(unittest.TestCase):
                 self.assertFalse(exercise.STAGING_NAMESPACE.fullmatch(namespace))
         self.assertTrue(exercise.STAGING_NAMESPACE.fullmatch(self.namespace))
 
+    def test_missing_nomad_evidence_stops_before_any_public_write(self):
+        image = "ghcr.io/antiartificial/hello-norn-mysql@sha256:" + "a" * 64
+        argv = ["exercise.py", "--url", "https://staging.example.test", "--expected-image", image,
+                "--expected-source-version", self.source, "--expected-hostname", "staging.example.test",
+                "--namespace", self.namespace, "--app-node-ids-json", json.dumps(sorted(self.app_nodes)),
+                "--write-token-file", "/owner-only/token"]
+        with patch("sys.argv", argv), patch("exercise.load_write_token", return_value="t" * 32), \
+                patch("exercise.inventory_staging", return_value=([], False)), \
+                patch("exercise.request") as request, patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(exercise.main(), 1)
+            request.assert_not_called()
+            self.assertFalse(json.loads(output.getvalue())["nomadEvidenceVerified"])
+
     @patch("exercise.time.sleep")
     @patch("exercise.inventory_staging")
     @patch("exercise.nomad_json")

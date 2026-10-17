@@ -394,7 +394,10 @@ def main():
     )
     initial_ids = {item["allocation"] for item in topology}
     if not topology_verified:
-        initial_ids = set()
+        print(json.dumps({"runId": run_id, "origin": base, "startedAt": started_at,
+                          "namespace": args.namespace, "nomadEvidenceVerified": False,
+                          "nomadAllocations": topology, "requests": 0}, sort_keys=True))
+        return 1
     pre = proof(base, f"{run_id}-pre", args.expected_source_version, initial_ids, write_token)
     written = [pre["id"]] if pre["write"] and pre["read"] else []
     allowed_ids = initial_ids
