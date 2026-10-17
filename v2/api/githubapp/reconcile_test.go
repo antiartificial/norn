@@ -18,7 +18,7 @@ import (
 )
 
 func TestApplyRunDisplayTitleUsesNonceContract(t *testing.T) {
-	if got := fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", "plan", strings.Repeat("a", 64)); got != "Apply production/nyc3 Norn plan plan nonce "+strings.Repeat("a", 64) {
+	if got := fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", "plan", strings.Repeat("a", 64)); got != "Apply production/nyc3 pilot  Norn plan plan nonce "+strings.Repeat("a", 64) {
 		t.Fatalf("server run-name format=%q", got)
 	}
 	if got := applyRunDisplayTitle("disposable/external-mac/nyc3", "pilot20260907", "plan", strings.Repeat("a", 64)); got != "Apply disposable/external-mac/nyc3 pilot pilot20260907 Norn plan plan nonce "+strings.Repeat("a", 64) {
