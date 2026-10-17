@@ -86,6 +86,7 @@ type CIIdentity struct {
 	RefType              string `json:"refType"`
 	EventName            string `json:"eventName"`
 	Environment          string `json:"environment"`
+	GitHubEnvironment    string `json:"githubEnvironment,omitempty"`
 	SHA                  string `json:"sha"`
 	RefProtected         bool   `json:"refProtected"`
 	Intent               string `json:"intent"`

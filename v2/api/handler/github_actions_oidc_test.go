@@ -104,6 +104,35 @@ func TestGitHubActionsFleetAuthorityOnlyAllowsProtectedStagingApplyAndRecovery(t
 	}
 }
 
+func TestGitHubActionsFleetAuthorityOnlyMapsExactWorkStagingClaim(t *testing.T) {
+	workflowSHA := strings.Repeat("a", 40)
+	h := &Handler{cfg: &config.Config{
+		FleetAuthorityOnly: true, Environment: "staging",
+		GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"},
+		GitHubActionsFleetAllowedRepository:   "acme/norn-fleet@101@202",
+		GitHubActionsFleetAllowedEnvironments: []string{"work-staging"},
+		GitHubActionsFleetAllowedIntents:      []string{"apply"},
+		GitHubActionsFleetAllowedWorkflowRefs: []string{"acme/norn-fleet/.github/workflows/apply.yml@" + workflowSHA},
+	}}
+	claims := &githubActionsClaims{Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", Environment: "work-staging", Ref: "refs/heads/main", EventName: "push", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main", WorkflowSHA: workflowSHA, RefProtected: "true"}
+	request := githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "staging", Intent: "apply"}
+	ci, err := h.authorizeGitHubActionsClaims(claims, request)
+	if err != nil || ci.Environment != "staging" || ci.GitHubEnvironment != "work-staging" {
+		t.Fatalf("work-staging claim mapping: ci=%+v err=%v", ci, err)
+	}
+	for _, environment := range []string{"staging", "production", "work-staging-extra"} {
+		claims.Environment = environment
+		if _, err := h.authorizeGitHubActionsClaims(claims, request); err == nil {
+			t.Fatalf("GitHub environment %q accepted outside exact work-staging policy", environment)
+		}
+	}
+	claims.Environment = "work-staging"
+	request.Environment = "production"
+	if _, err := h.authorizeGitHubActionsClaims(claims, request); err == nil {
+		t.Fatal("work-staging claim accepted for production control environment")
+	}
+}
+
 func TestGitHubActionsExternalAdmissionUsesExactFleetApplyRecoveryIdentity(t *testing.T) {
 	workflowSHA := strings.Repeat("a", 40)
 	h := &Handler{cfg: &config.Config{
