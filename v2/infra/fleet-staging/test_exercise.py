@@ -1,0 +1,396 @@
+import io
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import exercise
+
+
+class Response(io.BytesIO):
+    status = 200
+
+
+class ProbeTests(unittest.TestCase):
+    allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    source = "a" * 40
+    namespace = "norn-work-staging"
+    app_nodes = frozenset({
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    })
+
+    def probe(self, payload):
+        with patch("exercise.urllib.request.build_opener") as opener:
+            opener.return_value.open.return_value = Response(payload)
+            return exercise.request(
+                "https://staging.example.test", "GET", "receipt-1",
+                self.source, {self.allocation},
+            )
+
+    def test_matching_receipt(self):
+        payload = json.dumps({"id": "receipt-1", "allocation": self.allocation, "version": self.source}).encode()
+        self.assertTrue(self.probe(payload)["ok"])
+
+    def test_missing_or_unrelated_provenance_fails(self):
+        unrelated = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        for value in (
+            {"id": "receipt-1"},
+            {"id": "receipt-1", "allocation": self.allocation},
+            {"id": "receipt-1", "allocation": unrelated, "version": self.source},
+            {"id": "receipt-1", "allocation": self.allocation, "version": "wrong"},
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(self.probe(json.dumps(value).encode())["ok"])
+
+    def test_wrong_receipt_fails(self):
+        self.assertFalse(self.probe(b'{"id":"receipt-2"}')["ok"])
+
+    def test_non_object_or_malformed_json_fails(self):
+        for payload in (b"[]", b"null", b"not-json"):
+            with self.subTest(payload=payload):
+                self.assertFalse(self.probe(payload)["ok"])
+
+    def test_oversized_response_fails(self):
+        self.assertFalse(self.probe(b" " * 65537)["ok"])
+
+    def test_write_request_uses_bearer_only_for_fixed_put_origin(self):
+        token = "t" * 32
+        payload = json.dumps({"id": "receipt-1", "allocation": self.allocation, "version": self.source}).encode()
+        with patch("exercise.urllib.request.build_opener") as build:
+            build.return_value.open.return_value = Response(payload)
+            result = exercise.request(
+                "https://staging.example.test", "PUT", "receipt-1", self.source, {self.allocation}, token
+            )
+            sent = build.return_value.open.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(sent.full_url, "https://staging.example.test/records/receipt-1")
+        self.assertEqual(sent.get_header("Authorization"), "Bearer " + token)
+
+    def test_get_never_sends_write_token_and_put_rejects_missing_token(self):
+        payload = json.dumps({"id": "receipt-1", "allocation": self.allocation, "version": self.source}).encode()
+        with patch("exercise.urllib.request.build_opener") as build:
+            build.return_value.open.return_value = Response(payload)
+            result = exercise.request(
+                "https://staging.example.test", "GET", "receipt-1", self.source, {self.allocation}, "t" * 32
+            )
+            sent = build.return_value.open.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertIsNone(sent.get_header("Authorization"))
+        with self.assertRaises(ValueError):
+            exercise.request("https://staging.example.test", "PUT", "receipt-1", self.source, {self.allocation})
+
+    def test_no_redirect_handler_prevents_bearer_exfiltration(self):
+        with patch("exercise.urllib.request.build_opener") as build:
+            exercise.opener()
+            redirect = next(item for item in build.call_args.args if isinstance(item, exercise.urllib.request.HTTPRedirectHandler))
+        self.assertIsNone(redirect.redirect_request(None, None, None, None, None, None, None))
+
+    def test_write_token_file_requires_owner_owned_mode_0600_no_symlink(self):
+        token = "t" * 32
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "token")
+            with open(path, "w", encoding="ascii") as handle:
+                handle.write(token + "\n")
+            os.chmod(path, 0o600)
+            self.assertEqual(exercise.load_write_token(path), token)
+            os.chmod(path, 0o644)
+            with self.assertRaises(ValueError):
+                exercise.load_write_token(path)
+            os.chmod(path, 0o600)
+            link = os.path.join(directory, "token-link")
+            os.symlink(path, link)
+            with self.assertRaises(ValueError):
+                exercise.load_write_token(link)
+            with self.assertRaises(ValueError):
+                exercise.load_write_token("token")
+
+    def test_write_token_file_rejects_same_size_in_place_mutation_during_read(self):
+        original_read = os.read
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "token")
+            with open(path, "w", encoding="ascii") as handle:
+                handle.write("a" * 32)
+            os.chmod(path, 0o600)
+
+            def mutate(fd, size):
+                prior = os.stat(path)
+                with open(path, "w", encoding="ascii") as handle:
+                    handle.write("b" * 32)
+                os.chmod(path, 0o600)
+                os.utime(path, ns=(prior.st_atime_ns, prior.st_mtime_ns + 1_000_000_000))
+                return original_read(fd, size)
+
+            with patch("exercise.os.read", side_effect=mutate), self.assertRaises(ValueError):
+                exercise.load_write_token(path)
+
+    def test_runtime_hcl_keeps_write_token_out_of_migration_and_drains_before_stop(self):
+        root = Path(__file__).parent / "hello-norn-mysql" / "nomad"
+        runtime = (root / "hello-norn-mysql.nomad.hcl").read_text(encoding="utf-8")
+        migration = (root / "hello-norn-mysql-migrate.nomad.hcl").read_text(encoding="utf-8")
+        self.assertIn("hello-norn-mysql-private-readyz.rule=Host(`${var.hostname}`) && Path(`/readyz`)", runtime)
+        self.assertIn("hello-norn-mysql-private-readyz.entrypoints=private-readiness", runtime)
+        self.assertNotIn("Path(`/readyz`)", runtime.split("hello-norn-mysql-private-readyz.rule", 1)[0])
+        self.assertIn('destination          = "secrets/pilot-write-token"', runtime)
+        self.assertIn("{{ .PILOT_WRITE_TOKEN.Value }}", runtime)
+        self.assertNotIn("PILOT_WRITE_TOKEN={{", runtime)
+        self.assertNotIn("PILOT_WRITE_TOKEN", migration)
+        self.assertIn('shutdown_delay = "10s"', runtime)
+
+    def test_runtime_hcl_retries_only_get_routes(self):
+        runtime = (
+            Path(__file__).parent
+            / "hello-norn-mysql"
+            / "nomad"
+            / "hello-norn-mysql.nomad.hcl"
+        ).read_text(encoding="utf-8")
+        tags = {}
+        for line in runtime.splitlines():
+            stripped = line.strip()
+            if not (stripped.startswith('"traefik.') and stripped.endswith('",')):
+                continue
+            key, value = stripped[1:-2].split("=", 1)
+            self.assertNotIn(key, tags)
+            tags[key] = value
+
+        public_rule = "Host(`${var.hostname}`) && (PathPrefix(`/records/`) || Path(`/version`))"
+        self.assertEqual(tags["traefik.http.routers.hello-norn-mysql.rule"], public_rule)
+        self.assertNotIn("traefik.http.routers.hello-norn-mysql.middlewares", tags)
+        self.assertEqual(
+            tags["traefik.http.routers.hello-norn-mysql-read.rule"],
+            "Host(`${var.hostname}`) && Method(`GET`) && (PathPrefix(`/records/`) || Path(`/version`))",
+        )
+        self.assertEqual(tags["traefik.http.routers.hello-norn-mysql-read.priority"], "1000")
+        self.assertEqual(
+            tags["traefik.http.routers.hello-norn-mysql-read.middlewares"],
+            "hello-norn-mysql-read-retry",
+        )
+        self.assertEqual(tags["traefik.http.middlewares.hello-norn-mysql-read-retry.retry.attempts"], "2")
+        self.assertEqual(tags["traefik.http.middlewares.hello-norn-mysql-read-retry.retry.initialinterval"], "50ms")
+        self.assertFalse(any("retryNonIdempotentMethod" in key for key in tags))
+
+    def test_fault_rejects_short_allocation_prefix(self):
+        self.assertFalse(exercise.stop_staging_allocation("aaaaaaaa", self.namespace))
+
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_fault_stop_requires_target_job(self, run, _which):
+        run.return_value.returncode = 0
+        run.return_value.stdout = json.dumps({"JobID": "another-job", "Namespace": self.namespace})
+        self.assertFalse(exercise.stop_staging_allocation("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", self.namespace))
+        self.assertEqual(run.call_count, 1)
+
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_fault_stop_is_scoped_to_staging_allocation(self, run, _which):
+        inspect = type("Result", (), {"returncode": 0, "stdout": json.dumps({"JobID": "hello-norn-mysql", "Namespace": self.namespace})})()
+        stopped = type("Result", (), {"returncode": 0, "stdout": ""})()
+        run.side_effect = [inspect, stopped]
+        allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        self.assertTrue(exercise.stop_staging_allocation(allocation, self.namespace))
+        self.assertEqual(run.call_args_list[0].args[0], ["nomad", "alloc", "status", "-namespace=" + self.namespace, "-json", allocation])
+        self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "stop", "-namespace=" + self.namespace, "-detach", allocation])
+
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_fault_stop_rejects_same_job_in_another_namespace(self, run, _which):
+        run.return_value.returncode = 0
+        run.return_value.stdout = json.dumps({"JobID": "hello-norn-mysql", "Namespace": "another-namespace"})
+        self.assertFalse(exercise.stop_staging_allocation(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", self.namespace
+        ))
+        self.assertEqual(run.call_count, 1)
+
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_nomad_inventory_requires_two_distinct_app_nodes(self, run, _which):
+        allocations = ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+        def result(value):
+            return type("Result", (), {"returncode": 0, "stdout": json.dumps(value)})()
+        run.side_effect = [
+            result([{"ID": allocations[0], "ClientStatus": "running"}, {"ID": allocations[1], "ClientStatus": "running"}]),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "DesiredStatus": "run", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "CreateIndex": 10, "ModifyIndex": 11, "TaskStates": {"web": {"State": "running"}}, "DeploymentStatus": {"Healthy": True}, "Job": {"NodePool": "app", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "DesiredStatus": "run", "Namespace": self.namespace, "NodeID": "22222222-2222-2222-2222-222222222222", "CreateIndex": 12, "ModifyIndex": 13, "TaskStates": {"web": {"State": "running"}}, "DeploymentStatus": {"Healthy": True}, "Job": {"NodePool": "app", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
+        ]
+        proofs, verified = exercise.inventory_staging(image, "a" * 40, "staging.example.test", self.namespace, self.app_nodes)
+        self.assertTrue(verified)
+        self.assertEqual(proofs[0]["image"], image)
+        self.assertEqual(proofs[0]["sourceVersion"], "a" * 40)
+        self.assertEqual({proof["nodeID"] for proof in proofs}, self.app_nodes)
+        self.assertEqual(run.call_args_list[0].args[0], ["nomad", "job", "allocs", "-namespace=" + self.namespace, "-json", "hello-norn-mysql"])
+        self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "status", "-namespace=" + self.namespace, "-json", allocations[0]])
+        self.assertEqual(len(run.call_args_list), 3)
+
+    def test_nomad_inventory_rejects_unreviewed_or_non_app_node(self):
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+        self.assertEqual(
+            exercise.inventory_staging(image, "a" * 40, "staging.example.test", self.namespace, frozenset({"not-a-node"})),
+            ([], False),
+        )
+
+    @patch("exercise.nomad_json")
+    def test_nomad_inventory_rejects_running_client_without_task_health(self, read):
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+        ids = ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+        read.side_effect = [
+            [{"ID": item, "ClientStatus": "running"} for item in ids],
+            {"ID": ids[0], "JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace,
+             "NodeID": sorted(self.app_nodes)[0], "TaskStates": {"web": {"State": "running"}},
+             "DeploymentStatus": {"Healthy": False},
+             "Job": {"NodePool": "app", "Meta": {"staging_image": image,
+                     "staging_source_version": self.source, "staging_hostname": "staging.example.test"}}},
+        ]
+        self.assertEqual(exercise.inventory_staging(image, self.source, "staging.example.test", self.namespace, self.app_nodes), ([], False))
+
+    def test_app_node_ids_require_exact_two_uuid_json_array(self):
+        good = json.dumps(sorted(self.app_nodes))
+        self.assertEqual(exercise.parse_app_node_ids(good), self.app_nodes)
+        for value in (
+            json.dumps({node: True for node in self.app_nodes}),
+            json.dumps([next(iter(self.app_nodes))]),
+            json.dumps(["not-a-node", "also-not-a-node"]),
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                exercise.parse_app_node_ids(value)
+
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_nomad_inventory_rejects_job_outside_app_pool_without_node_read(self, run, _which):
+        allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+
+        def result(value):
+            return type("Result", (), {"returncode": 0, "stdout": json.dumps(value)})()
+
+        run.side_effect = [
+            result([{"ID": allocation, "ClientStatus": "running"}, {"ID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "ClientStatus": "running"}]),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "DesiredStatus": "run", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "Job": {"NodePool": "control", "Meta": {"staging_image": image, "staging_source_version": "a" * 40, "staging_hostname": "staging.example.test"}}}),
+        ]
+        proofs, verified = exercise.inventory_staging(image, "a" * 40, "staging.example.test", self.namespace, self.app_nodes)
+        self.assertFalse(verified)
+        self.assertEqual(proofs, [])
+        self.assertEqual(len(run.call_args_list), 2)
+        self.assertNotIn("node", run.call_args_list[1].args[0])
+
+    def test_namespace_requires_exact_work_staging_identity(self):
+        for namespace in ("default", "norn-staging-run1", "norn-staging-staging-260907a", "norn-work-staging-"):
+            with self.subTest(namespace=namespace):
+                self.assertFalse(exercise.STAGING_NAMESPACE.fullmatch(namespace))
+        self.assertTrue(exercise.STAGING_NAMESPACE.fullmatch(self.namespace))
+
+    def test_missing_nomad_evidence_stops_before_any_public_write(self):
+        image = "ghcr.io/antiartificial/hello-norn-mysql@sha256:" + "a" * 64
+        argv = ["exercise.py", "--url", "https://staging.example.test", "--expected-image", image,
+                "--expected-source-version", self.source, "--expected-hostname", "staging.example.test",
+                "--namespace", self.namespace, "--app-node-ids-json", json.dumps(sorted(self.app_nodes)),
+                "--write-token-file", "/owner-only/token"]
+        with patch("sys.argv", argv), patch("exercise.load_write_token", return_value="t" * 32), \
+                patch("exercise.inventory_staging", return_value=([], False)), \
+                patch("exercise.request") as request, patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(exercise.main(), 1)
+            request.assert_not_called()
+            self.assertFalse(json.loads(output.getvalue())["nomadEvidenceVerified"])
+
+    def test_fault_rejection_and_recovery_timeout_emit_structured_receipts_without_more_writes(self):
+        image = "ghcr.io/antiartificial/hello-norn-mysql@sha256:" + "a" * 64
+        old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        kept = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        argv = ["exercise.py", "--url", "https://staging.example.test", "--expected-image", image,
+                "--expected-source-version", self.source, "--expected-hostname", "staging.example.test",
+                "--namespace", self.namespace, "--app-node-ids-json", json.dumps(sorted(self.app_nodes)),
+                "--write-token-file", "/owner-only/token", "--fault-allocation", old]
+        pre = {"id": "a" * 32 + "-pre", "write": True, "read": True,
+               "allocation": old, "version": self.source}
+        topology = [{"allocation": old}, {"allocation": kept}]
+        for accepted, reason in ((False, "stop_not_accepted"), (True, "replacement_not_verified")):
+            with self.subTest(accepted=accepted), patch("sys.argv", argv), \
+                    patch("exercise.load_write_token", return_value="t" * 32), \
+                    patch("exercise.inventory_staging", return_value=(topology, True)), \
+                    patch("exercise.proof", return_value=pre), \
+                    patch("exercise.stop_staging_allocation", return_value=accepted), \
+                    patch("exercise.wait_for_recovery", return_value=([], [], False)) as recovery, \
+                    patch("exercise.best_effort_post_fault_readback", return_value={"attempted": True, "publicRecordRead": True,
+                           "allocation": kept, "sourceVersionMatches": True, "nomadProvenanceVerified": False}) as readback, \
+                    patch("exercise.exercise_load") as load, \
+                    patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(exercise.main(), 1)
+                receipt = json.loads(output.getvalue())
+                self.assertEqual(receipt["preDatabaseProof"], pre)
+                self.assertEqual(receipt["fault"]["failureReason"], reason)
+                self.assertEqual(receipt["requests"], 0)
+                self.assertFalse(receipt["postFaultReadbackVerified"])
+                load.assert_not_called()
+                if not accepted:
+                    recovery.assert_not_called()
+                    readback.assert_not_called()
+                else:
+                    readback.assert_called_once_with("https://staging.example.test", pre["id"], self.source)
+                    self.assertTrue(receipt["postFaultReadback"]["publicRecordRead"])
+                    self.assertFalse(receipt["postFaultReadback"]["nomadProvenanceVerified"])
+
+    def test_best_effort_post_fault_readback_is_bounded_and_never_claims_nomad_provenance(self):
+        record = "a" * 32 + "-pre"
+        payload = json.dumps({"id": record, "version": self.source, "allocation": self.allocation}).encode()
+        with patch("exercise.opener") as client:
+            client.return_value.open.return_value = Response(payload)
+            result = exercise.best_effort_post_fault_readback("https://staging.example.test", record, self.source)
+            self.assertTrue(result["publicRecordRead"])
+            self.assertFalse(result["nomadProvenanceVerified"])
+            self.assertEqual(client.return_value.open.call_args.kwargs["timeout"], 5)
+            client.return_value.open.return_value = Response(b" " * 65537)
+            self.assertFalse(exercise.best_effort_post_fault_readback("https://staging.example.test", record, self.source)["publicRecordRead"])
+
+    def test_unverified_pre_write_cannot_trigger_fault(self):
+        image = "ghcr.io/antiartificial/hello-norn-mysql@sha256:" + "a" * 64
+        old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        argv = ["exercise.py", "--url", "https://staging.example.test", "--expected-image", image,
+                "--expected-source-version", self.source, "--expected-hostname", "staging.example.test",
+                "--namespace", self.namespace, "--app-node-ids-json", json.dumps(sorted(self.app_nodes)),
+                "--write-token-file", "/owner-only/token", "--fault-allocation", old]
+        with patch("sys.argv", argv), patch("exercise.load_write_token", return_value="t" * 32), \
+                patch("exercise.inventory_staging", return_value=([{"allocation": old}], True)), \
+                patch("exercise.proof", return_value={"id": "x", "write": False, "read": False}), \
+                patch("exercise.stop_staging_allocation") as stop, \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(exercise.main(), 1)
+            stop.assert_not_called()
+            self.assertEqual(json.loads(output.getvalue())["fault"]["failureReason"], "pre_write_not_verified")
+
+    @patch("exercise.time.sleep")
+    @patch("exercise.inventory_staging")
+    @patch("exercise.nomad_json")
+    def test_fault_recovery_requires_stopped_target_and_replacement(self, nomad_json, inventory, _sleep):
+        old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        kept = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        replacement = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+        nomad_json.return_value = {"ClientStatus": "complete"}
+        inventory.return_value = ([{"allocation": kept}, {"allocation": replacement}], True)
+        proofs, replacements, recovered = exercise.wait_for_recovery(
+            old, {old, kept}, "image", "source", "staging.example.test", self.namespace, self.app_nodes, 1
+        )
+        self.assertTrue(recovered)
+        self.assertEqual(proofs[1]["allocation"], replacement)
+        self.assertEqual(replacements, [replacement])
+        self.assertEqual(
+            nomad_json.call_args.args[0],
+            ["alloc", "status", "-namespace=" + self.namespace, "-json", old],
+        )
+        self.assertEqual(inventory.call_args.args[-2:], (self.namespace, self.app_nodes))
+
+    @patch("exercise.time.sleep")
+    @patch("exercise.request")
+    def test_public_recovery_requires_replacement_response(self, request, _sleep):
+        replacement = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+        request.return_value = {"ok": False, "allocation": ""}
+        allocation, recovered = exercise.wait_for_public_replacement(
+            "https://staging.example.test", "receipt", [replacement], self.source, 0.001
+        )
+        self.assertFalse(recovered)
+        self.assertEqual(allocation, "")
+
+
+if __name__ == "__main__":
+    unittest.main()
