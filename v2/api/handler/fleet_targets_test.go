@@ -180,12 +180,13 @@ func (b *fakeTargetBackend) HolderBinding(context.Context, string) (FleetTargetH
 }
 
 type fakeTargetObserver struct {
-	mu        sync.Mutex
-	applyRuns []string
-	recovered []string
-	listings  int
-	completed map[string]bool
-	listErr   error
+	mu            sync.Mutex
+	applyRuns     []string
+	recovered     []string
+	recoveryHeads []string
+	listings      int
+	completed     map[string]bool
+	listErr       error
 }
 
 func (o *fakeTargetObserver) status(runID, runAttempt int64) *githubapp.ApplyRunObservation {
@@ -212,10 +213,11 @@ func (o *fakeTargetObserver) ObserveApplyRunByNonceHash(_ context.Context, _, _ 
 	return o.status(approved.RunID, runAttempt), nil
 }
 
-func (o *fakeTargetObserver) ObserveRecoverRun(_ context.Context, _ int64, _ string, runID, runAttempt int64, _ string) (*githubapp.ApplyRunObservation, error) {
+func (o *fakeTargetObserver) ObserveRecoverRun(_ context.Context, _ int64, _ string, runID, runAttempt int64, headSHA string) (*githubapp.ApplyRunObservation, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.recovered = append(o.recovered, runKeyString(runID, runAttempt))
+	o.recoveryHeads = append(o.recoveryHeads, headSHA)
 	return o.status(runID, runAttempt), nil
 }
 
@@ -365,9 +367,9 @@ func TestTerminalReleaseObservesEveryRun(t *testing.T) {
 		Dispatch: githubapp.Dispatch{RunID: boundRun, PlanRunID: 1, PlanSHA: strings.Repeat("c", 64), ApprovedHeadSHA: strings.Repeat("d", 40)},
 		Attempts: []fleet.RunnerAttempt{
 			{RunnerAttemptID: "github-actions:acme/fleet:100:1", CommitSHA: strings.Repeat("e", 40)},
-			{RunnerAttemptID: "github-actions:acme/fleet:200:1", CommitSHA: strings.Repeat("e", 40)},
-			{RunnerAttemptID: "github-actions:acme/fleet:200:1", CommitSHA: strings.Repeat("e", 40)}, // duplicate
-			{RunnerAttemptID: "github-actions:acme/fleet:300:2", CommitSHA: strings.Repeat("e", 40)},
+			{RunnerAttemptID: "github-actions:acme/fleet:200:1", CommitSHA: strings.Repeat("e", 40), RecoveryWorkflowHeadSHA: strings.Repeat("f", 40)},
+			{RunnerAttemptID: "github-actions:acme/fleet:200:1", CommitSHA: strings.Repeat("e", 40), RecoveryWorkflowHeadSHA: strings.Repeat("f", 40)}, // duplicate
+			{RunnerAttemptID: "github-actions:acme/fleet:300:2", CommitSHA: strings.Repeat("e", 40), RecoveryWorkflowHeadSHA: strings.Repeat("a", 40)},
 		},
 	}
 	observer.completed[runKeyString(boundRun, 1)] = true
@@ -383,6 +385,9 @@ func TestTerminalReleaseObservesEveryRun(t *testing.T) {
 	}
 	if got := strings.Join(observer.recovered, ","); got != "200:1,300:2" {
 		t.Fatalf("every distinct recover run must be observed once: %s", got)
+	}
+	if got := strings.Join(observer.recoveryHeads, ","); got != strings.Repeat("f", 40)+","+strings.Repeat("a", 40) {
+		t.Fatalf("recovery must use recorded workflow heads, not the plan commit: %s", got)
 	}
 	evidence := backend.operations.last.FleetTargetReleaseEvidence
 	if evidence == nil || !evidence.BoundApplyRunCompleted || strings.Join(evidence.CompletedRunnerAttemptIDs, ",") != "github-actions:acme/fleet:100:1,github-actions:acme/fleet:200:1" {
@@ -419,6 +424,31 @@ func TestTerminalReleaseObservesEveryRun(t *testing.T) {
 	mountFleetTargetRoutes(noGitHub, NewFleetTargetRoutes(backend, nil))
 	if rec := fleetTargetDo(noGitHub, http.MethodPost, path, fleetTargetPrincipal(ScopeAdmin), "k-nogh", map[string]interface{}{"mode": "terminal", "expectedGeneration": 3}); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no observer: status=%d", rec.Code)
+	}
+}
+
+func TestTerminalEvidenceRequiresExactLegacyRecoveryHeadBinding(t *testing.T) {
+	const planID = "70a6338c-0cb9-4a36-aeca-eead49539056"
+	const runID int64 = 39092844731
+	const applyRunID int64 = 39090698999
+	planCommit := strings.Repeat("9", 40)
+	workflowHead := strings.Repeat("c", 40)
+	attemptID := "github-actions:antiartificial/norn-fleet:39092844731:1"
+	backend := &fakeTargetBackend{binding: FleetTargetHolderBinding{
+		FleetEnvironment: "staging/nyc3", NonceSHA256: strings.Repeat("b", 64), BoundRunAttempt: 1,
+		Dispatch: githubapp.Dispatch{RunID: applyRunID, PlanRunID: 1, PlanSHA: strings.Repeat("d", 64), ApprovedHeadSHA: planCommit},
+		Attempts: []fleet.RunnerAttempt{{RunnerAttemptID: attemptID, CommitSHA: planCommit}},
+	}}
+	observer := &fakeTargetObserver{completed: map[string]bool{runKeyString(applyRunID, 1): true, runKeyString(runID, 1): true}}
+	routes := NewFleetTargetRoutes(backend, observer)
+	first, problem := routes.terminalEvidence(context.Background(), planID)
+	if problem != nil || len(first.CompletedRunnerAttemptIDs) != 0 || len(observer.recovered) != 0 {
+		t.Fatalf("unbound legacy recovery was observed: evidence=%+v problem=%+v", first, problem)
+	}
+	routes.legacyRecoveryHeadBinding = planID + ":39092844731:1:" + planCommit + ":" + workflowHead
+	second, problem := routes.terminalEvidence(context.Background(), planID)
+	if problem != nil || len(second.CompletedRunnerAttemptIDs) != 1 || second.CompletedRunnerAttemptIDs[0] != attemptID || len(observer.recoveryHeads) != 1 || observer.recoveryHeads[0] != workflowHead {
+		t.Fatalf("exact legacy recovery not observed with workflow head: evidence=%+v problem=%+v heads=%v", second, problem, observer.recoveryHeads)
 	}
 }
 

@@ -9,13 +9,14 @@ import (
 // fleet.RunnerAttempt shape, so the pure lineage and expiry helpers in this
 // package (and the fleet/fleettest HTTP-boundary conformance suite) can treat
 // either backend's attempt uniformly. Fields with no home in fleet.RunnerAttempt
-// (PilotRunID, PrincipalSubject, Metadata, Timing, ...) are PG-legacy-only and
+// (PilotRunID, PrincipalSubject, Timing, ...) are PG-legacy-only and
 // are intentionally dropped; this is a read-only projection and never writes
 // back to a.
 func FromLegacy(a *model.FleetRunnerAttempt) fleet.RunnerAttempt {
 	if a == nil {
 		return fleet.RunnerAttempt{}
 	}
+	recoveryHead, _ := a.Metadata["recoveryWorkflowHeadSHA"].(string)
 	return fleet.RunnerAttempt{
 		SchemaVersion:           a.SchemaVersion,
 		ID:                      a.ID,
@@ -25,6 +26,7 @@ func FromLegacy(a *model.FleetRunnerAttempt) fleet.RunnerAttempt {
 		Status:                  string(a.Status),
 		CurrentPhase:            a.CurrentPhase,
 		CommitSHA:               a.CommitSHA,
+		RecoveryWorkflowHeadSHA: recoveryHead,
 		PlanSHA256:              a.PlanSHA256,
 		WorkflowURL:             a.WorkflowURL,
 		RootAttemptID:           a.RootAttemptID,

@@ -234,7 +234,7 @@ func (c *Client) ObserveRecoverRun(ctx context.Context, boundApplyRunID int64, n
 	if err := c.verifyRecoverRunIdentity(latest, runID, boundApplyRunID, nonceHash, recordedHeadSHA); err != nil {
 		return nil, err
 	}
-	if int64(latest.RunAttempt) != runAttempt || latest.Status != run.Status || latest.Conclusion != run.Conclusion {
+	if int64(latest.RunAttempt) != runAttempt || latest.HeadSHA != run.HeadSHA || latest.Status != run.Status || latest.Conclusion != run.Conclusion {
 		return nil, fmt.Errorf("protected recover run has a newer or disagreeing attempt")
 	}
 	return &ApplyRunObservation{RunID: run.ID, RunAttempt: int64(run.RunAttempt), Status: run.Status, Conclusion: run.Conclusion, ObservedAt: c.now().UTC()}, nil

@@ -381,6 +381,7 @@ func TestObserveRecoverRunRejectsForeignWorkflowOrPlan(t *testing.T) {
 		"different run id in body":       both(with(func(r *observeRunFields) { r.id = 156 })),
 		"rerun between reads":            {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.attempt, r.status, r.conclusion = 2, "queued", "" })},
 		"latest disagrees":               {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.conclusion = "success" })},
+		"latest head disagrees":          {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.headSHA = strings.Repeat("b", 40) })},
 		"latest bound to foreign apply":  {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.title = fmt.Sprintf(recoverRunDisplayTitleFormat, 94) })},
 		"attempt 404":                    {attemptStatus: http.StatusNotFound, attemptBody: `{"message":"Not Found"}`, latestBody: ok},
 		"latest 403":                     {attemptBody: ok, latestStatus: http.StatusForbidden, latestBody: `{"message":"Forbidden"}`},

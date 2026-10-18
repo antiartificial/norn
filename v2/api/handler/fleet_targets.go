@@ -153,8 +153,9 @@ type FleetTargetBackend interface {
 
 // FleetTargetRoutes serves the target and fence routes for one backend.
 type FleetTargetRoutes struct {
-	backend  FleetTargetBackend
-	observer FleetTargetRunObserver
+	backend                   FleetTargetBackend
+	observer                  FleetTargetRunObserver
+	legacyRecoveryHeadBinding string
 }
 
 // NewFleetTargetRoutes builds the shared routes. observer may be nil when no
@@ -171,12 +172,20 @@ func (h *Handler) FleetTargetRoutes() *FleetTargetRoutes {
 	if h.fleetGitHub != nil {
 		observer = h.fleetGitHub
 	}
-	return NewFleetTargetRoutes(&pgFleetTargetBackend{h: h}, observer)
+	routes := NewFleetTargetRoutes(&pgFleetTargetBackend{h: h}, observer)
+	if h.cfg != nil {
+		routes.legacyRecoveryHeadBinding = h.cfg.FleetLegacyRecoveryHeadBinding
+	}
+	return routes
 }
 
 // NewEtcdFleetTargetRoutes returns the etcd routes. observer may be nil.
 func NewEtcdFleetTargetRoutes(cfg *config.Config, operations *etcdstore.V3OperationStore, observer FleetTargetRunObserver) *FleetTargetRoutes {
-	return NewFleetTargetRoutes(&etcdFleetTargetBackend{cfg: cfg, operations: operations}, observer)
+	routes := NewFleetTargetRoutes(&etcdFleetTargetBackend{cfg: cfg, operations: operations}, observer)
+	if cfg != nil {
+		routes.legacyRecoveryHeadBinding = cfg.FleetLegacyRecoveryHeadBinding
+	}
+	return routes
 }
 
 // fleetTargetFenceCodes lists every stable fence and release code the target
@@ -574,7 +583,11 @@ func (s *FleetTargetRoutes) terminalEvidence(ctx context.Context, holderPlanID s
 			}
 			continue
 		}
-		obs, obsErr := s.observer.ObserveRecoverRun(ctx, approved.RunID, binding.NonceSHA256, runID, runAttempt, attempt.CommitSHA)
+		recoveryHeadSHA := recoveryWorkflowHeadSHA(holderPlanID, attempt.RunnerAttemptID, attempt.CommitSHA, attempt.RecoveryWorkflowHeadSHA, s.legacyRecoveryHeadBinding)
+		if recoveryHeadSHA == "" {
+			continue
+		}
+		obs, obsErr := s.observer.ObserveRecoverRun(ctx, approved.RunID, binding.NonceSHA256, runID, runAttempt, recoveryHeadSHA)
 		if obsErr == nil && obs != nil && obs.Status == "completed" {
 			evidence.CompletedRunnerAttemptIDs = append(evidence.CompletedRunnerAttemptIDs, id)
 		}

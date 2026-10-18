@@ -211,9 +211,12 @@ type RunnerAttempt struct {
 	Status          string `json:"status"`
 	CurrentPhase    string `json:"currentPhase"`
 	CommitSHA       string `json:"commitSha"`
-	PlanSHA256      string `json:"planSha256"`
-	WorkflowURL     string `json:"workflowUrl"`
-	WorkloadSHA     string `json:"workloadSha,omitempty"`
+	// RecoveryWorkflowHeadSHA is the authenticated workflow commit, separate
+	// from CommitSHA, which remains the original reviewed plan commit.
+	RecoveryWorkflowHeadSHA string `json:"recoveryWorkflowHeadSha,omitempty"`
+	PlanSHA256              string `json:"planSha256"`
+	WorkflowURL             string `json:"workflowUrl"`
+	WorkloadSHA             string `json:"workloadSha,omitempty"`
 	// RootAttemptID is output-only server-owned ancestry. Clients cannot set it.
 	RootAttemptID           string     `json:"rootAttemptId"`
 	RetryOf                 string     `json:"retryOf,omitempty"`
