@@ -153,7 +153,7 @@ func TestGrantTypeTable(t *testing.T) {
 		{legacy, CredentialGrantRequest{Phase: "plan", Types: []string{"do-read", "spaces-rw"}}, ""},
 		{legacy, CredentialGrantRequest{Phase: "plan", Types: []string{"do-write"}}, CodeFleetCredentialTypeNotAllowed},
 		{legacy, CredentialGrantRequest{Phase: "plan", AttemptID: id, Types: []string{"do-read"}}, CodeInvalidFleetExecutorRequest},
-		{legacy, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredBootstrapDir, CredSSHNode}}, CodeInvalidFleetExecutorRequest},
+		{legacy, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredBootstrapDir, CredSSHNode}}, ""},
 		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, Types: []string{CredBootstrapDir, CredSSHNode}}, CodeFleetCredentialGrantAttemptRequired},
 		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredBootstrapDir, CredSSHNode}}, ""},
 		{v3, CredentialGrantRequest{Phase: GrantPhasePreflight, AttemptID: id, Types: []string{CredDOWrite}}, CodeFleetCredentialTypeNotAllowed},

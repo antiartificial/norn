@@ -576,7 +576,8 @@ func (s *FleetExecutorOpsRoutes) Grant(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if s.backend.GrantProfile() == executor.GrantProfileV3 && attempt != nil &&
+	if attempt != nil && (s.backend.GrantProfile() == executor.GrantProfileV3 ||
+		(s.backend.GrantProfile() == executor.GrantProfilePostgresLegacyNoDrain && attempt.RetryOf != "")) &&
 		(request.Phase == "provider_applying" || request.Phase == executor.GrantPhaseRecover) && grantIncludesType(request.Types, executor.CredDOWrite) {
 		rows, err := s.backend.FleetExecutorLedgerRows(ctx, executor.KindPreflightComplete, planID)
 		if err != nil {
@@ -696,8 +697,8 @@ func (s *FleetExecutorOpsRoutes) PreflightComplete(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	if s.backend.GrantProfile() != executor.GrantProfileV3 {
-		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, "preflight completion is available only on the v3 executor profile")
+	if s.backend.GrantProfile() != executor.GrantProfileV3 && s.backend.GrantProfile() != executor.GrantProfilePostgresLegacyNoDrain {
+		WriteControlProblem(w, r, http.StatusBadRequest, executor.CodeInvalidFleetExecutorRequest, "preflight completion is unavailable on this executor profile")
 		return
 	}
 	var request executor.PreflightCompleteRequest
@@ -737,6 +738,7 @@ func (s *FleetExecutorOpsRoutes) PreflightComplete(w http.ResponseWriter, r *htt
 	}
 	now := s.now()
 	if attempt == nil || attempt.PlanID != planID || !attempt.Executor || attempt.PrincipalSubject != executor.PrincipalSubject(principal.DeviceID) || !attempt.Live(now) ||
+		(s.backend.GrantProfile() == executor.GrantProfilePostgresLegacyNoDrain && attempt.RetryOf == "") ||
 		(attempt.CurrentPhase != "provider_applying" && (attempt.RetryOf == "" || attempt.CurrentPhase == "complete")) {
 		WriteControlProblem(w, r, http.StatusConflict, executor.CodeFleetCredentialGrantAttemptRequired, "preflight completion needs a live owned first attempt at provider_applying or a nonterminal recovery attempt")
 		return

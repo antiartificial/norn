@@ -164,6 +164,9 @@ func DecideFleetExecutorGrant(request executor.CredentialGrantRequest, profile e
 		return request, nil, executorRefusal(executor.CodeFleetCredentialGrantAttemptRequired, "a grant needs a live attempt of this plan owned by this device")
 	}
 	if request.Phase == executor.GrantPhasePreflight {
+		if profile == executor.GrantProfilePostgresLegacyNoDrain && attempt.RetryOf == "" {
+			return request, nil, executorRefusal(executor.CodeFleetCredentialGrantPhaseMismatch, "legacy preflight requires a recovery attempt")
+		}
 		if attempt.CurrentPhase != "provider_applying" && (attempt.RetryOf == "" || attempt.CurrentPhase == "complete") {
 			return request, nil, executorRefusal(executor.CodeFleetCredentialGrantPhaseMismatch, "preflight requires provider_applying or a nonterminal recovery attempt")
 		}
