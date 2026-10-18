@@ -126,6 +126,46 @@ func TestGitHubActionsFleetAuthorityOnlyAllowsProtectedStagingApplyAndRecovery(t
 	}
 }
 
+func TestGitHubActionsWorkflowRunOnlyAuthorizesPinnedWorkStagingRecovery(t *testing.T) {
+	sha := strings.Repeat("b", 40)
+	h := &Handler{cfg: &config.Config{
+		FleetAuthorityOnly:                    true,
+		GitHubActionsAllowedRefs:              []string{"refs/heads/main"},
+		GitHubActionsAllowedEvents:            []string{"push", "workflow_dispatch", "workflow_run"},
+		GitHubActionsFleetAllowedRepository:   "acme/norn-fleet@101@202",
+		GitHubActionsFleetAllowedEnvironments: []string{"work-staging"},
+		GitHubActionsFleetAllowedIntents:      []string{"apply", "recover"},
+		GitHubActionsFleetAllowedWorkflowRefs: []string{"acme/norn-fleet/.github/workflows/recover.yml@" + sha},
+	}}
+	c := &githubActionsClaims{Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", Environment: "work-staging", Ref: "refs/heads/main", RefProtected: "true", EventName: "workflow_run", WorkflowRef: "acme/norn-fleet/.github/workflows/recover.yml@refs/heads/main", WorkflowSHA: sha}
+	r := githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "staging", Intent: "recover"}
+	if _, err := h.authorizeGitHubActionsClaims(c, r); err != nil {
+		t.Fatalf("automatic Fleet recovery rejected: %v", err)
+	}
+	for name, alter := range map[string]func(*githubActionsClaims, *githubActionsExchangeRequest){
+		"apply intent": func(_ *githubActionsClaims, r *githubActionsExchangeRequest) { r.Intent = "apply" },
+		"release lane": func(_ *githubActionsClaims, r *githubActionsExchangeRequest) {
+			r.Scope = ScopeReleaseStage
+			r.App = "app"
+		},
+		"wrong workflow": func(c *githubActionsClaims, _ *githubActionsExchangeRequest) {
+			c.WorkflowRef = "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main"
+		},
+		"wrong workflow SHA": func(c *githubActionsClaims, _ *githubActionsExchangeRequest) { c.WorkflowSHA = strings.Repeat("a", 40) },
+		"unprotected ref":    func(c *githubActionsClaims, _ *githubActionsExchangeRequest) { c.RefProtected = "false" },
+		"other environment":  func(c *githubActionsClaims, _ *githubActionsExchangeRequest) { c.Environment = "staging" },
+		"other repository":   func(c *githubActionsClaims, _ *githubActionsExchangeRequest) { c.RepositoryID = "999" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed, request := *c, r
+			alter(&changed, &request)
+			if _, err := h.authorizeGitHubActionsClaims(&changed, request); err == nil {
+				t.Fatal("workflow_run identity accepted")
+			}
+		})
+	}
+}
+
 func TestGitHubActionsFleetAuthorityOnlyMapsExactWorkStagingClaim(t *testing.T) {
 	workflowSHA := strings.Repeat("a", 40)
 	h := &Handler{cfg: &config.Config{

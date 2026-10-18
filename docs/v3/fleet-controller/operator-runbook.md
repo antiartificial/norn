@@ -342,6 +342,13 @@ It must differ from the apply workflow (`NORN_FLEET_GITHUB_APPLY_WORKFLOW`'s
 file). Set it if your recovery workflow is not `recover.yml`; a wrong name
 makes terminal release and recovery report incomplete proof.
 
+For an authority-only work-staging controller using automatic recovery, set
+`NORN_GITHUB_ACTIONS_ALLOWED_EVENTS=push,workflow_dispatch,workflow_run`.
+The `workflow_run` OIDC assertion is accepted only for `fleet:operate` with
+intent `recover`, the SHA-pinned `recover.yml` workflow on protected main, and
+the `work-staging` GitHub environment. The usual repository tuple and pinned
+workflow allowlists still apply. Do not add `workflow_run` to release lanes.
+
 ## 7. Reconciler
 
 The reconciler derives resource status from the fence, attempts, dispatches

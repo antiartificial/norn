@@ -413,8 +413,26 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 	}
 	workStaging := *valid
 	workStaging.GitHubActionsFleetAllowedEnvironments = []string{"work-staging"}
+	workStaging.GitHubActionsAllowedEvents = []string{"push", "workflow_dispatch", "workflow_run"}
 	if err := validateControlSecurity(&workStaging); err != nil {
-		t.Fatalf("dedicated work-staging GitHub environment rejected: %v", err)
+		t.Fatalf("dedicated work-staging automatic recovery configuration rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*config.Config){
+		"staging-only environment": func(c *config.Config) { c.GitHubActionsFleetAllowedEnvironments = []string{"staging"} },
+		"no pinned recover workflow": func(c *config.Config) {
+			c.GitHubActionsFleetAllowedWorkflowRefs = []string{"acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40)}
+		},
+		"branch ref instead of immutable recover": func(c *config.Config) {
+			c.GitHubActionsFleetAllowedWorkflowRefs = []string{"acme/norn-fleet/.github/workflows/recover.yml@refs/heads/main"}
+		},
+	} {
+		t.Run("workflow_run "+name, func(t *testing.T) {
+			candidate := workStaging
+			mutate(&candidate)
+			if err := validateControlSecurity(&candidate); err == nil {
+				t.Fatal("unusable automatic recovery configuration accepted")
+			}
+		})
 	}
 	for _, tt := range []struct {
 		name   string
@@ -427,6 +445,9 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 		{"requires only staging Fleet environment", func(c *config.Config) { c.GitHubActionsFleetAllowedEnvironments = []string{"staging", "production"} }},
 		{"rejects multiple staging GitHub environments", func(c *config.Config) { c.GitHubActionsFleetAllowedEnvironments = []string{"staging", "work-staging"} }},
 		{"requires only protected main ref", func(c *config.Config) { c.GitHubActionsAllowedRefs = []string{"refs/heads/main", "refs/heads/release"} }},
+		{"rejects extra GitHub event", func(c *config.Config) {
+			c.GitHubActionsAllowedEvents = []string{"push", "workflow_dispatch", "workflow_run", "pull_request"}
+		}},
 		{"requires exact Fleet repository tuple", func(c *config.Config) { c.GitHubActionsFleetAllowedRepository = "acme/other-fleet@101@202" }},
 		{"requires fixed GitHub App API", func(c *config.Config) { c.FleetGitHubAPIBaseURL = "https://github.example.test" }},
 		{"requires fixed GitHub Actions JWKS", func(c *config.Config) { c.GitHubActionsOIDCJWKSURL = "https://github.example.test/jwks" }},

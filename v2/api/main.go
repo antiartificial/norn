@@ -2296,8 +2296,8 @@ func validateFleetAuthorityOnly(cfg *config.Config, profile, environment string)
 	if strings.TrimSpace(cfg.FleetConfig) == "" || strings.TrimSpace(cfg.FleetGitHubAppID) == "" || cfg.FleetGitHubInstallationID <= 0 || strings.TrimSpace(cfg.FleetGitHubPrivateKeyFile) == "" || strings.TrimSpace(cfg.FleetGitHubRepository) == "" || strings.TrimSpace(cfg.FleetGitHubConfigPath) == "" || cfg.FleetGitHubEnvironment != "staging" || strings.TrimRight(strings.TrimSpace(cfg.FleetGitHubAPIBaseURL), "/") != "https://api.github.com" {
 		return fmt.Errorf("Fleet authority-only mode requires a complete staging Fleet GitHub App and NORN_FLEET_CONFIG")
 	}
-	if strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || strings.TrimSpace(cfg.GitHubActionsOIDCJWKSURL) != "https://token.actions.githubusercontent.com/.well-known/jwks" || strings.TrimSpace(cfg.GitHubActionsFleetAllowedRepository) == "" || len(cfg.GitHubActionsFleetAllowedWorkflowRefs) == 0 || !exactStringSet(cfg.GitHubActionsAllowedRefs, "refs/heads/main") || !exactStringSet(cfg.GitHubActionsAllowedEvents, "push", "workflow_dispatch") || !(exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "staging") || exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "work-staging")) || !(exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover") || exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover", handler.FleetObserveIntent)) {
-		return fmt.Errorf("Fleet authority-only mode requires exact GitHub Actions Fleet OIDC repository/workflow, protected main ref, push/workflow_dispatch events, one staging or work-staging GitHub environment, and apply/recover intents (plus the optional observe intent)")
+	if strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || strings.TrimSpace(cfg.GitHubActionsOIDCJWKSURL) != "https://token.actions.githubusercontent.com/.well-known/jwks" || strings.TrimSpace(cfg.GitHubActionsFleetAllowedRepository) == "" || len(cfg.GitHubActionsFleetAllowedWorkflowRefs) == 0 || !exactStringSet(cfg.GitHubActionsAllowedRefs, "refs/heads/main") || !(exactStringSet(cfg.GitHubActionsAllowedEvents, "push", "workflow_dispatch") || exactStringSet(cfg.GitHubActionsAllowedEvents, "push", "workflow_dispatch", "workflow_run")) || !(exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "staging") || exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "work-staging")) || !(exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover") || exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover", handler.FleetObserveIntent)) {
+		return fmt.Errorf("Fleet authority-only mode requires exact GitHub Actions Fleet OIDC repository/workflow, protected main ref, push/workflow_dispatch events (optionally workflow_run for work-staging recovery), one staging or work-staging GitHub environment, and apply/recover intents (plus the optional observe intent)")
 	}
 	fleetDocument, err := os.ReadFile(cfg.FleetConfig)
 	if err != nil {
@@ -2314,6 +2314,18 @@ func validateFleetAuthorityOnly(cfg *config.Config, profile, environment string)
 	for _, workflowRef := range cfg.GitHubActionsFleetAllowedWorkflowRefs {
 		if !immutableGitHubWorkflowRef(workflowRef) || !strings.HasPrefix(workflowRef, cfg.FleetGitHubRepository+"/.github/workflows/") {
 			return fmt.Errorf("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS entries must be exact pinned workflows in NORN_FLEET_GITHUB_REPOSITORY")
+		}
+	}
+	if exactStringSet(cfg.GitHubActionsAllowedEvents, "push", "workflow_dispatch", "workflow_run") {
+		pinnedRecover := false
+		for _, workflowRef := range cfg.GitHubActionsFleetAllowedWorkflowRefs {
+			if strings.HasPrefix(workflowRef, cfg.FleetGitHubRepository+"/.github/workflows/recover.yml@") {
+				pinnedRecover = true // The loop above already verified the full immutable SHA.
+				break
+			}
+		}
+		if !exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "work-staging") || !pinnedRecover {
+			return fmt.Errorf("Fleet authority-only workflow_run requires only work-staging and an immutable recover.yml workflow ref")
 		}
 	}
 	if (cfg.ReleaseAdmissionMode != "" && cfg.ReleaseAdmissionMode != "keyed") || (cfg.ReleaseAttestationTrustMode != "" && cfg.ReleaseAttestationTrustMode != "github-public") || len(cfg.GitHubActionsReleaseBindings) != 0 || len(cfg.GitHubActionsAllowedWorkflowRefs) != 0 || len(cfg.GitHubActionsAllowedEnvironments) != 0 || strings.TrimSpace(cfg.QualificationSigningKey) != "" || len(cfg.TrustedQualificationSigningKeys) != 0 || strings.TrimSpace(cfg.ReleasePrivateSigningBackend) != "" || strings.TrimSpace(cfg.ReleasePrivateSigningKeyFile) != "" || strings.TrimSpace(cfg.ReleasePrivateKMSHelper) != "" || strings.TrimSpace(cfg.ReleasePrivateKMSKeyID) != "" {

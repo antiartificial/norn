@@ -402,6 +402,12 @@ func (h *Handler) authorizeGitHubActionsClaims(c *githubActionsClaims, request g
 	if (c.Environment != request.Environment && !fleetAuthorityEnvironmentAlias) || !matchesAny(c.Ref, h.cfg.GitHubActionsAllowedRefs) || !matchesAny(c.EventName, h.cfg.GitHubActionsAllowedEvents) {
 		return CIIdentity{}, fmt.Errorf("GitHub Actions ref, event, or environment is not allowlisted")
 	}
+	// workflow_run is emitted by automatic recover.yml after a failed apply.
+	// Even when the configured event set contains it, this event must never
+	// authorize an apply, a release lane, or a different Fleet workflow.
+	if c.EventName == "workflow_run" && !(h.cfg.IsFleetAuthorityOnly() && request.Scope == ScopeFleetOperate && request.Intent == "recover" && c.Environment == "work-staging" && c.Ref == "refs/heads/main" && c.RefProtected == "true" && c.WorkflowRef == c.Repository+"/.github/workflows/recover.yml@refs/heads/main" && matchesPinnedDirectWorkflow(c.WorkflowRef, c.WorkflowSHA, c.Ref, h.cfg.GitHubActionsFleetAllowedWorkflowRefs)) {
+		return CIIdentity{}, fmt.Errorf("GitHub Actions workflow_run is allowed only for pinned work-staging Fleet recovery")
+	}
 	if request.Scope == ScopeFleetOperate || request.Scope == ScopeFleetExternalAdmission {
 		if c.Ref != "refs/heads/main" || c.RefProtected != "true" || !matchesRepository(c, []string{h.cfg.GitHubActionsFleetAllowedRepository}) || !matchesAny(c.Environment, h.cfg.GitHubActionsFleetAllowedEnvironments) || !matchesAny(request.Intent, h.cfg.GitHubActionsFleetAllowedIntents) || !matchesPinnedDirectWorkflow(c.WorkflowRef, c.WorkflowSHA, c.Ref, h.cfg.GitHubActionsFleetAllowedWorkflowRefs) {
 			return CIIdentity{}, fmt.Errorf("GitHub Actions fleet identity is not allowlisted")
