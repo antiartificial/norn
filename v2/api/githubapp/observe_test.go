@@ -158,8 +158,8 @@ func TestListPlanRunsBounded(t *testing.T) {
 // the exact-attempt and latest-run endpoints so tests can model reruns,
 // malformed payloads and GitHub error statuses.
 type observeFake struct {
-	attemptStatus, latestStatus, jobsStatus int
-	attemptBody, latestBody, jobsBody       string
+	attemptStatus, latestStatus, jobsStatus                int
+	attemptBody, latestBody, latestAfterJobsBody, jobsBody string
 }
 
 func recoverJobsFixture(runID int64, attempt int, headSHA string) string {
@@ -171,6 +171,7 @@ func (f *observeFake) client(t *testing.T, runID int64, attempt int) *Client {
 	attemptPath := fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d/attempts/%d", runID, attempt)
 	latestPath := fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d", runID)
 	jobsPath := fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d/attempts/%d/jobs", runID, attempt)
+	jobsRead := false
 	return testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/app" {
 			fmt.Fprint(w, `{"slug":"norn"}`)
@@ -189,8 +190,13 @@ func (f *observeFake) client(t *testing.T, runID int64, attempt int) *Client {
 		case attemptPath:
 			write(f.attemptStatus, f.attemptBody)
 		case latestPath:
-			write(f.latestStatus, f.latestBody)
+			body := f.latestBody
+			if jobsRead && f.latestAfterJobsBody != "" {
+				body = f.latestAfterJobsBody
+			}
+			write(f.latestStatus, body)
 		case jobsPath:
+			jobsRead = true
 			body := f.jobsBody
 			if body == "" {
 				body = recoverJobsFixture(runID, attempt, strings.Repeat("d", 40))
@@ -392,6 +398,7 @@ func TestObserveRecoverRunRejectsForeignWorkflowOrPlan(t *testing.T) {
 		"attempt number mismatch":       {attemptBody: with(func(r *observeRunFields) { r.attempt = 2 }), latestBody: ok},
 		"different run id in body":      both(with(func(r *observeRunFields) { r.id = 156 })),
 		"rerun between reads":           {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.attempt, r.status, r.conclusion = 2, "queued", "" })},
+		"rerun after binding job read":  {attemptBody: ok, latestBody: ok, latestAfterJobsBody: with(func(r *observeRunFields) { r.attempt, r.status, r.conclusion = 2, "queued", "" })},
 		"latest disagrees":              {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.conclusion = "success" })},
 		"latest head disagrees":         {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.headSHA = strings.Repeat("b", 40) })},
 		"latest bound to foreign apply": {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.title = fmt.Sprintf(recoverRunDisplayTitleFormat, 94) })},

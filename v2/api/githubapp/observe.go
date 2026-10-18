@@ -226,6 +226,9 @@ func (c *Client) ObserveRecoverRun(ctx context.Context, boundApplyRunID int64, n
 	if int64(run.RunAttempt) != runAttempt || !validApplyRunObservationState(run.Status, run.Conclusion) {
 		return nil, fmt.Errorf("GitHub recover run state is inconsistent")
 	}
+	if err := c.verifyRecoverBindingJob(ctx, token, runID, runAttempt, recordedHeadSHA); err != nil {
+		return nil, err
+	}
 	latest, err := c.getApplyRun(ctx, token, runID)
 	if err != nil {
 		return nil, err
@@ -235,9 +238,6 @@ func (c *Client) ObserveRecoverRun(ctx context.Context, boundApplyRunID int64, n
 	}
 	if int64(latest.RunAttempt) != runAttempt || latest.HeadSHA != run.HeadSHA || latest.Status != run.Status || latest.Conclusion != run.Conclusion {
 		return nil, fmt.Errorf("protected recover run has a newer or disagreeing attempt")
-	}
-	if err := c.verifyRecoverBindingJob(ctx, token, runID, runAttempt, recordedHeadSHA); err != nil {
-		return nil, err
 	}
 	return &ApplyRunObservation{RunID: run.ID, RunAttempt: int64(run.RunAttempt), Status: run.Status, Conclusion: run.Conclusion, ObservedAt: c.now().UTC()}, nil
 }
