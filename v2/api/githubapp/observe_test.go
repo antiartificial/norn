@@ -158,14 +158,19 @@ func TestListPlanRunsBounded(t *testing.T) {
 // the exact-attempt and latest-run endpoints so tests can model reruns,
 // malformed payloads and GitHub error statuses.
 type observeFake struct {
-	attemptStatus, latestStatus int
-	attemptBody, latestBody     string
+	attemptStatus, latestStatus, jobsStatus int
+	attemptBody, latestBody, jobsBody       string
+}
+
+func recoverJobsFixture(runID int64, attempt int, headSHA string) string {
+	return fmt.Sprintf(`{"total_count":2,"jobs":[{"id":11,"run_id":%d,"run_attempt":%d,"head_sha":%q,"name":"recovery_binding","status":"completed","conclusion":"success","steps":[{"number":1,"name":"Verify immutable recovery binding","status":"completed","conclusion":"success"}]},{"id":12,"run_id":%d,"run_attempt":%d,"head_sha":%q,"name":"recover","status":"completed","conclusion":"failure"}]}`, runID, attempt, headSHA, runID, attempt, headSHA)
 }
 
 func (f *observeFake) client(t *testing.T, runID int64, attempt int) *Client {
 	t.Helper()
 	attemptPath := fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d/attempts/%d", runID, attempt)
 	latestPath := fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d", runID)
+	jobsPath := fmt.Sprintf("/repos/acme/norn-fleet/actions/runs/%d/attempts/%d/jobs", runID, attempt)
 	return testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/app" {
 			fmt.Fprint(w, `{"slug":"norn"}`)
@@ -185,6 +190,12 @@ func (f *observeFake) client(t *testing.T, runID int64, attempt int) *Client {
 			write(f.attemptStatus, f.attemptBody)
 		case latestPath:
 			write(f.latestStatus, f.latestBody)
+		case jobsPath:
+			body := f.jobsBody
+			if body == "" {
+				body = recoverJobsFixture(runID, attempt, strings.Repeat("d", 40))
+			}
+			write(f.jobsStatus, body)
 		default:
 			http.NotFound(w, r)
 		}
@@ -334,7 +345,9 @@ func TestObserveRecoverRunAcceptsBothTriggersWithoutActorRestriction(t *testing.
 	automatic.event, automatic.inputs, automatic.actorLogin = "workflow_run", "", "someone-who-ran-apply"
 	bot := base
 	bot.actorLogin, bot.actorTyp = "norn[bot]", "Bot"
-	for name, run := range map[string]observeRunFields{"manual by human": base, "manual by bot": bot, "workflow_run": automatic} {
+	withoutRESTInputs := base
+	withoutRESTInputs.inputs = "" // GitHub omits workflow_dispatch inputs on its run REST response.
+	for name, run := range map[string]observeRunFields{"manual by human": base, "manual by bot": bot, "manual without REST inputs": withoutRESTInputs, "workflow_run": automatic} {
 		fake := observeFake{attemptBody: run.json(), latestBody: run.json()}
 		observed, err := fake.client(t, 155, 1).ObserveRecoverRun(context.Background(), applyRunID, nonceHash, 155, 1, recordedSHA)
 		if err != nil || observed.Status != "completed" || observed.Conclusion != "failure" {
@@ -366,28 +379,38 @@ func TestObserveRecoverRunRejectsForeignWorkflowOrPlan(t *testing.T) {
 		"wrong nonce": both(with(func(r *observeRunFields) {
 			r.inputs = fmt.Sprintf(`{"apply_run_id":"%d","dispatch_nonce":%q}`, applyRunID, otherNonce)
 		})),
-		"missing nonce input":            both(with(func(r *observeRunFields) { r.inputs = fmt.Sprintf(`{"apply_run_id":"%d"}`, applyRunID) })),
-		"manual dispatch without inputs": both(with(func(r *observeRunFields) { r.inputs = "" })),
-		"apply workflow path":            both(with(func(r *observeRunFields) { r.path = ".github/workflows/apply.yml@main" })),
-		"foreign workflow path":          both(with(func(r *observeRunFields) { r.path = ".github/workflows/other.yml@main" })),
-		"wrong head sha":                 both(with(func(r *observeRunFields) { r.headSHA = strings.Repeat("b", 40) })),
-		"non-default branch":             both(with(func(r *observeRunFields) { r.branch, r.path = "feature", ".github/workflows/recover.yml@feature" })),
-		"non-default head branch only":   both(with(func(r *observeRunFields) { r.branch = "feature" })),
-		"push event":                     both(with(func(r *observeRunFields) { r.event = "push" })),
-		"foreign repository url":         both(strings.Replace(ok, "acme/norn-fleet", "evil/norn-fleet", 1)),
-		"completed with null":            both(with(func(r *observeRunFields) { r.conclusion = "" })),
-		"queued with stray conclusion":   both(with(func(r *observeRunFields) { r.status = "queued" })),
-		"attempt number mismatch":        {attemptBody: with(func(r *observeRunFields) { r.attempt = 2 }), latestBody: ok},
-		"different run id in body":       both(with(func(r *observeRunFields) { r.id = 156 })),
-		"rerun between reads":            {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.attempt, r.status, r.conclusion = 2, "queued", "" })},
-		"latest disagrees":               {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.conclusion = "success" })},
-		"latest head disagrees":          {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.headSHA = strings.Repeat("b", 40) })},
-		"latest bound to foreign apply":  {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.title = fmt.Sprintf(recoverRunDisplayTitleFormat, 94) })},
-		"attempt 404":                    {attemptStatus: http.StatusNotFound, attemptBody: `{"message":"Not Found"}`, latestBody: ok},
-		"latest 403":                     {attemptBody: ok, latestStatus: http.StatusForbidden, latestBody: `{"message":"Forbidden"}`},
-		"attempt rate limited":           {attemptStatus: http.StatusTooManyRequests, attemptBody: ``, latestBody: ok},
-		"malformed attempt json":         {attemptBody: `[`, latestBody: ok},
-		"malformed latest json":          {attemptBody: ok, latestBody: `{"id":`},
+		"missing nonce input":           both(with(func(r *observeRunFields) { r.inputs = fmt.Sprintf(`{"apply_run_id":"%d"}`, applyRunID) })),
+		"apply workflow path":           both(with(func(r *observeRunFields) { r.path = ".github/workflows/apply.yml@main" })),
+		"foreign workflow path":         both(with(func(r *observeRunFields) { r.path = ".github/workflows/other.yml@main" })),
+		"wrong head sha":                both(with(func(r *observeRunFields) { r.headSHA = strings.Repeat("b", 40) })),
+		"non-default branch":            both(with(func(r *observeRunFields) { r.branch, r.path = "feature", ".github/workflows/recover.yml@feature" })),
+		"non-default head branch only":  both(with(func(r *observeRunFields) { r.branch = "feature" })),
+		"push event":                    both(with(func(r *observeRunFields) { r.event = "push" })),
+		"foreign repository url":        both(strings.Replace(ok, "acme/norn-fleet", "evil/norn-fleet", 1)),
+		"completed with null":           both(with(func(r *observeRunFields) { r.conclusion = "" })),
+		"queued with stray conclusion":  both(with(func(r *observeRunFields) { r.status = "queued" })),
+		"attempt number mismatch":       {attemptBody: with(func(r *observeRunFields) { r.attempt = 2 }), latestBody: ok},
+		"different run id in body":      both(with(func(r *observeRunFields) { r.id = 156 })),
+		"rerun between reads":           {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.attempt, r.status, r.conclusion = 2, "queued", "" })},
+		"latest disagrees":              {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.conclusion = "success" })},
+		"latest head disagrees":         {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.headSHA = strings.Repeat("b", 40) })},
+		"latest bound to foreign apply": {attemptBody: ok, latestBody: with(func(r *observeRunFields) { r.title = fmt.Sprintf(recoverRunDisplayTitleFormat, 94) })},
+		"attempt 404":                   {attemptStatus: http.StatusNotFound, attemptBody: `{"message":"Not Found"}`, latestBody: ok},
+		"latest 403":                    {attemptBody: ok, latestStatus: http.StatusForbidden, latestBody: `{"message":"Forbidden"}`},
+		"attempt rate limited":          {attemptStatus: http.StatusTooManyRequests, attemptBody: ``, latestBody: ok},
+		"malformed attempt json":        {attemptBody: `[`, latestBody: ok},
+		"malformed latest json":         {attemptBody: ok, latestBody: `{"id":`},
+		"jobs 403":                      {attemptBody: ok, latestBody: ok, jobsStatus: http.StatusForbidden, jobsBody: `{"message":"Forbidden"}`},
+		"jobs malformed":                {attemptBody: ok, latestBody: ok, jobsBody: `{"total_count":`},
+		"jobs missing binding":          {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), "recovery_binding", "other_job", 1)},
+		"jobs duplicate binding":        {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), `"name":"recover"`, `"name":"recovery_binding"`, 1)},
+		"jobs wrong run":                {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), `"run_id":155`, `"run_id":156`, 1)},
+		"jobs wrong attempt":            {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), `"run_attempt":1`, `"run_attempt":2`, 1)},
+		"jobs wrong head":               {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), recordedSHA, strings.Repeat("b", 40), 1)},
+		"binding job failed":            {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), `"conclusion":"success"`, `"conclusion":"failure"`, 1)},
+		"binding step skipped":          {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), `"name":"Verify immutable recovery binding","status":"completed","conclusion":"success"`, `"name":"Verify immutable recovery binding","status":"completed","conclusion":"skipped"`, 1)},
+		"binding step absent":           {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), `"Verify immutable recovery binding"`, `"Unrelated step"`, 1)},
+		"jobs listing truncated":        {attemptBody: ok, latestBody: ok, jobsBody: strings.Replace(recoverJobsFixture(155, 1, recordedSHA), `"total_count":2`, `"total_count":101`, 1)},
 	}
 	for name, fake := range cases {
 		t.Run(name, func(t *testing.T) {
