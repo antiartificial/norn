@@ -583,7 +583,13 @@ func (s *FleetTargetRoutes) terminalEvidence(ctx context.Context, holderPlanID s
 			}
 			continue
 		}
-		recoveryHeadSHA := recoveryWorkflowHeadSHA(holderPlanID, attempt.RunnerAttemptID, attempt.CommitSHA, attempt.RecoveryWorkflowHeadSHA, s.legacyRecoveryHeadBinding)
+		recordedHead := attempt.RecoveryWorkflowHeadSHA
+		if recordedHead == "" && attempt.RetryOf != "" {
+			// Older etcd attempts already retained this authenticated OIDC
+			// claim as WorkloadSHA before the dedicated field existed.
+			recordedHead = attempt.WorkloadSHA
+		}
+		recoveryHeadSHA := recoveryWorkflowHeadSHA(holderPlanID, attempt.RunnerAttemptID, attempt.CommitSHA, recordedHead, s.legacyRecoveryHeadBinding)
 		if recoveryHeadSHA == "" {
 			continue
 		}

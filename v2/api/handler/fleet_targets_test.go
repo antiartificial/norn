@@ -452,6 +452,22 @@ func TestTerminalEvidenceRequiresExactLegacyRecoveryHeadBinding(t *testing.T) {
 	}
 }
 
+func TestTerminalEvidenceUsesRecordedEtcdRecoveryWorkloadSHA(t *testing.T) {
+	planID := "plan-etcd-recovery"
+	planCommit := strings.Repeat("9", 40)
+	workflowHead := strings.Repeat("c", 40)
+	backend := &fakeTargetBackend{binding: FleetTargetHolderBinding{
+		FleetEnvironment: "staging/nyc3", NonceSHA256: strings.Repeat("b", 64), BoundRunAttempt: 1,
+		Dispatch: githubapp.Dispatch{RunID: 100, PlanRunID: 1, PlanSHA: strings.Repeat("d", 64), ApprovedHeadSHA: planCommit},
+		Attempts: []fleet.RunnerAttempt{{RunnerAttemptID: "github-actions:acme/fleet:200:1", CommitSHA: planCommit, RetryOf: "root", WorkloadSHA: workflowHead}},
+	}}
+	observer := &fakeTargetObserver{completed: map[string]bool{"100:1": true, "200:1": true}}
+	evidence, problem := NewFleetTargetRoutes(backend, observer).terminalEvidence(context.Background(), planID)
+	if problem != nil || len(evidence.CompletedRunnerAttemptIDs) != 1 || len(observer.recoveryHeads) != 1 || observer.recoveryHeads[0] != workflowHead {
+		t.Fatalf("recorded etcd OIDC head was not used: evidence=%+v problem=%+v heads=%v", evidence, problem, observer.recoveryHeads)
+	}
+}
+
 func TestAbandonRequiresMinimumAge(t *testing.T) {
 	router, backend, observer := newFakeTargetRouter(t)
 	admin := fleetTargetPrincipal(ScopeAdmin)
