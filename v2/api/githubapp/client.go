@@ -1082,6 +1082,7 @@ type reconciliationJob struct {
 	ID          int64                `json:"id"`
 	RunID       int64                `json:"run_id"`
 	RunAttempt  int                  `json:"run_attempt"`
+	HeadSHA     string               `json:"head_sha"`
 	Name        string               `json:"name"`
 	Status      string               `json:"status"`
 	Conclusion  string               `json:"conclusion"`

@@ -191,14 +191,13 @@ const recoverRunDisplayTitleFormat = "Recover Fleet apply %d"
 // Identity: the run lives in the canonical repository on the default branch,
 // at the configured RecoverWorkflow path and at recordedHeadSHA, and it is
 // bound to the plan's apply run boundApplyRunID:
-//   - workflow_dispatch: the apply_run_id input equals boundApplyRunID and
-//     the dispatch_nonce input hashes to nonceHash. Inputs that are absent
-//     fail closed.
-//   - workflow_run: the REST run object exposes no triggering run ID, so the
-//     binding is the GitHub-rendered display title, which the workflow file
-//     (pinned here by path, branch and head SHA) derives from
-//     github.event.workflow_run.id. That event payload is GitHub-generated
-//     and cannot be supplied by a caller.
+//   - The exact attempt's recovery_binding job must have completed
+//     successfully, including its immutable binding verification step. The
+//     protected workflow verifies the dispatch nonce against the source
+//     apply artifact there. GitHub's REST run object omits workflow_dispatch
+//     inputs, so those inputs cannot be the sole source of completion proof.
+//   - When REST does return workflow_dispatch inputs, they must also agree
+//     with the bound apply run and nonce hash.
 //
 // In both cases the display title must equal "Recover Fleet apply
 // <boundApplyRunID>". There is deliberately no actor restriction:
@@ -227,6 +226,9 @@ func (c *Client) ObserveRecoverRun(ctx context.Context, boundApplyRunID int64, n
 	if int64(run.RunAttempt) != runAttempt || !validApplyRunObservationState(run.Status, run.Conclusion) {
 		return nil, fmt.Errorf("GitHub recover run state is inconsistent")
 	}
+	if err := c.verifyRecoverBindingJob(ctx, token, runID, runAttempt, recordedHeadSHA); err != nil {
+		return nil, err
+	}
 	latest, err := c.getApplyRun(ctx, token, runID)
 	if err != nil {
 		return nil, err
@@ -240,6 +242,50 @@ func (c *Client) ObserveRecoverRun(ctx context.Context, boundApplyRunID int64, n
 	return &ApplyRunObservation{RunID: run.ID, RunAttempt: int64(run.RunAttempt), Status: run.Status, Conclusion: run.Conclusion, ObservedAt: c.now().UTC()}, nil
 }
 
+// verifyRecoverBindingJob observes only jobs belonging to the exact run
+// attempt. Missing pages, selective reruns without the binding job, and
+// duplicate binding jobs are all unobserved rather than completion proof.
+func (c *Client) verifyRecoverBindingJob(ctx context.Context, token string, runID, runAttempt int64, recordedHeadSHA string) error {
+	var jobs canceledRunJobs
+	path := c.repoPath(fmt.Sprintf("/actions/runs/%d/attempts/%d/jobs?per_page=100", runID, runAttempt))
+	if err := c.request(ctx, token, http.MethodGet, path, nil, &jobs); err != nil {
+		return err
+	}
+	if jobs.TotalCount <= 0 || jobs.TotalCount > 100 || jobs.TotalCount != len(jobs.Jobs) {
+		return fmt.Errorf("protected recover run job listing is incomplete")
+	}
+	seen := false
+	for _, job := range jobs.Jobs {
+		if job.ID <= 0 || job.RunID != runID || int64(job.RunAttempt) != runAttempt || job.HeadSHA != recordedHeadSHA {
+			return fmt.Errorf("protected recover run job identity differs")
+		}
+		if job.Name != "recovery_binding" {
+			continue
+		}
+		if seen || job.Status != "completed" || job.Conclusion != "success" {
+			return fmt.Errorf("protected recovery binding job is ambiguous or incomplete")
+		}
+		seen = true
+		verified := false
+		for _, step := range job.Steps {
+			if step.Name != "Verify immutable recovery binding" {
+				continue
+			}
+			if verified || step.Status != "completed" || step.Conclusion != "success" {
+				return fmt.Errorf("protected recovery binding step is ambiguous or incomplete")
+			}
+			verified = true
+		}
+		if !verified {
+			return fmt.Errorf("protected recovery binding step is absent")
+		}
+	}
+	if !seen {
+		return fmt.Errorf("protected recovery binding job is absent")
+	}
+	return nil
+}
+
 func (c *Client) verifyRecoverRunIdentity(run *applyRun, runID, boundApplyRunID int64, nonceHash, recordedHeadSHA string) error {
 	if run == nil || run.ID != runID || !canonicalWorkflowURL(c.cfg.Repository, runID, run.HTMLURL) || run.HeadBranch != c.cfg.DefaultBranch || !workflowPathMatches(run.Path, c.cfg.RecoverWorkflow, c.cfg.DefaultBranch) || run.HeadSHA != recordedHeadSHA || run.DisplayTitle != fmt.Sprintf(recoverRunDisplayTitleFormat, boundApplyRunID) {
 		return fmt.Errorf("GitHub recover run does not match the recorded recovery identity")
@@ -248,6 +294,9 @@ func (c *Client) verifyRecoverRunIdentity(run *applyRun, runID, boundApplyRunID 
 	case "workflow_run":
 		return nil
 	case "workflow_dispatch":
+		if len(run.Inputs) == 0 {
+			return nil
+		}
 		nonce := run.Inputs["dispatch_nonce"]
 		sum := sha256.Sum256([]byte(nonce))
 		if run.Inputs["apply_run_id"] != strconv.FormatInt(boundApplyRunID, 10) || !dispatchNonceRe.MatchString(nonce) || subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(nonceHash)) != 1 {
