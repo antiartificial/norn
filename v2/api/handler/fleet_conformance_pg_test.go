@@ -899,7 +899,7 @@ var (
 	fakeGHArtifactsRe  = regexp.MustCompile(`/runs/(\d+)/artifacts$`)
 	fakeGHArtifactZip  = regexp.MustCompile(`/artifacts/(\d+)/zip$`)
 	fakeGHRunByIDRe    = regexp.MustCompile(`/runs/(\d+)(?:/attempts/\d+)?$`)
-	fakeGHRunJobsRe    = regexp.MustCompile(`/runs/(\d+)/jobs$`)
+	fakeGHRunJobsRe    = regexp.MustCompile(`/runs/(\d+)(?:/attempts/(\d+))?/jobs$`)
 )
 
 func newFakeFleetGitHubServer(t *testing.T) *fakeFleetGitHubServer {
@@ -1047,7 +1047,8 @@ func (s *fakeFleetGitHubServer) handle(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(path, "/actions/workflows/apply.yml/runs"):
 		s.handleApplyRunsListLocked(w)
 	case fakeGHRunJobsRe.MatchString(path):
-		s.handleRunJobsLocked(w, fakeGHRunJobsRe.FindStringSubmatch(path)[1])
+		matches := fakeGHRunJobsRe.FindStringSubmatch(path)
+		s.handleRunJobsLocked(w, matches[1], matches[2])
 	case fakeGHArtifactZip.MatchString(path):
 		s.handleArtifactZipLocked(w, fakeGHArtifactZip.FindStringSubmatch(path)[1])
 	case fakeGHArtifactsRe.MatchString(path):
@@ -1093,9 +1094,13 @@ func (s *fakeFleetGitHubServer) handleArtifactsListLocked(w http.ResponseWriter,
 	fmt.Fprintf(w, `{"artifacts":[{"id":%d,"name":%q,"expired":false}]}`, fx.artifactID, name)
 }
 
-func (s *fakeFleetGitHubServer) handleRunJobsLocked(w http.ResponseWriter, runIDStr string) {
+func (s *fakeFleetGitHubServer) handleRunJobsLocked(w http.ResponseWriter, runIDStr, attemptStr string) {
 	runID, _ := strconv.ParseInt(runIDStr, 10, 64)
 	run, ok := s.runs[runID]
+	if ok && run.kind == "recover" && attemptStr == strconv.Itoa(run.runAttempt) {
+		fmt.Fprintf(w, `{"total_count":1,"jobs":[{"id":8,"run_id":%d,"run_attempt":%d,"head_sha":%q,"name":"recovery_binding","status":"completed","conclusion":"success","steps":[{"number":1,"name":"Verify immutable recovery binding","status":"completed","conclusion":"success"}]}]}`, runID, run.runAttempt, run.headSHA)
+		return
+	}
 	if !ok || run.conclusion != "cancelled" {
 		http.NotFound(w, nil)
 		return
