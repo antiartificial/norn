@@ -55,7 +55,12 @@ func TestFleetExecutorGrantTypeTable(t *testing.T) {
 			}
 			facts := []FleetExecutorAttemptFact{attempt}
 			if phase == executor.GrantPhasePreflight {
-				attempt.CurrentPhase = "provider_applying"
+				if profile == executor.GrantProfilePostgresLegacyNoDrain {
+					attempt.CurrentPhase = "infrastructure_applied"
+					attempt.RetryOf = uuid.NewString()
+				} else {
+					attempt.CurrentPhase = "provider_applying"
+				}
 				facts = []FleetExecutorAttemptFact{attempt}
 			}
 			in := func(t string) bool {

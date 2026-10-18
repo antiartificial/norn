@@ -504,6 +504,39 @@ func TestFleetExecutorRecoveryNeedsOwnPreflightBeforeProviderWrite(t *testing.T)
 	}
 }
 
+func TestFleetExecutorLegacyRecoveryNeedsOwnPreflightBeforeProviderWrite(t *testing.T) {
+	f := newOpsFixture(t, executor.GrantProfilePostgresLegacyNoDrain, "infrastructure_applied")
+	principal := opsExecutorPrincipal()
+	// Existing PG first attempts retain their legacy provider grant contract.
+	if rec := f.grant(principal, "initial-write", f.grantBody("infrastructure_applied", executor.CredDOWrite)); rec.Code != http.StatusCreated {
+		t.Fatalf("legacy first-attempt provider write: %d %s", rec.Code, rec.Body.String())
+	}
+	requireProblem(t, f.grant(principal, "initial-preflight", f.grantBody(executor.GrantPhasePreflight, executor.CredBootstrapDir, executor.CredSSHNode)), http.StatusConflict, executor.CodeFleetCredentialGrantPhaseMismatch)
+
+	source := f.attempt
+	source.Status = "failed"
+	recovery := f.attempt
+	recovery.ID, recovery.Attempt, recovery.RetryOf = uuid.NewString(), 2, source.ID
+	f.backend.attempts = []store.FleetExecutorAttemptFact{source, recovery}
+	recoverBody := map[string]interface{}{"attemptId": recovery.ID, "phase": executor.GrantPhaseRecover,
+		"types": []string{executor.CredDOWrite, executor.CredNornAttempt}}
+	requireProblem(t, f.grant(principal, "recover-early", recoverBody), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	preflightBody := map[string]interface{}{"attemptId": recovery.ID, "phase": executor.GrantPhasePreflight,
+		"types": []string{executor.CredBootstrapDir, executor.CredSSHNode}}
+	preflight := decodeGrant(t, f.grant(principal, "recover-preflight", preflightBody))
+	requireProblem(t, f.grant(principal, "recover-before-attest", recoverBody), http.StatusConflict, executor.CodeFleetPreflightRequired)
+	path := "/api/v1/fleet/plans/" + f.planID + "/preflight-completions"
+	completion := map[string]interface{}{"attemptId": recovery.ID, "grantId": preflight.GrantID,
+		"evidenceDigest": "sha256:" + strings.Repeat("d", 64)}
+	if rec := fleetTargetDo(f.router, http.MethodPost, path, principal, "recover-complete", completion); rec.Code != http.StatusCreated {
+		t.Fatalf("legacy recovery preflight completion: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.grant(principal, "recover-write", recoverBody); rec.Code != http.StatusCreated {
+		t.Fatalf("legacy recovery provider write after attestation: %d %s", rec.Code, rec.Body.String())
+	}
+	requireProblem(t, f.grant(principal, "preflight-after-write", preflightBody), http.StatusConflict, executor.CodeFleetPreflightRequired)
+}
+
 func TestFleetExecutorLaterRecoveryCanPreflightBeforeProviderWrite(t *testing.T) {
 	f := newOpsFixture(t, executor.GrantProfileV3, "nodes_configured")
 	principal := opsExecutorPrincipal()

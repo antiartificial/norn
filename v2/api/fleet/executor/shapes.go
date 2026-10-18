@@ -559,6 +559,7 @@ var (
 var GrantTypes = map[GrantProfile]map[string][]string{
 	GrantProfilePostgresLegacyNoDrain: {
 		GrantPhasePlan:           planTypes,
+		GrantPhasePreflight:      preflightTypes,
 		"infrastructure_applied": providerApplyTypes,
 		"inventory_generated":    postApplyTypes,
 		"nodes_configured":       postApplyTypes,
