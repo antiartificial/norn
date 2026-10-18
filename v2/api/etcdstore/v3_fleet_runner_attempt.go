@@ -211,6 +211,9 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	item := fleet.RunnerAttempt{SchemaVersion: fleet.RunnerAttemptSchemaVersion, ID: admission.AttemptID, PlanID: admission.PlanID, Attempt: len(attempts) + 1, RunnerAttemptID: admission.RunnerAttemptID, Status: "queued", CurrentPhase: fleetInitialPhase(plan.Operation.Payload), CommitSHA: admission.CommitSHA, PlanSHA256: admission.PlanSHA256, WorkflowURL: admission.WorkflowURL, WorkloadSHA: admission.WorkloadSHA, RootAttemptID: admission.AttemptID, HeartbeatTimeoutSeconds: admission.HeartbeatTimeoutSeconds, Revision: 1, StartedAt: now, HeartbeatAt: now, HeartbeatExpiresAt: now.Add(time.Duration(admission.HeartbeatTimeoutSeconds) * time.Second), UpdatedAt: now}
 	if len(attempts) == 1 {
 		predecessor := attempts[0]
+		// WorkloadSHA is the authenticated recovery job's OIDC head; keep it
+		// distinct from the original reviewed plan CommitSHA for stop proof.
+		item.RecoveryWorkflowHeadSHA = admission.WorkloadSHA
 		item.RootAttemptID, item.RetryOf = predecessor.RootAttemptID, predecessor.ID
 		// Destructive/drain paths re-prove prechange before mutation. A proven
 		// non-destructive successor resumes the first unproven predecessor phase.

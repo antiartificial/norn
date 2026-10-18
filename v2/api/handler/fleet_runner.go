@@ -89,7 +89,17 @@ func (h *Handler) fleetRunnerSourceProvenStopped(ctx context.Context, previous *
 		observation, err := h.fleetGitHub.ObserveApplyRunByNonceHash(ctx, previous.PlanID, binding.FleetEnvironment, approved, binding.DispatchNonceSHA256, runAttempt)
 		return err == nil && observation != nil && observation.Status == "completed"
 	}
-	observation, err := h.fleetGitHub.ObserveRecoverRun(ctx, binding.RunID, binding.DispatchNonceSHA256, runID, runAttempt, previous.CommitSHA)
+	// CommitSHA remains the reviewed plan commit across recovery runs. The
+	// recovery workflow itself may run at a newer protected default-branch
+	// commit, so its head is recorded separately from the OIDC identity.
+	// Attempts admitted before that field existed require an exact audited
+	// incident binding. Missing or malformed bindings remain unobserved.
+	recordedHead, _ := previous.Metadata["recoveryWorkflowHeadSHA"].(string)
+	recoveryHeadSHA := recoveryWorkflowHeadSHA(previous.PlanID, previous.RunnerAttemptID, previous.CommitSHA, recordedHead, h.cfg.FleetLegacyRecoveryHeadBinding)
+	if recoveryHeadSHA == "" {
+		return false
+	}
+	observation, err := h.fleetGitHub.ObserveRecoverRun(ctx, binding.RunID, binding.DispatchNonceSHA256, runID, runAttempt, recoveryHeadSHA)
 	return err == nil && observation != nil && observation.Status == "completed"
 }
 
@@ -256,7 +266,7 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 			PrincipalSubject: principalIdentity(principal), RetryOf: previous.ID,
 			HeartbeatTimeoutSeconds: previous.HeartbeatTimeoutSeconds, Revision: 1,
 			StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
-			Metadata: mergeFleetRunnerMetadata(fleetRunnerTimingMetadata(classification), map[string]interface{}{"authorityConsumption": fleetRunnerAuthorityMetadata(request)}),
+			Metadata: mergeFleetRunnerMetadata(fleetRunnerTimingMetadata(classification), map[string]interface{}{"authorityConsumption": fleetRunnerAuthorityMetadata(request), "recoveryWorkflowHeadSHA": principal.CI.SHA}),
 		}
 		recovery.Metadata["recoveryReason"] = "verified GitHub Actions recovery workflow"
 		if err := h.db.RecoverFleetRunnerAttempt(r.Context(), previous, recovery); writeFleetFenceError(w, r, err) {

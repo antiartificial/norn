@@ -51,10 +51,14 @@ type Config struct {
 	// differ from FleetGitHubApplyWorkflow; githubapp.New defaults it to
 	// "recover.yml" when empty.
 	FleetGitHubRecoverWorkflow string
-	FleetGitHubAPIBaseURL      string
-	GitToken                   string
-	GitSSHKey                  string
-	APIToken                   string
+	// FleetLegacyRecoveryHeadBinding is an operator-audited, incident-specific
+	// binding for a recovery attempt created before its workflow head was
+	// recorded separately from the reviewed plan commit. Empty by default.
+	FleetLegacyRecoveryHeadBinding string
+	FleetGitHubAPIBaseURL          string
+	GitToken                       string
+	GitSSHKey                      string
+	APIToken                       string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
 	RequireExplicitAuth      bool
@@ -307,6 +311,7 @@ func Load() *Config {
 		FleetGitHubPlanWorkflow:               envOr("NORN_FLEET_GITHUB_PLAN_WORKFLOW", "plan.yml"),
 		FleetGitHubApplyWorkflow:              envOr("NORN_FLEET_GITHUB_APPLY_WORKFLOW", "apply.yml"),
 		FleetGitHubRecoverWorkflow:            envOr("NORN_FLEET_GITHUB_RECOVER_WORKFLOW", "recover.yml"),
+		FleetLegacyRecoveryHeadBinding:        strings.TrimSpace(os.Getenv("NORN_FLEET_LEGACY_RECOVERY_HEAD_BINDING")),
 		FleetGitHubAPIBaseURL:                 envOr("NORN_FLEET_GITHUB_API_BASE_URL", "https://api.github.com"),
 		GitToken:                              os.Getenv("NORN_GIT_TOKEN"),
 		GitSSHKey:                             os.Getenv("NORN_GIT_SSH_KEY"),
