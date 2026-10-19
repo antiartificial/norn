@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,8 @@ type DeleteCommitment struct {
 	AttemptID              string    `json:"attemptId"`
 	GrantID                string    `json:"grantId"`
 	BindingSHA256          string    `json:"bindingSHA256"`
+	AttemptSHA256          string    `json:"attemptSHA256"`
+	EffectGrantSHA256      string    `json:"effectGrantSHA256"`
 	SourceCommit           string    `json:"sourceCommit"`
 	SavedPlanSHA256        string    `json:"savedPlanSHA256"`
 	EffectSHA256           string    `json:"effectSHA256"`
@@ -52,7 +55,17 @@ type DeleteCommitment struct {
 // Legacy v1 bindings are refused. This does not persist the record.
 func NewDeleteCommitment(b Binding, a Attempt, g EffectGrant, rootID, executionID, runtimeID string, now time.Time) (DeleteCommitment, []byte, error) {
 	if b.SchemaVersion != BindingSchemaV2 || b.Validate() != nil || a.SchemaVersion != AttemptSchema ||
+		a.Status != "queued" || a.CurrentPhase != "prechange_verified" ||
+		uuid.Validate(a.ID) != nil || a.PrincipalTokenID == "" || a.PrincipalDeviceID == "" ||
+		strings.ContainsAny(a.PrincipalTokenID+a.PrincipalDeviceID, " \t\r\n") ||
+		a.CreatedAt.IsZero() || a.CreatedAt.Before(b.CreatedAt) ||
 		g.SchemaVersion != EffectGrantSchema || g.Phase != "consumed" || g.ConsumedAt == nil ||
+		uuid.Validate(g.ID) != nil || g.AuthorityEpoch <= 0 ||
+		!hex64.MatchString(g.PrechangeSHA256) || !hex64.MatchString(g.IndependentlyObservedSHA256) ||
+		g.IssuedAt.IsZero() || g.IssuedAt.Before(a.CreatedAt) ||
+		g.IssuedAt.Before(b.CreatedAt) ||
+		g.ExpiresAt.Sub(g.IssuedAt) > time.Minute || !g.ExpiresAt.After(g.IssuedAt) ||
+		g.ConsumedAt.Before(g.IssuedAt) || !g.ConsumedAt.Before(g.ExpiresAt) ||
 		a.ID != g.AttemptID || a.PlanID != b.PlanID || g.PlanID != b.PlanID ||
 		a.BindingSHA256 != g.BindingSHA256 || a.TargetID != b.TargetID ||
 		a.FenceGeneration != b.FenceGeneration || g.TargetID != b.TargetID ||
@@ -69,9 +82,19 @@ func NewDeleteCommitment(b Binding, a Attempt, g EffectGrant, rootID, executionI
 	if err != nil || DeleteCommitmentSHA256(bindingBytes) != a.BindingSHA256 {
 		return DeleteCommitment{}, nil, ErrDeleteCommitment
 	}
+	attemptBytes, err := json.Marshal(a)
+	if err != nil {
+		return DeleteCommitment{}, nil, ErrDeleteCommitment
+	}
+	grantBytes, err := json.Marshal(g)
+	if err != nil {
+		return DeleteCommitment{}, nil, ErrDeleteCommitment
+	}
 	commitment := DeleteCommitment{
 		SchemaVersion: DeleteCommitmentSchema, PlanID: b.PlanID, AttemptID: a.ID,
-		GrantID: g.ID, BindingSHA256: g.BindingSHA256, SourceCommit: b.SourceCommit,
+		GrantID: g.ID, BindingSHA256: g.BindingSHA256,
+		AttemptSHA256:     DeleteCommitmentSHA256(attemptBytes),
+		EffectGrantSHA256: DeleteCommitmentSHA256(grantBytes), SourceCommit: b.SourceCommit,
 		SavedPlanSHA256: b.SavedPlanSHA256, EffectSHA256: b.EffectSHA256,
 		ProviderAccountUUID: b.ProviderAccountUUID, TargetID: b.TargetID,
 		NodeName: b.NodeName, DropletID: b.DropletID, Backend: b.Backend,
@@ -91,7 +114,8 @@ func NewDeleteCommitment(b Binding, a Attempt, g EffectGrant, rootID, executionI
 func (c DeleteCommitment) Validate() error {
 	if c.SchemaVersion != DeleteCommitmentSchema || c.RetryPolicy != DeleteRetryPolicy ||
 		uuid.Validate(c.PlanID) != nil || uuid.Validate(c.AttemptID) != nil || uuid.Validate(c.GrantID) != nil ||
-		!hex64.MatchString(c.BindingSHA256) || !hex40.MatchString(c.SourceCommit) ||
+		!hex64.MatchString(c.BindingSHA256) || !hex64.MatchString(c.AttemptSHA256) ||
+		!hex64.MatchString(c.EffectGrantSHA256) || !hex40.MatchString(c.SourceCommit) ||
 		!hex64.MatchString(c.SavedPlanSHA256) || !hex64.MatchString(c.EffectSHA256) ||
 		c.ProviderAccountUUID == "" || c.TargetID == "" || c.NodeName != WorkNode || c.DropletID != WorkDropletID ||
 		c.Backend.Bucket == "" || c.Backend.Key == "" || c.Backend.VersionID == "" ||
