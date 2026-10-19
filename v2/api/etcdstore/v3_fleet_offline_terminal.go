@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,19 +55,57 @@ func decodeOfflineTerminalPair(head, event []byte, planID string) (offline.Termi
 	return receipt, nil
 }
 
+// GetOfflineTerminal derives lookup keys from a probe, then validates every
+// authoritative row in one etcd read revision. The probe is never evidence:
+// a concurrent rebind either appears in the snapshot and fails validation or
+// is outside the snapshot and is not asserted by this read.
 func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string) (offline.TerminalEvidence, error) {
+	if s == nil || uuid.Validate(planID) != nil {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	probe, err := s.kv.Txn(ctx).Then(clientv3.OpGet(s.offlineTerminalKey(planID)), clientv3.OpGet(s.offlineTerminalEventKey(planID)),
+		clientv3.OpGet(s.offlineDispatchKey(planID))).Commit()
+	if err != nil {
+		return offline.TerminalEvidence{}, err
+	}
+	if len(probe.Responses) != 3 {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	terminalProbe := probe.Responses[0].GetResponseRange().Kvs
+	if len(terminalProbe) == 0 {
+		if len(probe.Responses[1].GetResponseRange().Kvs) != 0 {
+			return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+		}
+		return offline.TerminalEvidence{}, ErrNotFound
+	}
+	bindingProbe := probe.Responses[2].GetResponseRange().Kvs
+	if len(terminalProbe) != 1 || len(bindingProbe) != 1 {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	var candidate offline.TerminalEvidence
+	if decodeV3Record(terminalProbe[0].Value, &candidate) != nil || candidate.TargetID == "" || candidate.PlanID != planID {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	candidateBinding, err := offline.DecodeBinding(bindingProbe[0].Value)
+	if err != nil || candidateBinding.PlanID != planID || candidateBinding.OwnerAuthorizationID == "" {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
 	response, err := s.kv.Txn(ctx).Then(
 		clientv3.OpGet(s.offlineTerminalKey(planID)), clientv3.OpGet(s.offlineTerminalEventKey(planID)),
 		clientv3.OpGet(s.offlineEffectGrantKey(planID)), clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 1)),
-		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 2)),
+		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 2)), clientv3.OpGet(s.offlineDispatchKey(planID)),
+		clientv3.OpGet(s.offlineAttemptKey(planID)), clientv3.OpGet(s.offlineOwnerConsumptionKey(candidateBinding.OwnerAuthorizationID)),
+		clientv3.OpGet(s.fleetTargetFenceKey(candidate.TargetID)), clientv3.OpGet(s.fleetAuthorityEpochKey()),
+		clientv3.OpGet(s.offlineCheckpointKey(planID)), clientv3.OpGet(s.offlineCheckpointEventKey(planID, 1)),
+		clientv3.OpGet(s.fleetTargetRegistryKey()),
 	).Commit()
 	if err != nil {
 		return offline.TerminalEvidence{}, err
 	}
-	if len(response.Responses) != 5 {
+	if len(response.Responses) != 13 {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
-	var raw [5][]byte
+	var raw [13][]byte
 	for i := range raw {
 		rows := response.Responses[i].GetResponseRange().Kvs
 		if len(rows) == 1 {
@@ -77,13 +117,51 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 		return offline.TerminalEvidence{}, err
 	}
 	grant, err := decodeOfflineEffectGrantPair(raw[2], raw[3], raw[4], planID)
-	if err != nil || grant.Phase != "consumed" || terminal.GrantID != grant.ID ||
-		terminal.AttemptID != grant.AttemptID || terminal.BindingSHA256 != grant.BindingSHA256 ||
-		terminal.TargetID != grant.TargetID || terminal.FenceGeneration != grant.FenceGeneration ||
-		terminal.AuthorityEpoch != grant.AuthorityEpoch || terminal.Backend.Bucket != grant.Backend.Bucket ||
-		terminal.Backend.Key != grant.Backend.Key || terminal.Backend.Lineage != grant.Backend.Lineage ||
-		terminal.Backend.Serial <= grant.Backend.Serial || terminal.Backend.VersionID == grant.Backend.VersionID ||
-		grant.ConsumedAt == nil || terminal.ObservedAt.Before(*grant.ConsumedAt) {
+	if err != nil || grant.Phase != "consumed" || grant.ConsumedAt == nil ||
+		terminal.GrantID != grant.ID || terminal.AttemptID != grant.AttemptID ||
+		terminal.BindingSHA256 != grant.BindingSHA256 || terminal.TargetID != grant.TargetID ||
+		terminal.FenceGeneration != grant.FenceGeneration || terminal.AuthorityEpoch != grant.AuthorityEpoch ||
+		terminal.Backend.Bucket != grant.Backend.Bucket || terminal.Backend.Key != grant.Backend.Key ||
+		terminal.Backend.Lineage != grant.Backend.Lineage || terminal.Backend.Serial <= grant.Backend.Serial ||
+		terminal.Backend.VersionID == grant.Backend.VersionID || !terminal.ObservedAt.After(*grant.ConsumedAt) {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	binding, err := offline.DecodeBinding(raw[5])
+	digest := sha256.Sum256(raw[5])
+	if err != nil || binding.SchemaVersion != offline.BindingSchemaV2 || binding.PlanID != planID ||
+		binding.OwnerAuthorizationID != candidateBinding.OwnerAuthorizationID ||
+		binding.TargetID != candidate.TargetID || binding.TargetID != grant.TargetID ||
+		binding.FenceGeneration != grant.FenceGeneration || binding.DispatchNonceSHA256 == "" ||
+		hex.EncodeToString(digest[:]) != grant.BindingSHA256 || binding.Backend != grant.Backend ||
+		binding.ProviderAccountUUID != grant.ProviderAccountUUID || binding.NodeName != grant.NodeName ||
+		binding.DropletID != grant.DropletID {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	attempt, err := decodeOfflineAttempt(raw[6], planID)
+	if err != nil || uuid.Validate(attempt.ID) != nil || attempt.ID != terminal.AttemptID ||
+		attempt.BindingSHA256 != terminal.BindingSHA256 || attempt.PrincipalSubject != binding.RunnerPrincipalSubject ||
+		attempt.TargetID != binding.TargetID || attempt.FenceGeneration != binding.FenceGeneration {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	if string(raw[7]) != planID+":"+binding.OwnerEnvelopeSHA256 {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	var fence v3FleetTargetFence
+	if decodeV3Record(raw[8], &fence) != nil || !fence.Held || fence.HolderPlanID != planID ||
+		fence.HolderNonceSHA256 != binding.DispatchNonceSHA256 || fence.Generation <= 0 ||
+		uint64(fence.Generation) != terminal.FenceGeneration || fence.AuthorityEpoch != terminal.AuthorityEpoch {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	if len(raw[12]) == 0 {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	epoch, err := strconv.ParseInt(strings.TrimSpace(string(raw[9])), 10, 64)
+	if err != nil || epoch < 1 || epoch != terminal.AuthorityEpoch {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	checkpoint, err := decodeOfflineCheckpointPair(raw[10], raw[11], planID)
+	if err != nil || checkpoint.AttemptID != terminal.AttemptID || checkpoint.EvidenceSHA256 != grant.PrechangeSHA256 ||
+		checkpoint.FenceGeneration != terminal.FenceGeneration || checkpoint.AuthorityEpoch != terminal.AuthorityEpoch {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
 	return terminal, nil
@@ -120,15 +198,17 @@ func (s *V3OperationStore) recordOfflineTerminal(ctx context.Context, planID, at
 	if err != nil || grant.Phase != "consumed" || grant.AttemptID != attemptID || grant.ID != grantID {
 		return offline.TerminalEvidence{}, offline.ErrTerminalProof
 	}
-	attempt, err := decodeOfflineAttempt(rows[3].Value, planID)
-	if err != nil || attempt.ID != attemptID || attempt.BindingSHA256 != grant.BindingSHA256 {
-		return offline.TerminalEvidence{}, offline.ErrTerminalProof
-	}
 	binding, err := offline.DecodeBinding(rows[4].Value)
 	digest := sha256.Sum256(rows[4].Value)
 	if err != nil || binding.SchemaVersion != offline.BindingSchemaV2 || binding.PlanID != planID ||
 		binding.TargetID != grant.TargetID || binding.FenceGeneration != grant.FenceGeneration ||
 		hex.EncodeToString(digest[:]) != grant.BindingSHA256 || binding.Backend != grant.Backend {
+		return offline.TerminalEvidence{}, offline.ErrTerminalProof
+	}
+	attempt, err := decodeOfflineAttempt(rows[3].Value, planID)
+	if err != nil || uuid.Validate(attempt.ID) != nil || attempt.ID != attemptID || attempt.BindingSHA256 != grant.BindingSHA256 ||
+		attempt.PrincipalSubject != binding.RunnerPrincipalSubject || attempt.TargetID != grant.TargetID ||
+		attempt.FenceGeneration != grant.FenceGeneration {
 		return offline.TerminalEvidence{}, offline.ErrTerminalProof
 	}
 	checkpoint, err := decodeOfflineCheckpointPair(rows[5].Value, rows[6].Value, planID)

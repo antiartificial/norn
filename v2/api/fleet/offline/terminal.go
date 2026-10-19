@@ -59,7 +59,7 @@ func ValidateTerminalObservation(o TerminalObservation, g EffectGrant, now time.
 		o.Backend.VersionID == g.Backend.VersionID || o.Backend.VersionID == "" || o.Backend.VersionID == "null" ||
 		!hex64.MatchString(o.Backend.RawSHA256) || !hex64.MatchString(o.EvidenceSHA256) ||
 		!hex64.MatchString(o.ProviderEvidenceSHA256) || !hex64.MatchString(o.BackendEvidenceSHA256) ||
-		!hex64.MatchString(o.WorkloadEvidenceSHA256) || o.ObservedAt.Before(*g.ConsumedAt) ||
+		!hex64.MatchString(o.WorkloadEvidenceSHA256) || !o.ObservedAt.After(*g.ConsumedAt) ||
 		o.ObservedAt.After(now) || now.Sub(o.ObservedAt) > 30*time.Second ||
 		!o.ProviderNodeAbsent || !o.BackendLatestExact || !o.BackendNodeAbsent ||
 		!o.AllNamespacesInspected || !o.WorkloadNodeAbsent || !o.SurvivingPlacement ||

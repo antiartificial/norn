@@ -30,7 +30,7 @@ func terminalObservation(g offline.EffectGrant, now time.Time) offline.TerminalO
 	backend.RawSHA256 = strings.Repeat("9", 64)
 	return offline.TerminalObservation{PlanID: g.PlanID, AttemptID: g.AttemptID, GrantID: g.ID,
 		BindingSHA256: g.BindingSHA256, TargetID: g.TargetID, FenceGeneration: g.FenceGeneration,
-		AuthorityEpoch: g.AuthorityEpoch, ObservedAt: now, EvidenceSHA256: strings.Repeat("a", 64),
+		AuthorityEpoch: g.AuthorityEpoch, ObservedAt: now.Add(time.Nanosecond), EvidenceSHA256: strings.Repeat("a", 64),
 		ProviderEvidenceSHA256: strings.Repeat("b", 64), BackendEvidenceSHA256: strings.Repeat("c", 64),
 		WorkloadEvidenceSHA256: strings.Repeat("d", 64), ProviderAccountUUID: g.ProviderAccountUUID,
 		NodeName: g.NodeName, DropletID: g.DropletID, Backend: backend,
@@ -124,5 +124,113 @@ func TestOfflineTerminalConcurrentFenceMutationFailsCAS(t *testing.T) {
 	}
 	if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("failed CAS wrote terminal event: %v", err)
+	}
+}
+
+func TestOfflineTerminalRestoreRejectsDivergedAuthorityRows(t *testing.T) {
+	h, b, a, grant, now := consumedOfflineGrant(t)
+	observation := terminalObservation(grant, now)
+	if _, err := h.s.recordOfflineTerminal(h.ctx(), b.PlanID, a.ID, grant.ID, now, offlineTerminalFixture{observation: observation}); err != nil {
+		t.Fatal(err)
+	}
+	attemptKey := h.s.offlineAttemptKey(b.PlanID)
+	bindingKey := h.s.offlineDispatchKey(b.PlanID)
+	ownerKey := h.s.offlineOwnerConsumptionKey(b.OwnerAuthorizationID)
+	fenceKey := h.s.fleetTargetFenceKey(b.TargetID)
+	checkpointKey := h.s.offlineCheckpointKey(b.PlanID)
+	grantKey := h.s.offlineEffectGrantKey(b.PlanID)
+	cases := []struct {
+		name, key string
+		mutate    func([]byte) []byte
+	}{
+		{"attempt principal", attemptKey, func(raw []byte) []byte {
+			var v offline.Attempt
+			_ = json.Unmarshal(raw, &v)
+			v.PrincipalSubject = "other"
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"attempt target", attemptKey, func(raw []byte) []byte {
+			var v offline.Attempt
+			_ = json.Unmarshal(raw, &v)
+			v.TargetID = "other"
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"attempt generation", attemptKey, func(raw []byte) []byte {
+			var v offline.Attempt
+			_ = json.Unmarshal(raw, &v)
+			v.FenceGeneration++
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"attempt id", attemptKey, func(raw []byte) []byte {
+			var v offline.Attempt
+			_ = json.Unmarshal(raw, &v)
+			v.ID = "bad"
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"binding", bindingKey, func(raw []byte) []byte {
+			var v offline.Binding
+			_ = json.Unmarshal(raw, &v)
+			v.DropletID = "999"
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"owner consumption", ownerKey, func([]byte) []byte { return []byte("other") }},
+		{"fence holder", fenceKey, func(raw []byte) []byte {
+			var v v3FleetTargetFence
+			_ = json.Unmarshal(raw, &v)
+			v.HolderPlanID = "other"
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"authority epoch", h.s.fleetAuthorityEpochKey(), func([]byte) []byte { return []byte("2") }},
+		{"checkpoint", checkpointKey, func(raw []byte) []byte {
+			var v offline.Checkpoint
+			_ = json.Unmarshal(raw, &v)
+			v.AttemptID = "other"
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"consumed grant", grantKey, func(raw []byte) []byte {
+			var v offline.EffectGrant
+			_ = json.Unmarshal(raw, &v)
+			v.Phase = "issued"
+			v.ConsumedAt = nil
+			out, _ := json.Marshal(v)
+			return out
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original, err := h.s.kv.Get(h.ctx(), tc.key)
+			if err != nil || len(original.Kvs) != 1 {
+				t.Fatalf("original row: %v", err)
+			}
+			raw := append([]byte(nil), original.Kvs[0].Value...)
+			if _, err := h.s.kv.Put(h.ctx(), tc.key, string(tc.mutate(raw))); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+				t.Fatalf("diverged %s accepted: %v", tc.name, err)
+			}
+			if _, err := h.s.kv.Put(h.ctx(), tc.key, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); err != nil {
+				t.Fatalf("restored %s rejected: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestOfflineTerminalRequiresObservationAfterConsumption(t *testing.T) {
+	h, b, a, grant, now := consumedOfflineGrant(t)
+	observation := terminalObservation(grant, now)
+	observation.ObservedAt = *grant.ConsumedAt
+	if _, err := h.s.recordOfflineTerminal(h.ctx(), b.PlanID, a.ID, grant.ID, now, offlineTerminalFixture{observation: observation}); !errors.Is(err, offline.ErrTerminalProof) {
+		t.Fatalf("observation at consumption accepted: %v", err)
 	}
 }
