@@ -477,6 +477,34 @@ func TestScaleStatusRequiresExactSuccessfulDurableOperationEvent(t *testing.T) {
 	}
 }
 
+func TestManagedScaleRequiresCompletedEvalAndHealthyPlacements(t *testing.T) {
+	t.Parallel()
+	status := nomadapi.TaskGroupScaleStatus{Desired: 3, Placed: 3, Running: 2, Healthy: 2, Events: []nomadapi.ScalingEvent{{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": "1", "norn.executionId": "execution-1"}, Count: int64Pointer(3), EvalID: stringPointer("eval-1")}}}
+	evalStatus := "pending"
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/job/norn-job-managed/scale":
+			_ = json.NewEncoder(w).Encode(nomadapi.JobScaleStatusResponse{JobID: "norn-job-managed", TaskGroups: map[string]nomadapi.TaskGroupScaleStatus{"web": status}})
+		case "/v1/evaluation/eval-1":
+			_ = json.NewEncoder(w).Encode(nomadapi.Evaluation{ID: "eval-1", JobID: "norn-job-managed", Status: evalStatus})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	check := func(want bool) {
+		t.Helper()
+		desired, matched, evalID, healthy, err := client.ScalePlacementConverged("norn-job-managed", "web", "global", "operation-1", "1", "execution-1", 3, "eval-1")
+		if err != nil || desired != 3 || !matched || evalID != "eval-1" || healthy != want {
+			t.Fatalf("managed scale evidence=%d %t %q %t err=%v want healthy=%t", desired, matched, evalID, healthy, err, want)
+		}
+	}
+	check(false) // scheduler has not finished
+	evalStatus = "complete"
+	check(false) // accepted desired count still has an unhealthy/missing replica
+	status.Running, status.Healthy = 3, 3
+	check(true)
+}
+
 func TestExactCanaryPromotionNeverResolvesLatestDeployment(t *testing.T) {
 	t.Parallel()
 	var promoted string

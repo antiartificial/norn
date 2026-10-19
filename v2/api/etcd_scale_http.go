@@ -111,6 +111,14 @@ func etcdScaleApp(cfg *config.Config, operations *etcdstore.V3OperationStore, id
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "process_not_scalable", "group must be a declared service process")
 			return
 		}
+		if err := validateEtcdScaleCount(cfg, process, request.Count); err != nil {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "scale_outside_declared_bounds", err.Error())
+			return
+		}
+		if process.Health == nil {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "scale_health_check_required", "managed Fleet scaling requires a declared process health check")
+			return
+		}
 		requestedRegion := request.Region
 		regions := spec.ResolvedRegions()
 		if request.Region == "" && len(regions) == 1 {
@@ -155,6 +163,35 @@ func etcdScaleApp(cfg *config.Config, operations *etcdstore.V3OperationStore, id
 		}
 		writeEtcdSourceJSON(w, status, accepted.Operation)
 	}
+}
+
+func validateEtcdScaleCount(cfg *config.Config, process model.Process, count int) error {
+	minimum, maximum := 1, process.DeclaredReplicaCount()
+	if process.Scaling != nil {
+		if process.Scaling.Min > 0 {
+			minimum = process.Scaling.Min
+		}
+		if process.Scaling.Max > 0 {
+			maximum = process.Scaling.Max
+		}
+	}
+	if maximum < minimum || count < minimum || count > maximum {
+		return fmt.Errorf("requested replicas must be within declared minimum %d and maximum %d", minimum, maximum)
+	}
+	if process.HostPort > 0 && count > 1 {
+		return fmt.Errorf("a fixed hostPort cannot admit multiple allocations in one region")
+	}
+	if process.Placement != nil && process.Placement.DistinctHosts && cfg != nil && strings.TrimSpace(cfg.FleetConfig) != "" {
+		inventory, err := loadEtcdFleetInventory(cfg)
+		if err != nil || inventory == nil || inventory.Validation == nil || !inventory.Validation.Valid {
+			return fmt.Errorf("Fleet capacity policy is unavailable")
+		}
+		pool, ok := inventory.NodePools["app"]
+		if !ok || count > pool.Desired {
+			return fmt.Errorf("requested replicas exceed the declared app node pool under distinct-host placement")
+		}
+	}
+	return nil
 }
 
 func etcdScaleStatus(cfg *config.Config, operations *etcdstore.V3OperationStore, runtime *etcdScaleRuntime) http.HandlerFunc {

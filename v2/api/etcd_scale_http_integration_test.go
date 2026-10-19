@@ -55,7 +55,7 @@ func TestEtcdScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker(t *testing.T)
 	if err := os.Mkdir(filepath.Join(apps, "widgets"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	spec := "name: widgets\ndeploy: true\nregions:\n  us-central:\n    nomadRegion: global\n    datacenters: [dc1]\nprocesses:\n  web:\n    command: sleep 60\n"
+	spec := "name: widgets\ndeploy: true\nregions:\n  us-central:\n    nomadRegion: global\n    datacenters: [dc1]\nprocesses:\n  web:\n    command: sleep 60\n    scaling:\n      min: 2\n      max: 3\n    health:\n      path: /ready\n"
 	if err := os.WriteFile(filepath.Join(apps, "widgets", "infraspec.yaml"), []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +106,12 @@ func TestEtcdScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker(t *testing.T)
 		return response
 	}
 	const path = "/api/v1/apps/widgets/scale"
+	for _, count := range []int{0, 1, 4} {
+		body := fmt.Sprintf(`{"group":"web","region":"us-central","count":%d}`, count)
+		if got := request(http.MethodPost, path, body, fmt.Sprintf("outside-%d", count)); got.Code != http.StatusBadRequest || nomadWrites != 0 {
+			t.Fatalf("out-of-bounds %d admitted: %d %s", count, got.Code, got.Body.String())
+		}
+	}
 	first := request(http.MethodPost, path, `{"group":"web","region":"us-central","count":3}`, "same-intent")
 	if first.Code != http.StatusAccepted {
 		t.Fatalf("scale admission=%d %s", first.Code, first.Body.String())
@@ -141,5 +147,128 @@ func TestEtcdScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker(t *testing.T)
 	currentJob = "norn-job-other-deployment"
 	if _, err := runtime.ExecuteOperationWithAppLock(ctx, claimed, claim, lock); err == nil || nomadWrites != 0 {
 		t.Fatalf("stale route reached Nomad: err=%v writes=%d", err, nomadWrites)
+	}
+}
+
+func TestEtcdScaleCrashAfterNomadAcceptRecoversWithoutSecondLaunch(t *testing.T) {
+	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	ctx := context.Background()
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	prefix := "/norn-tests/scale-crash/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-scale-crash-signing-key-000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := uuid.NewString()
+	operations, err := etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const app, region, jobID, deploymentID = "widgets", "us-central", "norn-job-managed", "deployment-managed"
+	nomadWrites := 0
+	ready := false
+	var scaleMeta map[string]interface{}
+	nomadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/"+jobID+"/deployments":
+			_ = json.NewEncoder(w).Encode([]interface{}{})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/job/"+jobID+"/scale":
+			nomadWrites++
+			var request struct {
+				Meta map[string]interface{} `json:"Meta"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode Nomad scale: %v", err)
+			}
+			scaleMeta = request.Meta
+			_ = json.NewEncoder(w).Encode(map[string]string{"EvalID": "eval-managed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/"+jobID+"/scale":
+			if !ready {
+				http.Error(w, "temporary Nomad read outage", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"JobID": jobID, "TaskGroups": map[string]interface{}{"web": map[string]interface{}{"Desired": 3, "Placed": 3, "Running": 3, "Healthy": 3, "Events": []interface{}{map[string]interface{}{"Count": 3, "EvalID": "eval-managed", "Meta": scaleMeta}}}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/evaluation/eval-managed":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"ID": "eval-managed", "JobID": jobID, "Status": "complete"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(nomadServer.Close)
+	cfg := &config.Config{Environment: "staging", AppsDir: t.TempDir(), NomadAddr: nomadServer.URL}
+	runtime, err := newEtcdScaleRuntime(cfg, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.resolveTarget = func(_ context.Context, gotApp, environment, gotRegion string) (string, string, error) {
+		if gotApp != app || environment != "staging" || gotRegion != region {
+			return "", "", fmt.Errorf("wrong target")
+		}
+		return jobID, deploymentID, nil
+	}
+	id := uuid.NewString()
+	op := model.Operation{ID: id, Kind: "app.scale", App: app, Ref: region + "/web", Status: model.OperationQueued, MaxAttempts: 1,
+		Payload: map[string]interface{}{"app": app, "group": "web", "region": region, "nomadRegion": "global", "count": 3, "nomadJobId": jobID, "deploymentId": deploymentID}}
+	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: op.Kind, Resource: "app/widgets", Key: id}, Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"app": app, "count": 3}}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operations.Accept(ctx, acceptance); err != nil {
+		t.Fatal(err)
+	}
+	claimed, first, err := operations.ClaimNextOperation(ctx, "first-worker", time.Minute, []string{"app.scale"})
+	if err != nil || claimed == nil {
+		t.Fatalf("first claim=%+v err=%v", claimed, err)
+	}
+	lock, acquired, err := operations.AcquireAppOperationLock(ctx, app)
+	if err != nil || !acquired {
+		t.Fatalf("first app lock=%t err=%v", acquired, err)
+	}
+	result, err := runtime.ExecuteOperationWithAppLock(ctx, claimed, first, lock)
+	if err == nil || result != nil || nomadWrites != 1 {
+		t.Fatalf("post-launch uncertainty result=%+v err=%v writes=%d", result, err, nomadWrites)
+	}
+	lock.Release() // process dies before it can defer or commit desired intent
+	owner, err := client.Get(ctx, prefix+"/v3/owners/"+id)
+	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 {
+		t.Fatalf("owner=%+v err=%v", owner.Kvs, err)
+	}
+	if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := operations.GetOperation(ctx, id)
+	if err != nil || queued.Status != model.OperationQueued || queued.Metadata["externalEffectRecoveryPending"] != true {
+		t.Fatalf("recovered operation=%+v err=%v", queued, err)
+	}
+	ready = true
+	claimed, second, err := operations.ClaimNextOperation(ctx, "second-worker", time.Minute, []string{"app.scale"})
+	if err != nil || claimed == nil || second.Generation() <= first.Generation() {
+		t.Fatalf("successor claim=%+v %+v err=%v", claimed, second, err)
+	}
+	lock, acquired, err = operations.AcquireAppOperationLock(ctx, app)
+	if err != nil || !acquired {
+		t.Fatalf("successor app lock=%t err=%v", acquired, err)
+	}
+	defer lock.Release()
+	result, err = runtime.ExecuteOperationWithAppLock(ctx, claimed, second, lock)
+	if err != nil || result == nil || !result.Finished() || !result.AppLockFenced() || nomadWrites != 1 {
+		t.Fatalf("recovery result=%+v err=%v writes=%d", result, err, nomadWrites)
+	}
+	final, err := operations.GetOperation(ctx, id)
+	counts, countErr := operations.DesiredReplicaCounts(ctx, app, region)
+	if err != nil || countErr != nil || final.Status != model.OperationSucceeded || counts["web"] != 3 {
+		t.Fatalf("recovered receipt=%+v counts=%v err=%v countErr=%v", final, counts, err, countErr)
 	}
 }

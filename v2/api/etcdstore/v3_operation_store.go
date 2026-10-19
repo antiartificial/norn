@@ -1109,9 +1109,9 @@ func (s *V3OperationStore) mutateClaimWithAppLock(ctx context.Context, c store.O
 	}, f)
 }
 
-// RecoverExpiredOperations requeues canary promotion through its effect
-// reconciliation path and catalog activation through its atomic routing and
-// terminal-receipt transaction. Other expired claims remain manual recovery
+// RecoverExpiredOperations requeues canary promotion and app scaling through
+// their effect reconciliation paths, and catalog activation through its atomic
+// routing and terminal-receipt transaction. Other expired claims remain manual recovery
 // until their mutable effects have equivalent durable boundaries. A concurrent
 // renew or finish changes the record revision and wins instead.
 func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
@@ -1177,13 +1177,13 @@ func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 				op.NextAttemptAt = now
 				op.Message = "catalog activation owner lease expired; retrying signed intent"
 				op.Metadata["recoveredAfterLeaseExpiry"] = true
-			} else if op.Kind == "app.canary-promote" {
+			} else if op.Kind == "app.canary-promote" || op.Kind == "app.scale" {
 				op.Status = model.OperationQueued
 				if op.Attempts > 0 {
 					op.Attempts--
 				}
 				op.NextAttemptAt = now
-				op.Message = "canary promotion owner lease expired; effect reconciliation pending"
+				op.Message = op.Kind + " owner lease expired; effect reconciliation pending"
 				op.Metadata["externalEffectRecoveryPending"] = true
 				op.Metadata["recoveredAfterLeaseExpiry"] = true
 			} else {

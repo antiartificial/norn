@@ -92,10 +92,11 @@ func (s *V3OperationStore) FinishScaleClaimedOperationWithAppLock(ctx context.Co
 	if err != nil {
 		return err
 	}
-	completed, effectKey, effectRevision, err := effects.loadToken(ctx, effect.Token{EffectID: effectID, Generation: claim.Generation()})
+	completed, effectKey, effectRevision, err := effects.loadScaleEffectID(ctx, effectID)
 	if err != nil || completed.Lifecycle != effect.LifecycleCompleted || completed.Completion == nil || completed.Completion.Outcome != effect.OutcomeSucceeded ||
 		completed.Reservation.Authority != authority || completed.Reservation.OperationClaim.OperationID != claim.OperationID() ||
-		completed.Reservation.OperationClaim.OwnerID != claim.OwnerID() || completed.Reservation.OperationClaim.Generation != claim.Generation() {
+		completed.Reservation.OperationClaim.Generation <= 0 || completed.Reservation.OperationClaim.Generation > claim.Generation() ||
+		(completed.Reservation.OperationClaim.Generation == claim.Generation() && completed.Reservation.OperationClaim.OwnerID != claim.OwnerID()) {
 		return fmt.Errorf("desired replica completion is not bound to a successful exact scale effect")
 	}
 	var effectInput scaleEffectInput
