@@ -24,7 +24,7 @@ func validateClaimedDesiredReplicaCounts(spec *model.InfraSpec, region string, c
 	for _, group := range groups {
 		count := counts[group]
 		process, found := spec.Processes[group]
-		if !found || process.Schedule != "" || process.Function != nil || !spec.ProcessRunsInRegion(process, region) {
+		if !found || process.Schedule != "" || process.Function != nil || process.Health == nil || !spec.ProcessRunsInRegion(process, region) {
 			return fmt.Errorf("Fleet desired replica intent for group %q is ineligible in region %q; reconcile the stored scale intent before deploying", group, region)
 		}
 		minimum, maximum := 1, process.DeclaredReplicaCount()
