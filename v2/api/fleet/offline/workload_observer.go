@@ -23,23 +23,34 @@ type WorkloadAllocation struct {
 
 type WorkloadNode struct {
 	Name, ID, Status      string
+	EligibleForWorkload   bool
 	FreeCPU, FreeMemoryMB int
 }
 
 type WorkloadService struct {
-	AllocationID, Node, Status string
+	AllocationID, Node, Namespace, Name, CheckID, Status string
+}
+
+type WorkloadNamespaceRead struct {
+	Name            string
+	QueryIndex      uint64
+	AllocationCount int
 }
 
 // WorkloadSnapshot is an atomic logical observation. FullNamespaceAccess
 // must come from an independently checked Nomad ACL policy, not from a
 // successful list response: Nomad can silently filter unauthorized rows.
 type WorkloadSnapshot struct {
-	ObservedAt          time.Time
-	FullNamespaceAccess bool
-	Namespaces          []string
-	Allocations         []WorkloadAllocation
-	Nodes               []WorkloadNode
-	Services            []WorkloadService
+	ObservedAt               time.Time
+	FullNamespaceAccess      bool
+	ACLPolicySHA256          string
+	NamespaceListIndexBefore uint64
+	NamespaceListIndexAfter  uint64
+	Namespaces               []string
+	NamespaceReads           []WorkloadNamespaceRead
+	Allocations              []WorkloadAllocation
+	Nodes                    []WorkloadNode
+	Services                 []WorkloadService
 }
 
 type WorkloadSnapshotSource interface {
@@ -62,7 +73,8 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 		return WorkloadEvidence{}, ErrWorkloadObservation
 	}
 	s, err := source.Snapshot(ctx)
-	if err != nil || ctx.Err() != nil || !s.FullNamespaceAccess || s.ObservedAt.IsZero() ||
+	if err != nil || ctx.Err() != nil || !s.FullNamespaceAccess || !hex64.MatchString(s.ACLPolicySHA256) ||
+		s.NamespaceListIndexBefore == 0 || s.NamespaceListIndexAfter != s.NamespaceListIndexBefore || s.ObservedAt.IsZero() ||
 		now.Before(s.ObservedAt) || now.Sub(s.ObservedAt) > 30*time.Second || len(s.Namespaces) == 0 {
 		return WorkloadEvidence{}, ErrWorkloadObservation
 	}
@@ -74,6 +86,16 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 		namespaces[name] = true
 	}
 	if !namespaces["default"] {
+		return WorkloadEvidence{}, ErrWorkloadObservation
+	}
+	reads := map[string]WorkloadNamespaceRead{}
+	for _, read := range s.NamespaceReads {
+		if !namespaces[read.Name] || read.QueryIndex == 0 || read.AllocationCount < 0 || reads[read.Name].Name != "" {
+			return WorkloadEvidence{}, ErrWorkloadObservation
+		}
+		reads[read.Name] = read
+	}
+	if len(reads) != len(namespaces) {
 		return WorkloadEvidence{}, ErrWorkloadObservation
 	}
 	nodes := map[string]WorkloadNode{}
@@ -98,6 +120,9 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
 		allocIDs[alloc.ID] = true
+		read := reads[alloc.Namespace]
+		read.AllocationCount--
+		reads[alloc.Namespace] = read
 		// Terminal allocations do not consume the current placement, but an
 		// unknown status is unsafe because it may still be live.
 		switch alloc.Status {
@@ -107,6 +132,9 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 			}
 		case "complete", "failed", "lost":
 		default:
+			return WorkloadEvidence{}, ErrWorkloadObservation
+		}
+		if alloc.Job == "hello-norn-mysql" && alloc.Namespace == "default" && alloc.Status == "pending" {
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
 		if alloc.Job == "hello-norn-mysql" && alloc.Namespace == "default" && alloc.Status == "running" {
@@ -119,15 +147,32 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 	if len(placements) != 2 {
 		return WorkloadEvidence{}, ErrWorkloadObservation
 	}
+	for _, read := range reads {
+		if read.AllocationCount != 0 {
+			return WorkloadEvidence{}, ErrWorkloadObservation
+		}
+	}
+	requestCPU, requestMemory := 0, 0
+	for _, alloc := range s.Allocations {
+		if alloc.Job == "hello-norn-mysql" && alloc.Namespace == "default" && alloc.Status == "running" {
+			if requestCPU == 0 {
+				requestCPU, requestMemory = alloc.CPU, alloc.MemoryMB
+			}
+			if alloc.CPU <= 0 || alloc.MemoryMB <= 0 || alloc.CPU != requestCPU || alloc.MemoryMB != requestMemory {
+				return WorkloadEvidence{}, ErrWorkloadObservation
+			}
+		}
+	}
 	// One replacement replica must fit on either survivor independently.
 	for _, name := range []string{"app-01", "app-02"} {
-		if nodes[name].FreeCPU < 200 || nodes[name].FreeMemoryMB < 128 {
+		if !nodes[name].EligibleForWorkload || nodes[name].FreeCPU < requestCPU || nodes[name].FreeMemoryMB < requestMemory {
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
 	}
 	serviceIDs := map[string]bool{}
 	for _, entry := range s.Services {
-		if entry.AllocationID == "" || entry.Status != "passing" ||
+		if entry.AllocationID == "" || entry.Namespace != "default" || entry.Name != "hello-norn-mysql" ||
+			entry.CheckID == "" || entry.Status != "passing" ||
 			placements[entry.Node] != entry.AllocationID || serviceIDs[entry.AllocationID] {
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
@@ -137,7 +182,13 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 		return WorkloadEvidence{}, ErrWorkloadObservation
 	}
 	// Canonicalize unordered API list responses for a stable evidence digest.
+	s.Namespaces = append([]string(nil), s.Namespaces...)
+	s.NamespaceReads = append([]WorkloadNamespaceRead(nil), s.NamespaceReads...)
+	s.Nodes = append([]WorkloadNode(nil), s.Nodes...)
+	s.Allocations = append([]WorkloadAllocation(nil), s.Allocations...)
+	s.Services = append([]WorkloadService(nil), s.Services...)
 	sort.Strings(s.Namespaces)
+	sort.Slice(s.NamespaceReads, func(i, j int) bool { return s.NamespaceReads[i].Name < s.NamespaceReads[j].Name })
 	sort.Slice(s.Nodes, func(i, j int) bool { return s.Nodes[i].Name < s.Nodes[j].Name })
 	sort.Slice(s.Allocations, func(i, j int) bool { return s.Allocations[i].ID < s.Allocations[j].ID })
 	sort.Slice(s.Services, func(i, j int) bool { return s.Services[i].AllocationID < s.Services[j].AllocationID })
