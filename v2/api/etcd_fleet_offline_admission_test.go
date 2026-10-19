@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"net/http"
@@ -15,10 +16,20 @@ import (
 
 	"norn/v2/api/config"
 	"norn/v2/api/handler"
+	"norn/v2/api/store"
 )
 
+type offlineTestIdentity struct {
+	activeManagedIdentity
+	device *store.AccessDevice
+}
+
+func (i offlineTestIdentity) ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error) {
+	return i.device, nil
+}
+
 func TestOfflineFleetTrustFailsClosed(t *testing.T) {
-	base := &config.Config{FleetAuthorityOnly: true, Environment: "staging", FleetOfflineOwnerKeyID: "owner-1", FleetOfflineRunnerSubject: "offline-runner"}
+	base := &config.Config{FleetAuthorityOnly: true, Profile: "staging", Environment: "staging", FleetOfflineOwnerKeyID: "owner-1", FleetOfflineRunnerSubject: "offline-runner"}
 	if trust, err := loadOfflineFleetTrust(&config.Config{FleetAuthorityOnly: true, Environment: "staging"}); err != nil || trust != nil {
 		t.Fatalf("unset trust must disable route: %v %v", trust, err)
 	}
@@ -39,6 +50,15 @@ func TestOfflineFleetTrustFailsClosed(t *testing.T) {
 		t.Fatal("production trust accepted")
 	}
 	base.Environment = "staging"
+	base.Profile = "production"
+	if _, err := loadOfflineFleetTrust(base); err == nil {
+		t.Fatal("production profile with staging environment accepted")
+	}
+	base.Profile = "development"
+	if _, err := loadOfflineFleetTrust(base); err == nil {
+		t.Fatal("development profile with staging environment accepted")
+	}
+	base.Profile = "staging"
 	link := filepath.Join(t.TempDir(), "link.pub")
 	if err := os.Symlink(path, link); err != nil {
 		t.Fatal(err)
@@ -60,7 +80,7 @@ func TestOfflineReservationRefusesUndelegatedAdministrator(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	conf := &config.Config{APIToken: secret}
 	router := chi.NewRouter()
-	registerEtcdFleetOfflineRoutes(router, conf, activeManagedIdentity{}, nil,
+	registerEtcdFleetOfflineRoutes(router, conf, offlineTestIdentity{}, nil,
 		&offlineFleetTrust{keyID: "owner-1", public: make(ed25519.PublicKey, ed25519.PublicKeySize), runnerSubject: "offline-runner"})
 	record, err := handler.NewManagedAccessTokenRecord("operator", []string{handler.ScopeAdmin}, time.Hour, time.Now())
 	if err != nil {
@@ -76,5 +96,22 @@ func TestOfflineReservationRefusesUndelegatedAdministrator(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "offline_reservation_principal_invalid") {
 		t.Fatalf("non-device admin was admitted: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestOfflineReservationRequiresActiveMatchingDevice(t *testing.T) {
+	for name, device := range map[string]*store.AccessDevice{
+		"missing":   nil,
+		"different": {ID: "other"},
+		"revoked":   {ID: "device-1", RevokedAt: func() *time.Time { at := time.Now(); return &at }()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if offlineReservationDeviceActive(context.Background(), offlineTestIdentity{device: device}, "device-1") {
+				t.Fatal("inactive or mismatched device accepted")
+			}
+		})
+	}
+	if !offlineReservationDeviceActive(context.Background(), offlineTestIdentity{device: &store.AccessDevice{ID: "device-1"}}, "device-1") {
+		t.Fatal("active matching device refused")
 	}
 }

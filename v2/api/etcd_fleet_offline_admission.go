@@ -4,6 +4,7 @@ package main
 // shared Fleet target fence. It cannot issue credentials or run an effect.
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -40,7 +41,7 @@ func loadOfflineFleetTrust(cfg *config.Config) (*offlineFleetTrust, error) {
 	if keyID == "" && path == "" && subject == "" {
 		return nil, nil
 	}
-	if !cfg.FleetAuthorityOnly || cfg.EnvironmentID() != "staging" || keyID == "" || path == "" || subject == "" || strings.ContainsAny(keyID, " \t\n\r") || strings.ContainsAny(subject, " \t\n\r") {
+	if !cfg.FleetAuthorityOnly || cfg.Production() || cfg.ProfileID() != "staging" || cfg.EnvironmentID() != "staging" || keyID == "" || path == "" || subject == "" || strings.ContainsAny(keyID, " \t\n\r") || strings.ContainsAny(subject, " \t\n\r") {
 		return nil, fmt.Errorf("offline trust requires authority-only staging and complete pinned owner and runner identities")
 	}
 	if !filepath.IsAbs(path) {
@@ -76,7 +77,12 @@ type offlineReserveRequest struct {
 	Approval json.RawMessage `json:"approval"`
 }
 
-func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities store.IdentityStore, operations *etcdstore.V3OperationStore, trust *offlineFleetTrust) {
+type offlineIdentityStore interface {
+	store.IdentityStore
+	ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error)
+}
+
+func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities offlineIdentityStore, operations *etcdstore.V3OperationStore, trust *offlineFleetTrust) {
 	if trust == nil {
 		return
 	}
@@ -84,6 +90,10 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 		principal, ok := handler.AccessPrincipalFromRequest(r)
 		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy || principal.TokenID == "" || principal.DeviceID == "" || principal.CI != nil || !principal.Allows(handler.ScopeAdmin) || principal.Subject == trust.runnerSubject {
 			handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_reservation_principal_invalid", "offline reservation requires a distinct device-bound administrator")
+			return
+		}
+		if !offlineReservationDeviceActive(r.Context(), identities, principal.DeviceID) {
+			handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_reservation_device_inactive", "offline reservation requires an active registered administrator device")
 			return
 		}
 		var request offlineReserveRequest
@@ -130,4 +140,12 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 			AuthorizesEffect bool            `json:"authorizesEffect"`
 		}{reserved, false})
 	})
+}
+
+func offlineReservationDeviceActive(ctx context.Context, identities offlineIdentityStore, deviceID string) bool {
+	if identities == nil || deviceID == "" {
+		return false
+	}
+	device, err := identities.ActiveAccessDevice(ctx, deviceID)
+	return err == nil && device != nil && device.ID == deviceID && device.RevokedAt == nil
 }
