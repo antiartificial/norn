@@ -56,6 +56,12 @@ type Config struct {
 	// recorded separately from the reviewed plan commit. Empty by default.
 	FleetLegacyRecoveryHeadBinding string
 	FleetGitHubAPIBaseURL          string
+	// Offline Fleet admission is disabled unless all three values are set.
+	// The public key is pinned server-side; the runner subject names a distinct
+	// managed device principal. These settings authorize reservation only.
+	FleetOfflineOwnerKeyID         string
+	FleetOfflineOwnerPublicKeyFile string
+	FleetOfflineRunnerSubject      string
 	GitToken                       string
 	GitSSHKey                      string
 	APIToken                       string
@@ -313,6 +319,9 @@ func Load() *Config {
 		FleetGitHubRecoverWorkflow:            envOr("NORN_FLEET_GITHUB_RECOVER_WORKFLOW", "recover.yml"),
 		FleetLegacyRecoveryHeadBinding:        strings.TrimSpace(os.Getenv("NORN_FLEET_LEGACY_RECOVERY_HEAD_BINDING")),
 		FleetGitHubAPIBaseURL:                 envOr("NORN_FLEET_GITHUB_API_BASE_URL", "https://api.github.com"),
+		FleetOfflineOwnerKeyID:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_KEY_ID")),
+		FleetOfflineOwnerPublicKeyFile:        strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_PUBLIC_KEY_FILE")),
+		FleetOfflineRunnerSubject:             strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_RUNNER_SUBJECT")),
 		GitToken:                              os.Getenv("NORN_GIT_TOKEN"),
 		GitSSHKey:                             os.Getenv("NORN_GIT_SSH_KEY"),
 		APIToken:                              os.Getenv("NORN_API_TOKEN"),

@@ -56,6 +56,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if !cfg.RequireExplicitAuth || len(cfg.APIToken) < 32 || len(cfg.AuditSigningKey) < 32 || strings.TrimSpace(cfg.ControlAuthority) == "" {
 		return fmt.Errorf("etcd Fleet runtime requires explicit auth, a 32-byte API token and audit key, and control authority")
 	}
+	if _, err := loadOfflineFleetTrust(cfg); err != nil {
+		return fmt.Errorf("offline Fleet admission: %w", err)
+	}
 	signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...)
 	if err != nil {
 		return fmt.Errorf("acceptance signer: %w", err)
@@ -673,6 +676,10 @@ const etcdFleetExecutorLaneEnabled = false
 // only where the reconciler runs.
 func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, operations *etcdstore.V3OperationStore, fleetGitHub *githubapp.Client, commits controller.CommitSource, reconciler *controller.Reconciler, executorLane bool) *controller.Watcher {
 	registerEtcdFleetTargetRoutes(router, cfg, identities, operations, fleetGitHub)
+	// Startup has already rejected partial or invalid trust configuration.
+	if trust, err := loadOfflineFleetTrust(cfg); err == nil {
+		registerEtcdFleetOfflineRoutes(router, cfg, identities, operations, trust)
+	}
 	var liveness handler.FleetControllerLiveness
 	if reconciler != nil {
 		liveness = reconciler
