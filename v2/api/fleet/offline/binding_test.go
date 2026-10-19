@@ -11,7 +11,7 @@ import (
 func goodBinding() Binding {
 	start := time.Date(2026, 10, 19, 20, 0, 0, 0, time.UTC)
 	return Binding{
-		SchemaVersion: BindingSchema, PlanID: "plan-1", TargetID: "target-1",
+		SchemaVersion: BindingSchema, PlanID: "11111111-1111-4111-8111-111111111111", TargetID: "target-1",
 		Resource: WorkResource, SourceCommit: strings.Repeat("a", 40),
 		SavedPlanSHA256: strings.Repeat("b", 64), EffectSHA256: strings.Repeat("c", 64),
 		Backend: Backend{Bucket: "work-state", Key: "staging/terraform.tfstate", VersionID: "version-1",
@@ -72,9 +72,9 @@ func TestDecodeRejectsDuplicateAndUnknownFields(t *testing.T) {
 		t.Fatalf("valid decode: %+v, %v", decoded, err)
 	}
 	for _, bad := range []string{
-		strings.Replace(string(raw), `"planId":"plan-1"`, `"planId":"plan-1","planId":"plan-2"`, 1),
+		strings.Replace(string(raw), `"planId":"11111111-1111-4111-8111-111111111111"`, `"planId":"11111111-1111-4111-8111-111111111111","planId":"22222222-2222-4222-8222-222222222222"`, 1),
 		strings.Replace(string(raw), `"serial":22`, `"serial":22,"serial":23`, 1),
-		strings.Replace(string(raw), `"planId":"plan-1"`, `"planId":"plan-1","extra":true`, 1),
+		strings.Replace(string(raw), `"planId":"11111111-1111-4111-8111-111111111111"`, `"planId":"11111111-1111-4111-8111-111111111111","extra":true`, 1),
 	} {
 		if _, err := DecodeBinding([]byte(bad)); !errors.Is(err, ErrInvalidBinding) {
 			t.Fatalf("accepted ambiguous binding: %v", err)

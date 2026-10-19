@@ -12,6 +12,8 @@ import (
 	"errors"
 	"regexp"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -66,7 +68,7 @@ type Binding struct {
 // Validate checks structural completeness and a bounded lifetime. It never
 // asserts that the binding came from Norn or that its claims are true.
 func (b Binding) Validate() error {
-	if b.SchemaVersion != BindingSchema || b.PlanID == "" || b.TargetID == "" ||
+	if b.SchemaVersion != BindingSchema || uuid.Validate(b.PlanID) != nil || b.TargetID == "" ||
 		b.Resource != WorkResource || !hex40.MatchString(b.SourceCommit) ||
 		!hex64.MatchString(b.SavedPlanSHA256) || !hex64.MatchString(b.EffectSHA256) ||
 		b.Backend.Bucket == "" || b.Backend.Key == "" || b.Backend.VersionID == "" ||
