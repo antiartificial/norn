@@ -4,16 +4,22 @@ on:
   pull_request:
   push:
     branches: [master]
+  # Run the full qualification suite deliberately on protected master before
+  # publishing a release. The M4 branch-protection check still runs on PRs.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: norn-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A manual release qualification must not cancel the required M4 check from
+  # a master push, nor be canceled by a later push to master.
+  group: norn-ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   api-and-cli:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: ${{ matrix.component }}
     runs-on: ubuntu-24.04
     services:
@@ -76,6 +82,7 @@ jobs:
           python3 -m unittest -v test_compare_state.py
 
   mobility-fixture-image:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: M7 mobility fixture image
     runs-on: ubuntu-24.04
     steps:
@@ -116,6 +123,7 @@ jobs:
         run: bash v2/scripts/test-m4-capacity-local.sh
 
   migration-process-crash:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: M1 migration process-crash recovery
     runs-on: ubuntu-24.04
     steps:
@@ -130,6 +138,7 @@ jobs:
         run: bash v2/scripts/test-snapshot-cgroup-linux.sh
 
   etcd-deployment-process-crash:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: M1/M4 etcd deployment process-crash containment
     runs-on: ubuntu-24.04
     steps:
@@ -168,6 +177,7 @@ jobs:
         run: bash v2/scripts/test-etcd-deployment-worker-crash-qualification.sh
 
   ingress-private-transport:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: M4 private ingress transport
     runs-on: ubuntu-24.04
     steps:
@@ -184,6 +194,7 @@ jobs:
         run: python3 v2/api/scripts/qualify-v3-private-ingress-publisher.py
 
   mobility-local-transfer:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: M6 local mobility transfer and fence
     runs-on: ubuntu-24.04
     steps:
@@ -202,6 +213,7 @@ jobs:
         run: bash v2/scripts/test-mobility-local-transfer.sh
 
   api-production-etcd:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: api production etcd TLS RBAC
     runs-on: ubuntu-24.04
     steps:
@@ -217,6 +229,7 @@ jobs:
         run: go test ./... -run '^TestEtcdFleetRuntimeProductionTLSRBACProcess$' -count=1
 
   mini-schema-fixture:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: Mini synthetic schema fixture
     runs-on: ubuntu-24.04
     services:
@@ -260,6 +273,7 @@ jobs:
           python3 v2/scripts/test-mini-recovered-forward-completed-gate.py
 
   release-bundle:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: release bundle rehearsal
     runs-on: ubuntu-24.04
     steps:
@@ -295,6 +309,7 @@ jobs:
         run: bash v2/scripts/test-platform-release-bundle.sh
 
   workflows:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && github.ref_protected
     name: workflow validation
     runs-on: ubuntu-24.04
     steps:
