@@ -2,6 +2,10 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -17,6 +21,8 @@ import (
 	"norn/v2/api/model"
 )
 
+var offlineTestPrivateKey = ed25519.NewKeyFromSeed([]byte("01234567890123456789012345678901"))
+
 func offlineTestBinding(planID, targetID string, now time.Time) offline.Binding {
 	return offline.Binding{
 		SchemaVersion: offline.BindingSchema, PlanID: planID, TargetID: targetID,
@@ -29,6 +35,52 @@ func offlineTestBinding(planID, targetID string, now time.Time) offline.Binding 
 		DispatchNonceSHA256: strings.Repeat("f", 64), FenceGeneration: 1,
 		CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(10 * time.Minute),
 	}
+}
+
+func offlineTestApproval(t *testing.T, binding offline.Binding, now time.Time) (offline.Binding, offline.VerifiedApproval) {
+	t.Helper()
+	id := sha256.Sum256([]byte(binding.PlanID))
+	return offlineTestApprovalID(t, binding, now, hex.EncodeToString(id[:]))
+}
+
+func offlineTestApprovalID(t *testing.T, binding offline.Binding, now time.Time, authorizationID string) (offline.Binding, offline.VerifiedApproval) {
+	t.Helper()
+	binding.OwnerAuthorizationID = authorizationID
+	intent := offline.ApprovalIntent{SchemaVersion: offline.ApprovalSchema, AuthorizationID: authorizationID,
+		AllowDestructive: true, PlanID: binding.PlanID, TargetID: binding.TargetID, Resource: binding.Resource,
+		SourceCommit: binding.SourceCommit, SavedPlanSHA256: binding.SavedPlanSHA256,
+		EffectSHA256: binding.EffectSHA256, Backend: binding.Backend,
+		ProviderAccountUUID: binding.ProviderAccountUUID, NodeName: binding.NodeName,
+		DropletID: binding.DropletID, RunnerPrincipalSubject: binding.RunnerPrincipalSubject,
+		DispatchNonceSHA256: binding.DispatchNonceSHA256, FenceGeneration: binding.FenceGeneration,
+		ExpiresAt: binding.ExpiresAt}
+	intentBytes, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed := offline.SignedApproval{Intent: intent, KeyID: "pinned-owner", Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(offlineTestPrivateKey, intentBytes))}
+	envelope, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(envelope)
+	binding.OwnerEnvelopeSHA256 = hex.EncodeToString(digest[:])
+	verified, err := offline.VerifySignedApproval(signed, "pinned-owner", offlineTestPrivateKey.Public().(ed25519.PublicKey), binding, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding, verified
+}
+
+func offlineAttemptClaim(binding offline.Binding) offline.AttemptClaim {
+	return offline.AttemptClaim{PlanID: binding.PlanID, TargetID: binding.TargetID,
+		Resource: binding.Resource, SourceCommit: binding.SourceCommit,
+		SavedPlanSHA256: binding.SavedPlanSHA256, EffectSHA256: binding.EffectSHA256,
+		Backend: binding.Backend, ProviderAccountUUID: binding.ProviderAccountUUID,
+		NodeName: binding.NodeName, DropletID: binding.DropletID,
+		OwnerAuthorizationID: binding.OwnerAuthorizationID, OwnerEnvelopeSHA256: binding.OwnerEnvelopeSHA256,
+		RunnerPrincipalSubject: binding.RunnerPrincipalSubject,
+		DispatchNonceSHA256:    binding.DispatchNonceSHA256, FenceGeneration: binding.FenceGeneration}
 }
 
 func offlineTestPlan(h *etcdExecutorHarness, id string) {
@@ -58,7 +110,8 @@ func TestOfflineDispatchReservationAcquiresSharedFenceAtomically(t *testing.T) {
 	offlineTestPlan(h, firstID)
 	offlineTestPlan(h, secondID)
 	first := offlineTestBinding(firstID, targetID, now)
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, now); err != nil {
+	first, verified := offlineTestApproval(t, first, now)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, verified, now); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := h.s.GetOfflineDispatchReservation(h.ctx(), firstID)
@@ -70,16 +123,17 @@ func TestOfflineDispatchReservationAcquiresSharedFenceAtomically(t *testing.T) {
 		fence.HolderNonceSHA256 != first.DispatchNonceSHA256 || fence.Generation != 1 {
 		t.Fatalf("fence is not held by exact offline dispatch: %+v, %v", fence, err)
 	}
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, now); err != nil {
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, verified, now); err != nil {
 		t.Fatalf("exact replay failed: %v", err)
 	}
 	changed := first
 	changed.EffectSHA256 = strings.Repeat("1", 64)
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), changed, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), changed, verified, now); !errors.Is(err, offline.ErrInvalidBinding) {
 		t.Fatalf("changed replay accepted: %v", err)
 	}
 	second := offlineTestBinding(secondID, targetID, now)
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), second, now); err == nil {
+	second, secondApproval := offlineTestApproval(t, second, now)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), second, secondApproval, now); err == nil {
 		t.Fatal("second plan acquired occupied shared fence")
 	}
 	if _, err := h.s.GetOfflineDispatchReservation(h.ctx(), secondID); !errors.Is(err, ErrNotFound) {
@@ -95,7 +149,7 @@ func TestOfflineDispatchReservationAcquiresSharedFenceAtomically(t *testing.T) {
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetFenceKey(targetID), string(encoded)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, verified, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
 		t.Fatalf("released fence allowed reservation replay: %v", err)
 	}
 }
@@ -106,10 +160,11 @@ func TestOfflineDispatchRefusesExistingProtectedPreparationAndWrongPlan(t *testi
 	planID := uuid.NewString()
 	offlineTestPlan(h, planID)
 	b := offlineTestBinding(planID, targetID, now)
+	b, approval := offlineTestApproval(t, b, now)
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(planID), `{"prepared":true}`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, approval, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
 		t.Fatalf("protected preparation did not block offline reservation: %v", err)
 	}
 	fence, _, err := h.s.GetFleetTargetFence(h.ctx(), targetID)
@@ -119,12 +174,12 @@ func TestOfflineDispatchRefusesExistingProtectedPreparationAndWrongPlan(t *testi
 	if _, err := h.s.kv.Delete(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(planID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, now.Add(11*time.Minute)); !errors.Is(err, offline.ErrInvalidBinding) {
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, approval, now.Add(11*time.Minute)); !errors.Is(err, offline.ErrInvalidBinding) {
 		t.Fatalf("expired binding accepted: %v", err)
 	}
 	wrong := b
 	wrong.FenceGeneration = 2
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), wrong, now); err == nil {
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), wrong, approval, now); err == nil {
 		t.Fatal("wrong fence generation accepted")
 	}
 	if _, err := h.s.GetOfflineDispatchReservation(h.ctx(), planID); !errors.Is(err, ErrNotFound) {
@@ -139,6 +194,11 @@ func TestOfflineDispatchConcurrentPlansOnlyOneCommits(t *testing.T) {
 	for _, id := range ids {
 		offlineTestPlan(h, id)
 	}
+	bindings := make([]offline.Binding, len(ids))
+	approvals := make([]offline.VerifiedApproval, len(ids))
+	for i, id := range ids {
+		bindings[i], approvals[i] = offlineTestApproval(t, offlineTestBinding(id, targetID, now), now)
+	}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	results := make([]error, 2)
@@ -147,7 +207,7 @@ func TestOfflineDispatchConcurrentPlansOnlyOneCommits(t *testing.T) {
 		go func(i int, id string) {
 			defer wg.Done()
 			<-start
-			_, results[i] = h.s.ReserveOfflineDispatch(h.ctx(), offlineTestBinding(id, targetID, now), now)
+			_, results[i] = h.s.ReserveOfflineDispatch(h.ctx(), bindings[i], approvals[i], now)
 		}(i, id)
 	}
 	close(start)
@@ -173,12 +233,56 @@ func TestOfflineDispatchConcurrentPlansOnlyOneCommits(t *testing.T) {
 	}
 }
 
+func TestOfflineOwnerAuthorizationIsConsumedOnceAcrossPlans(t *testing.T) {
+	h, targetID := offlineTestHarness(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	firstID, secondID := uuid.NewString(), uuid.NewString()
+	offlineTestPlan(h, firstID)
+	offlineTestPlan(h, secondID)
+	ownerID := strings.Repeat("9", 64)
+	first, firstApproval := offlineTestApprovalID(t, offlineTestBinding(firstID, targetID, now), now, ownerID)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, firstApproval, now); err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := h.s.kv.Get(h.ctx(), h.s.offlineOwnerConsumptionKey(ownerID))
+	if err != nil || len(consumed.Kvs) != 1 || string(consumed.Kvs[0].Value) != firstID+":"+first.OwnerEnvelopeSHA256 {
+		t.Fatalf("owner authorization was not durably consumed: %v", err)
+	}
+	// Simulate an independently proved non-submission release. This store
+	// slice intentionally exposes no release API; the second valid signature
+	// must still fail because the same authorization ID was already consumed.
+	fence, _, err := h.s.GetFleetTargetFence(h.ctx(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence.Held, fence.HolderPlanID, fence.HolderNonceSHA256 = false, "", ""
+	fence.LastRelease = &lifecycle.Release{PlanID: firstID, Reason: "dispatch_not_submitted", At: now}
+	fence.Revision++
+	encoded, err := json.Marshal(fleetTargetFenceRecord(fence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetFenceKey(targetID), string(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	second := offlineTestBinding(secondID, targetID, now)
+	second.FenceGeneration = 2
+	second, secondApproval := offlineTestApprovalID(t, second, now, ownerID)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), second, secondApproval, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
+		t.Fatalf("reused owner authorization was accepted: %v", err)
+	}
+	if _, err := h.s.GetOfflineDispatchReservation(h.ctx(), secondID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reused owner authorization persisted another reservation: %v", err)
+	}
+}
+
 func TestOfflineReservationTransactionHasNoEffectGrant(t *testing.T) {
 	h, targetID := offlineTestHarness(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	id := uuid.NewString()
 	offlineTestPlan(h, id)
-	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), offlineTestBinding(id, targetID, now), now); err != nil {
+	b, approval := offlineTestApproval(t, offlineTestBinding(id, targetID, now), now)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, approval, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, prefix := range []string{h.s.fleetRunnerAttemptPrefix(id), h.s.fleetExecutorMetaKey(id, "any")} {
@@ -186,5 +290,77 @@ func TestOfflineReservationTransactionHasNoEffectGrant(t *testing.T) {
 		if err != nil || response.Count != 0 {
 			t.Fatalf("reservation created attempt or grant: %s, %v", prefix, err)
 		}
+	}
+}
+
+func TestOfflineAttemptAdmissionRequiresExactHeldFenceAndOwnerConsumption(t *testing.T) {
+	h, targetID := offlineTestHarness(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	id := uuid.NewString()
+	offlineTestPlan(h, id)
+	binding, approval := offlineTestApproval(t, offlineTestBinding(id, targetID, now), now)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), binding, approval, now); err != nil {
+		t.Fatal(err)
+	}
+	claim := offlineAttemptClaim(binding)
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, "wrong-principal", uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
+		t.Fatalf("wrong principal admitted: %v", err)
+	}
+	wrong := claim
+	wrong.Backend.RawSHA256 = strings.Repeat("1", 64)
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), wrong, claim.RunnerPrincipalSubject, uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
+		t.Fatalf("changed backend admitted: %v", err)
+	}
+	consumptionKey := h.s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID)
+	if _, err := h.s.kv.Delete(h.ctx(), consumptionKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
+		t.Fatalf("attempt without owner consumption admitted: %v", err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), consumptionKey, binding.PlanID+":"+binding.OwnerEnvelopeSHA256); err != nil {
+		t.Fatal(err)
+	}
+	fence, _, err := h.s.GetFleetTargetFence(h.ctx(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence.Held = false
+	fence.HolderPlanID = ""
+	fence.HolderNonceSHA256 = ""
+	broken, err := json.Marshal(fleetTargetFenceRecord(fence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetFenceKey(targetID), string(broken)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), now); err == nil {
+		t.Fatal("attempt without held shared fence admitted")
+	}
+	fence.Held = true
+	fence.HolderPlanID = id
+	fence.HolderNonceSHA256 = binding.DispatchNonceSHA256
+	restored, err := json.Marshal(fleetTargetFenceRecord(fence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetFenceKey(targetID), string(restored)); err != nil {
+		t.Fatal(err)
+	}
+	attemptID := uuid.NewString()
+	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, attemptID, now)
+	if err != nil || attempt.ID != attemptID || attempt.CurrentPhase != "prechange_verified" || attempt.Status != "queued" {
+		t.Fatalf("exact attempt refused or malformed: %+v, %v", attempt, err)
+	}
+	stored, err := h.s.GetOfflineAttempt(h.ctx(), id)
+	if err != nil || stored != attempt {
+		t.Fatalf("stored attempt differs: %+v, %v", stored, err)
+	}
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), now); !errors.Is(err, ErrOfflineAttemptConflict) {
+		t.Fatalf("second attempt admitted: %v", err)
+	}
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), binding.ExpiresAt); !errors.Is(err, offline.ErrAttemptMismatch) {
+		t.Fatalf("expired attempt admitted: %v", err)
 	}
 }

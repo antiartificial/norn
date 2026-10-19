@@ -28,6 +28,10 @@ func (s *V3OperationStore) offlineDispatchKey(planID string) string {
 	return s.prefix + "/v3/fleet-offline-dispatches/" + planID
 }
 
+func (s *V3OperationStore) offlineOwnerConsumptionKey(authorizationID string) string {
+	return s.prefix + "/v3/fleet-offline-owner-consumptions/" + authorizationID
+}
+
 // GetOfflineDispatchReservation reads a previously committed reservation. It
 // does not prove that the current target fence still belongs to the plan.
 func (s *V3OperationStore) GetOfflineDispatchReservation(ctx context.Context, planID string) (offline.Binding, error) {
@@ -45,8 +49,10 @@ func (s *V3OperationStore) GetOfflineDispatchReservation(ctx context.Context, pl
 // the existing target fence. A lost etcd commit response is indeterminate:
 // callers must read this key and the fence, never issue a changed reservation.
 // The method does not consume owner authorization or permit an attempt.
-func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding offline.Binding, now time.Time) (offline.Binding, error) {
-	if s == nil || binding.Validate() != nil || now.Before(binding.CreatedAt) || !now.Before(binding.ExpiresAt) {
+func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding offline.Binding,
+	approval offline.VerifiedApproval, now time.Time) (offline.Binding, error) {
+	if s == nil || binding.Validate() != nil || !approval.Match(binding) ||
+		now.Before(binding.CreatedAt) || !now.Before(binding.ExpiresAt) {
 		return offline.Binding{}, offline.ErrInvalidBinding
 	}
 	if existing, err := s.GetOfflineDispatchReservation(ctx, binding.PlanID); err == nil {
@@ -54,10 +60,12 @@ func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding o
 			abandoned, abandonedErr := s.checkFleetTargetPlanAbandoned(ctx, binding.PlanID)
 			fence, _, fenceErr := s.GetFleetTargetFence(ctx, binding.TargetID)
 			epoch, _, epochErr := s.fleetAuthorityEpochWithRevision(ctx)
+			consumption, consumptionErr := s.kv.Get(ctx, s.offlineOwnerConsumptionKey(approval.AuthorizationID()))
 			if abandonedErr != nil || abandoned || fenceErr != nil || !fence.Held || fence.HolderPlanID != binding.PlanID ||
 				fence.HolderNonceSHA256 != binding.DispatchNonceSHA256 ||
 				uint64(fence.Generation) != binding.FenceGeneration || epochErr != nil ||
-				fence.AuthorityEpoch != epoch {
+				fence.AuthorityEpoch != epoch || consumptionErr != nil || len(consumption.Kvs) != 1 ||
+				string(consumption.Kvs[0].Value) != binding.PlanID+":"+binding.OwnerEnvelopeSHA256 {
 				return offline.Binding{}, ErrOfflineDispatchReservationConflict
 			}
 			return existing, nil
@@ -75,10 +83,7 @@ func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding o
 		return offline.Binding{}, fmt.Errorf("offline reservation requires a succeeded Fleet capacity plan")
 	}
 	var plan fleet.CapacityPlan
-	encodedPayload, err := json.Marshal(op.Payload)
-	if err != nil || json.Unmarshal(encodedPayload, &plan) != nil ||
-		plan.ID != binding.PlanID || plan.Cluster != "tk-staging-nyc3" || plan.Pool != "app" ||
-		plan.Action != "scale" || plan.Current.Desired != 3 || plan.Proposed.Desired != 2 {
+	if !validOfflineContractionPlan(op, binding.PlanID, &plan) {
 		return offline.Binding{}, fmt.Errorf("offline reservation requires the exact work-staging 3-to-2 app plan")
 	}
 	if abandoned, err := s.checkFleetTargetPlanAbandoned(ctx, binding.PlanID); err != nil {
@@ -124,12 +129,14 @@ func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding o
 		clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", fenceContext.EpochRevision),
 		s.abandonedCompare(binding.PlanID),
 		clientv3.Compare(clientv3.CreateRevision(s.offlineDispatchKey(binding.PlanID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineOwnerConsumptionKey(approval.AuthorizationID())), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetGitHubDispatchPreparationKey(binding.PlanID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(binding.PlanID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(binding.PlanID)).WithPrefix(), "=", 0),
 	}
 	committed, err := s.kv.Txn(ctx).If(compares...).Then(
 		clientv3.OpPut(s.offlineDispatchKey(binding.PlanID), string(bound)),
+		clientv3.OpPut(s.offlineOwnerConsumptionKey(approval.AuthorizationID()), binding.PlanID+":"+binding.OwnerEnvelopeSHA256),
 		clientv3.OpPut(s.fleetTargetFenceKey(binding.TargetID), string(fence)),
 	).Commit()
 	if err != nil {
@@ -139,6 +146,18 @@ func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding o
 		return offline.Binding{}, ErrOfflineDispatchReservationConflict
 	}
 	return binding, nil
+}
+
+func validOfflineContractionPlan(op model.Operation, planID string, plan *fleet.CapacityPlan) bool {
+	if op.Kind != "fleet.capacity-plan" || op.Status != model.OperationSucceeded {
+		return false
+	}
+	encoded, err := json.Marshal(op.Payload)
+	if err != nil || json.Unmarshal(encoded, plan) != nil {
+		return false
+	}
+	return plan.ID == planID && plan.Cluster == "tk-staging-nyc3" && plan.Pool == "app" &&
+		plan.Action == "scale" && plan.Current.Desired == 3 && plan.Proposed.Desired == 2
 }
 
 func sameOfflineBinding(a, b offline.Binding) bool {

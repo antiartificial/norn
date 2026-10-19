@@ -57,6 +57,7 @@ type Binding struct {
 	ProviderAccountUUID    string    `json:"providerAccountUUID"`
 	NodeName               string    `json:"nodeName"`
 	DropletID              string    `json:"dropletId"`
+	OwnerAuthorizationID   string    `json:"ownerAuthorizationId"`
 	OwnerEnvelopeSHA256    string    `json:"ownerEnvelopeSHA256"`
 	RunnerPrincipalSubject string    `json:"runnerPrincipalSubject"`
 	DispatchNonceSHA256    string    `json:"dispatchNonceSHA256"`
@@ -74,6 +75,7 @@ func (b Binding) Validate() error {
 		b.Backend.Bucket == "" || b.Backend.Key == "" || b.Backend.VersionID == "" ||
 		b.Backend.Lineage == "" || b.Backend.Serial == 0 || !hex64.MatchString(b.Backend.RawSHA256) ||
 		b.ProviderAccountUUID == "" || b.NodeName != WorkNode || b.DropletID != WorkDropletID ||
+		!hex64.MatchString(b.OwnerAuthorizationID) ||
 		!hex64.MatchString(b.OwnerEnvelopeSHA256) || b.RunnerPrincipalSubject == "" ||
 		!hex64.MatchString(b.DispatchNonceSHA256) || b.FenceGeneration == 0 ||
 		b.CreatedAt.IsZero() || b.ExpiresAt.IsZero() || !b.ExpiresAt.After(b.CreatedAt) ||
@@ -142,10 +144,16 @@ func rejectDuplicateKeys(decoder *json.Decoder) error {
 // additionally prove that principal, dispatch, owner signature, and fence.
 type AttemptClaim struct {
 	PlanID                 string
+	TargetID               string
+	Resource               string
 	SourceCommit           string
 	SavedPlanSHA256        string
 	EffectSHA256           string
-	BackendVersionID       string
+	Backend                Backend
+	ProviderAccountUUID    string
+	NodeName               string
+	DropletID              string
+	OwnerAuthorizationID   string
 	OwnerEnvelopeSHA256    string
 	RunnerPrincipalSubject string
 	DispatchNonceSHA256    string
@@ -156,8 +164,10 @@ type AttemptClaim struct {
 // authority. A wrong or expired claim fails closed before any credential grant.
 func (b Binding) MatchAttempt(a AttemptClaim, now time.Time) error {
 	if b.Validate() != nil || now.Before(b.CreatedAt) || !now.Before(b.ExpiresAt) ||
-		b.PlanID != a.PlanID || b.SourceCommit != a.SourceCommit ||
-		b.Backend.VersionID != a.BackendVersionID ||
+		b.PlanID != a.PlanID || b.TargetID != a.TargetID || b.Resource != a.Resource ||
+		b.SourceCommit != a.SourceCommit || b.Backend != a.Backend ||
+		b.ProviderAccountUUID != a.ProviderAccountUUID || b.NodeName != a.NodeName ||
+		b.DropletID != a.DropletID || b.OwnerAuthorizationID != a.OwnerAuthorizationID ||
 		b.RunnerPrincipalSubject != a.RunnerPrincipalSubject ||
 		b.FenceGeneration != a.FenceGeneration ||
 		!equalDigest(b.SavedPlanSHA256, a.SavedPlanSHA256) ||
