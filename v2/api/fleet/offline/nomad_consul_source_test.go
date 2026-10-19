@@ -47,6 +47,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 				w.Header().Set("X-Nomad-NextToken", "next")
 				fmt.Fprint(w, `[{"ID":"alloc-1","Namespace":"default","JobID":"hello-norn-mysql","NodeID":"node-1","ClientStatus":"running","AllocatedResources":{"Tasks":{"web":{"Cpu":{"CpuShares":200},"Memory":{"MemoryMB":128}}}}}]`)
 			} else {
+				pages++
 				fmt.Fprint(w, `[{"ID":"alloc-2","Namespace":"default","JobID":"hello-norn-mysql","NodeID":"node-2","ClientStatus":"running","AllocatedResources":{"Tasks":{"web":{"Cpu":{"CpuShares":200},"Memory":{"MemoryMB":128}}}}}]`)
 			}
 		case "/v1/nodes":
@@ -90,7 +91,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	}
 	source.NomadServerName = "example.com"
 	evidence, err := ObserveWorkload(context.Background(), source, now)
-	if err != nil || !evidence.AllNamespacesInspected || pages != 0 {
+	if err != nil || !evidence.AllNamespacesInspected || pages != 2 {
 		t.Fatalf("valid paginated observation: %+v %v pages=%d", evidence, err, pages)
 	}
 	mismatch = true
