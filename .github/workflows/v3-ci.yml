@@ -12,8 +12,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: norn-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A manual release qualification must not cancel the required M4 check from
+  # a master push, nor be canceled by a later push to master.
+  group: norn-ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   api-and-cli:
