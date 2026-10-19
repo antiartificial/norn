@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -83,6 +84,15 @@ type HolderFacts struct {
 	SubmissionStartedAt time.Time
 	Attempts            []fleet.RunnerAttempt
 	Abandoned           bool
+	// Offline reservations are a separate non-effect lane. A queued offline
+	// attempt has no runner heartbeat and must never be inferred live from
+	// GitHub runner attempt semantics. Generic fence release cannot retire it.
+	OfflineReservation        bool
+	OfflineQueuedAttempt      bool
+	OfflineEvidenceIncomplete bool
+	OfflineTargetID           string
+	OfflineNonceSHA256        string
+	OfflineFenceGeneration    uint64
 }
 
 // Occupancy is the derived, admission-never-reads display cache (M3).
@@ -100,7 +110,12 @@ const (
 	ReasonNoLiveAttempt                 = "NoLiveAttempt"
 	ReasonAttemptTerminalWithoutSuccess = "AttemptTerminalWithoutSuccess"
 	ReasonAuthoritySuperseded           = "AuthoritySuperseded"
+	ReasonOfflineReserved               = "OfflineReserved"
+	ReasonOfflineAttemptQueued          = "OfflineAttemptQueued"
+	ReasonOfflineEvidenceIncomplete     = "OfflineEvidenceIncomplete"
 )
+
+var ErrFleetTargetOfflineRecoveryRequired = errors.New("offline Fleet holder requires dedicated recovery")
 
 // latestAttempt returns the attempt with the highest Attempt number,
 // projected to now so an expired lease is reported abandoned (D8/ProjectExpiry).
@@ -131,6 +146,17 @@ func Outcome(f FenceFacts, h HolderFacts, currentEpoch int64, now time.Time) (Oc
 	}
 	if f.AuthorityEpoch < currentEpoch {
 		return OccupancyUncertain, ReasonAuthoritySuperseded
+	}
+	if h.OfflineReservation {
+		if h.OfflineEvidenceIncomplete || h.OfflineTargetID != f.TargetID ||
+			h.OfflineNonceSHA256 != f.HolderNonceSHA256 ||
+			h.OfflineFenceGeneration != uint64(f.Generation) {
+			return OccupancyUncertain, ReasonOfflineEvidenceIncomplete
+		}
+		if h.OfflineQueuedAttempt {
+			return OccupancyUncertain, ReasonOfflineAttemptQueued
+		}
+		return OccupancyUncertain, ReasonOfflineReserved
 	}
 	if h.DispatchState != "" && h.DispatchState != "dispatched" && h.DispatchState != "bound" {
 		return OccupancyUncertain, ReasonDispatchSubmissionUnresolved
@@ -330,6 +356,9 @@ var releaseReason = map[ReleaseMode]string{
 func DecideRelease(f FenceFacts, h HolderFacts, mode ReleaseMode, proof *TerminalProof, now time.Time) (FenceFacts, error) {
 	if !f.Held {
 		return f, ErrFleetTargetNotHeld
+	}
+	if h.OfflineReservation {
+		return f, ErrFleetTargetOfflineRecoveryRequired
 	}
 	latest, hasAttempt := latestAttempt(h.Attempts, now)
 	if hasAttempt && isLive(latest) {

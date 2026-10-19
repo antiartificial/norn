@@ -16,13 +16,17 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/lifecycle"
+	"norn/v2/api/fleet/offline"
 	"norn/v2/api/store"
 )
 
@@ -188,13 +192,70 @@ func (s *V3OperationStore) loadFleetTargetHolderFacts(ctx context.Context, planI
 		}
 		facts.DispatchState, facts.SubmissionStartedAt = "bound", binding.CreatedAt
 	}
-	if facts.DispatchState == "" {
+	if offlineResp, err := s.kv.Get(ctx, s.offlineDispatchKey(planID)); err != nil {
+		return lifecycle.HolderFacts{}, err
+	} else if len(offlineResp.Kvs) == 1 {
+		binding, decodeErr := offline.DecodeBinding(offlineResp.Kvs[0].Value)
+		if decodeErr != nil || binding.PlanID != planID || facts.DispatchState != "" || len(attempts) != 0 {
+			facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
+			return facts, nil
+		}
+		facts.OfflineReservation = true
+		facts.OfflineTargetID = binding.TargetID
+		facts.OfflineNonceSHA256 = binding.DispatchNonceSHA256
+		facts.OfflineFenceGeneration = binding.FenceGeneration
+		facts.SubmissionStartedAt = binding.CreatedAt
+		consumed, err := s.kv.Get(ctx, s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID))
+		if err != nil {
+			return lifecycle.HolderFacts{}, err
+		}
+		facts.OfflineEvidenceIncomplete = len(consumed.Kvs) != 1 ||
+			string(consumed.Kvs[0].Value) != binding.PlanID+":"+binding.OwnerEnvelopeSHA256
+		attempt, err := s.GetOfflineAttempt(ctx, planID)
+		if errors.Is(err, ErrOfflineAttemptCorrupt) {
+			facts.OfflineEvidenceIncomplete = true
+		} else if err != nil && !errors.Is(err, ErrNotFound) {
+			return lifecycle.HolderFacts{}, err
+		}
+		if err == nil {
+			digest := sha256.Sum256(offlineResp.Kvs[0].Value)
+			if attempt.BindingSHA256 != hex.EncodeToString(digest[:]) || attempt.TargetID != binding.TargetID ||
+				attempt.FenceGeneration != binding.FenceGeneration || attempt.PrincipalSubject != binding.RunnerPrincipalSubject {
+				facts.OfflineEvidenceIncomplete = true
+			} else {
+				facts.OfflineQueuedAttempt = true
+			}
+		}
+	}
+	if !facts.OfflineReservation {
+		if _, err := s.GetOfflineAttempt(ctx, planID); err == nil {
+			facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
+		} else if errors.Is(err, ErrOfflineAttemptCorrupt) {
+			facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
+		} else if !errors.Is(err, ErrNotFound) {
+			return lifecycle.HolderFacts{}, err
+		}
+	}
+	if facts.DispatchState == "" && !facts.OfflineReservation {
 		// A converge plan on the executor lane has no dispatch keys and is
 		// bound once its first attempt exists (plan-5-7 section 2.6).
 		if converge, _, err := s.fleetConvergePlanOf(ctx, planID); err != nil {
 			return lifecycle.HolderFacts{}, err
 		} else if converge != nil {
 			facts.DispatchState = fleetExecutorHolderDispatchState
+		}
+		if facts.DispatchState == "" {
+			// A held work-staging contraction with neither its offline record
+			// nor a protected dispatch record is ambiguous after a partial
+			// restore. It must not look like "dispatch not submitted".
+			if plan, _, err := s.load(ctx, planID); err != nil && !errors.Is(err, ErrNotFound) {
+				return lifecycle.HolderFacts{}, err
+			} else if err == nil {
+				var typed fleet.CapacityPlan
+				if validOfflineContractionPlan(plan.Operation, planID, &typed) {
+					facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
+				}
+			}
 		}
 	}
 	return facts, nil

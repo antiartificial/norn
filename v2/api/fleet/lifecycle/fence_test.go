@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,29 @@ import (
 
 func heldFence() FenceFacts {
 	return FenceFacts{TargetID: "tgt_1", Generation: 1, Held: true, HolderPlanID: "plan-1", HolderNonceSHA256: "nonce-1", AuthorityEpoch: 1, Revision: 1}
+}
+
+func TestOfflineHolderIsUncertainAndCannotUseGenericRelease(t *testing.T) {
+	now := time.Now().UTC()
+	fence := heldFence()
+	holder := HolderFacts{OfflineReservation: true, OfflineTargetID: fence.TargetID,
+		OfflineNonceSHA256: fence.HolderNonceSHA256, OfflineFenceGeneration: uint64(fence.Generation)}
+	if state, reason := Outcome(fence, holder, 1, now); state != OccupancyUncertain || reason != ReasonOfflineReserved {
+		t.Fatalf("reserved offline holder: %s/%s", state, reason)
+	}
+	holder.OfflineQueuedAttempt = true
+	if state, reason := Outcome(fence, holder, 1, now); state != OccupancyUncertain || reason != ReasonOfflineAttemptQueued {
+		t.Fatalf("queued offline attempt: %s/%s", state, reason)
+	}
+	holder.OfflineEvidenceIncomplete = true
+	if state, reason := Outcome(fence, holder, 1, now); state != OccupancyUncertain || reason != ReasonOfflineEvidenceIncomplete {
+		t.Fatalf("incomplete offline evidence: %s/%s", state, reason)
+	}
+	for _, mode := range []ReleaseMode{ReleaseModeSucceeded, ReleaseModeDispatchNotSubmitted, ReleaseModeTerminal, ReleaseModeAbandon} {
+		if _, err := DecideRelease(fence, holder, mode, &TerminalProof{ListingSnapshotSHA256: "evidence"}, now.Add(time.Hour)); !errors.Is(err, ErrFleetTargetOfflineRecoveryRequired) {
+			t.Fatalf("generic release %s accepted offline holder: %v", mode, err)
+		}
+	}
 }
 
 func TestOutcomeTable(t *testing.T) {
