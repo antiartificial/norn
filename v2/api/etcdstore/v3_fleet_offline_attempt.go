@@ -77,7 +77,10 @@ func decodeOfflineCheckpointPair(headRaw, eventRaw []byte, planID string) (offli
 		checkpoint.SchemaVersion != offline.CheckpointSchema || checkpoint.PlanID != planID ||
 		uuid.Validate(checkpoint.AttemptID) != nil || checkpoint.Sequence != 1 || checkpoint.Phase != "prechange_observed" ||
 		!offlineEvidenceDigest.MatchString(checkpoint.EvidenceSHA256) || checkpoint.AuthorityEpoch < 1 ||
-		checkpoint.FenceGeneration == 0 || checkpoint.RecordedAt.IsZero() {
+		checkpoint.FenceGeneration == 0 || checkpoint.RecordedAt.IsZero() ||
+		(checkpoint.Prechange != nil && (checkpoint.Prechange.SchemaVersion != offline.PrechangeSchema ||
+			checkpoint.Prechange.SHA256 != checkpoint.EvidenceSHA256 || checkpoint.Prechange.ObservedAt.IsZero() ||
+			!checkpoint.Prechange.ExpiresAt.Equal(checkpoint.Prechange.ObservedAt.Add(5*time.Minute)))) {
 		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt
 	}
 	return checkpoint, nil
@@ -88,7 +91,7 @@ func decodeOfflineCheckpointPair(headRaw, eventRaw []byte, planID string) (offli
 // protected-lane absence are compared in one transaction. The event is
 // append-only; the head is a CAS cursor. A lost response must be reconciled
 // by reading the exact event, never by retrying a changed request.
-func (s *V3OperationStore) RecordOfflineCheckpoint(ctx context.Context, planID, attemptID, authenticatedPrincipal, phase, evidenceSHA256 string, expectedSequence uint64, now time.Time) (offline.Checkpoint, error) {
+func (s *V3OperationStore) RecordOfflineCheckpoint(ctx context.Context, planID, attemptID, authenticatedPrincipal, phase, evidenceSHA256 string, expectedSequence uint64, now time.Time, receiptRaw ...[]byte) (offline.Checkpoint, error) {
 	if s == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || authenticatedPrincipal == "" ||
 		phase != "prechange_observed" || !offlineEvidenceDigest.MatchString(evidenceSHA256) || expectedSequence != 0 {
 		return offline.Checkpoint{}, ErrOfflineCheckpointInvalid
@@ -120,6 +123,17 @@ func (s *V3OperationStore) RecordOfflineCheckpoint(ctx context.Context, planID, 
 		binding.RunnerPrincipalSubject != authenticatedPrincipal || now.Before(binding.CreatedAt) || !now.Before(binding.ExpiresAt) {
 		return offline.Checkpoint{}, offline.ErrAttemptMismatch
 	}
+	var prechange *offline.PrechangeSummary
+	if len(receiptRaw) > 1 {
+		return offline.Checkpoint{}, ErrOfflineCheckpointInvalid
+	}
+	if len(receiptRaw) == 1 {
+		summary, err := offline.ValidatePrechangeReceipt(receiptRaw[0], binding, attempt, now)
+		if err != nil || summary.SHA256 != evidenceSHA256 {
+			return offline.Checkpoint{}, ErrOfflineCheckpointInvalid
+		}
+		prechange = &summary
+	}
 	consumptionKey := s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID)
 	consumption, err := s.kv.Get(ctx, consumptionKey)
 	if err != nil {
@@ -145,7 +159,7 @@ func (s *V3OperationStore) RecordOfflineCheckpoint(ctx context.Context, planID, 
 	}
 	checkpoint := offline.Checkpoint{SchemaVersion: offline.CheckpointSchema, PlanID: planID, AttemptID: attemptID,
 		Sequence: 1, Phase: phase, EvidenceSHA256: evidenceSHA256, AuthorityEpoch: fenceContext.Epoch,
-		FenceGeneration: binding.FenceGeneration, RecordedAt: now.UTC()}
+		FenceGeneration: binding.FenceGeneration, RecordedAt: now.UTC(), Prechange: prechange}
 	encoded, err := json.Marshal(checkpoint)
 	if err != nil {
 		return offline.Checkpoint{}, err

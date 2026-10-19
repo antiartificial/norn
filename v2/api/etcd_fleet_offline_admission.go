@@ -179,14 +179,15 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 			return
 		}
 		var request struct {
-			EvidenceSHA256   string `json:"evidenceSHA256"`
-			ExpectedSequence uint64 `json:"expectedSequence"`
+			EvidenceSHA256   string          `json:"evidenceSHA256"`
+			ExpectedSequence uint64          `json:"expectedSequence"`
+			Receipt          json.RawMessage `json:"receipt"`
 		}
-		if !decodeOfflineRequest(w, r, &request) {
+		if !decodeOfflineRequest(w, r, &request) || len(request.Receipt) == 0 {
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "offline_checkpoint_invalid", "invalid checkpoint request")
 			return
 		}
-		checkpoint, err := operations.RecordOfflineCheckpoint(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), principal.Subject, "prechange_observed", request.EvidenceSHA256, request.ExpectedSequence, time.Now().UTC())
+		checkpoint, err := operations.RecordOfflineCheckpoint(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), principal.Subject, "prechange_observed", request.EvidenceSHA256, request.ExpectedSequence, time.Now().UTC(), request.Receipt)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_checkpoint_refused", "offline checkpoint or shared target fence refused the request")
 			return

@@ -9,15 +9,16 @@ const AttemptSchema = "norn.fleet-offline-attempt/v1"
 const CheckpointSchema = "norn.fleet-offline-checkpoint/v1"
 
 type Checkpoint struct {
-	SchemaVersion   string    `json:"schemaVersion"`
-	PlanID          string    `json:"planId"`
-	AttemptID       string    `json:"attemptId"`
-	Sequence        uint64    `json:"sequence"`
-	Phase           string    `json:"phase"`
-	EvidenceSHA256  string    `json:"evidenceSHA256"`
-	AuthorityEpoch  int64     `json:"authorityEpoch"`
-	FenceGeneration uint64    `json:"fenceGeneration"`
-	RecordedAt      time.Time `json:"recordedAt"`
+	SchemaVersion   string            `json:"schemaVersion"`
+	PlanID          string            `json:"planId"`
+	AttemptID       string            `json:"attemptId"`
+	Sequence        uint64            `json:"sequence"`
+	Phase           string            `json:"phase"`
+	EvidenceSHA256  string            `json:"evidenceSHA256"`
+	Prechange       *PrechangeSummary `json:"prechange,omitempty"`
+	AuthorityEpoch  int64             `json:"authorityEpoch"`
+	FenceGeneration uint64            `json:"fenceGeneration"`
+	RecordedAt      time.Time         `json:"recordedAt"`
 }
 
 // Attempt is the immutable, non-effect admission record. Its runner can
