@@ -34,5 +34,6 @@ func (r originCheckedEffectReobserver) reobserveEffect(ctx context.Context, bind
 		return offline.EffectObservation{}, offline.ErrEffectProofMissing
 	}
 	observation.TrustedOrigin = true
+	observation.EvidenceSHA256 = offlineEffectDigest("github-protected-source", observation.EvidenceSHA256, "antiartificial/norn-fleet", "main", binding.SourceCommit)
 	return observation, nil
 }

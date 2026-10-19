@@ -52,6 +52,7 @@ func (r backendCheckedEffectReobserver) reobserveEffect(ctx context.Context, bin
 		return offline.EffectObservation{}, err
 	}
 	observation.LatestBackendExact = true
+	observation.EvidenceSHA256 = offlineEffectDigest("versioned-backend", observation.EvidenceSHA256, binding.Backend)
 	return observation, nil
 }
 
@@ -201,6 +202,12 @@ func (s *V3OperationStore) issueOfflineEffectGrant(ctx context.Context, planID, 
 	observation, err := observer.reobserveEffect(ctx, binding, attempt)
 	if err != nil {
 		return offline.EffectGrant{}, err
+	}
+	// Reobservation may take seconds. Use the authority clock after all reads
+	// for freshness, plan lifetime and grant issuance, rather than the caller's
+	// pre-read timestamp. Preserve a later caller time in deterministic tests.
+	if completed := time.Now().UTC(); completed.After(now) {
+		now = completed
 	}
 	if err := offline.ValidateEffectObservation(observation, binding, attempt, fenceContext.Epoch, now); err != nil {
 		return offline.EffectGrant{}, err

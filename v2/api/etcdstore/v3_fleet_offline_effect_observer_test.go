@@ -23,6 +23,12 @@ type effectWorkloadFixture struct {
 	err      error
 }
 
+type effectWorkloadSourceFunc func(context.Context) (offline.WorkloadSnapshot, error)
+
+func (f effectWorkloadSourceFunc) Snapshot(ctx context.Context) (offline.WorkloadSnapshot, error) {
+	return f(ctx)
+}
+
 func (f effectWorkloadFixture) Snapshot(context.Context) (offline.WorkloadSnapshot, error) {
 	return f.snapshot, f.err
 }
@@ -62,6 +68,33 @@ func TestOfflineEffectObserverCompositionFailsClosed(t *testing.T) {
 	o, err := observer.reobserveEffect(context.Background(), b, a)
 	if err != nil || offline.ValidateEffectObservation(o, b, a, 1, now) != nil {
 		t.Fatalf("composed proof: %+v %v", o, err)
+	}
+	workloadOnly, err := offline.ObserveWorkload(context.Background(), d.workload, now)
+	if err != nil || o.EvidenceSHA256 == workloadOnly.SHA256 {
+		t.Fatal("composite digest omitted authenticated slices")
+	}
+	changed := d
+	changed.provider = providerFixture{account: b.ProviderAccountUUID, droplets: append(append([]offlineProviderDroplet(nil), rows...), offlineProviderDroplet{ID: "999", Name: "unrelated", Status: "active", ProjectID: "elsewhere", VPCUUID: "elsewhere"})}
+	changedObserver, err := newOfflineEffectReobserver(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedProof, err := changedObserver.reobserveEffect(context.Background(), b, a)
+	if err != nil || changedProof.EvidenceSHA256 == o.EvidenceSHA256 {
+		t.Fatal("provider receipt did not change composite digest")
+	}
+	advanced := now.Add(time.Second)
+	clockCalls := 0
+	changed = d
+	changed.workload = effectWorkloadSourceFunc(func(context.Context) (offline.WorkloadSnapshot, error) { return effectWorkloadSnapshot(advanced), nil })
+	changed.clock = func() time.Time { clockCalls++; return advanced }
+	advancedObserver, err := newOfflineEffectReobserver(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advancedProof, err := advancedObserver.reobserveEffect(context.Background(), b, a)
+	if err != nil || clockCalls != 1 || !advancedProof.ObservedAt.Equal(advanced) || offline.ValidateEffectObservation(advancedProof, b, a, 1, advanced) != nil {
+		t.Fatalf("post-read timestamp rejected: %+v %v", advancedProof, err)
 	}
 	missing := map[string]func(*offlineEffectObserverDependencies){
 		"origin":   func(d *offlineEffectObserverDependencies) { d.origin = nil },

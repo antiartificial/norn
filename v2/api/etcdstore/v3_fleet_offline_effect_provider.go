@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -60,6 +61,16 @@ func (r providerCheckedEffectReobserver) reobserveEffect(ctx context.Context, bi
 		return offline.EffectObservation{}, offline.ErrEffectProofMissing
 	}
 	observation.ProviderExact = true
+	// Inventory order is provider-controlled. Canonicalize all returned rows,
+	// including unrelated rows, so any different authenticated read produces a
+	// different durable proof without introducing ordering noise.
+	canonical := append([]offlineProviderDroplet(nil), droplets...)
+	for i := range canonical {
+		canonical[i].Tags = append([]string(nil), canonical[i].Tags...)
+		sort.Strings(canonical[i].Tags)
+	}
+	sort.Slice(canonical, func(i, j int) bool { return canonical[i].ID < canonical[j].ID })
+	observation.EvidenceSHA256 = offlineEffectDigest("digitalocean-topology", observation.EvidenceSHA256, account, r.topology, canonical)
 	return observation, nil
 }
 
