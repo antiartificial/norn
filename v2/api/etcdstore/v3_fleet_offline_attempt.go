@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +21,7 @@ import (
 )
 
 var ErrOfflineAttemptConflict = errors.New("offline attempt admission changed or is already occupied")
+var ErrOfflineAttemptCorrupt = errors.New("offline attempt record is invalid")
 
 func (s *V3OperationStore) offlineAttemptKey(planID string) string {
 	return s.prefix + "/v3/fleet-offline-attempts/" + planID
@@ -39,7 +39,7 @@ func (s *V3OperationStore) GetOfflineAttempt(ctx context.Context, planID string)
 	if err := decodeV3Record(response.Kvs[0].Value, &attempt); err != nil ||
 		attempt.SchemaVersion != offline.AttemptSchema || attempt.PlanID != planID ||
 		attempt.ID == "" || attempt.Status != "queued" || attempt.CurrentPhase != "prechange_verified" {
-		return offline.Attempt{}, fmt.Errorf("offline attempt record is invalid")
+		return offline.Attempt{}, ErrOfflineAttemptCorrupt
 	}
 	return attempt, nil
 }

@@ -364,3 +364,102 @@ func TestOfflineAttemptAdmissionRequiresExactHeldFenceAndOwnerConsumption(t *tes
 		t.Fatalf("expired attempt admitted: %v", err)
 	}
 }
+
+func TestOfflineHolderOccupancyAndGenericRecoveryFailClosed(t *testing.T) {
+	h, targetID := offlineTestHarness(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	id := uuid.NewString()
+	offlineTestPlan(h, id)
+	binding, approval := offlineTestApproval(t, offlineTestBinding(id, targetID, now), now)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), binding, approval, now); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineReserved {
+		t.Fatalf("reserved occupancy = %s/%s, %v", state, reason, err)
+	}
+	if _, err := h.s.planFleetTargetRelease(h.ctx(), targetID, 1, lifecycle.ReleaseModeDispatchNotSubmitted,
+		nil, uuid.NewString(), now); !errors.Is(err, lifecycle.ErrFleetTargetOfflineRecoveryRequired) {
+		t.Fatalf("generic not-submitted release accepted offline holder: %v", err)
+	}
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(binding), binding.RunnerPrincipalSubject,
+		uuid.NewString(), now); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineAttemptQueued {
+		t.Fatalf("queued occupancy = %s/%s, %v", state, reason, err)
+	}
+	attempt, err := h.s.GetOfflineAttempt(h.ctx(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineAttemptKey(id), "malformed"); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
+		t.Fatalf("corrupt attempt occupancy = %s/%s, %v", state, reason, err)
+	}
+	attemptBytes, err := json.Marshal(attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineAttemptKey(id), string(attemptBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID)); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
+		t.Fatalf("missing owner proof occupancy = %s/%s, %v", state, reason, err)
+	}
+	if _, err := h.s.planFleetTargetRelease(h.ctx(), targetID, 1, lifecycle.ReleaseModeAbandon,
+		&lifecycle.TerminalProof{ListingSnapshotSHA256: strings.Repeat("a", 64)}, uuid.NewString(), now.Add(time.Hour)); !errors.Is(err, lifecycle.ErrFleetTargetOfflineRecoveryRequired) {
+		t.Fatalf("generic abandon accepted incomplete offline holder: %v", err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID),
+		binding.PlanID+":"+binding.OwnerEnvelopeSHA256); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineDispatchKey(id), "malformed"); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
+		t.Fatalf("corrupt binding occupancy = %s/%s, %v", state, reason, err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineDispatchKey(id)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineAttemptKey(id)); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
+		t.Fatalf("lost offline records occupancy = %s/%s, %v", state, reason, err)
+	}
+	if _, err := h.s.planFleetTargetRelease(h.ctx(), targetID, 1, lifecycle.ReleaseModeDispatchNotSubmitted,
+		nil, uuid.NewString(), now); !errors.Is(err, lifecycle.ErrFleetTargetOfflineRecoveryRequired) {
+		t.Fatalf("generic release accepted holder after offline record loss: %v", err)
+	}
+}
+
+func TestOfflineReservationBlocksTargetAliasChange(t *testing.T) {
+	h, targetID := offlineTestHarness(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	id := uuid.NewString()
+	offlineTestPlan(h, id)
+	binding, approval := offlineTestApproval(t, offlineTestBinding(id, targetID, now), now)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), binding, approval, now); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.s.RegisterFleetTarget(h.ctx(), lifecycle.TargetIdentity{
+		Provider: "digitalocean", ProviderAccount: "work-account", StateBackend: "s3://work-state/staging/terraform.tfstate",
+	}, []string{"cluster:tk-staging-nyc3", "environment:staging", "environment:staging-alt"}, uuid.NewString())
+	var fenceErr *lifecycle.FenceError
+	if !errors.As(err, &fenceErr) || fenceErr.Code != lifecycle.CodeFleetTargetRegistrationInFlight {
+		t.Fatalf("target alias changed under offline holder: %v", err)
+	}
+}

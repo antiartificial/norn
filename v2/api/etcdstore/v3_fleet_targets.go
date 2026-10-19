@@ -94,6 +94,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet/lifecycle"
+	"norn/v2/api/fleet/offline"
 )
 
 // ErrFleetAuthorityEpochConflict is returned by AdvanceFleetAuthorityEpoch
@@ -175,6 +176,10 @@ func (s *V3OperationStore) fleetGitHubDispatchPreparationsPrefix() string {
 }
 func (s *V3OperationStore) fleetRunnerDispatchesPrefix() string {
 	return s.prefix + "/v3/fleet-runner-dispatches/"
+}
+
+func (s *V3OperationStore) fleetOfflineDispatchesPrefix() string {
+	return s.prefix + "/v3/fleet-offline-dispatches/"
 }
 
 // RegisterFleetTarget registers identity with the given aliases, attributed
@@ -378,7 +383,8 @@ func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, c
 	return &target, fleetTargetMutationPlan{compares: compares, puts: puts}, nil
 }
 
-// fleetTargetInFlightCompares scans every dispatch preparation for a plan
+// fleetTargetInFlightCompares scans protected dispatch preparations and offline
+// reservations for a plan
 // whose cluster or environment would resolve to the new target (M1,
 // mirroring fleetTargetInFlightSQL), and returns the two prefix compares the
 // caller's registration Txn must include so a plan that goes in flight
@@ -386,6 +392,7 @@ func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, c
 func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, clusterNames, environments []string) ([]clientv3.Cmp, bool, error) {
 	preparationPrefix := s.fleetGitHubDispatchPreparationsPrefix()
 	bindingPrefix := s.fleetRunnerDispatchesPrefix()
+	offlinePrefix := s.fleetOfflineDispatchesPrefix()
 	preparations, err := s.kv.Get(ctx, preparationPrefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, false, err
@@ -394,9 +401,14 @@ func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, clus
 	if err != nil {
 		return nil, false, err
 	}
+	offlineBindings, err := s.kv.Get(ctx, offlinePrefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, false, err
+	}
 	compares := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(preparationPrefix).WithPrefix(), "<", preparations.Header.Revision+1),
 		clientv3.Compare(clientv3.ModRevision(bindingPrefix).WithPrefix(), "<", bindings.Header.Revision+1),
+		clientv3.Compare(clientv3.ModRevision(offlinePrefix).WithPrefix(), "<", offlineBindings.Header.Revision+1),
 	}
 
 	clusterSet := make(map[string]bool, len(clusterNames))
@@ -441,6 +453,26 @@ func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, clus
 			return nil, false, err
 		}
 		if !succeeded {
+			return compares, true, nil
+		}
+	}
+	for _, kv := range offlineBindings.Kvs {
+		binding, err := offline.DecodeBinding(kv.Value)
+		if err != nil {
+			return nil, false, fmt.Errorf("Fleet offline dispatch binding is corrupt: %w", err)
+		}
+		cluster, err := s.fleetCapacityPlanCluster(ctx, binding.PlanID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !clusterSet[cluster] && !environmentSet["staging"] {
+			continue
+		}
+		abandoned, err := s.fleetTargetPlanAbandoned(ctx, binding.PlanID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !abandoned {
 			return compares, true, nil
 		}
 	}

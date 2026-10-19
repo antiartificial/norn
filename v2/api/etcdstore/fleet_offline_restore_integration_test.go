@@ -128,6 +128,10 @@ func fleetOfflineRestoreVerify(t *testing.T) {
 		fence.HolderNonceSHA256 != binding.DispatchNonceSHA256 || uint64(fence.Generation) != binding.FenceGeneration {
 		t.Fatalf("restored shared fence: %+v, %v", fence, err)
 	}
+	if state, reason, err := s.FleetTargetOutcome(ctx, manifest.TargetID, time.Now().UTC()); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineAttemptQueued {
+		t.Fatalf("restored offline holder occupancy = %s/%s, %v", state, reason, err)
+	}
 	// Lost responses may replay the same reservation. Its one-use owner
 	// tombstone must be present even for that exact idempotent readback.
 	replayBinding, approval := offlineTestApprovalID(t, binding, binding.CreatedAt.Add(time.Minute), manifest.AuthorizationID)
