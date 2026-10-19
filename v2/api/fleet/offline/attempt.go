@@ -25,14 +25,16 @@ type Checkpoint struct {
 // record a separately authenticated observation checkpoint, but neither
 // record can request a credential or authorize an effect.
 type Attempt struct {
-	SchemaVersion    string    `json:"schemaVersion"`
-	ID               string    `json:"id"`
-	PlanID           string    `json:"planId"`
-	BindingSHA256    string    `json:"bindingSHA256"`
-	PrincipalSubject string    `json:"principalSubject"`
-	TargetID         string    `json:"targetId"`
-	FenceGeneration  uint64    `json:"fenceGeneration"`
-	Status           string    `json:"status"`
-	CurrentPhase     string    `json:"currentPhase"`
-	CreatedAt        time.Time `json:"createdAt"`
+	SchemaVersion     string    `json:"schemaVersion"`
+	ID                string    `json:"id"`
+	PlanID            string    `json:"planId"`
+	BindingSHA256     string    `json:"bindingSHA256"`
+	PrincipalSubject  string    `json:"principalSubject"`
+	PrincipalTokenID  string    `json:"principalTokenId,omitempty"`
+	PrincipalDeviceID string    `json:"principalDeviceId,omitempty"`
+	TargetID          string    `json:"targetId"`
+	FenceGeneration   uint64    `json:"fenceGeneration"`
+	Status            string    `json:"status"`
+	CurrentPhase      string    `json:"currentPhase"`
+	CreatedAt         time.Time `json:"createdAt"`
 }

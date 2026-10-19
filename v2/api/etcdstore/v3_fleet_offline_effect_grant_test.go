@@ -23,6 +23,10 @@ type offlineBackendReadFixture struct {
 	versioning bool
 }
 
+func offlineEffectIdentity(b offline.Binding, a offline.Attempt) OfflineRunnerIdentity {
+	return OfflineRunnerIdentity{Subject: b.RunnerPrincipalSubject, TokenID: a.PrincipalTokenID, DeviceID: a.PrincipalDeviceID}
+}
+
 func (f offlineBackendReadFixture) VersioningEnabled(_ context.Context, bucket, key string) (bool, error) {
 	if bucket != f.bucket || key != f.key {
 		return false, offline.ErrLatestBackendMismatch
@@ -101,7 +105,7 @@ func offlineEffectFixture(t *testing.T) (*etcdExecutorHarness, offline.Binding, 
 	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, approval, now); err != nil {
 		t.Fatal(err)
 	}
-	a, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(b), b.RunnerPrincipalSubject, uuid.NewString(), now)
+	a, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(b), b.RunnerPrincipalSubject, uuid.NewString(), now, "token-1", "device-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,35 +141,35 @@ func offlineEffectObservation(b offline.Binding, a offline.Attempt, now time.Tim
 
 func TestOfflineEffectGrantFailClosedAndOneUseCAS(t *testing.T) {
 	h, b, a, now := offlineEffectFixture(t)
-	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, nil); !errors.Is(err, offline.ErrEffectProofMissing) {
+	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, nil); !errors.Is(err, offline.ErrEffectProofMissing) {
 		t.Fatalf("nil observer: %v", err)
 	}
 	o := offlineEffectObservation(b, a, now)
 	bad := o
 	bad.AllNamespacesInspected = false
-	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: bad}); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, offlineTestReobserver{observation: bad}); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("missing all-namespace proof: %v", err)
 	}
 	bad = o
 	bad.Backend.RawSHA256 = strings.Repeat("4", 64)
-	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: bad}); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, offlineTestReobserver{observation: bad}); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("stale backend: %v", err)
 	}
-	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: o})
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, offlineTestReobserver{observation: o})
 	if err != nil || grant.Phase != "issued" {
 		t.Fatalf("issue: %+v %v", grant, err)
 	}
-	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: o}); !errors.Is(err, ErrOfflineEffectGrantConflict) {
+	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, offlineTestReobserver{observation: o}); !errors.Is(err, ErrOfflineEffectGrantConflict) {
 		t.Fatalf("reissue: %v", err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, "wrong", now, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, OfflineRunnerIdentity{Subject: "wrong", TokenID: a.PrincipalTokenID, DeviceID: a.PrincipalDeviceID}, now, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("wrong principal: %v", err)
 	}
-	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b))
+	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b))
 	if err != nil || consumed.Phase != "consumed" || consumed.ConsumedAt == nil {
 		t.Fatalf("consume: %+v %v", consumed, err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("replay: %v", err)
 	}
 	rows, err := h.s.kv.Get(h.ctx(), h.s.offlineEffectGrantEventKey(b.PlanID, 2))
@@ -176,25 +180,25 @@ func TestOfflineEffectGrantFailClosedAndOneUseCAS(t *testing.T) {
 
 func TestOfflineEffectGrantConsumeRechecksLatestBackend(t *testing.T) {
 	h, b, a, now := offlineEffectFixture(t)
-	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now,
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now,
 		offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, nil); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, nil); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("missing reader: %v", err)
 	}
 	stale := offlineBackendReadFor(b)
 	stale.version = "newer-version"
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, stale); !errors.Is(err, offline.ErrLatestBackendMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, stale); !errors.Is(err, offline.ErrLatestBackendMismatch) {
 		t.Fatalf("stale latest: %v", err)
 	}
 	suspended := offlineBackendReadFor(b)
 	suspended.versioning = false
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, suspended); !errors.Is(err, offline.ErrLatestBackendMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, suspended); !errors.Is(err, offline.ErrLatestBackendMismatch) {
 		t.Fatalf("suspended versioning: %v", err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); err != nil {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b)); err != nil {
 		t.Fatalf("still issuable after rejected reads: %v", err)
 	}
 }
@@ -205,14 +209,14 @@ func TestOfflineEffectGrantRejectsCompetingLaneAndStaleEpoch(t *testing.T) {
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(b.PlanID), "competing"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: o}); !errors.Is(err, ErrOfflineEffectGrantConflict) {
+	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, offlineTestReobserver{observation: o}); !errors.Is(err, ErrOfflineEffectGrantConflict) {
 		t.Fatalf("competing lane: %v", err)
 	}
 	if _, err := h.s.kv.Delete(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(b.PlanID)); err != nil {
 		t.Fatal(err)
 	}
 	o.AuthorityEpoch++
-	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: o}); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, offlineTestReobserver{observation: o}); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("stale epoch: %v", err)
 	}
 }
@@ -220,25 +224,25 @@ func TestOfflineEffectGrantRejectsCompetingLaneAndStaleEpoch(t *testing.T) {
 func TestOfflineEffectGrantConsumeRejectsCompetingLaneAndCrashShape(t *testing.T) {
 	h, b, a, now := offlineEffectFixture(t)
 	o := offlineEffectObservation(b, a, now)
-	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: o})
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now, offlineTestReobserver{observation: o})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(b.PlanID), "competing"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); !errors.Is(err, ErrOfflineEffectGrantConflict) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b)); !errors.Is(err, ErrOfflineEffectGrantConflict) {
 		t.Fatalf("competing lane at consume: %v", err)
 	}
 	if _, err := h.s.kv.Delete(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(b.PlanID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, grant.ExpiresAt, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), grant.ExpiresAt, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("expired grant: %v", err)
 	}
 	// Simulate a partial restore: a consumed cursor without its append-only
 	// consumption event must be treated as corrupt, never as a fresh grant.
-	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b))
+	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,12 +261,12 @@ func TestOfflineEffectGrantConsumeRejectsCompetingLaneAndCrashShape(t *testing.T
 
 func TestOfflineEffectGrantPartialRestoreMarksTargetHolderIncomplete(t *testing.T) {
 	h, b, a, now := offlineEffectFixture(t)
-	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now,
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now,
 		offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); err != nil {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b)); err != nil {
 		t.Fatal(err)
 	}
 	facts, err := h.s.loadFleetTargetHolderFacts(h.ctx(), b.PlanID)
@@ -291,7 +295,7 @@ func TestOfflineEffectGrantPartialRestoreMarksTargetHolderIncomplete(t *testing.
 
 func TestOfflineEffectGrantRestoreRejectsEpochMismatchAcrossHolderPaths(t *testing.T) {
 	h, b, a, now := offlineEffectFixture(t)
-	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now,
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now,
 		offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
 	if err != nil {
 		t.Fatal(err)

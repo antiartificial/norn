@@ -42,12 +42,12 @@ func terminalObservation(g offline.EffectGrant, now time.Time) offline.TerminalO
 func consumedOfflineGrant(t *testing.T) (*etcdExecutorHarness, offline.Binding, offline.Attempt, offline.EffectGrant, time.Time) {
 	t.Helper()
 	h, b, a, now := offlineEffectFixture(t)
-	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now,
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, offlineEffectIdentity(b, a), now,
 		offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err = h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b))
+	grant, err = h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b))
 	if err != nil {
 		t.Fatal(err)
 	}

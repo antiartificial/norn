@@ -27,13 +27,13 @@ func registerEtcdFleetOfflineEffectRoutes(router chi.Router, runnerAuth func(htt
 			AuthorizesEffect bool                `json:"authorizesEffect"`
 		}{grant, false})
 	}
-	valid := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+	valid := func(w http.ResponseWriter, r *http.Request) (etcdstore.OfflineRunnerIdentity, bool) {
 		principal, ok := offlineRunnerPrincipal(r, trust, identities)
 		if !ok {
 			handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_runner_invalid", "a pinned active device-bound runner is required")
-			return "", false
+			return etcdstore.OfflineRunnerIdentity{}, false
 		}
-		return principal.Subject, true
+		return etcdstore.OfflineRunnerIdentity{Subject: principal.Subject, TokenID: principal.TokenID, DeviceID: principal.DeviceID}, true
 	}
 	ready := func(w http.ResponseWriter, r *http.Request) bool {
 		if authority == nil {

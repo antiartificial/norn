@@ -128,11 +128,11 @@ func (s *V3OperationStore) GetOfflineEffectGrant(ctx context.Context, planID str
 // issueOfflineEffectGrant is a non-public CAS transition. It rechecks the
 // checkpoint, owner consumption, registry, held fence, epoch, absence of a
 // competing GitHub lane, and independent effect-time observation atomically.
-func (s *V3OperationStore) issueOfflineEffectGrant(ctx context.Context, planID, attemptID, principal string, now time.Time, observer offlineEffectReobserver) (offline.EffectGrant, error) {
+func (s *V3OperationStore) issueOfflineEffectGrant(ctx context.Context, planID, attemptID string, identity OfflineRunnerIdentity, now time.Time, observer offlineEffectReobserver) (offline.EffectGrant, error) {
 	if s == nil || observer == nil {
 		return offline.EffectGrant{}, offline.ErrEffectProofMissing
 	}
-	if uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || principal == "" {
+	if uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || !identity.valid() {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	rows, err := s.kv.Txn(ctx).Then(
@@ -165,7 +165,8 @@ func (s *V3OperationStore) issueOfflineEffectGrant(ctx context.Context, planID, 
 	}
 	attempt, err := decodeOfflineAttempt(a[0].Value, planID)
 	digest := sha256.Sum256(b[0].Value)
-	if err != nil || attempt.ID != attemptID || attempt.PrincipalSubject != principal ||
+	if err != nil || attempt.ID != attemptID || attempt.PrincipalSubject != identity.Subject ||
+		attempt.PrincipalTokenID != identity.TokenID || attempt.PrincipalDeviceID != identity.DeviceID ||
 		attempt.BindingSHA256 != hex.EncodeToString(digest[:]) || attempt.TargetID != binding.TargetID ||
 		attempt.FenceGeneration != binding.FenceGeneration {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
@@ -261,8 +262,8 @@ func (s *V3OperationStore) issueOfflineEffectGrant(ctx context.Context, planID, 
 // credential side effect. Its transaction records the irrevocable one-use
 // transition before a future executor may attempt an external effect. If the
 // response is lost, recovery must read event 2 and must never retry apply.
-func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID, attemptID, grantID, principal string, now time.Time, backend offline.LatestBackendReader) (offline.EffectGrant, error) {
-	if s == nil || backend == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || uuid.Validate(grantID) != nil || principal == "" {
+func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID, attemptID, grantID string, identity OfflineRunnerIdentity, now time.Time, backend offline.LatestBackendReader) (offline.EffectGrant, error) {
+	if s == nil || backend == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || uuid.Validate(grantID) != nil || !identity.valid() {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	response, err := s.kv.Txn(ctx).Then(clientv3.OpGet(s.offlineEffectGrantKey(planID)),
@@ -292,7 +293,8 @@ func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	attempt, err := decodeOfflineAttempt(a[0].Value, planID)
-	if err != nil || attempt.ID != attemptID || attempt.PrincipalSubject != principal || attempt.BindingSHA256 != grant.BindingSHA256 {
+	if err != nil || attempt.ID != attemptID || attempt.PrincipalSubject != identity.Subject || attempt.BindingSHA256 != grant.BindingSHA256 ||
+		attempt.PrincipalTokenID != identity.TokenID || attempt.PrincipalDeviceID != identity.DeviceID {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	binding, err := offline.DecodeBinding(b[0].Value)

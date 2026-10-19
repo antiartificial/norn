@@ -2,10 +2,18 @@ package etcdstore
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"norn/v2/api/fleet/offline"
 )
+
+type OfflineRunnerIdentity struct{ Subject, TokenID, DeviceID string }
+
+func (i OfflineRunnerIdentity) valid() bool {
+	return i.Subject != "" && i.TokenID != "" && i.DeviceID != "" &&
+		!strings.ContainsAny(i.Subject+i.TokenID+i.DeviceID, " \t\r\n")
+}
 
 // OfflineEffectAuthority is the narrow transport boundary. Callers cannot
 // provide an observation or backend proof in an HTTP request. Constructing it
@@ -63,22 +71,22 @@ func NewOfflineEffectAuthority(store *V3OperationStore, readers OfflineEffectRea
 	return &OfflineEffectAuthority{store: store, observer: observer, backend: readers.Backend}, nil
 }
 
-func (a *OfflineEffectAuthority) Issue(ctx context.Context, planID, attemptID, principal string, now time.Time) (offline.EffectGrant, error) {
-	if a == nil || a.store == nil || a.observer == nil {
+func (a *OfflineEffectAuthority) Issue(ctx context.Context, planID, attemptID string, identity OfflineRunnerIdentity, now time.Time) (offline.EffectGrant, error) {
+	if a == nil || a.store == nil || a.observer == nil || !identity.valid() {
 		return offline.EffectGrant{}, offline.ErrEffectProofMissing
 	}
-	return a.store.issueOfflineEffectGrant(ctx, planID, attemptID, principal, now, a.observer)
+	return a.store.issueOfflineEffectGrant(ctx, planID, attemptID, identity, now, a.observer)
 }
 
-func (a *OfflineEffectAuthority) Consume(ctx context.Context, planID, attemptID, grantID, principal string, now time.Time) (offline.EffectGrant, error) {
-	if a == nil || a.store == nil || a.backend == nil {
+func (a *OfflineEffectAuthority) Consume(ctx context.Context, planID, attemptID, grantID string, identity OfflineRunnerIdentity, now time.Time) (offline.EffectGrant, error) {
+	if a == nil || a.store == nil || a.backend == nil || !identity.valid() {
 		return offline.EffectGrant{}, offline.ErrEffectProofMissing
 	}
-	return a.store.consumeOfflineEffectGrant(ctx, planID, attemptID, grantID, principal, now, a.backend)
+	return a.store.consumeOfflineEffectGrant(ctx, planID, attemptID, grantID, identity, now, a.backend)
 }
 
-func (a *OfflineEffectAuthority) Recover(ctx context.Context, planID, attemptID, grantID, principal string) (offline.EffectGrant, error) {
-	grant, err := a.RecoverAttempt(ctx, planID, attemptID, principal)
+func (a *OfflineEffectAuthority) Recover(ctx context.Context, planID, attemptID, grantID string, identity OfflineRunnerIdentity) (offline.EffectGrant, error) {
+	grant, err := a.RecoverAttempt(ctx, planID, attemptID, identity)
 	if err != nil {
 		return offline.EffectGrant{}, err
 	}
@@ -88,19 +96,9 @@ func (a *OfflineEffectAuthority) Recover(ctx context.Context, planID, attemptID,
 	return grant, nil
 }
 
-func (a *OfflineEffectAuthority) RecoverAttempt(ctx context.Context, planID, attemptID, principal string) (offline.EffectGrant, error) {
-	if a == nil || a.store == nil {
+func (a *OfflineEffectAuthority) RecoverAttempt(ctx context.Context, planID, attemptID string, identity OfflineRunnerIdentity) (offline.EffectGrant, error) {
+	if a == nil || a.store == nil || !identity.valid() {
 		return offline.EffectGrant{}, offline.ErrEffectProofMissing
 	}
-	grant, err := a.store.GetOfflineEffectGrant(ctx, planID)
-	if err != nil {
-		return offline.EffectGrant{}, err
-	}
-	attempt, err := a.store.GetOfflineAttempt(ctx, planID)
-	if err != nil || grant.AttemptID != attemptID || attempt.ID != attemptID ||
-		principal == "" || attempt.PrincipalSubject != principal || attempt.BindingSHA256 != grant.BindingSHA256 ||
-		attempt.FenceGeneration != grant.FenceGeneration || attempt.TargetID != grant.TargetID {
-		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
-	}
-	return grant, nil
+	return a.store.RecoverOfflineEffectGrant(ctx, planID, attemptID, identity)
 }
