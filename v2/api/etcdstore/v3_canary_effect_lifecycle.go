@@ -182,7 +182,15 @@ func (s *V3CanaryEffectReservations) UnresolvedForResource(ctx context.Context, 
 	}
 	key := string(gate.Kvs[0].Value)
 	if !strings.HasPrefix(key, s.operations.prefix+"/v3/effects/"+s.effectNamespace()+"/") {
-		return effect.Record{}, false, fmt.Errorf("app gate names an effect in another namespace")
+		// The app gate is intentionally shared by deploy, canary, and scale.
+		// A namespace-specific executor cannot recover another kind's effect,
+		// but Reserve will still observe the occupied gate and return blocked.
+		// Report wait-only here so Prepare can continue to that atomic check
+		// instead of treating healthy cross-kind serialization as corruption.
+		if strings.HasPrefix(key, s.operations.prefix+"/v3/effects/") {
+			return effect.Record{}, false, nil
+		}
+		return effect.Record{}, false, fmt.Errorf("app gate names an effect outside the app effect ledger")
 	}
 	value, err := s.operations.kv.Get(ctx, key)
 	if err != nil {

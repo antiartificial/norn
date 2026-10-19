@@ -102,6 +102,63 @@ func TestV3ScaleEffectReservationSurvivesWorkerCrashBeforeCompletion(t *testing.
 	}
 }
 
+func TestV3ScaleEffectWaitsForForeignNamespaceAppGate(t *testing.T) {
+	ctx, _, operations, _, _, scaleReservation := newScaleFoundationFixture(t)
+	canaryID := uuid.NewString()
+	canaryOp := model.Operation{ID: canaryID, Kind: "app.canary-promote", App: "widgets", Status: model.OperationQueued, MaxAttempts: 1,
+		Payload: map[string]interface{}{"app": "widgets", "region": "us-central", "nomadRegion": "global", "deploymentId": "deployment-" + canaryID}}
+	accepted := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: scaleReservation.Authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: canaryOp.Kind, Resource: "app/widgets", Key: canaryID},
+		Operation: canaryOp, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"app": canaryOp.App, "deploymentId": canaryOp.Payload["deploymentId"]}}
+	var err error
+	accepted.Fingerprint, err = store.CanonicalOperationRequestFingerprint(accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operations.Accept(ctx, accepted); err != nil {
+		t.Fatal(err)
+	}
+	claimed, canaryClaim, err := operations.ClaimNextOperation(ctx, "canary-worker", time.Minute, []string{"app.canary-promote"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim canary operation: op=%+v err=%v", claimed, err)
+	}
+	canaryPayload, err := json.Marshal(canaryEffectInput{App: "widgets", Region: "us-central", NomadRegion: "global", DeploymentID: "deployment-" + canaryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canaryReservation := effect.Reservation{Authority: scaleReservation.Authority, Resource: "app/widgets/canary-promote/us-central", Stage: "app.canary-promote.nomad", Supervisor: "nomad-canary-promotion", SupervisorExecutionID: "canary-" + canaryID,
+		OperationClaim: effect.OperationClaim{OperationID: canaryClaim.OperationID(), OwnerID: canaryClaim.OwnerID(), Generation: canaryClaim.Generation()}, LaunchPayload: canaryPayload}
+	canaryReservation.InputDigest, err = effect.ComputeInputDigest(canaryReservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canaryEffects, err := NewV3CanaryEffectReservations(operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary, err := canaryEffects.Reserve(ctx, canaryReservation)
+	if err != nil || !canary.Created {
+		t.Fatalf("reserve canary blocker: %+v err=%v", canary, err)
+	}
+	scaleEffects, err := NewV3ScaleEffectReservations(operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record, found, err := scaleEffects.UnresolvedForResource(ctx, scaleReservation.Authority, scaleReservation.Resource); err != nil || found || record.Token.EffectID != "" {
+		t.Fatalf("foreign namespace lookup should be wait-only: record=%+v found=%v err=%v", record, found, err)
+	}
+	if _, err := scaleEffects.Reserve(ctx, scaleReservation); !errors.Is(err, effect.ErrResourceBlocked) {
+		t.Fatalf("scale reservation behind canary gate error=%v", err)
+	}
+	verification := effect.Verification{Decision: effect.VerificationNeverLaunched, InputDigest: canaryReservation.InputDigest, SupervisorExecutionID: canaryReservation.SupervisorExecutionID,
+		EvidenceSource: "nomad.deployment", EvidenceReference: "deployment-" + canaryID, ObservedAt: time.Now().UTC()}
+	if err := canaryEffects.Resolve(ctx, canary.Record.Token, effect.Resolution{Decision: effect.VerificationNeverLaunched, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := scaleEffects.Reserve(ctx, scaleReservation); err != nil || !result.Created {
+		t.Fatalf("scale reservation after foreign gate resolved: %+v err=%v", result, err)
+	}
+}
+
 func TestV3ScaleCompletionAtomicallyFencesClaimAppLockAndDesiredIntent(t *testing.T) {
 	ctx, _, operations, claim, lock, reservation := newScaleFoundationFixture(t)
 	effects, err := NewV3ScaleEffectReservations(operations)
@@ -134,6 +191,22 @@ func TestV3ScaleCompletionAtomicallyFencesClaimAppLockAndDesiredIntent(t *testin
 	}
 	if err := operations.FinishScaleClaimedOperationWithAppLock(ctx, claim, lock, uuid.NewString(), "widgets", "web", "us-central", 3, "scaled", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("foreign authority completion error=%v", err)
+	}
+	negative := []struct {
+		name            string
+		process, region string
+		count           int
+		metadata        map[string]interface{}
+	}{
+		{name: "process", process: "worker", region: "us-central", count: 3, metadata: map[string]interface{}{"effectId": reserved.Record.Token.EffectID}},
+		{name: "region", process: "web", region: "eu-west", count: 3, metadata: map[string]interface{}{"effectId": reserved.Record.Token.EffectID}},
+		{name: "count", process: "web", region: "us-central", count: 4, metadata: map[string]interface{}{"effectId": reserved.Record.Token.EffectID}},
+		{name: "effect", process: "web", region: "us-central", count: 3, metadata: map[string]interface{}{"effectId": uuid.NewString()}},
+	}
+	for _, test := range negative {
+		if err := operations.FinishScaleClaimedOperationWithAppLock(ctx, claim, lock, reservation.Authority, "widgets", test.process, test.region, test.count, "scaled", test.metadata); err == nil {
+			t.Fatalf("%s mismatch completed scale intent", test.name)
+		}
 	}
 	if err := operations.FinishScaleClaimedOperationWithAppLock(ctx, claim, lock, reservation.Authority, "widgets", "web", "us-central", 3, "scaled", map[string]interface{}{"effectId": reserved.Record.Token.EffectID}); err != nil {
 		t.Fatal(err)
