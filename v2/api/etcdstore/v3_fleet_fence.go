@@ -249,6 +249,8 @@ func (s *V3OperationStore) loadFleetTargetHolderFacts(ctx context.Context, planI
 				grant.ProviderAccountUUID != binding.ProviderAccountUUID || grant.NodeName != binding.NodeName ||
 				grant.DropletID != binding.DropletID || grant.PrechangeSHA256 != checkpoint.EvidenceSHA256 {
 				facts.OfflineEvidenceIncomplete = true
+			} else if grant.AuthorityEpoch != checkpoint.AuthorityEpoch {
+				facts.OfflineEvidenceIncomplete = true
 			}
 		}
 	}

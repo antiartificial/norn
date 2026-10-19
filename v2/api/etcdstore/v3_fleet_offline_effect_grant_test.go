@@ -203,3 +203,33 @@ func TestOfflineEffectGrantPartialRestoreMarksTargetHolderIncomplete(t *testing.
 		t.Fatalf("orphan grant accepted: %+v %v", facts, err)
 	}
 }
+
+func TestOfflineEffectGrantRestoreRejectsEpochMismatchAcrossHolderPaths(t *testing.T) {
+	h, b, a, now := offlineEffectFixture(t)
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now,
+		offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A consistent grant pair can still have an epoch from a different
+	// authority incarnation after a partial or incorrect restore.
+	grant.AuthorityEpoch++
+	raw, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineEffectGrantKey(b.PlanID), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineEffectGrantEventKey(b.PlanID, 1), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := h.s.loadFleetTargetHolderFacts(h.ctx(), b.PlanID)
+	if err != nil || !facts.OfflineEvidenceIncomplete {
+		t.Fatalf("target holder accepted epoch mismatch: %+v %v", facts, err)
+	}
+	resource, _, _, err := h.s.fleetResourceHolderFacts(h.ctx(), b.PlanID)
+	if err != nil || !resource.OfflineEvidenceIncomplete {
+		t.Fatalf("resource holder accepted epoch mismatch: %+v %v", resource, err)
+	}
+}

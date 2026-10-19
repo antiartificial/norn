@@ -550,7 +550,8 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 			grant.PrechangeSHA256 != checkpoint.EvidenceSHA256 || grant.Backend != offlineBinding.Backend ||
 			grant.SourceCommit != offlineBinding.SourceCommit || grant.SavedPlanSHA256 != offlineBinding.SavedPlanSHA256 ||
 			grant.EffectSHA256 != offlineBinding.EffectSHA256 || grant.ProviderAccountUUID != offlineBinding.ProviderAccountUUID ||
-			grant.NodeName != offlineBinding.NodeName || grant.DropletID != offlineBinding.DropletID {
+			grant.NodeName != offlineBinding.NodeName || grant.DropletID != offlineBinding.DropletID ||
+			grant.AuthorityEpoch != checkpoint.AuthorityEpoch {
 			holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
 		} else if attempt, decodeErr := decodeOfflineAttempt(offlineAttemptResponse.Kvs[0].Value, planID); decodeErr != nil ||
 			grant.AttemptID != attempt.ID || grant.BindingSHA256 != attempt.BindingSHA256 {
