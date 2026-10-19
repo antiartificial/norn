@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -56,7 +57,7 @@ func (s NomadConsulSource) Snapshot(ctx context.Context) (WorkloadSnapshot, erro
 	if err != nil {
 		return WorkloadSnapshot{}, err
 	}
-	if first.namespaceIndex == 0 || first.namespaceIndex != second.namespaceIndex || !bytes.Equal(first.canonical, second.canonical) {
+	if first.namespaceIndex == 0 || first.namespaceIndex != second.namespaceIndex || first.nodeIndex == 0 || first.nodeIndex != second.nodeIndex || first.consulIndex == 0 || first.consulIndex != second.consulIndex || !bytes.Equal(first.canonical, second.canonical) {
 		return WorkloadSnapshot{}, ErrWorkloadObservation
 	}
 	for name, index := range first.allocationIndices {
@@ -147,6 +148,8 @@ func (s NomadConsulSource) read(ctx context.Context, client *http.Client, base, 
 type workloadScan struct {
 	snapshot          WorkloadSnapshot
 	namespaceIndex    uint64
+	nodeIndex         uint64
+	consulIndex       uint64
 	allocationIndices map[string]uint64
 	canonical         []byte
 }
@@ -177,7 +180,7 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 		}
 		out.snapshot.Namespaces = append(out.snapshot.Namespaces, ns.Name)
 		var allocations []alloc
-		index, e := s.pages(ctx, nomad, s.NomadURL, "/v1/allocations", url.Values{"namespace": {ns.Name}}, s.NomadToken, "X-Nomad-Token", &allocations)
+		index, e := s.pages(ctx, nomad, s.NomadURL, "/v1/allocations", url.Values{"namespace": {ns.Name}, "resources": {"true"}, "per_page": {"100"}}, s.NomadToken, "X-Nomad-Token", &allocations)
 		if e != nil {
 			return out, e
 		}
@@ -200,7 +203,7 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 		}
 	}
 	var nodes []struct{ ID, Name, Status, SchedulingEligibility string }
-	if _, err = s.pages(ctx, nomad, s.NomadURL, "/v1/nodes", nil, s.NomadToken, "X-Nomad-Token", &nodes); err != nil {
+	if out.nodeIndex, err = s.pages(ctx, nomad, s.NomadURL, "/v1/nodes", url.Values{"per_page": {"100"}}, s.NomadToken, "X-Nomad-Token", &nodes); err != nil {
 		return out, err
 	}
 	idToName := map[string]string{}
@@ -251,8 +254,16 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 		}
 		Checks []struct{ CheckID, Name, Status string }
 	}
-	if _, err = s.read(ctx, consul, s.ConsulURL, "/v1/health/service/hello-norn-mysql-web", url.Values{"passing": {"false"}}, s.ConsulToken, "X-Consul-Token", &entries); err != nil {
+	var consulHeader http.Header
+	if consulHeader, err = s.read(ctx, consul, s.ConsulURL, "/v1/health/service/hello-norn-mysql-web", url.Values{"passing": {"false"}, "consistent": {"true"}}, s.ConsulToken, "X-Consul-Token", &entries); err != nil {
 		return out, err
+	}
+	if consulHeader.Get("X-Consul-Results-Filtered-By-ACLs") != "" && consulHeader.Get("X-Consul-Results-Filtered-By-ACLs") != "false" {
+		return out, ErrWorkloadObservation
+	}
+	out.consulIndex, err = strconv.ParseUint(consulHeader.Get("X-Consul-Index"), 10, 64)
+	if err != nil || out.consulIndex == 0 {
+		return out, ErrWorkloadObservation
 	}
 	for _, entry := range entries {
 		meta := entry.Service.Meta

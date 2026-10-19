@@ -18,6 +18,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	digest := sha256.Sum256([]byte(rules))
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	mismatch := false
+	filtered := false
 	pages := 0
 	nomad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.Header.Get("X-Nomad-Token") != "nomad-read" {
@@ -32,19 +33,13 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		case "/v1/acl/policy/workload-read":
 			fmt.Fprintf(w, `{"Name":"workload-read","Rules":%q}`, rules)
 		case "/v1/namespaces":
-			if r.URL.Query().Get("next_token") == "" {
-				w.Header().Set("X-Nomad-NextToken", "next")
-				fmt.Fprint(w, `[{"Name":"default"}]`)
-			} else {
-				pages++
-				fmt.Fprint(w, `[{"Name":"system"}]`)
-			}
+			fmt.Fprint(w, `[{"Name":"default"},{"Name":"system"}]`)
 		case "/v1/allocations":
 			if r.URL.Query().Get("namespace") == "system" {
 				fmt.Fprint(w, `[]`)
 				return
 			}
-			if r.URL.Query().Get("namespace") != "default" {
+			if r.URL.Query().Get("namespace") != "default" || r.URL.Query().Get("resources") != "true" || r.URL.Query().Get("per_page") != "100" {
 				http.Error(w, "bad namespace", 400)
 				return
 			}
@@ -55,6 +50,10 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 				fmt.Fprint(w, `[{"ID":"alloc-2","Namespace":"default","JobID":"hello-norn-mysql","NodeID":"node-2","ClientStatus":"running","AllocatedResources":{"Tasks":{"web":{"Cpu":{"CpuShares":200},"Memory":{"MemoryMB":128}}}}}]`)
 			}
 		case "/v1/nodes":
+			if r.URL.Query().Get("per_page") != "100" {
+				http.Error(w, "missing pagination", 400)
+				return
+			}
 			fmt.Fprint(w, `[{"ID":"node-1","Name":"app-01"},{"ID":"node-2","Name":"app-02"},{"ID":"node-3","Name":"app-03"}]`)
 		case "/v1/node/node-1", "/v1/node/node-2", "/v1/node/node-3":
 			id := strings.TrimPrefix(r.URL.Path, "/v1/node/")
@@ -66,10 +65,14 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	}))
 	defer nomad.Close()
 	consul := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.Header.Get("X-Consul-Token") != "consul-read" || r.URL.Path != "/v1/health/service/hello-norn-mysql-web" || r.URL.Query().Get("passing") != "false" {
+		if r.Method != "GET" || r.Header.Get("X-Consul-Token") != "consul-read" || r.URL.Path != "/v1/health/service/hello-norn-mysql-web" || r.URL.Query().Get("passing") != "false" || r.URL.Query().Get("consistent") != "true" {
 			t.Errorf("unexpected Consul request %s", r.URL)
 			http.Error(w, "denied", 403)
 			return
+		}
+		w.Header().Set("X-Consul-Index", "23")
+		if filtered {
+			w.Header().Set("X-Consul-Results-Filtered-By-ACLs", "true")
 		}
 		status := "passing"
 		if mismatch {
@@ -87,12 +90,17 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	}
 	source.NomadServerName = "example.com"
 	evidence, err := ObserveWorkload(context.Background(), source, now)
-	if err != nil || !evidence.AllNamespacesInspected || pages != 2 {
+	if err != nil || !evidence.AllNamespacesInspected || pages != 0 {
 		t.Fatalf("valid paginated observation: %+v %v pages=%d", evidence, err, pages)
 	}
 	mismatch = true
 	if _, err = ObserveWorkload(context.Background(), source, now); err == nil {
 		t.Fatal("failing Consul check accepted")
+	}
+	filtered = true
+	mismatch = false
+	if _, err = source.Snapshot(context.Background()); err == nil {
+		t.Fatal("ACL-filtered Consul response accepted")
 	}
 	source.PolicySHA256 = strings.Repeat("0", 64)
 	if _, err = source.Snapshot(context.Background()); err == nil {
