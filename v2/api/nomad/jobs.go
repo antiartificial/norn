@@ -703,6 +703,32 @@ func (c *Client) ScaleStatus(jobID, group, region, operationID, generation, exec
 	return target.Desired, matched, evalID, nil
 }
 
+// ScalePlacementConverged requires the exact scaling event, its completed
+// scheduler evaluation, and healthy placed allocations. A desired count alone
+// is merely accepted intent and cannot complete a managed Fleet scale.
+func (c *Client) ScalePlacementConverged(jobID, group, region, operationID, generation, executionID string, count int, expectedEvalID string) (desired int, matched bool, evalID string, healthy bool, err error) {
+	desired, matched, evalID, err = c.ScaleStatus(jobID, group, region, operationID, generation, executionID, count, expectedEvalID)
+	if err != nil || !matched || desired != count || evalID == "" {
+		return desired, matched, evalID, false, err
+	}
+	evaluation, _, err := c.api.Evaluations().Info(evalID, &nomadapi.QueryOptions{Region: region})
+	if err != nil {
+		return desired, matched, evalID, false, err
+	}
+	if evaluation == nil || evaluation.ID != evalID || evaluation.JobID != jobID || evaluation.Status != "complete" || evaluation.BlockedEval != "" || evaluation.QuotaLimitReached != "" {
+		return desired, matched, evalID, false, nil
+	}
+	status, err := c.JobScaleStatusRegion(jobID, region)
+	if err != nil || status == nil || status.JobID != jobID {
+		return desired, matched, evalID, false, err
+	}
+	groupStatus, ok := status.TaskGroups[group]
+	if !ok || groupStatus.Desired != count || groupStatus.Unhealthy != 0 || groupStatus.Placed < count || groupStatus.Running < count || groupStatus.Healthy < count {
+		return desired, matched, evalID, false, nil
+	}
+	return desired, matched, evalID, true, nil
+}
+
 // JobScaleStatusRegion reads the scheduler's scale projection for all service
 // task groups in one Nomad region without applying a scaling mutation.
 func (c *Client) JobScaleStatusRegion(jobID, region string) (*nomadapi.JobScaleStatusResponse, error) {
