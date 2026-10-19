@@ -48,6 +48,32 @@ func (s *V3CanaryEffectReservations) loadToken(ctx context.Context, token effect
 	return record, key, result.Kvs[0].ModRevision, nil
 }
 
+// loadScaleEffectID resolves a completed scale effect from a predecessor
+// claim without trusting the caller to supply its old generation. The token
+// index remains immutable; loadToken performs the namespace/key check again.
+func (s *V3CanaryEffectReservations) loadScaleEffectID(ctx context.Context, effectID string) (effect.Record, string, int64, error) {
+	if s == nil || s.effectNamespace() != "scale" || effectID == "" {
+		return effect.Record{}, "", 0, effect.ErrStaleToken
+	}
+	index, err := s.operations.kv.Get(ctx, s.tokenKey(effectID))
+	if err != nil || len(index.Kvs) != 1 {
+		return effect.Record{}, "", 0, effect.ErrStaleToken
+	}
+	key := string(index.Kvs[0].Value)
+	if !strings.HasPrefix(key, s.operations.prefix+"/v3/effects/scale/") {
+		return effect.Record{}, "", 0, effect.ErrStaleToken
+	}
+	response, err := s.operations.kv.Get(ctx, key)
+	if err != nil || len(response.Kvs) != 1 {
+		return effect.Record{}, "", 0, effect.ErrStaleToken
+	}
+	var record effect.Record
+	if err := json.Unmarshal(response.Kvs[0].Value, &record); err != nil || record.Token.EffectID != effectID || record.Token.Generation <= 0 {
+		return effect.Record{}, "", 0, effect.ErrStaleToken
+	}
+	return s.loadToken(ctx, record.Token)
+}
+
 func (s *V3CanaryEffectReservations) MarkLaunched(ctx context.Context, token effect.Token, identity effect.ExecutionIdentity) error {
 	record, key, rev, err := s.loadToken(ctx, token)
 	if err != nil {
@@ -182,7 +208,15 @@ func (s *V3CanaryEffectReservations) UnresolvedForResource(ctx context.Context, 
 	}
 	key := string(gate.Kvs[0].Value)
 	if !strings.HasPrefix(key, s.operations.prefix+"/v3/effects/"+s.effectNamespace()+"/") {
-		return effect.Record{}, false, fmt.Errorf("app gate names an effect in another namespace")
+		// The app gate is intentionally shared by deploy, canary, and scale.
+		// A namespace-specific executor cannot recover another kind's effect,
+		// but Reserve will still observe the occupied gate and return blocked.
+		// Report wait-only here so Prepare can continue to that atomic check
+		// instead of treating healthy cross-kind serialization as corruption.
+		if strings.HasPrefix(key, s.operations.prefix+"/v3/effects/") {
+			return effect.Record{}, false, nil
+		}
+		return effect.Record{}, false, fmt.Errorf("app gate names an effect outside the app effect ledger")
 	}
 	value, err := s.operations.kv.Get(ctx, key)
 	if err != nil {

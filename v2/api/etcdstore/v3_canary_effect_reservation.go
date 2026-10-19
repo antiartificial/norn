@@ -31,6 +31,17 @@ func NewV3CanaryEffectReservations(operations *V3OperationStore) (*V3CanaryEffec
 	return &V3CanaryEffectReservations{operations: operations, namespace: "canary"}, nil
 }
 
+// NewV3ScaleEffectReservations creates the etcd-backed reservation ledger for
+// app.scale. It deliberately shares the app effect gate with canary and deploy
+// effects, so two different mutation kinds cannot concurrently change the same
+// application's Nomad state.
+func NewV3ScaleEffectReservations(operations *V3OperationStore) (*V3CanaryEffectReservations, error) {
+	if operations == nil || operations.kv == nil || operations.lease == nil || operations.authority == "" {
+		return nil, fmt.Errorf("etcd scale effect reservations require a v3 operation store")
+	}
+	return &V3CanaryEffectReservations{operations: operations, namespace: "scale"}, nil
+}
+
 func (s *V3CanaryEffectReservations) Authority(ctx context.Context) (string, error) {
 	return s.operations.Authority(ctx)
 }
@@ -48,6 +59,9 @@ func (s *V3CanaryEffectReservations) effectPrefix(r effect.Reservation) string {
 func (s *V3CanaryEffectReservations) effectNamespace() string {
 	if s.namespace == "deploy" {
 		return "deploy"
+	}
+	if s.namespace == "scale" {
+		return "scale"
 	}
 	return "canary"
 }
@@ -67,6 +81,55 @@ type canaryEffectInput struct {
 	Region       string `json:"region"`
 	NomadRegion  string `json:"nomadRegion"`
 	DeploymentID string `json:"deploymentId"`
+}
+
+type scaleEffectInput struct {
+	App         string `json:"app"`
+	NomadJobID  string `json:"nomadJobId,omitempty"`
+	Group       string `json:"group"`
+	Region      string `json:"region"`
+	NomadRegion string `json:"nomadRegion"`
+	Count       int    `json:"count"`
+}
+
+func validateScaleEffectReservation(r effect.Reservation, op model.Operation, authority string) (string, error) {
+	if r.Authority != authority || r.OperationClaim.OperationID != op.ID || r.OperationClaim.OwnerID == "" || r.OperationClaim.Generation <= 0 ||
+		r.Stage != "app.scale.nomad" || r.Supervisor != "nomad-scale" || r.SupervisorExecutionID == "" || op.Kind != "app.scale" {
+		return "", fmt.Errorf("scale effect reservation does not match the accepted operation and authority")
+	}
+	var input scaleEffectInput
+	if err := json.Unmarshal(r.LaunchPayload, &input); err != nil {
+		return "", fmt.Errorf("decode scale effect input: %w", err)
+	}
+	count, ok := effectPayloadInt(op.Payload, "count")
+	if !ok || input.App == "" || input.NomadJobID == "" || input.Group == "" || input.Region == "" || input.NomadRegion == "" || input.Count < 0 ||
+		input.App != op.App || input.Group != effectPayloadString(op.Payload, "group") || input.Region != effectPayloadString(op.Payload, "region") ||
+		input.NomadRegion != effectPayloadString(op.Payload, "nomadRegion") || input.NomadJobID != effectPayloadString(op.Payload, "nomadJobId") || input.Count != count ||
+		r.Resource != "app/"+input.App+"/scale/"+input.Region+"/"+input.Group {
+		return "", fmt.Errorf("scale effect input does not match accepted operation payload")
+	}
+	if strings.Contains(input.App, "/") || strings.Contains(input.Group, "/") || strings.Contains(input.Region, "/") {
+		return "", fmt.Errorf("scale effect resource contains an invalid path component")
+	}
+	digest, err := effect.ComputeInputDigest(r)
+	if err != nil || r.InputDigest != digest {
+		return "", fmt.Errorf("scale effect input digest does not match its reservation")
+	}
+	return input.App, nil
+}
+
+func effectPayloadInt(payload map[string]interface{}, key string) (int, bool) {
+	switch value := payload[key].(type) {
+	case int:
+		return value, true
+	case float64:
+		return int(value), value == float64(int(value))
+	case json.Number:
+		parsed, err := value.Int64()
+		return int(parsed), err == nil && int64(int(parsed)) == parsed
+	default:
+		return 0, false
+	}
 }
 
 func validateCanaryEffectReservation(r effect.Reservation, op model.Operation, authority string) (string, error) {
@@ -112,6 +175,8 @@ func (s *V3CanaryEffectReservations) Reserve(ctx context.Context, r effect.Reser
 	var app string
 	if s.effectNamespace() == "deploy" {
 		app, err = s.validateDeploymentEffectReservation(ctx, r, op.Operation)
+	} else if s.effectNamespace() == "scale" {
+		app, err = validateScaleEffectReservation(r, op.Operation, s.operations.authority)
 	} else {
 		app, err = validateCanaryEffectReservation(r, op.Operation, s.operations.authority)
 	}

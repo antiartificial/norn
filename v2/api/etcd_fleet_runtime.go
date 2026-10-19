@@ -112,6 +112,18 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 			return fmt.Errorf("configure etcd canary worker: %w", err)
 		}
 	}
+	scaleWorkerEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdScaleWorkerEnv)), "true")
+	scaleHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdScaleHTTPEnv)), "true")
+	if scaleHTTPEnabled && !scaleWorkerEnabled {
+		return fmt.Errorf("%s requires %s=true", etcdScaleHTTPEnv, etcdScaleWorkerEnv)
+	}
+	var scale *etcdScaleRuntime
+	if scaleWorkerEnabled {
+		scale, err = newEtcdScaleRuntime(cfg, operations)
+		if err != nil {
+			return fmt.Errorf("configure etcd scale worker: %w", err)
+		}
+	}
 	deployConfig := strings.TrimSpace(os.Getenv(etcdFleetDeployWorkerConfigEnv))
 	if deployConfig != "" {
 		deploy, err = newEtcdFleetDeployRuntime(workerCtx, cfg, operations, deployConfig)
@@ -146,7 +158,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
 	})
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(cfg, canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled))
+		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(cfg, canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled, scaleHTTPEnabled))
 	})
 	// Fleet runners carry fleet:operate only for their own attempts and
 	// reconciliation checkpoints. Inventory and general operation reads still
@@ -167,6 +179,10 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	router.With(plan).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
 	if canaryHTTPEnabled {
 		router.With(plan).Post("/api/v1/apps/{id}/promote", etcdCanaryPromote(cfg, operations, identities, canary))
+	}
+	if scaleHTTPEnabled {
+		router.With(plan).Post("/api/v1/apps/{id}/scale", etcdScaleApp(cfg, operations, identities, scale))
+		router.With(read).Get("/api/v1/apps/{id}/scale-status", etcdScaleStatus(cfg, operations, scale))
 	}
 	operationRead := read
 	if releaseHTTPEnabled {
@@ -213,6 +229,10 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if canary != nil {
 		runWorker(canary.worker)
 		log.Printf("etcd canary operation worker enabled; HTTP preview=%t", canaryHTTPEnabled)
+	}
+	if scale != nil {
+		runWorker(scale.worker)
+		log.Printf("etcd app.scale operation worker enabled; HTTP=%t", scaleHTTPEnabled)
 	}
 	if deploy != nil {
 		runWorker(deploy.worker)
@@ -284,6 +304,12 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 	if len(githubEnabled) > 1 && githubEnabled[1] {
 		features = append(features, "staging-fleet-release-admission-v1")
 		endpoints["appReleaseDeployment"] = "/api/v1/apps/{id}/releases/deployments"
+		unsupported[0] = "other-app-mutations"
+	}
+	if len(githubEnabled) > 2 && githubEnabled[2] {
+		features = append(features, "durable-app-scale-etcd-preview")
+		endpoints["appScale"] = "/api/v1/apps/{id}/scale"
+		endpoints["appScaleStatus"] = "/api/v1/apps/{id}/scale-status"
 		unsupported[0] = "other-app-mutations"
 	}
 	return map[string]interface{}{
@@ -397,7 +423,7 @@ func etcdFleetOperation(operations *etcdstore.V3OperationStore, allowCanary bool
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}
-		allowed := principal.Allows(handler.ScopeAPIRead) && (op.Kind == "fleet.capacity-plan" || op.Kind == pipeline.CatalogActivationKind || (allowCanary && op.Kind == "app.canary-promote"))
+		allowed := principal.Allows(handler.ScopeAPIRead) && (op.Kind == "fleet.capacity-plan" || op.Kind == pipeline.CatalogActivationKind || op.Kind == "app.scale" || (allowCanary && op.Kind == "app.canary-promote"))
 		if !allowed && len(releaseConfig) > 0 && releaseConfig[0] != nil && op.Kind == "app.deploy" {
 			allowed = principal.Allows(handler.ScopeAPIRead) || fleetReleaseOperationReadable(*releaseConfig[0], principal, *op)
 		}

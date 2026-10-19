@@ -35,6 +35,9 @@ func BuildClaimedFleetDeploymentJobPlan(source ClaimedFleetDeploymentSource, cla
 		return ClaimedFleetDeploymentJobPlan{}, fmt.Errorf("claimed Fleet deployment job source is incomplete")
 	}
 	region := accepted.Regions[0]
+	if err := validateClaimedDesiredReplicaCounts(source.Spec, region.Name, source.DesiredReplicaCounts); err != nil {
+		return ClaimedFleetDeploymentJobPlan{}, err
+	}
 	input, err := nomad.BuildManagedDeploymentJobEffectInput(accepted.Deployment, source.Spec, region, source.Managed.CatalogRevision, source.Managed.RuntimeTargets)
 	if err != nil {
 		return ClaimedFleetDeploymentJobPlan{}, err
@@ -43,6 +46,7 @@ func BuildClaimedFleetDeploymentJobPlan(source ClaimedFleetDeploymentSource, cla
 	if err != nil {
 		return ClaimedFleetDeploymentJobPlan{}, err
 	}
+	nomad.ApplyDesiredReplicaCounts(job, source.DesiredReplicaCounts)
 	if err := pipeline.BindDeploymentJobProvenance(job, accepted.Deployment.ID, accepted.Deployment.SpecDigest, accepted.Operation.Payload); err != nil {
 		return ClaimedFleetDeploymentJobPlan{}, err
 	}

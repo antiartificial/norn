@@ -14,6 +14,9 @@ type ClaimedFleetDeploymentSource struct {
 	Spec    *model.InfraSpec
 	Managed VerifiedManagedDeployment
 	Route   VerifiedFleetRouteSource
+	// DesiredReplicaCounts is read from the same control authority under the
+	// claimed app lock, then included in the deterministic Nomad job digest.
+	DesiredReplicaCounts map[string]int
 }
 
 // LoadClaimedFleetDeploymentSource refuses disabled, duplicated or changed

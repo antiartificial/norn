@@ -44,6 +44,7 @@ func PrepareClaimedFleetDeploymentJob(ctx context.Context, source ClaimedFleetDe
 	if preparedJob == nil || !reflect.DeepEqual(preparedInput, expectedInput) {
 		return ClaimedFleetDeploymentJobPlan{}, fmt.Errorf("staged Nomad input descriptor differs from signed plan")
 	}
+	nomad.ApplyDesiredReplicaCounts(preparedJob, source.DesiredReplicaCounts)
 	if err := pipeline.BindDeploymentJobProvenance(preparedJob, accepted.Deployment.ID, accepted.Deployment.SpecDigest, accepted.Operation.Payload); err != nil {
 		return ClaimedFleetDeploymentJobPlan{}, err
 	}
