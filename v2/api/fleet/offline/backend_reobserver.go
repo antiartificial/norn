@@ -18,6 +18,7 @@ const maxEffectStateBytes = 64 << 20
 // LatestBackendReader is deliberately read-only. Latest and Version must be
 // implemented against the object store, not the runner's cached receipt.
 type LatestBackendReader interface {
+	VersioningEnabled(context.Context, string, string) (bool, error)
 	Latest(context.Context, string, string) (versionID string, size int64, err error)
 	Version(context.Context, string, string, string, int64) ([]byte, error)
 }
@@ -26,12 +27,16 @@ type LatestBackendReader interface {
 // byte read. A concurrent overwrite, delete marker, oversized or malformed
 // state, or stale serial/lineage all deny an effect grant.
 func VerifyLatestBackend(ctx context.Context, reader LatestBackendReader, bound Backend) error {
-	if reader == nil || bound.Bucket == "" || bound.Key == "" || bound.VersionID == "" ||
+	if reader == nil || bound.Bucket == "" || bound.Key == "" || bound.VersionID == "" || bound.VersionID == "null" ||
 		bound.Lineage == "" || bound.Serial == 0 || !hex64.MatchString(bound.RawSHA256) {
 		return ErrLatestBackendMismatch
 	}
+	enabled, err := reader.VersioningEnabled(ctx, bound.Bucket, bound.Key)
+	if err != nil || !enabled {
+		return ErrLatestBackendMismatch
+	}
 	version, size, err := reader.Latest(ctx, bound.Bucket, bound.Key)
-	if err != nil || version != bound.VersionID || size <= 0 || size > maxEffectStateBytes {
+	if err != nil || version == "null" || version != bound.VersionID || size <= 0 || size > maxEffectStateBytes {
 		return ErrLatestBackendMismatch
 	}
 	raw, err := reader.Version(ctx, bound.Bucket, bound.Key, version, size)
@@ -52,6 +57,10 @@ func VerifyLatestBackend(ctx context.Context, reader LatestBackendReader, bound 
 	}
 	latest, latestSize, err := reader.Latest(ctx, bound.Bucket, bound.Key)
 	if err != nil || latest != version || latestSize != size {
+		return ErrLatestBackendMismatch
+	}
+	enabled, err = reader.VersioningEnabled(ctx, bound.Bucket, bound.Key)
+	if err != nil || !enabled {
 		return ErrLatestBackendMismatch
 	}
 	return nil

@@ -254,8 +254,8 @@ func (s *V3OperationStore) issueOfflineEffectGrant(ctx context.Context, planID, 
 // credential side effect. Its transaction records the irrevocable one-use
 // transition before a future executor may attempt an external effect. If the
 // response is lost, recovery must read event 2 and must never retry apply.
-func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID, attemptID, grantID, principal string, now time.Time) (offline.EffectGrant, error) {
-	if s == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || uuid.Validate(grantID) != nil || principal == "" {
+func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID, attemptID, grantID, principal string, now time.Time, backend offline.LatestBackendReader) (offline.EffectGrant, error) {
+	if s == nil || backend == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || uuid.Validate(grantID) != nil || principal == "" {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	response, err := s.kv.Txn(ctx).Then(clientv3.OpGet(s.offlineEffectGrantKey(planID)),
@@ -333,6 +333,12 @@ func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID
 		fence.HolderNonceSHA256 != binding.DispatchNonceSHA256 || uint64(fence.Generation) != binding.FenceGeneration ||
 		fence.AuthorityEpoch != fenceContext.Epoch || grant.AuthorityEpoch != fenceContext.Epoch {
 		return offline.EffectGrant{}, ErrOfflineEffectGrantConflict
+	}
+	// The issuance read is insufficient: the latest backend may change while
+	// this short-lived grant waits to be consumed. Re-read it immediately before
+	// the durable one-use transition. No caller-provided receipt substitutes.
+	if err := offline.VerifyLatestBackend(ctx, backend, binding.Backend); err != nil {
+		return offline.EffectGrant{}, err
 	}
 	consumed := now.UTC()
 	grant.Phase, grant.ConsumedAt = "consumed", &consumed

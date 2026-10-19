@@ -13,19 +13,30 @@ import (
 // is needed by this observer.
 type MinIOLatestBackendReader struct{ Client *minio.Client }
 
+func (r MinIOLatestBackendReader) VersioningEnabled(ctx context.Context, bucket, key string) (bool, error) {
+	if r.Client == nil || bucket == "" || key == "" {
+		return false, ErrLatestBackendMismatch
+	}
+	config, err := r.Client.GetBucketVersioning(ctx, bucket)
+	if err != nil || !config.Enabled() || config.ExcludeFolders || len(config.ExcludedPrefixes) != 0 {
+		return false, ErrLatestBackendMismatch
+	}
+	return true, nil
+}
+
 func (r MinIOLatestBackendReader) Latest(ctx context.Context, bucket, key string) (string, int64, error) {
 	if r.Client == nil {
 		return "", 0, ErrLatestBackendMismatch
 	}
 	stat, err := r.Client.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
-	if err != nil || stat.VersionID == "" {
+	if err != nil || stat.VersionID == "" || stat.VersionID == "null" {
 		return "", 0, ErrLatestBackendMismatch
 	}
 	return stat.VersionID, stat.Size, nil
 }
 
 func (r MinIOLatestBackendReader) Version(ctx context.Context, bucket, key, version string, size int64) ([]byte, error) {
-	if r.Client == nil || version == "" || size <= 0 || size > maxEffectStateBytes {
+	if r.Client == nil || version == "" || version == "null" || size <= 0 || size > maxEffectStateBytes {
 		return nil, ErrLatestBackendMismatch
 	}
 	options := minio.GetObjectOptions{VersionID: version}

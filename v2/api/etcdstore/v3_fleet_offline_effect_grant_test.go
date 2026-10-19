@@ -16,15 +16,38 @@ import (
 )
 
 type offlineBackendReadFixture struct {
-	raw     []byte
-	version string
+	raw        []byte
+	version    string
+	bucket     string
+	key        string
+	versioning bool
 }
 
-func (f offlineBackendReadFixture) Latest(context.Context, string, string) (string, int64, error) {
+func (f offlineBackendReadFixture) VersioningEnabled(_ context.Context, bucket, key string) (bool, error) {
+	if bucket != f.bucket || key != f.key {
+		return false, offline.ErrLatestBackendMismatch
+	}
+	return f.versioning, nil
+}
+func (f offlineBackendReadFixture) Latest(_ context.Context, bucket, key string) (string, int64, error) {
+	if bucket != f.bucket || key != f.key {
+		return "", 0, offline.ErrLatestBackendMismatch
+	}
 	return f.version, int64(len(f.raw)), nil
 }
-func (f offlineBackendReadFixture) Version(context.Context, string, string, string, int64) ([]byte, error) {
+func (f offlineBackendReadFixture) Version(_ context.Context, bucket, key, version string, size int64) ([]byte, error) {
+	if bucket != f.bucket || key != f.key || version != f.version || size != int64(len(f.raw)) {
+		return nil, offline.ErrLatestBackendMismatch
+	}
 	return f.raw, nil
+}
+
+func offlineBackendReadFor(b offline.Binding) offlineBackendReadFixture {
+	raw, _ := json.Marshal(struct {
+		Lineage string `json:"lineage"`
+		Serial  uint64 `json:"serial"`
+	}{b.Backend.Lineage, b.Backend.Serial})
+	return offlineBackendReadFixture{raw: raw, version: b.Backend.VersionID, bucket: b.Backend.Bucket, key: b.Backend.Key, versioning: true}
 }
 
 func TestBackendCheckedReobserverDoesNotTrustDelegateBackendClaim(t *testing.T) {
@@ -32,11 +55,11 @@ func TestBackendCheckedReobserverDoesNotTrustDelegateBackendClaim(t *testing.T) 
 	sum := sha256.Sum256(raw)
 	b := offline.Binding{Backend: offline.Backend{Bucket: "state", Key: "staging.tfstate", VersionID: "version-22", Lineage: "lineage-one", Serial: 22, RawSHA256: hex.EncodeToString(sum[:])}}
 	claim := offline.EffectObservation{LatestBackendExact: true}
-	observer := backendCheckedEffectReobserver{remaining: offlineTestReobserver{observation: claim}, backend: offlineBackendReadFixture{raw: raw, version: "version-23"}}
+	observer := backendCheckedEffectReobserver{remaining: offlineTestReobserver{observation: claim}, backend: offlineBackendReadFixture{raw: raw, version: "version-23", bucket: "state", key: "staging.tfstate", versioning: true}}
 	if _, err := observer.reobserveEffect(context.Background(), b, offline.Attempt{}); !errors.Is(err, offline.ErrLatestBackendMismatch) {
 		t.Fatalf("stale backend accepted: %v", err)
 	}
-	observer.backend = offlineBackendReadFixture{raw: raw, version: "version-22"}
+	observer.backend = offlineBackendReadFixture{raw: raw, version: "version-22", bucket: "state", key: "staging.tfstate", versioning: true}
 	got, err := observer.reobserveEffect(context.Background(), b, offline.Attempt{})
 	if err != nil || !got.LatestBackendExact {
 		t.Fatalf("exact backend rejected: %+v %v", got, err)
@@ -71,6 +94,9 @@ func offlineEffectFixture(t *testing.T) (*etcdExecutorHarness, offline.Binding, 
 		{Name: "control-02", ProviderID: "202"}, {Name: "control-03", ProviderID: "203"},
 		{Name: "ingress-01", ProviderID: "301"}, {Name: "ingress-02", ProviderID: "302"},
 	}
+	state := offlineBackendReadFor(b)
+	digest := sha256.Sum256(state.raw)
+	b.Backend.RawSHA256 = hex.EncodeToString(digest[:])
 	b, approval := offlineTestApproval(t, b, now)
 	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, approval, now); err != nil {
 		t.Fatal(err)
@@ -132,19 +158,44 @@ func TestOfflineEffectGrantFailClosedAndOneUseCAS(t *testing.T) {
 	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now, offlineTestReobserver{observation: o}); !errors.Is(err, ErrOfflineEffectGrantConflict) {
 		t.Fatalf("reissue: %v", err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, "wrong", now); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, "wrong", now, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("wrong principal: %v", err)
 	}
-	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now)
+	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b))
 	if err != nil || consumed.Phase != "consumed" || consumed.ConsumedAt == nil {
 		t.Fatalf("consume: %+v %v", consumed, err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("replay: %v", err)
 	}
 	rows, err := h.s.kv.Get(h.ctx(), h.s.offlineEffectGrantEventKey(b.PlanID, 2))
 	if err != nil || len(rows.Kvs) != 1 {
 		t.Fatalf("missing durable consumption event: %v", err)
+	}
+}
+
+func TestOfflineEffectGrantConsumeRechecksLatestBackend(t *testing.T) {
+	h, b, a, now := offlineEffectFixture(t)
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now,
+		offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, nil); !errors.Is(err, offline.ErrEffectProofMismatch) {
+		t.Fatalf("missing reader: %v", err)
+	}
+	stale := offlineBackendReadFor(b)
+	stale.version = "newer-version"
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, stale); !errors.Is(err, offline.ErrLatestBackendMismatch) {
+		t.Fatalf("stale latest: %v", err)
+	}
+	suspended := offlineBackendReadFor(b)
+	suspended.versioning = false
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, suspended); !errors.Is(err, offline.ErrLatestBackendMismatch) {
+		t.Fatalf("suspended versioning: %v", err)
+	}
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); err != nil {
+		t.Fatalf("still issuable after rejected reads: %v", err)
 	}
 }
 
@@ -176,18 +227,18 @@ func TestOfflineEffectGrantConsumeRejectsCompetingLaneAndCrashShape(t *testing.T
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(b.PlanID), "competing"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now); !errors.Is(err, ErrOfflineEffectGrantConflict) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); !errors.Is(err, ErrOfflineEffectGrantConflict) {
 		t.Fatalf("competing lane at consume: %v", err)
 	}
 	if _, err := h.s.kv.Delete(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(b.PlanID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, grant.ExpiresAt); !errors.Is(err, offline.ErrEffectProofMismatch) {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, grant.ExpiresAt, offlineBackendReadFor(b)); !errors.Is(err, offline.ErrEffectProofMismatch) {
 		t.Fatalf("expired grant: %v", err)
 	}
 	// Simulate a partial restore: a consumed cursor without its append-only
 	// consumption event must be treated as corrupt, never as a fresh grant.
-	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now)
+	consumed, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +262,7 @@ func TestOfflineEffectGrantPartialRestoreMarksTargetHolderIncomplete(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now); err != nil {
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now, offlineBackendReadFor(b)); err != nil {
 		t.Fatal(err)
 	}
 	facts, err := h.s.loadFleetTargetHolderFacts(h.ctx(), b.PlanID)
