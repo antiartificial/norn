@@ -235,8 +235,29 @@ func (s *V3OperationStore) loadFleetTargetHolderFacts(ctx context.Context, planI
 			checkpoint.FenceGeneration != binding.FenceGeneration) {
 			facts.OfflineEvidenceIncomplete = true
 		}
+		grant, grantErr := s.GetOfflineEffectGrant(ctx, planID)
+		if errors.Is(grantErr, ErrOfflineAttemptCorrupt) {
+			facts.OfflineEvidenceIncomplete = true
+		} else if grantErr != nil && !errors.Is(grantErr, ErrNotFound) {
+			return lifecycle.HolderFacts{}, grantErr
+		} else if grantErr == nil {
+			if binding.SchemaVersion != offline.BindingSchemaV2 || err != nil || checkpointErr != nil ||
+				grant.AttemptID != attempt.ID || grant.BindingSHA256 != attempt.BindingSHA256 ||
+				grant.TargetID != binding.TargetID || grant.FenceGeneration != binding.FenceGeneration ||
+				grant.SourceCommit != binding.SourceCommit || grant.SavedPlanSHA256 != binding.SavedPlanSHA256 ||
+				grant.EffectSHA256 != binding.EffectSHA256 || grant.Backend != binding.Backend ||
+				grant.ProviderAccountUUID != binding.ProviderAccountUUID || grant.NodeName != binding.NodeName ||
+				grant.DropletID != binding.DropletID || grant.PrechangeSHA256 != checkpoint.EvidenceSHA256 {
+				facts.OfflineEvidenceIncomplete = true
+			}
+		}
 	}
 	if !facts.OfflineReservation {
+		if _, err := s.GetOfflineEffectGrant(ctx, planID); err == nil || errors.Is(err, ErrOfflineAttemptCorrupt) {
+			facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
+		} else if !errors.Is(err, ErrNotFound) {
+			return lifecycle.HolderFacts{}, err
+		}
 		if _, err := s.GetOfflineCheckpoint(ctx, planID); err == nil || errors.Is(err, ErrOfflineAttemptCorrupt) {
 			facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
 		} else if !errors.Is(err, ErrNotFound) {

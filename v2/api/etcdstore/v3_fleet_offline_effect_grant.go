@@ -75,6 +75,30 @@ func decodeOfflineEffectGrantPair(headRaw, issuedRaw, consumedRaw []byte, planID
 	return head, nil
 }
 
+// GetOfflineEffectGrant reads the cursor and both append-only events in one
+// etcd revision. A partial restore is corruption, not a fresh issuance.
+func (s *V3OperationStore) GetOfflineEffectGrant(ctx context.Context, planID string) (offline.EffectGrant, error) {
+	response, err := s.kv.Txn(ctx).Then(
+		clientv3.OpGet(s.offlineEffectGrantKey(planID)),
+		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 1)),
+		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 2)),
+	).Commit()
+	if err != nil {
+		return offline.EffectGrant{}, err
+	}
+	if len(response.Responses) != 3 {
+		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
+	}
+	var raw [3][]byte
+	for i := range raw {
+		rows := response.Responses[i].GetResponseRange().Kvs
+		if len(rows) == 1 {
+			raw[i] = rows[0].Value
+		}
+	}
+	return decodeOfflineEffectGrantPair(raw[0], raw[1], raw[2], planID)
+}
+
 // issueOfflineEffectGrant is a non-public CAS transition. It rechecks the
 // checkpoint, owner consumption, registry, held fence, epoch, absence of a
 // competing GitHub lane, and independent effect-time observation atomically.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/fleet/offline"
 )
 
@@ -166,5 +167,39 @@ func TestOfflineEffectGrantConsumeRejectsCompetingLaneAndCrashShape(t *testing.T
 	}
 	if _, err := decodeOfflineEffectGrantPair(head, issuedRows.Kvs[0].Value, nil, b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
 		t.Fatalf("partial restore accepted: %v", err)
+	}
+}
+
+func TestOfflineEffectGrantPartialRestoreMarksTargetHolderIncomplete(t *testing.T) {
+	h, b, a, now := offlineEffectFixture(t)
+	grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, b.RunnerPrincipalSubject, now,
+		offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, b.RunnerPrincipalSubject, now); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := h.s.loadFleetTargetHolderFacts(h.ctx(), b.PlanID)
+	if err != nil || !facts.OfflineReservation || facts.OfflineEvidenceIncomplete {
+		t.Fatalf("intact holder: %+v %v", facts, err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineEffectGrantEventKey(b.PlanID, 2)); err != nil {
+		t.Fatal(err)
+	}
+	facts, err = h.s.loadFleetTargetHolderFacts(h.ctx(), b.PlanID)
+	if err != nil || !facts.OfflineReservation || !facts.OfflineEvidenceIncomplete {
+		t.Fatalf("missing consumption event accepted: %+v %v", facts, err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), b.TargetID, now); err != nil ||
+		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
+		t.Fatalf("target outcome missed partial grant restore: %s/%s %v", state, reason, err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineDispatchKey(b.PlanID)); err != nil {
+		t.Fatal(err)
+	}
+	facts, err = h.s.loadFleetTargetHolderFacts(h.ctx(), b.PlanID)
+	if err != nil || !facts.OfflineReservation || !facts.OfflineEvidenceIncomplete {
+		t.Fatalf("orphan grant accepted: %+v %v", facts, err)
 	}
 }
