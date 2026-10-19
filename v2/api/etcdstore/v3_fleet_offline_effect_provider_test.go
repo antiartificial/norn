@@ -49,6 +49,9 @@ func TestProviderCheckedEffectReobserver(t *testing.T) {
 		"extra target node": func(v []offlineProviderDroplet) []offlineProviderDroplet {
 			return append(v, offlineProviderDroplet{ID: "999", Name: "app-04", ProjectID: "work-project", VPCUUID: "work-vpc", Tags: []string{"norn-work-staging"}})
 		},
+		"extra untagged target node": func(v []offlineProviderDroplet) []offlineProviderDroplet {
+			return append(v, offlineProviderDroplet{ID: "998", Name: "app-04", ProjectID: "work-project", VPCUUID: "work-vpc"})
+		},
 		"renamed app-03": func(v []offlineProviderDroplet) []offlineProviderDroplet { v[2].Name = "app-04"; return v },
 	}
 	for name, mutate := range mutations {
@@ -103,7 +106,74 @@ func TestOfflineDOReaderPaginationAndReadOnly(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[1].ProjectID != "project" {
 		t.Fatalf("inventory: %+v %v", rows, err)
 	}
-	if len(seen) != 5 {
+	if len(seen) != 7 {
 		t.Fatalf("pagination skipped: %v", seen)
+	}
+}
+
+func TestOfflineDOReaderRejectsChangedMembershipAndPageTotals(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		changeMembers, changeTotals bool
+	}{
+		{name: "membership changed", changeMembers: true},
+		{name: "project total changed", changeTotals: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projectReads := 0
+			reader := offlineDOReader{projectID: "project", token: func(context.Context) (string, error) { return "token", nil }, client: &http.Client{Transport: providerHTTPFixture(func(req *http.Request) (*http.Response, error) {
+				var body any
+				if strings.Contains(req.URL.Path, "/resources") {
+					projectReads++
+					id, total := "101", 1
+					if tc.changeMembers && projectReads > 1 {
+						id = "102"
+					}
+					if tc.changeTotals && projectReads > 1 {
+						total = 2
+					}
+					body = map[string]any{"resources": []any{map[string]any{"urn": "do:droplet:" + id}}, "meta": map[string]any{"total": total}}
+				} else {
+					body = map[string]any{"droplets": []any{map[string]any{"id": 101, "name": "app-01", "status": "active", "vpc_uuid": "vpc", "tags": []string{"work"}}}, "meta": map[string]any{"total": 1}}
+				}
+				encoded, _ := json.Marshal(body)
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: http.Header{}}, nil
+			})}}
+			if _, err := reader.Droplets(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) {
+				t.Fatalf("accepted unstable provider read: %v", err)
+			}
+		})
+	}
+}
+
+func TestOfflineDOReaderRejectsRedirectBeforeBearerDisclosure(t *testing.T) {
+	redirects := 0
+	reader := offlineDOReader{projectID: "project", token: func(context.Context) (string, error) { return "token", nil }, client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { redirects++; return nil }, Transport: providerHTTPFixture(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.digitalocean.com" {
+			t.Fatalf("bearer sent to redirect host: %s", req.URL.Host)
+		}
+		return &http.Response{StatusCode: 302, Header: http.Header{"Location": []string{"https://example.invalid/steal"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}}
+	if _, err := reader.AccountUUID(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) || redirects != 0 {
+		t.Fatalf("redirect followed: err=%v redirects=%d", err, redirects)
+	}
+}
+
+func TestOfflineDOReaderRejectsChangingDropletPageTotal(t *testing.T) {
+	reader := offlineDOReader{projectID: "project", token: func(context.Context) (string, error) { return "token", nil }, client: &http.Client{Transport: providerHTTPFixture(func(req *http.Request) (*http.Response, error) {
+		var body any
+		switch {
+		case strings.Contains(req.URL.Path, "/resources"):
+			body = map[string]any{"resources": []any{map[string]any{"urn": "do:droplet:101"}}, "meta": map[string]any{"total": 1}}
+		case req.URL.Query().Get("page") == "1":
+			body = map[string]any{"droplets": []any{map[string]any{"id": 101}}, "meta": map[string]any{"total": 2}}
+		default:
+			body = map[string]any{"droplets": []any{map[string]any{"id": 102}}, "meta": map[string]any{"total": 1}}
+		}
+		encoded, _ := json.Marshal(body)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: http.Header{}}, nil
+	})}}
+	if _, err := reader.Droplets(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) {
+		t.Fatalf("accepted changing total: %v", err)
 	}
 }

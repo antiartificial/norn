@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"norn/v2/api/fleet/offline"
 )
@@ -76,7 +78,7 @@ func exactOfflineProviderTopology(binding offline.Binding, droplets []offlinePro
 		// Unrelated account resources are permitted, but a duplicate ID, name or
 		// unexpected node in the target project/VPC is ambiguous and fails closed.
 		name, named := wanted[droplet.ID]
-		inTarget := droplet.ProjectID == expected.ProjectID && droplet.VPCUUID == expected.VPCUUID && containsAllTags(droplet.Tags, expected.RequiredTags)
+		inTarget := droplet.ProjectID == expected.ProjectID && droplet.VPCUUID == expected.VPCUUID
 		if !named && !inTarget {
 			continue
 		}
@@ -123,8 +125,10 @@ func (r offlineDOReader) get(ctx context.Context, path string, out any) error {
 	if r.client == nil || r.token == nil || r.projectID == "" {
 		return offline.ErrEffectProofMissing
 	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
 	token, err := r.token(ctx)
-	if err != nil || strings.TrimSpace(token) != token || token == "" {
+	if err != nil || token == "" || strings.ContainsAny(token, " \t\r\n") {
 		return offline.ErrEffectProofMissing
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.digitalocean.com"+path, nil)
@@ -133,7 +137,9 @@ func (r offlineDOReader) get(ctx context.Context, path string, out any) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
-	resp, err := r.client.Do(req)
+	client := *r.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
 		return offline.ErrEffectProofMissing
 	}
@@ -167,6 +173,8 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 	if r.projectID == "" {
 		return nil, offline.ErrEffectProofMissing
 	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	members, err := r.projectDropletIDs(ctx)
 	if err != nil {
 		return nil, err
@@ -213,6 +221,10 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 				if !seen[id] {
 					return nil, offline.ErrEffectProofMissing
 				}
+			}
+			freshMembers, err := r.projectDropletIDs(ctx)
+			if err != nil || !maps.Equal(members, freshMembers) {
+				return nil, offline.ErrEffectProofMissing
 			}
 			return droplets, nil
 		}
