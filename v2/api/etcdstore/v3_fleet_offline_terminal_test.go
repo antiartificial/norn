@@ -96,6 +96,19 @@ func TestOfflineTerminalCASAndRestore(t *testing.T) {
 	if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
 		t.Fatalf("partial restore accepted: %v", err)
 	}
+	restoredEvent, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineTerminalEventKey(b.PlanID), string(restoredEvent)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineTerminalKey(b.PlanID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("event-only restore accepted: %v", err)
+	}
 }
 
 func TestOfflineTerminalConcurrentFenceMutationFailsCAS(t *testing.T) {
@@ -139,6 +152,10 @@ func TestOfflineTerminalRestoreRejectsDivergedAuthorityRows(t *testing.T) {
 	fenceKey := h.s.fleetTargetFenceKey(b.TargetID)
 	checkpointKey := h.s.offlineCheckpointKey(b.PlanID)
 	grantKey := h.s.offlineEffectGrantKey(b.PlanID)
+	registryKey := h.s.fleetTargetRegistryKey()
+	targetKey := h.s.fleetTargetKey(b.TargetID)
+	clusterAliasKey := h.s.fleetTargetAliasKey("cluster:tk-staging-nyc3")
+	environmentAliasKey := h.s.fleetTargetAliasKey("environment:staging")
 	cases := []struct {
 		name, key string
 		mutate    func([]byte) []byte
@@ -194,6 +211,30 @@ func TestOfflineTerminalRestoreRejectsDivergedAuthorityRows(t *testing.T) {
 			out, _ := json.Marshal(v)
 			return out
 		}},
+		{"registry generation", registryKey, func(raw []byte) []byte {
+			var v v3FleetTargetRegistry
+			_ = json.Unmarshal(raw, &v)
+			v.Generation = 0
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"registry malformed", registryKey, func([]byte) []byte { return []byte("not-json") }},
+		{"target identity", targetKey, func(raw []byte) []byte {
+			var v FleetTarget
+			_ = json.Unmarshal(raw, &v)
+			v.ProviderAccount = "other-account"
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"target aliases", targetKey, func(raw []byte) []byte {
+			var v FleetTarget
+			_ = json.Unmarshal(raw, &v)
+			v.Aliases = []string{"cluster:tk-staging-nyc3"}
+			out, _ := json.Marshal(v)
+			return out
+		}},
+		{"cluster alias owner", clusterAliasKey, func([]byte) []byte { return []byte("other") }},
+		{"environment alias owner", environmentAliasKey, func([]byte) []byte { return []byte("other") }},
 		{"consumed grant", grantKey, func(raw []byte) []byte {
 			var v offline.EffectGrant
 			_ = json.Unmarshal(raw, &v)
@@ -215,6 +256,30 @@ func TestOfflineTerminalRestoreRejectsDivergedAuthorityRows(t *testing.T) {
 			}
 			if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
 				t.Fatalf("diverged %s accepted: %v", tc.name, err)
+			}
+			if _, err := h.s.kv.Put(h.ctx(), tc.key, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); err != nil {
+				t.Fatalf("restored %s rejected: %v", tc.name, err)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, key string }{
+		{"registry deleted", registryKey}, {"target deleted", targetKey},
+		{"cluster alias deleted", clusterAliasKey}, {"environment alias deleted", environmentAliasKey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original, err := h.s.kv.Get(h.ctx(), tc.key)
+			if err != nil || len(original.Kvs) != 1 {
+				t.Fatalf("original row: %v", err)
+			}
+			raw := append([]byte(nil), original.Kvs[0].Value...)
+			if _, err := h.s.kv.Delete(h.ctx(), tc.key); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.GetOfflineTerminal(h.ctx(), b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+				t.Fatalf("deleted %s accepted: %v", tc.name, err)
 			}
 			if _, err := h.s.kv.Put(h.ctx(), tc.key, string(raw)); err != nil {
 				t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/fleet/offline"
 )
 
@@ -98,14 +100,17 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 		clientv3.OpGet(s.fleetTargetFenceKey(candidate.TargetID)), clientv3.OpGet(s.fleetAuthorityEpochKey()),
 		clientv3.OpGet(s.offlineCheckpointKey(planID)), clientv3.OpGet(s.offlineCheckpointEventKey(planID, 1)),
 		clientv3.OpGet(s.fleetTargetRegistryKey()),
+		clientv3.OpGet(s.fleetTargetKey(candidate.TargetID)),
+		clientv3.OpGet(s.fleetTargetAliasKey("cluster:tk-staging-nyc3")),
+		clientv3.OpGet(s.fleetTargetAliasKey("environment:staging")),
 	).Commit()
 	if err != nil {
 		return offline.TerminalEvidence{}, err
 	}
-	if len(response.Responses) != 13 {
+	if len(response.Responses) != 16 {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
-	var raw [13][]byte
+	var raw [16][]byte
 	for i := range raw {
 		rows := response.Responses[i].GetResponseRange().Kvs
 		if len(rows) == 1 {
@@ -152,7 +157,21 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 		uint64(fence.Generation) != terminal.FenceGeneration || fence.AuthorityEpoch != terminal.AuthorityEpoch {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
-	if len(raw[12]) == 0 {
+	var registry v3FleetTargetRegistry
+	if decodeV3Record(raw[12], &registry) != nil || registry.Generation < 1 {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	var target FleetTarget
+	if decodeV3Record(raw[13], &target) != nil || target.TargetID != binding.TargetID ||
+		!slices.Contains(target.Aliases, "cluster:tk-staging-nyc3") ||
+		!slices.Contains(target.Aliases, "environment:staging") ||
+		string(raw[14]) != binding.TargetID || string(raw[15]) != binding.TargetID {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	_, canonicalTargetID, err := lifecycle.CanonicalTarget(lifecycle.TargetIdentity{
+		Provider: target.Provider, ProviderAccount: target.ProviderAccount, StateBackend: target.StateBackend,
+	})
+	if err != nil || canonicalTargetID != binding.TargetID {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
 	epoch, err := strconv.ParseInt(strings.TrimSpace(string(raw[9])), 10, 64)
