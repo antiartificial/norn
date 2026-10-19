@@ -57,6 +57,9 @@ regions:
 processes:
   web:
     port: 8080
+    scaling:
+      min: 1
+      max: 3
 endpoints:
   - url: https://pilot.example.test
     region: west
@@ -108,6 +111,49 @@ endpoints:
 	scaledPrepared, err := PrepareClaimedFleetDeploymentJob(t.Context(), scaled, claim, "test-authority", scaledStager, nil, nil)
 	if err != nil || scaledPrepared.Input.JobDigest != scaledPlan.Input.JobDigest || scaledPrepared.Reservation.InputDigest != scaledPlan.Reservation.InputDigest {
 		t.Fatalf("accepted desired replica overlay was not bound to staged job: %+v err=%v", scaledPrepared, err)
+	}
+	// A newer accepted spec can narrow or remove a formerly legal group.
+	// The persisted count must never silently bypass that new policy.
+	for _, test := range []struct {
+		name   string
+		counts map[string]int
+		change func(*model.InfraSpec)
+	}{
+		{name: "below new minimum", counts: map[string]int{"web": 0}},
+		{name: "above new maximum", counts: map[string]int{"web": 4}},
+		{name: "removed group", counts: map[string]int{"retired": 2}},
+		{name: "new region exclusion", counts: map[string]int{"web": 2}, change: func(spec *model.InfraSpec) {
+			proc := spec.Processes["web"]
+			proc.Regions = []string{"east"}
+			spec.Processes["web"] = proc
+		}},
+		{name: "new schedule", counts: map[string]int{"web": 2}, change: func(spec *model.InfraSpec) {
+			proc := spec.Processes["web"]
+			proc.Schedule = "0 0 * * *"
+			spec.Processes["web"] = proc
+		}},
+		{name: "narrowed maximum", counts: map[string]int{"web": 3}, change: func(spec *model.InfraSpec) {
+			proc := spec.Processes["web"]
+			proc.Scaling = &model.Scaling{Min: 1, Max: 2}
+			spec.Processes["web"] = proc
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			newSource := bound
+			copySpec := *bound.Spec
+			copySpec.Processes = make(map[string]model.Process, len(bound.Spec.Processes))
+			for name, process := range bound.Spec.Processes {
+				copySpec.Processes[name] = process
+			}
+			if test.change != nil {
+				test.change(&copySpec)
+			}
+			newSource.Spec = &copySpec
+			newSource.DesiredReplicaCounts = test.counts
+			if _, err := BuildClaimedFleetDeploymentJobPlan(newSource, claim, "test-authority"); err == nil || !strings.Contains(err.Error(), "reconcile the stored scale intent") {
+				t.Fatalf("stale desired replica intent was not refused for reconciliation: %v", err)
+			}
+		})
 	}
 	effects := &deploymentStepEffects{created: true}
 	remote := &deploymentStepRemote{state: nomad.DeploymentJobFound}
