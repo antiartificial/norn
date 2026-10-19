@@ -511,6 +511,52 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 			holder.OfflineEvidenceIncomplete = true
 		}
 	}
+	grantKey := s.offlineEffectGrantKey(planID)
+	grantHead, err := s.kv.Get(ctx, grantKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(grantKey, grantHead)
+	issuedKey := s.offlineEffectGrantEventKey(planID, 1)
+	grantIssued, err := s.kv.Get(ctx, issuedKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(issuedKey, grantIssued)
+	consumedKey := s.offlineEffectGrantEventKey(planID, 2)
+	grantConsumed, err := s.kv.Get(ctx, consumedKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(consumedKey, grantConsumed)
+	var grantHeadRaw, grantIssuedRaw, grantConsumedRaw []byte
+	if len(grantHead.Kvs) == 1 {
+		grantHeadRaw = grantHead.Kvs[0].Value
+	}
+	if len(grantIssued.Kvs) == 1 {
+		grantIssuedRaw = grantIssued.Kvs[0].Value
+	}
+	if len(grantConsumed.Kvs) == 1 {
+		grantConsumedRaw = grantConsumed.Kvs[0].Value
+	}
+	grant, grantErr := decodeOfflineEffectGrantPair(grantHeadRaw, grantIssuedRaw, grantConsumedRaw, planID)
+	if errors.Is(grantErr, ErrOfflineAttemptCorrupt) {
+		holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
+	} else if grantErr != nil && !errors.Is(grantErr, ErrNotFound) {
+		return holder, 0, nil, grantErr
+	} else if grantErr == nil {
+		if !validOfflineBinding || len(offlineAttemptResponse.Kvs) != 1 || checkpointErr != nil ||
+			grant.TargetID != offlineBinding.TargetID || grant.FenceGeneration != offlineBinding.FenceGeneration ||
+			grant.PrechangeSHA256 != checkpoint.EvidenceSHA256 || grant.Backend != offlineBinding.Backend ||
+			grant.SourceCommit != offlineBinding.SourceCommit || grant.SavedPlanSHA256 != offlineBinding.SavedPlanSHA256 ||
+			grant.EffectSHA256 != offlineBinding.EffectSHA256 || grant.ProviderAccountUUID != offlineBinding.ProviderAccountUUID ||
+			grant.NodeName != offlineBinding.NodeName || grant.DropletID != offlineBinding.DropletID {
+			holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
+		} else if attempt, decodeErr := decodeOfflineAttempt(offlineAttemptResponse.Kvs[0].Value, planID); decodeErr != nil ||
+			grant.AttemptID != attempt.ID || grant.BindingSHA256 != attempt.BindingSHA256 {
+			holder.OfflineEvidenceIncomplete = true
+		}
+	}
 
 	abandonedKey := s.fleetTargetAbandonedKey(planID)
 	abandonedResponse, err := s.kv.Get(ctx, abandonedKey)
