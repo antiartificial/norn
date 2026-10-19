@@ -6,7 +6,7 @@ Status: proposed implementation plan, 2026-09-22. No infrastructure changes or m
 
 This roadmap is the review artifact before implementation. Current authorization covers planning and documentation only. No application changes, provider provisioning, production measurements, migrations, or deployments are part of this planning pass.
 
-Norn v3 has two initial release gates: upgrade the existing Mini from v2 to v3 on PostgreSQL while preserving its workloads, and bootstrap a fresh HA DigitalOcean Fleet directly on three-member etcd. Both use the same control contracts. PostgreSQL remains supported for the Mini; an upgrade does not force a backend switch or workload relocation. The target release includes independent observability retention, named database bindings, persistent app scaling, explicit placement and coordinated upgrades/application migrations. General PG↔etcd conversion is deferred.
+Norn v3 has two independent initial release paths: upgrade the existing Mini from v2 to v3 on PostgreSQL while preserving its development workloads, and bootstrap a fresh HA DigitalOcean staging Fleet directly on three-member etcd with applications deployed to Fleet. A future production Fleet is a separate environment. Both paths use the same control contracts. PostgreSQL remains supported for the Mini; an upgrade does not force a backend switch or workload relocation. The target release includes independent observability retention, named database bindings, persistent app scaling, explicit placement and coordinated upgrades. Mini-to-Fleet application migration and general PG↔etcd conversion are deferred capabilities, not launch gates.
 
 Product, wire API, Fleet document, InfraSpec, object format and database schema versions are independent. Preserve supported `fleet/v1` documents; introduce a new document version only for incompatible semantics. Advertise optional capabilities instead of assuming a v3 client implies every backend/provider feature exists. A roadmap under `docs/v3` does not require duplicating the source tree into `v3/`.
 
@@ -41,9 +41,9 @@ The store ADR must compare a dedicated etcd group with reuse of existing Consul 
 | M4 | Fleet scaling and replacement | M1; M2 profiles | Placement and 2→3→2 under load |
 | M5 | Mini upgrade rehearsal | M1–M2 | v2→v3 on PG with workload identities preserved |
 | M6 | Running upgrades and app DB lifecycle | M2–M4 | v3→v3 and app DB cutover/recovery |
-| M7 | First Mini→Fleet app migration rehearsal | M4–M6 | Data, traffic and worker ownership reconciled |
+| M7 | Direct Fleet application deployment | M3–M4; M6 app DB lifecycle | Fleet-owned web/worker workload, data binding, traffic and recovery proved |
 | M8 | Release qualification | M3–M7 | Both release paths, client parity and fault evidence |
-| M9 | Controlled adoption | M8; named rollout scope | Mini, Fleet and app cutovers verified separately |
+| M9 | Controlled adoption | M8; named rollout scope | Mini upgrade and separate staging Fleet with directly deployed applications verified independently |
 
 The [execution milestones](execution-milestones.md) define review units, dependencies and rollback boundaries. These are internal engineering stages of one v3 release, not mandatory sequential production releases. Etcd is an initial HA release gate; failure to qualify it blocks that claim. General backend conversion is not a dependency of fresh Fleet bootstrap or the Mini PG upgrade.
 
@@ -60,7 +60,7 @@ Estimate implementation effort only after M0's inventories and spikes. Track eff
 
 Release rollback is possible only while the persisted schema remains compatible. Database restore and runtime binary rollback are distinct operations with different data-loss boundaries.
 
-Mini and Fleet remain independent control-plane identities. Move selected applications with explicit identity/provenance mappings, database/secrets bindings and data/file transfer, then cut traffic after fencing source writers and proving readiness. Do not clone the Mini control database into the live Fleet. Qualify the supported PG, etcd, Nomad and Consul versions alongside the Norn/client compatibility matrix.
+Mini and Fleet remain independent control-plane identities. Deploy applications directly to Fleet with its own database and secrets bindings; do not clone the Mini control database into Fleet. Any later cross-environment move needs explicit identity/provenance mapping, data/file transfer, source-writer fencing and traffic cutover qualification. Qualify the supported PG, etcd, Nomad and Consul versions alongside the Norn/client compatibility matrix.
 
 ## Planning artifacts and repository ownership
 

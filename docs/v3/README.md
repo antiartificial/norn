@@ -40,7 +40,7 @@ documents for implementation details.
 - Make desired replica count durable and distinct from VM count; require explicit placement and remaining capacity before drain.
 - Qualify single-active API handoff before promising continuous API service; test ownership and schema compatibility before wider concurrency.
 - Use a writer-fenced, externally recoverable migration coordinator; never treat switching a connection string back as sufficient rollback after new writes.
-- Rehearse one actual Mini-to-Fleet application migration, including its data, files, jobs and traffic. General PG↔etcd control conversion is deferred and does not block either initial installation path.
+- Deploy and qualify an application directly on the independent staging Fleet, including its data binding, web/worker behavior, traffic and recovery. Mini-to-Fleet application migration and general PG↔etcd control conversion are deferred; neither blocks the Mini upgrade or the staging Fleet launch.
 
 ## Remaining product choices
 

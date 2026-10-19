@@ -20,9 +20,10 @@ or running Norn on Mini. In the current implementation, Mini reads a local
 for Fleet operations; the Mini does not require a direct connection to a
 Fleet-node API.
 
-The disposable DigitalOcean Fleet is a separate staging exercise for fresh
-bootstrap, quorum, workload communication, scaling and teardown. Its etcd and
-management-node requirements apply to that Fleet deployment, not to the Mini.
+The persistent work-account DigitalOcean Fleet is a separate staging Norn for
+fresh bootstrap, quorum, workload communication, scaling and recovery. Its
+etcd and management-node requirements apply to that Fleet deployment, not to
+the Mini.
 These paths share release qualification but are not prerequisites for one
 another. No general PG↔etcd control conversion is required. A targeted v2
 prerequisite release is needed only if the inspected Mini version cannot safely
@@ -37,7 +38,7 @@ Mini prerequisite. The Mini upgrade can advance independently of Fleet
 provisioning. Fleet's etcd snapshots, restore, quorum and fault gates remain
 required before claiming that staging exercise complete.
 
-Application migration is separate from platform upgrade. The first release qualifies moving a representative Mini application to Fleet; moving every app is not a release gate. Keep the Mini and Fleet as independent control-plane identities. Transfer app definitions/data and selected provenance with an explicit mapping; do not clone the entire Mini control database into the live Fleet or run both as the same authority.
+Mini is the independent v3 development environment. The work-account Fleet is a separately deployed staging Norn; a future production Fleet is another distinct environment. Deploy applications directly to Fleet. Mini-to-Fleet application promotion or data migration is not an initial release gate. If cross-environment mobility is offered later, qualify explicit identity, data and provenance mappings without cloning Mini's control database or sharing its authority.
 
 ## Milestone order
 
@@ -50,9 +51,9 @@ Application migration is separate from platform upgrade. The first release quali
 | M4 | Fleet app pools, persistent scaling and replacement | M1; M2 profiles | Norn, Fleet, NornUI | Verified placement, 2→3→2 nodes, replica growth and safe drain |
 | M5 | Rehearsed Mini v2→v3 upgrade on PG | M1–M2 | Norn, NornUI | Isolated upgrade/rollback from representative Mini state; jobs and routes unchanged |
 | M6 | Running upgrades and app database lifecycle | M2–M4 | Norn, Fleet, app owners | v3→v3 rolling rehearsal; app DB upgrade/cutover and interrupted recovery |
-| M7 | First Mini→Fleet application migration rehearsal | M4–M6 | Norn, Fleet, selected app repo | Data/work reconciliation, traffic cutover, rollback/recovery boundary |
+| M7 | Direct Fleet application deployment | M3–M4; M6 app DB lifecycle | Norn, Fleet, selected app repo | Fleet-owned web/worker workload, data binding, public traffic, recovery and rollback proof |
 | M8 | v3 release qualification | M3–M7 | All release owners | Signed candidate, client parity, version matrix, soak/fault results and operator runbooks |
-| M9 | Controlled adoption | M8; explicit rollout scope | Operators + release owners | Mini upgrade, clean Fleet deployment and selected app migrations independently verified |
+| M9 | Controlled adoption | M8; explicit rollout scope | Operators + release owners | Mini upgrade and separate staging Fleet deployment with directly deployed applications independently verified |
 
 After M1, profile/archive, etcd and scheduling work can overlap at agreed interfaces. M5 proceeds without a live DO Fleet. Provider-backed tests follow local/Linux isolated qualification; their budget and exact targets are established before provisioning. M8 qualifies the package; M9 is actual deployment, not an automatic side effect of completion.
 
@@ -141,25 +142,26 @@ Gate: PG and selected MySQL adapter backup/restore; planned engine upgrade or cl
 
 Control-PG replacement on the Mini and general PG↔etcd conversion may follow later; app database cutovers are required here.
 
-## M7 — Application mobility
+## M7 — Direct Fleet application deployment
 
-Select one representative low-risk database-backed application with explicit data/file/queue ownership and synthetic traffic. Include web and worker behavior in the fixture; prove other storage patterns separately before offering migration support for them.
+Select one representative low-risk database-backed application created for Fleet, with explicit data/file/queue ownership and synthetic traffic. Include web and worker behavior in the fixture; prove other storage patterns separately before offering support for them.
 
-Export definition plus selected provenance, map its identity into the independent Fleet, provision target dependencies and copy app data/files. Keep target workers/schedules disabled until cutover. For final activation, quiesce/fence source writers, synchronize, enable one target ownership generation, verify data/work, then switch traffic and remaining consumers. Delayed DNS propagation means the source must remain safely read-only/proxying/maintenance-mode as designed; DNS alone is not a write fence.
+Define the application in Fleet, provision its database and other dependencies, deploy web and worker processes, and verify routes and externally visible traffic. Exercise deployment recovery, scheduled work, node replacement and rollback while the application is running. Prove the workload remains available within the agreed service budget during the M4 scale/drain and M6 running-upgrade exercises.
 
-Gate: data and acknowledged work reconcile; auth/URLs/files function; no duplicate schedules; source rollback before new writes and recovery after new writes are rehearsed. Preserve unrelated Mini workloads. Record which application data/engine classes are actually supported.
+Gate: auth/URLs/files function; data and acknowledged work remain correct across restart, drain and rollback; no duplicate schedules or writers; Fleet database backup/restore and recovery are evidenced. Mini remains an independent development Norn and is not a deployment source for this gate. Record which application data/engine classes are actually supported.
 
 ## M8–M9 — Release and adoption
 
 Release evidence includes exact Norn/Fleet/NornUI/runner and upstream versions, workload fixtures, topology and resource reservations, request/error/latency results, operation/effect reconciliation, retention growth and restore records. Etcd soak and failure qualification are initial HA release gates. Any deferred capability is explicitly absent/experimental in negotiation.
 
-Adoption has three independent steps: deploy empty DO Fleet on etcd; upgrade Mini on PG; move selected apps. Prioritize the Fleet deployment, while retaining M8 qualification and a reviewed protected plan before provider changes. Schedule the steps separately. A failed Fleet launch must not force a Mini rollback; a successful Mini upgrade must not be mistaken for HA qualification.
+Adoption has two independent paths: upgrade Mini on PG for development, and deploy a separate staging Fleet on etcd with applications deployed directly to it. A future production Fleet has its own reviewed rollout and qualification. Prioritize staging Fleet fitness while retaining M8 qualification and a reviewed protected plan before provider changes. A failed Fleet launch must not force a Mini rollback; a successful Mini upgrade must not be mistaken for HA qualification.
 
-The immediate objective is the bounded disposable
-[Fleet fitness pilot](fleet-fitness-pilot-matrix-2026-09-29.md). It gathers
-real provider, control-plane, ingress, workload and teardown evidence quickly,
-but it does not collapse or waive the remaining M0–M9 exits. Record each
-result only against the gate it actually proves.
+The immediate objective is to qualify the persistent work-account staging Fleet:
+prove provider-backed bootstrap, control-plane recovery, ingress, directly
+deployed workloads, scaling and running upgrades against M0–M9 exit criteria.
+The earlier bounded [Fleet fitness pilot](fleet-fitness-pilot-matrix-2026-09-29.md)
+supplies historical test cases, not a spend cap or retirement requirement for
+work staging. Record each result only against the gate it actually proves.
 
 General cross-backend conversion, local single-member etcd, Fleet-PG qualification, autonomous cloud scaling, multi-region HA and additional database engines remain later milestones unless scope is explicitly expanded.
 
