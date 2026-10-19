@@ -17,7 +17,7 @@ import (
 
 // The transport contains no provider client and accepts no runner proof.
 // Absence of complete authority-side read credentials leaves issuance off.
-func registerEtcdFleetOfflineEffectRoutes(router chi.Router, runnerAuth func(http.Handler) http.Handler, identities offlineIdentityStore, trust *offlineFleetTrust, authority *etcdstore.OfflineEffectAuthority) {
+func registerEtcdFleetOfflineEffectRoutes(router chi.Router, runnerAuth func(http.Handler) http.Handler, identities offlineIdentityStore, trust *offlineFleetTrust, authority, recovery *etcdstore.OfflineEffectAuthority) {
 	base := "/api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants"
 	write := func(w http.ResponseWriter, grant offline.EffectGrant, status int) {
 		w.Header().Set("Content-Type", "application/json")
@@ -38,6 +38,13 @@ func registerEtcdFleetOfflineEffectRoutes(router chi.Router, runnerAuth func(htt
 	ready := func(w http.ResponseWriter, r *http.Request) bool {
 		if authority == nil {
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "offline_effect_observer_unavailable", "independent authority observation is unavailable")
+			return false
+		}
+		return true
+	}
+	readyRecovery := func(w http.ResponseWriter, r *http.Request) bool {
+		if recovery == nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "offline_effect_history_unavailable", "durable grant history is unavailable")
 			return false
 		}
 		return true
@@ -92,10 +99,10 @@ func registerEtcdFleetOfflineEffectRoutes(router chi.Router, runnerAuth func(htt
 		if !ok {
 			return
 		}
-		if !ready(w, r) {
+		if !readyRecovery(w, r) {
 			return
 		}
-		grant, err := authority.RecoverAttempt(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), principal)
+		grant, err := recovery.RecoverAttempt(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), principal)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_effect_grant_unavailable", "immutable grant history is unavailable or differs")
 			return
@@ -107,10 +114,10 @@ func registerEtcdFleetOfflineEffectRoutes(router chi.Router, runnerAuth func(htt
 		if !ok {
 			return
 		}
-		if !ready(w, r) {
+		if !readyRecovery(w, r) {
 			return
 		}
-		grant, err := authority.Recover(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), chi.URLParam(r, "grantID"), principal)
+		grant, err := recovery.Recover(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), chi.URLParam(r, "grantID"), principal)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_effect_grant_unavailable", "immutable grant history is unavailable or differs")
 			return

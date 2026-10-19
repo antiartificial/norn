@@ -200,7 +200,7 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 			AuthorizesEffect bool               `json:"authorizesEffect"`
 		}{checkpoint, false})
 	})
-	registerEtcdFleetOfflineEffectRoutes(router, runnerAuth, identities, trust, offlineEffectAuthorityForRuntime(cfg, operations, origin...))
+	registerEtcdFleetOfflineEffectRoutes(router, runnerAuth, identities, trust, offlineEffectAuthorityForRuntime(cfg, operations, origin...), etcdstore.NewOfflineEffectRecovery(operations))
 }
 
 func offlineRunnerPrincipal(r *http.Request, trust *offlineFleetTrust, identities offlineIdentityStore) (handler.AccessPrincipal, bool) {

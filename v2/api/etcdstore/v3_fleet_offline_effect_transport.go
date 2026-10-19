@@ -16,6 +16,16 @@ type OfflineEffectAuthority struct {
 	backend  offline.LatestBackendReader
 }
 
+// NewOfflineEffectRecovery exposes only immutable grant history. It cannot
+// issue or consume and remains usable if observer credentials rotate after a
+// response was lost.
+func NewOfflineEffectRecovery(store *V3OperationStore) *OfflineEffectAuthority {
+	if store == nil {
+		return nil
+	}
+	return &OfflineEffectAuthority{store: store}
+}
+
 // OfflineEffectReaders are authority-owned clients; no runner-supplied
 // receipt, provider credential, or provider mutation capability belongs here.
 type OfflineEffectReaders struct {
@@ -54,14 +64,14 @@ func NewOfflineEffectAuthority(store *V3OperationStore, readers OfflineEffectRea
 }
 
 func (a *OfflineEffectAuthority) Issue(ctx context.Context, planID, attemptID, principal string, now time.Time) (offline.EffectGrant, error) {
-	if a == nil {
+	if a == nil || a.store == nil || a.observer == nil {
 		return offline.EffectGrant{}, offline.ErrEffectProofMissing
 	}
 	return a.store.issueOfflineEffectGrant(ctx, planID, attemptID, principal, now, a.observer)
 }
 
 func (a *OfflineEffectAuthority) Consume(ctx context.Context, planID, attemptID, grantID, principal string, now time.Time) (offline.EffectGrant, error) {
-	if a == nil {
+	if a == nil || a.store == nil || a.backend == nil {
 		return offline.EffectGrant{}, offline.ErrEffectProofMissing
 	}
 	return a.store.consumeOfflineEffectGrant(ctx, planID, attemptID, grantID, principal, now, a.backend)
@@ -79,7 +89,7 @@ func (a *OfflineEffectAuthority) Recover(ctx context.Context, planID, attemptID,
 }
 
 func (a *OfflineEffectAuthority) RecoverAttempt(ctx context.Context, planID, attemptID, principal string) (offline.EffectGrant, error) {
-	if a == nil {
+	if a == nil || a.store == nil {
 		return offline.EffectGrant{}, offline.ErrEffectProofMissing
 	}
 	grant, err := a.store.GetOfflineEffectGrant(ctx, planID)

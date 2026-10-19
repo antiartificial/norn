@@ -26,7 +26,7 @@ func TestOfflineEffectTransportRefusesUnauthorizedAndMissingObserver(t *testing.
 			next.ServeHTTP(w, r)
 		})
 	}
-	registerEtcdFleetOfflineEffectRoutes(router, auth, identities, trust, nil)
+	registerEtcdFleetOfflineEffectRoutes(router, auth, identities, trust, nil, nil)
 	base := "/api/v1/fleet/offline/attempts/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/effect-grants"
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPost, base}, {http.MethodPost, base + "/33333333-3333-4333-8333-333333333333/consume"},
@@ -42,7 +42,7 @@ func TestOfflineEffectTransportRefusesUnauthorizedAndMissingObserver(t *testing.
 		inject = &principal
 		response = httptest.NewRecorder()
 		router.ServeHTTP(response, request)
-		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "offline_effect_observer_unavailable") {
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "offline_effect_") {
 			t.Fatalf("%s with incomplete observer = %d %s", tc.path, response.Code, response.Body.String())
 		}
 		inject = nil
