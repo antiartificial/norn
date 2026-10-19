@@ -25,8 +25,21 @@ const nomadScaleStage = "app.scale.nomad"
 // operation that is guaranteed to fail later.
 type NomadScaleEffects struct {
 	executor *effect.Executor
-	store    *store.PGEffectStore
+	store    ScaleEffectStore
 }
+
+// ScaleEffectStore is the complete durable boundary needed by app.scale.
+// Keeping this interface backend-neutral prevents the normal Fleet runtime
+// from mounting PostgreSQL storage accidentally when its control store is
+// etcd.
+type ScaleEffectStore interface {
+	effect.Store
+	effect.RecoveryStore
+	Authority(context.Context) (string, error)
+	UnresolvedForResource(context.Context, string, string) (effect.Record, bool, error)
+}
+
+var _ ScaleEffectStore = (*store.PGEffectStore)(nil)
 
 func NewNomadScaleEffects(db *store.DB, client *nomad.Client) (*NomadScaleEffects, error) {
 	if client == nil {
@@ -35,6 +48,15 @@ func NewNomadScaleEffects(db *store.DB, client *nomad.Client) (*NomadScaleEffect
 	effectStore, err := store.NewPGEffectStore(db)
 	if err != nil {
 		return nil, err
+	}
+	return NewNomadScaleEffectsWithStore(effectStore, client)
+}
+
+// NewNomadScaleEffectsWithStore permits a control backend to supply its own
+// fenced effect implementation without importing PostgreSQL.
+func NewNomadScaleEffectsWithStore(effectStore ScaleEffectStore, client *nomad.Client) (*NomadScaleEffects, error) {
+	if effectStore == nil || client == nil {
+		return nil, fmt.Errorf("durable scale requires an effect store and Nomad client")
 	}
 	supervisor := &nomadScaleSupervisor{client: client, store: effectStore}
 	return &NomadScaleEffects{store: effectStore, executor: &effect.Executor{
@@ -161,7 +183,7 @@ func scaleExecutionID(r effect.Reservation) string {
 
 type nomadScaleSupervisor struct {
 	client *nomad.Client
-	store  *store.PGEffectStore
+	store  ScaleEffectStore
 }
 
 func (s *nomadScaleSupervisor) Prepare(ctx context.Context, r effect.Reservation) error {
