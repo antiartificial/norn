@@ -42,7 +42,7 @@ func newScaleFoundationFixture(t *testing.T) (context.Context, *clientv3.Client,
 	}
 	id := uuid.NewString()
 	op := model.Operation{ID: id, Kind: "app.scale", App: "widgets", Ref: "us-central/web", Status: model.OperationQueued, MaxAttempts: 2,
-		Payload: map[string]interface{}{"app": "widgets", "group": "web", "region": "us-central", "nomadRegion": "global", "count": 3}}
+		Payload: map[string]interface{}{"app": "widgets", "group": "web", "region": "us-central", "nomadRegion": "global", "nomadJobId": "norn-job-pinned", "count": 3}}
 	accepted := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: op.Kind, Resource: "app/widgets", Key: id},
 		Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"app": op.App, "group": "web", "region": "us-central", "count": 3}}
 	accepted.Fingerprint, err = store.CanonicalOperationRequestFingerprint(accepted)
@@ -61,7 +61,7 @@ func newScaleFoundationFixture(t *testing.T) (context.Context, *clientv3.Client,
 		t.Fatalf("acquire scale app lock: acquired=%v err=%v", acquired, err)
 	}
 	t.Cleanup(lock.Release)
-	payload, err := json.Marshal(scaleEffectInput{App: op.App, Group: "web", Region: "us-central", NomadRegion: "global", Count: 3})
+	payload, err := json.Marshal(scaleEffectInput{App: op.App, NomadJobID: "norn-job-pinned", Group: "web", Region: "us-central", NomadRegion: "global", Count: 3})
 	if err != nil {
 		t.Fatal(err)
 	}

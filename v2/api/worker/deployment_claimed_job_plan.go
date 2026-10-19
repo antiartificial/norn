@@ -43,6 +43,7 @@ func BuildClaimedFleetDeploymentJobPlan(source ClaimedFleetDeploymentSource, cla
 	if err != nil {
 		return ClaimedFleetDeploymentJobPlan{}, err
 	}
+	nomad.ApplyDesiredReplicaCounts(job, source.DesiredReplicaCounts)
 	if err := pipeline.BindDeploymentJobProvenance(job, accepted.Deployment.ID, accepted.Deployment.SpecDigest, accepted.Operation.Payload); err != nil {
 		return ClaimedFleetDeploymentJobPlan{}, err
 	}

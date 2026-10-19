@@ -24,6 +24,19 @@ func TestScaleRequestFromOperationRejectsAmbiguousCounts(t *testing.T) {
 	}
 }
 
+func TestScaleRequestTargetsManagedNomadJobWhenPinned(t *testing.T) {
+	op := &model.Operation{App: "widget", Payload: map[string]interface{}{"group": "web", "region": "us-central", "nomadRegion": "global", "count": 3, "nomadJobId": "norn-job-deployment"}}
+	request, err := scaleRequestFromOperation(op)
+	if err != nil || scaleNomadJobID(request) != "norn-job-deployment" {
+		t.Fatalf("managed scale target = %+v, %v", request, err)
+	}
+	delete(op.Payload, "nomadJobId")
+	request, err = scaleRequestFromOperation(op)
+	if err != nil || scaleNomadJobID(request) != "widget" {
+		t.Fatalf("legacy scale target = %+v, %v", request, err)
+	}
+}
+
 func TestScaleIntentWriteFailureDefersForCompletedEffectRecovery(t *testing.T) {
 	claim, err := store.NewOperationClaim("operation", "worker", 1)
 	if err != nil {
@@ -37,12 +50,12 @@ func TestScaleIntentWriteFailureDefersForCompletedEffectRecovery(t *testing.T) {
 		}
 		return nil
 	}}
-	err = p.finishScaleIntent(context.Background(), claim, "widget", "web", "us-central", 3, "scaled", nil)
+	err = p.finishScaleIntent(context.Background(), claim, nil, "authority", "widget", "web", "us-central", 3, "scaled", nil)
 	result := deferredResult(claim, &effect.PendingError{EffectID: "completed-effect", Resource: "app/widget/scale/web", Reason: "persist desired scale intent", Cause: err})
 	if result.deferred == nil || !effect.IsDeferred(result.deferred) || result.Status != "" {
 		t.Fatalf("intent persistence failure terminalized completed effect: %#v", result)
 	}
-	if err := p.finishScaleIntent(context.Background(), claim, "widget", "web", "us-central", 3, "scaled", nil); err != nil || calls != 2 {
+	if err := p.finishScaleIntent(context.Background(), claim, nil, "authority", "widget", "web", "us-central", 3, "scaled", nil); err != nil || calls != 2 {
 		t.Fatalf("reclaimed completed effect did not retry only intent write: calls=%d err=%v", calls, err)
 	}
 }
