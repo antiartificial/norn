@@ -7,6 +7,10 @@ on:
         description: Exact 40-character commit SHA already merged to master
         required: true
         type: string
+      qualification_run_id:
+        description: Successful protected-master v3 CI workflow_dispatch run ID for this exact commit
+        required: true
+        type: string
 
 # Builds never receive secrets. Only the protected publish job receives the
 # Ed25519 key and contents:write permission. Configure the `platform-release`
@@ -21,6 +25,9 @@ concurrency:
 jobs:
   authorize:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Require protected master and exact commit
         env:
@@ -40,6 +47,18 @@ jobs:
             echo "commit_sha must be an exact lowercase 40-character SHA." >&2
             exit 1
           }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Qualification code comes from the protected dispatch ref, never
+          # from the historical source commit being packaged.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact protected v3 CI qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+        run: python3 v2/scripts/require-v3-release-qualification.py
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
