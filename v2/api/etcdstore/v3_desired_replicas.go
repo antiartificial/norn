@@ -114,6 +114,9 @@ func (s *V3OperationStore) FinishScaleClaimedOperationWithAppLock(ctx context.Co
 	if current.Operation.Metadata == nil {
 		current.Operation.Metadata = map[string]interface{}{}
 	}
+	delete(current.Operation.Metadata, "externalEffectRecoveryPending")
+	delete(current.Operation.Metadata, "effectRecoveryReason")
+	delete(current.Operation.Metadata, "effectResource")
 	for key, value := range metadata {
 		current.Operation.Metadata[key] = value
 	}
