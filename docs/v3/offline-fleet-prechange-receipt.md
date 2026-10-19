@@ -5,13 +5,21 @@ read-only JSON emitted by Fleet's `offline_contraction_effect_time.py`, plus
 `evidenceSHA256` of the exact JSON bytes sent. Norn rejects a stale receipt or
 one whose source commit, OpenTofu 1.10.6 saved-plan/effect digests, versioned
 Spaces state identity (bucket, key, version, lineage, serial, raw hash), work
-DigitalOcean account, app-03 droplet identity, or two-replica Nomad placement
-differs from the one-use reservation. It stores the receipt hash, schema,
+DigitalOcean account or app-03 droplet identity differs from the one-use
+reservation. It also checks that the plan and freshness observations name one
+candidate digest, the reviewed provider archive/version and VPC, eight unique
+active-looking node IDs, and two distinct Nomad allocations on app-01/app-02.
+Those latter assertions come from the submitted receipt; Norn cannot verify
+their origin or bind survivor IDs to the reservation. It stores the receipt hash, schema,
 observation time, and expiry with the attempt/fence checkpoint. Its restore
 reader rejects a corrupted summary or mismatched append-only event.
 
 This is a **non-effect** checkpoint. The Fleet receipt is runner-produced
-read-only evidence, not an independently signed attestation, and it does not
+read-only evidence, not an independently signed attestation. The summary marks
+`providerTopologyVerified: false` because the signed reservation has no full
+candidate digest or survivor provider-ID set. Arbitrary, unique survivor IDs
+can therefore still be submitted and must never be accepted as effect proof.
+The receipt does not
 contain the attempt, target fence, CPU/memory headroom, or service-health
 observations. Norn binds the checkpoint to the attempt and live fence in its
 etcd transaction, but no provider credential or effect route consumes this

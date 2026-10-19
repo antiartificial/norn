@@ -11,10 +11,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"time"
 )
 
 const PrechangeSchema = "norn.fleet-offline-contraction-effect-time/v1"
+
+const workVPCUUID = "b9d7d407-cdf9-4f1e-8a44-8983812860a8"
+const reviewedProviderArchiveSHA256 = "4dd5b6e8c1be5fb619812fe738d0b49e0d24731fb290c0ab5190b7bc60c70e66"
+
+var prechangeHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var ErrPrechangeEvidence = errors.New("offline prechange evidence does not match reservation")
 
@@ -23,6 +29,9 @@ type PrechangeSummary struct {
 	SHA256        string    `json:"sha256"`
 	ObservedAt    time.Time `json:"observedAt"`
 	ExpiresAt     time.Time `json:"expiresAt"`
+	// No reservation field pins the complete candidate or survivor IDs.
+	// An effect lane must never interpret this summary as topology proof.
+	ProviderTopologyVerified bool `json:"providerTopologyVerified"`
 }
 
 // ValidatePrechangeReceipt accepts the Fleet verifier's current receipt shape.
@@ -41,20 +50,29 @@ func ValidatePrechangeReceipt(raw []byte, binding Binding, attempt Attempt, now 
 		ReadOnly         bool      `json:"readOnly"`
 		AuthorizesEffect bool      `json:"authorizesEffect"`
 		Plan             struct {
+			CandidateSHA256 string `json:"candidateSHA256"`
 			SavedPlanSHA256 string `json:"savedPlanSHA256"`
 			EffectSHA256    string `json:"effectSHA256"`
 			TofuVersion     string `json:"tofuVersion"`
 			Source          struct {
-				Commit string `json:"commit"`
-				Root   string `json:"root"`
+				Commit         string `json:"commit"`
+				Root           string `json:"root"`
+				LockfileSHA256 string `json:"lockfileSHA256"`
 			} `json:"source"`
+			Provider struct {
+				Address       string `json:"address"`
+				Version       string `json:"version"`
+				ArchiveSHA256 string `json:"archiveSHA256"`
+			} `json:"provider"`
 		} `json:"plan"`
 		Freshness struct {
-			SchemaVersion string    `json:"schemaVersion"`
-			ObservedAt    time.Time `json:"observedAt"`
-			AccountUUID   string    `json:"accountUUID"`
-			Backend       Backend   `json:"backend"`
-			Nodes         []struct {
+			SchemaVersion   string    `json:"schemaVersion"`
+			ObservedAt      time.Time `json:"observedAt"`
+			AccountUUID     string    `json:"accountUUID"`
+			CandidateSHA256 string    `json:"candidateSHA256"`
+			VPCUUID         string    `json:"vpcUUID"`
+			Backend         Backend   `json:"backend"`
+			Nodes           []struct {
 				Name       string `json:"name"`
 				ProviderID string `json:"providerId"`
 				Status     string `json:"status"`
@@ -71,10 +89,17 @@ func ValidatePrechangeReceipt(raw []byte, binding Binding, attempt Attempt, now 
 	}
 	if json.Unmarshal(raw, &receipt) != nil || receipt.SchemaVersion != PrechangeSchema ||
 		!receipt.ReadOnly || receipt.AuthorizesEffect || receipt.Plan.TofuVersion != "1.10.6" ||
+		!prechangeHex64.MatchString(receipt.Plan.CandidateSHA256) ||
+		receipt.Plan.CandidateSHA256 != receipt.Freshness.CandidateSHA256 ||
+		!prechangeHex64.MatchString(receipt.Plan.Source.LockfileSHA256) ||
+		receipt.Plan.Provider.Address != "registry.opentofu.org/digitalocean/digitalocean" ||
+		receipt.Plan.Provider.Version != "2.100.0" ||
+		receipt.Plan.Provider.ArchiveSHA256 != reviewedProviderArchiveSHA256 ||
 		receipt.Plan.Source.Commit != binding.SourceCommit || receipt.Plan.Source.Root != binding.Resource ||
 		receipt.Plan.SavedPlanSHA256 != binding.SavedPlanSHA256 || receipt.Plan.EffectSHA256 != binding.EffectSHA256 ||
 		receipt.Freshness.SchemaVersion != "norn.fleet-offline-contraction-freshness/v1" ||
 		!receipt.Freshness.ReadOnly || receipt.Freshness.AuthorizesEffect ||
+		receipt.Freshness.VPCUUID != workVPCUUID ||
 		receipt.Freshness.AccountUUID != binding.ProviderAccountUUID || receipt.Freshness.Backend != binding.Backend ||
 		receipt.Workload.Job != "hello-norn-mysql" || receipt.Workload.Namespace != "default" ||
 		len(receipt.Workload.RunningAllocationIDs) != 2 || receipt.Workload.RunningAllocationIDs[0] == "" ||
@@ -85,11 +110,14 @@ func ValidatePrechangeReceipt(raw []byte, binding Binding, attempt Attempt, now 
 	}
 	found := false
 	names := map[string]bool{}
+	providerIDs := map[string]bool{}
 	for _, node := range receipt.Freshness.Nodes {
-		if node.Name == "" || names[node.Name] || node.ProviderID == "" || node.Status != "active" {
+		if node.Name == "" || names[node.Name] || !positiveDecimal.MatchString(node.ProviderID) ||
+			providerIDs[node.ProviderID] || node.Status != "active" {
 			return PrechangeSummary{}, ErrPrechangeEvidence
 		}
 		names[node.Name] = true
+		providerIDs[node.ProviderID] = true
 		if node.Name == binding.NodeName && node.ProviderID == binding.DropletID && node.Status == "active" {
 			found = true
 		}

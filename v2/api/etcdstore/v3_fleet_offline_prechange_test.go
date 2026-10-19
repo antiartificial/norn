@@ -31,6 +31,13 @@ func TestOfflinePrechangeRestoreRejectsCorruptSummary(t *testing.T) {
 	if _, err := decodeOfflineCheckpointPair(badRaw, badRaw, plan); err == nil {
 		t.Fatal("corrupt receipt hash accepted")
 	}
+	bad = *checkpoint.Prechange
+	bad.ProviderTopologyVerified = true
+	corrupt.Prechange = &bad
+	badRaw, _ = json.Marshal(corrupt)
+	if _, err := decodeOfflineCheckpointPair(badRaw, badRaw, plan); err == nil {
+		t.Fatal("unproven topology claim accepted")
+	}
 	if _, err := decodeOfflineCheckpointPair(raw, badRaw, plan); err == nil {
 		t.Fatal("head/event mismatch accepted")
 	}

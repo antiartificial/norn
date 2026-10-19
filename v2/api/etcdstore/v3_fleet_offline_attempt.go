@@ -79,6 +79,7 @@ func decodeOfflineCheckpointPair(headRaw, eventRaw []byte, planID string) (offli
 		!offlineEvidenceDigest.MatchString(checkpoint.EvidenceSHA256) || checkpoint.AuthorityEpoch < 1 ||
 		checkpoint.FenceGeneration == 0 || checkpoint.RecordedAt.IsZero() ||
 		(checkpoint.Prechange != nil && (checkpoint.Prechange.SchemaVersion != offline.PrechangeSchema ||
+			checkpoint.Prechange.ProviderTopologyVerified ||
 			checkpoint.Prechange.SHA256 != checkpoint.EvidenceSHA256 || checkpoint.Prechange.ObservedAt.IsZero() ||
 			!checkpoint.Prechange.ExpiresAt.Equal(checkpoint.Prechange.ObservedAt.Add(5*time.Minute)))) {
 		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt
