@@ -11,6 +11,8 @@ func TestOfflineEtcdPayloadInventory(t *testing.T) {
 		"/v3/fleet-offline-checkpoint-events/":   ClassHotEvidence,
 		"/v3/fleet-offline-effect-grants/":       ClassCurrentState,
 		"/v3/fleet-offline-effect-grant-events/": ClassHotEvidence,
+		"/v3/fleet-offline-terminals/":           ClassHotEvidence,
+		"/v3/fleet-offline-terminal-events/":     ClassHotEvidence,
 	}
 	for _, entry := range OfflineEtcdPayloadInventory {
 		class, ok := want[entry.Prefix]
