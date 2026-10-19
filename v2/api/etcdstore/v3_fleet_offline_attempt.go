@@ -35,8 +35,12 @@ func (s *V3OperationStore) GetOfflineAttempt(ctx context.Context, planID string)
 	if len(response.Kvs) != 1 {
 		return offline.Attempt{}, ErrNotFound
 	}
+	return decodeOfflineAttempt(response.Kvs[0].Value, planID)
+}
+
+func decodeOfflineAttempt(raw []byte, planID string) (offline.Attempt, error) {
 	var attempt offline.Attempt
-	if err := decodeV3Record(response.Kvs[0].Value, &attempt); err != nil ||
+	if err := decodeV3Record(raw, &attempt); err != nil ||
 		attempt.SchemaVersion != offline.AttemptSchema || attempt.PlanID != planID ||
 		attempt.ID == "" || attempt.Status != "queued" || attempt.CurrentPhase != "prechange_verified" {
 		return offline.Attempt{}, ErrOfflineAttemptCorrupt

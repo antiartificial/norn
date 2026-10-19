@@ -378,6 +378,10 @@ func TestOfflineHolderOccupancyAndGenericRecoveryFailClosed(t *testing.T) {
 		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineReserved {
 		t.Fatalf("reserved occupancy = %s/%s, %v", state, reason, err)
 	}
+	resourceHolder, _, _, err := h.s.fleetResourceHolderFacts(h.ctx(), id)
+	if err != nil || !resourceHolder.OfflineReservation || resourceHolder.OfflineEvidenceIncomplete || resourceHolder.OfflineQueuedAttempt {
+		t.Fatalf("resource holder omitted offline reservation: %+v, %v", resourceHolder, err)
+	}
 	if _, err := h.s.planFleetTargetRelease(h.ctx(), targetID, 1, lifecycle.ReleaseModeDispatchNotSubmitted,
 		nil, uuid.NewString(), now); !errors.Is(err, lifecycle.ErrFleetTargetOfflineRecoveryRequired) {
 		t.Fatalf("generic not-submitted release accepted offline holder: %v", err)
@@ -389,6 +393,10 @@ func TestOfflineHolderOccupancyAndGenericRecoveryFailClosed(t *testing.T) {
 	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
 		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineAttemptQueued {
 		t.Fatalf("queued occupancy = %s/%s, %v", state, reason, err)
+	}
+	resourceHolder, _, oldCompares, err := h.s.fleetResourceHolderFacts(h.ctx(), id)
+	if err != nil || !resourceHolder.OfflineQueuedAttempt || resourceHolder.OfflineEvidenceIncomplete {
+		t.Fatalf("resource holder omitted offline queued attempt: %+v, %v", resourceHolder, err)
 	}
 	attempt, err := h.s.GetOfflineAttempt(h.ctx(), id)
 	if err != nil {
@@ -411,9 +419,16 @@ func TestOfflineHolderOccupancyAndGenericRecoveryFailClosed(t *testing.T) {
 	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID)); err != nil {
 		t.Fatal(err)
 	}
+	stale, err := h.s.kv.Txn(h.ctx()).If(oldCompares...).Then(clientv3.OpPut(h.s.prefix+"/stale-resource-commit", "bad")).Commit()
+	if err != nil || stale.Succeeded {
+		t.Fatalf("resource reconcile ignored changed owner consumption: %+v, %v", stale, err)
+	}
 	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil ||
 		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
 		t.Fatalf("missing owner proof occupancy = %s/%s, %v", state, reason, err)
+	}
+	if resourceHolder, _, _, err := h.s.fleetResourceHolderFacts(h.ctx(), id); err != nil || !resourceHolder.OfflineEvidenceIncomplete {
+		t.Fatalf("resource holder treated missing owner proof as complete: %+v, %v", resourceHolder, err)
 	}
 	if _, err := h.s.planFleetTargetRelease(h.ctx(), targetID, 1, lifecycle.ReleaseModeAbandon,
 		&lifecycle.TerminalProof{ListingSnapshotSHA256: strings.Repeat("a", 64)}, uuid.NewString(), now.Add(time.Hour)); !errors.Is(err, lifecycle.ErrFleetTargetOfflineRecoveryRequired) {
@@ -440,6 +455,9 @@ func TestOfflineHolderOccupancyAndGenericRecoveryFailClosed(t *testing.T) {
 		state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
 		t.Fatalf("lost offline records occupancy = %s/%s, %v", state, reason, err)
 	}
+	if resourceHolder, _, _, err := h.s.fleetResourceHolderFacts(h.ctx(), id); err != nil || !resourceHolder.OfflineEvidenceIncomplete {
+		t.Fatalf("resource holder missed lost offline records: %+v, %v", resourceHolder, err)
+	}
 	if _, err := h.s.planFleetTargetRelease(h.ctx(), targetID, 1, lifecycle.ReleaseModeDispatchNotSubmitted,
 		nil, uuid.NewString(), now); !errors.Is(err, lifecycle.ErrFleetTargetOfflineRecoveryRequired) {
 		t.Fatalf("generic release accepted holder after offline record loss: %v", err)
@@ -461,5 +479,16 @@ func TestOfflineReservationBlocksTargetAliasChange(t *testing.T) {
 	var fenceErr *lifecycle.FenceError
 	if !errors.As(err, &fenceErr) || fenceErr.Code != lifecycle.CodeFleetTargetRegistrationInFlight {
 		t.Fatalf("target alias changed under offline holder: %v", err)
+	}
+	// Simulate a partial restore: the immutable offline binding is missing,
+	// but the authoritative shared fence still names this plan and target.
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineDispatchKey(id)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.s.RegisterFleetTarget(h.ctx(), lifecycle.TargetIdentity{
+		Provider: "digitalocean", ProviderAccount: "work-account", StateBackend: "s3://work-state/staging/terraform.tfstate",
+	}, []string{"cluster:tk-staging-nyc3", "environment:staging", "environment:staging-alt"}, uuid.NewString())
+	if !errors.As(err, &fenceErr) || fenceErr.Code != lifecycle.CodeFleetTargetRegistrationInFlight {
+		t.Fatalf("target alias changed after offline binding loss: %v", err)
 	}
 }

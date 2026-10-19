@@ -28,6 +28,8 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,7 @@ import (
 	"norn/v2/api/fleet/controller"
 	"norn/v2/api/fleet/executor"
 	"norn/v2/api/fleet/lifecycle"
+	"norn/v2/api/fleet/offline"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -422,6 +425,59 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 	holder.Attempts = attempts
 	compares = append(compares, attemptCompares...)
 
+	offlineKey := s.offlineDispatchKey(planID)
+	offlineResponse, err := s.kv.Get(ctx, offlineKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(offlineKey, offlineResponse)
+	var offlineBinding offline.Binding
+	validOfflineBinding := false
+	if len(offlineResponse.Kvs) == 1 {
+		holder.OfflineReservation = true
+		binding, decodeErr := offline.DecodeBinding(offlineResponse.Kvs[0].Value)
+		if decodeErr != nil || binding.PlanID != planID || holder.DispatchState != "" || len(attempts) != 0 {
+			holder.OfflineEvidenceIncomplete = true
+		} else {
+			offlineBinding, validOfflineBinding = binding, true
+			holder.OfflineTargetID = binding.TargetID
+			holder.OfflineNonceSHA256 = binding.DispatchNonceSHA256
+			holder.OfflineFenceGeneration = binding.FenceGeneration
+			holder.SubmissionStartedAt = binding.CreatedAt
+			ownerKey := s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID)
+			ownerResponse, err := s.kv.Get(ctx, ownerKey)
+			if err != nil {
+				return holder, 0, nil, err
+			}
+			exact(ownerKey, ownerResponse)
+			holder.OfflineEvidenceIncomplete = len(ownerResponse.Kvs) != 1 ||
+				string(ownerResponse.Kvs[0].Value) != binding.PlanID+":"+binding.OwnerEnvelopeSHA256
+		}
+	}
+	offlineAttemptKey := s.offlineAttemptKey(planID)
+	offlineAttemptResponse, err := s.kv.Get(ctx, offlineAttemptKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(offlineAttemptKey, offlineAttemptResponse)
+	if len(offlineAttemptResponse.Kvs) == 1 {
+		if !validOfflineBinding {
+			holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
+		}
+		attempt, decodeErr := decodeOfflineAttempt(offlineAttemptResponse.Kvs[0].Value, planID)
+		var digest [32]byte
+		if validOfflineBinding {
+			digest = sha256.Sum256(offlineResponse.Kvs[0].Value)
+		}
+		if decodeErr != nil || !validOfflineBinding || attempt.BindingSHA256 != hex.EncodeToString(digest[:]) ||
+			attempt.TargetID != offlineBinding.TargetID || attempt.FenceGeneration != offlineBinding.FenceGeneration ||
+			attempt.PrincipalSubject != offlineBinding.RunnerPrincipalSubject {
+			holder.OfflineEvidenceIncomplete = true
+		} else {
+			holder.OfflineQueuedAttempt = true
+		}
+	}
+
 	abandonedKey := s.fleetTargetAbandonedKey(planID)
 	abandonedResponse, err := s.kv.Get(ctx, abandonedKey)
 	if err != nil {
@@ -429,7 +485,7 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 	}
 	exact(abandonedKey, abandonedResponse)
 	holder.Abandoned = len(abandonedResponse.Kvs) == 1
-	if holder.DispatchState == "" {
+	if holder.DispatchState == "" && !holder.OfflineReservation {
 		// A converge plan on the executor lane has no dispatch keys and is
 		// bound once its first attempt exists (plan-5-7 section 2.6).
 		converge, planRevision, err := s.fleetConvergePlanOf(ctx, planID)
@@ -439,6 +495,19 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.opKey(planID)), "=", planRevision))
 		if converge != nil {
 			holder.DispatchState = fleetExecutorHolderDispatchState
+		}
+		if holder.DispatchState == "" {
+			plan, revision, err := s.load(ctx, planID)
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return holder, 0, nil, err
+			}
+			if err == nil {
+				compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.opKey(planID)), "=", revision))
+				var typed fleet.CapacityPlan
+				if validOfflineContractionPlan(plan.Operation, planID, &typed) {
+					holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
+				}
+			}
 		}
 	}
 	return holder, runID, compares, nil
