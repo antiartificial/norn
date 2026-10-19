@@ -173,6 +173,7 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 	}
 	var droplets []offlineProviderDroplet
 	seen := map[string]bool{}
+	firstTotal := 0
 	for page := 1; page <= 50; page++ {
 		var response struct {
 			Droplets []struct {
@@ -189,7 +190,10 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 		if err := r.get(ctx, fmt.Sprintf("/v2/droplets?per_page=200&page=%d", page), &response); err != nil {
 			return nil, err
 		}
-		if response.Meta.Total <= 0 || response.Meta.Total > 10000 || len(response.Droplets) == 0 || len(droplets)+len(response.Droplets) > response.Meta.Total {
+		if page == 1 {
+			firstTotal = response.Meta.Total
+		}
+		if response.Meta.Total <= 0 || response.Meta.Total != firstTotal || response.Meta.Total > 10000 || len(response.Droplets) == 0 || len(droplets)+len(response.Droplets) > response.Meta.Total {
 			return nil, offline.ErrEffectProofMissing
 		}
 		for _, d := range response.Droplets {
@@ -219,6 +223,7 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 func (r offlineDOReader) projectDropletIDs(ctx context.Context) (map[string]bool, error) {
 	members := map[string]bool{}
 	count := 0
+	firstTotal := 0
 	for page := 1; page <= 50; page++ {
 		var response struct {
 			Resources []struct {
@@ -232,7 +237,10 @@ func (r offlineDOReader) projectDropletIDs(ctx context.Context) (map[string]bool
 		if err := r.get(ctx, path, &response); err != nil {
 			return nil, err
 		}
-		if response.Meta.Total <= 0 || response.Meta.Total > 10000 || len(response.Resources) == 0 || count+len(response.Resources) > response.Meta.Total {
+		if page == 1 {
+			firstTotal = response.Meta.Total
+		}
+		if response.Meta.Total <= 0 || response.Meta.Total != firstTotal || response.Meta.Total > 10000 || len(response.Resources) == 0 || count+len(response.Resources) > response.Meta.Total {
 			return nil, offline.ErrEffectProofMissing
 		}
 		for _, resource := range response.Resources {
