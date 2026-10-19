@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
-"""Exercise etcd-backed Fleet scale recovery against disposable local services."""
+"""Exercise etcd-backed app scaling against a disposable multi-client Nomad."""
 
+import json
 import os
 import pathlib
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
 
 
-def port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+def ports(count):
+    reservations = []
+    try:
+        for _ in range(count):
+            sock = socket.socket()
+            sock.bind(("127.0.0.1", 0))
+            reservations.append(sock)
+        return [sock.getsockname()[1] for sock in reservations]
+    finally:
+        for sock in reservations:
+            sock.close()
 
 
 api = pathlib.Path(__file__).resolve().parents[1] / "api"
@@ -23,17 +32,36 @@ if not shutil.which("etcd") or not shutil.which("nomad"):
 
 with tempfile.TemporaryDirectory(prefix="norn-scale-real-nomad-") as directory:
     root = pathlib.Path(directory)
-    etcd_port, peer_port, nomad_port, rpc_port, serf_port = [port() for _ in range(5)]
-    config = root / "nomad.hcl"
-    config.write_text(
-        f'data_dir = "{root / "nomad"}"\n'
+    reserved = iter(ports(14))
+    etcd_port, peer_port = next(reserved), next(reserved)
+    server_http, server_rpc, server_serf = [next(reserved) for _ in range(3)]
+    server_config = root / "nomad-server.hcl"
+    server_config.write_text(
+        f'name = "scale-server"\ndata_dir = "{root / "nomad-server"}"\n'
         'bind_addr = "127.0.0.1"\n'
-        f'ports {{ http = {nomad_port} rpc = {rpc_port} serf = {serf_port} }}\n'
-        'plugin "raw_exec" { config { enabled = true } }\n'
+        f'ports {{ http = {server_http} rpc = {server_rpc} serf = {server_serf} }}\n'
+        f'advertise {{ http = "127.0.0.1:{server_http}" rpc = "127.0.0.1:{server_rpc}" serf = "127.0.0.1:{server_serf}" }}\n'
+        'server { enabled = true bootstrap_expect = 1 }\n'
+        'client { enabled = false }\n'
     )
+    client_configs = []
+    for index in range(3):
+        address = "127.0.0.1"
+        http, rpc, serf = [next(reserved) for _ in range(3)]
+        config = root / f"nomad-client-{index + 1}.hcl"
+        config.write_text(
+            f'name = "scale-client-{index + 1}"\ndata_dir = "{root / f"nomad-client-{index + 1}"}"\n'
+            f'bind_addr = "{address}"\n'
+            f'ports {{ http = {http} rpc = {rpc} serf = {serf} }}\n'
+            f'advertise {{ http = "{address}:{http}" rpc = "{address}:{rpc}" serf = "{address}:{serf}" }}\n'
+            f'client {{ enabled = true servers = ["127.0.0.1:{server_rpc}"] node_pool = "app" }}\n'
+            'server { enabled = false }\n'
+            'plugin "raw_exec" { config { enabled = true } }\n'
+        )
+        client_configs.append(config)
     processes = []
     try:
-        for command in (
+        commands = [
             ["etcd", "--name", "scale-test", "--data-dir", str(root / "etcd"),
              "--listen-client-urls", f"http://127.0.0.1:{etcd_port}",
              "--advertise-client-urls", f"http://127.0.0.1:{etcd_port}",
@@ -41,17 +69,19 @@ with tempfile.TemporaryDirectory(prefix="norn-scale-real-nomad-") as directory:
              "--initial-advertise-peer-urls", f"http://127.0.0.1:{peer_port}",
              "--initial-cluster", f"scale-test=http://127.0.0.1:{peer_port}",
              "--log-level", "error"],
-            ["nomad", "agent", "-dev", "-config", str(config), "-log-level", "WARN"],
-        ):
-            log = (root / f"{command[0]}.log").open("w")
+            ["nomad", "agent", "-config", str(server_config), "-log-level", "WARN"],
+        ]
+        commands.extend(["nomad", "agent", "-config", str(config), "-log-level", "WARN"] for config in client_configs)
+        for index, command in enumerate(commands):
+            log = (root / f"{command[0]}-{index}.log").open("w")
             processes.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
         for name, address, process in (
             ("etcd", f"http://127.0.0.1:{etcd_port}/health", processes[0][0]),
-            ("nomad", f"http://127.0.0.1:{nomad_port}/v1/status/leader", processes[1][0]),
+            ("nomad", f"http://127.0.0.1:{server_http}/v1/status/leader", processes[1][0]),
         ):
             for _ in range(100):
                 if process.poll() is not None:
-                    raise RuntimeError(f"{name} exited: {(root / f'{name}.log').read_text()[-2000:]}")
+                    raise RuntimeError(f"{name} exited before readiness")
                 try:
                     with urllib.request.urlopen(address, timeout=0.3) as response:
                         if response.status == 200:
@@ -60,9 +90,25 @@ with tempfile.TemporaryDirectory(prefix="norn-scale-real-nomad-") as directory:
                     time.sleep(0.2)
             else:
                 raise RuntimeError(f"{name} failed to become ready")
+        nodes_url = f"http://127.0.0.1:{server_http}/v1/nodes"
+        nodes = []
+        for _ in range(150):
+            if any(process.poll() is not None for process, _ in processes[1:]):
+                raise RuntimeError("a Nomad agent exited before all clients registered")
+            try:
+                with urllib.request.urlopen(nodes_url, timeout=0.3) as response:
+                    nodes = json.load(response)
+                ready = [node for node in nodes if node.get("Status") == "ready" and node.get("SchedulingEligibility") == "eligible" and node.get("NodePool") == "app"]
+                if len(ready) == 3:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+        else:
+            raise RuntimeError(f"Nomad did not register three ready clients: {nodes!r}")
         env = os.environ.copy()
         env["NORN_TEST_ETCD_ENDPOINTS"] = f"http://127.0.0.1:{etcd_port}"
-        env["NORN_TEST_DISPOSABLE_NOMAD_ADDR"] = f"http://127.0.0.1:{nomad_port}"
+        env["NORN_TEST_DISPOSABLE_NOMAD_ADDR"] = f"http://127.0.0.1:{server_http}"
         subprocess.run(
             ["go", "test", ".", "-run",
              "^TestEtcd(ManagedScaleRecoversRealNomadPlacement|ScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker|ScaleCrashAfterNomadAcceptRecoversWithoutSecondLaunch)$",
@@ -70,6 +116,7 @@ with tempfile.TemporaryDirectory(prefix="norn-scale-real-nomad-") as directory:
             cwd=api, env=env, check=True,
         )
     finally:
+        failed = sys.exc_info()[0] is not None
         for process, _ in reversed(processes):
             process.terminate()
         for process, log in reversed(processes):
@@ -79,3 +126,7 @@ with tempfile.TemporaryDirectory(prefix="norn-scale-real-nomad-") as directory:
                 process.kill()
                 process.wait(timeout=5)
             log.close()
+        if failed:
+            for path in sorted(root.glob("*.log")):
+                print(f"--- {path.name}", file=sys.stderr)
+                print("\n".join(path.read_text(errors="replace").splitlines()[-40:]), file=sys.stderr)

@@ -2,23 +2,27 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	nomadapi "github.com/hashicorp/nomad/api"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
+	"norn/v2/api/handler"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/store"
@@ -61,9 +65,13 @@ func TestEtcdManagedScaleRecoversRealNomadPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := nomadapi.NewServiceJob(jobID, jobID, "global", 50).AddDatacenter("dc1")
-	job.AddTaskGroup(nomadapi.NewTaskGroup("web", 1).AddTask(
+	appPool := "app"
+	job.NodePool = &appPool
+	group := nomadapi.NewTaskGroup("web", 1).AddTask(
 		nomadapi.NewTask("sleep", "raw_exec").SetConfig("command", "/bin/sleep").SetConfig("args", []string{"300"}),
-	))
+	)
+	group.Constraints = append(group.Constraints, nomadapi.NewConstraint("", nomadapi.ConstraintDistinctHosts, ""))
+	job.AddTaskGroup(group)
 	if _, err := direct.SubmitJob(job); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +103,26 @@ func TestEtcdManagedScaleRecoversRealNomadPlacement(t *testing.T) {
 		proxy.ServeHTTP(w, r)
 	}))
 	t.Cleanup(proxied.Close)
-	runtime, err := newEtcdScaleRuntime(&config.Config{Environment: "staging", AppsDir: t.TempDir(), NomadAddr: proxied.URL}, operations)
+	apps := t.TempDir()
+	if err := os.Mkdir(filepath.Join(apps, app), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spec := "name: widgets\ndeploy: true\nregions:\n  us-central:\n    nomadRegion: global\n    datacenters: [dc1]\nprocesses:\n  web:\n    command: sleep 300\n    scaling:\n      min: 1\n      max: 2\n    placement:\n      distinctHosts: true\n    health:\n      path: /ready\n"
+	if err := os.WriteFile(filepath.Join(apps, app, "infraspec.yaml"), []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := store.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: app, ControlEnvironment: "staging", Cluster: "fleet", FleetEnvironment: "staging/us-central", Region: region, NomadRegion: "global", Datacenters: []string{"dc1"}, Generation: 1}
+	if _, err := operations.ConfigureFleetAppTarget(ctx, target, 0); err != nil {
+		t.Fatal(err)
+	}
+	identities := etcdstore.NewAuthStore(ec, prefix)
+	rootID := uuid.NewString()
+	now := time.Now().UTC()
+	if err := identities.RecordAccessToken(ctx, &store.AccessToken{JTI: rootID, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite}, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Environment: "staging", AppsDir: apps, NomadAddr: proxied.URL}
+	runtime, err := newEtcdScaleRuntime(cfg, operations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,17 +132,27 @@ func TestEtcdManagedScaleRecoversRealNomadPlacement(t *testing.T) {
 		}
 		return jobID, deploymentID, nil
 	}
-	id := uuid.NewString()
-	op := model.Operation{ID: id, Kind: "app.scale", App: app, Ref: region + "/web", Status: model.OperationQueued, MaxAttempts: 1,
-		Payload: map[string]interface{}{"app": app, "group": "web", "region": region, "nomadRegion": "global", "count": 2, "nomadJobId": jobID, "deploymentId": deploymentID}}
-	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: op.Kind, Resource: "app/widgets", Key: id}, Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"app": app, "count": 2}}
-	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
-	if err != nil {
-		t.Fatal(err)
+	router := chi.NewRouter()
+	router.Post("/api/v1/apps/{id}/scale", etcdScaleApp(cfg, operations, identities, runtime))
+	principal := &handler.AccessPrincipal{Source: handler.AccessPrincipalSourceManagedToken, TokenID: rootID, Scopes: []string{handler.ScopeAPIWrite, handler.ScopeAPIRead}}
+	acceptScale := func(count int, key string) model.Operation {
+		t.Helper()
+		body := fmt.Sprintf(`{"group":"web","region":"%s","count":%d}`, region, count)
+		req := handler.WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/widgets/scale", strings.NewReader(body)), principal)
+		req.Header.Set("Idempotency-Key", key)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("scale %d admission=%d %s", count, response.Code, response.Body.String())
+		}
+		var accepted model.Operation
+		if err := json.Unmarshal(response.Body.Bytes(), &accepted); err != nil || accepted.ID == "" || accepted.Payload["nomadJobId"] != jobID {
+			t.Fatalf("scale %d accepted target=%+v err=%v", count, accepted, err)
+		}
+		return accepted
 	}
-	if _, err := operations.Accept(ctx, acceptance); err != nil {
-		t.Fatal(err)
-	}
+	accepted := acceptScale(2, "real-nomad-scale-up")
+	id := accepted.ID
 	claimed, first, err := operations.ClaimNextOperation(ctx, "first-worker", time.Minute, []string{"app.scale"})
 	if err != nil || claimed == nil {
 		t.Fatalf("first claim: %+v %v", claimed, err)
@@ -177,7 +214,7 @@ func TestEtcdManagedScaleRecoversRealNomadPlacement(t *testing.T) {
 	}
 	final, err := operations.GetOperation(ctx, id)
 	counts, countErr := operations.DesiredReplicaCounts(ctx, app, region)
-	if err != nil || countErr != nil || final.Status != model.OperationSucceeded || counts["web"] != 2 {
+	if err != nil || countErr != nil || final.Status != model.OperationSucceeded || final.Metadata["externalEffectRecoveryPending"] == true || counts["web"] != 2 {
 		t.Fatalf("durable receipt and intent: %+v %v %v %v", final, counts, err, countErr)
 	}
 	status, err := direct.JobScaleStatusRegion(jobID, "global")
@@ -192,5 +229,126 @@ func TestEtcdManagedScaleRecoversRealNomadPlacement(t *testing.T) {
 	}
 	if matchedEvents != 1 {
 		t.Fatalf("Nomad has %d scale events for one accepted operation, want exactly one", matchedEvents)
+	}
+	running := waitForDistinctNomadPlacement(t, direct.API(), jobID, "web", 2, "")
+
+	// A fresh store instance must observe the committed desired intent. This
+	// guards against accidentally proving only an in-memory worker projection.
+	reopened, err := etcdstore.NewV3OperationStore(ec, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := reopened.DesiredReplicaCounts(ctx, app, region)
+	if err != nil || persisted["web"] != 2 {
+		t.Fatalf("reopened durable scale intent: %+v %v", persisted, err)
+	}
+
+	// Drain one client that owns an allocation. Nomad must replace it on the
+	// third disposable client while preserving the accepted count and the
+	// distinct-host constraint; this is scheduler recovery, not provider scale.
+	drainedNode := running[0].NodeID
+	if _, err := direct.API().Nodes().UpdateDrain(drainedNode, &nomadapi.DrainSpec{Deadline: 30 * time.Second}, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	drainActive := true
+	t.Cleanup(func() {
+		var cleanupErr error
+		if drainActive {
+			_, cleanupErr = direct.API().Nodes().UpdateDrain(drainedNode, nil, true, nil)
+		}
+		if cleanupErr != nil {
+			t.Errorf("clear node drain: %v", cleanupErr)
+		}
+	})
+	waitForDistinctNomadPlacement(t, direct.API(), jobID, "web", 2, drainedNode)
+	status, err = direct.JobScaleStatusRegion(jobID, "global")
+	if err != nil || status.TaskGroups["web"].Desired != 2 {
+		t.Fatalf("drain changed accepted replica intent: %+v %v", status, err)
+	}
+	matchedEvents = 0
+	for _, event := range status.TaskGroups["web"].Events {
+		if event.Meta != nil && fmt.Sprint(event.Meta["norn.operationId"]) == id {
+			matchedEvents++
+		}
+	}
+	if matchedEvents != 1 {
+		t.Fatalf("drain caused %d scale events for one accepted operation, want exactly one", matchedEvents)
+	}
+	if _, err := direct.API().Nodes().UpdateDrain(drainedNode, nil, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	drainActive = false
+
+	// Exercise an independently admitted downscale through the same HTTP
+	// surface after scheduler recovery, then require durable intent and one
+	// exact Nomad scaling event for that operation as well.
+	down := acceptScale(1, "real-nomad-scale-down")
+	claimed, downClaim, err := operations.ClaimNextOperation(ctx, "downscale-worker", time.Minute, []string{"app.scale"})
+	if err != nil || claimed == nil || claimed.ID != down.ID {
+		t.Fatalf("downscale claim: %+v %v", claimed, err)
+	}
+	lock, acquired, err = operations.AcquireAppOperationLock(ctx, app)
+	if err != nil || !acquired {
+		t.Fatalf("downscale lock: %t %v", acquired, err)
+	}
+	deadline = time.Now().Add(45 * time.Second)
+	for {
+		result, err = runtime.ExecuteOperationWithAppLock(ctx, claimed, downClaim, lock)
+		if err == nil && result != nil && result.Finished() && result.AppLockFenced() {
+			break
+		}
+		if time.Now().After(deadline) {
+			lock.Release()
+			t.Fatalf("downscale did not converge: %+v %v", result, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	lock.Release()
+	waitForDistinctNomadPlacement(t, direct.API(), jobID, "web", 1, "")
+	reopened, err = etcdstore.NewV3OperationStore(ec, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err = reopened.DesiredReplicaCounts(ctx, app, region)
+	downFinal, finalErr := reopened.GetOperation(ctx, down.ID)
+	if err != nil || finalErr != nil || persisted["web"] != 1 || downFinal.Status != model.OperationSucceeded {
+		t.Fatalf("durable downscale receipt and intent: operation=%+v counts=%+v err=%v finalErr=%v", downFinal, persisted, err, finalErr)
+	}
+	status, err = direct.JobScaleStatusRegion(jobID, "global")
+	if err != nil || status.TaskGroups["web"].Desired != 1 {
+		t.Fatalf("downscale scheduler intent: %+v %v", status, err)
+	}
+	downEvents := 0
+	for _, event := range status.TaskGroups["web"].Events {
+		if event.Meta != nil && fmt.Sprint(event.Meta["norn.operationId"]) == down.ID {
+			downEvents++
+		}
+	}
+	if downEvents != 1 {
+		t.Fatalf("Nomad has %d scale events for accepted downscale, want exactly one", downEvents)
+	}
+}
+
+func waitForDistinctNomadPlacement(t *testing.T, api *nomadapi.Client, jobID, group string, count int, excludedNode string) []*nomadapi.AllocationListStub {
+	t.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		allocations, _, err := api.Jobs().Allocations(jobID, true, &nomadapi.QueryOptions{Region: "global"})
+		running := make([]*nomadapi.AllocationListStub, 0, count)
+		nodes := make(map[string]struct{}, count)
+		for _, allocation := range allocations {
+			if allocation != nil && allocation.TaskGroup == group && allocation.DesiredStatus == nomadapi.AllocDesiredStatusRun && allocation.ClientStatus == nomadapi.AllocClientStatusRunning {
+				running = append(running, allocation)
+				nodes[allocation.NodeID] = struct{}{}
+			}
+		}
+		_, excluded := nodes[excludedNode]
+		if err == nil && len(running) == count && len(nodes) == count && (excludedNode == "" || !excluded) {
+			return running
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("running allocations=%d distinct nodes=%d excluded node present=%t, want %d distinct placements (err=%v)", len(running), len(nodes), excluded, count, err)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
