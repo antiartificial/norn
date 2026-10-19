@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"strconv"
 	"strings"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/fleet/offline"
 )
 
@@ -19,18 +21,46 @@ func (s *V3OperationStore) RecoverOfflineEffectGrant(ctx context.Context, planID
 	if s == nil || !identity.valid() {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
+	// This probe names exact keys only. It is not evidence: the following
+	// transaction reads every row at this same revision, and fails closed if
+	// the revision has been compacted before the read.
+	probe, err := s.kv.Get(ctx, s.offlineDispatchKey(planID))
+	if err != nil {
+		return offline.EffectGrant{}, err
+	}
+	if len(probe.Kvs) != 1 {
+		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
+	}
+	candidate, err := offline.DecodeBinding(probe.Kvs[0].Value)
+	if err != nil || candidate.PlanID != planID || candidate.OwnerAuthorizationID == "" || candidate.TargetID == "" {
+		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
+	}
+	revision := probe.Header.Revision
+	if revision < 1 {
+		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
+	}
+	return s.recoverOfflineEffectGrantAtRevision(ctx, planID, attemptID, identity, candidate, revision)
+}
+
+func (s *V3OperationStore) recoverOfflineEffectGrantAtRevision(ctx context.Context, planID, attemptID string, identity OfflineRunnerIdentity, candidate offline.Binding, revision int64) (offline.EffectGrant, error) {
+	if s == nil || !identity.valid() || revision < 1 {
+		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
+	}
+	getAt := func(key string, options ...clientv3.OpOption) clientv3.Op {
+		return clientv3.OpGet(key, append(options, clientv3.WithRev(revision))...)
+	}
 	const (
 		head = iota
 		issued
 		consumed
 		attemptKey
 		bindingKey
-		owners
+		owner
 		registry
 		clusterAlias
 		environmentAlias
-		targets
-		fences
+		target
+		fence
 		epoch
 		abandoned
 		githubPrep
@@ -38,22 +68,22 @@ func (s *V3OperationStore) RecoverOfflineEffectGrant(ctx context.Context, planID
 		runnerAttempts
 	)
 	response, err := s.kv.Txn(ctx).Then(
-		clientv3.OpGet(s.offlineEffectGrantKey(planID)),
-		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 1)),
-		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 2)),
-		clientv3.OpGet(s.offlineAttemptKey(planID)),
-		clientv3.OpGet(s.offlineDispatchKey(planID)),
-		clientv3.OpGet(s.prefix+"/v3/fleet-offline-owner-consumptions/", clientv3.WithPrefix()),
-		clientv3.OpGet(s.fleetTargetRegistryKey()),
-		clientv3.OpGet(s.fleetTargetAliasKey("cluster:tk-staging-nyc3")),
-		clientv3.OpGet(s.fleetTargetAliasKey("environment:staging")),
-		clientv3.OpGet(s.prefix+"/v3/fleet-targets/", clientv3.WithPrefix()),
-		clientv3.OpGet(s.prefix+"/v3/fleet-target-fences/", clientv3.WithPrefix()),
-		clientv3.OpGet(s.fleetAuthorityEpochKey()),
-		clientv3.OpGet(s.fleetTargetAbandonedKey(planID)),
-		clientv3.OpGet(s.fleetGitHubDispatchPreparationKey(planID)),
-		clientv3.OpGet(s.fleetRunnerDispatchKey(planID)),
-		clientv3.OpGet(s.fleetRunnerAttemptPrefix(planID), clientv3.WithPrefix()),
+		getAt(s.offlineEffectGrantKey(planID)),
+		getAt(s.offlineEffectGrantEventKey(planID, 1)),
+		getAt(s.offlineEffectGrantEventKey(planID, 2)),
+		getAt(s.offlineAttemptKey(planID)),
+		getAt(s.offlineDispatchKey(planID)),
+		getAt(s.offlineOwnerConsumptionKey(candidate.OwnerAuthorizationID)),
+		getAt(s.fleetTargetRegistryKey()),
+		getAt(s.fleetTargetAliasKey("cluster:tk-staging-nyc3")),
+		getAt(s.fleetTargetAliasKey("environment:staging")),
+		getAt(s.fleetTargetKey(candidate.TargetID)),
+		getAt(s.fleetTargetFenceKey(candidate.TargetID)),
+		getAt(s.fleetAuthorityEpochKey()),
+		getAt(s.fleetTargetAbandonedKey(planID)),
+		getAt(s.fleetGitHubDispatchPreparationKey(planID)),
+		getAt(s.fleetRunnerDispatchKey(planID)),
+		getAt(s.fleetRunnerAttemptPrefix(planID), clientv3.WithPrefix()),
 	).Commit()
 	if err != nil {
 		return offline.EffectGrant{}, err
@@ -73,7 +103,8 @@ func (s *V3OperationStore) RecoverOfflineEffectGrant(ctx context.Context, planID
 		return out
 	}
 	if len(rows(head)) != 1 || len(rows(issued)) != 1 || len(rows(attemptKey)) != 1 || len(rows(bindingKey)) != 1 ||
-		len(rows(registry)) != 1 || len(rows(clusterAlias)) != 1 || len(rows(epoch)) != 1 ||
+		len(rows(owner)) != 1 || len(rows(registry)) != 1 || len(rows(clusterAlias)) != 1 || len(rows(environmentAlias)) != 1 ||
+		len(rows(target)) != 1 || len(rows(fence)) != 1 || len(rows(epoch)) != 1 ||
 		len(rows(abandoned)) != 0 || len(rows(githubPrep)) != 0 || len(rows(runnerDispatch)) != 0 || len(rows(runnerAttempts)) != 0 {
 		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
 	}
@@ -103,54 +134,37 @@ func (s *V3OperationStore) RecoverOfflineEffectGrant(ctx context.Context, planID
 		binding.ProviderAccountUUID != grant.ProviderAccountUUID || binding.NodeName != grant.NodeName || binding.DropletID != grant.DropletID {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
-	ownerKey := s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID)
-	ownerFound := false
-	for _, kv := range response.Responses[owners].GetResponseRange().Kvs {
-		if string(kv.Key) == ownerKey {
-			if ownerFound || string(kv.Value) != planID+":"+binding.OwnerEnvelopeSHA256 {
-				return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
-			}
-			ownerFound = true
-		}
-	}
-	if !ownerFound {
+	if binding.OwnerAuthorizationID != candidate.OwnerAuthorizationID || binding.TargetID != candidate.TargetID ||
+		string(rows(owner)[0]) != planID+":"+binding.OwnerEnvelopeSHA256 {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	var reg v3FleetTargetRegistry
 	if decodeV3Record(rows(registry)[0], &reg) != nil || reg.Generation < 1 || string(rows(clusterAlias)[0]) != grant.TargetID ||
-		(len(rows(environmentAlias)) != 0 && (len(rows(environmentAlias)) != 1 || string(rows(environmentAlias)[0]) != grant.TargetID)) {
+		string(rows(environmentAlias)[0]) != grant.TargetID {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
-	targetFound := false
-	for _, kv := range response.Responses[targets].GetResponseRange().Kvs {
-		if string(kv.Key) == s.fleetTargetKey(grant.TargetID) {
-			var target FleetTarget
-			if targetFound || decodeV3Record(kv.Value, &target) != nil || target.TargetID != grant.TargetID || target.ProviderAccount != grant.ProviderAccountUUID {
-				return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
-			}
-			targetFound = true
-		}
+	var targetRecord FleetTarget
+	if decodeV3Record(rows(target)[0], &targetRecord) != nil || targetRecord.TargetID != grant.TargetID ||
+		targetRecord.Provider != "digitalocean" || targetRecord.ProviderAccount != grant.ProviderAccountUUID ||
+		targetRecord.StateBackend != "s3://"+binding.Backend.Bucket+"/"+binding.Backend.Key ||
+		!slices.Contains(targetRecord.Aliases, "cluster:tk-staging-nyc3") ||
+		!slices.Contains(targetRecord.Aliases, "environment:staging") {
+		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
-	if !targetFound {
+	_, canonicalTargetID, err := lifecycle.CanonicalTarget(lifecycle.TargetIdentity{
+		Provider: targetRecord.Provider, ProviderAccount: targetRecord.ProviderAccount, StateBackend: targetRecord.StateBackend,
+	})
+	if err != nil || canonicalTargetID != grant.TargetID {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	epochNumber, err := strconv.ParseInt(strings.TrimSpace(string(rows(epoch)[0])), 10, 64)
 	if err != nil || epochNumber < 1 || epochNumber != grant.AuthorityEpoch {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
-	fenceFound := false
-	for _, kv := range response.Responses[fences].GetResponseRange().Kvs {
-		if string(kv.Key) == s.fleetTargetFenceKey(grant.TargetID) {
-			var fence v3FleetTargetFence
-			if fenceFound || decodeV3Record(kv.Value, &fence) != nil || !fence.Held || fence.HolderPlanID != planID ||
-				fence.HolderNonceSHA256 != binding.DispatchNonceSHA256 || uint64(fence.Generation) != grant.FenceGeneration ||
-				fence.AuthorityEpoch != grant.AuthorityEpoch {
-				return offline.EffectGrant{}, offline.ErrEffectProofMismatch
-			}
-			fenceFound = true
-		}
-	}
-	if !fenceFound {
+	var fenceRecord v3FleetTargetFence
+	if decodeV3Record(rows(fence)[0], &fenceRecord) != nil || !fenceRecord.Held || fenceRecord.HolderPlanID != planID ||
+		fenceRecord.HolderNonceSHA256 != binding.DispatchNonceSHA256 || uint64(fenceRecord.Generation) != grant.FenceGeneration ||
+		fenceRecord.AuthorityEpoch != grant.AuthorityEpoch {
 		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
 	}
 	return grant, nil

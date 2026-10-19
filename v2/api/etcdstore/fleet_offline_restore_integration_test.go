@@ -80,11 +80,11 @@ func fleetOfflineRestoreSeed(t *testing.T) {
 	if _, err := h.s.ReserveOfflineDispatch(ctx, binding, approval, now); err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := h.s.AdmitOfflineAttempt(ctx, offlineAttemptClaim(binding), binding.RunnerPrincipalSubject, uuid.NewString(), now)
+	attempt, err := h.s.AdmitOfflineAttempt(ctx, offlineAttemptClaim(binding), offlineTestRunnerIdentity(binding.RunnerPrincipalSubject), uuid.NewString(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.RecordOfflineCheckpoint(ctx, planID, attempt.ID, binding.RunnerPrincipalSubject,
+	if _, err := h.s.RecordOfflineCheckpoint(ctx, planID, attempt.ID, offlineTestRunnerIdentity(binding.RunnerPrincipalSubject),
 		"prechange_observed", strings.Repeat("a", 64), 0, now); err != nil {
 		t.Fatal(err)
 	}
@@ -169,11 +169,11 @@ func fleetOfflineRestoreVerify(t *testing.T) {
 	if _, err := s.AdvanceFleetAuthorityEpoch(ctx, epoch, "offline-restore"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RecordOfflineCheckpoint(ctx, manifest.PlanID, manifest.AttemptID, binding.RunnerPrincipalSubject,
+	if _, err := s.RecordOfflineCheckpoint(ctx, manifest.PlanID, manifest.AttemptID, offlineTestRunnerIdentity(binding.RunnerPrincipalSubject),
 		"prechange_observed", strings.Repeat("a", 64), 0, time.Now().UTC()); err == nil {
 		t.Fatal("restored stale offline holder admitted another checkpoint")
 	}
-	if _, err := s.AdmitOfflineAttempt(ctx, offlineAttemptClaim(binding), binding.RunnerPrincipalSubject,
+	if _, err := s.AdmitOfflineAttempt(ctx, offlineAttemptClaim(binding), offlineTestRunnerIdentity(binding.RunnerPrincipalSubject),
 		uuid.NewString(), time.Now().UTC()); err == nil {
 		t.Fatal("restored stale offline holder admitted another attempt")
 	}

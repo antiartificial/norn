@@ -23,6 +23,10 @@ import (
 
 var offlineTestPrivateKey = ed25519.NewKeyFromSeed([]byte("01234567890123456789012345678901"))
 
+func offlineTestRunnerIdentity(subject string) OfflineRunnerIdentity {
+	return OfflineRunnerIdentity{Subject: subject, TokenID: "test-runner-token", DeviceID: "test-runner-device"}
+}
+
 func offlineTestBinding(planID, targetID string, now time.Time) offline.Binding {
 	return offline.Binding{
 		SchemaVersion: offline.BindingSchema, PlanID: planID, TargetID: targetID,
@@ -309,19 +313,19 @@ func TestOfflineAttemptAdmissionRequiresExactHeldFenceAndOwnerConsumption(t *tes
 		t.Fatal(err)
 	}
 	claim := offlineAttemptClaim(binding)
-	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, "wrong-principal", uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, offlineTestRunnerIdentity("wrong-principal"), uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
 		t.Fatalf("wrong principal admitted: %v", err)
 	}
 	wrong := claim
 	wrong.Backend.RawSHA256 = strings.Repeat("1", 64)
-	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), wrong, claim.RunnerPrincipalSubject, uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), wrong, offlineTestRunnerIdentity(claim.RunnerPrincipalSubject), uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
 		t.Fatalf("changed backend admitted: %v", err)
 	}
 	consumptionKey := h.s.offlineOwnerConsumptionKey(binding.OwnerAuthorizationID)
 	if _, err := h.s.kv.Delete(h.ctx(), consumptionKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, offlineTestRunnerIdentity(claim.RunnerPrincipalSubject), uuid.NewString(), now); !errors.Is(err, offline.ErrAttemptMismatch) {
 		t.Fatalf("attempt without owner consumption admitted: %v", err)
 	}
 	if _, err := h.s.kv.Put(h.ctx(), consumptionKey, binding.PlanID+":"+binding.OwnerEnvelopeSHA256); err != nil {
@@ -341,7 +345,7 @@ func TestOfflineAttemptAdmissionRequiresExactHeldFenceAndOwnerConsumption(t *tes
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetFenceKey(targetID), string(broken)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), now); err == nil {
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, offlineTestRunnerIdentity(claim.RunnerPrincipalSubject), uuid.NewString(), now); err == nil {
 		t.Fatal("attempt without held shared fence admitted")
 	}
 	fence.Held = true
@@ -355,7 +359,7 @@ func TestOfflineAttemptAdmissionRequiresExactHeldFenceAndOwnerConsumption(t *tes
 		t.Fatal(err)
 	}
 	attemptID := uuid.NewString()
-	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, attemptID, now)
+	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, offlineTestRunnerIdentity(claim.RunnerPrincipalSubject), attemptID, now)
 	if err != nil || attempt.ID != attemptID || attempt.CurrentPhase != "prechange_verified" || attempt.Status != "queued" {
 		t.Fatalf("exact attempt refused or malformed: %+v, %v", attempt, err)
 	}
@@ -363,10 +367,10 @@ func TestOfflineAttemptAdmissionRequiresExactHeldFenceAndOwnerConsumption(t *tes
 	if err != nil || stored != attempt {
 		t.Fatalf("stored attempt differs: %+v, %v", stored, err)
 	}
-	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), now); !errors.Is(err, ErrOfflineAttemptConflict) {
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, offlineTestRunnerIdentity(claim.RunnerPrincipalSubject), uuid.NewString(), now); !errors.Is(err, ErrOfflineAttemptConflict) {
 		t.Fatalf("second attempt admitted: %v", err)
 	}
-	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, claim.RunnerPrincipalSubject, uuid.NewString(), binding.ExpiresAt); !errors.Is(err, offline.ErrAttemptMismatch) {
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), claim, offlineTestRunnerIdentity(claim.RunnerPrincipalSubject), uuid.NewString(), binding.ExpiresAt); !errors.Is(err, offline.ErrAttemptMismatch) {
 		t.Fatalf("expired attempt admitted: %v", err)
 	}
 }
@@ -392,7 +396,7 @@ func TestOfflineHolderOccupancyAndGenericRecoveryFailClosed(t *testing.T) {
 		nil, uuid.NewString(), now); !errors.Is(err, lifecycle.ErrFleetTargetOfflineRecoveryRequired) {
 		t.Fatalf("generic not-submitted release accepted offline holder: %v", err)
 	}
-	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(binding), binding.RunnerPrincipalSubject,
+	if _, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(binding), offlineTestRunnerIdentity(binding.RunnerPrincipalSubject),
 		uuid.NewString(), now); err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +518,7 @@ func TestOfflineCheckpointCASAndCurrentFence(t *testing.T) {
 	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), binding, approval, now); err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(binding), binding.RunnerPrincipalSubject, uuid.NewString(), now)
+	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(binding), offlineTestRunnerIdentity(binding.RunnerPrincipalSubject), uuid.NewString(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,12 +534,12 @@ func TestOfflineCheckpointCASAndCurrentFence(t *testing.T) {
 		{"wrong sequence", attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, tc.id, tc.principal, tc.phase, tc.digest, tc.sequence, now); err == nil {
+			if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, tc.id, offlineTestRunnerIdentity(tc.principal), tc.phase, tc.digest, tc.sequence, now); err == nil {
 				t.Fatal("invalid checkpoint admitted")
 			}
 		})
 	}
-	checkpoint, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now)
+	checkpoint, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, offlineTestRunnerIdentity(binding.RunnerPrincipalSubject), "prechange_observed", evidence, 0, now)
 	if err != nil || checkpoint.Sequence != 1 || checkpoint.AuthorityEpoch != 1 {
 		t.Fatalf("checkpoint: %+v, %v", checkpoint, err)
 	}
@@ -586,19 +590,19 @@ func TestOfflineCheckpointCASAndCurrentFence(t *testing.T) {
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(planID), `{"prepared":true}`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
+	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, offlineTestRunnerIdentity(binding.RunnerPrincipalSubject), "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
 		t.Fatalf("protected-lane coexistence accepted: %v", err)
 	}
 	if _, err := h.s.kv.Delete(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(planID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
+	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, offlineTestRunnerIdentity(binding.RunnerPrincipalSubject), "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
 		t.Fatalf("replay accepted: %v", err)
 	}
 	if _, err := h.s.AdvanceFleetAuthorityEpoch(h.ctx(), 1, "test-fence"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
+	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, offlineTestRunnerIdentity(binding.RunnerPrincipalSubject), "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
 		t.Fatalf("stale epoch accepted: %v", err)
 	}
 	stored, err = h.s.GetOfflineCheckpoint(h.ctx(), planID)

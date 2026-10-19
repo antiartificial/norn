@@ -112,19 +112,11 @@ func decodeOfflineCheckpointPair(headRaw, eventRaw []byte, planID string) (offli
 // protected-lane absence are compared in one transaction. The event is
 // append-only; the head is a CAS cursor. A lost response must be reconciled
 // by reading the exact event, never by retrying a changed request.
-func (s *V3OperationStore) RecordOfflineCheckpoint(ctx context.Context, planID, attemptID, authenticatedPrincipal, phase, evidenceSHA256 string, expectedSequence uint64, now time.Time, receiptRaw ...[]byte) (offline.Checkpoint, error) {
-	return s.recordOfflineCheckpoint(ctx, planID, attemptID, authenticatedPrincipal, nil, phase, evidenceSHA256, expectedSequence, now, receiptRaw...)
-}
-
-func (s *V3OperationStore) RecordOfflineCheckpointBound(ctx context.Context, planID, attemptID string, identity OfflineRunnerIdentity, phase, evidenceSHA256 string, expectedSequence uint64, now time.Time, receiptRaw ...[]byte) (offline.Checkpoint, error) {
+func (s *V3OperationStore) RecordOfflineCheckpoint(ctx context.Context, planID, attemptID string, identity OfflineRunnerIdentity, phase, evidenceSHA256 string, expectedSequence uint64, now time.Time, receiptRaw ...[]byte) (offline.Checkpoint, error) {
 	if !identity.valid() {
 		return offline.Checkpoint{}, offline.ErrAttemptMismatch
 	}
-	return s.recordOfflineCheckpoint(ctx, planID, attemptID, identity.Subject, &identity, phase, evidenceSHA256, expectedSequence, now, receiptRaw...)
-}
-
-func (s *V3OperationStore) recordOfflineCheckpoint(ctx context.Context, planID, attemptID, authenticatedPrincipal string, credential *OfflineRunnerIdentity, phase, evidenceSHA256 string, expectedSequence uint64, now time.Time, receiptRaw ...[]byte) (offline.Checkpoint, error) {
-	if s == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || authenticatedPrincipal == "" ||
+	if s == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil ||
 		phase != "prechange_observed" || !offlineEvidenceDigest.MatchString(evidenceSHA256) || expectedSequence != 0 {
 		return offline.Checkpoint{}, ErrOfflineCheckpointInvalid
 	}
@@ -139,9 +131,8 @@ func (s *V3OperationStore) recordOfflineCheckpoint(ctx context.Context, planID, 
 	if err != nil {
 		return offline.Checkpoint{}, err
 	}
-	if attempt.ID != attemptID || attempt.PrincipalSubject != authenticatedPrincipal ||
-		(credential == nil && attempt.PrincipalTokenID != "") ||
-		(credential != nil && (attempt.PrincipalTokenID != credential.TokenID || attempt.PrincipalDeviceID != credential.DeviceID)) {
+	if attempt.ID != attemptID || attempt.PrincipalSubject != identity.Subject ||
+		attempt.PrincipalTokenID != identity.TokenID || attempt.PrincipalDeviceID != identity.DeviceID {
 		return offline.Checkpoint{}, offline.ErrAttemptMismatch
 	}
 	bindingResponse, err := s.kv.Get(ctx, s.offlineDispatchKey(planID))
@@ -154,7 +145,7 @@ func (s *V3OperationStore) recordOfflineCheckpoint(ctx context.Context, planID, 
 	binding, err := offline.DecodeBinding(bindingResponse.Kvs[0].Value)
 	digest := sha256.Sum256(bindingResponse.Kvs[0].Value)
 	if err != nil || binding.PlanID != planID || attempt.BindingSHA256 != hex.EncodeToString(digest[:]) ||
-		binding.RunnerPrincipalSubject != authenticatedPrincipal || now.Before(binding.CreatedAt) || !now.Before(binding.ExpiresAt) {
+		binding.RunnerPrincipalSubject != identity.Subject || now.Before(binding.CreatedAt) || !now.Before(binding.ExpiresAt) {
 		return offline.Checkpoint{}, offline.ErrAttemptMismatch
 	}
 	var prechange *offline.PrechangeSummary
@@ -250,12 +241,9 @@ func decodeOfflineAttempt(raw []byte, planID string) (offline.Attempt, error) {
 // It binds one queued attempt to the immutable reservation and its current
 // shared fence in one etcd Txn. No retry/recovery or effect capability exists.
 func (s *V3OperationStore) AdmitOfflineAttempt(ctx context.Context, claim offline.AttemptClaim,
-	authenticatedPrincipal, attemptID string, now time.Time, credential ...string) (offline.Attempt, error) {
-	if s == nil || uuid.Validate(attemptID) != nil || authenticatedPrincipal == "" ||
-		claim.RunnerPrincipalSubject != authenticatedPrincipal {
-		return offline.Attempt{}, offline.ErrAttemptMismatch
-	}
-	if len(credential) != 0 && (len(credential) != 2 || credential[0] == "" || credential[1] == "") {
+	identity OfflineRunnerIdentity, attemptID string, now time.Time) (offline.Attempt, error) {
+	if s == nil || uuid.Validate(attemptID) != nil || !identity.valid() ||
+		claim.RunnerPrincipalSubject != identity.Subject {
 		return offline.Attempt{}, offline.ErrAttemptMismatch
 	}
 	bindingResponse, err := s.kv.Get(ctx, s.offlineDispatchKey(claim.PlanID))
@@ -299,12 +287,10 @@ func (s *V3OperationStore) AdmitOfflineAttempt(ctx context.Context, claim offlin
 	}
 	digest := sha256.Sum256(bindingResponse.Kvs[0].Value)
 	attempt := offline.Attempt{SchemaVersion: offline.AttemptSchema, ID: attemptID, PlanID: binding.PlanID,
-		BindingSHA256: hex.EncodeToString(digest[:]), PrincipalSubject: authenticatedPrincipal,
+		BindingSHA256: hex.EncodeToString(digest[:]), PrincipalSubject: identity.Subject,
+		PrincipalTokenID: identity.TokenID, PrincipalDeviceID: identity.DeviceID,
 		TargetID: binding.TargetID, FenceGeneration: binding.FenceGeneration,
 		Status: "queued", CurrentPhase: "prechange_verified", CreatedAt: now.UTC()}
-	if len(credential) == 2 {
-		attempt.PrincipalTokenID, attempt.PrincipalDeviceID = credential[0], credential[1]
-	}
 	encoded, err := json.Marshal(attempt)
 	if err != nil {
 		return offline.Attempt{}, err

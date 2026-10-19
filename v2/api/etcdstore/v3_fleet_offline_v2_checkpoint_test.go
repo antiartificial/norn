@@ -32,7 +32,7 @@ func TestOfflineV2SignedTopologyCheckpointRestore(t *testing.T) {
 	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, approval, now); err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(b), b.RunnerPrincipalSubject, uuid.NewString(), now)
+	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(b), offlineTestRunnerIdentity(b.RunnerPrincipalSubject), uuid.NewString(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestOfflineV2SignedTopologyCheckpointRestore(t *testing.T) {
 		"workload":  map[string]any{"job": "hello-norn-mysql", "namespace": "default", "runningAllocationIDs": []string{"alloc1", "alloc2"}, "survivingClientNames": []string{"app-01", "app-02"}}}
 	raw, _ := json.Marshal(receipt)
 	hash := sha256.Sum256(raw)
-	checkpoint, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, b.RunnerPrincipalSubject, "prechange_observed", hex.EncodeToString(hash[:]), 0, now, raw)
+	checkpoint, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, offlineTestRunnerIdentity(b.RunnerPrincipalSubject), "prechange_observed", hex.EncodeToString(hash[:]), 0, now, raw)
 	if err != nil || checkpoint.Prechange == nil || !checkpoint.Prechange.ProviderTopologyVerified {
 		t.Fatalf("v2 checkpoint: %+v %v", checkpoint, err)
 	}

@@ -1,6 +1,7 @@
 package etcdstore
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -131,6 +132,54 @@ func TestOfflineEffectRecoveryConcurrentConsumptionSeesWholeEventSnapshot(t *tes
 	}
 	if observed, err := authority.Recover(h.ctx(), b.PlanID, a.ID, grant.ID, identity); err != nil || observed.Phase != "consumed" {
 		t.Fatalf("final event-2 snapshot: %+v %v", observed, err)
+	}
+}
+
+func TestOfflineEffectRecoveryRejectsTargetSubstitutionAndCompaction(t *testing.T) {
+	for name, change := range map[string]func(*FleetTarget){
+		"provider": func(v *FleetTarget) { v.Provider = "other" },
+		"account":  func(v *FleetTarget) { v.ProviderAccount = "other" },
+		"backend":  func(v *FleetTarget) { v.StateBackend = "s3://other/key" },
+		"alias":    func(v *FleetTarget) { v.Aliases = []string{"cluster:tk-staging-nyc3"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, b, a, now := offlineEffectFixture(t)
+			identity := offlineEffectIdentity(b, a)
+			grant, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, identity, now, offlineTestReobserver{observation: offlineEffectObservation(b, a, now)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, err := h.s.GetFleetTarget(h.ctx(), b.TargetID)
+			if err != nil || row == nil {
+				t.Fatalf("target: %v", err)
+			}
+			change(row)
+			raw, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetKey(b.TargetID), string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.RecoverOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, identity); err == nil {
+				t.Fatalf("substituted target recovered grant %s", grant.ID)
+			}
+		})
+	}
+	h, b, a, now := offlineEffectFixture(t)
+	identity := offlineEffectIdentity(b, a)
+	if _, err := h.s.issueOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, identity, now, offlineTestReobserver{observation: offlineEffectObservation(b, a, now)}); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := h.s.kv.Get(h.ctx(), h.s.offlineDispatchKey(b.PlanID))
+	if err != nil || len(probe.Kvs) != 1 {
+		t.Fatalf("probe: %v", err)
+	}
+	if _, err := h.s.kv.Compact(h.ctx(), probe.Header.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.recoverOfflineEffectGrantAtRevision(h.ctx(), b.PlanID, a.ID, identity, b, probe.Header.Revision); err == nil {
+		t.Fatal("compacted revision recovered grant")
 	}
 }
 

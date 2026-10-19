@@ -105,7 +105,7 @@ func offlineEffectFixture(t *testing.T) (*etcdExecutorHarness, offline.Binding, 
 	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), b, approval, now); err != nil {
 		t.Fatal(err)
 	}
-	a, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(b), b.RunnerPrincipalSubject, uuid.NewString(), now, "token-1", "device-1")
+	a, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(b), OfflineRunnerIdentity{Subject: b.RunnerPrincipalSubject, TokenID: "token-1", DeviceID: "device-1"}, uuid.NewString(), now)
 	if err != nil {
 		t.Fatal(err)
 	}

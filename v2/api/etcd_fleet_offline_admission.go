@@ -161,7 +161,7 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "offline_attempt_invalid", "invalid offline attempt request")
 			return
 		}
-		attempt, err := operations.AdmitOfflineAttempt(r.Context(), request.Claim, principal.Subject, request.AttemptID, time.Now().UTC(), principal.TokenID, principal.DeviceID)
+		attempt, err := operations.AdmitOfflineAttempt(r.Context(), request.Claim, etcdstore.OfflineRunnerIdentity{Subject: principal.Subject, TokenID: principal.TokenID, DeviceID: principal.DeviceID}, request.AttemptID, time.Now().UTC())
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_attempt_refused", "offline attempt or shared target fence refused the request")
 			return
@@ -188,7 +188,7 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "offline_checkpoint_invalid", "invalid checkpoint request")
 			return
 		}
-		checkpoint, err := operations.RecordOfflineCheckpointBound(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), etcdstore.OfflineRunnerIdentity{Subject: principal.Subject, TokenID: principal.TokenID, DeviceID: principal.DeviceID}, "prechange_observed", request.EvidenceSHA256, request.ExpectedSequence, time.Now().UTC(), request.Receipt)
+		checkpoint, err := operations.RecordOfflineCheckpoint(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), etcdstore.OfflineRunnerIdentity{Subject: principal.Subject, TokenID: principal.TokenID, DeviceID: principal.DeviceID}, "prechange_observed", request.EvidenceSHA256, request.ExpectedSequence, time.Now().UTC(), request.Receipt)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_checkpoint_refused", "offline checkpoint or shared target fence refused the request")
 			return
