@@ -57,6 +57,8 @@ regions:
 processes:
   web:
     port: 8080
+    health:
+      path: /ready
     scaling:
       min: 1
       max: 3
@@ -130,6 +132,11 @@ endpoints:
 		{name: "new schedule", counts: map[string]int{"web": 2}, change: func(spec *model.InfraSpec) {
 			proc := spec.Processes["web"]
 			proc.Schedule = "0 0 * * *"
+			spec.Processes["web"] = proc
+		}},
+		{name: "removed health check", counts: map[string]int{"web": 2}, change: func(spec *model.InfraSpec) {
+			proc := spec.Processes["web"]
+			proc.Health = nil
 			spec.Processes["web"] = proc
 		}},
 		{name: "narrowed maximum", counts: map[string]int{"web": 3}, change: func(spec *model.InfraSpec) {
