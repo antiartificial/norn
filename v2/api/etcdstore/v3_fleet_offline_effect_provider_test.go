@@ -18,9 +18,8 @@ type providerFixture struct {
 	err      error
 }
 
-func (f providerFixture) AccountUUID(context.Context) (string, error) { return f.account, f.err }
-func (f providerFixture) Droplets(context.Context) ([]offlineProviderDroplet, error) {
-	return f.droplets, f.err
+func (f providerFixture) ObserveInventory(context.Context) (string, []offlineProviderDroplet, error) {
+	return f.account, f.droplets, f.err
 }
 
 func providerRows(b offline.Binding) []offlineProviderDroplet {
@@ -75,6 +74,7 @@ func (f providerHTTPFixture) RoundTrip(r *http.Request) (*http.Response, error) 
 
 func TestOfflineDOReaderPaginationAndReadOnly(t *testing.T) {
 	seen := []string{}
+	tokenCalls := 0
 	reader := offlineDOReader{client: &http.Client{Transport: providerHTTPFixture(func(req *http.Request) (*http.Response, error) {
 		if req.Method != "GET" || req.URL.Host != "api.digitalocean.com" || req.Header.Get("Authorization") != "Bearer token" {
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
@@ -97,17 +97,25 @@ func TestOfflineDOReaderPaginationAndReadOnly(t *testing.T) {
 		}
 		encoded, _ := json.Marshal(body)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: http.Header{}}, nil
-	})}, projectID: "project", token: func(context.Context) (string, error) { return "token", nil }}
-	account, err := reader.AccountUUID(context.Background())
+	})}, projectID: "project", token: func(context.Context) (string, error) {
+		tokenCalls++
+		if tokenCalls > 1 {
+			return "rotated-token", nil
+		}
+		return "token", nil
+	}}
+	account, rows, err := reader.ObserveInventory(context.Background())
 	if err != nil || account != "work" {
 		t.Fatalf("account: %s %v", account, err)
 	}
-	rows, err := reader.Droplets(context.Background())
 	if err != nil || len(rows) != 2 || rows[1].ProjectID != "project" {
 		t.Fatalf("inventory: %+v %v", rows, err)
 	}
 	if len(seen) != 7 {
 		t.Fatalf("pagination skipped: %v", seen)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("credential rotated within observation: %d suppliers", tokenCalls)
 	}
 }
 
@@ -123,7 +131,9 @@ func TestOfflineDOReaderRejectsChangedMembershipAndPageTotals(t *testing.T) {
 			projectReads := 0
 			reader := offlineDOReader{projectID: "project", token: func(context.Context) (string, error) { return "token", nil }, client: &http.Client{Transport: providerHTTPFixture(func(req *http.Request) (*http.Response, error) {
 				var body any
-				if strings.Contains(req.URL.Path, "/resources") {
+				if req.URL.Path == "/v2/account" {
+					body = map[string]any{"account": map[string]any{"uuid": "work"}}
+				} else if strings.Contains(req.URL.Path, "/resources") {
 					projectReads++
 					id, total := "101", 1
 					if tc.changeMembers && projectReads > 1 {
@@ -139,7 +149,7 @@ func TestOfflineDOReaderRejectsChangedMembershipAndPageTotals(t *testing.T) {
 				encoded, _ := json.Marshal(body)
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: http.Header{}}, nil
 			})}}
-			if _, err := reader.Droplets(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) {
+			if _, _, err := reader.ObserveInventory(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) {
 				t.Fatalf("accepted unstable provider read: %v", err)
 			}
 		})
@@ -154,7 +164,7 @@ func TestOfflineDOReaderRejectsRedirectBeforeBearerDisclosure(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 302, Header: http.Header{"Location": []string{"https://example.invalid/steal"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}}
-	if _, err := reader.AccountUUID(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) || redirects != 0 {
+	if _, _, err := reader.ObserveInventory(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) || redirects != 0 {
 		t.Fatalf("redirect followed: err=%v redirects=%d", err, redirects)
 	}
 }
@@ -163,6 +173,8 @@ func TestOfflineDOReaderRejectsChangingDropletPageTotal(t *testing.T) {
 	reader := offlineDOReader{projectID: "project", token: func(context.Context) (string, error) { return "token", nil }, client: &http.Client{Transport: providerHTTPFixture(func(req *http.Request) (*http.Response, error) {
 		var body any
 		switch {
+		case req.URL.Path == "/v2/account":
+			body = map[string]any{"account": map[string]any{"uuid": "work"}}
 		case strings.Contains(req.URL.Path, "/resources"):
 			body = map[string]any{"resources": []any{map[string]any{"urn": "do:droplet:101"}}, "meta": map[string]any{"total": 1}}
 		case req.URL.Query().Get("page") == "1":
@@ -173,7 +185,7 @@ func TestOfflineDOReaderRejectsChangingDropletPageTotal(t *testing.T) {
 		encoded, _ := json.Marshal(body)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: http.Header{}}, nil
 	})}}
-	if _, err := reader.Droplets(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) {
+	if _, _, err := reader.ObserveInventory(context.Background()); !errors.Is(err, offline.ErrEffectProofMissing) {
 		t.Fatalf("accepted changing total: %v", err)
 	}
 }

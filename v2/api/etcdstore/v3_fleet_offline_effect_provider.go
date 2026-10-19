@@ -20,8 +20,7 @@ const offlineWorkAccountUUID = "17f40050233d1cd4962b44050e82a0dd01f8dff7"
 // offlineProviderInventoryReader is an authority-owned, read-only provider
 // client. The runner's inventory and prechange receipt must never implement it.
 type offlineProviderInventoryReader interface {
-	AccountUUID(context.Context) (string, error)
-	Droplets(context.Context) ([]offlineProviderDroplet, error)
+	ObserveInventory(context.Context) (string, []offlineProviderDroplet, error)
 }
 
 type offlineProviderDroplet struct {
@@ -53,12 +52,11 @@ func (r providerCheckedEffectReobserver) reobserveEffect(ctx context.Context, bi
 		return offline.EffectObservation{}, err
 	}
 	observation.ProviderExact = false
-	account, err := r.provider.AccountUUID(ctx)
+	account, droplets, err := r.provider.ObserveInventory(ctx)
 	if err != nil || account != r.topology.AccountUUID {
 		return offline.EffectObservation{}, offline.ErrEffectProofMissing
 	}
-	droplets, err := r.provider.Droplets(ctx)
-	if err != nil || !exactOfflineProviderTopology(binding, droplets, r.topology) {
+	if !exactOfflineProviderTopology(binding, droplets, r.topology) {
 		return offline.EffectObservation{}, offline.ErrEffectProofMissing
 	}
 	observation.ProviderExact = true
@@ -121,14 +119,13 @@ type offlineDOReader struct {
 	projectID string
 }
 
-func (r offlineDOReader) get(ctx context.Context, path string, out any) error {
+func (r offlineDOReader) get(ctx context.Context, token, path string, out any) error {
 	if r.client == nil || r.token == nil || r.projectID == "" {
 		return offline.ErrEffectProofMissing
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	token, err := r.token(ctx)
-	if err != nil || token == "" || strings.ContainsAny(token, " \t\r\n") {
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
 		return offline.ErrEffectProofMissing
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.digitalocean.com"+path, nil)
@@ -157,25 +154,46 @@ func (r offlineDOReader) get(ctx context.Context, path string, out any) error {
 	return nil
 }
 
-func (r offlineDOReader) AccountUUID(ctx context.Context) (string, error) {
+// ObserveInventory pins one read-only bearer across account, project and
+// droplet reads. A rotating supplier cannot splice identities across pages.
+func (r offlineDOReader) ObserveInventory(ctx context.Context) (string, []offlineProviderDroplet, error) {
+	if r.token == nil {
+		return "", nil, offline.ErrEffectProofMissing
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	token, err := r.token(ctx)
+	if err != nil || token == "" || strings.ContainsAny(token, " \t\r\n") {
+		return "", nil, offline.ErrEffectProofMissing
+	}
+	account, err := r.accountUUID(ctx, token)
+	if err != nil {
+		return "", nil, err
+	}
+	droplets, err := r.droplets(ctx, token)
+	if err != nil {
+		return "", nil, err
+	}
+	return account, droplets, nil
+}
+
+func (r offlineDOReader) accountUUID(ctx context.Context, token string) (string, error) {
 	var response struct {
 		Account struct {
 			UUID string `json:"uuid"`
 		} `json:"account"`
 	}
-	if err := r.get(ctx, "/v2/account", &response); err != nil || response.Account.UUID == "" {
+	if err := r.get(ctx, token, "/v2/account", &response); err != nil || response.Account.UUID == "" {
 		return "", offline.ErrEffectProofMissing
 	}
 	return response.Account.UUID, nil
 }
 
-func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet, error) {
+func (r offlineDOReader) droplets(ctx context.Context, token string) ([]offlineProviderDroplet, error) {
 	if r.projectID == "" {
 		return nil, offline.ErrEffectProofMissing
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	members, err := r.projectDropletIDs(ctx)
+	members, err := r.projectDropletIDs(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +213,7 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 				Total int `json:"total"`
 			} `json:"meta"`
 		}
-		if err := r.get(ctx, fmt.Sprintf("/v2/droplets?per_page=200&page=%d", page), &response); err != nil {
+		if err := r.get(ctx, token, fmt.Sprintf("/v2/droplets?per_page=200&page=%d", page), &response); err != nil {
 			return nil, err
 		}
 		if page == 1 {
@@ -222,7 +240,7 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 					return nil, offline.ErrEffectProofMissing
 				}
 			}
-			freshMembers, err := r.projectDropletIDs(ctx)
+			freshMembers, err := r.projectDropletIDs(ctx, token)
 			if err != nil || !maps.Equal(members, freshMembers) {
 				return nil, offline.ErrEffectProofMissing
 			}
@@ -232,7 +250,7 @@ func (r offlineDOReader) Droplets(ctx context.Context) ([]offlineProviderDroplet
 	return nil, offline.ErrEffectProofMissing
 }
 
-func (r offlineDOReader) projectDropletIDs(ctx context.Context) (map[string]bool, error) {
+func (r offlineDOReader) projectDropletIDs(ctx context.Context, token string) (map[string]bool, error) {
 	members := map[string]bool{}
 	count := 0
 	firstTotal := 0
@@ -246,7 +264,7 @@ func (r offlineDOReader) projectDropletIDs(ctx context.Context) (map[string]bool
 			} `json:"meta"`
 		}
 		path := fmt.Sprintf("/v2/projects/%s/resources?per_page=200&page=%d", url.PathEscape(r.projectID), page)
-		if err := r.get(ctx, path, &response); err != nil {
+		if err := r.get(ctx, token, path, &response); err != nil {
 			return nil, err
 		}
 		if page == 1 {
