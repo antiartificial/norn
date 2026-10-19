@@ -29,7 +29,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		w.Header().Set("X-Nomad-Index", "10")
 		switch r.URL.Path {
 		case "/v1/acl/token/self":
-			fmt.Fprint(w, `{"Type":"client","Policies":[{"Name":"workload-read"}]}`)
+			fmt.Fprint(w, `{"Type":"client","Policies":["workload-read"]}`)
 		case "/v1/acl/policy/workload-read":
 			fmt.Fprintf(w, `{"Name":"workload-read","Rules":%q}`, rules)
 		case "/v1/namespaces":

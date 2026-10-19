@@ -87,13 +87,13 @@ func (s NomadConsulSource) Snapshot(ctx context.Context) (WorkloadSnapshot, erro
 func (s NomadConsulSource) provePolicy(ctx context.Context, nomad *http.Client) error {
 	var self struct {
 		Type     string
-		Policies []struct{ Name string }
+		Policies []string
 		Roles    []struct{ ID string }
 	}
 	if _, err := s.read(ctx, nomad, s.NomadURL, "/v1/acl/token/self", nil, s.NomadToken, "X-Nomad-Token", &self); err != nil {
 		return err
 	}
-	if self.Type != "client" || len(self.Policies) != 1 || self.Policies[0].Name != s.PolicyName || len(self.Roles) != 0 {
+	if self.Type != "client" || len(self.Policies) != 1 || self.Policies[0] != s.PolicyName || len(self.Roles) != 0 {
 		return ErrWorkloadObservation
 	}
 	var policy struct{ Name, Rules string }
