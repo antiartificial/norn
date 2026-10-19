@@ -11,6 +11,7 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -79,6 +80,28 @@ func (s *V3OperationStore) FinishScaleClaimedOperationWithAppLock(ctx context.Co
 		current.Operation.LockedBy != claim.OwnerID() || current.Generation != claim.Generation() {
 		return store.ErrOperationOwnershipLost
 	}
+	acceptedCount, countOK := effectPayloadInt(current.Operation.Payload, "count")
+	if process != effectPayloadString(current.Operation.Payload, "group") || region != effectPayloadString(current.Operation.Payload, "region") || !countOK || count != acceptedCount {
+		return fmt.Errorf("desired replica completion does not match accepted scale operation payload")
+	}
+	effectID, ok := metadata["effectId"].(string)
+	if !ok || effectID == "" {
+		return fmt.Errorf("desired replica completion requires its exact scale effect")
+	}
+	effects, err := NewV3ScaleEffectReservations(s)
+	if err != nil {
+		return err
+	}
+	completed, effectKey, effectRevision, err := effects.loadToken(ctx, effect.Token{EffectID: effectID, Generation: claim.Generation()})
+	if err != nil || completed.Lifecycle != effect.LifecycleCompleted || completed.Completion == nil || completed.Completion.Outcome != effect.OutcomeSucceeded ||
+		completed.Reservation.Authority != authority || completed.Reservation.OperationClaim.OperationID != claim.OperationID() ||
+		completed.Reservation.OperationClaim.OwnerID != claim.OwnerID() || completed.Reservation.OperationClaim.Generation != claim.Generation() {
+		return fmt.Errorf("desired replica completion is not bound to a successful exact scale effect")
+	}
+	var effectInput scaleEffectInput
+	if err := json.Unmarshal(completed.Reservation.LaunchPayload, &effectInput); err != nil || effectInput.App != app || effectInput.Group != process || effectInput.Region != region || effectInput.Count != count {
+		return fmt.Errorf("completed scale effect does not match desired replica intent")
+	}
 	ownerKey := s.ownerKey(claim.OperationID())
 	owner, err := s.kv.Get(ctx, ownerKey)
 	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 || string(owner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) {
@@ -130,6 +153,7 @@ func (s *V3OperationStore) FinishScaleClaimedOperationWithAppLock(ctx context.Co
 		clientv3.Compare(clientv3.ModRevision(ownerKey), "=", owner.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.Value(ownerKey), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
 		clientv3.Compare(clientv3.Value(s.appLockKey(app)), "=", lock.Fence()),
+		clientv3.Compare(clientv3.ModRevision(effectKey), "=", effectRevision),
 	}
 	if desiredRevision == 0 {
 		comparisons = append(comparisons, clientv3.Compare(clientv3.CreateRevision(desiredKey), "=", 0))
