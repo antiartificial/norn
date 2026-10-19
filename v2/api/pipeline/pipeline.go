@@ -118,6 +118,9 @@ type Pipeline struct {
 	// FinishScaleIntent is the claim-fenced atomic desired-replica and terminal
 	// operation write. Tests may inject a transient failure; production uses DB.
 	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, string, int, string, map[string]interface{}) error
+	// FencedScaleIntent is required by the etcd worker. It atomically commits
+	// the replica ledger and receipt under the worker's app-lock fence.
+	FencedScaleIntent store.FencedDesiredReplicaWriter
 	// FinishCronPauseIntent atomically records paused cron state and terminalizes
 	// the claimed operation after Nomad has verified the periodic job stopped.
 	FinishCronPauseIntent    func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
@@ -389,7 +392,7 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 		return p.executeCatalogActivation(ctx, op, claim)
 	}
 	if op.Kind == "app.scale" {
-		return operationOutcome(p.executeScale(ctx, op, claim))
+		return operationOutcome(p.executeScale(ctx, op, claim, nil))
 	}
 	if op.Kind == "app.restart" {
 		return operationOutcome(p.executeRestart(ctx, op, claim))

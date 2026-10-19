@@ -96,6 +96,19 @@ endpoints:
 		plan.Job.Meta[nomad.DeploymentExecutionIDMeta] != plan.Reservation.SupervisorExecutionID || plan.Reservation.OperationClaim.Generation != claim.Generation() {
 		t.Fatalf("claimed job plan=%+v err=%v", plan, err)
 	}
+	// An accepted scale survives the next managed deployment revision, and its
+	// count changes the exact job digest submitted through the effect boundary.
+	scaled := bound
+	scaled.DesiredReplicaCounts = map[string]int{"web": 3}
+	scaledPlan, err := BuildClaimedFleetDeploymentJobPlan(scaled, claim, "test-authority")
+	if err != nil || scaledPlan.Input.JobDigest == plan.Input.JobDigest || len(scaledPlan.Job.TaskGroups) != 1 || scaledPlan.Job.TaskGroups[0].Count == nil || *scaledPlan.Job.TaskGroups[0].Count != 3 {
+		t.Fatalf("accepted desired replica overlay was not bound to planned job: %+v err=%v", scaledPlan, err)
+	}
+	scaledStager := &claimedInputStagerFake{}
+	scaledPrepared, err := PrepareClaimedFleetDeploymentJob(t.Context(), scaled, claim, "test-authority", scaledStager, nil, nil)
+	if err != nil || scaledPrepared.Input.JobDigest != scaledPlan.Input.JobDigest || scaledPrepared.Reservation.InputDigest != scaledPlan.Reservation.InputDigest {
+		t.Fatalf("accepted desired replica overlay was not bound to staged job: %+v err=%v", scaledPrepared, err)
+	}
 	effects := &deploymentStepEffects{created: true}
 	remote := &deploymentStepRemote{state: nomad.DeploymentJobFound}
 	if decision, err := EnsureDeploymentJobEffect(t.Context(), effects, remote, plan.Reservation, plan.Job); err != nil || decision.State != DeploymentJobEffectObserved || remote.submits != 1 {

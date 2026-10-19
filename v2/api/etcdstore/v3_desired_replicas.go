@@ -99,7 +99,7 @@ func (s *V3OperationStore) FinishScaleClaimedOperationWithAppLock(ctx context.Co
 		return fmt.Errorf("desired replica completion is not bound to a successful exact scale effect")
 	}
 	var effectInput scaleEffectInput
-	if err := json.Unmarshal(completed.Reservation.LaunchPayload, &effectInput); err != nil || effectInput.App != app || effectInput.Group != process || effectInput.Region != region || effectInput.Count != count {
+	if err := json.Unmarshal(completed.Reservation.LaunchPayload, &effectInput); err != nil || effectInput.App != app || effectInput.Group != process || effectInput.Region != region || effectInput.Count != count || effectInput.NomadJobID != effectPayloadString(current.Operation.Payload, "nomadJobId") {
 		return fmt.Errorf("completed scale effect does not match desired replica intent")
 	}
 	ownerKey := s.ownerKey(claim.OperationID())

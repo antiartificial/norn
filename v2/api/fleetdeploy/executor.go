@@ -68,6 +68,13 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if err != nil {
 		return nil, err
 	}
+	if len(source.Managed.Accepted.Regions) != 1 {
+		return nil, fmt.Errorf("claimed Fleet deployment has no unique region for desired replicas")
+	}
+	source.DesiredReplicaCounts, err = e.Store.DesiredReplicaCounts(ctx, source.Spec.App, source.Managed.Accepted.Regions[0].Name)
+	if err != nil {
+		return nil, fmt.Errorf("claimed Fleet desired replica intent is unavailable: %w", err)
+	}
 	if e.Route.ObserverPort < 1024 || e.Route.ObserverPort > 65535 || e.Route.PublisherPort < 1024 || e.Route.PublisherPort > 65535 || e.Route.PublisherPort == e.Route.ObserverPort || e.Route.EndpointPort < 1 || e.Route.EndpointPort > 65535 {
 		return nil, fmt.Errorf("claimed Fleet route transport is incomplete")
 	}
