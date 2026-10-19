@@ -347,6 +347,14 @@ func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID
 	if err := offline.VerifyLatestBackend(ctx, backend, binding.Backend); err != nil {
 		return offline.EffectGrant{}, err
 	}
+	// A slow backend read cannot extend the grant lifetime. The authority clock
+	// after that read is decisive for the one-use transition.
+	if completed := time.Now().UTC(); completed.After(now) {
+		now = completed
+	}
+	if !now.Before(grant.ExpiresAt) || !now.Before(binding.ExpiresAt) || !now.Before(checkpoint.Prechange.ExpiresAt) {
+		return offline.EffectGrant{}, offline.ErrEffectProofMismatch
+	}
 	consumed := now.UTC()
 	grant.Phase, grant.ConsumedAt = "consumed", &consumed
 	encoded, err := json.Marshal(grant)

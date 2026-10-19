@@ -704,7 +704,7 @@ func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, id
 	registerEtcdFleetTargetRoutes(router, cfg, identities, operations, fleetGitHub)
 	// Startup has already rejected partial or invalid trust configuration.
 	if trust, err := loadOfflineFleetTrust(cfg); err == nil {
-		registerEtcdFleetOfflineRoutes(router, cfg, identities, operations, trust)
+		registerEtcdFleetOfflineRoutes(router, cfg, identities, operations, trust, fleetGitHub)
 	}
 	var liveness handler.FleetControllerLiveness
 	if reconciler != nil {

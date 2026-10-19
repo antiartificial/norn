@@ -62,9 +62,12 @@ type Config struct {
 	FleetOfflineOwnerKeyID         string
 	FleetOfflineOwnerPublicKeyFile string
 	FleetOfflineRunnerSubject      string
-	GitToken                       string
-	GitSSHKey                      string
-	APIToken                       string
+	// A root-owned manifest of independent, read-only effect-time observers.
+	// Empty leaves the grant transport unavailable.
+	FleetOfflineEffectConfigFile string
+	GitToken                     string
+	GitSSHKey                    string
+	APIToken                     string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
 	RequireExplicitAuth      bool
@@ -322,6 +325,7 @@ func Load() *Config {
 		FleetOfflineOwnerKeyID:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_KEY_ID")),
 		FleetOfflineOwnerPublicKeyFile:        strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_PUBLIC_KEY_FILE")),
 		FleetOfflineRunnerSubject:             strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_RUNNER_SUBJECT")),
+		FleetOfflineEffectConfigFile:          strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_CONFIG_FILE")),
 		GitToken:                              os.Getenv("NORN_GIT_TOKEN"),
 		GitSSHKey:                             os.Getenv("NORN_GIT_SSH_KEY"),
 		APIToken:                              os.Getenv("NORN_API_TOKEN"),

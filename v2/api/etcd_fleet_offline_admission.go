@@ -25,6 +25,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/store"
 )
@@ -84,7 +85,7 @@ type offlineIdentityStore interface {
 	ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error)
 }
 
-func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities offlineIdentityStore, operations *etcdstore.V3OperationStore, trust *offlineFleetTrust) {
+func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities offlineIdentityStore, operations *etcdstore.V3OperationStore, trust *offlineFleetTrust, origin ...*githubapp.Client) {
 	if trust == nil {
 		return
 	}
@@ -199,6 +200,7 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 			AuthorizesEffect bool               `json:"authorizesEffect"`
 		}{checkpoint, false})
 	})
+	registerEtcdFleetOfflineEffectRoutes(router, runnerAuth, identities, trust, offlineEffectAuthorityForRuntime(cfg, operations, origin...))
 }
 
 func offlineRunnerPrincipal(r *http.Request, trust *offlineFleetTrust, identities offlineIdentityStore) (handler.AccessPrincipal, bool) {
