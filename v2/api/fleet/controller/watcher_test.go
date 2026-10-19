@@ -67,7 +67,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if state == "pending" {
 				status, conclusion = "in_progress", ""
 			}
-			runs = append(runs, fmt.Sprintf(`{"id":1,"head_sha":%q,"event":"push","head_branch":"main","head_repository":{"full_name":"acme/norn-fleet"},"path":".github/workflows/validate.yml","status":%q,"conclusion":%q}`, r.URL.Query().Get("head_sha"), status, conclusion))
+			runs = append(runs, fmt.Sprintf(`{"id":1,"run_attempt":1,"head_sha":%q,"event":"push","head_branch":"main","head_repository":{"full_name":"acme/norn-fleet"},"path":".github/workflows/validate.yml","status":%q,"conclusion":%q}`, r.URL.Query().Get("head_sha"), status, conclusion))
 		}
 		fmt.Fprintf(w, `{"workflow_runs":[%s]}`, strings.Join(runs, ","))
 	case strings.Contains(r.URL.Path, "/compare/"):
