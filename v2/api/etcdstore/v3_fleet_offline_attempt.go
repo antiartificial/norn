@@ -46,11 +46,13 @@ func (s *V3OperationStore) GetOfflineCheckpoint(ctx context.Context, planID stri
 	response, err := s.kv.Txn(ctx).Then(
 		clientv3.OpGet(s.offlineCheckpointKey(planID)),
 		clientv3.OpGet(s.offlineCheckpointEventKey(planID, 1)),
+		clientv3.OpGet(s.offlineAttemptKey(planID)),
+		clientv3.OpGet(s.offlineDispatchKey(planID)),
 	).Commit()
 	if err != nil {
 		return offline.Checkpoint{}, err
 	}
-	if len(response.Responses) != 2 || response.Responses[0].GetResponseRange() == nil || response.Responses[1].GetResponseRange() == nil {
+	if len(response.Responses) != 4 || response.Responses[0].GetResponseRange() == nil || response.Responses[1].GetResponseRange() == nil || response.Responses[2].GetResponseRange() == nil || response.Responses[3].GetResponseRange() == nil {
 		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt
 	}
 	head := response.Responses[0].GetResponseRange().Kvs
@@ -62,7 +64,24 @@ func (s *V3OperationStore) GetOfflineCheckpoint(ctx context.Context, planID stri
 	if len(event) == 1 {
 		eventRaw = event[0].Value
 	}
-	return decodeOfflineCheckpointPair(headRaw, eventRaw, planID)
+	checkpoint, err := decodeOfflineCheckpointPair(headRaw, eventRaw, planID)
+	if err != nil || checkpoint.Prechange == nil || !checkpoint.Prechange.ProviderTopologyVerified {
+		return checkpoint, err
+	}
+	attemptRows := response.Responses[2].GetResponseRange().Kvs
+	bindingRows := response.Responses[3].GetResponseRange().Kvs
+	if len(attemptRows) != 1 || len(bindingRows) != 1 {
+		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt
+	}
+	attempt, attemptErr := decodeOfflineAttempt(attemptRows[0].Value, planID)
+	binding, bindingErr := offline.DecodeBinding(bindingRows[0].Value)
+	bindingDigest := sha256.Sum256(bindingRows[0].Value)
+	if attemptErr != nil || bindingErr != nil || binding.SchemaVersion != offline.BindingSchemaV2 ||
+		attempt.ID != checkpoint.AttemptID || attempt.BindingSHA256 != checkpoint.Prechange.BindingSHA256 ||
+		attempt.BindingSHA256 != hex.EncodeToString(bindingDigest[:]) {
+		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt
+	}
+	return checkpoint, nil
 }
 
 func decodeOfflineCheckpointPair(headRaw, eventRaw []byte, planID string) (offline.Checkpoint, error) {
@@ -79,7 +98,7 @@ func decodeOfflineCheckpointPair(headRaw, eventRaw []byte, planID string) (offli
 		!offlineEvidenceDigest.MatchString(checkpoint.EvidenceSHA256) || checkpoint.AuthorityEpoch < 1 ||
 		checkpoint.FenceGeneration == 0 || checkpoint.RecordedAt.IsZero() ||
 		(checkpoint.Prechange != nil && (checkpoint.Prechange.SchemaVersion != offline.PrechangeSchema ||
-			checkpoint.Prechange.ProviderTopologyVerified ||
+			(checkpoint.Prechange.ProviderTopologyVerified && !offlineEvidenceDigest.MatchString(checkpoint.Prechange.BindingSHA256)) ||
 			checkpoint.Prechange.SHA256 != checkpoint.EvidenceSHA256 || checkpoint.Prechange.ObservedAt.IsZero() ||
 			!checkpoint.Prechange.ExpiresAt.Equal(checkpoint.Prechange.ObservedAt.Add(5*time.Minute)))) {
 		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt

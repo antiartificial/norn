@@ -29,8 +29,9 @@ type PrechangeSummary struct {
 	SHA256        string    `json:"sha256"`
 	ObservedAt    time.Time `json:"observedAt"`
 	ExpiresAt     time.Time `json:"expiresAt"`
-	// No reservation field pins the complete candidate or survivor IDs.
-	// An effect lane must never interpret this summary as topology proof.
+	BindingSHA256 string    `json:"bindingSHA256,omitempty"`
+	// True means the receipt matches a v2 owner-signed candidate/node set,
+	// not that Norn independently observed live provider topology.
 	ProviderTopologyVerified bool `json:"providerTopologyVerified"`
 }
 
@@ -127,6 +128,23 @@ func ValidatePrechangeReceipt(raw []byte, binding Binding, attempt Attempt, now 
 			return PrechangeSummary{}, ErrPrechangeEvidence
 		}
 	}
+	if binding.SchemaVersion == BindingSchemaV2 {
+		if receipt.Plan.CandidateSHA256 != binding.CandidateSHA256 {
+			return PrechangeSummary{}, ErrPrechangeEvidence
+		}
+		for i, expected := range binding.ProviderNodes {
+			matched := false
+			for _, node := range receipt.Freshness.Nodes {
+				if node.Name == expected.Name && node.ProviderID == expected.ProviderID {
+					matched = true
+					break
+				}
+			}
+			if !matched || expected.Name != workNodeNames[i] {
+				return PrechangeSummary{}, ErrPrechangeEvidence
+			}
+		}
+	}
 	if !found || receipt.ObservedAt.IsZero() || receipt.Freshness.ObservedAt.IsZero() ||
 		receipt.ObservedAt.Before(receipt.Freshness.ObservedAt) || now.Before(receipt.ObservedAt) ||
 		now.Before(receipt.Freshness.ObservedAt) || now.Sub(receipt.ObservedAt) > 5*time.Minute ||
@@ -135,5 +153,6 @@ func ValidatePrechangeReceipt(raw []byte, binding Binding, attempt Attempt, now 
 	}
 	hash := sha256.Sum256(raw)
 	return PrechangeSummary{SchemaVersion: PrechangeSchema, SHA256: hex.EncodeToString(hash[:]),
-		ObservedAt: receipt.ObservedAt, ExpiresAt: receipt.ObservedAt.Add(5 * time.Minute)}, nil
+		ObservedAt: receipt.ObservedAt, ExpiresAt: receipt.ObservedAt.Add(5 * time.Minute),
+		BindingSHA256: attempt.BindingSHA256, ProviderTopologyVerified: binding.SchemaVersion == BindingSchemaV2}, nil
 }

@@ -9,16 +9,21 @@ DigitalOcean account or app-03 droplet identity differs from the one-use
 reservation. It also checks that the plan and freshness observations name one
 candidate digest, the reviewed provider archive/version and VPC, eight unique
 active-looking node IDs, and two distinct Nomad allocations on app-01/app-02.
-Those latter assertions come from the submitted receipt; Norn cannot verify
-their origin or bind survivor IDs to the reservation. It stores the receipt hash, schema,
+Those latter assertions come from the submitted receipt. A v1 reservation
+cannot bind survivor IDs. A new v2 reservation requires the exact candidate
+SHA-256 and all eight unique provider node IDs in both the binding and the
+owner-signed v2 approval; the attempt must inherit them. Only when the receipt
+matches that signed set does the summary mark `providerTopologyVerified: true`.
+This means **matched to the signed reservation**, not independently observed
+provider truth. Norn stores the receipt hash, schema,
 observation time, and expiry with the attempt/fence checkpoint. Its restore
 reader rejects a corrupted summary or mismatched append-only event.
 
 This is a **non-effect** checkpoint. The Fleet receipt is runner-produced
-read-only evidence, not an independently signed attestation. The summary marks
-`providerTopologyVerified: false` because the signed reservation has no full
-candidate digest or survivor provider-ID set. Arbitrary, unique survivor IDs
-can therefore still be submitted and must never be accepted as effect proof.
+read-only evidence, not an independently signed attestation. Old v1
+reservations remain readable but yield `providerTopologyVerified: false`;
+arbitrary, unique survivor IDs can still be submitted under v1. Even v2
+owner acknowledgement does not prove the live provider state.
 The receipt does not
 contain the attempt, target fence, CPU/memory headroom, or service-health
 observations. Norn binds the checkpoint to the attempt and live fence in its

@@ -26,6 +26,7 @@ func goodBinding() Binding {
 func claimOf(b Binding) AttemptClaim {
 	return AttemptClaim{PlanID: b.PlanID, TargetID: b.TargetID, Resource: b.Resource, SourceCommit: b.SourceCommit,
 		SavedPlanSHA256: b.SavedPlanSHA256, EffectSHA256: b.EffectSHA256,
+		CandidateSHA256: b.CandidateSHA256, ProviderNodes: b.ProviderNodes,
 		Backend: b.Backend, ProviderAccountUUID: b.ProviderAccountUUID,
 		NodeName: b.NodeName, DropletID: b.DropletID, OwnerAuthorizationID: b.OwnerAuthorizationID,
 		OwnerEnvelopeSHA256:    b.OwnerEnvelopeSHA256,

@@ -13,6 +13,7 @@ import (
 )
 
 const ApprovalSchema = "norn.fleet-offline-owner-approval/v1"
+const ApprovalSchemaV2 = "norn.fleet-offline-owner-approval/v2"
 
 var ErrInvalidApproval = errors.New("offline owner approval is invalid or does not match dispatch")
 
@@ -20,23 +21,25 @@ var ErrInvalidApproval = errors.New("offline owner approval is invalid or does n
 // omits Binding.OwnerEnvelopeSHA256 so the signed envelope can be hashed and
 // that hash can be placed in the binding without a circular digest.
 type ApprovalIntent struct {
-	SchemaVersion          string    `json:"schemaVersion"`
-	AuthorizationID        string    `json:"authorizationId"`
-	AllowDestructive       bool      `json:"allowDestructive"`
-	PlanID                 string    `json:"planId"`
-	TargetID               string    `json:"targetId"`
-	Resource               string    `json:"resource"`
-	SourceCommit           string    `json:"sourceCommit"`
-	SavedPlanSHA256        string    `json:"savedPlanSHA256"`
-	EffectSHA256           string    `json:"effectSHA256"`
-	Backend                Backend   `json:"backend"`
-	ProviderAccountUUID    string    `json:"providerAccountUUID"`
-	NodeName               string    `json:"nodeName"`
-	DropletID              string    `json:"dropletId"`
-	RunnerPrincipalSubject string    `json:"runnerPrincipalSubject"`
-	DispatchNonceSHA256    string    `json:"dispatchNonceSHA256"`
-	FenceGeneration        uint64    `json:"fenceGeneration"`
-	ExpiresAt              time.Time `json:"expiresAt"`
+	SchemaVersion          string         `json:"schemaVersion"`
+	AuthorizationID        string         `json:"authorizationId"`
+	AllowDestructive       bool           `json:"allowDestructive"`
+	PlanID                 string         `json:"planId"`
+	TargetID               string         `json:"targetId"`
+	Resource               string         `json:"resource"`
+	SourceCommit           string         `json:"sourceCommit"`
+	SavedPlanSHA256        string         `json:"savedPlanSHA256"`
+	EffectSHA256           string         `json:"effectSHA256"`
+	CandidateSHA256        string         `json:"candidateSHA256,omitempty"`
+	ProviderNodes          []ProviderNode `json:"providerNodes,omitempty"`
+	Backend                Backend        `json:"backend"`
+	ProviderAccountUUID    string         `json:"providerAccountUUID"`
+	NodeName               string         `json:"nodeName"`
+	DropletID              string         `json:"dropletId"`
+	RunnerPrincipalSubject string         `json:"runnerPrincipalSubject"`
+	DispatchNonceSHA256    string         `json:"dispatchNonceSHA256"`
+	FenceGeneration        uint64         `json:"fenceGeneration"`
+	ExpiresAt              time.Time      `json:"expiresAt"`
 }
 
 type SignedApproval struct {
@@ -88,12 +91,16 @@ func VerifySignedApproval(a SignedApproval, pinnedKeyID string, pinnedPublicKey 
 	b Binding, now time.Time) (VerifiedApproval, error) {
 	if b.Validate() != nil || len(pinnedPublicKey) != ed25519.PublicKeySize ||
 		pinnedKeyID == "" || a.KeyID != pinnedKeyID ||
-		a.Intent.SchemaVersion != ApprovalSchema || !hex64.MatchString(a.Intent.AuthorizationID) ||
+		((b.SchemaVersion == BindingSchema && a.Intent.SchemaVersion != ApprovalSchema) ||
+			(b.SchemaVersion == BindingSchemaV2 && a.Intent.SchemaVersion != ApprovalSchemaV2)) ||
+		!hex64.MatchString(a.Intent.AuthorizationID) ||
 		a.Intent.AuthorizationID != b.OwnerAuthorizationID ||
 		!a.Intent.AllowDestructive || a.Intent.PlanID != b.PlanID || a.Intent.TargetID != b.TargetID ||
 		a.Intent.Resource != b.Resource || a.Intent.SourceCommit != b.SourceCommit ||
 		!equalDigest(a.Intent.SavedPlanSHA256, b.SavedPlanSHA256) ||
 		!equalDigest(a.Intent.EffectSHA256, b.EffectSHA256) ||
+		a.Intent.CandidateSHA256 != b.CandidateSHA256 ||
+		!sameProviderNodes(a.Intent.ProviderNodes, b.ProviderNodes) ||
 		a.Intent.Backend != b.Backend || a.Intent.ProviderAccountUUID != b.ProviderAccountUUID ||
 		a.Intent.NodeName != b.NodeName || a.Intent.DropletID != b.DropletID ||
 		a.Intent.RunnerPrincipalSubject != b.RunnerPrincipalSubject ||

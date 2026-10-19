@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	BindingSchema = "norn.fleet-offline-dispatch-binding/v1"
-	WorkResource  = "staging/nyc3"
-	WorkNode      = "app-03"
-	WorkDropletID = "610327215"
-	maxLifetime   = 15 * time.Minute
+	BindingSchema   = "norn.fleet-offline-dispatch-binding/v1"
+	BindingSchemaV2 = "norn.fleet-offline-dispatch-binding/v2"
+	WorkResource    = "staging/nyc3"
+	WorkNode        = "app-03"
+	WorkDropletID   = "610327215"
+	maxLifetime     = 15 * time.Minute
 )
 
 var (
@@ -43,33 +44,60 @@ type Backend struct {
 	RawSHA256 string `json:"rawSHA256"`
 }
 
+type ProviderNode struct {
+	Name       string `json:"name"`
+	ProviderID string `json:"providerId"`
+}
+
+var workNodeNames = []string{"app-01", "app-02", "app-03", "control-01", "control-02", "control-03", "ingress-01", "ingress-02"}
+
+func validProviderNodes(nodes []ProviderNode, dropletID string) bool {
+	if len(nodes) != len(workNodeNames) {
+		return false
+	}
+	ids := map[string]bool{}
+	for i, row := range nodes {
+		if row.Name != workNodeNames[i] || !positiveDecimal.MatchString(row.ProviderID) || ids[row.ProviderID] ||
+			(row.Name == WorkNode && row.ProviderID != dropletID) {
+			return false
+		}
+		ids[row.ProviderID] = true
+	}
+	return true
+}
+
 // Binding carries every identity an offline destructive attempt must inherit.
 // OwnerEnvelopeSHA256 is a *digest*, not proof of a valid owner signature.
 type Binding struct {
-	SchemaVersion          string    `json:"schemaVersion"`
-	PlanID                 string    `json:"planId"`
-	TargetID               string    `json:"targetId"`
-	Resource               string    `json:"resource"`
-	SourceCommit           string    `json:"sourceCommit"`
-	SavedPlanSHA256        string    `json:"savedPlanSHA256"`
-	EffectSHA256           string    `json:"effectSHA256"`
-	Backend                Backend   `json:"backend"`
-	ProviderAccountUUID    string    `json:"providerAccountUUID"`
-	NodeName               string    `json:"nodeName"`
-	DropletID              string    `json:"dropletId"`
-	OwnerAuthorizationID   string    `json:"ownerAuthorizationId"`
-	OwnerEnvelopeSHA256    string    `json:"ownerEnvelopeSHA256"`
-	RunnerPrincipalSubject string    `json:"runnerPrincipalSubject"`
-	DispatchNonceSHA256    string    `json:"dispatchNonceSHA256"`
-	FenceGeneration        uint64    `json:"fenceGeneration"`
-	CreatedAt              time.Time `json:"createdAt"`
-	ExpiresAt              time.Time `json:"expiresAt"`
+	SchemaVersion          string         `json:"schemaVersion"`
+	PlanID                 string         `json:"planId"`
+	TargetID               string         `json:"targetId"`
+	Resource               string         `json:"resource"`
+	SourceCommit           string         `json:"sourceCommit"`
+	SavedPlanSHA256        string         `json:"savedPlanSHA256"`
+	EffectSHA256           string         `json:"effectSHA256"`
+	CandidateSHA256        string         `json:"candidateSHA256,omitempty"`
+	ProviderNodes          []ProviderNode `json:"providerNodes,omitempty"`
+	Backend                Backend        `json:"backend"`
+	ProviderAccountUUID    string         `json:"providerAccountUUID"`
+	NodeName               string         `json:"nodeName"`
+	DropletID              string         `json:"dropletId"`
+	OwnerAuthorizationID   string         `json:"ownerAuthorizationId"`
+	OwnerEnvelopeSHA256    string         `json:"ownerEnvelopeSHA256"`
+	RunnerPrincipalSubject string         `json:"runnerPrincipalSubject"`
+	DispatchNonceSHA256    string         `json:"dispatchNonceSHA256"`
+	FenceGeneration        uint64         `json:"fenceGeneration"`
+	CreatedAt              time.Time      `json:"createdAt"`
+	ExpiresAt              time.Time      `json:"expiresAt"`
 }
 
 // Validate checks structural completeness and a bounded lifetime. It never
 // asserts that the binding came from Norn or that its claims are true.
 func (b Binding) Validate() error {
-	if b.SchemaVersion != BindingSchema || uuid.Validate(b.PlanID) != nil || b.TargetID == "" ||
+	if (b.SchemaVersion != BindingSchema && b.SchemaVersion != BindingSchemaV2) ||
+		(b.SchemaVersion == BindingSchema && (b.CandidateSHA256 != "" || len(b.ProviderNodes) != 0)) ||
+		(b.SchemaVersion == BindingSchemaV2 && (!hex64.MatchString(b.CandidateSHA256) || !validProviderNodes(b.ProviderNodes, b.DropletID))) ||
+		uuid.Validate(b.PlanID) != nil || b.TargetID == "" ||
 		b.Resource != WorkResource || !hex40.MatchString(b.SourceCommit) ||
 		!hex64.MatchString(b.SavedPlanSHA256) || !hex64.MatchString(b.EffectSHA256) ||
 		b.Backend.Bucket == "" || b.Backend.Key == "" || b.Backend.VersionID == "" ||
@@ -149,6 +177,8 @@ type AttemptClaim struct {
 	SourceCommit           string
 	SavedPlanSHA256        string
 	EffectSHA256           string
+	CandidateSHA256        string
+	ProviderNodes          []ProviderNode
 	Backend                Backend
 	ProviderAccountUUID    string
 	NodeName               string
@@ -172,11 +202,24 @@ func (b Binding) MatchAttempt(a AttemptClaim, now time.Time) error {
 		b.FenceGeneration != a.FenceGeneration ||
 		!equalDigest(b.SavedPlanSHA256, a.SavedPlanSHA256) ||
 		!equalDigest(b.EffectSHA256, a.EffectSHA256) ||
+		b.CandidateSHA256 != a.CandidateSHA256 || !sameProviderNodes(b.ProviderNodes, a.ProviderNodes) ||
 		!equalDigest(b.OwnerEnvelopeSHA256, a.OwnerEnvelopeSHA256) ||
 		!equalDigest(b.DispatchNonceSHA256, a.DispatchNonceSHA256) {
 		return ErrAttemptMismatch
 	}
 	return nil
+}
+
+func sameProviderNodes(a, b []ProviderNode) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func equalDigest(a, b string) bool {

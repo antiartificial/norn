@@ -505,7 +505,9 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 		if len(offlineAttemptResponse.Kvs) != 1 || !validOfflineBinding ||
 			checkpoint.FenceGeneration != offlineBinding.FenceGeneration {
 			holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
-		} else if attempt, err := decodeOfflineAttempt(offlineAttemptResponse.Kvs[0].Value, planID); err != nil || checkpoint.AttemptID != attempt.ID {
+		} else if attempt, err := decodeOfflineAttempt(offlineAttemptResponse.Kvs[0].Value, planID); err != nil || checkpoint.AttemptID != attempt.ID ||
+			(checkpoint.Prechange != nil && checkpoint.Prechange.ProviderTopologyVerified &&
+				(offlineBinding.SchemaVersion != offline.BindingSchemaV2 || checkpoint.Prechange.BindingSHA256 != attempt.BindingSHA256)) {
 			holder.OfflineEvidenceIncomplete = true
 		}
 	}
