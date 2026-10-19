@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/go-chi/chi/v5"
 
 	"norn/v2/api/config"
@@ -140,6 +142,83 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 			AuthorizesEffect bool            `json:"authorizesEffect"`
 		}{reserved, false})
 	})
+	// The runner route is deliberately non-effect. It accepts one immutable
+	// queued attempt and one prechange observation; no credential or provider
+	// endpoint is mounted here.
+	runnerAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
+	router.With(runnerAuth).Post("/api/v1/fleet/offline/attempts", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := offlineRunnerPrincipal(r, trust, identities)
+		if !ok {
+			handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_runner_invalid", "a pinned active device-bound runner is required")
+			return
+		}
+		var request struct {
+			Claim     offline.AttemptClaim `json:"claim"`
+			AttemptID string               `json:"attemptId"`
+		}
+		if !decodeOfflineRequest(w, r, &request) || uuid.Validate(request.AttemptID) != nil {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "offline_attempt_invalid", "invalid offline attempt request")
+			return
+		}
+		attempt, err := operations.AdmitOfflineAttempt(r.Context(), request.Claim, principal.Subject, request.AttemptID, time.Now().UTC())
+		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_attempt_refused", "offline attempt or shared target fence refused the request")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(struct {
+			Attempt          offline.Attempt `json:"attempt"`
+			AuthorizesEffect bool            `json:"authorizesEffect"`
+		}{attempt, false})
+	})
+	router.With(runnerAuth).Post("/api/v1/fleet/offline/attempts/{planID}/{attemptID}/prechange-observations", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := offlineRunnerPrincipal(r, trust, identities)
+		if !ok {
+			handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_runner_invalid", "a pinned active device-bound runner is required")
+			return
+		}
+		var request struct {
+			EvidenceSHA256   string `json:"evidenceSHA256"`
+			ExpectedSequence uint64 `json:"expectedSequence"`
+		}
+		if !decodeOfflineRequest(w, r, &request) {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "offline_checkpoint_invalid", "invalid checkpoint request")
+			return
+		}
+		checkpoint, err := operations.RecordOfflineCheckpoint(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"), principal.Subject, "prechange_observed", request.EvidenceSHA256, request.ExpectedSequence, time.Now().UTC())
+		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_checkpoint_refused", "offline checkpoint or shared target fence refused the request")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(struct {
+			Checkpoint       offline.Checkpoint `json:"checkpoint"`
+			AuthorizesEffect bool               `json:"authorizesEffect"`
+		}{checkpoint, false})
+	})
+}
+
+func offlineRunnerPrincipal(r *http.Request, trust *offlineFleetTrust, identities offlineIdentityStore) (handler.AccessPrincipal, bool) {
+	principal, ok := handler.AccessPrincipalFromRequest(r)
+	if !ok || trust == nil || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy ||
+		principal.Subject != trust.runnerSubject || principal.TokenID == "" || principal.DeviceID == "" || principal.CI != nil ||
+		len(principal.Scopes) != 1 || principal.Scopes[0] != handler.ScopeFleetOperate ||
+		!offlineReservationDeviceActive(r.Context(), identities, principal.DeviceID) {
+		return handler.AccessPrincipal{}, false
+	}
+	return principal, true
+}
+
+func decodeOfflineRequest(w http.ResponseWriter, r *http.Request, destination any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(destination) != nil {
+		return false
+	}
+	var trailing any
+	return decoder.Decode(&trailing) == io.EOF
 }
 
 func offlineReservationDeviceActive(ctx context.Context, identities offlineIdentityStore, deviceID string) bool {

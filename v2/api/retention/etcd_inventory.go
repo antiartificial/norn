@@ -14,4 +14,6 @@ var OfflineEtcdPayloadInventory = []EtcdPayloadRetention{
 	{"/v3/fleet-offline-dispatches/", ClassHotEvidence, "immutable source, plan, backend, target and owner binding; retain while attempt, recovery, or audit can reference it"},
 	{"/v3/fleet-offline-owner-consumptions/", ClassCurrentState, "one-use authorization tombstone; do not expire by approval validity or allow replay after restore"},
 	{"/v3/fleet-offline-attempts/", ClassHotEvidence, "queued attempt and binding digest; retain through terminal recovery and archive qualification"},
+	{"/v3/fleet-offline-checkpoints/", ClassHotEvidence, "CAS cursor for non-effect runner observations; restore with attempt, fence and epoch"},
+	{"/v3/fleet-offline-checkpoint-events/", ClassHotEvidence, "append-only observation events; retain through terminal recovery and archive qualification"},
 }

@@ -84,6 +84,10 @@ func fleetOfflineRestoreSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := h.s.RecordOfflineCheckpoint(ctx, planID, attempt.ID, binding.RunnerPrincipalSubject,
+		"prechange_observed", strings.Repeat("a", 64), 0, now); err != nil {
+		t.Fatal(err)
+	}
 	manifest := offlineRestoreManifest{Authority: authority, PlanID: planID, TargetID: target.TargetID,
 		AuthorizationID: binding.OwnerAuthorizationID, AttemptID: attempt.ID, BindingSHA256: attempt.BindingSHA256}
 	encoded, err := json.Marshal(manifest)
@@ -123,6 +127,10 @@ func fleetOfflineRestoreVerify(t *testing.T) {
 	if err != nil || attempt.ID != manifest.AttemptID || attempt.BindingSHA256 != manifest.BindingSHA256 {
 		t.Fatalf("restored attempt: %+v, %v", attempt, err)
 	}
+	checkpoint, err := s.GetOfflineCheckpoint(ctx, manifest.PlanID)
+	if err != nil || checkpoint.AttemptID != manifest.AttemptID || checkpoint.Sequence != 1 || checkpoint.Phase != "prechange_observed" {
+		t.Fatalf("restored checkpoint: %+v, %v", checkpoint, err)
+	}
 	fence, _, err := s.GetFleetTargetFence(ctx, manifest.TargetID)
 	if err != nil || !fence.Held || fence.HolderPlanID != manifest.PlanID ||
 		fence.HolderNonceSHA256 != binding.DispatchNonceSHA256 || uint64(fence.Generation) != binding.FenceGeneration {
@@ -160,6 +168,10 @@ func fleetOfflineRestoreVerify(t *testing.T) {
 	}
 	if _, err := s.AdvanceFleetAuthorityEpoch(ctx, epoch, "offline-restore"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.RecordOfflineCheckpoint(ctx, manifest.PlanID, manifest.AttemptID, binding.RunnerPrincipalSubject,
+		"prechange_observed", strings.Repeat("a", 64), 0, time.Now().UTC()); err == nil {
+		t.Fatal("restored stale offline holder admitted another checkpoint")
 	}
 	if _, err := s.AdmitOfflineAttempt(ctx, offlineAttemptClaim(binding), binding.RunnerPrincipalSubject,
 		uuid.NewString(), time.Now().UTC()); err == nil {

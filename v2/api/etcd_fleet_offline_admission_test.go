@@ -115,3 +115,36 @@ func TestOfflineReservationRequiresActiveMatchingDevice(t *testing.T) {
 		t.Fatal("active matching device refused")
 	}
 }
+
+func TestOfflineRunnerPrincipalRequiresPinnedActiveDevice(t *testing.T) {
+	trust := &offlineFleetTrust{runnerSubject: "offline-runner"}
+	active := offlineTestIdentity{device: &store.AccessDevice{ID: "runner-device"}}
+	base := handler.AccessPrincipal{Source: handler.AccessPrincipalSourceManagedToken, Subject: "offline-runner", TokenID: "runner-token", DeviceID: "runner-device", Scopes: []string{handler.ScopeFleetOperate}}
+	check := func(principal handler.AccessPrincipal, identities offlineTestIdentity) bool {
+		request := handler.WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/", nil), &principal)
+		_, ok := offlineRunnerPrincipal(request, trust, identities)
+		return ok
+	}
+	if !check(base, active) {
+		t.Fatal("pinned active runner refused")
+	}
+	for name, change := range map[string]func(*handler.AccessPrincipal){
+		"other subject":  func(p *handler.AccessPrincipal) { p.Subject = "operator" },
+		"missing device": func(p *handler.AccessPrincipal) { p.DeviceID = "" },
+		"missing token":  func(p *handler.AccessPrincipal) { p.TokenID = "" },
+		"admin scope":    func(p *handler.AccessPrincipal) { p.Scopes = []string{handler.ScopeFleetOperate, handler.ScopeAdmin} },
+		"legacy":         func(p *handler.AccessPrincipal) { p.Legacy = true },
+		"shared api":     func(p *handler.AccessPrincipal) { p.Source = handler.AccessPrincipalSourceSharedAPI },
+	} {
+		t.Run(name, func(t *testing.T) {
+			principal := base
+			change(&principal)
+			if check(principal, active) {
+				t.Fatal("invalid runner accepted")
+			}
+		})
+	}
+	if check(base, offlineTestIdentity{}) {
+		t.Fatal("runner without registered active device accepted")
+	}
+}

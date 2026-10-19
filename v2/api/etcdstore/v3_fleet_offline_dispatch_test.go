@@ -498,3 +498,65 @@ func TestOfflineReservationBlocksTargetAliasChange(t *testing.T) {
 		t.Fatalf("unrelated target blocked by offline holder: %+v, %v", independent, err)
 	}
 }
+
+func TestOfflineCheckpointCASAndCurrentFence(t *testing.T) {
+	h, targetID := offlineTestHarness(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	planID := uuid.NewString()
+	offlineTestPlan(h, planID)
+	binding, approval := offlineTestApproval(t, offlineTestBinding(planID, targetID, now), now)
+	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), binding, approval, now); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.s.AdmitOfflineAttempt(h.ctx(), offlineAttemptClaim(binding), binding.RunnerPrincipalSubject, uuid.NewString(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name, id, principal, phase, digest string
+		sequence                           uint64
+	}{
+		{"wrong runner", attempt.ID, "other", "prechange_observed", evidence, 0},
+		{"wrong attempt", uuid.NewString(), binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0},
+		{"effect phase", attempt.ID, binding.RunnerPrincipalSubject, "provider_applying", evidence, 0},
+		{"bad digest", attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", "bad", 0},
+		{"wrong sequence", attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, tc.id, tc.principal, tc.phase, tc.digest, tc.sequence, now); err == nil {
+				t.Fatal("invalid checkpoint admitted")
+			}
+		})
+	}
+	checkpoint, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now)
+	if err != nil || checkpoint.Sequence != 1 || checkpoint.AuthorityEpoch != 1 {
+		t.Fatalf("checkpoint: %+v, %v", checkpoint, err)
+	}
+	stored, err := h.s.GetOfflineCheckpoint(h.ctx(), planID)
+	if err != nil || stored != checkpoint {
+		t.Fatalf("stored checkpoint: %+v, %v", stored, err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(planID), `{"prepared":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
+		t.Fatalf("protected-lane coexistence accepted: %v", err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(planID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
+		t.Fatalf("replay accepted: %v", err)
+	}
+	if _, err := h.s.AdvanceFleetAuthorityEpoch(h.ctx(), 1, "test-fence"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.RecordOfflineCheckpoint(h.ctx(), planID, attempt.ID, binding.RunnerPrincipalSubject, "prechange_observed", evidence, 0, now); !errors.Is(err, ErrOfflineCheckpointConflict) {
+		t.Fatalf("stale epoch accepted: %v", err)
+	}
+	stored, err = h.s.GetOfflineCheckpoint(h.ctx(), planID)
+	if err != nil || stored != checkpoint {
+		t.Fatalf("stale epoch changed checkpoint: %+v, %v", stored, err)
+	}
+}

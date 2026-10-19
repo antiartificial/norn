@@ -4,9 +4,25 @@ import "time"
 
 const AttemptSchema = "norn.fleet-offline-attempt/v1"
 
-// Attempt is the immutable, non-effect admission record. A queued attempt
-// cannot request a credential or advance phases until a later, separately
-// authenticated offline runner protocol has been implemented.
+// Checkpoint is a durable, non-effect runner observation. No checkpoint phase
+// authorizes provider credentials, a state apply, or fence release.
+const CheckpointSchema = "norn.fleet-offline-checkpoint/v1"
+
+type Checkpoint struct {
+	SchemaVersion   string    `json:"schemaVersion"`
+	PlanID          string    `json:"planId"`
+	AttemptID       string    `json:"attemptId"`
+	Sequence        uint64    `json:"sequence"`
+	Phase           string    `json:"phase"`
+	EvidenceSHA256  string    `json:"evidenceSHA256"`
+	AuthorityEpoch  int64     `json:"authorityEpoch"`
+	FenceGeneration uint64    `json:"fenceGeneration"`
+	RecordedAt      time.Time `json:"recordedAt"`
+}
+
+// Attempt is the immutable, non-effect admission record. Its runner can
+// record a separately authenticated observation checkpoint, but neither
+// record can request a credential or authorize an effect.
 type Attempt struct {
 	SchemaVersion    string    `json:"schemaVersion"`
 	ID               string    `json:"id"`
