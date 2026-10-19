@@ -186,6 +186,12 @@ func scaleRequestFromOperation(op *model.Operation) (scaleRequest, error) {
 			return scaleRequest{}, fmt.Errorf("scale operation count must be an integer")
 		}
 		request.Count = int(count)
+	case json.Number:
+		parsed, err := count.Int64()
+		if err != nil || int64(int(parsed)) != parsed {
+			return scaleRequest{}, fmt.Errorf("scale operation count must be an integer")
+		}
+		request.Count = int(parsed)
 	default:
 		return scaleRequest{}, fmt.Errorf("scale operation count is invalid")
 	}
@@ -258,17 +264,30 @@ func (s *nomadScaleSupervisor) Query(ctx context.Context, r effect.Reservation, 
 		return effect.Observation{}, err
 	}
 	expectedEvalID := strings.TrimPrefix(identity.RuntimeInstanceID, "nomad-eval:")
-	desired, matched, evalID, err := s.client.ScaleStatus(scaleNomadJobID(request), request.Group, request.NomadRegion, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID)
-	if err != nil {
-		return effect.Observation{}, err
+	var desired int
+	var matched, placementHealthy bool
+	var evalID string
+	if request.NomadJobID != "" {
+		// Managed Fleet jobs use a per-deployment ID and require placement
+		// evidence before the desired replica ledger can be acknowledged.
+		desired, matched, evalID, placementHealthy, err = s.client.ScalePlacementConverged(request.NomadJobID, request.Group, request.NomadRegion, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID)
+		if err != nil {
+			return effect.Observation{}, err
+		}
+	} else {
+		desired, matched, evalID, err = s.client.ScaleStatus(request.App, request.Group, request.NomadRegion, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID)
+		if err != nil {
+			return effect.Observation{}, err
+		}
+		placementHealthy = true
 	}
-	output, _ := json.Marshal(map[string]interface{}{"app": request.App, "group": request.Group, "count": request.Count, "desired": desired, "operationId": r.OperationClaim.OperationID, "evalId": evalID, "matched": matched})
+	output, _ := json.Marshal(map[string]interface{}{"app": request.App, "group": request.Group, "count": request.Count, "desired": desired, "operationId": r.OperationClaim.OperationID, "evalId": evalID, "matched": matched, "placementHealthy": placementHealthy})
 	identity.Supervisor, identity.SupervisorExecutionID = r.Supervisor, r.SupervisorExecutionID
 	if matched && identity.RuntimeInstanceID == "" {
 		identity.RuntimeInstanceID = "nomad-eval:" + evalID
 	}
 	phase := effect.SupervisorUnknown
-	if desired == request.Count && matched {
+	if desired == request.Count && matched && placementHealthy {
 		phase = effect.SupervisorSucceeded
 	}
 	return effect.Observation{Identity: identity, Phase: phase, Output: output, Evidence: effect.RawEvidence{Source: "nomad.scale-status", Reference: request.App + "/" + request.Group + "/" + evalID, Payload: output}}, nil
