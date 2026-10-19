@@ -30,6 +30,31 @@ type offlineEffectReobserver interface {
 	reobserveEffect(context.Context, offline.Binding, offline.Attempt) (offline.EffectObservation, error)
 }
 
+// backendCheckedEffectReobserver composes an independent backend read with
+// the remaining trusted read-only observers. It never trusts the delegate's
+// LatestBackendExact bit; that bit is set only after the latest versioned
+// state bytes are re-read from the object store.
+type backendCheckedEffectReobserver struct {
+	remaining offlineEffectReobserver
+	backend   offline.LatestBackendReader
+}
+
+func (r backendCheckedEffectReobserver) reobserveEffect(ctx context.Context, binding offline.Binding, attempt offline.Attempt) (offline.EffectObservation, error) {
+	if r.remaining == nil || r.backend == nil {
+		return offline.EffectObservation{}, offline.ErrEffectProofMissing
+	}
+	observation, err := r.remaining.reobserveEffect(ctx, binding, attempt)
+	if err != nil {
+		return offline.EffectObservation{}, err
+	}
+	observation.LatestBackendExact = false
+	if err := offline.VerifyLatestBackend(ctx, r.backend, binding.Backend); err != nil {
+		return offline.EffectObservation{}, err
+	}
+	observation.LatestBackendExact = true
+	return observation, nil
+}
+
 func (s *V3OperationStore) offlineEffectGrantKey(planID string) string {
 	return s.prefix + "/v3/fleet-offline-effect-grants/" + planID
 }

@@ -2,6 +2,8 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -12,6 +14,38 @@ import (
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/fleet/offline"
 )
+
+type offlineBackendReadFixture struct {
+	raw     []byte
+	version string
+}
+
+func (f offlineBackendReadFixture) Latest(context.Context, string, string) (string, int64, error) {
+	return f.version, int64(len(f.raw)), nil
+}
+func (f offlineBackendReadFixture) Version(context.Context, string, string, string, int64) ([]byte, error) {
+	return f.raw, nil
+}
+
+func TestBackendCheckedReobserverDoesNotTrustDelegateBackendClaim(t *testing.T) {
+	raw := []byte(`{"lineage":"lineage-one","serial":22}`)
+	sum := sha256.Sum256(raw)
+	b := offline.Binding{Backend: offline.Backend{Bucket: "state", Key: "staging.tfstate", VersionID: "version-22", Lineage: "lineage-one", Serial: 22, RawSHA256: hex.EncodeToString(sum[:])}}
+	claim := offline.EffectObservation{LatestBackendExact: true}
+	observer := backendCheckedEffectReobserver{remaining: offlineTestReobserver{observation: claim}, backend: offlineBackendReadFixture{raw: raw, version: "version-23"}}
+	if _, err := observer.reobserveEffect(context.Background(), b, offline.Attempt{}); !errors.Is(err, offline.ErrLatestBackendMismatch) {
+		t.Fatalf("stale backend accepted: %v", err)
+	}
+	observer.backend = offlineBackendReadFixture{raw: raw, version: "version-22"}
+	got, err := observer.reobserveEffect(context.Background(), b, offline.Attempt{})
+	if err != nil || !got.LatestBackendExact {
+		t.Fatalf("exact backend rejected: %+v %v", got, err)
+	}
+	observer.backend = nil
+	if _, err := observer.reobserveEffect(context.Background(), b, offline.Attempt{}); !errors.Is(err, offline.ErrEffectProofMissing) {
+		t.Fatalf("missing backend accepted: %v", err)
+	}
+}
 
 type offlineTestReobserver struct {
 	observation offline.EffectObservation
