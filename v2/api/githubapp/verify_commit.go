@@ -187,6 +187,15 @@ func (c *Client) VerifyProtectedCommit(ctx context.Context, sha, lastApplied str
 		}
 		return unverified("no %s push run at this commit after %s (CI skipped or Actions disabled)", ValidateWorkflow, ValidateRunGrace)
 	}
+	// Actions and branch are separate reads. Recheck the protected tip after
+	// validation so an advancing main cannot authorize the former head.
+	latest, err := c.readBranchTip(ctx, token, "")
+	if err != nil {
+		return nil, err
+	}
+	if latest.NotModified || latest.SHA != sha || !latest.Protected {
+		return unverified("commit is no longer the protected %s branch tip", c.cfg.DefaultBranch)
+	}
 	out.ValidateRun = runID
 
 	if lastApplied == "" {
@@ -227,6 +236,7 @@ func (c *Client) validateRunState(ctx context.Context, token, sha string) (int64
 	var runs struct {
 		WorkflowRuns []struct {
 			ID         int64  `json:"id"`
+			RunAttempt int    `json:"run_attempt"`
 			HeadSHA    string `json:"head_sha"`
 			HeadBranch string `json:"head_branch"`
 			Event      string `json:"event"`
@@ -246,29 +256,46 @@ func (c *Client) validateRunState(ctx context.Context, token, sha string) (int64
 	if err != nil {
 		return 0, 0, err
 	}
+	if len(runs.WorkflowRuns) >= 100 {
+		// The list may be truncated at per_page=100, hiding a conflicting
+		// run. Treat saturation as ambiguous instead of selecting one.
+		return 0, validateFailed, nil
+	}
+	matching, selectedID := 0, int64(0)
 	pending, failed := false, false
 	for _, run := range runs.WorkflowRuns {
 		// The listing is filtered server side, but never trust the filter.
 		if run.HeadSHA != sha || run.Event != "push" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadRepo.FullName != c.cfg.Repository {
 			continue
 		}
-		if wf := ".github/workflows/" + ValidateWorkflow; run.Path != wf && !strings.HasPrefix(run.Path, wf+"@") {
+		if !workflowPathMatches(run.Path, ValidateWorkflow, c.cfg.DefaultBranch) {
+			continue
+		}
+		matching++
+		if run.ID <= 0 || run.RunAttempt != 1 {
+			failed = true
 			continue
 		}
 		switch {
 		case run.Status != "completed":
 			pending = true
 		case run.Conclusion == "success":
-			return run.ID, validateSucceeded, nil
+			selectedID = run.ID
 		default:
 			failed = true
 		}
 	}
 	switch {
+	case matching > 1:
+		// Multiple matching runs may include a pending rerun or conflicting
+		// result. No listing-order choice is safe for effect authorization.
+		return 0, validateFailed, nil
 	case pending:
 		return 0, validatePending, nil
 	case failed:
 		return 0, validateFailed, nil
+	case selectedID > 0:
+		return selectedID, validateSucceeded, nil
 	}
 	// No run at this SHA: not started yet, or never will be (bounded by the caller).
 	return 0, validateNoRun, nil

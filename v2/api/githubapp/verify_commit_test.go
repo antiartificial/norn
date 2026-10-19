@@ -30,8 +30,11 @@ type fakeGitHub struct {
 	files       []string // compare files, served 100 per page
 	compareHits int
 	etag        string
-	runRepo     string    // head_repository of every run; default acme/norn-fleet
-	runPath     string    // path of every run; default .github/workflows/validate.yml
+	runRepo     string // head_repository of every run; default acme/norn-fleet
+	runPath     string // path of every run; default .github/workflows/validate.yml
+	runAttempt  int    // current attempt of every run; default 1
+	branchReads int
+	advanceTip  string    // replace tip on the second branch read
 	committed   time.Time // tip committer date; default testNow
 }
 
@@ -45,6 +48,10 @@ func (f *fakeGitHub) handler(t *testing.T) http.Handler {
 		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
+			f.branchReads++
+			if f.branchReads >= 2 && f.advanceTip != "" {
+				f.tip = f.advanceTip
+			}
 			if f.etag != "" && r.Header.Get("If-None-Match") == f.etag {
 				w.WriteHeader(http.StatusNotModified)
 				return
@@ -70,8 +77,12 @@ func (f *fakeGitHub) handler(t *testing.T) http.Handler {
 				runPath = ".github/workflows/validate.yml"
 			}
 			var parts []string
+			attempt := f.runAttempt
+			if attempt == 0 {
+				attempt = 1
+			}
 			for i, run := range f.runs {
-				parts = append(parts, fmt.Sprintf(`{"id":%d,"head_sha":%q,"event":%q,"head_branch":%q,"head_repository":{"full_name":%q},"path":%q,"status":%q,"conclusion":%q}`, i+1, run.sha, run.event, run.branch, repo, runPath, run.status, run.conclusion))
+				parts = append(parts, fmt.Sprintf(`{"id":%d,"run_attempt":%d,"head_sha":%q,"event":%q,"head_branch":%q,"head_repository":{"full_name":%q},"path":%q,"status":%q,"conclusion":%q}`, i+1, attempt, run.sha, run.event, run.branch, repo, runPath, run.status, run.conclusion))
 			}
 			fmt.Fprintf(w, `{"workflow_runs":[%s]}`, strings.Join(parts, ","))
 		case strings.Contains(r.URL.Path, "/compare/"):
@@ -136,6 +147,47 @@ func TestVerifyProtectedCommitNotTipFailsClosed(t *testing.T) {
 	f.tip = strings.Repeat("c", 40)
 	if got := verify(t, f, baseSHA); got.Verdict != CommitUnverified {
 		t.Fatalf("older/non-tip sha accepted: %+v", got)
+	}
+}
+
+func TestVerifyProtectedCommitRechecksTipAfterActions(t *testing.T) {
+	f := goodFake()
+	f.advanceTip = strings.Repeat("c", 40)
+	got := verify(t, f, baseSHA)
+	if got.Verdict != CommitUnverified || f.branchReads != 2 {
+		t.Fatalf("advancing main accepted: %+v reads=%d", got, f.branchReads)
+	}
+}
+
+func TestVerifyProtectedCommitRejectsAmbiguousOrRerunValidation(t *testing.T) {
+	t.Run("rerun attempt", func(t *testing.T) {
+		f := goodFake()
+		f.runAttempt = 2
+		if got := verify(t, f, baseSHA); got.Verdict == CommitVerified {
+			t.Fatalf("rerun attempt accepted: %+v", got)
+		}
+	})
+	for name, second := range map[string]fakeRun{
+		"pending": {tipSHA, "push", "main", "in_progress", ""},
+		"failed":  {tipSHA, "push", "main", "completed", "failure"},
+		"success": {tipSHA, "push", "main", "completed", "success"},
+	} {
+		t.Run("duplicate "+name, func(t *testing.T) {
+			f := goodFake()
+			f.runs = append(f.runs, second)
+			if got := verify(t, f, baseSHA); got.Verdict == CommitVerified {
+				t.Fatalf("ambiguous validation accepted: %+v", got)
+			}
+		})
+	}
+	for _, path := range []string{".github/workflows/validate.yml@feature", ".github/workflows/validate.yml@refs/heads/feature"} {
+		t.Run(path, func(t *testing.T) {
+			f := goodFake()
+			f.runPath = path
+			if got := verify(t, f, baseSHA); got.Verdict == CommitVerified {
+				t.Fatalf("untrusted workflow ref accepted: %+v", got)
+			}
+		})
 	}
 }
 
