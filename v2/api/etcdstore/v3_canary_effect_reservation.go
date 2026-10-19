@@ -85,6 +85,7 @@ type canaryEffectInput struct {
 
 type scaleEffectInput struct {
 	App         string `json:"app"`
+	NomadJobID  string `json:"nomadJobId,omitempty"`
 	Group       string `json:"group"`
 	Region      string `json:"region"`
 	NomadRegion string `json:"nomadRegion"`
@@ -101,9 +102,9 @@ func validateScaleEffectReservation(r effect.Reservation, op model.Operation, au
 		return "", fmt.Errorf("decode scale effect input: %w", err)
 	}
 	count, ok := effectPayloadInt(op.Payload, "count")
-	if !ok || input.App == "" || input.Group == "" || input.Region == "" || input.NomadRegion == "" || input.Count < 0 ||
+	if !ok || input.App == "" || input.NomadJobID == "" || input.Group == "" || input.Region == "" || input.NomadRegion == "" || input.Count < 0 ||
 		input.App != op.App || input.Group != effectPayloadString(op.Payload, "group") || input.Region != effectPayloadString(op.Payload, "region") ||
-		input.NomadRegion != effectPayloadString(op.Payload, "nomadRegion") || input.Count != count ||
+		input.NomadRegion != effectPayloadString(op.Payload, "nomadRegion") || input.NomadJobID != effectPayloadString(op.Payload, "nomadJobId") || input.Count != count ||
 		r.Resource != "app/"+input.App+"/scale/"+input.Region+"/"+input.Group {
 		return "", fmt.Errorf("scale effect input does not match accepted operation payload")
 	}
