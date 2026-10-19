@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Exercise etcd-backed Fleet scale recovery against disposable local services."""
+
+import os
+import pathlib
+import shutil
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.request
+
+
+def port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+api = pathlib.Path(__file__).resolve().parents[1] / "api"
+if not shutil.which("etcd") or not shutil.which("nomad"):
+    raise SystemExit("etcd and nomad binaries are required")
+
+with tempfile.TemporaryDirectory(prefix="norn-scale-real-nomad-") as directory:
+    root = pathlib.Path(directory)
+    etcd_port, peer_port, nomad_port, rpc_port, serf_port = [port() for _ in range(5)]
+    config = root / "nomad.hcl"
+    config.write_text(
+        f'data_dir = "{root / "nomad"}"\n'
+        'bind_addr = "127.0.0.1"\n'
+        f'ports {{ http = {nomad_port} rpc = {rpc_port} serf = {serf_port} }}\n'
+        'plugin "raw_exec" { config { enabled = true } }\n'
+    )
+    processes = []
+    try:
+        for command in (
+            ["etcd", "--name", "scale-test", "--data-dir", str(root / "etcd"),
+             "--listen-client-urls", f"http://127.0.0.1:{etcd_port}",
+             "--advertise-client-urls", f"http://127.0.0.1:{etcd_port}",
+             "--listen-peer-urls", f"http://127.0.0.1:{peer_port}",
+             "--initial-advertise-peer-urls", f"http://127.0.0.1:{peer_port}",
+             "--initial-cluster", f"scale-test=http://127.0.0.1:{peer_port}",
+             "--log-level", "error"],
+            ["nomad", "agent", "-dev", "-config", str(config), "-log-level", "WARN"],
+        ):
+            log = (root / f"{command[0]}.log").open("w")
+            processes.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
+        for name, address, process in (
+            ("etcd", f"http://127.0.0.1:{etcd_port}/health", processes[0][0]),
+            ("nomad", f"http://127.0.0.1:{nomad_port}/v1/status/leader", processes[1][0]),
+        ):
+            for _ in range(100):
+                if process.poll() is not None:
+                    raise RuntimeError(f"{name} exited: {(root / f'{name}.log').read_text()[-2000:]}")
+                try:
+                    with urllib.request.urlopen(address, timeout=0.3) as response:
+                        if response.status == 200:
+                            break
+                except Exception:
+                    time.sleep(0.2)
+            else:
+                raise RuntimeError(f"{name} failed to become ready")
+        env = os.environ.copy()
+        env["NORN_TEST_ETCD_ENDPOINTS"] = f"http://127.0.0.1:{etcd_port}"
+        env["NORN_TEST_DISPOSABLE_NOMAD_ADDR"] = f"http://127.0.0.1:{nomad_port}"
+        subprocess.run(
+            ["go", "test", ".", "-run",
+             "^TestEtcd(ManagedScaleRecoversRealNomadPlacement|ScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker|ScaleCrashAfterNomadAcceptRecoversWithoutSecondLaunch)$",
+             "-count=1", "-v"],
+            cwd=api, env=env, check=True,
+        )
+    finally:
+        for process, _ in reversed(processes):
+            process.terminate()
+        for process, log in reversed(processes):
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            log.close()
