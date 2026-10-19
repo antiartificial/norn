@@ -135,6 +135,7 @@ echo 'Healthy three-member Fleet suites (skips are fatal), then seed authority-r
 "$strict" ./etcdstore '^TestFleet(Target|Resource|Reconciler)ConformanceEtcd$'
 "$strict" ./handler '^TestFleet(Lifecycle|Fence)ConformanceEtcd$'
 "$strict" ./etcdstore '^TestFleetAuthorityRestoreEtcd/seed$'
+"$strict" ./etcdstore '^TestFleetOfflineRestoreEtcd/seed$'
 
 echo 'One-member network partition: two-member quorum and normal runtime survive'
 docker network disconnect "$network" "$network-m3"
@@ -214,4 +215,5 @@ test "$value" = snapshot-retained
 run_process_test
 echo 'Post-restore: advance the authority epoch on the restored seed data'
 "$strict" ./etcdstore '^TestFleetAuthorityRestoreEtcd/verify$'
+"$strict" ./etcdstore '^TestFleetOfflineRestoreEtcd/verify$'
 echo 'PASS: disposable three-member TLS/RBAC, isolated-member partition and rejoin, one loss, quorum refusal, corruption rejection, snapshot restore, Fleet suites and authority restore'
