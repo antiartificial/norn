@@ -28,18 +28,23 @@ type WorkloadNode struct {
 }
 
 type WorkloadService struct {
-	AllocationID, Node, Namespace, Name, CheckID, Status string
+	AllocationID, Node, Namespace, Name, CheckName, CheckID, Status string
 }
 
 type WorkloadNamespaceRead struct {
-	Name            string
-	QueryIndex      uint64
-	AllocationCount int
+	Name             string
+	QueryIndexBefore uint64
+	QueryIndexAfter  uint64
+	AllocationCount  int
 }
 
-// WorkloadSnapshot is an atomic logical observation. FullNamespaceAccess
-// must come from an independently checked Nomad ACL policy, not from a
-// successful list response: Nomad can silently filter unauthorized rows.
+// WorkloadSnapshot is an atomic logical observation. A source must verify its
+// Nomad ACL policy grants wildcard namespace read, read the namespace list,
+// read allocations separately for each namespace, then repeat those reads
+// and the namespace list. Both query indices for each list must agree.
+// A successful list response alone is insufficient: Nomad may silently
+// filter unauthorized namespaces. Consul entries must contain every check
+// from the target service rather than only its passing subset.
 type WorkloadSnapshot struct {
 	ObservedAt               time.Time
 	FullNamespaceAccess      bool
@@ -90,7 +95,8 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 	}
 	reads := map[string]WorkloadNamespaceRead{}
 	for _, read := range s.NamespaceReads {
-		if !namespaces[read.Name] || read.QueryIndex == 0 || read.AllocationCount < 0 || reads[read.Name].Name != "" {
+		if !namespaces[read.Name] || read.QueryIndexBefore == 0 || read.QueryIndexAfter != read.QueryIndexBefore ||
+			read.AllocationCount < 0 || reads[read.Name].Name != "" {
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
 		reads[read.Name] = read
@@ -169,17 +175,28 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
 	}
-	serviceIDs := map[string]bool{}
+	serviceChecks := map[string]map[string]bool{}
+	checkIDs := map[string]bool{}
 	for _, entry := range s.Services {
-		if entry.AllocationID == "" || entry.Namespace != "default" || entry.Name != "hello-norn-mysql" ||
-			entry.CheckID == "" || entry.Status != "passing" ||
-			placements[entry.Node] != entry.AllocationID || serviceIDs[entry.AllocationID] {
+		if entry.AllocationID == "" || entry.Namespace != "default" || entry.Name != "hello-norn-mysql-web" ||
+			(entry.CheckName != "readyz" && entry.CheckName != "healthz") || entry.CheckID == "" ||
+			checkIDs[entry.CheckID] || entry.Status != "passing" ||
+			placements[entry.Node] != entry.AllocationID || serviceChecks[entry.AllocationID][entry.CheckName] {
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
-		serviceIDs[entry.AllocationID] = true
+		if serviceChecks[entry.AllocationID] == nil {
+			serviceChecks[entry.AllocationID] = map[string]bool{}
+		}
+		serviceChecks[entry.AllocationID][entry.CheckName] = true
+		checkIDs[entry.CheckID] = true
 	}
-	if len(serviceIDs) != 2 {
+	if len(serviceChecks) != 2 || len(checkIDs) != 4 {
 		return WorkloadEvidence{}, ErrWorkloadObservation
+	}
+	for _, checks := range serviceChecks {
+		if len(checks) != 2 || !checks["readyz"] || !checks["healthz"] {
+			return WorkloadEvidence{}, ErrWorkloadObservation
+		}
 	}
 	// Canonicalize unordered API list responses for a stable evidence digest.
 	s.Namespaces = append([]string(nil), s.Namespaces...)
@@ -191,7 +208,12 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 	sort.Slice(s.NamespaceReads, func(i, j int) bool { return s.NamespaceReads[i].Name < s.NamespaceReads[j].Name })
 	sort.Slice(s.Nodes, func(i, j int) bool { return s.Nodes[i].Name < s.Nodes[j].Name })
 	sort.Slice(s.Allocations, func(i, j int) bool { return s.Allocations[i].ID < s.Allocations[j].ID })
-	sort.Slice(s.Services, func(i, j int) bool { return s.Services[i].AllocationID < s.Services[j].AllocationID })
+	sort.Slice(s.Services, func(i, j int) bool {
+		if s.Services[i].AllocationID != s.Services[j].AllocationID {
+			return s.Services[i].AllocationID < s.Services[j].AllocationID
+		}
+		return s.Services[i].CheckName < s.Services[j].CheckName
+	})
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return WorkloadEvidence{}, ErrWorkloadObservation
