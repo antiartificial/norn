@@ -226,8 +226,22 @@ func (s *V3OperationStore) loadFleetTargetHolderFacts(ctx context.Context, planI
 				facts.OfflineQueuedAttempt = true
 			}
 		}
+		checkpoint, checkpointErr := s.GetOfflineCheckpoint(ctx, planID)
+		if errors.Is(checkpointErr, ErrOfflineAttemptCorrupt) {
+			facts.OfflineEvidenceIncomplete = true
+		} else if checkpointErr != nil && !errors.Is(checkpointErr, ErrNotFound) {
+			return lifecycle.HolderFacts{}, checkpointErr
+		} else if checkpointErr == nil && (err != nil || checkpoint.AttemptID != attempt.ID ||
+			checkpoint.FenceGeneration != binding.FenceGeneration) {
+			facts.OfflineEvidenceIncomplete = true
+		}
 	}
 	if !facts.OfflineReservation {
+		if _, err := s.GetOfflineCheckpoint(ctx, planID); err == nil || errors.Is(err, ErrOfflineAttemptCorrupt) {
+			facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
+		} else if !errors.Is(err, ErrNotFound) {
+			return lifecycle.HolderFacts{}, err
+		}
 		if _, err := s.GetOfflineAttempt(ctx, planID); err == nil {
 			facts.OfflineReservation, facts.OfflineEvidenceIncomplete = true, true
 		} else if errors.Is(err, ErrOfflineAttemptCorrupt) {

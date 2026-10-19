@@ -477,6 +477,38 @@ func (s *V3OperationStore) fleetResourceHolderFacts(ctx context.Context, planID 
 			holder.OfflineQueuedAttempt = true
 		}
 	}
+	checkpointKey := s.offlineCheckpointKey(planID)
+	checkpointHead, err := s.kv.Get(ctx, checkpointKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(checkpointKey, checkpointHead)
+	eventKey := s.offlineCheckpointEventKey(planID, 1)
+	checkpointEvent, err := s.kv.Get(ctx, eventKey)
+	if err != nil {
+		return holder, 0, nil, err
+	}
+	exact(eventKey, checkpointEvent)
+	var headRaw, eventRaw []byte
+	if len(checkpointHead.Kvs) == 1 {
+		headRaw = checkpointHead.Kvs[0].Value
+	}
+	if len(checkpointEvent.Kvs) == 1 {
+		eventRaw = checkpointEvent.Kvs[0].Value
+	}
+	checkpoint, checkpointErr := decodeOfflineCheckpointPair(headRaw, eventRaw, planID)
+	if errors.Is(checkpointErr, ErrOfflineAttemptCorrupt) {
+		holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
+	} else if checkpointErr != nil && !errors.Is(checkpointErr, ErrNotFound) {
+		return holder, 0, nil, checkpointErr
+	} else if checkpointErr == nil {
+		if len(offlineAttemptResponse.Kvs) != 1 || !validOfflineBinding ||
+			checkpoint.FenceGeneration != offlineBinding.FenceGeneration {
+			holder.OfflineReservation, holder.OfflineEvidenceIncomplete = true, true
+		} else if attempt, err := decodeOfflineAttempt(offlineAttemptResponse.Kvs[0].Value, planID); err != nil || checkpoint.AttemptID != attempt.ID {
+			holder.OfflineEvidenceIncomplete = true
+		}
+	}
 
 	abandonedKey := s.fleetTargetAbandonedKey(planID)
 	abandonedResponse, err := s.kv.Get(ctx, abandonedKey)

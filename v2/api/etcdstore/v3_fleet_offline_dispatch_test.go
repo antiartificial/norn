@@ -537,6 +537,46 @@ func TestOfflineCheckpointCASAndCurrentFence(t *testing.T) {
 	if err != nil || stored != checkpoint {
 		t.Fatalf("stored checkpoint: %+v, %v", stored, err)
 	}
+	eventKey := h.s.offlineCheckpointEventKey(planID, 1)
+	eventResponse, err := h.s.kv.Get(h.ctx(), eventKey)
+	if err != nil || len(eventResponse.Kvs) != 1 {
+		t.Fatalf("checkpoint event missing: %v", err)
+	}
+	eventBytes := string(eventResponse.Kvs[0].Value)
+	if _, err := h.s.kv.Delete(h.ctx(), eventKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.GetOfflineCheckpoint(h.ctx(), planID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("head without event accepted: %v", err)
+	}
+	if state, reason, err := h.s.FleetTargetOutcome(h.ctx(), targetID, now); err != nil || state != lifecycle.OccupancyUncertain || reason != lifecycle.ReasonOfflineEvidenceIncomplete {
+		t.Fatalf("partial checkpoint occupancy = %s/%s, %v", state, reason, err)
+	}
+	if holder, _, _, err := h.s.fleetResourceHolderFacts(h.ctx(), planID); err != nil || !holder.OfflineEvidenceIncomplete {
+		t.Fatalf("partial checkpoint holder = %+v, %v", holder, err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), eventKey, eventBytes); err != nil {
+		t.Fatal(err)
+	}
+	headKey := h.s.offlineCheckpointKey(planID)
+	if _, err := h.s.kv.Delete(h.ctx(), headKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.GetOfflineCheckpoint(h.ctx(), planID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("event without head accepted: %v", err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), headKey, eventBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), eventKey, `{"changed":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.GetOfflineCheckpoint(h.ctx(), planID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("divergent checkpoint event accepted: %v", err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), eventKey, eventBytes); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(planID), `{"prepared":true}`); err != nil {
 		t.Fatal(err)
 	}

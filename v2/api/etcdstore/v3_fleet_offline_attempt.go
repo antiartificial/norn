@@ -5,6 +5,7 @@ package etcdstore
 // route. It is intentionally separate from the GitHub Actions attempt keys.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -42,15 +43,37 @@ func (s *V3OperationStore) offlineCheckpointEventKey(planID string, sequence uin
 }
 
 func (s *V3OperationStore) GetOfflineCheckpoint(ctx context.Context, planID string) (offline.Checkpoint, error) {
-	response, err := s.kv.Get(ctx, s.offlineCheckpointKey(planID))
+	response, err := s.kv.Txn(ctx).Then(
+		clientv3.OpGet(s.offlineCheckpointKey(planID)),
+		clientv3.OpGet(s.offlineCheckpointEventKey(planID, 1)),
+	).Commit()
 	if err != nil {
 		return offline.Checkpoint{}, err
 	}
-	if len(response.Kvs) != 1 {
+	if len(response.Responses) != 2 || response.Responses[0].GetResponseRange() == nil || response.Responses[1].GetResponseRange() == nil {
+		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt
+	}
+	head := response.Responses[0].GetResponseRange().Kvs
+	event := response.Responses[1].GetResponseRange().Kvs
+	var headRaw, eventRaw []byte
+	if len(head) == 1 {
+		headRaw = head[0].Value
+	}
+	if len(event) == 1 {
+		eventRaw = event[0].Value
+	}
+	return decodeOfflineCheckpointPair(headRaw, eventRaw, planID)
+}
+
+func decodeOfflineCheckpointPair(headRaw, eventRaw []byte, planID string) (offline.Checkpoint, error) {
+	if headRaw == nil && eventRaw == nil {
 		return offline.Checkpoint{}, ErrNotFound
 	}
+	if headRaw == nil || eventRaw == nil || !bytes.Equal(headRaw, eventRaw) {
+		return offline.Checkpoint{}, ErrOfflineAttemptCorrupt
+	}
 	var checkpoint offline.Checkpoint
-	if err := decodeV3Record(response.Kvs[0].Value, &checkpoint); err != nil ||
+	if err := decodeV3Record(headRaw, &checkpoint); err != nil ||
 		checkpoint.SchemaVersion != offline.CheckpointSchema || checkpoint.PlanID != planID ||
 		uuid.Validate(checkpoint.AttemptID) != nil || checkpoint.Sequence != 1 || checkpoint.Phase != "prechange_observed" ||
 		!offlineEvidenceDigest.MatchString(checkpoint.EvidenceSHA256) || checkpoint.AuthorityEpoch < 1 ||
