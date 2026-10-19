@@ -491,4 +491,10 @@ func TestOfflineReservationBlocksTargetAliasChange(t *testing.T) {
 	if !errors.As(err, &fenceErr) || fenceErr.Code != lifecycle.CodeFleetTargetRegistrationInFlight {
 		t.Fatalf("target alias changed after offline binding loss: %v", err)
 	}
+	independent, err := h.s.RegisterFleetTarget(h.ctx(), lifecycle.TargetIdentity{
+		Provider: "digitalocean", ProviderAccount: "other-account", StateBackend: "s3://other-state/independent.tfstate",
+	}, []string{"cluster:independent", "environment:independent"}, uuid.NewString())
+	if err != nil || independent == nil || independent.TargetID == targetID {
+		t.Fatalf("unrelated target blocked by offline holder: %+v, %v", independent, err)
+	}
 }
