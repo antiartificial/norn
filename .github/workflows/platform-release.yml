@@ -257,6 +257,7 @@ jobs:
     environment: platform-release
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -284,6 +285,12 @@ jobs:
             echo "GitHub immutable releases must be enabled; configure the protected admin-read check token." >&2
             exit 1
           }
+      - name: Recheck exact protected v3 CI qualification before signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+        run: python3 v2/scripts/require-v3-release-qualification.py
       - name: Sign, verify, and publish without overwriting
         env:
           GH_TOKEN: ${{ github.token }}

@@ -32,6 +32,18 @@ def fixture():
 
 
 class QualificationTests(unittest.TestCase):
+    def test_workflow_rechecks_before_signing(self):
+        workflow = (path.parents[2] / ".github/workflows/platform-release.yml").read_text()
+        authorize, publish = workflow.split("  publish:\n", 1)
+        self.assertIn("Require exact protected v3 CI qualification", authorize)
+        self.assertIn("actions: read", publish.split("    steps:\n", 1)[0])
+        recheck = publish.index("Recheck exact protected v3 CI qualification before signing")
+        sign = publish.index("Sign, verify, and publish without overwriting")
+        self.assertLess(recheck, sign)
+        gate_step = publish[recheck:sign]
+        self.assertIn("run: python3 v2/scripts/require-v3-release-qualification.py", gate_step)
+        self.assertNotIn("NORN_RELEASE_SIGNING_KEY", gate_step)
+
     def check(self, responses):
         def get(path, token):
             self.assertEqual(token, "token")

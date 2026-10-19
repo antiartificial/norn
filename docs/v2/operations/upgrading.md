@@ -101,7 +101,9 @@ protected `master` and require its full successful job set. Then dispatch
 40-character SHA and the successful CI run ID in `qualification_run_id`.
 Approve only the matching
 `platform-release` environment run after authorization, UI, and all four
-OS/architecture bundle jobs succeed.
+OS/architecture bundle jobs succeed. The protected publish job checks the
+qualification again immediately before using the signing key; a newer failed
+or in-progress attempt refuses publication.
 
 Assign the release a version-first operator label in the established
 `v<major>.<minor>.<patch>-platform[-<distance>-g<shortsha>]` form, or for a

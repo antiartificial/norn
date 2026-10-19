@@ -105,8 +105,9 @@ Before the first publish, configure the repository deliberately:
    every qualification job to succeed. Dispatch
    `.github/workflows/platform-release.yml` from `master` with that exact
    40-character commit SHA and the successful CI run ID as
-   `qualification_run_id`. The publisher rechecks the run's latest attempt,
-   source identity, and complete job set before signing.
+   `qualification_run_id`. The publisher checks the run before builds and
+   rechecks its latest attempt, source identity, and complete job set after
+   environment approval immediately before signing.
 
 The workflow builds requested source without signing credentials, then gives
 only the protected publish job the Ed25519 key and `contents:write`. That job
