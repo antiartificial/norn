@@ -327,7 +327,7 @@ func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, c
 		return &target, none, nil
 	}
 
-	inFlightCompares, inFlight, err := s.fleetTargetInFlightCompares(ctx, clusterNames, environments)
+	inFlightCompares, inFlight, err := s.fleetTargetInFlightCompares(ctx, targetID, clusterNames, environments)
 	if err != nil {
 		return nil, none, err
 	}
@@ -389,10 +389,11 @@ func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, c
 // mirroring fleetTargetInFlightSQL), and returns the two prefix compares the
 // caller's registration Txn must include so a plan that goes in flight
 // after this scan, but before the Txn commits, cannot slip through.
-func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, clusterNames, environments []string) ([]clientv3.Cmp, bool, error) {
+func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, targetID string, clusterNames, environments []string) ([]clientv3.Cmp, bool, error) {
 	preparationPrefix := s.fleetGitHubDispatchPreparationsPrefix()
 	bindingPrefix := s.fleetRunnerDispatchesPrefix()
 	offlinePrefix := s.fleetOfflineDispatchesPrefix()
+	fencePrefix := s.prefix + "/v3/fleet-target-fences/"
 	preparations, err := s.kv.Get(ctx, preparationPrefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, false, err
@@ -405,10 +406,15 @@ func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, clus
 	if err != nil {
 		return nil, false, err
 	}
+	fences, err := s.kv.Get(ctx, fencePrefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, false, err
+	}
 	compares := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(preparationPrefix).WithPrefix(), "<", preparations.Header.Revision+1),
 		clientv3.Compare(clientv3.ModRevision(bindingPrefix).WithPrefix(), "<", bindings.Header.Revision+1),
 		clientv3.Compare(clientv3.ModRevision(offlinePrefix).WithPrefix(), "<", offlineBindings.Header.Revision+1),
+		clientv3.Compare(clientv3.ModRevision(fencePrefix).WithPrefix(), "<", fences.Header.Revision+1),
 	}
 
 	clusterSet := make(map[string]bool, len(clusterNames))
@@ -473,6 +479,33 @@ func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, clus
 			return nil, false, err
 		}
 		if !abandoned {
+			return compares, true, nil
+		}
+	}
+	// The shared fence is the durable authority. A partial restore can lose
+	// an offline binding while leaving its fence held; registration must still
+	// refuse an alias change for that target or holder plan. Pin the whole
+	// prefix above so a concurrent acquire cannot commit after this scan.
+	for _, kv := range fences.Kvs {
+		var fence v3FleetTargetFence
+		if err := decodeV3Record(kv.Value, &fence); err != nil {
+			return nil, false, fmt.Errorf("fleet target fence is corrupt: %w", err)
+		}
+		if !fence.Held {
+			continue
+		}
+		heldTargetID := strings.TrimPrefix(string(kv.Key), fencePrefix)
+		if heldTargetID == targetID {
+			return compares, true, nil
+		}
+		if fence.HolderPlanID == "" {
+			return nil, false, fmt.Errorf("held Fleet target fence has no holder plan")
+		}
+		cluster, err := s.fleetCapacityPlanCluster(ctx, fence.HolderPlanID)
+		if err != nil {
+			return nil, false, err
+		}
+		if clusterSet[cluster] {
 			return compares, true, nil
 		}
 	}
