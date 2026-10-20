@@ -55,7 +55,7 @@ func ValidateTerminalObservation(o TerminalObservation, g EffectGrant, now time.
 		o.FenceGeneration != g.FenceGeneration || o.AuthorityEpoch != g.AuthorityEpoch ||
 		o.ProviderAccountUUID != g.ProviderAccountUUID || o.NodeName != g.NodeName || o.DropletID != g.DropletID ||
 		o.Backend.Bucket != g.Backend.Bucket || o.Backend.Key != g.Backend.Key ||
-		o.Backend.Lineage != g.Backend.Lineage || o.Backend.Serial <= g.Backend.Serial ||
+		o.Backend.Lineage != g.Backend.Lineage || g.Backend.Serial == ^uint64(0) || o.Backend.Serial != g.Backend.Serial+1 ||
 		o.Backend.VersionID == g.Backend.VersionID || o.Backend.VersionID == "" || o.Backend.VersionID == "null" ||
 		!hex64.MatchString(o.Backend.RawSHA256) || !hex64.MatchString(o.EvidenceSHA256) ||
 		!hex64.MatchString(o.ProviderEvidenceSHA256) || !hex64.MatchString(o.BackendEvidenceSHA256) ||

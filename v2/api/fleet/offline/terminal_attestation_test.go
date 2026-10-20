@@ -13,7 +13,12 @@ func terminalAttestationFixture(t *testing.T) (TerminalChallengeV1, EffectGrant,
 	t.Helper()
 	b, _, g, now := deleteInputs(t)
 	nonce := bytes.Repeat([]byte{0x7d}, 32)
-	c, err := NewTerminalChallengeV1(g, "verifier-device", "management-observer", b.DispatchNonceSHA256,
+	_, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewTerminalChallengeV1(g, "verifier-device", "management-observer", "observer-key-1", 1,
+		digestTerminalBytes(private.Public().(ed25519.PublicKey)), b.DispatchNonceSHA256,
 		"44444444-4444-4444-8444-444444444444", nonce, now)
 	if err != nil {
 		t.Fatal(err)
@@ -35,10 +40,6 @@ func terminalAttestationFixture(t *testing.T) (TerminalChallengeV1, EffectGrant,
 		SurvivingHeadroom: true, ServicePassing: true,
 	}
 	a, err := NewTerminalAttestationV1(c, o, now.Add(time.Second), strings.Repeat("6", 64))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, private, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +108,15 @@ func TestTerminalAttestationRejectsTamperReplayExpiryAndKeyRotation(t *testing.T
 	changed = envelope
 	changed.Attestation.Purpose = "effect-issue"
 	verify("cross-purpose replay", changed, c, g, "management-observer", "observer-key-1", pub, now)
+	changed = envelope
+	changed.KeyID = "observer-key-2"
+	verify("relabeled envelope key", changed, c, g, "management-observer", "observer-key-2", pub, now)
+	changed = envelope
+	changed.Attestation.TrustGeneration++
+	verify("changed trust generation", changed, c, g, "management-observer", "observer-key-1", pub, now)
+	changed = envelope
+	changed.Attestation.Observation.Backend.Serial++
+	verify("backend serial jump", resignTerminal(t, changed.Attestation, private), c, g, "management-observer", "observer-key-1", pub, now)
 	otherChallenge := c
 	otherChallenge.ID = "99999999-9999-4999-8999-999999999999"
 	verify("another challenge", envelope, otherChallenge, g, "management-observer", "observer-key-1", pub, now)

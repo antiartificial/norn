@@ -29,30 +29,33 @@ var ErrTerminalAttestation = errors.New("offline terminal attestation is invalid
 // epoch/fence and enforce one terminal result per attempt. This data type does
 // not perform that ledger CAS or grant an effect.
 type TerminalChallengeV1 struct {
-	SchemaVersion       string    `json:"schemaVersion"`
-	Purpose             string    `json:"purpose"`
-	ID                  string    `json:"id"`
-	PlanID              string    `json:"planId"`
-	AttemptID           string    `json:"attemptId"`
-	GrantID             string    `json:"grantId"`
-	GrantSHA256         string    `json:"grantSHA256"`
-	BindingSHA256       string    `json:"bindingSHA256"`
-	DispatchNonceSHA256 string    `json:"dispatchNonceSHA256"`
-	HolderID            string    `json:"holderId"`
-	TargetID            string    `json:"targetId"`
-	FenceGeneration     uint64    `json:"fenceGeneration"`
-	AuthorityEpoch      int64     `json:"authorityEpoch"`
-	SourceCommit        string    `json:"sourceCommit"`
-	SavedPlanSHA256     string    `json:"savedPlanSHA256"`
-	EffectSHA256        string    `json:"effectSHA256"`
-	ProviderAccountUUID string    `json:"providerAccountUUID"`
-	NodeName            string    `json:"nodeName"`
-	DropletID           string    `json:"dropletId"`
-	VerifierSubject     string    `json:"verifierSubject"`
-	ObserverSubject     string    `json:"observerSubject"`
-	Nonce               string    `json:"nonce"`
-	IssuedAt            time.Time `json:"issuedAt"`
-	ExpiresAt           time.Time `json:"expiresAt"`
+	SchemaVersion           string    `json:"schemaVersion"`
+	Purpose                 string    `json:"purpose"`
+	ID                      string    `json:"id"`
+	PlanID                  string    `json:"planId"`
+	AttemptID               string    `json:"attemptId"`
+	GrantID                 string    `json:"grantId"`
+	GrantSHA256             string    `json:"grantSHA256"`
+	BindingSHA256           string    `json:"bindingSHA256"`
+	DispatchNonceSHA256     string    `json:"dispatchNonceSHA256"`
+	HolderID                string    `json:"holderId"`
+	TargetID                string    `json:"targetId"`
+	FenceGeneration         uint64    `json:"fenceGeneration"`
+	AuthorityEpoch          int64     `json:"authorityEpoch"`
+	SourceCommit            string    `json:"sourceCommit"`
+	SavedPlanSHA256         string    `json:"savedPlanSHA256"`
+	EffectSHA256            string    `json:"effectSHA256"`
+	ProviderAccountUUID     string    `json:"providerAccountUUID"`
+	NodeName                string    `json:"nodeName"`
+	DropletID               string    `json:"dropletId"`
+	VerifierSubject         string    `json:"verifierSubject"`
+	ObserverSubject         string    `json:"observerSubject"`
+	ObserverKeyID           string    `json:"observerKeyId"`
+	TrustGeneration         uint64    `json:"trustGeneration"`
+	ObserverPublicKeySHA256 string    `json:"observerPublicKeySHA256"`
+	Nonce                   string    `json:"nonce"`
+	IssuedAt                time.Time `json:"issuedAt"`
+	ExpiresAt               time.Time `json:"expiresAt"`
 }
 
 // NewTerminalChallengeV1 accepts caller-supplied random nonce bytes so the
@@ -64,8 +67,9 @@ func GenerateTerminalChallengeNonce() ([]byte, error) {
 	return nonce, err
 }
 
-func NewTerminalChallengeV1(g EffectGrant, verifierSubject, observerSubject, dispatchNonceSHA256, holderID string, nonce []byte, now time.Time) (TerminalChallengeV1, error) {
+func NewTerminalChallengeV1(g EffectGrant, verifierSubject, observerSubject, observerKeyID string, trustGeneration uint64, observerPublicKeySHA256, dispatchNonceSHA256, holderID string, nonce []byte, now time.Time) (TerminalChallengeV1, error) {
 	if len(nonce) != 32 || !validTerminalGrant(g) || !validSubject(verifierSubject) || !validSubject(observerSubject) ||
+		!validSubject(observerKeyID) || trustGeneration == 0 || !hex64.MatchString(observerPublicKeySHA256) ||
 		!hex64.MatchString(dispatchNonceSHA256) || uuid.Validate(holderID) != nil ||
 		now.IsZero() || now.Before(*g.ConsumedAt) {
 		return TerminalChallengeV1{}, ErrTerminalAttestation
@@ -84,7 +88,9 @@ func NewTerminalChallengeV1(g EffectGrant, verifierSubject, observerSubject, dis
 		SavedPlanSHA256: g.SavedPlanSHA256, EffectSHA256: g.EffectSHA256,
 		ProviderAccountUUID: g.ProviderAccountUUID, NodeName: g.NodeName, DropletID: g.DropletID,
 		VerifierSubject: verifierSubject, ObserverSubject: observerSubject,
-		Nonce: base64.RawURLEncoding.EncodeToString(nonce), IssuedAt: now.UTC(),
+		ObserverKeyID: observerKeyID, TrustGeneration: trustGeneration,
+		ObserverPublicKeySHA256: observerPublicKeySHA256,
+		Nonce:                   base64.RawURLEncoding.EncodeToString(nonce), IssuedAt: now.UTC(),
 		ExpiresAt: now.UTC().Add(5 * time.Minute),
 	}
 	if c.ValidateForGrant(g, now) != nil {
@@ -120,6 +126,7 @@ func (c TerminalChallengeV1) ValidateForGrant(g EffectGrant, now time.Time) erro
 		c.EffectSHA256 != g.EffectSHA256 || c.ProviderAccountUUID != g.ProviderAccountUUID ||
 		c.NodeName != g.NodeName || c.DropletID != g.DropletID ||
 		!validSubject(c.VerifierSubject) || !validSubject(c.ObserverSubject) ||
+		!validSubject(c.ObserverKeyID) || c.TrustGeneration == 0 || !hex64.MatchString(c.ObserverPublicKeySHA256) ||
 		c.IssuedAt.IsZero() || c.IssuedAt.Before(*g.ConsumedAt) ||
 		!c.ExpiresAt.After(c.IssuedAt) || c.ExpiresAt.Sub(c.IssuedAt) > 5*time.Minute ||
 		now.Before(c.IssuedAt) || !now.Before(c.ExpiresAt) {
@@ -153,35 +160,38 @@ func DecodeTerminalChallengeV1(raw []byte) (TerminalChallengeV1, error) {
 // source commit and plan/effect digests. RawJournalSHA256 identifies the
 // immutable observer-owned transcript; the receipt must retain that transcript.
 type TerminalAttestationV1 struct {
-	SchemaVersion          string              `json:"schemaVersion"`
-	Purpose                string              `json:"purpose"`
-	ChallengeID            string              `json:"challengeId"`
-	ChallengeSHA256        string              `json:"challengeSHA256"`
-	Nonce                  string              `json:"nonce"`
-	PlanID                 string              `json:"planId"`
-	AttemptID              string              `json:"attemptId"`
-	GrantID                string              `json:"grantId"`
-	GrantSHA256            string              `json:"grantSHA256"`
-	BindingSHA256          string              `json:"bindingSHA256"`
-	DispatchNonceSHA256    string              `json:"dispatchNonceSHA256"`
-	HolderID               string              `json:"holderId"`
-	TargetID               string              `json:"targetId"`
-	FenceGeneration        uint64              `json:"fenceGeneration"`
-	AuthorityEpoch         int64               `json:"authorityEpoch"`
-	SourceCommit           string              `json:"sourceCommit"`
-	SavedPlanSHA256        string              `json:"savedPlanSHA256"`
-	EffectSHA256           string              `json:"effectSHA256"`
-	ProviderAccountUUID    string              `json:"providerAccountUUID"`
-	NodeName               string              `json:"nodeName"`
-	DropletID              string              `json:"dropletId"`
-	ObserverSubject        string              `json:"observerSubject"`
-	ObservedFrom           time.Time           `json:"observedFrom"`
-	ObservedTo             time.Time           `json:"observedTo"`
-	ProviderEvidenceSHA256 string              `json:"providerEvidenceSHA256"`
-	BackendEvidenceSHA256  string              `json:"backendEvidenceSHA256"`
-	WorkloadEvidenceSHA256 string              `json:"workloadEvidenceSHA256"`
-	RawJournalSHA256       string              `json:"rawJournalSHA256"`
-	Observation            TerminalObservation `json:"observation"`
+	SchemaVersion           string              `json:"schemaVersion"`
+	Purpose                 string              `json:"purpose"`
+	ChallengeID             string              `json:"challengeId"`
+	ChallengeSHA256         string              `json:"challengeSHA256"`
+	Nonce                   string              `json:"nonce"`
+	PlanID                  string              `json:"planId"`
+	AttemptID               string              `json:"attemptId"`
+	GrantID                 string              `json:"grantId"`
+	GrantSHA256             string              `json:"grantSHA256"`
+	BindingSHA256           string              `json:"bindingSHA256"`
+	DispatchNonceSHA256     string              `json:"dispatchNonceSHA256"`
+	HolderID                string              `json:"holderId"`
+	TargetID                string              `json:"targetId"`
+	FenceGeneration         uint64              `json:"fenceGeneration"`
+	AuthorityEpoch          int64               `json:"authorityEpoch"`
+	SourceCommit            string              `json:"sourceCommit"`
+	SavedPlanSHA256         string              `json:"savedPlanSHA256"`
+	EffectSHA256            string              `json:"effectSHA256"`
+	ProviderAccountUUID     string              `json:"providerAccountUUID"`
+	NodeName                string              `json:"nodeName"`
+	DropletID               string              `json:"dropletId"`
+	ObserverSubject         string              `json:"observerSubject"`
+	ObserverKeyID           string              `json:"observerKeyId"`
+	TrustGeneration         uint64              `json:"trustGeneration"`
+	ObserverPublicKeySHA256 string              `json:"observerPublicKeySHA256"`
+	ObservedFrom            time.Time           `json:"observedFrom"`
+	ObservedTo              time.Time           `json:"observedTo"`
+	ProviderEvidenceSHA256  string              `json:"providerEvidenceSHA256"`
+	BackendEvidenceSHA256   string              `json:"backendEvidenceSHA256"`
+	WorkloadEvidenceSHA256  string              `json:"workloadEvidenceSHA256"`
+	RawJournalSHA256        string              `json:"rawJournalSHA256"`
+	Observation             TerminalObservation `json:"observation"`
 }
 
 func NewTerminalAttestationV1(c TerminalChallengeV1, observation TerminalObservation, observedFrom time.Time, rawJournalSHA256 string) (TerminalAttestationV1, error) {
@@ -198,8 +208,10 @@ func NewTerminalAttestationV1(c TerminalChallengeV1, observation TerminalObserva
 		AuthorityEpoch: c.AuthorityEpoch, SourceCommit: c.SourceCommit,
 		SavedPlanSHA256: c.SavedPlanSHA256, EffectSHA256: c.EffectSHA256,
 		ProviderAccountUUID: c.ProviderAccountUUID, NodeName: c.NodeName, DropletID: c.DropletID,
-		ObserverSubject: c.ObserverSubject, ObservedFrom: observedFrom.UTC(),
-		ObservedTo: observation.ObservedAt.UTC(), ProviderEvidenceSHA256: observation.ProviderEvidenceSHA256,
+		ObserverSubject: c.ObserverSubject, ObserverKeyID: c.ObserverKeyID,
+		TrustGeneration: c.TrustGeneration, ObserverPublicKeySHA256: c.ObserverPublicKeySHA256,
+		ObservedFrom: observedFrom.UTC(),
+		ObservedTo:   observation.ObservedAt.UTC(), ProviderEvidenceSHA256: observation.ProviderEvidenceSHA256,
 		BackendEvidenceSHA256:  observation.BackendEvidenceSHA256,
 		WorkloadEvidenceSHA256: observation.WorkloadEvidenceSHA256,
 		RawJournalSHA256:       rawJournalSHA256, Observation: observation,
@@ -226,12 +238,14 @@ func digestTerminalBytes(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func terminalSigningBytes(a TerminalAttestationV1) ([]byte, error) {
+func terminalSigningBytes(a TerminalAttestationV1, keyID string) ([]byte, error) {
 	raw, err := json.Marshal(a)
 	if err != nil {
 		return nil, ErrTerminalAttestation
 	}
-	return append([]byte(terminalSignatureDomainV1), raw...), nil
+	message := append([]byte(terminalSignatureDomainV1), []byte(keyID)...)
+	message = append(message, 0)
+	return append(message, raw...), nil
 }
 
 // Signing is deliberately separate from validation against live authority
@@ -241,7 +255,10 @@ func SignTerminalAttestationV1(a TerminalAttestationV1, keyID string, private ed
 		!validSubject(keyID) || len(private) != ed25519.PrivateKeySize {
 		return SignedTerminalAttestationV1{}, ErrTerminalAttestation
 	}
-	message, err := terminalSigningBytes(a)
+	if a.ObserverKeyID != keyID {
+		return SignedTerminalAttestationV1{}, ErrTerminalAttestation
+	}
+	message, err := terminalSigningBytes(a, keyID)
 	if err != nil {
 		return SignedTerminalAttestationV1{}, err
 	}
@@ -255,7 +272,8 @@ func VerifyTerminalAttestationV1(envelope SignedTerminalAttestationV1, c Termina
 	challengeRaw, err := json.Marshal(c)
 	if err != nil || c.ValidateForGrant(g, now) != nil || len(public) != ed25519.PublicKeySize ||
 		!validSubject(pinnedObserverSubject) || !validSubject(pinnedKeyID) ||
-		c.ObserverSubject != pinnedObserverSubject || envelope.KeyID != pinnedKeyID ||
+		c.ObserverSubject != pinnedObserverSubject || envelope.KeyID != pinnedKeyID || c.ObserverKeyID != pinnedKeyID ||
+		!equalDigest(c.ObserverPublicKeySHA256, digestTerminalBytes(public)) ||
 		a.SchemaVersion != TerminalAttestationSchemaV1 || a.Purpose != TerminalChallengePurpose || a.ChallengeID != c.ID ||
 		!equalDigest(a.ChallengeSHA256, digestTerminalBytes(challengeRaw)) || a.Nonce != c.Nonce ||
 		a.PlanID != c.PlanID || a.AttemptID != c.AttemptID || a.GrantID != c.GrantID ||
@@ -266,6 +284,8 @@ func VerifyTerminalAttestationV1(envelope SignedTerminalAttestationV1, c Termina
 		!equalDigest(a.SavedPlanSHA256, c.SavedPlanSHA256) || !equalDigest(a.EffectSHA256, c.EffectSHA256) ||
 		a.ProviderAccountUUID != c.ProviderAccountUUID || a.NodeName != c.NodeName ||
 		a.DropletID != c.DropletID || a.ObserverSubject != c.ObserverSubject ||
+		a.ObserverKeyID != c.ObserverKeyID || a.TrustGeneration != c.TrustGeneration ||
+		!equalDigest(a.ObserverPublicKeySHA256, c.ObserverPublicKeySHA256) ||
 		a.ObservedFrom.Before(c.IssuedAt) || a.ObservedTo.Before(a.ObservedFrom) ||
 		a.ObservedTo.Sub(a.ObservedFrom) > 30*time.Second ||
 		a.ObservedTo.After(now) || now.Sub(a.ObservedTo) > time.Minute ||
@@ -278,7 +298,7 @@ func VerifyTerminalAttestationV1(envelope SignedTerminalAttestationV1, c Termina
 		return VerifiedTerminalAttestationV1{}, ErrTerminalAttestation
 	}
 	signature, err := base64.RawStdEncoding.Strict().DecodeString(envelope.Signature)
-	message, messageErr := terminalSigningBytes(a)
+	message, messageErr := terminalSigningBytes(a, envelope.KeyID)
 	if err != nil || messageErr != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(public, message, signature) {
 		return VerifiedTerminalAttestationV1{}, ErrTerminalAttestation
 	}

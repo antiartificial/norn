@@ -3,6 +3,8 @@ package observerclient
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -156,14 +158,18 @@ func TestLostSubmitResponseRecoversWithoutSecondEffect(t *testing.T) {
 			Lineage: "lineage", Serial: 22, RawSHA256: strings.Repeat("d", 64)},
 		ProviderAccountUUID: "work-account", NodeName: offline.WorkNode, DropletID: offline.WorkDropletID,
 		Phase: "consumed", IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute), ConsumedAt: &consumed}
-	c, err := offline.NewTerminalChallengeV1(g, "verifier", "observer", strings.Repeat("f", 64),
+	client := &flowClient{grant: g, responseLost: true}
+	source := &flowSource{}
+	runner := testRunner(client, source)
+	public := runner.PrivateKey.Public().(ed25519.PublicKey)
+	publicDigest := sha256.Sum256(public)
+	c, err := offline.NewTerminalChallengeV1(g, "verifier", "observer", runner.KeyID, 1,
+		hex.EncodeToString(publicDigest[:]), strings.Repeat("f", 64),
 		"44444444-4444-4444-8444-444444444444", make([]byte, 32), now.Add(-2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &flowClient{grant: g, challenge: c, responseLost: true}
-	source := &flowSource{}
-	runner := testRunner(client, source)
+	client.challenge = c
 	runner.Clock = func() time.Time { return now }
 	got, err := runner.Run(context.Background(), g.PlanID, g.AttemptID)
 	if err != nil || got.EvidenceSHA256 != strings.Repeat("a", 64) || client.submissions != 1 || client.reads != 2 || source.calls != 1 {
