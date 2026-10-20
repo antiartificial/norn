@@ -31,21 +31,24 @@ type offlineTerminalAttestationStore interface {
 // This trust is supplied only by a future target-etcd-controller wiring path.
 // It must never be sourced from the PostgreSQL management authority config.
 type offlineTerminalTransportTrust struct {
-	runnerSubject   string
-	verifierSubject string
-	observerSubject string
+	runnerSubject    string
+	verifierSubject  string
+	observerSubject  string
+	verifierDeviceID string
+	observerDeviceID string
 }
 
 func (t offlineTerminalTransportTrust) valid() bool {
 	return t.runnerSubject != "" && t.verifierSubject != "" && t.observerSubject != "" &&
+		t.verifierDeviceID != "" && t.observerDeviceID != "" && t.verifierDeviceID != t.observerDeviceID &&
 		t.runnerSubject != t.verifierSubject && t.runnerSubject != t.observerSubject && t.verifierSubject != t.observerSubject &&
-		!strings.ContainsAny(t.runnerSubject+t.verifierSubject+t.observerSubject, " \t\r\n")
+		!strings.ContainsAny(t.runnerSubject+t.verifierSubject+t.observerSubject+t.verifierDeviceID+t.observerDeviceID, " \t\r\n")
 }
 
-func offlineTerminalPrincipal(r *http.Request, trust offlineTerminalTransportTrust, identities offlineIdentityStore, subject, scope string) (handler.AccessPrincipal, bool) {
+func offlineTerminalPrincipal(r *http.Request, trust offlineTerminalTransportTrust, identities offlineIdentityStore, subject, scope, deviceID string) (handler.AccessPrincipal, bool) {
 	principal, ok := handler.AccessPrincipalFromRequest(r)
 	if !ok || !trust.valid() || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy ||
-		principal.Subject != subject || principal.TokenID == "" || principal.DeviceID == "" || principal.CI != nil ||
+		principal.Subject != subject || principal.TokenID == "" || principal.DeviceID != deviceID || principal.CI != nil ||
 		len(principal.Scopes) != 1 || principal.Scopes[0] != scope ||
 		!offlineReservationDeviceActive(r.Context(), identities, principal.DeviceID) {
 		return handler.AccessPrincipal{}, false
@@ -85,14 +88,14 @@ func registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router chi.Router
 		handler.WriteControlProblem(w, r, status, code, "terminal state is absent or inconsistent")
 	}
 	verifier := func(w http.ResponseWriter, r *http.Request) bool {
-		if _, ok := offlineTerminalPrincipal(r, trust, identities, trust.verifierSubject, handler.ScopeFleetVerify); !ok {
+		if _, ok := offlineTerminalPrincipal(r, trust, identities, trust.verifierSubject, handler.ScopeFleetVerify, trust.verifierDeviceID); !ok {
 			handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_verifier_invalid", "a distinct pinned active device-bound verifier is required")
 			return false
 		}
 		return true
 	}
 	observer := func(w http.ResponseWriter, r *http.Request) bool {
-		if _, ok := offlineTerminalPrincipal(r, trust, identities, trust.observerSubject, handler.ScopeFleetObserve); !ok {
+		if _, ok := offlineTerminalPrincipal(r, trust, identities, trust.observerSubject, handler.ScopeFleetObserve, trust.observerDeviceID); !ok {
 			handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_observer_invalid", "a distinct pinned active device-bound observer is required")
 			return false
 		}

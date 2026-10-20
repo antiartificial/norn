@@ -78,7 +78,8 @@ func terminalTransportTestRouter(t *testing.T, fixture *terminalTransportStoreFi
 	}
 	router := chi.NewRouter()
 	registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router, auth, auth, terminalTransportIdentity{}, fixture,
-		offlineTerminalTransportTrust{runnerSubject: "runner", verifierSubject: "verifier", observerSubject: "observer"})
+		offlineTerminalTransportTrust{runnerSubject: "runner", verifierSubject: "verifier", observerSubject: "observer",
+			verifierDeviceID: "verifier-device", observerDeviceID: "observer-device"})
 	return router, &principal
 }
 
@@ -148,6 +149,7 @@ func TestOfflineTerminalObserverRoutesRequireDistinctDeviceScopeAndExactRecords(
 		func(p *handler.AccessPrincipal) { p.Scopes = []string{handler.ScopeFleetVerify} },
 		func(p *handler.AccessPrincipal) { p.Scopes = []string{handler.ScopeFleetObserve, handler.ScopeAPIRead} },
 		func(p *handler.AccessPrincipal) { p.DeviceID = "inactive" },
+		func(p *handler.AccessPrincipal) { p.DeviceID = "verifier-device" },
 		func(p *handler.AccessPrincipal) { p.CI = &handler.CIIdentity{} },
 	} {
 		candidate := observer
@@ -172,6 +174,14 @@ func TestOfflineTerminalObserverRoutesRequireDistinctDeviceScopeAndExactRecords(
 	fixture.evidence.AttemptID = terminalGrantID
 	if got := terminalRequest(router, http.MethodGet, base+"evidence", "").Code; got != http.StatusConflict {
 		t.Fatalf("wrong terminal exposed: %d", got)
+	}
+}
+
+func TestOfflineTerminalTransportRejectsSharedVerifierObserverDevice(t *testing.T) {
+	trust := offlineTerminalTransportTrust{runnerSubject: "runner", verifierSubject: "verifier", observerSubject: "observer",
+		verifierDeviceID: "shared-device", observerDeviceID: "shared-device"}
+	if trust.valid() {
+		t.Fatal("verifier and observer may not share one device")
 	}
 }
 
