@@ -298,20 +298,35 @@ func effectChallengeMatchesGrant(challenge offline.EffectChallengeV1, grant offl
 	return challenge.GrantID == grant.ID && challenge.GrantSHA256 == hex.EncodeToString(digest[:])
 }
 
-// GetOfflineEffectChallenge recovers the immutable exact challenge, including
-// after expiry. Readback is not permission to apply a provider effect.
+// GetOfflineEffectChallenge reads the immutable issue event independently of
+// current eligibility. It works after grant transitions, trust rotation, or
+// fence release and never authorizes accepting an attestation or an effect.
 func (s *V3OperationStore) GetOfflineEffectChallenge(ctx context.Context, planID, purpose string) (offline.EffectChallengeV1, error) {
 	if s == nil || uuid.Validate(planID) != nil || !validEffectChallengePurpose(purpose) {
 		return offline.EffectChallengeV1{}, offline.ErrEffectAttestation
 	}
-	snapshot, err := s.readEffectChallengeSnapshot(ctx, planID, purpose)
+	result, err := s.kv.Txn(ctx).Then(clientv3.OpGet(s.offlineEffectChallengeKey(planID, purpose)),
+		clientv3.OpGet(s.offlineEffectChallengeEventKey(planID, purpose))).Commit()
 	if err != nil {
 		return offline.EffectChallengeV1{}, err
 	}
-	if !snapshot.hasChallenge {
+	if len(result.Responses) != 2 || len(result.Responses[0].GetResponseRange().Kvs) > 1 ||
+		len(result.Responses[1].GetResponseRange().Kvs) > 1 {
+		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
+	}
+	head, event := result.Responses[0].GetResponseRange().Kvs, result.Responses[1].GetResponseRange().Kvs
+	if len(head) == 0 && len(event) == 0 {
 		return offline.EffectChallengeV1{}, ErrNotFound
 	}
-	return snapshot.challenge, nil
+	if len(head) != 1 || len(event) != 1 || !bytes.Equal(head[0].Value, event[0].Value) {
+		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
+	}
+	challenge, err := offline.DecodeEffectChallengeV1(head[0].Value)
+	if err != nil || challenge.PlanID != planID || challenge.Purpose != purpose ||
+		uuid.Validate(challenge.AttemptID) != nil || uuid.Validate(challenge.ID) != nil {
+		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
+	}
+	return challenge, nil
 }
 
 // IssueOfflineEffectChallenge makes one immutable challenge under the exact
@@ -323,6 +338,16 @@ func (s *V3OperationStore) IssueOfflineEffectChallenge(ctx context.Context, plan
 func (s *V3OperationStore) issueOfflineEffectChallengeWithClock(ctx context.Context, planID, attemptID, purpose, observerSubject string, clock func() time.Time) (offline.EffectChallengeV1, error) {
 	if s == nil || clock == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || !validEffectChallengePurpose(purpose) {
 		return offline.EffectChallengeV1{}, offline.ErrEffectAttestation
+	}
+	// Replay is historical recovery only. A caller cannot use this answer to
+	// bypass the live fence/trust/grant checks required by Submit.
+	if prior, readErr := s.GetOfflineEffectChallenge(ctx, planID, purpose); readErr == nil {
+		if prior.AttemptID != attemptID || prior.ObserverSubject != observerSubject {
+			return offline.EffectChallengeV1{}, ErrOfflineEffectChallengeConflict
+		}
+		return prior, nil
+	} else if readErr != ErrNotFound {
+		return offline.EffectChallengeV1{}, readErr
 	}
 	snapshot, err := s.readEffectChallengeSnapshot(ctx, planID, purpose)
 	if err != nil {
@@ -389,9 +414,9 @@ func (s *V3OperationStore) issueOfflineEffectChallengeWithClock(ctx context.Cont
 		return offline.EffectChallengeV1{}, err
 	}
 	if !result.Succeeded {
-		recovered, readErr := s.readEffectChallengeSnapshot(ctx, planID, purpose)
-		if readErr == nil && recovered.hasChallenge && recovered.attempt.ID == attemptID && recovered.challenge.ObserverSubject == observerSubject {
-			return recovered.challenge, nil
+		recovered, readErr := s.GetOfflineEffectChallenge(ctx, planID, purpose)
+		if readErr == nil && recovered.AttemptID == attemptID && recovered.ObserverSubject == observerSubject {
+			return recovered, nil
 		}
 		return offline.EffectChallengeV1{}, ErrOfflineEffectChallengeConflict
 	}
