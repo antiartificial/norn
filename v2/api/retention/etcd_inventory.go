@@ -16,4 +16,6 @@ var OfflineEtcdPayloadInventory = []EtcdPayloadRetention{
 	{"/v3/fleet-offline-attempts/", ClassHotEvidence, "queued attempt and binding digest; retain through terminal recovery and archive qualification"},
 	{"/v3/fleet-offline-effect-grants/", ClassCurrentState, "one-use inert grant cursor; restore with its attempt, owner consumption, shared target fence and epoch"},
 	{"/v3/fleet-offline-effect-grant-events/", ClassCurrentState, "immutable issue and consume events; restore with the grant cursor for exact GET recovery"},
+	{"/v3/fleet-offline-effect-v2/", ClassCurrentState, "effect v2 cursor; restore with owner, target fence, writer fence and complete one-shot lifecycle"},
+	{"/v3/fleet-offline-effect-v2-events/", ClassCurrentState, "immutable issue, commitment, dispatch and terminal events; incomplete history never reauthorizes DELETE"},
 }

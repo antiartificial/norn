@@ -17,6 +17,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet/lifecycle"
+	"norn/v2/api/fleet/offline"
 	"norn/v2/api/internal/integrationtest"
 	"norn/v2/api/store"
 )
@@ -28,6 +29,10 @@ type offlineRestoreManifest struct {
 	AuthorizationID string `json:"authorizationId"`
 	AttemptID       string `json:"attemptId"`
 	BindingSHA256   string `json:"bindingSHA256"`
+	GrantID         string `json:"grantId"`
+	RunnerSubject   string `json:"runnerSubject"`
+	RunnerTokenID   string `json:"runnerTokenId"`
+	RunnerDeviceID  string `json:"runnerDeviceId"`
 }
 
 func offlineRestoreBase() string {
@@ -76,16 +81,49 @@ func fleetOfflineRestoreSeed(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	planID := uuid.NewString()
 	offlineTestPlan(h, planID)
-	binding, approval := offlineTestApproval(t, offlineTestBinding(planID, target.TargetID, now), now)
-	if _, err := h.s.ReserveOfflineDispatch(ctx, binding, approval, now); err != nil {
+	auth := NewAuthStore(h.s.kv, h.s.prefix)
+	deviceID, tokenID := uuid.NewString(), "norn_"+uuid.NewString()
+	if err := auth.CreateAccessDevice(ctx, &store.AccessDevice{ID: deviceID, Name: "restore-offline-v2", Platform: "fleet-offline-runner", CreatedAt: now.Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := h.s.AdmitOfflineAttempt(ctx, offlineAttemptClaim(binding), binding.RunnerPrincipalSubject, uuid.NewString(), now)
+	subject := "fleet-offline-device:" + deviceID
+	if err := auth.RecordAccessToken(ctx, &store.AccessToken{JTI: tokenID, DeviceID: deviceID, Subject: subject, Scopes: []string{"fleet:offline-attempt"}, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	proof, err := auth.ProveOfflineRunner(ctx, subject, now)
 	if err != nil {
 		t.Fatal(err)
 	}
+	binding := offlineTestBinding(planID, target.TargetID, now)
+	binding.SchemaVersion, binding.CandidateSHA256, binding.ProviderNodes = offline.BindingSchemaV2, strings.Repeat("9", 64), offlineProviderNodesV2()
+	binding.RunnerPrincipalSubject = subject
+	binding, approval := offlineTestApproval(t, binding, now)
+	if _, err := h.s.ReserveOfflineDispatchWithRunnerProof(ctx, binding, approval, proof, now); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.s.AdmitOfflineAttemptWithRunnerProof(ctx, offlineAttemptClaim(binding), proof, uuid.NewString(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &offlineEffectV2Fixture{h: h, auth: auth, binding: binding, attempt: attempt, proof: proof, now: now}
+	grant := f.issue(t)
+	f.commit(t, grant)
+	if _, err := h.s.DispatchOfflineDeleteV2(ctx, planID, attempt.ID, grant.ID, proof, f.effectObservation(now.Add(3*time.Second)), now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	terminalAt := now.Add(4 * time.Second)
+	terminal := offline.TerminalObservationV2{PlanID: planID, AttemptID: attempt.ID, GrantID: grant.ID, BindingSHA256: attempt.BindingSHA256,
+		TargetID: binding.TargetID, TargetFenceGeneration: binding.FenceGeneration, AuthorityEpoch: 1, WriterFence: grant.WriterFence,
+		ObservedAt: terminalAt, EvidenceSHA256: strings.Repeat("1", 64), ProviderEvidenceSHA256: strings.Repeat("2", 64),
+		BackendEvidenceSHA256: strings.Repeat("3", 64), WorkloadEvidenceSHA256: strings.Repeat("4", 64), ProviderAbsent: true,
+		BackendAdvanced: true, BackendTargetAbsent: true, AllNamespacesInspected: true, WorkloadTargetAbsent: true,
+		SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true}
+	if _, err := h.s.RecordOfflineTerminalV2(ctx, planID, attempt.ID, grant.ID, proof, terminal, terminalAt); err != nil {
+		t.Fatal(err)
+	}
 	manifest := offlineRestoreManifest{Authority: authority, PlanID: planID, TargetID: target.TargetID,
-		AuthorizationID: binding.OwnerAuthorizationID, AttemptID: attempt.ID, BindingSHA256: attempt.BindingSHA256}
+		AuthorizationID: binding.OwnerAuthorizationID, AttemptID: attempt.ID, BindingSHA256: attempt.BindingSHA256,
+		GrantID: grant.ID, RunnerSubject: subject, RunnerTokenID: tokenID, RunnerDeviceID: deviceID}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +160,15 @@ func fleetOfflineRestoreVerify(t *testing.T) {
 	attempt, err := s.GetOfflineAttempt(ctx, manifest.PlanID)
 	if err != nil || attempt.ID != manifest.AttemptID || attempt.BindingSHA256 != manifest.BindingSHA256 {
 		t.Fatalf("restored attempt: %+v, %v", attempt, err)
+	}
+	auth := NewAuthStore(s.kv, s.prefix)
+	proof, err := auth.ProveOfflineRunner(ctx, manifest.RunnerSubject, time.Now().UTC())
+	if err != nil || proof.TokenID != manifest.RunnerTokenID || proof.DeviceID != manifest.RunnerDeviceID {
+		t.Fatalf("restored runner proof: %+v %v", proof, err)
+	}
+	grant, err := s.RecoverOfflineEffectGrantV2(ctx, manifest.PlanID, manifest.AttemptID, proof, time.Now().UTC())
+	if err != nil || grant.ID != manifest.GrantID || grant.Phase != "terminal_verified" || grant.Commitment == nil || grant.Dispatch == nil || grant.Terminal == nil {
+		t.Fatalf("restored v2 event chain: %+v %v", grant, err)
 	}
 	fence, _, err := s.GetFleetTargetFence(ctx, manifest.TargetID)
 	if err != nil || !fence.Held || fence.HolderPlanID != manifest.PlanID ||

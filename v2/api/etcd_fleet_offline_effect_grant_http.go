@@ -36,12 +36,18 @@ func offlineEffectNoStore(next http.Handler) http.Handler {
 }
 
 func registerEtcdFleetOfflineEffectGrantRoutes(router chi.Router, auth func(http.Handler) http.Handler,
-	grants offlineEffectGrantStore, identities *etcdstore.AuthStore) {
+	grants offlineEffectGrantStore, identities *etcdstore.AuthStore, v2Source ...OfflineEffectEvidenceSourceV2) {
 	base := "/api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants"
 	router.With(offlineEffectNoStore, auth).Post(base, etcdOfflineEffectGrantIssue(grants, identities))
 	router.With(offlineEffectNoStore, auth).Get(base, etcdOfflineEffectGrantRecover(grants, identities, false))
 	router.With(offlineEffectNoStore, auth).Get(base+"/{grantID}", etcdOfflineEffectGrantRecover(grants, identities, true))
 	router.With(offlineEffectNoStore, auth).Post(base+"/{grantID}/consume", etcdOfflineEffectGrantConsume(grants, identities))
+	var source OfflineEffectEvidenceSourceV2
+	if len(v2Source) > 0 {
+		source = v2Source[0]
+	}
+	v2Store, _ := grants.(offlineEffectV2Store)
+	registerEtcdFleetOfflineEffectV2Routes(router, auth, v2Store, identities, source)
 }
 
 func offlineEffectGrantProof(w http.ResponseWriter, r *http.Request, identities offlineEffectIdentityStore) (etcdstore.OfflineRunnerProof, bool) {

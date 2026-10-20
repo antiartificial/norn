@@ -26,11 +26,42 @@ func goodBinding() Binding {
 func claimOf(b Binding) AttemptClaim {
 	return AttemptClaim{PlanID: b.PlanID, TargetID: b.TargetID, Resource: b.Resource, SourceCommit: b.SourceCommit,
 		SavedPlanSHA256: b.SavedPlanSHA256, EffectSHA256: b.EffectSHA256,
+		CandidateSHA256: b.CandidateSHA256, ProviderNodes: b.ProviderNodes,
 		Backend: b.Backend, ProviderAccountUUID: b.ProviderAccountUUID,
 		NodeName: b.NodeName, DropletID: b.DropletID, OwnerAuthorizationID: b.OwnerAuthorizationID,
 		OwnerEnvelopeSHA256:    b.OwnerEnvelopeSHA256,
 		RunnerPrincipalSubject: b.RunnerPrincipalSubject, DispatchNonceSHA256: b.DispatchNonceSHA256,
 		FenceGeneration: b.FenceGeneration}
+}
+
+func TestBindingV2PinsFullProviderInventory(t *testing.T) {
+	b := goodBinding()
+	b.SchemaVersion = BindingSchemaV2
+	b.CandidateSHA256 = strings.Repeat("1", 64)
+	for i, name := range workNodeNames {
+		id := "90000000" + string(rune('1'+i))
+		if name == WorkNode {
+			id = WorkDropletID
+		}
+		b.ProviderNodes = append(b.ProviderNodes, ProviderNode{Name: name, ProviderID: id})
+	}
+	if err := b.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	claim := claimOf(b)
+	if err := b.MatchAttempt(claim, b.CreatedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	claim.ProviderNodes = append([]ProviderNode(nil), claim.ProviderNodes...)
+	claim.ProviderNodes[0].ProviderID = "42"
+	if !errors.Is(b.MatchAttempt(claim, b.CreatedAt.Add(time.Minute)), ErrAttemptMismatch) {
+		t.Fatal("changed provider inventory accepted")
+	}
+	legacy := b
+	legacy.SchemaVersion = BindingSchema
+	if !errors.Is(legacy.Validate(), ErrInvalidBinding) {
+		t.Fatal("v2 fields accepted by v1")
+	}
 }
 
 func TestBindingFailsClosedForMissingOrChangedIdentity(t *testing.T) {

@@ -14,9 +14,14 @@ import (
 
 func signedApprovalFor(t *testing.T, b Binding, key ed25519.PrivateKey) (Binding, SignedApproval) {
 	t.Helper()
-	intent := ApprovalIntent{SchemaVersion: ApprovalSchema, AuthorizationID: strings.Repeat("9", 64), AllowDestructive: true,
+	schema := ApprovalSchema
+	if b.SchemaVersion == BindingSchemaV2 {
+		schema = ApprovalSchemaV2
+	}
+	intent := ApprovalIntent{SchemaVersion: schema, AuthorizationID: strings.Repeat("9", 64), AllowDestructive: true,
 		PlanID: b.PlanID, TargetID: b.TargetID, Resource: b.Resource, SourceCommit: b.SourceCommit,
-		SavedPlanSHA256: b.SavedPlanSHA256, EffectSHA256: b.EffectSHA256, Backend: b.Backend,
+		SavedPlanSHA256: b.SavedPlanSHA256, EffectSHA256: b.EffectSHA256,
+		CandidateSHA256: b.CandidateSHA256, ProviderNodes: b.ProviderNodes, Backend: b.Backend,
 		ProviderAccountUUID: b.ProviderAccountUUID, NodeName: b.NodeName, DropletID: b.DropletID,
 		RunnerPrincipalSubject: b.RunnerPrincipalSubject, DispatchNonceSHA256: b.DispatchNonceSHA256,
 		FenceGeneration: b.FenceGeneration, ExpiresAt: b.ExpiresAt}
@@ -49,7 +54,9 @@ func TestSignedApprovalExactBindingAndPinnedKey(t *testing.T) {
 	}
 	changedAfterVerification := b
 	changedAfterVerification.EffectSHA256 = strings.Repeat("1", 64)
-	if verified.Match(changedAfterVerification) { t.Fatal("verified token accepted a changed binding") }
+	if verified.Match(changedAfterVerification) {
+		t.Fatal("verified token accepted a changed binding")
+	}
 	wrong := b
 	wrong.Backend.RawSHA256 = strings.Repeat("1", 64)
 	if _, err := VerifySignedApproval(a, a.KeyID, key.Public().(ed25519.PublicKey), wrong, now); !errors.Is(err, ErrInvalidApproval) {

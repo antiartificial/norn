@@ -47,10 +47,15 @@ func offlineTestApproval(t *testing.T, binding offline.Binding, now time.Time) (
 func offlineTestApprovalID(t *testing.T, binding offline.Binding, now time.Time, authorizationID string) (offline.Binding, offline.VerifiedApproval) {
 	t.Helper()
 	binding.OwnerAuthorizationID = authorizationID
-	intent := offline.ApprovalIntent{SchemaVersion: offline.ApprovalSchema, AuthorizationID: authorizationID,
+	approvalSchema := offline.ApprovalSchema
+	if binding.SchemaVersion == offline.BindingSchemaV2 {
+		approvalSchema = offline.ApprovalSchemaV2
+	}
+	intent := offline.ApprovalIntent{SchemaVersion: approvalSchema, AuthorizationID: authorizationID,
 		AllowDestructive: true, PlanID: binding.PlanID, TargetID: binding.TargetID, Resource: binding.Resource,
 		SourceCommit: binding.SourceCommit, SavedPlanSHA256: binding.SavedPlanSHA256,
-		EffectSHA256: binding.EffectSHA256, Backend: binding.Backend,
+		EffectSHA256: binding.EffectSHA256, CandidateSHA256: binding.CandidateSHA256,
+		ProviderNodes: binding.ProviderNodes, Backend: binding.Backend,
 		ProviderAccountUUID: binding.ProviderAccountUUID, NodeName: binding.NodeName,
 		DropletID: binding.DropletID, RunnerPrincipalSubject: binding.RunnerPrincipalSubject,
 		DispatchNonceSHA256: binding.DispatchNonceSHA256, FenceGeneration: binding.FenceGeneration,
@@ -77,6 +82,7 @@ func offlineAttemptClaim(binding offline.Binding) offline.AttemptClaim {
 	return offline.AttemptClaim{PlanID: binding.PlanID, TargetID: binding.TargetID,
 		Resource: binding.Resource, SourceCommit: binding.SourceCommit,
 		SavedPlanSHA256: binding.SavedPlanSHA256, EffectSHA256: binding.EffectSHA256,
+		CandidateSHA256: binding.CandidateSHA256, ProviderNodes: binding.ProviderNodes,
 		Backend: binding.Backend, ProviderAccountUUID: binding.ProviderAccountUUID,
 		NodeName: binding.NodeName, DropletID: binding.DropletID,
 		OwnerAuthorizationID: binding.OwnerAuthorizationID, OwnerEnvelopeSHA256: binding.OwnerEnvelopeSHA256,
