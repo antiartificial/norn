@@ -63,6 +63,93 @@ func TestOfflineDeleteCommitmentCASRecoveryAndRestore(t *testing.T) {
 	}
 }
 
+func TestOfflineDeleteDispatchReservationRejectsIdenticalNoncanonicalRows(t *testing.T) {
+	for name, mutate := range map[string]func([]byte) []byte{
+		"unknown field":    func(raw []byte) []byte { return append(raw[:len(raw)-1], []byte(`,"extra":true}`)...) },
+		"trailing newline": func(raw []byte) []byte { return append(append([]byte(nil), raw...), '\n') },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _, _, commitment, raw, admissionAt := admittedOfflineDelete(t)
+			if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw, func(context.Context, string, string, string) error { return nil }, func() time.Time { return admissionAt }); err != nil {
+				t.Fatal(err)
+			}
+			head, err := h.s.kv.Get(h.ctx(), h.s.offlineDeleteDispatchReservationKey(commitment.PlanID))
+			if err != nil || len(head.Kvs) != 1 {
+				t.Fatalf("reservation: %v", err)
+			}
+			forged := mutate(append([]byte(nil), head.Kvs[0].Value...))
+			if _, err := h.s.kv.Txn(h.ctx()).Then(
+				clientv3.OpPut(h.s.offlineDeleteDispatchReservationKey(commitment.PlanID), string(forged)),
+				clientv3.OpPut(h.s.offlineDeleteDispatchReservationEventKey(commitment.PlanID), string(forged))).Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.GetOfflineDeleteDispatchReservation(h.ctx(), commitment.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+				t.Fatalf("forged rows accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestOfflineDeleteDispatchReservationReadIsOneRevision(t *testing.T) {
+	h, _, _, commitmentA, rawA, admissionAt := admittedOfflineDelete(t)
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), rawA, func(context.Context, string, string, string) error { return nil }, func() time.Time { return admissionAt }); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := h.s.readOfflineDeleteLedger(h.ctx(), commitmentA.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitmentB, rawB, err := offline.NewDeleteCommitment(rows.binding, rows.attempt, rows.grant, uuid.NewString(), uuid.NewString(), uuid.NewString(), commitmentA.CommittedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchRow, err := h.s.kv.Get(h.ctx(), h.s.offlineDeleteDispatchReservationKey(commitmentA.PlanID))
+	if err != nil || len(dispatchRow.Kvs) != 1 {
+		t.Fatalf("reservation: %v", err)
+	}
+	var dispatchA offlineDeleteDispatch
+	if json.Unmarshal(dispatchRow.Kvs[0].Value, &dispatchA) != nil {
+		t.Fatal("decode reservation")
+	}
+	dispatchB := dispatchA
+	dispatchB.CommitmentSHA256 = offline.DeleteCommitmentSHA256(rawB)
+	dispatchB.SupervisorRootID = commitmentB.SupervisorRootID
+	dispatchB.SupervisorExecutionID = commitmentB.SupervisorExecutionID
+	dispatchB.RuntimeInstanceID = commitmentB.RuntimeInstanceID
+	dispatchRawB, _ := json.Marshal(dispatchB)
+
+	write := func(commitment, dispatch []byte) error {
+		_, err := h.s.kv.Txn(h.ctx()).Then(
+			clientv3.OpPut(h.s.offlineDeleteCommitmentKey(commitmentA.PlanID), string(commitment)),
+			clientv3.OpPut(h.s.offlineDeleteCommitmentEventKey(commitmentA.PlanID), string(commitment)),
+			clientv3.OpPut(h.s.offlineDeleteDispatchReservationKey(commitmentA.PlanID), string(dispatch)),
+			clientv3.OpPut(h.s.offlineDeleteDispatchReservationEventKey(commitmentA.PlanID), string(dispatch))).Commit()
+		return err
+	}
+	errs := make(chan error, 1)
+	go func() {
+		for i := 0; i < 100; i++ {
+			if err := write(rawB, dispatchRawB); err != nil {
+				errs <- err
+				return
+			}
+			if err := write(rawA, dispatchRow.Kvs[0].Value); err != nil {
+				errs <- err
+				return
+			}
+		}
+		errs <- nil
+	}()
+	for i := 0; i < 100; i++ {
+		if _, err := h.s.GetOfflineDeleteDispatchReservation(h.ctx(), commitmentA.PlanID); err != nil {
+			t.Fatalf("torn reservation read: %v", err)
+		}
+	}
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOfflineDeleteCommitmentRefreshesGrantExpiryBeforeCAS(t *testing.T) {
 	h, b, a, g, _ := consumedOfflineGrant(t)
 	reads := 0
@@ -150,6 +237,10 @@ func TestOfflineDeleteAdmissionBindsExactLedgerAndSupervisor(t *testing.T) {
 	event, err := h.s.kv.Get(h.ctx(), h.s.offlineDeleteDispatchReservationEventKey(commitment.PlanID))
 	if err != nil || len(event.Kvs) != 1 || !bytes.Equal(head.Kvs[0].Value, event.Kvs[0].Value) {
 		t.Fatalf("dispatch reservation event mismatch: rows=%d err=%v", len(event.Kvs), err)
+	}
+	recoveredDispatch, err := h.s.GetOfflineDeleteDispatchReservation(h.ctx(), commitment.PlanID)
+	if err != nil || !bytes.Equal(recoveredDispatch, head.Kvs[0].Value) {
+		t.Fatalf("dispatch reservation recovery differs: err=%v", err)
 	}
 	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), append(append([]byte(nil), raw...), '\n'), verify,
 		func() time.Time { return admissionAt }); !errors.Is(err, offline.ErrDeleteCommitment) {

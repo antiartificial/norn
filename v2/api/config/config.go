@@ -56,12 +56,13 @@ type Config struct {
 	// recorded separately from the reviewed plan commit. Empty by default.
 	FleetLegacyRecoveryHeadBinding string
 	FleetGitHubAPIBaseURL          string
-	// Offline Fleet admission is disabled unless all three values are set.
-	// The public key is pinned server-side; the runner subject names a distinct
-	// managed device principal. These settings authorize reservation only.
+	// Offline Fleet admission is disabled unless the owner key and distinct
+	// runner/verifier subjects are set. The public key is pinned server-side;
+	// both subjects name managed device principals.
 	FleetOfflineOwnerKeyID         string
 	FleetOfflineOwnerPublicKeyFile string
 	FleetOfflineRunnerSubject      string
+	FleetOfflineVerifierSubject    string
 	// A root-owned manifest of independent, read-only effect-time observers.
 	// Empty leaves the grant transport unavailable.
 	FleetOfflineEffectConfigFile string
@@ -325,6 +326,7 @@ func Load() *Config {
 		FleetOfflineOwnerKeyID:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_KEY_ID")),
 		FleetOfflineOwnerPublicKeyFile:        strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_PUBLIC_KEY_FILE")),
 		FleetOfflineRunnerSubject:             strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_RUNNER_SUBJECT")),
+		FleetOfflineVerifierSubject:           strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_VERIFIER_SUBJECT")),
 		FleetOfflineEffectConfigFile:          strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_CONFIG_FILE")),
 		GitToken:                              os.Getenv("NORN_GIT_TOKEN"),
 		GitSSHKey:                             os.Getenv("NORN_GIT_SSH_KEY"),

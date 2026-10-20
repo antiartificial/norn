@@ -29,7 +29,7 @@ func (i offlineTestIdentity) ActiveAccessDevice(context.Context, string) (*store
 }
 
 func TestOfflineFleetTrustFailsClosed(t *testing.T) {
-	base := &config.Config{FleetAuthorityOnly: true, Profile: "staging", Environment: "staging", FleetOfflineOwnerKeyID: "owner-1", FleetOfflineRunnerSubject: "offline-runner"}
+	base := &config.Config{FleetAuthorityOnly: true, Profile: "staging", Environment: "staging", FleetOfflineOwnerKeyID: "owner-1", FleetOfflineRunnerSubject: "offline-runner", FleetOfflineVerifierSubject: "offline-verifier"}
 	if trust, err := loadOfflineFleetTrust(&config.Config{FleetAuthorityOnly: true, Environment: "staging"}); err != nil || trust != nil {
 		t.Fatalf("unset trust must disable route: %v %v", trust, err)
 	}
@@ -42,9 +42,14 @@ func TestOfflineFleetTrustFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	base.FleetOfflineOwnerPublicKeyFile = path
-	if trust, err := loadOfflineFleetTrust(base); err != nil || trust == nil || trust.runnerSubject != "offline-runner" {
+	if trust, err := loadOfflineFleetTrust(base); err != nil || trust == nil || trust.runnerSubject != "offline-runner" || trust.verifierSubject != "offline-verifier" {
 		t.Fatalf("valid trust refused: %v %v", trust, err)
 	}
+	base.FleetOfflineVerifierSubject = base.FleetOfflineRunnerSubject
+	if _, err := loadOfflineFleetTrust(base); err == nil {
+		t.Fatal("shared runner and verifier identity accepted")
+	}
+	base.FleetOfflineVerifierSubject = "offline-verifier"
 	base.Environment = "production"
 	if _, err := loadOfflineFleetTrust(base); err == nil {
 		t.Fatal("production trust accepted")
@@ -146,5 +151,38 @@ func TestOfflineRunnerPrincipalRequiresPinnedActiveDevice(t *testing.T) {
 	}
 	if check(base, offlineTestIdentity{}) {
 		t.Fatal("runner without registered active device accepted")
+	}
+}
+
+func TestOfflineVerifierPrincipalRequiresDistinctPinnedActiveDevice(t *testing.T) {
+	trust := &offlineFleetTrust{runnerSubject: "offline-runner", verifierSubject: "offline-verifier"}
+	active := offlineTestIdentity{device: &store.AccessDevice{ID: "verifier-device"}}
+	base := handler.AccessPrincipal{Source: handler.AccessPrincipalSourceManagedToken, Subject: "offline-verifier", TokenID: "verifier-token", DeviceID: "verifier-device", Scopes: []string{handler.ScopeFleetVerify}}
+	check := func(principal handler.AccessPrincipal, identities offlineTestIdentity) bool {
+		request := handler.WithAccessPrincipal(httptest.NewRequest(http.MethodGet, "/", nil), &principal)
+		_, ok := offlineVerifierPrincipal(request, trust, identities)
+		return ok
+	}
+	if !check(base, active) {
+		t.Fatal("pinned active verifier refused")
+	}
+	for name, change := range map[string]func(*handler.AccessPrincipal){
+		"runner subject": func(p *handler.AccessPrincipal) { p.Subject = "offline-runner" },
+		"runner scope":   func(p *handler.AccessPrincipal) { p.Scopes = []string{handler.ScopeFleetOperate} },
+		"extra scope":    func(p *handler.AccessPrincipal) { p.Scopes = []string{handler.ScopeFleetVerify, handler.ScopeAPIRead} },
+		"missing device": func(p *handler.AccessPrincipal) { p.DeviceID = "" },
+		"legacy":         func(p *handler.AccessPrincipal) { p.Legacy = true },
+		"ci":             func(p *handler.AccessPrincipal) { p.CI = &handler.CIIdentity{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			principal := base
+			change(&principal)
+			if check(principal, active) {
+				t.Fatal("invalid verifier accepted")
+			}
+		})
+	}
+	if check(base, offlineTestIdentity{}) {
+		t.Fatal("verifier without active device accepted")
 	}
 }

@@ -31,21 +31,23 @@ import (
 )
 
 type offlineFleetTrust struct {
-	keyID         string
-	public        ed25519.PublicKey
-	runnerSubject string
+	keyID           string
+	public          ed25519.PublicKey
+	runnerSubject   string
+	verifierSubject string
 }
 
 func loadOfflineFleetTrust(cfg *config.Config) (*offlineFleetTrust, error) {
 	if cfg == nil {
 		return nil, nil
 	}
-	keyID, path, subject := strings.TrimSpace(cfg.FleetOfflineOwnerKeyID), strings.TrimSpace(cfg.FleetOfflineOwnerPublicKeyFile), strings.TrimSpace(cfg.FleetOfflineRunnerSubject)
-	if keyID == "" && path == "" && subject == "" {
+	keyID, path := strings.TrimSpace(cfg.FleetOfflineOwnerKeyID), strings.TrimSpace(cfg.FleetOfflineOwnerPublicKeyFile)
+	subject, verifier := strings.TrimSpace(cfg.FleetOfflineRunnerSubject), strings.TrimSpace(cfg.FleetOfflineVerifierSubject)
+	if keyID == "" && path == "" && subject == "" && verifier == "" {
 		return nil, nil
 	}
-	if !cfg.FleetAuthorityOnly || cfg.Production() || cfg.ProfileID() != "staging" || cfg.EnvironmentID() != "staging" || keyID == "" || path == "" || subject == "" || strings.ContainsAny(keyID, " \t\n\r") || strings.ContainsAny(subject, " \t\n\r") {
-		return nil, fmt.Errorf("offline trust requires authority-only staging and complete pinned owner and runner identities")
+	if !cfg.FleetAuthorityOnly || cfg.Production() || cfg.ProfileID() != "staging" || cfg.EnvironmentID() != "staging" || keyID == "" || path == "" || subject == "" || verifier == "" || subject == verifier || strings.ContainsAny(keyID, " \t\n\r") || strings.ContainsAny(subject, " \t\n\r") || strings.ContainsAny(verifier, " \t\n\r") {
+		return nil, fmt.Errorf("offline trust requires authority-only staging and distinct complete pinned runner and verifier identities")
 	}
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("offline owner key path must be absolute")
@@ -72,7 +74,7 @@ func loadOfflineFleetTrust(cfg *config.Config) (*offlineFleetTrust, error) {
 	if err != nil || len(decoded) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("offline owner public key must be raw-base64 Ed25519")
 	}
-	return &offlineFleetTrust{keyID: keyID, public: ed25519.PublicKey(decoded), runnerSubject: subject}, nil
+	return &offlineFleetTrust{keyID: keyID, public: ed25519.PublicKey(decoded), runnerSubject: subject, verifierSubject: verifier}, nil
 }
 
 type offlineReserveRequest struct {
@@ -201,6 +203,7 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 		}{checkpoint, false})
 	})
 	registerEtcdFleetOfflineEffectRoutes(router, runnerAuth, identities, trust, offlineEffectAuthorityForRuntime(cfg, operations, origin...), etcdstore.NewOfflineEffectRecovery(operations))
+	registerEtcdFleetOfflineEvidenceReadRoutes(router, cfg, identities, operations, trust)
 }
 
 func offlineRunnerPrincipal(r *http.Request, trust *offlineFleetTrust, identities offlineIdentityStore) (handler.AccessPrincipal, bool) {
@@ -208,6 +211,17 @@ func offlineRunnerPrincipal(r *http.Request, trust *offlineFleetTrust, identitie
 	if !ok || trust == nil || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy ||
 		principal.Subject != trust.runnerSubject || principal.TokenID == "" || principal.DeviceID == "" || principal.CI != nil ||
 		len(principal.Scopes) != 1 || principal.Scopes[0] != handler.ScopeFleetOperate ||
+		!offlineReservationDeviceActive(r.Context(), identities, principal.DeviceID) {
+		return handler.AccessPrincipal{}, false
+	}
+	return principal, true
+}
+
+func offlineVerifierPrincipal(r *http.Request, trust *offlineFleetTrust, identities offlineIdentityStore) (handler.AccessPrincipal, bool) {
+	principal, ok := handler.AccessPrincipalFromRequest(r)
+	if !ok || trust == nil || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy ||
+		principal.Subject != trust.verifierSubject || principal.Subject == trust.runnerSubject || principal.TokenID == "" || principal.DeviceID == "" || principal.CI != nil ||
+		len(principal.Scopes) != 1 || principal.Scopes[0] != handler.ScopeFleetVerify ||
 		!offlineReservationDeviceActive(r.Context(), identities, principal.DeviceID) {
 		return handler.AccessPrincipal{}, false
 	}

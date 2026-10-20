@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,50 @@ type offlineDeleteDispatch struct {
 	State                 string    `json:"state"`
 	RetryPolicy           string    `json:"retryPolicy"`
 	AdmittedAt            time.Time `json:"admittedAt"`
+}
+
+// GetOfflineDeleteDispatchReservation returns the exact immutable reservation
+// bytes after revalidating the paired event and referenced commitment.
+func (s *V3OperationStore) GetOfflineDeleteDispatchReservation(ctx context.Context, planID string) ([]byte, error) {
+	if s == nil || uuid.Validate(planID) != nil {
+		return nil, ErrOfflineAttemptCorrupt
+	}
+	rows, extra, err := s.readOfflineDeleteLedgerWithExtra(ctx, planID,
+		s.offlineDeleteDispatchReservationKey(planID), s.offlineDeleteDispatchReservationEventKey(planID))
+	if err != nil {
+		return nil, err
+	}
+	commitment, exactCommitment, err := validateOfflineDeleteCommitment(planID, rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(extra) != 2 {
+		return nil, ErrOfflineAttemptCorrupt
+	}
+	head, event := extra[0], extra[1]
+	if len(head) == 0 && len(event) == 0 {
+		return nil, ErrNotFound
+	}
+	if len(head) == 0 || len(event) == 0 || !bytes.Equal(head, event) {
+		return nil, ErrOfflineAttemptCorrupt
+	}
+	var dispatch offlineDeleteDispatch
+	decoder := json.NewDecoder(bytes.NewReader(head))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&dispatch) != nil || decoder.Decode(&struct{}{}) != io.EOF || dispatch.SchemaVersion != offlineDeleteDispatchSchema ||
+		dispatch.PlanID != commitment.PlanID || dispatch.AttemptID != commitment.AttemptID || dispatch.GrantID != commitment.GrantID ||
+		dispatch.CommitmentSHA256 != offline.DeleteCommitmentSHA256(exactCommitment) || dispatch.TargetID != commitment.TargetID ||
+		dispatch.DropletID != commitment.DropletID || dispatch.FenceGeneration != commitment.FenceGeneration ||
+		dispatch.AuthorityEpoch != commitment.AuthorityEpoch || dispatch.SupervisorRootID != commitment.SupervisorRootID ||
+		dispatch.SupervisorExecutionID != commitment.SupervisorExecutionID || dispatch.RuntimeInstanceID != commitment.RuntimeInstanceID ||
+		dispatch.State != "admitted" || dispatch.RetryPolicy != offline.DeleteRetryPolicy || dispatch.AdmittedAt.IsZero() {
+		return nil, ErrOfflineAttemptCorrupt
+	}
+	canonical, err := json.Marshal(dispatch)
+	if err != nil || !bytes.Equal(canonical, head) {
+		return nil, ErrOfflineAttemptCorrupt
+	}
+	return append([]byte(nil), head...), nil
 }
 
 // offlineDeleteSupervisorVerifier is supplied only by the local supervised
@@ -76,56 +121,66 @@ type offlineDeleteLedgerRows struct {
 // rows at one etcd revision. A missing event or a changed source is corrupt,
 // never an invitation to issue a second provider request.
 func (s *V3OperationStore) readOfflineDeleteLedger(ctx context.Context, planID string) (offlineDeleteLedgerRows, error) {
+	rows, _, err := s.readOfflineDeleteLedgerWithExtra(ctx, planID)
+	return rows, err
+}
+
+func (s *V3OperationStore) readOfflineDeleteLedgerWithExtra(ctx context.Context, planID string, extraKeys ...string) (offlineDeleteLedgerRows, [][]byte, error) {
 	var out offlineDeleteLedgerRows
 	keys := []string{s.offlineDeleteCommitmentKey(planID), s.offlineDeleteCommitmentEventKey(planID),
 		s.offlineDispatchKey(planID), s.offlineAttemptKey(planID), s.offlineEffectGrantKey(planID),
 		s.offlineEffectGrantEventKey(planID, 1), s.offlineEffectGrantEventKey(planID, 2),
 		s.offlineCheckpointKey(planID), s.offlineCheckpointEventKey(planID, 1)}
+	keys = append(keys, extraKeys...)
 	ops := make([]clientv3.Op, 0, len(keys))
 	for _, key := range keys {
 		ops = append(ops, clientv3.OpGet(key))
 	}
 	response, err := s.kv.Txn(ctx).Then(ops...).Commit()
 	if err != nil {
-		return out, err
+		return out, nil, err
 	}
 	if len(response.Responses) != len(keys) {
-		return out, ErrOfflineAttemptCorrupt
+		return out, nil, ErrOfflineAttemptCorrupt
 	}
-	out.raw = make([][]byte, len(keys))
-	out.revisions = make([]int64, len(keys))
+	allRaw := make([][]byte, len(keys))
+	out.raw = allRaw[:9]
+	out.revisions = make([]int64, 9)
 	for i, item := range response.Responses {
 		rows := item.GetResponseRange().Kvs
 		if len(rows) > 1 {
-			return out, ErrOfflineAttemptCorrupt
+			return out, nil, ErrOfflineAttemptCorrupt
 		}
 		if len(rows) == 1 {
-			out.raw[i], out.revisions[i] = rows[0].Value, rows[0].ModRevision
+			allRaw[i] = rows[0].Value
+			if i < len(out.revisions) {
+				out.revisions[i] = rows[0].ModRevision
+			}
 		}
 	}
 	if (len(out.raw[0]) == 0) != (len(out.raw[1]) == 0) {
-		return out, ErrOfflineAttemptCorrupt
+		return out, nil, ErrOfflineAttemptCorrupt
 	}
 	if out.binding, err = offline.DecodeBinding(out.raw[2]); err != nil || out.binding.SchemaVersion != offline.BindingSchemaV2 || out.binding.PlanID != planID {
-		return out, ErrOfflineAttemptCorrupt
+		return out, nil, ErrOfflineAttemptCorrupt
 	}
 	if out.attempt, err = decodeOfflineAttempt(out.raw[3], planID); err != nil {
-		return out, ErrOfflineAttemptCorrupt
+		return out, nil, ErrOfflineAttemptCorrupt
 	}
 	if out.grant, err = decodeOfflineEffectGrantPair(out.raw[4], out.raw[5], out.raw[6], planID); err != nil || out.grant.Phase != "consumed" {
-		return out, ErrOfflineAttemptCorrupt
+		return out, nil, ErrOfflineAttemptCorrupt
 	}
 	if out.checkpoint, err = decodeOfflineCheckpointPair(out.raw[7], out.raw[8], planID); err != nil {
-		return out, ErrOfflineAttemptCorrupt
+		return out, nil, ErrOfflineAttemptCorrupt
 	}
 	if out.attempt.ID != out.grant.AttemptID || out.checkpoint.AttemptID != out.attempt.ID ||
 		out.attempt.BindingSHA256 != offline.DeleteCommitmentSHA256(out.raw[2]) ||
 		out.grant.BindingSHA256 != out.attempt.BindingSHA256 ||
 		out.checkpoint.EvidenceSHA256 != out.grant.PrechangeSHA256 ||
 		out.checkpoint.FenceGeneration != out.grant.FenceGeneration || out.checkpoint.AuthorityEpoch != out.grant.AuthorityEpoch {
-		return out, ErrOfflineAttemptCorrupt
+		return out, nil, ErrOfflineAttemptCorrupt
 	}
-	return out, nil
+	return out, allRaw[9:], nil
 }
 
 // GetOfflineDeleteCommitment recovers the exact historical bytes after a lost
@@ -140,7 +195,11 @@ func (s *V3OperationStore) GetOfflineDeleteCommitment(ctx context.Context, planI
 	if err != nil {
 		return offline.DeleteCommitment{}, nil, err
 	}
-	if len(rows.raw[0]) == 0 {
+	return validateOfflineDeleteCommitment(planID, rows)
+}
+
+func validateOfflineDeleteCommitment(planID string, rows offlineDeleteLedgerRows) (offline.DeleteCommitment, []byte, error) {
+	if len(rows.raw) != 9 || len(rows.raw[0]) == 0 {
 		return offline.DeleteCommitment{}, nil, ErrNotFound
 	}
 	if !bytes.Equal(rows.raw[0], rows.raw[1]) {

@@ -51,6 +51,17 @@ func TestFleetOperateIsARegisteredLeastPrivilegeScope(t *testing.T) {
 	}
 }
 
+func TestFleetVerifyIsARegisteredReadOnlyScope(t *testing.T) {
+	scopes, err := normalizeAccessTokenScopes([]string{ScopeFleetVerify})
+	if err != nil || len(scopes) != 1 || scopes[0] != ScopeFleetVerify {
+		t.Fatalf("scopes = %v err=%v", scopes, err)
+	}
+	principal := AccessPrincipal{Scopes: scopes}
+	if !principal.Allows(ScopeFleetVerify) || principal.Allows(ScopeFleetOperate) || principal.Allows(ScopeAPIRead) {
+		t.Fatal("fleet verifier scope widened authority")
+	}
+}
+
 func TestLegacyAccessTokenRetainsCompatibility(t *testing.T) {
 	h := &Handler{cfg: &config.Config{APIToken: "test-secret"}}
 	now := time.Now().UTC()
