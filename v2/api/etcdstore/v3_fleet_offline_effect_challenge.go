@@ -3,7 +3,6 @@ package etcdstore
 // This source-only target-etcd ledger has no mounted HTTP route and performs
 // no provider effect. It retains one immutable challenge for each purpose.
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -49,6 +48,8 @@ type effectChallengeSnapshot struct {
 	attempt      offline.Attempt
 	epoch        int64
 	hasChallenge bool
+	accepted     *AcceptedOfflineEffectAttestation
+	aliasEnd     int
 }
 
 const (
@@ -132,6 +133,12 @@ func (s *V3OperationStore) readEffectChallengeSnapshot(ctx context.Context, plan
 	for _, alias := range out.aliases[2:] {
 		out.keys = append(out.keys, s.fleetTargetAliasKey(alias))
 	}
+	out.aliasEnd = len(out.keys)
+	out.keys = append(out.keys,
+		s.offlineEffectAttestationKey(planID, purpose),
+		s.offlineEffectAttestationEventKey(planID, purpose),
+		s.offlineEffectChallengeConsumedKey(planID, purpose),
+		s.offlineEffectAcceptanceWatermarkKey(planID, purpose))
 	ops := make([]clientv3.Op, len(out.keys))
 	for i, key := range out.keys {
 		if i == effectChallengeRunnerAttempts {
@@ -166,7 +173,7 @@ func (s *V3OperationStore) readEffectChallengeSnapshot(ctx context.Context, plan
 			return out, ErrOfflineAttemptCorrupt
 		}
 	}
-	for i := effectChallengeObserverTrust + 1; i < len(out.keys); i++ {
+	for i := effectChallengeObserverTrust + 1; i < out.aliasEnd; i++ {
 		if out.revisions[i] == 0 || string(out.raw[i]) != candidate.TargetID {
 			return out, ErrOfflineAttemptCorrupt
 		}
@@ -265,24 +272,40 @@ func (s *V3OperationStore) readEffectChallengeSnapshot(ctx context.Context, plan
 		return out, ErrOfflineEffectChallengeConflict
 	}
 	if out.revisions[effectChallengeHead] == 0 && out.revisions[effectChallengeEvent] == 0 {
+		for i := out.aliasEnd; i < len(out.keys); i++ {
+			if out.revisions[i] != 0 {
+				return out, ErrOfflineAttemptCorrupt
+			}
+		}
 		out.epoch = epoch
 		return out, nil
 	}
-	if out.revisions[effectChallengeHead] == 0 || out.revisions[effectChallengeEvent] == 0 ||
-		!bytes.Equal(out.raw[effectChallengeHead], out.raw[effectChallengeEvent]) {
-		return out, ErrOfflineAttemptCorrupt
+	challenge, acceptedHead, err := decodeEffectChallengeHead(out.raw[effectChallengeHead], out.raw[effectChallengeEvent], planID, purpose)
+	if err != nil {
+		return out, err
 	}
-	if decodeV3Record(out.raw[effectChallengeHead], &out.challenge) != nil ||
-		out.challenge.Purpose != purpose || out.challenge.Validate(binding, attempt, epoch, out.challenge.IssuedAt) != nil ||
+	out.challenge = challenge
+	if acceptedHead != nil {
+		rows := [6][]byte{out.raw[out.aliasEnd], out.raw[out.aliasEnd+1], out.raw[out.aliasEnd+2],
+			out.raw[effectChallengeHead], out.raw[effectChallengeEvent], out.raw[out.aliasEnd+3]}
+		receipt, receiptErr := verifyAcceptedEffectRows(rows, planID, purpose, challenge.ID)
+		if receiptErr != nil {
+			return out, receiptErr
+		}
+		out.accepted = &receipt
+	} else {
+		for i := out.aliasEnd; i < len(out.keys); i++ {
+			if out.revisions[i] != 0 {
+				return out, ErrOfflineAttemptCorrupt
+			}
+		}
+	}
+	if out.challenge.Purpose != purpose || out.challenge.Validate(binding, attempt, epoch, out.challenge.IssuedAt) != nil ||
 		(purpose == offline.EffectConsumePurpose && !effectChallengeMatchesGrant(out.challenge, out.grant)) ||
 		out.challenge.ObserverSubject != out.trust.ObserverSubject || out.challenge.ObserverKeyID != out.trust.KeyID ||
 		out.challenge.TrustGeneration != out.trust.Generation ||
 		out.challenge.ObserverPublicKeySHA256 != terminalObserverPublicKeySHA256(out.trust) {
 		return out, ErrOfflineEffectChallengeConflict
-	}
-	canonicalChallenge, err := json.Marshal(out.challenge)
-	if err != nil || !bytes.Equal(canonicalChallenge, out.raw[effectChallengeHead]) {
-		return out, ErrOfflineAttemptCorrupt
 	}
 	out.hasChallenge = true
 	out.epoch = epoch
