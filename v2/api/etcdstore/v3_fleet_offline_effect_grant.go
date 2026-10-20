@@ -245,6 +245,10 @@ func (s *V3OperationStore) issueOfflineEffectGrant(ctx context.Context, planID, 
 		clientv3.Compare(clientv3.CreateRevision(s.fleetGitHubDispatchPreparationKey(planID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(planID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(planID)).WithPrefix(), "=", 0),
+		// A signed effect challenge must never be bypassed by this legacy
+		// private observer path, including after a crash/partial restore.
+		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectChallengeKey(planID, offline.EffectIssuePurpose)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectChallengeEventKey(planID, offline.EffectIssuePurpose)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectGrantKey(planID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectGrantEventKey(planID, 1)), "=", 0),
 	).Then(clientv3.OpPut(s.offlineEffectGrantKey(planID), string(encoded)),
@@ -380,6 +384,10 @@ func (s *V3OperationStore) consumeOfflineEffectGrant(ctx context.Context, planID
 		clientv3.Compare(clientv3.CreateRevision(s.fleetGitHubDispatchPreparationKey(planID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(planID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(planID)).WithPrefix(), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectChallengeKey(planID, offline.EffectIssuePurpose)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectChallengeEventKey(planID, offline.EffectIssuePurpose)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectChallengeKey(planID, offline.EffectConsumePurpose)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectChallengeEventKey(planID, offline.EffectConsumePurpose)), "=", 0),
 	).Then(clientv3.OpPut(s.offlineEffectGrantKey(planID), string(encoded)),
 		clientv3.OpPut(s.offlineEffectGrantEventKey(planID, 2), string(encoded))).Commit()
 	if err != nil {
