@@ -212,22 +212,25 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 			nodeIDs[a.NodeID] = true
 		}
 	}
-	var nodes []struct{ ID, Name, Status, SchedulingEligibility string }
+	var nodes []struct{ ID, Name, Address, Status, SchedulingEligibility string }
 	if out.nodeIndex, err = s.pages(ctx, nomad, s.NomadURL, "/v1/nodes", url.Values{"per_page": {"100"}}, s.NomadToken, "X-Nomad-Token", &nodes); err != nil {
 		return out, err
 	}
 	idToName := map[string]string{}
 	for _, n := range nodes {
-		if n.ID == "" || n.Name == "" {
+		if n.ID == "" || n.Name == "" || idToName[n.ID] != "" {
 			return out, ErrWorkloadObservation
 		}
 		idToName[n.ID] = n.Name
 		var info struct {
-			ID, Name, Status, SchedulingEligibility, Address string
-			NodeResources                                    struct {
-				Cpu      struct{ CpuShares int }
-				Memory   struct{ MemoryMB int }
-				Networks []struct{ IP string }
+			ID, Name, Status, SchedulingEligibility string
+			NodeResources                           struct {
+				Cpu          struct{ CpuShares int }
+				Memory       struct{ MemoryMB int }
+				Networks     []struct{ IP string }
+				NodeNetworks []struct {
+					Addresses []struct{ Address string }
+				}
 			}
 			ReservedResources struct {
 				Cpu    struct{ CpuShares int }
@@ -248,22 +251,34 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 				freeMem -= a.MemoryMB
 			}
 		}
-		// Nomad's node detail is authenticated through the dedicated read
-		// credential. Preserve its advertised address in the snapshot so the
-		// pre-effect observer can bind the target to the provider's pinned IP.
-		// More than one advertised network address makes that binding ambiguous.
+		// The list stub carries Address; Nomad's node detail does not. Bind
+		// that stub to the exact detail ID/name and require its address to be
+		// advertised by the detail's network inventory. Ignore other valid
+		// interfaces (including loopback and IPv6); the caller's provider IP
+		// selects the one private address relevant to the effect.
 		privateIP := ""
-		if info.Address != "" {
-			addr, parseErr := netip.ParseAddr(info.Address)
-			if parseErr != nil || !addr.Is4() || !addr.IsPrivate() || addr.String() != info.Address {
+		if n.Address != "" {
+			addr, parseErr := netip.ParseAddr(n.Address)
+			if parseErr != nil || !addr.Is4() || !addr.IsPrivate() || addr.String() != n.Address {
 				return out, ErrWorkloadObservation
 			}
-			privateIP = info.Address
+			privateIP = n.Address
 		}
+		addressInDetail := false
 		for _, network := range info.NodeResources.Networks {
-			if network.IP != "" && network.IP != privateIP {
-				return out, ErrWorkloadObservation
+			if network.IP == privateIP && privateIP != "" {
+				addressInDetail = true
 			}
+		}
+		for _, network := range info.NodeResources.NodeNetworks {
+			for _, address := range network.Addresses {
+				if address.Address == privateIP && privateIP != "" {
+					addressInDetail = true
+				}
+			}
+		}
+		if privateIP != "" && !addressInDetail {
+			return out, ErrWorkloadObservation
 		}
 		out.snapshot.Nodes = append(out.snapshot.Nodes, WorkloadNode{ID: n.ID, Name: n.Name, Status: info.Status, PrivateIP: privateIP, EligibleForWorkload: info.SchedulingEligibility == "eligible", FreeCPU: freeCPU, FreeMemoryMB: freeMem})
 	}

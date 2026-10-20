@@ -75,18 +75,18 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 				return
 			}
 			if targetGone {
-				fmt.Fprint(w, `[{"ID":"node-1","Name":"app-01"},{"ID":"node-2","Name":"app-02"}]`)
+				fmt.Fprint(w, `[{"ID":"node-1","Name":"app-01","Address":"10.43.0.11"},{"ID":"node-2","Name":"app-02","Address":"10.43.0.12"}]`)
 			} else {
-				fmt.Fprint(w, `[{"ID":"node-1","Name":"app-01"},{"ID":"node-2","Name":"app-02"},{"ID":"node-3","Name":"app-03"}]`)
+				fmt.Fprintf(w, `[{"ID":"node-1","Name":"app-01","Address":"10.43.0.11"},{"ID":"node-2","Name":"app-02","Address":"10.43.0.12"},{"ID":"node-3","Name":"app-03","Address":%q}]`, targetAddress)
 			}
 		case "/v1/node/node-1", "/v1/node/node-2", "/v1/node/node-3":
 			id := strings.TrimPrefix(r.URL.Path, "/v1/node/")
 			num := strings.TrimPrefix(id, "node-")
-			address, networkIP := fmt.Sprintf("10.43.0.1%s", num), fmt.Sprintf("10.43.0.1%s", num)
+			networkIP := fmt.Sprintf("10.43.0.1%s", num)
 			if id == "node-3" {
-				address, networkIP = targetAddress, targetNetworkIP
+				networkIP = targetNetworkIP
 			}
-			fmt.Fprintf(w, `{"ID":%q,"Name":%q,"Address":%q,"Status":"ready","SchedulingEligibility":"eligible","NodeResources":{"Cpu":{"CpuShares":1000},"Memory":{"MemoryMB":1024},"Networks":[{"IP":%q}]},"ReservedResources":{"Cpu":{"CpuShares":100},"Memory":{"MemoryMB":100}}}`, id, "app-0"+num, address, networkIP)
+			fmt.Fprintf(w, `{"ID":%q,"Name":%q,"Status":"ready","SchedulingEligibility":"eligible","NodeResources":{"Cpu":{"CpuShares":1000},"Memory":{"MemoryMB":1024},"Networks":[{"Device":"lo","IP":"127.0.0.1"},{"Device":"lo","IP":"::1"},{"Device":"eth0","IP":"10.43.0.99"},{"Device":"eth1","IP":%q}],"NodeNetworks":[{"Device":"lo","Addresses":[{"Address":"127.0.0.1","Family":"ipv4"}]}]},"ReservedResources":{"Cpu":{"CpuShares":100},"Memory":{"MemoryMB":100}}}`, id, "app-0"+num, networkIP)
 		default:
 			http.Error(w, "unknown", 404)
 		}
@@ -158,7 +158,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	targetAddress = "10.43.0.13"
 	targetNetworkIP = "10.43.0.99"
 	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
-		t.Fatal("ambiguous Nomad target network addresses accepted")
+		t.Fatal("Nomad list address absent from detail networks accepted")
 	}
 	targetNetworkIP = "10.43.0.13"
 	if _, err = ObserveEffectNomadConsul(context.Background(), source, now.Add(31*time.Second), "node-3", "10.43.0.13"); err == nil {
