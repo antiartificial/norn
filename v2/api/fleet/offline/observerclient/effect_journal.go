@@ -16,7 +16,10 @@ import (
 // FileEffectJournal is a local, owner-only, create-once transcript store.
 // The caller supplies a dedicated pre-existing 0700 directory on durable
 // storage. This implementation intentionally does not create it implicitly.
-type FileEffectJournal struct{ Directory string }
+type FileEffectJournal struct {
+	Directory     string
+	beforePublish func() error // test fault; never configured by production callers
+}
 
 func effectJournalName(key string) (string, error) {
 	base := key
@@ -94,30 +97,17 @@ func (j FileEffectJournal) WriteOnce(ctx context.Context, key string, raw []byte
 		return "", err
 	}
 	defer root.Close()
-	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
-	if errors.Is(err, os.ErrExist) {
-		existing, readErr := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if readErr != nil {
-			return "", readErr
-		}
-		defer existing.Close()
-		stat, statErr := existing.Stat()
-		if statErr != nil {
-			return "", statErr
-		}
-		owner, ownerOK := stat.Sys().(*syscall.Stat_t)
-		if !stat.Mode().IsRegular() || stat.Mode().Perm() != 0600 || stat.Size() > 36<<20 || !ownerOK || owner.Uid != uint32(os.Geteuid()) {
-			return "", errors.New("effect journal record is unsafe")
-		}
-		stored, readErr := io.ReadAll(io.LimitReader(existing, 36<<20+1))
-		if readErr != nil || !bytes.Equal(stored, raw) {
-			return "", errors.New("effect journal replay differs")
-		}
-		return digestEffectBytes(raw), nil
+	if _, err := root.Lstat(name); err == nil {
+		return effectJournalExactReplay(root, j.Directory, name, raw)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
+	temporary := ".effect-" + uuid.NewString() + ".tmp"
+	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return "", err
 	}
+	defer root.Remove(temporary)
 	_, writeErr := file.Write(raw)
 	if writeErr == nil {
 		writeErr = file.Sync()
@@ -126,15 +116,65 @@ func (j FileEffectJournal) WriteOnce(ctx context.Context, key string, raw []byte
 	if writeErr != nil || closeErr != nil {
 		return "", fmt.Errorf("effect journal write: %v; close: %v", writeErr, closeErr)
 	}
-	// Sync the directory entry as well as the bytes before returning a digest
-	// that may be embedded in a signed attestation.
-	dir, err := os.Open(filepath.Clean(j.Directory))
-	if err != nil {
+	if j.beforePublish != nil {
+		if err := j.beforePublish(); err != nil {
+			return "", err
+		}
+	}
+	// A hard link is an atomic, no-replace publication within this one
+	// directory. The final name is never visible with incomplete bytes.
+	if err := root.Link(temporary, name); errors.Is(err, os.ErrExist) {
+		return effectJournalExactReplay(root, j.Directory, name, raw)
+	} else if err != nil {
 		return "", err
+	}
+	if err := syncEffectJournalDirectory(j.Directory); err != nil {
+		return "", err
+	}
+	if err := root.Remove(temporary); err != nil {
+		return "", err
+	}
+	if err := syncEffectJournalDirectory(j.Directory); err != nil {
+		return "", err
+	}
+	return digestEffectBytes(raw), nil
+}
+
+func effectJournalExactReplay(root *os.Root, directory, name string, raw []byte) (string, error) {
+	existing, readErr := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if readErr != nil {
+		return "", readErr
+	}
+	defer existing.Close()
+	stat, statErr := existing.Stat()
+	if statErr != nil {
+		return "", statErr
+	}
+	owner, ownerOK := stat.Sys().(*syscall.Stat_t)
+	if !stat.Mode().IsRegular() || stat.Mode().Perm() != 0600 || stat.Size() > 36<<20 || !ownerOK || owner.Uid != uint32(os.Geteuid()) {
+		return "", errors.New("effect journal record is unsafe")
+	}
+	stored, readErr := io.ReadAll(io.LimitReader(existing, 36<<20+1))
+	if readErr != nil || !bytes.Equal(stored, raw) {
+		return "", errors.New("effect journal replay differs")
+	}
+	if err := existing.Sync(); err != nil {
+		return "", err
+	}
+	if err := syncEffectJournalDirectory(directory); err != nil {
+		return "", err
+	}
+	return digestEffectBytes(raw), nil
+}
+
+func syncEffectJournalDirectory(path string) error {
+	dir, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return err
 	}
 	syncErr, closeErr := dir.Sync(), dir.Close()
 	if syncErr != nil || closeErr != nil {
-		return "", fmt.Errorf("effect journal directory sync: %v; close: %v", syncErr, closeErr)
+		return fmt.Errorf("effect journal directory sync: %v; close: %v", syncErr, closeErr)
 	}
-	return digestEffectBytes(raw), nil
+	return nil
 }
