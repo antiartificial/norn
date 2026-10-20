@@ -1030,7 +1030,7 @@ func (s *V3OperationStore) planAbandonUnstartedConvergePlans(ctx context.Context
 			if err != nil {
 				return nil, nil, err
 			}
-			compares = append(compares, s.abandonedCompare(op.ID),
+			compares = append(compares, s.abandonedCompare(op.ID), s.noOfflineDeleteDispatchCompare(op.ID),
 				clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(op.ID)).WithPrefix(), "=", 0))
 			puts = append(puts, clientv3.OpPut(s.fleetTargetAbandonedKey(op.ID), string(record2)))
 		}

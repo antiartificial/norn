@@ -142,19 +142,47 @@ func TestOfflineDeleteAdmissionBindsExactLedgerAndSupervisor(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("supervisor verification calls = %d, want 1", calls)
 	}
+	head, err := h.s.kv.Get(h.ctx(), h.s.offlineDeleteDispatchReservationKey(commitment.PlanID))
+	if err != nil || len(head.Kvs) != 1 {
+		t.Fatalf("dispatch reservation: rows=%d err=%v", len(head.Kvs), err)
+	}
+	event, err := h.s.kv.Get(h.ctx(), h.s.offlineDeleteDispatchReservationEventKey(commitment.PlanID))
+	if err != nil || len(event.Kvs) != 1 || !bytes.Equal(head.Kvs[0].Value, event.Kvs[0].Value) {
+		t.Fatalf("dispatch reservation event mismatch: rows=%d err=%v", len(event.Kvs), err)
+	}
 	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), append(append([]byte(nil), raw...), '\n'), verify,
 		func() time.Time { return admissionAt }); !errors.Is(err, offline.ErrDeleteCommitment) {
 		t.Fatalf("non-canonical commitment admitted: %v", err)
 	}
+	// Lost-response recovery returns the existing byte-identical reservation;
+	// it does not refresh the expired grant or create a second authority row.
 	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw, verify,
-		func() time.Time { return grant.ExpiresAt }); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
-		t.Fatalf("expired grant admitted: %v", err)
+		func() time.Time { return grant.ExpiresAt }); err != nil {
+		t.Fatalf("exact reservation recovery: %v", err)
 	}
 	supervisorErr := errors.New("supervisor runtime is not running")
 	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw,
 		func(context.Context, string, string, string) error { return supervisorErr },
 		func() time.Time { return admissionAt }); !errors.Is(err, supervisorErr) {
 		t.Fatalf("supervisor refusal lost: %v", err)
+	}
+}
+
+func TestOfflineDeleteReservationLosesDeterministicPreCASAuthorityRace(t *testing.T) {
+	h, binding, _, _, raw, admissionAt := admittedOfflineDelete(t)
+	verify := func(context.Context, string, string, string) error {
+		_, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetAbandonedKey(binding.PlanID), `{}`)
+		return err
+	}
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw, verify,
+		func() time.Time { return admissionAt }); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
+		t.Fatalf("concurrent abandonment admitted: %v", err)
+	}
+	for _, key := range []string{h.s.offlineDeleteDispatchReservationKey(binding.PlanID), h.s.offlineDeleteDispatchReservationEventKey(binding.PlanID)} {
+		response, err := h.s.kv.Get(h.ctx(), key)
+		if err != nil || len(response.Kvs) != 0 {
+			t.Fatalf("failed CAS wrote %s: rows=%d err=%v", key, len(response.Kvs), err)
+		}
 	}
 }
 

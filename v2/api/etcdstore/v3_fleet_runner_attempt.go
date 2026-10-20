@@ -222,7 +222,7 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 		}
 	}
 	puts := make([]clientv3.Op, 0, 6)
-	compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.opKey(admission.PlanID)), "=", planRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerDispatchKey(admission.PlanID)), "=", dispatchResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerPlanStateKey(admission.PlanID)), "=", stateResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptKey(admission.PlanID, item.ID)), "=", 0)}
+	compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.opKey(admission.PlanID)), "=", planRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerDispatchKey(admission.PlanID)), "=", dispatchResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerPlanStateKey(admission.PlanID)), "=", stateResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptKey(admission.PlanID, item.ID)), "=", 0), s.noOfflineDeleteDispatchCompare(admission.PlanID)}
 	if preparationResponse != nil {
 		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetGitHubDispatchPreparationKey(admission.PlanID)), "=", preparationResponse.Kvs[0].ModRevision))
 	}
@@ -525,7 +525,7 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 			if marshalErr != nil {
 				return nil, marshalErr
 			}
-			compares = append(compares, s.registryCompare(fenceCtx), s.abandonedCompare(planID))
+			compares = append(compares, s.registryCompare(fenceCtx), s.abandonedCompare(planID), s.noOfflineDeleteDispatchCompare(planID))
 			puts = append(puts, clientv3.OpPut(s.fleetTargetFenceKey(fenceCtx.TargetID), string(fenceRecord)))
 		}
 		txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()

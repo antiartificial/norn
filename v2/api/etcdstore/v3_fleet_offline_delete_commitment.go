@@ -3,6 +3,7 @@ package etcdstore
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -16,6 +17,26 @@ import (
 
 var ErrOfflineDeleteCommitmentConflict = errors.New("offline delete commitment changed or authority is stale")
 
+const offlineDeleteDispatchSchema = "norn.fleet-offline-delete-dispatch/v1"
+
+type offlineDeleteDispatch struct {
+	SchemaVersion         string    `json:"schemaVersion"`
+	PlanID                string    `json:"planId"`
+	AttemptID             string    `json:"attemptId"`
+	GrantID               string    `json:"grantId"`
+	CommitmentSHA256      string    `json:"commitmentSHA256"`
+	TargetID              string    `json:"targetId"`
+	DropletID             string    `json:"dropletId"`
+	FenceGeneration       uint64    `json:"fenceGeneration"`
+	AuthorityEpoch        int64     `json:"authorityEpoch"`
+	SupervisorRootID      string    `json:"supervisorRootId"`
+	SupervisorExecutionID string    `json:"supervisorExecutionId"`
+	RuntimeInstanceID     string    `json:"runtimeInstanceId"`
+	State                 string    `json:"state"`
+	RetryPolicy           string    `json:"retryPolicy"`
+	AdmittedAt            time.Time `json:"admittedAt"`
+}
+
 // offlineDeleteSupervisorVerifier is supplied only by the local supervised
 // execution path. It must prove that all three identifiers still name the
 // running supervisor root, execution journal and runtime instance. The store
@@ -28,6 +49,18 @@ func (s *V3OperationStore) offlineDeleteCommitmentKey(planID string) string {
 
 func (s *V3OperationStore) offlineDeleteCommitmentEventKey(planID string) string {
 	return s.prefix + "/v3/fleet-offline-delete-commitment-events/" + planID + "/00000000000000000001"
+}
+
+func (s *V3OperationStore) offlineDeleteDispatchReservationKey(planID string) string {
+	return s.prefix + "/v3/fleet-offline-delete-dispatch-reservations/" + planID
+}
+
+func (s *V3OperationStore) offlineDeleteDispatchReservationEventKey(planID string) string {
+	return s.prefix + "/v3/fleet-offline-delete-dispatch-reservation-events/" + planID + "/00000000000000000001"
+}
+
+func (s *V3OperationStore) noOfflineDeleteDispatchCompare(planID string) clientv3.Cmp {
+	return clientv3.Compare(clientv3.CreateRevision(s.offlineDeleteDispatchReservationKey(planID)), "=", 0)
 }
 
 type offlineDeleteLedgerRows struct {
@@ -288,6 +321,8 @@ func (s *V3OperationStore) admitOfflineDeleteWithClock(ctx context.Context, exac
 		runnerDispatch
 		runnerAttempts
 		executorAttempts
+		dispatchHead
+		dispatchEvent
 	)
 	response, err := s.kv.Txn(ctx).Then(
 		clientv3.OpGet(s.offlineDeleteCommitmentKey(commitment.PlanID)),
@@ -310,11 +345,13 @@ func (s *V3OperationStore) admitOfflineDeleteWithClock(ctx context.Context, exac
 		clientv3.OpGet(s.fleetRunnerDispatchKey(commitment.PlanID)),
 		clientv3.OpGet(s.fleetRunnerAttemptPrefix(commitment.PlanID), clientv3.WithPrefix()),
 		clientv3.OpGet(s.fleetExecutorMetaKey(commitment.PlanID, ""), clientv3.WithPrefix()),
+		clientv3.OpGet(s.offlineDeleteDispatchReservationKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineDeleteDispatchReservationEventKey(commitment.PlanID)),
 	).Commit()
 	if err != nil {
 		return err
 	}
-	if len(response.Responses) != 20 {
+	if len(response.Responses) != 22 {
 		return ErrOfflineDeleteCommitmentConflict
 	}
 	rows := func(index int) [][]byte {
@@ -327,6 +364,25 @@ func (s *V3OperationStore) admitOfflineDeleteWithClock(ctx context.Context, exac
 			out = append(out, kv.Value)
 		}
 		return out
+	}
+	// A lost admission response may recover only the byte-identical reservation
+	// for this commitment and supervised runtime. It does not create a second
+	// dispatch or refresh any authority lifetime.
+	if len(rows(dispatchHead)) != 0 || len(rows(dispatchEvent)) != 0 {
+		if len(rows(dispatchHead)) != 1 || len(rows(dispatchEvent)) != 1 || !bytes.Equal(rows(dispatchHead)[0], rows(dispatchEvent)[0]) {
+			return ErrOfflineDeleteCommitmentConflict
+		}
+		var prior offlineDeleteDispatch
+		if json.Unmarshal(rows(dispatchHead)[0], &prior) != nil || prior.SchemaVersion != offlineDeleteDispatchSchema ||
+			prior.PlanID != commitment.PlanID || prior.AttemptID != commitment.AttemptID || prior.GrantID != commitment.GrantID ||
+			prior.CommitmentSHA256 != offline.DeleteCommitmentSHA256(exactCommitment) || prior.TargetID != commitment.TargetID ||
+			prior.DropletID != commitment.DropletID || prior.FenceGeneration != commitment.FenceGeneration ||
+			prior.AuthorityEpoch != commitment.AuthorityEpoch || prior.SupervisorRootID != commitment.SupervisorRootID ||
+			prior.SupervisorExecutionID != commitment.SupervisorExecutionID || prior.RuntimeInstanceID != commitment.RuntimeInstanceID ||
+			prior.State != "admitted" || prior.RetryPolicy != offline.DeleteRetryPolicy || prior.AdmittedAt.IsZero() {
+			return ErrOfflineDeleteCommitmentConflict
+		}
+		return nil
 	}
 	required := []int{commitmentHead, commitmentEvent, bindingKey, attemptKey, grantHead, grantIssued,
 		grantConsumed, checkpointHead, checkpointEvent, ownerKey, planKey, fenceKey, epochKey}
@@ -392,6 +448,51 @@ func (s *V3OperationStore) admitOfflineDeleteWithClock(ctx context.Context, exac
 	now := clock().UTC()
 	if now.IsZero() || now.Before(commitment.CommittedAt) || now.Before(*grant.ConsumedAt) ||
 		!now.Before(grant.ExpiresAt) || !now.Before(binding.ExpiresAt) || !now.Before(checkpoint.Prechange.ExpiresAt) {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	dispatch := offlineDeleteDispatch{
+		SchemaVersion: offlineDeleteDispatchSchema, PlanID: commitment.PlanID, AttemptID: commitment.AttemptID,
+		GrantID: commitment.GrantID, CommitmentSHA256: offline.DeleteCommitmentSHA256(exactCommitment),
+		TargetID: commitment.TargetID, DropletID: commitment.DropletID, FenceGeneration: commitment.FenceGeneration,
+		AuthorityEpoch: commitment.AuthorityEpoch, SupervisorRootID: commitment.SupervisorRootID,
+		SupervisorExecutionID: commitment.SupervisorExecutionID, RuntimeInstanceID: commitment.RuntimeInstanceID,
+		State: "admitted", RetryPolicy: offline.DeleteRetryPolicy, AdmittedAt: now,
+	}
+	dispatchBytes, err := json.Marshal(dispatch)
+	if err != nil {
+		return err
+	}
+	compares := []clientv3.Cmp{
+		clientv3.Compare(clientv3.CreateRevision(s.offlineDeleteDispatchReservationKey(commitment.PlanID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineDeleteDispatchReservationEventKey(commitment.PlanID)), "=", 0),
+	}
+	for _, index := range required {
+		kv := response.Responses[index].GetResponseRange().Kvs[0]
+		compares = append(compares, clientv3.Compare(clientv3.ModRevision(string(kv.Key)), "=", kv.ModRevision))
+	}
+	for _, index := range []int{abandonedKey, terminalHead, terminalEvent, githubPreparation, runnerDispatch, runnerAttempts, executorAttempts} {
+		key := response.Responses[index].GetResponseRange().Kvs
+		if len(key) != 0 {
+			return ErrOfflineDeleteCommitmentConflict
+		}
+	}
+	compares = append(compares,
+		clientv3.Compare(clientv3.CreateRevision(s.fleetTargetAbandonedKey(commitment.PlanID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalKey(commitment.PlanID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalEventKey(commitment.PlanID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.fleetGitHubDispatchPreparationKey(commitment.PlanID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(commitment.PlanID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(commitment.PlanID)).WithPrefix(), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.fleetExecutorMetaKey(commitment.PlanID, "")).WithPrefix(), "=", 0),
+	)
+	txn, err := s.kv.Txn(ctx).If(compares...).Then(
+		clientv3.OpPut(s.offlineDeleteDispatchReservationKey(commitment.PlanID), string(dispatchBytes)),
+		clientv3.OpPut(s.offlineDeleteDispatchReservationEventKey(commitment.PlanID), string(dispatchBytes)),
+	).Commit()
+	if err != nil {
+		return err
+	}
+	if !txn.Succeeded {
 		return ErrOfflineDeleteCommitmentConflict
 	}
 	return nil

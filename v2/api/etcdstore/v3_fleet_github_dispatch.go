@@ -166,6 +166,7 @@ func (s *V3OperationStore) AcceptFleetGitHubDispatch(ctx context.Context, input 
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0),
 		s.registryCompare(fenceCtx),
 		s.abandonedCompare(prepared.PlanID),
+		s.noOfflineDeleteDispatchCompare(prepared.PlanID),
 	}
 	compares = append(compares, fenceCompares...)
 	puts := []clientv3.Op{
@@ -318,7 +319,7 @@ func (s *V3OperationStore) FinishFleetGitHubDispatch(ctx context.Context, planID
 	if err != nil {
 		return err
 	}
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.PlanID)), "!=", 0), clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.OperationID)), "=", opRevision), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerPlanStateKey(prepared.PlanID)), "=", 0), s.abandonedCompare(prepared.PlanID)).Then(clientv3.OpPut(s.opKey(prepared.OperationID), string(opRecord)), clientv3.OpPut(s.fleetRunnerDispatchKey(prepared.PlanID), string(bindingRecord)), clientv3.OpPut(s.fleetRunnerPlanStateKey(prepared.PlanID), string(state))).Commit()
+	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.PlanID)), "!=", 0), clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.OperationID)), "=", opRevision), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerPlanStateKey(prepared.PlanID)), "=", 0), s.abandonedCompare(prepared.PlanID), s.noOfflineDeleteDispatchCompare(prepared.PlanID)).Then(clientv3.OpPut(s.opKey(prepared.OperationID), string(opRecord)), clientv3.OpPut(s.fleetRunnerDispatchKey(prepared.PlanID), string(bindingRecord)), clientv3.OpPut(s.fleetRunnerPlanStateKey(prepared.PlanID), string(state))).Commit()
 	if err != nil {
 		return err
 	}

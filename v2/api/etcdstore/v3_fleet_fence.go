@@ -360,7 +360,7 @@ func (s *V3OperationStore) planFleetTargetRelease(ctx context.Context, targetID 
 		return fleetTargetMutationPlan{}, err
 	}
 	plan := fleetTargetMutationPlan{
-		compares: []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(targetID)), "=", fenceRevision), stateCompare},
+		compares: []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(targetID)), "=", fenceRevision), stateCompare, s.noOfflineDeleteDispatchCompare(holderPlanID)},
 		puts:     []clientv3.Op{clientv3.OpPut(s.fleetTargetFenceKey(targetID), string(record))},
 	}
 	if mode == lifecycle.ReleaseModeTerminal || mode == lifecycle.ReleaseModeAbandon {
@@ -421,7 +421,7 @@ func (s *V3OperationStore) planFleetTargetAbandon(ctx context.Context, planID, n
 		return fleetTargetMutationPlan{}, err
 	}
 	plan := fleetTargetMutationPlan{
-		compares: []clientv3.Cmp{s.abandonedCompare(planID), stateCompare},
+		compares: []clientv3.Cmp{s.abandonedCompare(planID), s.noOfflineDeleteDispatchCompare(planID), stateCompare},
 		puts:     []clientv3.Op{clientv3.OpPut(s.fleetTargetAbandonedKey(planID), string(abandonedRecord))},
 	}
 	// The resolved target's fence revision is pinned whether or not this

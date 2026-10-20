@@ -373,7 +373,7 @@ func (s *V3OperationStore) tryFleetExecutorStart(ctx context.Context, in store.F
 
 	compares = append(compares,
 		clientv3.Compare(clientv3.ModRevision(s.opKey(planID)), "=", planRevision),
-		s.registryCompare(fenceCtx), s.abandonedCompare(planID),
+		s.registryCompare(fenceCtx), s.abandonedCompare(planID), s.noOfflineDeleteDispatchCompare(planID),
 		clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(fenceCtx.TargetID)), "=", fenceCtx.FenceRevision),
 		clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", fenceCtx.EpochRevision),
 		clientv3.Compare(clientv3.ModRevision(stateKey), "=", stateRevision),

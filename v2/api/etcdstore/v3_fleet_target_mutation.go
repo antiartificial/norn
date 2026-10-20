@@ -184,7 +184,7 @@ func (s *V3OperationStore) planAbandonUnstartedConvergePlan(ctx context.Context,
 		return fleetTargetMutationPlan{}, false, err
 	}
 	return fleetTargetMutationPlan{
-		compares: []clientv3.Cmp{s.abandonedCompare(planID), stateCompare},
+		compares: []clientv3.Cmp{s.abandonedCompare(planID), s.noOfflineDeleteDispatchCompare(planID), stateCompare},
 		puts:     []clientv3.Op{clientv3.OpPut(s.fleetTargetAbandonedKey(planID), string(record))},
 	}, true, nil
 }

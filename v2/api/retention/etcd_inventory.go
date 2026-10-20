@@ -22,4 +22,6 @@ var OfflineEtcdPayloadInventory = []EtcdPayloadRetention{
 	{"/v3/fleet-offline-terminal-events/", ClassHotEvidence, "append-only independently observed terminal proof; retain through recovery and archive qualification"},
 	{"/v3/fleet-offline-delete-commitments/", ClassCurrentState, "permanent pre-dispatch DELETE tombstone; never expire or reconstruct after response loss; restore with binding, attempt, grant, checkpoint, fence and epoch"},
 	{"/v3/fleet-offline-delete-commitment-events/", ClassCurrentState, "append-only exact commitment bytes are a permanent tombstone; restore with head and all referenced authority rows"},
+	{"/v3/fleet-offline-delete-dispatch-reservations/", ClassCurrentState, "atomic no-cancel DELETE dispatch authority; retain permanently and restore with its exact event and target fence"},
+	{"/v3/fleet-offline-delete-dispatch-reservation-events/", ClassCurrentState, "append-only dispatch reservation evidence; restore with its head and never synthesize from a commitment"},
 }
