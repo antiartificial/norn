@@ -112,6 +112,12 @@ func TestEffectRunnerIssueConsumeLostResponseAndExactReadback(t *testing.T) {
 			if err != nil || second.Signature != first.Signature || client.puts != 1 || source.calls != 1 {
 				t.Fatalf("exact recovery: %v puts=%d reads=%d", err, client.puts, source.calls)
 			}
+			committed := client.accepted
+			client.accepted = AcceptedEffectAttestation{}
+			if _, err := runner.RunEffect(context.Background(), b, a, 2, grant, purpose); err == nil || client.puts != 1 || source.calls != 1 {
+				t.Fatal("journaled submission without target receipt must wait without retry")
+			}
+			client.accepted = committed
 			instant = challenge.ExpiresAt.Add(time.Second)
 			if _, err := runner.RunEffect(context.Background(), b, a, 2, grant, purpose); err != nil {
 				t.Fatalf("historical accepted readback: %v", err)
