@@ -74,6 +74,16 @@ type WorkloadEvidence struct {
 // passing Consul entries tied to those exact allocations. It never mutates
 // Nomad or Consul and cannot authorize a provider effect on its own.
 func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now time.Time) (WorkloadEvidence, error) {
+	return observeWorkload(ctx, source, now, false)
+}
+
+// ObserveTerminalWorkload requires the removed application node to be absent
+// from Nomad as well as free of allocations across every namespace.
+func ObserveTerminalWorkload(ctx context.Context, source WorkloadSnapshotSource, now time.Time) (WorkloadEvidence, error) {
+	return observeWorkload(ctx, source, now, true)
+}
+
+func observeWorkload(ctx context.Context, source WorkloadSnapshotSource, now time.Time, targetAbsent bool) (WorkloadEvidence, error) {
 	if source == nil || ctx.Err() != nil {
 		return WorkloadEvidence{}, ErrWorkloadObservation
 	}
@@ -113,10 +123,17 @@ func ObserveWorkload(ctx context.Context, source WorkloadSnapshotSource, now tim
 		}
 		nodes[node.Name], ids[node.ID] = node, true
 	}
-	for _, name := range []string{"app-01", "app-02", "app-03"} {
+	for _, name := range []string{"app-01", "app-02"} {
 		if nodes[name].Name != name {
 			return WorkloadEvidence{}, ErrWorkloadObservation
 		}
+	}
+	if targetAbsent {
+		if nodes["app-03"].Name != "" {
+			return WorkloadEvidence{}, ErrWorkloadObservation
+		}
+	} else if nodes["app-03"].Name != "app-03" {
+		return WorkloadEvidence{}, ErrWorkloadObservation
 	}
 	allocIDs := map[string]bool{}
 	placements := map[string]string{}

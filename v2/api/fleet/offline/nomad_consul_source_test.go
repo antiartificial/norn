@@ -19,6 +19,8 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	mismatch := false
 	filtered := false
+	targetGone := false
+	ghostAllocation := false
 	pages := 0
 	nomad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.Header.Get("X-Nomad-Token") != "nomad-read" {
@@ -36,7 +38,11 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 			fmt.Fprint(w, `[{"Name":"default"},{"Name":"system"}]`)
 		case "/v1/allocations":
 			if r.URL.Query().Get("namespace") == "system" {
-				fmt.Fprint(w, `[]`)
+				if ghostAllocation {
+					fmt.Fprint(w, `[{"ID":"old-app-03","Namespace":"system","JobID":"former","NodeID":"node-3","ClientStatus":"complete","AllocatedResources":{"Tasks":{"web":{"Cpu":{"CpuShares":100},"Memory":{"MemoryMB":64}}}}}]`)
+				} else {
+					fmt.Fprint(w, `[]`)
+				}
 				return
 			}
 			if r.URL.Query().Get("namespace") != "default" || r.URL.Query().Get("resources") != "true" || r.URL.Query().Get("per_page") != "100" {
@@ -55,7 +61,11 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 				http.Error(w, "missing pagination", 400)
 				return
 			}
-			fmt.Fprint(w, `[{"ID":"node-1","Name":"app-01"},{"ID":"node-2","Name":"app-02"},{"ID":"node-3","Name":"app-03"}]`)
+			if targetGone {
+				fmt.Fprint(w, `[{"ID":"node-1","Name":"app-01"},{"ID":"node-2","Name":"app-02"}]`)
+			} else {
+				fmt.Fprint(w, `[{"ID":"node-1","Name":"app-01"},{"ID":"node-2","Name":"app-02"},{"ID":"node-3","Name":"app-03"}]`)
+			}
 		case "/v1/node/node-1", "/v1/node/node-2", "/v1/node/node-3":
 			id := strings.TrimPrefix(r.URL.Path, "/v1/node/")
 			num := strings.TrimPrefix(id, "node-")
@@ -106,5 +116,22 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	source.PolicySHA256 = strings.Repeat("0", 64)
 	if _, err = source.Snapshot(context.Background()); err == nil {
 		t.Fatal("unreviewed policy accepted")
+	}
+	source.PolicySHA256 = hex.EncodeToString(digest[:])
+	filtered = false
+	if _, err = ObserveTerminalNomadConsul(context.Background(), source, now); err == nil {
+		t.Fatal("terminal proof accepted a still-present app-03 node")
+	}
+	targetGone = true
+	terminal, err := ObserveTerminalNomadConsul(context.Background(), source, now)
+	if err != nil || !terminal.WorkloadEvidence.App03Empty || len(terminal.RawEvidence) == 0 || terminal.EvidenceSHA256 == terminal.WorkloadEvidence.SHA256 {
+		t.Fatalf("terminal workload observation: %+v %v", terminal, err)
+	}
+	if !strings.Contains(string(terminal.RawEvidence), `"/v1/allocations"`) || strings.Contains(string(terminal.RawEvidence), "nomad-read") {
+		t.Fatal("raw evidence lacks allocation reads or leaks bearer token")
+	}
+	ghostAllocation = true
+	if _, err = ObserveTerminalNomadConsul(context.Background(), source, now); err == nil {
+		t.Fatal("historical allocation on removed node accepted in another namespace")
 	}
 }

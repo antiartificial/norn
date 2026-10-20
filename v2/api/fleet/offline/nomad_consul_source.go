@@ -29,6 +29,7 @@ type NomadConsulSource struct {
 	NomadRoots, ConsulRoots           *x509.CertPool
 	PolicyName, PolicySHA256          string
 	Now                               func() time.Time
+	recorder                          *workloadRawRecorder
 }
 
 var wildcardRead = regexp.MustCompile(`(?s)namespace\s+"\*"\s*\{[^{}]*\bpolicy\s*=\s*"read"[^{}]*\}`)
@@ -139,8 +140,16 @@ func (s NomadConsulSource) read(ctx context.Context, client *http.Client, base, 
 	if err != nil || len(body) > 8<<20 {
 		return nil, ErrWorkloadObservation
 	}
+	if rejectDuplicateKeys(json.NewDecoder(bytes.NewReader(body))) != nil {
+		return nil, ErrWorkloadObservation
+	}
 	if err = json.Unmarshal(body, dst); err != nil {
 		return nil, ErrWorkloadObservation
+	}
+	if s.recorder != nil {
+		if err := s.recorder.append(req.URL, resp.Header, body); err != nil {
+			return nil, ErrWorkloadObservation
+		}
 	}
 	return resp.Header, nil
 }
