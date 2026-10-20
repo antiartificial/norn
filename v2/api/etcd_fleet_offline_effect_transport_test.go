@@ -58,7 +58,7 @@ func TestOfflineEffectTransportRefusesUnauthorizedAndMissingObserver(t *testing.
 }
 
 func TestOfflineEffectRuntimeCannotActivateWithoutManifest(t *testing.T) {
-	cfg := &config.Config{FleetAuthorityOnly: true, Profile: "staging", Environment: "staging"}
+	cfg := &config.Config{FleetAuthorityOnly: true, Profile: "development", Environment: "staging"}
 	if offlineEffectAuthorityForRuntime(cfg, nil) != nil {
 		t.Fatal("absent observer manifest activated")
 	}

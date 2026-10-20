@@ -46,7 +46,7 @@ func loadOfflineFleetTrust(cfg *config.Config) (*offlineFleetTrust, error) {
 	if keyID == "" && path == "" && subject == "" && verifier == "" {
 		return nil, nil
 	}
-	if !cfg.FleetAuthorityOnly || cfg.Production() || cfg.ProfileID() != "staging" || cfg.EnvironmentID() != "staging" || keyID == "" || path == "" || subject == "" || verifier == "" || subject == verifier || strings.ContainsAny(keyID, " \t\n\r") || strings.ContainsAny(subject, " \t\n\r") || strings.ContainsAny(verifier, " \t\n\r") {
+	if !cfg.FleetAuthorityOnly || cfg.Production() || cfg.ProfileID() != "development" || cfg.EnvironmentID() != "staging" || keyID == "" || path == "" || subject == "" || verifier == "" || subject == verifier || strings.ContainsAny(keyID, " \t\n\r") || strings.ContainsAny(subject, " \t\n\r") || strings.ContainsAny(verifier, " \t\n\r") {
 		return nil, fmt.Errorf("offline trust requires authority-only staging and distinct complete pinned runner and verifier identities")
 	}
 	if !filepath.IsAbs(path) {

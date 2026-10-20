@@ -17,7 +17,8 @@ import (
 
 const PrechangeSchema = "norn.fleet-offline-contraction-effect-time/v1"
 
-const workVPCUUID = "b9d7d407-cdf9-4f1e-8a44-8983812860a8"
+const WorkVPCUUID = "b9d7d407-cdf9-4f1e-8a44-8983812860a8"
+const workVPCUUID = WorkVPCUUID
 const reviewedProviderArchiveSHA256 = "4dd5b6e8c1be5fb619812fe738d0b49e0d24731fb290c0ab5190b7bc60c70e66"
 
 var prechangeHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)

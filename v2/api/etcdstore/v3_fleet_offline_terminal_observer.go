@@ -127,11 +127,15 @@ func writeFull(w io.Writer, raw []byte) error {
 }
 
 type offlineBoundTerminalBackend struct {
-	reader    offline.TerminalBackendReader
-	projectID string
+	reader      offline.TerminalBackendReader
+	projectID   string
+	bucket, key string
 }
 
 func (s offlineBoundTerminalBackend) ObserveExactTerminalBackend(ctx context.Context, binding offline.Binding) (offline.TerminalBackendObservation, error) {
+	if s.bucket == "" || s.key == "" || binding.Backend.Bucket != s.bucket || binding.Backend.Key != s.key {
+		return offline.TerminalBackendObservation{}, offline.ErrTerminalProof
+	}
 	return offline.ObserveTerminalBackend(ctx, s.reader, binding, s.projectID)
 }
 

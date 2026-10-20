@@ -127,7 +127,7 @@ func registerEtcdFleetOfflineEffectRoutes(router chi.Router, runnerAuth func(htt
 }
 
 func offlineEffectAuthorityForRuntime(cfg *config.Config, store *etcdstore.V3OperationStore, origin ...*githubapp.Client) *etcdstore.OfflineEffectAuthority {
-	if cfg == nil || !cfg.FleetAuthorityOnly || cfg.Production() || cfg.ProfileID() != "staging" ||
+	if cfg == nil || !cfg.FleetAuthorityOnly || cfg.Production() || cfg.ProfileID() != "development" ||
 		cfg.EnvironmentID() != "staging" || cfg.FleetOfflineEffectConfigFile == "" || len(origin) != 1 || origin[0] == nil {
 		return nil
 	}

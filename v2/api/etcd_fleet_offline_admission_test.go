@@ -29,7 +29,7 @@ func (i offlineTestIdentity) ActiveAccessDevice(context.Context, string) (*store
 }
 
 func TestOfflineFleetTrustFailsClosed(t *testing.T) {
-	base := &config.Config{FleetAuthorityOnly: true, Profile: "staging", Environment: "staging", FleetOfflineOwnerKeyID: "owner-1", FleetOfflineRunnerSubject: "offline-runner", FleetOfflineVerifierSubject: "offline-verifier"}
+	base := &config.Config{FleetAuthorityOnly: true, Profile: "development", Environment: "staging", FleetOfflineOwnerKeyID: "owner-1", FleetOfflineRunnerSubject: "offline-runner", FleetOfflineVerifierSubject: "offline-verifier"}
 	if trust, err := loadOfflineFleetTrust(&config.Config{FleetAuthorityOnly: true, Environment: "staging"}); err != nil || trust != nil {
 		t.Fatalf("unset trust must disable route: %v %v", trust, err)
 	}
@@ -59,11 +59,11 @@ func TestOfflineFleetTrustFailsClosed(t *testing.T) {
 	if _, err := loadOfflineFleetTrust(base); err == nil {
 		t.Fatal("production profile with staging environment accepted")
 	}
-	base.Profile = "development"
-	if _, err := loadOfflineFleetTrust(base); err == nil {
-		t.Fatal("development profile with staging environment accepted")
-	}
 	base.Profile = "staging"
+	if _, err := loadOfflineFleetTrust(base); err == nil {
+		t.Fatal("noncanonical staging profile accepted")
+	}
+	base.Profile = "development"
 	link := filepath.Join(t.TempDir(), "link.pub")
 	if err := os.Symlink(path, link); err != nil {
 		t.Fatal(err)
