@@ -268,7 +268,10 @@ func newHTTPOfflineEvidenceVerifier(rawURL, tokenFile string) (*httpOfflineEvide
 		return nil, fmt.Errorf("read offline evidence verifier token: %w", err)
 	}
 	return &httpOfflineEvidenceVerifier{baseURL: parsed, token: strings.TrimSpace(string(tokenBytes)), client: &http.Client{
-		Timeout: 10 * time.Second,
+		// The verifier independently renders the saved plan and brackets live
+		// backend/provider reads. A verifier timeout fails before the reservation
+		// store is called.
+		Timeout: 120 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("offline evidence redirects are forbidden")
 		},
