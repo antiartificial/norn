@@ -39,7 +39,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/v1/acl/token/self":
-			fmt.Fprint(w, `{"Type":"client","Policies":["workload-read"]}`)
+			fmt.Fprint(w, `{"Type":"client","Policies":["workload-read"],"SecretID":"server-echoed-live-secret"}`)
 		case "/v1/acl/policy/workload-read":
 			fmt.Fprintf(w, `{"Name":"workload-read","Rules":%q}`, rules)
 		case "/v1/namespaces":
@@ -119,26 +119,35 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	if err != nil || !evidence.AllNamespacesInspected || pages != 2 {
 		t.Fatalf("valid paginated observation: %+v %v pages=%d", evidence, err, pages)
 	}
-	effect, err := ObserveEffectNomadConsul(context.Background(), source, now)
+	effect, err := ObserveEffectNomadConsul(context.Background(), source, now, "node-3")
 	if err != nil || !effect.WorkloadEvidence.App03Empty || effect.EvidenceSHA256 == effect.WorkloadEvidence.SHA256 || len(effect.RawEvidence) == 0 || len(effect.RawEvidence) > maxTerminalWorkloadRawBytes {
 		t.Fatalf("valid effect observation: %+v %v", effect, err)
 	}
 	if !strings.Contains(string(effect.RawEvidence), `"schema":"norn.fleet-effect-workload-reads/v1"`) ||
+		!strings.Contains(string(effect.RawEvidence), `"targetNodeId":"node-3"`) ||
 		!strings.Contains(string(effect.RawEvidence), `"/v1/allocations"`) ||
 		!strings.Contains(string(effect.RawEvidence), `"/v1/acl/token/self"`) ||
-		strings.Contains(string(effect.RawEvidence), "nomad-read") || strings.Contains(string(effect.RawEvidence), "consul-read") {
+		strings.Contains(string(effect.RawEvidence), "nomad-read") || strings.Contains(string(effect.RawEvidence), "consul-read") ||
+		strings.Contains(string(effect.RawEvidence), "server-echoed-live-secret") ||
+		!strings.Contains(string(effect.RawEvidence), `"redacted":true`) {
 		t.Fatal("effect transcript missing independent reads or exposes bearer")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now.Add(31*time.Second)); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-wrong"); err == nil {
+		t.Fatal("wrong pinned Nomad target ID accepted")
+	}
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, ""); err == nil {
+		t.Fatal("missing pinned Nomad target ID accepted")
+	}
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now.Add(31*time.Second), "node-3"); err == nil {
 		t.Fatal("stale effect observation accepted")
 	}
 	targetRunning = true
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
 		t.Fatal("live app-03 allocation accepted for effect")
 	}
 	targetRunning = false
 	indexDrift = true
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
 		t.Fatal("namespace index drift accepted for effect")
 	}
 	indexDrift = false
@@ -146,7 +155,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	if _, err = ObserveWorkload(context.Background(), source, now); err == nil {
 		t.Fatal("failing Consul check accepted")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
 		t.Fatal("failing Consul check accepted for effect")
 	}
 	filtered = true
@@ -158,7 +167,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	if _, err = source.Snapshot(context.Background()); err == nil {
 		t.Fatal("unreviewed policy accepted")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
 		t.Fatal("unreviewed policy accepted for effect")
 	}
 	source.PolicySHA256 = hex.EncodeToString(digest[:])
@@ -167,7 +176,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		t.Fatal("terminal proof accepted a still-present app-03 node")
 	}
 	targetGone = true
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
 		t.Fatal("effect proof accepted missing app-03 node")
 	}
 	terminal, err := ObserveTerminalNomadConsul(context.Background(), source, now)
@@ -177,6 +186,9 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	if !strings.Contains(string(terminal.RawEvidence), `"/v1/allocations"`) || strings.Contains(string(terminal.RawEvidence), "nomad-read") {
 		t.Fatal("raw evidence lacks allocation reads or leaks bearer token")
 	}
+	if strings.Contains(string(terminal.RawEvidence), "server-echoed-live-secret") {
+		t.Fatal("terminal transcript leaked Nomad bearer")
+	}
 	ghostAllocation = true
 	if _, err = ObserveTerminalNomadConsul(context.Background(), source, now); err == nil {
 		t.Fatal("historical allocation on removed node accepted in another namespace")
@@ -185,5 +197,15 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	nodeCheckCritical = true
 	if _, err = ObserveTerminalNomadConsul(context.Background(), source, now); err == nil {
 		t.Fatal("failing Consul node health accepted")
+	}
+	nodeCheckCritical = false
+	targetGone = false
+	source.Now = time.Now
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, time.Now(), "node-3"); err != nil {
+		t.Fatalf("effect observation with real advancing clock: %v", err)
+	}
+	targetGone = true
+	if _, err = ObserveTerminalNomadConsul(context.Background(), source, time.Now()); err != nil {
+		t.Fatalf("terminal observation with real advancing clock: %v", err)
 	}
 }
