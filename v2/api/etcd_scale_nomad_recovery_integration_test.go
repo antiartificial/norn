@@ -126,11 +126,15 @@ func TestEtcdManagedScaleRecoversRealNomadPlacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.resolveTarget = func(_ context.Context, gotApp, environment, gotRegion string) (string, string, error) {
+	specDigest, err := currentEtcdScaleSpecDigest(apps, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.resolveTarget = func(_ context.Context, gotApp, environment, gotRegion string) (etcdstore.FleetScaleTarget, error) {
 		if gotApp != app || environment != "staging" || gotRegion != region {
-			return "", "", fmt.Errorf("wrong route")
+			return etcdstore.FleetScaleTarget{}, fmt.Errorf("wrong route")
 		}
-		return jobID, deploymentID, nil
+		return etcdstore.FleetScaleTarget{JobID: jobID, DeploymentID: deploymentID, SpecDigest: specDigest}, nil
 	}
 	router := chi.NewRouter()
 	router.Post("/api/v1/apps/{id}/scale", etcdScaleApp(cfg, operations, identities, runtime))

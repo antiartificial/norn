@@ -84,11 +84,16 @@ func TestEtcdScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.resolveTarget = func(_ context.Context, app, environment, region string) (string, string, error) {
+	specDigest, err := currentEtcdScaleSpecDigest(apps, "widgets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeSpecDigest := specDigest
+	runtime.resolveTarget = func(_ context.Context, app, environment, region string) (etcdstore.FleetScaleTarget, error) {
 		if app != "widgets" || environment != "staging" || region != "us-central" {
-			return "", "", fmt.Errorf("wrong target")
+			return etcdstore.FleetScaleTarget{}, fmt.Errorf("wrong target")
 		}
-		return currentJob, "deployment-pinned", nil
+		return etcdstore.FleetScaleTarget{JobID: currentJob, DeploymentID: "deployment-pinned", SpecDigest: activeSpecDigest}, nil
 	}
 	router := chi.NewRouter()
 	router.Post("/api/v1/apps/{id}/scale", etcdScaleApp(cfg, operations, identities, runtime))
@@ -111,6 +116,16 @@ func TestEtcdScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker(t *testing.T)
 		if got := request(http.MethodPost, path, body, fmt.Sprintf("outside-%d", count)); got.Code != http.StatusBadRequest || nomadWrites != 0 {
 			t.Fatalf("out-of-bounds %d admitted: %d %s", count, got.Code, got.Body.String())
 		}
+	}
+	driftedSpec := strings.Replace(spec, "max: 3", "max: 4", 1)
+	if err := os.WriteFile(filepath.Join(apps, "widgets", "infraspec.yaml"), []byte(driftedSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := request(http.MethodPost, path, `{"group":"web","region":"us-central","count":3}`, "drifted-max"); got.Code != http.StatusConflict || nomadWrites != 0 {
+		t.Fatalf("raised local maximum bypassed accepted spec: %d %s", got.Code, got.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(apps, "widgets", "infraspec.yaml"), []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	first := request(http.MethodPost, path, `{"group":"web","region":"us-central","count":3}`, "same-intent")
 	if first.Code != http.StatusAccepted {
@@ -144,9 +159,9 @@ func TestEtcdScaleHTTPAcceptsPinnedManagedJobAndRejectsStaleWorker(t *testing.T)
 		t.Fatalf("app lock=%t err=%v", acquired, err)
 	}
 	defer lock.Release()
-	currentJob = "norn-job-other-deployment"
+	activeSpecDigest = "sha256:" + strings.Repeat("f", 64)
 	if _, err := runtime.ExecuteOperationWithAppLock(ctx, claimed, claim, lock); err == nil || nomadWrites != 0 {
-		t.Fatalf("stale route reached Nomad: err=%v writes=%d", err, nomadWrites)
+		t.Fatalf("claimed operation escaped active signed-spec binding: err=%v writes=%d", err, nomadWrites)
 	}
 }
 
@@ -203,20 +218,32 @@ func TestEtcdScaleCrashAfterNomadAcceptRecoversWithoutSecondLaunch(t *testing.T)
 		}
 	}))
 	t.Cleanup(nomadServer.Close)
-	cfg := &config.Config{Environment: "staging", AppsDir: t.TempDir(), NomadAddr: nomadServer.URL}
+	apps := t.TempDir()
+	if err := os.Mkdir(filepath.Join(apps, app), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const runtimeSpec = "name: widgets\ndeploy: true\nregions:\n  us-central:\n    nomadRegion: global\n    datacenters: [dc1]\nprocesses:\n  web:\n    command: sleep 60\n    scaling:\n      min: 1\n      max: 3\n    health:\n      path: /ready\n"
+	if err := os.WriteFile(filepath.Join(apps, app, "infraspec.yaml"), []byte(runtimeSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	specDigest, err := currentEtcdScaleSpecDigest(apps, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Environment: "staging", AppsDir: apps, NomadAddr: nomadServer.URL}
 	runtime, err := newEtcdScaleRuntime(cfg, operations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime.resolveTarget = func(_ context.Context, gotApp, environment, gotRegion string) (string, string, error) {
+	runtime.resolveTarget = func(_ context.Context, gotApp, environment, gotRegion string) (etcdstore.FleetScaleTarget, error) {
 		if gotApp != app || environment != "staging" || gotRegion != region {
-			return "", "", fmt.Errorf("wrong target")
+			return etcdstore.FleetScaleTarget{}, fmt.Errorf("wrong target")
 		}
-		return jobID, deploymentID, nil
+		return etcdstore.FleetScaleTarget{JobID: jobID, DeploymentID: deploymentID, SpecDigest: specDigest}, nil
 	}
 	id := uuid.NewString()
 	op := model.Operation{ID: id, Kind: "app.scale", App: app, Ref: region + "/web", Status: model.OperationQueued, MaxAttempts: 1,
-		Payload: map[string]interface{}{"app": app, "group": "web", "region": region, "nomadRegion": "global", "count": 3, "nomadJobId": jobID, "deploymentId": deploymentID}}
+		Payload: map[string]interface{}{"app": app, "group": "web", "region": region, "nomadRegion": "global", "count": 3, "nomadJobId": jobID, "deploymentId": deploymentID, "specDigest": specDigest}}
 	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: op.Kind, Resource: "app/widgets", Key: id}, Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"app": app, "count": 3}}
 	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
 	if err != nil {
@@ -236,6 +263,12 @@ func TestEtcdScaleCrashAfterNomadAcceptRecoversWithoutSecondLaunch(t *testing.T)
 	result, err := runtime.ExecuteOperationWithAppLock(ctx, claimed, first, lock)
 	if err == nil || result != nil || nomadWrites != 1 {
 		t.Fatalf("post-launch uncertainty result=%+v err=%v writes=%d", result, err, nomadWrites)
+	}
+	// The accepted operation and active route remain the durable authority
+	// after launch. A checkout advance must not strand reconciliation or cause
+	// a second Nomad mutation.
+	if err := os.WriteFile(filepath.Join(apps, app, "infraspec.yaml"), []byte(strings.Replace(runtimeSpec, "max: 3", "max: 4", 1)), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	lock.Release() // process dies before it can defer or commit desired intent
 	owner, err := client.Get(ctx, prefix+"/v3/owners/"+id)
