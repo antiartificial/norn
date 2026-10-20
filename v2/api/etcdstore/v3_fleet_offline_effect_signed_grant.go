@@ -48,6 +48,12 @@ func effectAttemptMatchesIdentity(attempt offline.Attempt, identity OfflineRunne
 		attempt.PrincipalDeviceID == identity.DeviceID
 }
 
+// The server may commit just as the caller deadline fires. Reconciliation is
+// a bounded read only and must not inherit that canceled request context.
+func signedEffectReconcileContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
+
 func (s *V3OperationStore) GetOfflineSignedEffectGrant(ctx context.Context, planID, attemptID, challengeID string) (offline.EffectGrant, error) {
 	if s == nil || uuid.Validate(planID) != nil || uuid.Validate(attemptID) != nil || uuid.Validate(challengeID) != nil {
 		return offline.EffectGrant{}, offline.ErrEffectAttestation
@@ -228,8 +234,10 @@ func (s *V3OperationStore) issueOfflineEffectGrantFromAcceptedWithClock(ctx cont
 		clientv3.OpPut(s.offlineSignedEffectGrantWatermarkKey(planID), string(proofRaw)),
 	).Commit()
 	if err != nil {
-		if recovered, readErr := s.GetOfflineSignedEffectGrant(ctx, planID, attemptID, challengeID); readErr == nil {
-			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(ctx, planID, offline.EffectIssuePurpose, challengeID)
+		reconcileCtx, cancel := signedEffectReconcileContext(ctx)
+		defer cancel()
+		if recovered, readErr := s.GetOfflineSignedEffectGrant(reconcileCtx, planID, attemptID, challengeID); readErr == nil {
+			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(reconcileCtx, planID, offline.EffectIssuePurpose, challengeID)
 			if acceptedErr == nil && effectAttemptMatchesIdentity(accepted.Attempt, identity) {
 				return recovered, nil
 			}
@@ -237,8 +245,10 @@ func (s *V3OperationStore) issueOfflineEffectGrantFromAcceptedWithClock(ctx cont
 		return offline.EffectGrant{}, err
 	}
 	if !result.Succeeded {
-		if recovered, readErr := s.GetOfflineSignedEffectGrant(ctx, planID, attemptID, challengeID); readErr == nil {
-			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(ctx, planID, offline.EffectIssuePurpose, challengeID)
+		reconcileCtx, cancel := signedEffectReconcileContext(ctx)
+		defer cancel()
+		if recovered, readErr := s.GetOfflineSignedEffectGrant(reconcileCtx, planID, attemptID, challengeID); readErr == nil {
+			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(reconcileCtx, planID, offline.EffectIssuePurpose, challengeID)
 			if acceptedErr == nil && effectAttemptMatchesIdentity(accepted.Attempt, identity) {
 				return recovered, nil
 			}

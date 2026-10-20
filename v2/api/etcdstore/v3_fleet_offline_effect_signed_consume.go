@@ -214,8 +214,10 @@ func (s *V3OperationStore) consumeOfflineEffectGrantFromAcceptedWithClock(ctx co
 		clientv3.OpPut(s.offlineSignedEffectConsumeWatermarkKey(planID), string(consumeProofRaw)),
 	).Commit()
 	if err != nil {
-		if recovered, readErr := s.GetOfflineSignedConsumedGrant(ctx, planID, attemptID, challengeID); readErr == nil && recovered.ID == grantID {
-			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(ctx, planID, offline.EffectConsumePurpose, challengeID)
+		reconcileCtx, cancel := signedEffectReconcileContext(ctx)
+		defer cancel()
+		if recovered, readErr := s.GetOfflineSignedConsumedGrant(reconcileCtx, planID, attemptID, challengeID); readErr == nil && recovered.ID == grantID {
+			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(reconcileCtx, planID, offline.EffectConsumePurpose, challengeID)
 			if acceptedErr == nil && effectAttemptMatchesIdentity(accepted.Attempt, identity) {
 				return recovered, nil
 			}
@@ -223,8 +225,10 @@ func (s *V3OperationStore) consumeOfflineEffectGrantFromAcceptedWithClock(ctx co
 		return offline.EffectGrant{}, err
 	}
 	if !result.Succeeded {
-		if recovered, readErr := s.GetOfflineSignedConsumedGrant(ctx, planID, attemptID, challengeID); readErr == nil && recovered.ID == grantID {
-			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(ctx, planID, offline.EffectConsumePurpose, challengeID)
+		reconcileCtx, cancel := signedEffectReconcileContext(ctx)
+		defer cancel()
+		if recovered, readErr := s.GetOfflineSignedConsumedGrant(reconcileCtx, planID, attemptID, challengeID); readErr == nil && recovered.ID == grantID {
+			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(reconcileCtx, planID, offline.EffectConsumePurpose, challengeID)
 			if acceptedErr == nil && effectAttemptMatchesIdentity(accepted.Attempt, identity) {
 				return recovered, nil
 			}
