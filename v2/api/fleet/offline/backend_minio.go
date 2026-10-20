@@ -3,6 +3,7 @@ package offline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/minio/minio-go/v7"
@@ -22,6 +23,35 @@ func (r MinIOLatestBackendReader) VersioningEnabled(ctx context.Context, bucket,
 		return false, ErrLatestBackendMismatch
 	}
 	return true, nil
+}
+
+func (r MinIOLatestBackendReader) VersionSize(ctx context.Context, bucket, key, version string) (int64, error) {
+	if r.Client == nil || version == "" || version == "null" {
+		return 0, ErrLatestBackendMismatch
+	}
+	stat, err := r.Client.StatObject(ctx, bucket, key, minio.StatObjectOptions{VersionID: version})
+	if err != nil || stat.VersionID != version || stat.Size <= 0 || stat.Size > maxEffectStateBytes {
+		return 0, ErrLatestBackendMismatch
+	}
+	return stat.Size, nil
+}
+
+// ForeignLockAbsent checks the native OpenTofu S3 lockfile. A successful HEAD
+// or an ambiguous provider error fails closed; only authenticated not-found is
+// accepted as absence.
+func (r MinIOLatestBackendReader) ForeignLockAbsent(ctx context.Context, bucket, key string) error {
+	if r.Client == nil || bucket == "" || key == "" {
+		return ErrLatestBackendMismatch
+	}
+	_, err := r.Client.StatObject(ctx, bucket, key+".tflock", minio.StatObjectOptions{})
+	if err == nil {
+		return fmt.Errorf("%w: OpenTofu lock exists", ErrLatestBackendMismatch)
+	}
+	response := minio.ToErrorResponse(err)
+	if response.StatusCode != 404 || (response.Code != "NoSuchKey" && response.Code != "NoSuchObject" && response.Code != "NotFound") {
+		return ErrLatestBackendMismatch
+	}
+	return nil
 }
 
 func (r MinIOLatestBackendReader) Latest(ctx context.Context, bucket, key string) (string, int64, error) {

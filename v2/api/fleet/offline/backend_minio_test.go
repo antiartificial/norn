@@ -69,3 +69,41 @@ func TestMinIOBackendReaderRejectsNullHeadVersion(t *testing.T) {
 		t.Fatalf("null HEAD accepted: %v", err)
 	}
 }
+
+func TestMinIOBackendReaderRequiresAuthenticatedMissingLock(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		code   string
+		want   bool
+	}{
+		{"absent", http.StatusNotFound, "NoSuchKey", true},
+		{"present", http.StatusOK, "", false},
+		{"ambiguous", http.StatusForbidden, "AccessDenied", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodHead || r.URL.Path != "/state/staging.tfstate.tflock" {
+					t.Fatalf("unexpected lock read: %s %s", r.Method, r.URL)
+				}
+				if tc.status != http.StatusOK {
+					w.Header().Set("Content-Type", "application/xml")
+					w.WriteHeader(tc.status)
+					fmt.Fprintf(w, `<Error><Code>%s</Code><Message>test</Message></Error>`, tc.code)
+					return
+				}
+				w.Header().Set("Content-Length", "10")
+			}))
+			defer server.Close()
+			endpoint, _ := url.Parse(server.URL)
+			client, err := minio.New(endpoint.Host, &minio.Options{Creds: credentials.NewStaticV4("read", "secret", ""), Secure: false, Region: "us-east-1", BucketLookup: minio.BucketLookupPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = (MinIOLatestBackendReader{Client: client}).ForeignLockAbsent(context.Background(), "state", "staging.tfstate")
+			if (err == nil) != tc.want {
+				t.Fatalf("lock absence=%v err=%v", tc.want, err)
+			}
+		})
+	}
+}
