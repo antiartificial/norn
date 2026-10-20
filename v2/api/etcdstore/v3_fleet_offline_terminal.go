@@ -115,7 +115,16 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 	if err != nil || candidateBinding.PlanID != planID || candidateBinding.OwnerAuthorizationID == "" {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
-	response, err := s.kv.Txn(ctx).Then(
+	targetProbe, err := s.kv.Get(ctx, s.fleetTargetKey(candidate.TargetID), clientv3.WithRev(probe.Header.Revision))
+	if err != nil || len(targetProbe.Kvs) != 1 {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	var aliasCandidate FleetTarget
+	if decodeV3Record(targetProbe.Kvs[0].Value, &aliasCandidate) != nil ||
+		aliasCandidate.TargetID != candidate.TargetID || len(aliasCandidate.Aliases) < 2 || len(aliasCandidate.Aliases) > 32 {
+		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	ops := []clientv3.Op{
 		clientv3.OpGet(s.offlineTerminalKey(planID)), clientv3.OpGet(s.offlineTerminalEventKey(planID)),
 		clientv3.OpGet(s.offlineEffectGrantKey(planID)), clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 1)),
 		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 2)), clientv3.OpGet(s.offlineDispatchKey(planID)),
@@ -130,11 +139,23 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 		clientv3.OpGet(s.offlineTerminalChallengeEventKey(planID)),
 		clientv3.OpGet(s.offlineTerminalChallengeConsumedKey(planID)),
 		clientv3.OpGet(s.offlineTerminalAttestationProvenanceKey(planID)),
-	).Commit()
+	}
+	seenAliases := make(map[string]struct{}, len(aliasCandidate.Aliases))
+	for _, alias := range aliasCandidate.Aliases {
+		if alias == "" || len(alias) > 256 {
+			return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+		}
+		if _, exists := seenAliases[alias]; exists {
+			return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+		}
+		seenAliases[alias] = struct{}{}
+		ops = append(ops, clientv3.OpGet(s.fleetTargetAliasKey(alias)))
+	}
+	response, err := s.kv.Txn(ctx).Then(ops...).Commit()
 	if err != nil {
 		return offline.TerminalEvidence{}, err
 	}
-	if len(response.Responses) != 20 {
+	if len(response.Responses) != len(ops) {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
 	var raw [20][]byte
@@ -189,11 +210,20 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
 	var target FleetTarget
-	if decodeV3Record(raw[13], &target) != nil || target.TargetID != binding.TargetID ||
+	if decodeV3Record(raw[13], &target) != nil || !bytes.Equal(raw[13], targetProbe.Kvs[0].Value) || target.TargetID != binding.TargetID ||
 		!slices.Contains(target.Aliases, "cluster:tk-staging-nyc3") ||
 		!slices.Contains(target.Aliases, "environment:staging") ||
 		string(raw[14]) != binding.TargetID || string(raw[15]) != binding.TargetID {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	for i, alias := range target.Aliases {
+		if i >= len(aliasCandidate.Aliases) || alias != aliasCandidate.Aliases[i] {
+			return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+		}
+		rows := response.Responses[20+i].GetResponseRange().Kvs
+		if len(rows) != 1 || string(rows[0].Value) != binding.TargetID {
+			return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+		}
 	}
 	_, canonicalTargetID, err := lifecycle.CanonicalTarget(lifecycle.TargetIdentity{
 		Provider: target.Provider, ProviderAccount: target.ProviderAccount, StateBackend: target.StateBackend,
@@ -332,6 +362,10 @@ func (s *V3OperationStore) recordOfflineTerminal(ctx context.Context, planID, at
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(planID)).WithPrefix(), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalKey(planID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalEventKey(planID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalChallengeKey(planID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalChallengeEventKey(planID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalChallengeConsumedKey(planID)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineTerminalAttestationProvenanceKey(planID)), "=", 0),
 	).Then(clientv3.OpPut(s.offlineTerminalKey(planID), string(encoded)),
 		clientv3.OpPut(s.offlineTerminalEventKey(planID), string(encoded))).Commit()
 	if err != nil {

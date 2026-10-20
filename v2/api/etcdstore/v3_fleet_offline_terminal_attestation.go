@@ -190,7 +190,8 @@ func validateSignedTerminalProvenance(receipt offline.TerminalEvidence, grant of
 	challengeHead, challengeEvent, consumed, provenanceRaw []byte) error {
 	if receipt.ChallengeID == "" {
 		if receipt.AttestationSHA256 != "" || receipt.ObserverSubject != "" || receipt.ObserverKeyID != "" ||
-			receipt.RawJournalSHA256 != "" || len(consumed) != 0 || len(provenanceRaw) != 0 {
+			receipt.RawJournalSHA256 != "" || len(challengeHead) != 0 || len(challengeEvent) != 0 ||
+			len(consumed) != 0 || len(provenanceRaw) != 0 {
 			return ErrOfflineAttemptCorrupt
 		}
 		return nil

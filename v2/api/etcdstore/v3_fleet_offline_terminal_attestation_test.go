@@ -95,6 +95,45 @@ func TestSignedTerminalSubmitRecoverAndFence(t *testing.T) {
 	}
 }
 
+func TestSignedTerminalReadRejectsChangedExtraAlias(t *testing.T) {
+	h, binding, attempt, _, challenge, raw, now := signedTerminalFixture(t)
+	if _, err := h.s.submitOfflineTerminalAttestationWithClock(h.ctx(), binding.PlanID, attempt.ID, challenge.ID, raw,
+		func() time.Time { return now }); err != nil {
+		t.Fatal(err)
+	}
+	targetKey := h.s.fleetTargetKey(binding.TargetID)
+	row, err := h.s.kv.Get(h.ctx(), targetKey)
+	if err != nil || len(row.Kvs) != 1 {
+		t.Fatal(err)
+	}
+	var target FleetTarget
+	if err := json.Unmarshal(row.Kvs[0].Value, &target); err != nil {
+		t.Fatal(err)
+	}
+	extra := "environment:alternate"
+	target.Aliases = append(target.Aliases, extra)
+	targetRaw, _ := json.Marshal(target)
+	if _, err := h.s.kv.Put(h.ctx(), targetKey, string(targetRaw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetAliasKey(extra), binding.TargetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.GetOfflineTerminal(h.ctx(), binding.PlanID); err != nil {
+		t.Fatalf("valid extra alias rejected: %v", err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetAliasKey(extra), "other-target"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.GetOfflineTerminal(h.ctx(), binding.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("changed extra alias accepted: %v", err)
+	}
+	if _, err := h.s.submitOfflineTerminalAttestationWithClock(h.ctx(), binding.PlanID, attempt.ID, challenge.ID, raw,
+		func() time.Time { return now.Add(time.Hour) }); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("replay accepted changed extra alias: %v", err)
+	}
+}
+
 func TestSignedTerminalTamperAndExpired(t *testing.T) {
 	h, binding, attempt, _, challenge, raw, now := signedTerminalFixture(t)
 	var envelope offline.SignedTerminalAttestationV1

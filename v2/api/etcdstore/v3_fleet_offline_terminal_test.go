@@ -115,6 +115,52 @@ func TestOfflineTerminalCASAndRestore(t *testing.T) {
 	}
 }
 
+func TestOfflineTerminalLegacyWriterRefusesIssuedChallenge(t *testing.T) {
+	h, binding, attempt, grant, _ := consumedOfflineGrant(t)
+	installTerminalObserverTrust(t, h)
+	challenge, err := h.s.IssueOfflineTerminalChallenge(h.ctx(), binding.PlanID, attempt.ID, grant.ID,
+		"fleet-verifier", "management-observer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.recordOfflineTerminal(h.ctx(), binding.PlanID, attempt.ID, grant.ID, challenge.IssuedAt,
+		offlineTerminalFixture{observation: terminalObservation(grant, challenge.IssuedAt.Add(time.Millisecond))}); !errors.Is(err, ErrOfflineTerminalConflict) {
+		t.Fatalf("unsigned writer crossed issued challenge: %v", err)
+	}
+	if _, err := h.s.GetOfflineTerminal(h.ctx(), binding.PlanID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unsigned terminal appeared: %v", err)
+	}
+}
+
+func TestOfflineTerminalLegacyReadRejectsChallengeRows(t *testing.T) {
+	for _, keyKind := range []string{"head", "event", "consumed", "provenance"} {
+		t.Run(keyKind, func(t *testing.T) {
+			h, binding, attempt, grant, now := consumedOfflineGrant(t)
+			if _, err := h.s.recordOfflineTerminal(h.ctx(), binding.PlanID, attempt.ID, grant.ID, now,
+				offlineTerminalFixture{observation: terminalObservation(grant, now)}); err != nil {
+				t.Fatal(err)
+			}
+			var key string
+			switch keyKind {
+			case "head":
+				key = h.s.offlineTerminalChallengeKey(binding.PlanID)
+			case "event":
+				key = h.s.offlineTerminalChallengeEventKey(binding.PlanID)
+			case "consumed":
+				key = h.s.offlineTerminalChallengeConsumedKey(binding.PlanID)
+			case "provenance":
+				key = h.s.offlineTerminalAttestationProvenanceKey(binding.PlanID)
+			}
+			if _, err := h.s.kv.Put(h.ctx(), key, "restored-row"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.s.GetOfflineTerminal(h.ctx(), binding.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+				t.Fatalf("legacy receipt accepted %s challenge row: %v", keyKind, err)
+			}
+		})
+	}
+}
+
 func TestOfflineTerminalConcurrentFenceMutationFailsCAS(t *testing.T) {
 	h, b, a, grant, now := consumedOfflineGrant(t)
 	observation := terminalObservation(grant, now)
