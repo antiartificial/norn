@@ -16,6 +16,7 @@ import (
 )
 
 const offlineDeleteDispatchIntentName = "offline-delete-dispatch-intent.json"
+const offlineDeleteResponseReceiptName = "offline-delete-response-receipt.json"
 
 var errOfflineDeleteAlreadyDispatched = errors.New("offline delete dispatch was already attempted")
 
@@ -46,6 +47,20 @@ type offlineDeleteDispatchIntent struct {
 type signedOfflineDeleteDispatchIntent struct {
 	Intent offlineDeleteDispatchIntent `json:"intent"`
 	MAC    string                      `json:"mac"`
+}
+
+type offlineDeleteResponseReceipt struct {
+	SchemaVersion         string    `json:"schemaVersion"`
+	CommitmentSHA256      string    `json:"commitmentSHA256"`
+	SupervisorExecutionID string    `json:"supervisorExecutionId"`
+	RuntimeInstanceID     string    `json:"runtimeInstanceId"`
+	StatusCode            int       `json:"statusCode"`
+	RecordedAt            time.Time `json:"recordedAt"`
+}
+
+type signedOfflineDeleteResponseReceipt struct {
+	Receipt offlineDeleteResponseReceipt `json:"receipt"`
+	MAC     string                       `json:"mac"`
 }
 
 // verifyRuntimeIdentity proves that identity belongs to the manager's signed
@@ -158,9 +173,45 @@ func (m *Manager) dispatchOfflineDeleteOnce(ctx context.Context, reservation eff
 		if status != 204 {
 			return fmt.Errorf("offline delete returned status %d", status)
 		}
-		return nil
+		// Only a received 204 can create this receipt. A lost response keeps
+		// the intent but never acquires a terminal-success source.
+		receipt := offlineDeleteResponseReceipt{
+			SchemaVersion:         "norn.offline-delete-response-receipt/v1",
+			CommitmentSHA256:      hex.EncodeToString(digest[:]),
+			SupervisorExecutionID: identity.SupervisorExecutionID,
+			RuntimeInstanceID:     identity.RuntimeInstanceID,
+			StatusCode:            status, RecordedAt: time.Now().UTC(),
+		}
+		encoded, err = json.Marshal(receipt)
+		if err != nil {
+			return err
+		}
+		return writeOfflineDeleteResponseReceipt(directory, signedOfflineDeleteResponseReceipt{Receipt: receipt, MAC: m.mac(encoded)})
 	})
 	return result, err
+}
+
+func writeOfflineDeleteResponseReceipt(directory string, sealed signedOfflineDeleteResponseReceipt) error {
+	data, err := json.Marshal(sealed)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(filepath.Join(directory, offlineDeleteResponseReceiptName), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	return syncDirectory(directory)
 }
 
 func (m *Manager) requireNoOfflineDeleteIntent(directory string, identity effect.ExecutionIdentity, commitmentSHA256 string) error {
