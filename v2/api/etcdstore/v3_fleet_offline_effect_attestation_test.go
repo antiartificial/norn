@@ -85,6 +85,33 @@ func TestOfflineEffectAttestationPartialRestoreFailsClosed(t *testing.T) {
 	}
 }
 
+func TestOfflineEffectAttestationFullReceiptTupleRollbackFailsClosed(t *testing.T) {
+	h, b, a, c, envelope, now := signedEffectIssueFixture(t)
+	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope,
+		func() time.Time { return now }); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		h.s.offlineEffectAttestationKey(b.PlanID, c.Purpose),
+		h.s.offlineEffectAttestationEventKey(b.PlanID, c.Purpose),
+		h.s.offlineEffectChallengeConsumedKey(b.PlanID, c.Purpose),
+	} {
+		if _, err := h.s.kv.Delete(h.ctx(), key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.s.ReadAcceptedOfflineEffectAttestation(h.ctx(), b.PlanID, c.Purpose, c.ID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("full receipt rollback read as pristine: %v", err)
+	}
+	if _, err := h.s.GetOfflineEffectChallenge(h.ctx(), b.PlanID, c.Purpose); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("accepted head with missing receipt read as challenge: %v", err)
+	}
+	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope,
+		func() time.Time { return now.Add(time.Second) }); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("signed envelope accepted twice after tuple rollback: %v", err)
+	}
+}
+
 func TestOfflineEffectChallengeHistoricalReadAfterTransitions(t *testing.T) {
 	h, b, a, c, envelope, now := signedEffectIssueFixture(t)
 	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope, func() time.Time { return now }); err != nil {

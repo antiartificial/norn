@@ -305,25 +305,37 @@ func (s *V3OperationStore) GetOfflineEffectChallenge(ctx context.Context, planID
 	if s == nil || uuid.Validate(planID) != nil || !validEffectChallengePurpose(purpose) {
 		return offline.EffectChallengeV1{}, offline.ErrEffectAttestation
 	}
-	result, err := s.kv.Txn(ctx).Then(clientv3.OpGet(s.offlineEffectChallengeKey(planID, purpose)),
+	result, err := s.kv.Txn(ctx).Then(
+		clientv3.OpGet(s.offlineEffectAttestationKey(planID, purpose)),
+		clientv3.OpGet(s.offlineEffectAttestationEventKey(planID, purpose)),
+		clientv3.OpGet(s.offlineEffectChallengeConsumedKey(planID, purpose)),
+		clientv3.OpGet(s.offlineEffectChallengeKey(planID, purpose)),
 		clientv3.OpGet(s.offlineEffectChallengeEventKey(planID, purpose))).Commit()
 	if err != nil {
 		return offline.EffectChallengeV1{}, err
 	}
-	if len(result.Responses) != 2 || len(result.Responses[0].GetResponseRange().Kvs) > 1 ||
-		len(result.Responses[1].GetResponseRange().Kvs) > 1 {
+	if len(result.Responses) != 5 {
 		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
 	}
-	head, event := result.Responses[0].GetResponseRange().Kvs, result.Responses[1].GetResponseRange().Kvs
-	if len(head) == 0 && len(event) == 0 {
-		return offline.EffectChallengeV1{}, ErrNotFound
+	var raw [5][]byte
+	for i, item := range result.Responses {
+		rows := item.GetResponseRange().Kvs
+		if len(rows) > 1 {
+			return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
+		}
+		if len(rows) == 1 {
+			raw[i] = rows[0].Value
+		}
 	}
-	if len(head) != 1 || len(event) != 1 || !bytes.Equal(head[0].Value, event[0].Value) {
-		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
+	challenge, acceptedHead, err := decodeEffectChallengeHead(raw[3], raw[4], planID, purpose)
+	if err != nil {
+		return offline.EffectChallengeV1{}, err
 	}
-	challenge, err := offline.DecodeEffectChallengeV1(head[0].Value)
-	if err != nil || challenge.PlanID != planID || challenge.Purpose != purpose ||
-		uuid.Validate(challenge.AttemptID) != nil || uuid.Validate(challenge.ID) != nil {
+	if acceptedHead != nil {
+		if _, err := verifyAcceptedEffectRows(raw, planID, purpose, challenge.ID); err != nil {
+			return offline.EffectChallengeV1{}, err
+		}
+	} else if len(raw[0]) != 0 || len(raw[1]) != 0 || len(raw[2]) != 0 {
 		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
 	}
 	return challenge, nil

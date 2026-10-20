@@ -19,6 +19,7 @@ import (
 )
 
 const effectAttestationReceiptSchema = "norn.fleet-offline-effect-accepted/v1"
+const effectChallengeAcceptedHeadSchema = "norn.fleet-offline-effect-challenge-accepted/v1"
 
 var ErrOfflineEffectAttestationConflict = errors.New("offline effect attestation changed or authority is stale")
 
@@ -36,6 +37,40 @@ type AcceptedOfflineEffectAttestation struct {
 	Binding           offline.Binding           `json:"binding"`
 	Attempt           offline.Attempt           `json:"attempt"`
 	Grant             *offline.EffectGrant      `json:"grant,omitempty"`
+}
+
+// The challenge head advances once, in the same CAS as the three receipt
+// rows. The immutable issue event stays as the original challenge. Even if
+// every receipt row is later removed, the head prevents a second acceptance.
+type effectChallengeAcceptedHead struct {
+	SchemaVersion     string                    `json:"schemaVersion"`
+	Challenge         offline.EffectChallengeV1 `json:"challenge"`
+	AttestationSHA256 string                    `json:"attestationSHA256"`
+	AcceptedAt        time.Time                 `json:"acceptedAt"`
+}
+
+func decodeEffectChallengeHead(headRaw, eventRaw []byte, planID, purpose string) (offline.EffectChallengeV1, *effectChallengeAcceptedHead, error) {
+	if len(headRaw) == 0 && len(eventRaw) == 0 {
+		return offline.EffectChallengeV1{}, nil, ErrNotFound
+	}
+	challenge, err := offline.DecodeEffectChallengeV1(eventRaw)
+	if err != nil || challenge.PlanID != planID || challenge.Purpose != purpose || len(headRaw) == 0 {
+		return offline.EffectChallengeV1{}, nil, ErrOfflineAttemptCorrupt
+	}
+	if bytes.Equal(headRaw, eventRaw) {
+		return challenge, nil, nil
+	}
+	var accepted effectChallengeAcceptedHead
+	if decodeV3Record(headRaw, &accepted) != nil || accepted.SchemaVersion != effectChallengeAcceptedHeadSchema ||
+		accepted.Challenge != challenge || accepted.AcceptedAt.IsZero() ||
+		!accepted.AcceptedAt.Before(challenge.ExpiresAt) {
+		return offline.EffectChallengeV1{}, nil, ErrOfflineAttemptCorrupt
+	}
+	canonical, err := json.Marshal(accepted)
+	if err != nil || !bytes.Equal(canonical, headRaw) {
+		return offline.EffectChallengeV1{}, nil, ErrOfflineAttemptCorrupt
+	}
+	return challenge, &accepted, nil
 }
 
 func (s *V3OperationStore) offlineEffectAttestationKey(planID, purpose string) string {
@@ -109,10 +144,23 @@ func (s *V3OperationStore) ReadAcceptedOfflineEffectAttestation(ctx context.Cont
 			raw[i] = rows[0].Value
 		}
 	}
+	return verifyAcceptedEffectRows(raw, planID, purpose, challengeID)
+}
+
+// The five rows are read at one etcd revision. A transitioned challenge head
+// with a missing receipt tuple is corruption, never pristine eligibility.
+func verifyAcceptedEffectRows(raw [5][]byte, planID, purpose, challengeID string) (AcceptedOfflineEffectAttestation, error) {
+	challenge, acceptedHead, headErr := decodeEffectChallengeHead(raw[3], raw[4], planID, purpose)
+	if headErr != nil && headErr != ErrNotFound {
+		return AcceptedOfflineEffectAttestation{}, headErr
+	}
 	if len(raw[0]) == 0 && len(raw[1]) == 0 && len(raw[2]) == 0 {
+		if acceptedHead != nil {
+			return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
+		}
 		return AcceptedOfflineEffectAttestation{}, ErrNotFound
 	}
-	if len(raw[0]) == 0 || !bytes.Equal(raw[0], raw[1]) || len(raw[2]) == 0 || !bytes.Equal(raw[3], raw[4]) || len(raw[3]) == 0 {
+	if len(raw[0]) == 0 || !bytes.Equal(raw[0], raw[1]) || len(raw[2]) == 0 || acceptedHead == nil || headErr != nil {
 		return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
 	}
 	var candidate AcceptedOfflineEffectAttestation
@@ -126,8 +174,8 @@ func (s *V3OperationStore) ReadAcceptedOfflineEffectAttestation(ctx context.Cont
 	if !bytes.Equal(raw[2], []byte(receipt.AttestationSHA256)) {
 		return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
 	}
-	challenge, err := offline.DecodeEffectChallengeV1(raw[3])
-	if err != nil || challenge != receipt.Challenge {
+	if challenge != receipt.Challenge || acceptedHead.AttestationSHA256 != receipt.AttestationSHA256 ||
+		!acceptedHead.AcceptedAt.Equal(receipt.AcceptedAt) {
 		return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
 	}
 	return receipt, nil
@@ -192,6 +240,12 @@ func (s *V3OperationStore) submitOfflineEffectAttestationWithClock(ctx context.C
 	if err != nil {
 		return AcceptedOfflineEffectAttestation{}, err
 	}
+	acceptedHead := effectChallengeAcceptedHead{SchemaVersion: effectChallengeAcceptedHeadSchema,
+		Challenge: snapshot.challenge, AttestationSHA256: digest, AcceptedAt: receipt.AcceptedAt}
+	headRaw, err := json.Marshal(acceptedHead)
+	if err != nil {
+		return AcceptedOfflineEffectAttestation{}, err
+	}
 	compares := make([]clientv3.Cmp, 0, len(snapshot.keys)+3)
 	for i, key := range snapshot.keys {
 		if i == effectChallengeRunnerAttempts {
@@ -206,6 +260,7 @@ func (s *V3OperationStore) submitOfflineEffectAttestationWithClock(ctx context.C
 		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectAttestationEventKey(planID, purpose)), "=", 0),
 	)
 	result, err := s.kv.Txn(ctx).If(compares...).Then(
+		clientv3.OpPut(s.offlineEffectChallengeKey(planID, purpose), string(headRaw)),
 		clientv3.OpPut(s.offlineEffectChallengeConsumedKey(planID, purpose), digest),
 		clientv3.OpPut(s.offlineEffectAttestationKey(planID, purpose), string(raw)),
 		clientv3.OpPut(s.offlineEffectAttestationEventKey(planID, purpose), string(raw)),
