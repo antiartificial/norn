@@ -20,8 +20,12 @@ var ErrDeleteCommitment = errors.New("offline delete commitment is invalid or mi
 // DeleteCommitment is the authority's proposed pre-dispatch ledger entry. A
 // DigitalOcean droplet DELETE returns 204 with no action ID: this record binds
 // the attempt to a supervised runtime, not to an invented provider operation.
-// It grants no effect by itself; durable authority CAS and executor admission
-// must precede any DELETE request.
+// It grants no effect by itself. The local clock may cross grant expiry while
+// the networked etcd CAS commits, so this record is historical pre-dispatch
+// intent, not proof of commit-time freshness. A separately implemented
+// executor admission must check current grant, fence, epoch, binding, and
+// supervised runtime immediately before its one permitted DELETE request;
+// uncertainty must fail closed, never retry DELETE.
 type DeleteCommitment struct {
 	SchemaVersion          string    `json:"schemaVersion"`
 	PlanID                 string    `json:"planId"`

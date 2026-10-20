@@ -87,9 +87,10 @@ func (s *V3OperationStore) readOfflineDeleteLedger(ctx context.Context, planID s
 	return out, nil
 }
 
-// GetOfflineDeleteCommitment recovers the exact committed bytes after a lost
+// GetOfflineDeleteCommitment recovers the exact historical bytes after a lost
 // response. Reads require the event and every referenced authority row; they
 // never reconstruct a new commitment from a later clock or runtime identity.
+// Recovery is for audit/reconciliation only; it authorizes no provider call.
 func (s *V3OperationStore) GetOfflineDeleteCommitment(ctx context.Context, planID string) (offline.DeleteCommitment, []byte, error) {
 	if s == nil || uuid.Validate(planID) != nil {
 		return offline.DeleteCommitment{}, nil, ErrOfflineAttemptCorrupt
@@ -125,9 +126,12 @@ func (s *V3OperationStore) GetOfflineDeleteCommitment(ctx context.Context, planI
 // commitOfflineDelete is deliberately internal and has no live route. The
 // caller must supervise the identified runtime before using its bytes. The
 // CAS consumes no additional provider capability and never releases a fence.
-// Caller-supplied time cannot extend the one-minute grant. Future executor
-// admission must independently recheck this commitment and current authority
-// before DELETE; a committed record alone never grants retry permission.
+// Caller-supplied time cannot extend the one-minute grant. The local pre-CAS
+// clock read cannot prove freshness at the networked etcd commit instant.
+// Future executor admission must independently recheck the exact commitment,
+// grant validity, held fence, epoch and supervised runtime before DELETE. If
+// any current check is unavailable or ambiguous, it must fail closed. A
+// commitment never grants retry permission after response loss.
 func (s *V3OperationStore) commitOfflineDelete(ctx context.Context, planID, attemptID, grantID, rootID, executionID, runtimeID string) (offline.DeleteCommitment, []byte, error) {
 	return s.commitOfflineDeleteWithClock(ctx, planID, attemptID, grantID, rootID, executionID, runtimeID, time.Now)
 }
@@ -181,8 +185,9 @@ func (s *V3OperationStore) commitOfflineDeleteWithClock(ctx context.Context, pla
 	if err != nil {
 		return offline.DeleteCommitment{}, nil, err
 	}
-	// Time is refreshed at the last possible point before the authority CAS.
-	// No caller-provided observation timestamp may authorize an expired grant.
+	// Refresh time before the authority CAS to reject known expiry. This is
+	// deliberately only a local preflight: etcd has no transaction-time clock
+	// predicate, so expiry may cross during the networked Commit call.
 	decisionTime := clock().UTC()
 	if decisionTime.Before(c.CommittedAt) || !decisionTime.Before(rows.grant.ExpiresAt) || !decisionTime.Before(rows.binding.ExpiresAt) {
 		return offline.DeleteCommitment{}, nil, offline.ErrDeleteCommitment
