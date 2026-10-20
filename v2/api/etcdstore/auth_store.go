@@ -78,6 +78,7 @@ func (s *AuthStore) tokenKey(jti string) string { return s.prefix + "/auth/token
 func (s *AuthStore) tokenPrefix() string        { return s.prefix + "/auth/token/" }
 func (s *AuthStore) enrollKey(id string) string { return s.prefix + "/auth/enroll/" + id }
 func (s *AuthStore) enrollPrefix() string       { return s.prefix + "/auth/enroll/" }
+func (s *AuthStore) enrollAdmissionKey() string { return s.prefix + "/auth/enroll-admission/v1" }
 func (s *AuthStore) oidcKey(issuer, jti string) string {
 	return s.prefix + "/auth/oidc/" + issuer + "\x00" + jti
 }
@@ -517,29 +518,80 @@ func (s *AuthStore) scanEnrollments(ctx context.Context) ([]store.AccessEnrollme
 }
 
 func (s *AuthStore) CreateAccessEnrollment(ctx context.Context, enrollment *store.AccessEnrollment) error {
-	// Rate limits mirror the PostgreSQL adapter: <100 enrollments globally and
-	// <10 per source hash in the last 10 minutes.
-	all, err := s.scanEnrollments(ctx)
-	if err != nil {
-		return err
+	if s == nil || s.kv == nil || enrollment == nil || enrollment.ID == "" || enrollment.SourceHash == "" {
+		return fmt.Errorf("enrollment admission is unavailable")
 	}
-	since := time.Now().Add(-10 * time.Minute)
-	recentGlobal, recentSource := 0, 0
-	for _, e := range all {
-		if e.CreatedAt.After(since) {
-			recentGlobal++
-			if e.SourceHash == enrollment.SourceHash {
-				recentSource++
+	// Every public admission compares and advances one durable serialization
+	// key in the same Txn as its enrollment record. A concurrent admission can
+	// read the same snapshot, but only one may commit; the loser recounts the
+	// linearizable enrollment prefix before trying again. This mirrors the PG
+	// advisory transaction lock instead of relying on a racy scan then put.
+	for attempt := 0; attempt < 512; attempt++ {
+		marker, err := s.kv.Get(ctx, s.enrollAdmissionKey())
+		if err != nil {
+			return err
+		}
+		rows, err := s.kv.Get(ctx, s.enrollPrefix(), clientv3.WithPrefix())
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		since, retireBefore := now.Add(-10*time.Minute), now.Add(-30*24*time.Hour)
+		recentGlobal, recentSource := 0, 0
+		retire := make([]clientv3.Op, 0, 64)
+		for _, row := range rows.Kvs {
+			var raw storedEnrollment
+			if err := json.Unmarshal(row.Value, &raw); err != nil {
+				return err
+			}
+			e := enrollmentFrom(raw)
+			if e.CreatedAt.After(since) {
+				recentGlobal++
+				if e.SourceHash == enrollment.SourceHash {
+					recentSource++
+				}
+			} else if e.CreatedAt.Before(retireBefore) && len(retire) < 64 {
+				retire = append(retire, clientv3.OpDelete(string(row.Key)))
 			}
 		}
+		if recentGlobal >= 100 || recentSource >= 10 {
+			return store.ErrRateLimited
+		}
+		candidate := *enrollment
+		candidate.CreatedAt = now // store time, never a caller-chosen rate-window timestamp
+		if candidate.Status == "" {
+			candidate.Status = "pending"
+		}
+		put, err := opPut(s.enrollKey(candidate.ID), storedEnrollment{AccessEnrollment: candidate,
+			CodeHashStored: candidate.CodeHash, VerifierHashStored: candidate.VerifierHash,
+			PublicKeyStored: candidate.PublicKey, SourceHashStored: candidate.SourceHash,
+			VerifierAttemptsStored: candidate.VerifierAttempts})
+		if err != nil {
+			return err
+		}
+		compares := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(s.enrollKey(candidate.ID)), "=", 0)}
+		if len(marker.Kvs) == 0 {
+			compares = append(compares, clientv3.Compare(clientv3.CreateRevision(s.enrollAdmissionKey()), "=", 0))
+		} else {
+			compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.enrollAdmissionKey()), "=", marker.Kvs[0].ModRevision))
+		}
+		ops := append([]clientv3.Op{put, clientv3.OpPut(s.enrollAdmissionKey(), now.Format(time.RFC3339Nano))}, retire...)
+		committed, err := s.kv.Txn(ctx).If(compares...).Then(ops...).Commit()
+		if err != nil {
+			return err
+		}
+		if committed.Succeeded {
+			*enrollment = candidate
+			return nil
+		}
+		// A repeated ID cannot become a new enrollment after a limiter retry.
+		if existing, err := s.kv.Get(ctx, s.enrollKey(candidate.ID)); err != nil {
+			return err
+		} else if len(existing.Kvs) != 0 {
+			return fmt.Errorf("enrollment %s already exists", candidate.ID)
+		}
 	}
-	if recentGlobal >= 100 || recentSource >= 10 {
-		return store.ErrRateLimited
-	}
-	if enrollment.Status == "" {
-		enrollment.Status = "pending"
-	}
-	return s.putEnrollment(ctx, enrollment)
+	return fmt.Errorf("enrollment admission exhausted retries under contention")
 }
 
 func (s *AuthStore) GetAccessEnrollment(ctx context.Context, id string) (*store.AccessEnrollment, error) {
