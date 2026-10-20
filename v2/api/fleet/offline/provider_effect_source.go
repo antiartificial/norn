@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -288,7 +287,12 @@ func (s DigitalOceanEffectSource) loadToken() (string, error) {
 	if err != nil || !os.SameFile(before, after) || after.Size() > 4096 || after.Size() == 0 {
 		return "", ErrProviderEffectSource
 	}
-	if stat, ok := after.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Geteuid()) {
+	stat := reflect.ValueOf(after.Sys())
+	if stat.Kind() != reflect.Pointer || stat.IsNil() || stat.Elem().Kind() != reflect.Struct {
+		return "", ErrProviderEffectSource
+	}
+	uid := stat.Elem().FieldByName("Uid")
+	if !uid.IsValid() || uid.Kind() != reflect.Uint32 || uid.Uint() != uint64(os.Geteuid()) {
 		return "", ErrProviderEffectSource
 	}
 	data, err := io.ReadAll(io.LimitReader(f, 4097))
