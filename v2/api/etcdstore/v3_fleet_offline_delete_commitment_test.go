@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"norn/v2/api/fleet/offline"
 )
 
@@ -183,6 +184,66 @@ func TestOfflineDeleteReservationLosesDeterministicPreCASAuthorityRace(t *testin
 		if err != nil || len(response.Kvs) != 0 {
 			t.Fatalf("failed CAS wrote %s: rows=%d err=%v", key, len(response.Kvs), err)
 		}
+	}
+}
+
+func TestOfflineDeleteReservationRecoveryRejectsMissingMalformedAndDivergentPairs(t *testing.T) {
+	tests := map[string]func(*testing.T, *etcdExecutorHarness, offline.Binding){
+		"missing event": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineDeleteDispatchReservationEventKey(b.PlanID)); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"malformed pair": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			for _, key := range []string{h.s.offlineDeleteDispatchReservationKey(b.PlanID), h.s.offlineDeleteDispatchReservationEventKey(b.PlanID)} {
+				if _, err := h.s.kv.Put(h.ctx(), key, `{}`); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+		"divergent event": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Put(h.ctx(), h.s.offlineDeleteDispatchReservationEventKey(b.PlanID), `{}`); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			h, binding, _, _, raw, admissionAt := admittedOfflineDelete(t)
+			verify := func(context.Context, string, string, string) error { return nil }
+			if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw, verify, func() time.Time { return admissionAt }); err != nil {
+				t.Fatal(err)
+			}
+			mutate(t, h, binding)
+			if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw, verify, func() time.Time { return admissionAt }); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
+				t.Fatalf("corrupt reservation recovered: %v", err)
+			}
+		})
+	}
+}
+
+func TestOfflineDeleteReservationReciprocallyBlocksCompetingMutationCAS(t *testing.T) {
+	h, binding, _, _, raw, admissionAt := admittedOfflineDelete(t)
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw,
+		func(context.Context, string, string, string) error { return nil },
+		func() time.Time { return admissionAt }); err != nil {
+		t.Fatal(err)
+	}
+	// Every guarded writer uses this same compare in its final transaction.
+	// Exercise representative release, abandonment, GitHub, runner and executor
+	// writes against a reservation that won first; none may partially commit.
+	for _, lane := range []string{"release", "abandon", "github", "runner", "executor"} {
+		t.Run(lane, func(t *testing.T) {
+			key := h.s.prefix + "/test/offline-delete-reciprocal-gate/" + lane
+			txn, err := h.s.kv.Txn(h.ctx()).If(h.s.noOfflineDeleteDispatchCompare(binding.PlanID)).Then(clientv3.OpPut(key, "bad")).Commit()
+			if err != nil || txn.Succeeded {
+				t.Fatalf("%s mutation crossed reservation: succeeded=%t err=%v", lane, txn.Succeeded, err)
+			}
+			response, err := h.s.kv.Get(h.ctx(), key)
+			if err != nil || len(response.Kvs) != 0 {
+				t.Fatalf("%s mutation partially committed: rows=%d err=%v", lane, len(response.Kvs), err)
+			}
+		})
 	}
 }
 

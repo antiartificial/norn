@@ -47,7 +47,11 @@ func consumedOfflineGrant(t *testing.T) (*etcdExecutorHarness, offline.Binding, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err = h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), now, offlineBackendReadFor(b))
+	// Issuance refreshes its authority clock after independent observation. The
+	// consume fixture must therefore advance from the returned durable issue
+	// time instead of replaying the earlier setup timestamp.
+	consumeAt := grant.IssuedAt.Add(time.Nanosecond)
+	grant, err = h.s.consumeOfflineEffectGrant(h.ctx(), b.PlanID, a.ID, grant.ID, offlineEffectIdentity(b, a), consumeAt, offlineBackendReadFor(b))
 	if err != nil {
 		t.Fatal(err)
 	}
