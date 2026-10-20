@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -69,7 +71,8 @@ func (s CompositeEffectSource) ObserveEffect(parent context.Context, c offline.E
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	source, err := s.Origin.ReadSource(ctx, c, b, a)
-	if err != nil || len(source) == 0 || len(source) > 1<<20 || !validSourceObservation(source, c, b, a, start) {
+	sourceTime, sourceOK := validSourceObservation(source, c, b, a, start)
+	if err != nil || len(source) == 0 || len(source) > 1<<20 || !sourceOK {
 		return zero, ErrCompositeEffectSource
 	}
 	provider, err := s.Provider.Observe(ctx, b)
@@ -90,6 +93,7 @@ func (s CompositeEffectSource) ObserveEffect(parent context.Context, c offline.E
 	}
 	end := s.Clock().UTC()
 	if ctx.Err() != nil || end.Before(start) || end.Sub(start) > 30*time.Second || end.Sub(c.IssuedAt) > time.Minute ||
+		sourceTime.After(end) ||
 		!end.Before(c.ExpiresAt) || end.Before(work.WorkloadEvidence.ObservedAt) || end.Sub(work.WorkloadEvidence.ObservedAt) > 30*time.Second ||
 		c.Validate(b, a, c.AuthorityEpoch, end) != nil {
 		return zero, ErrCompositeEffectSource
@@ -183,7 +187,7 @@ func uniqueJSONValue(d *json.Decoder, depth int) bool {
 	}
 }
 
-func validSourceObservation(raw []byte, c offline.EffectChallengeV1, b offline.Binding, a offline.Attempt, start time.Time) bool {
+func validSourceObservation(raw []byte, c offline.EffectChallengeV1, b offline.Binding, a offline.Attempt, start time.Time) (time.Time, bool) {
 	var x struct {
 		Schema      string    `json:"schema"`
 		ChallengeID string    `json:"challengeId"`
@@ -202,32 +206,29 @@ func validSourceObservation(raw []byte, c offline.EffectChallengeV1, b offline.B
 	}
 	if !strictTranscript(raw, &x) || x.Schema != "norn.fleet-offline-effect-source-observation/v1" || x.ChallengeID != c.ID || x.PlanID != b.PlanID || x.AttemptID != a.ID || x.BindingSHA != a.BindingSHA256 ||
 		x.GitHubProof.Schema != "norn.fleet-offline-effect-source/v1" || x.GitHubProof.Repository != "antiartificial/norn-fleet" || x.GitHubProof.Branch != "main" || x.GitHubProof.Commit != b.SourceCommit || !x.GitHubProof.Protected || x.GitHubProof.ValidationRun <= 0 {
-		return false
+		return time.Time{}, false
 	}
-	return !x.ObservedAt.IsZero() && !x.ObservedAt.Before(start.Add(-30*time.Second)) && !x.ObservedAt.After(start.Add(30*time.Second))
+	return x.ObservedAt, !x.ObservedAt.IsZero() && !x.ObservedAt.Before(start.Add(-30*time.Second)) && !x.ObservedAt.After(start.Add(30*time.Second))
+}
+
+type compositeProviderNode struct {
+	ID        uint64   `json:"id"`
+	Name      string   `json:"name"`
+	Status    string   `json:"status"`
+	VPCUUID   string   `json:"vpc_uuid"`
+	PrivateIP string   `json:"privateIP"`
+	PublicIP  string   `json:"publicIP"`
+	Tags      []string `json:"tags"`
 }
 
 func validProviderObservation(raw []byte, b offline.Binding) (string, bool) {
 	var x struct {
-		SchemaVersion string `json:"schemaVersion"`
-		AccountUUID   string `json:"accountUUID"`
-		ProjectID     string `json:"projectId"`
-		VPCUUID       string `json:"vpcUUID"`
-		Reads         []struct {
-			Path      string          `json:"path"`
-			Status    int             `json:"status"`
-			RawSHA256 string          `json:"rawSHA256"`
-			Fields    json.RawMessage `json:"fields"`
-		} `json:"reads"`
-		Nodes []struct {
-			ID        uint64   `json:"id"`
-			Name      string   `json:"name"`
-			Status    string   `json:"status"`
-			VPCUUID   string   `json:"vpc_uuid"`
-			PrivateIP string   `json:"privateIP"`
-			PublicIP  string   `json:"publicIP"`
-			Tags      []string `json:"tags"`
-		} `json:"nodes"`
+		SchemaVersion string                  `json:"schemaVersion"`
+		AccountUUID   string                  `json:"accountUUID"`
+		ProjectID     string                  `json:"projectId"`
+		VPCUUID       string                  `json:"vpcUUID"`
+		Reads         []compositeProviderRead `json:"reads"`
+		Nodes         []compositeProviderNode `json:"nodes"`
 	}
 	if !strictTranscript(raw, &x) || x.SchemaVersion != "norn.fleet-provider-effect-transcript/v1" || x.AccountUUID != b.ProviderAccountUUID || x.ProjectID != offline.WorkProjectUUID || x.VPCUUID != offline.WorkVPCUUID || len(x.Reads) < 19 || len(x.Reads) > 25 || len(x.Nodes) != len(b.ProviderNodes) {
 		return "", false
@@ -260,11 +261,17 @@ func validProviderObservation(raw []byte, b offline.Binding) (string, bool) {
 		return "", false
 	}
 	privateIP := ""
+	wanted := make(map[string]bool, len(b.ProviderNodes))
 	for i, row := range x.Nodes {
+		wanted[b.ProviderNodes[i].ProviderID] = true
 		if paths["/v2/droplets/"+b.ProviderNodes[i].ProviderID] != 2 {
 			return "", false
 		}
-		if strconv.FormatUint(row.ID, 10) != b.ProviderNodes[i].ProviderID || row.Name != "tk-staging-nyc3-"+b.ProviderNodes[i].Name || row.Status != "active" || row.VPCUUID != offline.WorkVPCUUID || row.PrivateIP == "" || row.PublicIP == "" {
+		private, privateErr := netip.ParseAddr(row.PrivateIP)
+		public, publicErr := netip.ParseAddr(row.PublicIP)
+		if strconv.FormatUint(row.ID, 10) != b.ProviderNodes[i].ProviderID || row.Name != "tk-staging-nyc3-"+b.ProviderNodes[i].Name || row.Status != "active" || row.VPCUUID != offline.WorkVPCUUID ||
+			privateErr != nil || publicErr != nil || !private.Is4() || !private.IsPrivate() || !public.Is4() || !public.IsGlobalUnicast() || public.IsPrivate() ||
+			private.String() != row.PrivateIP || public.String() != row.PublicIP || !validCompositeProviderTags(row.Tags, b.ProviderNodes[i].Name) {
 			return "", false
 		}
 		if b.ProviderNodes[i].Name == offline.WorkNode {
@@ -274,7 +281,108 @@ func validProviderObservation(raw []byte, b offline.Binding) (string, bool) {
 			}
 		}
 	}
+	if !validCompositeProviderReads(x.Reads, x.Nodes, b.ProviderAccountUUID, wanted) {
+		return "", false
+	}
 	return privateIP, privateIP != ""
+}
+
+func validCompositeProviderTags(tags []string, nodeName string) bool {
+	pool := ""
+	for _, prefix := range []string{"app", "control", "ingress"} {
+		if strings.HasPrefix(nodeName, prefix+"-") {
+			pool = prefix
+		}
+	}
+	if pool == "" {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		if tag == "" || seen[tag] {
+			return false
+		}
+		seen[tag] = true
+	}
+	return seen["norn:tk-staging-nyc3"] && seen["norn:tk-staging-nyc3:pool:"+pool]
+}
+
+type compositeProviderRead struct {
+	Path      string          `json:"path"`
+	Status    int             `json:"status"`
+	RawSHA256 string          `json:"rawSHA256"`
+	Fields    json.RawMessage `json:"fields"`
+}
+
+func validCompositeProviderReads(reads []compositeProviderRead, nodes []compositeProviderNode, account string, wanted map[string]bool) bool {
+	pages := (len(reads) - 17) / 2
+	if pages < 1 || pages > 4 || len(reads) != 17+2*pages {
+		return false
+	}
+	var accountFields struct {
+		Account struct {
+			UUID string `json:"uuid"`
+		} `json:"account"`
+	}
+	if reads[0].Path != "/v2/account" || !strictTranscript(reads[0].Fields, &accountFields) || accountFields.Account.UUID != account {
+		return false
+	}
+	for pass := 0; pass < 2; pass++ {
+		members := map[string]bool{}
+		resources := 0
+		total := -1
+		for page := 1; page <= pages; page++ {
+			index := 1 + page - 1
+			if pass == 1 {
+				index = 1 + pages + 16 + page - 1
+			}
+			if reads[index].Path != "/v2/projects/"+offline.WorkProjectUUID+"/resources?per_page=200&page="+strconv.Itoa(page) {
+				return false
+			}
+			var fields struct {
+				Resources []struct {
+					URN string `json:"urn"`
+				} `json:"resources"`
+				Meta struct {
+					Total int `json:"total"`
+				} `json:"meta"`
+			}
+			if !strictTranscript(reads[index].Fields, &fields) || fields.Meta.Total < 8 || fields.Meta.Total > 800 || len(fields.Resources) == 0 || (total >= 0 && total != fields.Meta.Total) {
+				return false
+			}
+			total = fields.Meta.Total
+			resources += len(fields.Resources)
+			for _, entry := range fields.Resources {
+				if !strings.HasPrefix(entry.URN, "do:droplet:") {
+					continue
+				}
+				id := strings.TrimPrefix(entry.URN, "do:droplet:")
+				if !wanted[id] || members[id] {
+					return false
+				}
+				members[id] = true
+			}
+		}
+		if resources != total || len(members) != len(wanted) {
+			return false
+		}
+		for i, node := range nodes {
+			index := 1 + pages + i
+			if pass == 1 {
+				index += 8
+			}
+			if reads[index].Path != "/v2/droplets/"+strconv.FormatUint(node.ID, 10) {
+				return false
+			}
+			var fields struct {
+				Droplet compositeProviderNode `json:"droplet"`
+			}
+			if !strictTranscript(reads[index].Fields, &fields) || !reflect.DeepEqual(fields.Droplet, node) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validBackendObservation(raw []byte, c offline.EffectChallengeV1, b offline.Binding) bool {

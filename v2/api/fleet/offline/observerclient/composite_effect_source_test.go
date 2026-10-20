@@ -38,6 +38,20 @@ func (s compositeWorkloadStub) Observe(_ context.Context, _ time.Time, _, _ stri
 	return s.value, nil
 }
 
+func mutateCompositeProvider(t *testing.T, s *CompositeEffectSource, change func(map[string]any)) {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(s.Provider.(compositeProviderStub).raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	change(body)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Provider = compositeProviderStub{raw}
+}
+
 func compositeFixture(t *testing.T) (CompositeEffectSource, offline.EffectChallengeV1, offline.Binding, offline.Attempt, time.Time) {
 	t.Helper()
 	now := time.Date(2026, 10, 19, 20, 0, 0, 0, time.UTC)
@@ -71,18 +85,27 @@ func compositeFixture(t *testing.T) (CompositeEffectSource, offline.EffectChalle
 		if n.Name == offline.WorkNode {
 			id = 610327215
 		}
-		nodes = append(nodes, map[string]any{"id": id, "name": "tk-staging-nyc3-" + n.Name, "status": "active", "vpc_uuid": offline.WorkVPCUUID, "privateIP": "10.43.0.13", "publicIP": "159.203.100.16", "tags": []string{"norn:tk-staging-nyc3"}})
+		pool := strings.Split(n.Name, "-")[0]
+		nodes = append(nodes, map[string]any{"id": id, "name": "tk-staging-nyc3-" + n.Name, "status": "active", "vpc_uuid": offline.WorkVPCUUID, "privateIP": "10.43.0.13", "publicIP": "159.203.100.16", "tags": []string{"norn:tk-staging-nyc3", "norn:tk-staging-nyc3:pool:" + pool}})
+	}
+	resources := make([]any, 0, 8)
+	for _, n := range b.ProviderNodes {
+		resources = append(resources, map[string]any{"urn": "do:droplet:" + n.ProviderID})
 	}
 	reads := make([]any, 19)
 	for i := range reads {
 		path := "/v2/account"
+		fields := any(map[string]any{"account": map[string]any{"uuid": b.ProviderAccountUUID}})
 		if i == 1 || i == 18 {
 			path = "/v2/projects/" + offline.WorkProjectUUID + "/resources?per_page=200&page=1"
+			fields = map[string]any{"resources": resources, "meta": map[string]any{"total": 8}}
 		}
 		if i >= 2 && i <= 17 {
-			path = "/v2/droplets/" + b.ProviderNodes[(i-2)%8].ProviderID
+			index := (i - 2) % 8
+			path = "/v2/droplets/" + b.ProviderNodes[index].ProviderID
+			fields = map[string]any{"droplet": nodes[index]}
 		}
-		reads[i] = map[string]any{"path": path, "status": 200, "rawSHA256": strings.Repeat("a", 64), "fields": map[string]any{"ok": true}}
+		reads[i] = map[string]any{"path": path, "status": 200, "rawSHA256": strings.Repeat("a", 64), "fields": fields}
 	}
 	provider, _ := json.Marshal(map[string]any{"schemaVersion": "norn.fleet-provider-effect-transcript/v1", "accountUUID": b.ProviderAccountUUID, "projectId": offline.WorkProjectUUID, "vpcUUID": offline.WorkVPCUUID, "reads": reads, "nodes": nodes})
 	backend, _ := json.Marshal(map[string]any{"schema": "norn.fleet-effect-backend-transcript/v1", "challengeId": c.ID, "providerAccountUUID": b.ProviderAccountUUID, "backend": b.Backend, "rawState": state, "versioningAndLatest": "verified-before-and-after", "openTofuLock": "authenticated-absent-before-and-after"})
@@ -108,6 +131,24 @@ func TestCompositeEffectSourceBindsFourIndependentTranscripts(t *testing.T) {
 		{"provider identity", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
 			s.Provider = compositeProviderStub{bytes.ReplaceAll(s.Provider.(compositeProviderStub).raw, []byte("10.43.0.13"), []byte("10.43.0.99"))}
 		}},
+		{"provider summary contradicts reads", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
+			mutateCompositeProvider(t, s, func(body map[string]any) { body["nodes"].([]any)[2].(map[string]any)["privateIP"] = "10.43.0.99" })
+		}},
+		{"provider second pass contradicts first", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
+			mutateCompositeProvider(t, s, func(body map[string]any) {
+				body["reads"].([]any)[12].(map[string]any)["fields"].(map[string]any)["droplet"].(map[string]any)["privateIP"] = "10.43.0.99"
+			})
+		}},
+		{"project membership contradicts nodes", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
+			mutateCompositeProvider(t, s, func(body map[string]any) {
+				body["reads"].([]any)[18].(map[string]any)["fields"].(map[string]any)["resources"].([]any)[2].(map[string]any)["urn"] = "do:droplet:999"
+			})
+		}},
+		{"provider tag contradiction", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
+			mutateCompositeProvider(t, s, func(body map[string]any) {
+				body["reads"].([]any)[4].(map[string]any)["fields"].(map[string]any)["droplet"].(map[string]any)["tags"] = []any{"norn:tk-staging-nyc3"}
+			})
+		}},
 		{"state digest", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
 			s.Backend = compositeBackendStub{bytes.Replace(s.Backend.(compositeBackendStub).raw, []byte("lineage-1"), []byte("lineage-X"), 1)}
 		}},
@@ -119,6 +160,9 @@ func TestCompositeEffectSourceBindsFourIndependentTranscripts(t *testing.T) {
 		}},
 		{"stale source", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
 			s.Origin = compositeOriginStub{bytes.Replace(s.Origin.(compositeOriginStub).raw, []byte(now.Format(time.RFC3339)), []byte(now.Add(-31*time.Second).Format(time.RFC3339)), 1)}
+		}},
+		{"future source", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
+			s.Origin = compositeOriginStub{bytes.Replace(s.Origin.(compositeOriginStub).raw, []byte(now.Format(time.RFC3339)), []byte(now.Add(15*time.Second).Format(time.RFC3339)), 1)}
 		}},
 		{"workload target", func(s *CompositeEffectSource, _ *offline.EffectChallengeV1, _ *offline.Binding, _ *offline.Attempt) {
 			w := s.Workload.(compositeWorkloadStub).value
