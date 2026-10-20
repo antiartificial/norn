@@ -104,6 +104,7 @@ type flowClient struct {
 	terminal           offline.TerminalEvidence
 	reads, submissions int
 	responseLost       bool
+	wrongReceipt       bool
 }
 
 func (s *flowClient) ReadConsumedGrant(context.Context, string, string) (offline.EffectGrant, error) {
@@ -132,6 +133,9 @@ func (s *flowClient) SubmitAttestation(_ context.Context, _, _ string, envelope 
 	s.terminal.ObserverSubject = envelope.Attestation.ObserverSubject
 	s.terminal.ObserverKeyID = envelope.KeyID
 	s.terminal.RawJournalSHA256 = envelope.Attestation.RawJournalSHA256
+	if s.wrongReceipt {
+		s.terminal.AttestationSHA256 = strings.Repeat("0", 64)
+	}
 	if s.responseLost {
 		return offline.TerminalEvidence{}, errors.New("response lost after commit")
 	}
@@ -184,5 +188,11 @@ func TestLostSubmitResponseRecoversWithoutSecondEffect(t *testing.T) {
 	got, err := runner.Run(context.Background(), g.PlanID, g.AttemptID)
 	if err != nil || got.EvidenceSHA256 != strings.Repeat("a", 64) || client.submissions != 1 || client.reads != 2 || source.calls != 1 {
 		t.Fatalf("ambiguous response recovery: receipt=%+v err=%v submissions=%d reads=%d observations=%d", got, err, client.submissions, client.reads, source.calls)
+	}
+	client.reads, client.submissions = 0, 0
+	client.terminal = offline.TerminalEvidence{}
+	client.wrongReceipt = true
+	if _, err := runner.Run(context.Background(), g.PlanID, g.AttemptID); !errors.Is(err, offline.ErrTerminalProof) || client.submissions != 1 {
+		t.Fatalf("mismatched attestation digest accepted or retried: err=%v submissions=%d", err, client.submissions)
 	}
 }
