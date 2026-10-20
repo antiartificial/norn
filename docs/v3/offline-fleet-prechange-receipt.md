@@ -32,3 +32,20 @@ checkpoint yet. A future effect gate must require the structured summary,
 reobserve state/provider/Nomad from pinned origins immediately before acting,
 independently prove headroom and service health, and reject expiry or a changed
 fence. Legacy internal digest-only test checkpoints are not effect-qualified.
+
+## Staged effect-time observer composition
+
+The unmounted `observerclient.CompositeEffectSource` combines four fresh,
+independent reads: protected Fleet source proof, work-account DigitalOcean
+inventory, version-pinned state bytes and foreign-lock absence, and all-namespace
+Nomad/Consul workload health. It accepts only the signed binding and exact
+attempt/challenge identity, completes within 30 seconds and within the first
+minute of the challenge, and journals all four bounded transcripts before a
+signed effect attestation can be submitted. The work-staging app-03 Nomad node
+ID `fb10cefb-d416-363c-89b6-cb3a8247899a` is pinned in source because the
+signed dispatch binding contains its DigitalOcean ID but no Nomad ID. A node
+replacement must fail closed until an owner reviews and updates that pin,
+rebuilds the observer, and creates a new binding and challenge. A caller cannot
+select the replacement ID. This source is not mounted or deployed; live
+credential provisioning, target trust, writer fence, and terminal proof remain
+separate gates.
