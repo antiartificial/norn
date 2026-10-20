@@ -25,6 +25,8 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	namespaceReads := 0
 	ghostAllocation := false
 	nodeCheckCritical := false
+	targetAddress := "10.43.0.13"
+	targetNetworkIP := "10.43.0.13"
 	pages := 0
 	nomad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.Header.Get("X-Nomad-Token") != "nomad-read" {
@@ -80,7 +82,11 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		case "/v1/node/node-1", "/v1/node/node-2", "/v1/node/node-3":
 			id := strings.TrimPrefix(r.URL.Path, "/v1/node/")
 			num := strings.TrimPrefix(id, "node-")
-			fmt.Fprintf(w, `{"ID":%q,"Name":%q,"Status":"ready","SchedulingEligibility":"eligible","NodeResources":{"Cpu":{"CpuShares":1000},"Memory":{"MemoryMB":1024}},"ReservedResources":{"Cpu":{"CpuShares":100},"Memory":{"MemoryMB":100}}}`, id, "app-0"+num)
+			address, networkIP := fmt.Sprintf("10.43.0.1%s", num), fmt.Sprintf("10.43.0.1%s", num)
+			if id == "node-3" {
+				address, networkIP = targetAddress, targetNetworkIP
+			}
+			fmt.Fprintf(w, `{"ID":%q,"Name":%q,"Address":%q,"Status":"ready","SchedulingEligibility":"eligible","NodeResources":{"Cpu":{"CpuShares":1000},"Memory":{"MemoryMB":1024},"Networks":[{"IP":%q}]},"ReservedResources":{"Cpu":{"CpuShares":100},"Memory":{"MemoryMB":100}}}`, id, "app-0"+num, address, networkIP)
 		default:
 			http.Error(w, "unknown", 404)
 		}
@@ -119,12 +125,13 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	if err != nil || !evidence.AllNamespacesInspected || pages != 2 {
 		t.Fatalf("valid paginated observation: %+v %v pages=%d", evidence, err, pages)
 	}
-	effect, err := ObserveEffectNomadConsul(context.Background(), source, now, "node-3")
+	effect, err := ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13")
 	if err != nil || !effect.WorkloadEvidence.App03Empty || effect.EvidenceSHA256 == effect.WorkloadEvidence.SHA256 || len(effect.RawEvidence) == 0 || len(effect.RawEvidence) > maxTerminalWorkloadRawBytes {
 		t.Fatalf("valid effect observation: %+v %v", effect, err)
 	}
-	if !strings.Contains(string(effect.RawEvidence), `"schema":"norn.fleet-effect-workload-reads/v1"`) ||
+	if !strings.Contains(string(effect.RawEvidence), `"schema":"norn.fleet-effect-workload-reads/v2"`) ||
 		!strings.Contains(string(effect.RawEvidence), `"targetNodeId":"node-3"`) ||
+		!strings.Contains(string(effect.RawEvidence), `"targetPrivateIp":"10.43.0.13"`) ||
 		!strings.Contains(string(effect.RawEvidence), `"/v1/allocations"`) ||
 		!strings.Contains(string(effect.RawEvidence), `"/v1/acl/token/self"`) ||
 		strings.Contains(string(effect.RawEvidence), "nomad-read") || strings.Contains(string(effect.RawEvidence), "consul-read") ||
@@ -132,22 +139,38 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		!strings.Contains(string(effect.RawEvidence), `"redacted":true`) {
 		t.Fatal("effect transcript missing independent reads or exposes bearer")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-wrong"); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-wrong", "10.43.0.13"); err == nil {
 		t.Fatal("wrong pinned Nomad target ID accepted")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, ""); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "", "10.43.0.13"); err == nil {
 		t.Fatal("missing pinned Nomad target ID accepted")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now.Add(31*time.Second), "node-3"); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", ""); err == nil {
+		t.Fatal("missing pinned provider private IP accepted")
+	}
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.99"); err == nil {
+		t.Fatal("wrong pinned provider private IP accepted")
+	}
+	targetAddress = ""
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
+		t.Fatal("missing Nomad target address accepted")
+	}
+	targetAddress = "10.43.0.13"
+	targetNetworkIP = "10.43.0.99"
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
+		t.Fatal("ambiguous Nomad target network addresses accepted")
+	}
+	targetNetworkIP = "10.43.0.13"
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now.Add(31*time.Second), "node-3", "10.43.0.13"); err == nil {
 		t.Fatal("stale effect observation accepted")
 	}
 	targetRunning = true
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
 		t.Fatal("live app-03 allocation accepted for effect")
 	}
 	targetRunning = false
 	indexDrift = true
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
 		t.Fatal("namespace index drift accepted for effect")
 	}
 	indexDrift = false
@@ -155,7 +178,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	if _, err = ObserveWorkload(context.Background(), source, now); err == nil {
 		t.Fatal("failing Consul check accepted")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
 		t.Fatal("failing Consul check accepted for effect")
 	}
 	filtered = true
@@ -167,7 +190,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	if _, err = source.Snapshot(context.Background()); err == nil {
 		t.Fatal("unreviewed policy accepted")
 	}
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
 		t.Fatal("unreviewed policy accepted for effect")
 	}
 	source.PolicySHA256 = hex.EncodeToString(digest[:])
@@ -176,7 +199,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		t.Fatal("terminal proof accepted a still-present app-03 node")
 	}
 	targetGone = true
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3"); err == nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, now, "node-3", "10.43.0.13"); err == nil {
 		t.Fatal("effect proof accepted missing app-03 node")
 	}
 	terminal, err := ObserveTerminalNomadConsul(context.Background(), source, now)
@@ -201,7 +224,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	nodeCheckCritical = false
 	targetGone = false
 	source.Now = time.Now
-	if _, err = ObserveEffectNomadConsul(context.Background(), source, time.Now(), "node-3"); err != nil {
+	if _, err = ObserveEffectNomadConsul(context.Background(), source, time.Now(), "node-3", "10.43.0.13"); err != nil {
 		t.Fatalf("effect observation with real advancing clock: %v", err)
 	}
 	targetGone = true

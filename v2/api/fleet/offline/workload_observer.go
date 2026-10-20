@@ -22,9 +22,9 @@ type WorkloadAllocation struct {
 }
 
 type WorkloadNode struct {
-	Name, ID, Status      string
-	EligibleForWorkload   bool
-	FreeCPU, FreeMemoryMB int
+	Name, ID, Status, PrivateIP string
+	EligibleForWorkload         bool
+	FreeCPU, FreeMemoryMB       int
 }
 
 type WorkloadService struct {

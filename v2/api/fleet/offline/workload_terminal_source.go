@@ -108,13 +108,15 @@ func (r *workloadRawRecorder) append(u *url.URL, h http.Header, body []byte) err
 	return nil
 }
 
-// ObserveEffectNomadConsul proves the exact caller-pinned Nomad node ID is
-// present as app-03 but free of live allocations, with two healthy survivor
-// placements and headroom. The caller must independently bind this ID to
-// the provider droplet/private IP; this Nomad read alone cannot do so.
-func ObserveEffectNomadConsul(ctx context.Context, source NomadConsulSource, now time.Time, expectedNodeID string) (EffectWorkloadObservation, error) {
+// ObserveEffectNomadConsul proves the caller-pinned Nomad node ID and private
+// IP are present as app-03 but free of live allocations, with two healthy
+// survivor placements and headroom. The Nomad address is an agent report; the
+// caller must still obtain the expected IP and droplet ID from an independent
+// provider observation. This comparison alone is not cross-provider identity
+// attestation.
+func ObserveEffectNomadConsul(ctx context.Context, source NomadConsulSource, now time.Time, expectedNodeID, expectedPrivateIP string) (EffectWorkloadObservation, error) {
 	var zero EffectWorkloadObservation
-	if expectedNodeID == "" {
+	if expectedNodeID == "" || expectedPrivateIP == "" {
 		return zero, ErrWorkloadObservation
 	}
 	recorder := &workloadRawRecorder{}
@@ -126,7 +128,7 @@ func ObserveEffectNomadConsul(ctx context.Context, source NomadConsulSource, now
 	targetFound := false
 	for _, node := range snapshot.Nodes {
 		if node.Name == "app-03" {
-			if targetFound || node.ID != expectedNodeID {
+			if targetFound || node.ID != expectedNodeID || node.PrivateIP != expectedPrivateIP {
 				return zero, ErrWorkloadObservation
 			}
 			targetFound = true
@@ -140,12 +142,13 @@ func ObserveEffectNomadConsul(ctx context.Context, source NomadConsulSource, now
 		return zero, ErrWorkloadObservation
 	}
 	raw, err := json.Marshal(struct {
-		Schema       string            `json:"schema"`
-		TargetNodeID string            `json:"targetNodeId"`
-		ObservedAt   time.Time         `json:"observedAt"`
-		SnapshotHash string            `json:"snapshotSHA256"`
-		Reads        []json.RawMessage `json:"reads"`
-	}{Schema: "norn.fleet-effect-workload-reads/v1", TargetNodeID: expectedNodeID, ObservedAt: evidence.ObservedAt,
+		Schema          string            `json:"schema"`
+		TargetNodeID    string            `json:"targetNodeId"`
+		TargetPrivateIP string            `json:"targetPrivateIp"`
+		ObservedAt      time.Time         `json:"observedAt"`
+		SnapshotHash    string            `json:"snapshotSHA256"`
+		Reads           []json.RawMessage `json:"reads"`
+	}{Schema: "norn.fleet-effect-workload-reads/v2", TargetNodeID: expectedNodeID, TargetPrivateIP: expectedPrivateIP, ObservedAt: evidence.ObservedAt,
 		SnapshotHash: evidence.SHA256, Reads: recorder.rows})
 	if err != nil || len(raw) == 0 || len(raw) > maxTerminalWorkloadRawBytes || !json.Valid(raw) {
 		return zero, ErrWorkloadObservation

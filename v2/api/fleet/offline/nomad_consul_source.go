@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"sort"
@@ -222,10 +223,11 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 		}
 		idToName[n.ID] = n.Name
 		var info struct {
-			ID, Name, Status, SchedulingEligibility string
-			NodeResources                           struct {
-				Cpu    struct{ CpuShares int }
-				Memory struct{ MemoryMB int }
+			ID, Name, Status, SchedulingEligibility, Address string
+			NodeResources                                    struct {
+				Cpu      struct{ CpuShares int }
+				Memory   struct{ MemoryMB int }
+				Networks []struct{ IP string }
 			}
 			ReservedResources struct {
 				Cpu    struct{ CpuShares int }
@@ -246,7 +248,24 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 				freeMem -= a.MemoryMB
 			}
 		}
-		out.snapshot.Nodes = append(out.snapshot.Nodes, WorkloadNode{ID: n.ID, Name: n.Name, Status: info.Status, EligibleForWorkload: info.SchedulingEligibility == "eligible", FreeCPU: freeCPU, FreeMemoryMB: freeMem})
+		// Nomad's node detail is authenticated through the dedicated read
+		// credential. Preserve its advertised address in the snapshot so the
+		// pre-effect observer can bind the target to the provider's pinned IP.
+		// More than one advertised network address makes that binding ambiguous.
+		privateIP := ""
+		if info.Address != "" {
+			addr, parseErr := netip.ParseAddr(info.Address)
+			if parseErr != nil || !addr.Is4() || !addr.IsPrivate() || addr.String() != info.Address {
+				return out, ErrWorkloadObservation
+			}
+			privateIP = info.Address
+		}
+		for _, network := range info.NodeResources.Networks {
+			if network.IP != "" && network.IP != privateIP {
+				return out, ErrWorkloadObservation
+			}
+		}
+		out.snapshot.Nodes = append(out.snapshot.Nodes, WorkloadNode{ID: n.ID, Name: n.Name, Status: info.Status, PrivateIP: privateIP, EligibleForWorkload: info.SchedulingEligibility == "eligible", FreeCPU: freeCPU, FreeMemoryMB: freeMem})
 	}
 	for i := range out.snapshot.Allocations {
 		name := idToName[out.snapshot.Allocations[i].Node]
