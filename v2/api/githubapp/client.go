@@ -114,6 +114,7 @@ type Config struct {
 type Client struct {
 	cfg        Config
 	httpClient *http.Client
+	offlineEffectSourceSafe bool
 	now        func() time.Time
 	pause      func(time.Duration)
 	tokenMu    sync.Mutex
