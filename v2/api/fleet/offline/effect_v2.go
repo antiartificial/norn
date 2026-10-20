@@ -39,18 +39,21 @@ func (w WriterFence) valid(attemptID string) bool {
 // EffectObservationV2 is populated only by an authority-configured evidence
 // source. The HTTP caller cannot submit it. FenceGeneration is the Norn target
 // fence; WriterFence.Generation is the distinct PostgreSQL all-writer fence.
+// A delete may be dispatched only while the exact provider and backend target
+// still exist. Their absence belongs to terminal evidence after the DELETE.
 type EffectObservationV2 struct {
-	PlanID, AttemptID, BindingSHA256, TargetID                         string
-	SourceCommit, SavedPlanSHA256, EffectSHA256                        string
-	Backend                                                            Backend
-	ProviderAccountUUID, NodeName, DropletID                           string
-	FenceGeneration                                                    uint64
-	AuthorityEpoch                                                     int64
-	WriterFence                                                        WriterFence
-	ObservedAt, ValidUntil                                             time.Time
-	EvidenceSHA256                                                     string
-	ProviderExact, LatestBackendExact, AllNamespacesInspected          bool
-	TargetEmpty, SurvivingPlacement, SurvivingHeadroom, ServicePassing bool
+	PlanID, AttemptID, BindingSHA256, TargetID                string
+	SourceCommit, SavedPlanSHA256, EffectSHA256               string
+	Backend                                                   Backend
+	ProviderAccountUUID, NodeName, DropletID                  string
+	FenceGeneration                                           uint64
+	AuthorityEpoch                                            int64
+	WriterFence                                               WriterFence
+	ObservedAt, ValidUntil                                    time.Time
+	EvidenceSHA256                                            string
+	ProviderExact, LatestBackendExact, AllNamespacesInspected bool
+	ProviderTargetPresent, BackendTargetPresent               bool
+	SurvivingPlacement, SurvivingHeadroom, ServicePassing     bool
 }
 
 type VerifiedEffectObservationV2 struct{ value EffectObservationV2 }
@@ -64,7 +67,8 @@ func VerifyEffectObservationV2(o EffectObservationV2, b Binding, a Attempt, epoc
 		!o.WriterFence.valid(a.ID) || !hex64.MatchString(o.EvidenceSHA256) || o.ObservedAt.IsZero() ||
 		o.ValidUntil.IsZero() || now.Before(o.ObservedAt) || now.Sub(o.ObservedAt) > 30*time.Second ||
 		!now.Before(o.ValidUntil) || o.ValidUntil.Sub(o.ObservedAt) > 30*time.Second ||
-		!o.ProviderExact || !o.LatestBackendExact || !o.AllNamespacesInspected || !o.TargetEmpty ||
+		!o.ProviderExact || !o.LatestBackendExact || !o.AllNamespacesInspected ||
+		!o.ProviderTargetPresent || !o.BackendTargetPresent ||
 		!o.SurvivingPlacement || !o.SurvivingHeadroom || !o.ServicePassing {
 		return VerifiedEffectObservationV2{}, ErrEffectProofV2
 	}

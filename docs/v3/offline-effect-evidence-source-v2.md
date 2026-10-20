@@ -22,10 +22,10 @@ account and droplet identity, reviewed backend object, latest backend object,
 all-namespace workload facts, evidence digests, and observation times. Norn
 requires:
 
-- effect: the exact writer generation is held by the attempt; the provider
-  target and workload target are absent; the latest versioned backend identity
-  is exactly the reviewed identity; surviving placement, headroom, and service
-  checks pass;
+- effect: the exact writer generation is held by the attempt; the exact
+  provider target and backend target are still present; the workload target is
+  absent after drain; the latest versioned backend identity is exactly the
+  reviewed identity; surviving placement, headroom, and service checks pass;
 - terminal: the same writer generation remains held; the provider and workload
   target remain absent; a newer object version in the same backend lineage is
   observed; all evidence digests are present;

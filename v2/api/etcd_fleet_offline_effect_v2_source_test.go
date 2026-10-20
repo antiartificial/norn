@@ -77,7 +77,7 @@ func offlineEffectSourceFixture(t *testing.T) (offlineEffectSourceState, offline
 		BindingSHA256: attempt.BindingSHA256, TargetID: binding.TargetID, TargetFenceGeneration: binding.FenceGeneration,
 		AuthorityEpoch: 9, SourceCommit: binding.SourceCommit, SavedPlanSHA256: binding.SavedPlanSHA256, EffectSHA256: binding.EffectSHA256,
 		Backend: binding.Backend, LatestBackend: binding.Backend, ProviderAccountUUID: binding.ProviderAccountUUID, NodeName: binding.NodeName, DropletID: binding.DropletID,
-		WriterFence: fence, WriterState: "held", ProviderTargetState: "absent", BackendLatestState: "exact", BackendTargetState: "absent",
+		WriterFence: fence, WriterState: "held", ProviderTargetState: "present", BackendLatestState: "exact", BackendTargetState: "present",
 		WorkloadTargetState: "absent", NamespaceCoverage: "all", SurvivingPlacement: "passing", SurvivingHeadroom: "passing", ServiceState: "passing",
 		ObservedAt: now, ValidUntil: now.Add(20 * time.Second), EvidenceSHA256: strings.Repeat("7", 64),
 		ProviderEvidenceSHA256: strings.Repeat("8", 64), BackendEvidenceSHA256: strings.Repeat("9", 64), WorkloadEvidenceSHA256: strings.Repeat("a", 64),
@@ -97,9 +97,11 @@ func TestOfflineEffectEvidenceSourceV2ReadsExactServerOwnedFacts(t *testing.T) {
 			row.Phase, row.GrantID = "effect", ""
 		case strings.HasSuffix(r.URL.Path, "/terminal"):
 			row.Phase, row.GrantID, row.BackendLatestState = "terminal", state.grant.ID, "advanced"
+			row.ProviderTargetState, row.BackendTargetState = "absent", "absent"
 			row.LatestBackend.Serial, row.LatestBackend.VersionID, row.LatestBackend.RawSHA256 = row.Backend.Serial+1, "version-43", strings.Repeat("f", 64)
 		case strings.HasSuffix(r.URL.Path, "/completion"):
 			row.Phase, row.GrantID, row.WriterState, row.BackendLatestState = "completion", state.grant.ID, "released", "advanced"
+			row.ProviderTargetState, row.BackendTargetState = "absent", "absent"
 			row.LatestBackend.Serial, row.LatestBackend.VersionID, row.LatestBackend.RawSHA256 = row.Backend.Serial+1, "version-43", strings.Repeat("f", 64)
 		default:
 			t.Fatalf("unexpected verifier path %q", r.URL.Path)
@@ -117,7 +119,7 @@ func TestOfflineEffectEvidenceSourceV2ReadsExactServerOwnedFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if observed, err := source.ObserveOfflineEffect(context.Background(), state.binding.PlanID, state.attempt.ID); err != nil ||
-		observed.WriterFence != evidence.WriterFence || !observed.ProviderExact || !observed.TargetEmpty {
+		observed.WriterFence != evidence.WriterFence || !observed.ProviderExact || !observed.ProviderTargetPresent || !observed.BackendTargetPresent {
 		t.Fatalf("effect observation=%+v err=%v", observed, err)
 	}
 	if observed, err := source.ObserveOfflineTerminal(context.Background(), state.binding.PlanID, state.attempt.ID, state.grant.ID); err != nil ||
@@ -149,6 +151,16 @@ func TestOfflineEffectEvidenceSourceV2FailsClosed(t *testing.T) {
 	}
 	if _, err := source.ObserveOfflineEffect(context.Background(), state.binding.PlanID, state.attempt.ID); err == nil {
 		t.Fatal("mismatched provider target identity was accepted")
+	}
+	evidence.DropletID = state.binding.DropletID
+	evidence.ProviderTargetState = "absent"
+	if _, err := source.ObserveOfflineEffect(context.Background(), state.binding.PlanID, state.attempt.ID); err == nil {
+		t.Fatal("provider absence before DELETE was accepted")
+	}
+	evidence.ProviderTargetState = "present"
+	evidence.BackendTargetState = "absent"
+	if _, err := source.ObserveOfflineEffect(context.Background(), state.binding.PlanID, state.attempt.ID); err == nil {
+		t.Fatal("backend target absence before DELETE was accepted")
 	}
 	if source, err := newOfflineEffectEvidenceSourceV2(&config.Config{}, state); err != nil || source != nil {
 		t.Fatalf("default-off source=%T err=%v", source, err)

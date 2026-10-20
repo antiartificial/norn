@@ -143,7 +143,7 @@ func (s *httpOfflineEffectEvidenceSourceV2) ObserveOfflineEffect(ctx context.Con
 	}
 	e, err := s.observe(ctx, "effect", planID, attemptID, "")
 	if err != nil || !s.matchesBinding(e, binding, attempt, "effect", "") || e.WriterState != "held" ||
-		e.ProviderTargetState != "absent" || e.BackendLatestState != "exact" || e.LatestBackend != binding.Backend || e.BackendTargetState != "absent" ||
+		e.ProviderTargetState != "present" || e.BackendLatestState != "exact" || e.LatestBackend != binding.Backend || e.BackendTargetState != "present" ||
 		e.WorkloadTargetState != "absent" || e.NamespaceCoverage != "all" || e.SurvivingPlacement != "passing" ||
 		e.SurvivingHeadroom != "passing" || e.ServiceState != "passing" || e.ValidUntil.IsZero() || !offlineEffectHex64.MatchString(e.EvidenceSHA256) {
 		return offline.EffectObservationV2{}, errors.New("independent effect evidence differs from server state")
@@ -153,7 +153,8 @@ func (s *httpOfflineEffectEvidenceSourceV2) ObserveOfflineEffect(ctx context.Con
 		Backend: e.Backend, ProviderAccountUUID: e.ProviderAccountUUID, NodeName: e.NodeName, DropletID: e.DropletID,
 		FenceGeneration: e.TargetFenceGeneration, AuthorityEpoch: e.AuthorityEpoch, WriterFence: e.WriterFence,
 		ObservedAt: e.ObservedAt, ValidUntil: e.ValidUntil, EvidenceSHA256: e.EvidenceSHA256,
-		ProviderExact: true, LatestBackendExact: true, AllNamespacesInspected: true, TargetEmpty: true,
+		ProviderExact: true, LatestBackendExact: true, AllNamespacesInspected: true,
+		ProviderTargetPresent: true, BackendTargetPresent: true,
 		SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true}, nil
 }
 

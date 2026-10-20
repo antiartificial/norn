@@ -79,7 +79,8 @@ func (f *offlineEffectV2Fixture) effectObservation(at time.Time) offline.EffectO
 		Backend: f.binding.Backend, ProviderAccountUUID: f.binding.ProviderAccountUUID, NodeName: f.binding.NodeName, DropletID: f.binding.DropletID,
 		WriterFence: offline.WriterFence{BackendID: "work-staging-postgres", Generation: 41, Holder: f.attempt.ID, SessionSHA256: strings.Repeat("8", 64)},
 		ObservedAt:  at.Add(-time.Second), ValidUntil: at.Add(20 * time.Second), EvidenceSHA256: strings.Repeat("7", 64),
-		ProviderExact: true, LatestBackendExact: true, AllNamespacesInspected: true, TargetEmpty: true,
+		ProviderExact: true, LatestBackendExact: true, AllNamespacesInspected: true,
+		ProviderTargetPresent: true, BackendTargetPresent: true,
 		SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true}
 }
 
@@ -193,6 +194,23 @@ func TestOfflineEffectV2RejectsStaleEvidence(t *testing.T) {
 	observation.ObservedAt = at.Add(-31 * time.Second)
 	if _, err := f.h.s.IssueOfflineEffectGrantV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, f.proof, observation, at); !errors.Is(err, offline.ErrEffectProofV2) {
 		t.Fatalf("stale evidence=%v", err)
+	}
+}
+
+func TestOfflineEffectV2RequiresTargetPresentBeforeDeleteDispatch(t *testing.T) {
+	for name, mutate := range map[string]func(*offline.EffectObservationV2){
+		"provider absent": func(o *offline.EffectObservationV2) { o.ProviderTargetPresent = false },
+		"backend absent":  func(o *offline.EffectObservationV2) { o.BackendTargetPresent = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newOfflineEffectV2Fixture(t)
+			at := f.now.Add(time.Second)
+			observation := f.effectObservation(at)
+			mutate(&observation)
+			if _, err := f.h.s.IssueOfflineEffectGrantV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, f.proof, observation, at); !errors.Is(err, offline.ErrEffectProofV2) {
+				t.Fatalf("pre-delete absence admitted: %v", err)
+			}
+		})
 	}
 }
 
