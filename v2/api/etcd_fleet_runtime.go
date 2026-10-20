@@ -194,7 +194,11 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err != nil {
 		return fmt.Errorf("configure offline Fleet reservation: %w", err)
 	}
-	registerEtcdFleetOfflineRoutes(router, cfg, identities, operations, offlineOwnerKey, offlineReservationVerifier)
+	offlineEffectSource, err := newOfflineEffectEvidenceSourceV2(cfg, operations)
+	if err != nil {
+		return fmt.Errorf("configure offline Fleet effect v2 evidence: %w", err)
+	}
+	registerEtcdFleetOfflineRoutes(router, cfg, identities, operations, offlineOwnerKey, offlineReservationVerifier, offlineEffectSource)
 	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))

@@ -34,11 +34,11 @@ type offlineAttemptDeviceStore interface {
 }
 
 func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, attempts *etcdstore.V3OperationStore,
-	ownerPublicKey ed25519.PublicKey, reservationVerifier OfflineReservationEvidenceVerifier) {
+	ownerPublicKey ed25519.PublicKey, reservationVerifier OfflineReservationEvidenceVerifier, effectSource ...OfflineEffectEvidenceSourceV2) {
 	offlineAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOfflineAttempt)
 	router.With(offlineAuth).Post("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptCreate(attempts, identities))
 	router.With(offlineAuth).Get("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptGet(attempts, identities))
-	registerEtcdFleetOfflineEffectGrantRoutes(router, offlineAuth, attempts, identities)
+	registerEtcdFleetOfflineEffectGrantRoutes(router, offlineAuth, attempts, identities, effectSource...)
 	enrollment := handler.NewEtcdOfflineEnrollmentHandler(cfg, identities)
 	adminAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
 	router.Post("/api/v1/fleet/offline/enrollments", enrollment.StartDeviceEnrollment)

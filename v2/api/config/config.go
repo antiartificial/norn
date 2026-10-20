@@ -63,6 +63,13 @@ type Config struct {
 	FleetOfflineOwnerPublicKeyFile  string
 	FleetOfflineEvidenceVerifierURL string
 	FleetOfflineEvidenceTokenFile   string
+	// FleetOfflineEffectV2* enables the server-owned evidence adapter for the
+	// app-03 work-staging offline effect lifecycle. It is a separate activation
+	// gate and credential from reservation admission so enabling reservations
+	// cannot accidentally enable provider deletion.
+	FleetOfflineEffectV2Enabled     bool
+	FleetOfflineEffectV2VerifierURL string
+	FleetOfflineEffectV2TokenFile   string
 	FleetGitHubAPIBaseURL           string
 	GitToken                        string
 	GitSSHKey                       string
@@ -358,6 +365,9 @@ func Load() *Config {
 		FleetOfflineOwnerPublicKeyFile:        strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_PUBLIC_KEY_FILE")),
 		FleetOfflineEvidenceVerifierURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_VERIFIER_URL")), "/"),
 		FleetOfflineEvidenceTokenFile:         strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_TOKEN_FILE")),
+		FleetOfflineEffectV2Enabled:           envBoolOr("NORN_FLEET_OFFLINE_EFFECT_V2_ENABLED", false),
+		FleetOfflineEffectV2VerifierURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_VERIFIER_URL")), "/"),
+		FleetOfflineEffectV2TokenFile:         strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_TOKEN_FILE")),
 
 		ExternalFleetAdmissionApp:                  strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_APP")),
 		ExternalFleetAdmissionNamespace:            strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_NAMESPACE")),

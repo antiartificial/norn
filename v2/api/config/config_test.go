@@ -156,6 +156,22 @@ func TestFleetOfflineReservationIsExplicitAndDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestFleetOfflineEffectV2IsExplicitAndDisabledByDefault(t *testing.T) {
+	for _, key := range []string{"NORN_FLEET_OFFLINE_EFFECT_V2_ENABLED", "NORN_FLEET_OFFLINE_EFFECT_V2_VERIFIER_URL", "NORN_FLEET_OFFLINE_EFFECT_V2_TOKEN_FILE"} {
+		t.Setenv(key, "")
+	}
+	if cfg := Load(); cfg.FleetOfflineEffectV2Enabled {
+		t.Fatal("offline effect v2 enabled by default")
+	}
+	t.Setenv("NORN_FLEET_OFFLINE_EFFECT_V2_ENABLED", "true")
+	t.Setenv("NORN_FLEET_OFFLINE_EFFECT_V2_VERIFIER_URL", "https://effect-evidence.internal/")
+	t.Setenv("NORN_FLEET_OFFLINE_EFFECT_V2_TOKEN_FILE", "/run/secrets/offline-effect-v2-token")
+	cfg := Load()
+	if !cfg.FleetOfflineEffectV2Enabled || cfg.FleetOfflineEffectV2VerifierURL != "https://effect-evidence.internal" || cfg.FleetOfflineEffectV2TokenFile == "" {
+		t.Fatalf("offline effect v2 config = %#v", cfg)
+	}
+}
+
 func TestGitHubActionsReleaseBindingsConfig(t *testing.T) {
 	t.Setenv("NORN_GITHUB_ACTIONS_RELEASE_BINDINGS", "orders-api=acme/orders-api@123@456, billing-api=acme/billing-api@789@456")
 	t.Setenv("NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES", "acme/orders-api@123@456")
