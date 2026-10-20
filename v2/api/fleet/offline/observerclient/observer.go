@@ -60,7 +60,7 @@ func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.Term
 	}
 	terminal, err := r.Client.ReadTerminal(ctx, planID, attemptID)
 	if err == nil {
-		return requireReceipt(terminal, grant, "")
+		return requireReceipt(terminal, grant, "", "", "", r.ObserverSubject, r.KeyID)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return zero, fmt.Errorf("read exact terminal receipt: %w", err)
@@ -96,7 +96,8 @@ func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.Term
 	if !ok {
 		return zero, offline.ErrTerminalProof
 	}
-	if _, err := offline.VerifyTerminalAttestationV1(signed, challenge, grant, r.ObserverSubject, r.KeyID, public, r.Clock().UTC()); err != nil {
+	verified, err := offline.VerifyTerminalAttestationV1(signed, challenge, grant, r.ObserverSubject, r.KeyID, public, r.Clock().UTC())
+	if err != nil {
 		return zero, err
 	}
 	terminal, err = r.Client.SubmitAttestation(ctx, planID, attemptID, signed)
@@ -108,10 +109,11 @@ func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.Term
 	if err != nil {
 		return zero, fmt.Errorf("recover exact terminal receipt: %w", err)
 	}
-	return requireReceipt(terminal, grant, attestation.Observation.EvidenceSHA256)
+	return requireReceipt(terminal, grant, attestation.Observation.EvidenceSHA256,
+		verified.ChallengeID(), verified.AttestationSHA256(), r.ObserverSubject, r.KeyID)
 }
 
-func requireReceipt(receipt offline.TerminalEvidence, grant offline.EffectGrant, evidenceSHA string) (offline.TerminalEvidence, error) {
+func requireReceipt(receipt offline.TerminalEvidence, grant offline.EffectGrant, evidenceSHA, challengeID, attestationSHA, observerSubject, observerKeyID string) (offline.TerminalEvidence, error) {
 	if receipt.SchemaVersion != offline.TerminalSchema || receipt.PlanID != grant.PlanID || receipt.AttemptID != grant.AttemptID || receipt.GrantID != grant.ID ||
 		receipt.BindingSHA256 != grant.BindingSHA256 || receipt.TargetID != grant.TargetID || receipt.FenceGeneration != grant.FenceGeneration || receipt.AuthorityEpoch != grant.AuthorityEpoch ||
 		grant.ConsumedAt == nil || !receipt.ObservedAt.After(*grant.ConsumedAt) || receipt.RecordedAt.Before(receipt.ObservedAt) ||
@@ -119,7 +121,11 @@ func requireReceipt(receipt offline.TerminalEvidence, grant offline.EffectGrant,
 		receipt.Backend.Serial != grant.Backend.Serial+1 || receipt.Backend.VersionID == "" || receipt.Backend.VersionID == "null" || receipt.Backend.VersionID == grant.Backend.VersionID ||
 		!sha256Hex.MatchString(receipt.Backend.RawSHA256) || !sha256Hex.MatchString(receipt.EvidenceSHA256) ||
 		!sha256Hex.MatchString(receipt.ProviderEvidenceSHA256) || !sha256Hex.MatchString(receipt.BackendEvidenceSHA256) || !sha256Hex.MatchString(receipt.WorkloadEvidenceSHA256) ||
-		(evidenceSHA != "" && receipt.EvidenceSHA256 != evidenceSHA) {
+		!sha256Hex.MatchString(receipt.AttestationSHA256) || !sha256Hex.MatchString(receipt.RawJournalSHA256) ||
+		receipt.ChallengeID == "" || receipt.ObserverSubject != observerSubject || receipt.ObserverKeyID != observerKeyID ||
+		(evidenceSHA != "" && receipt.EvidenceSHA256 != evidenceSHA) ||
+		(challengeID != "" && receipt.ChallengeID != challengeID) ||
+		(attestationSHA != "" && receipt.AttestationSHA256 != attestationSHA) {
 		return offline.TerminalEvidence{}, offline.ErrTerminalProof
 	}
 	return receipt, nil

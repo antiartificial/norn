@@ -45,6 +45,11 @@ type TerminalEvidence struct {
 	ProviderEvidenceSHA256 string    `json:"providerEvidenceSHA256"`
 	BackendEvidenceSHA256  string    `json:"backendEvidenceSHA256"`
 	WorkloadEvidenceSHA256 string    `json:"workloadEvidenceSHA256"`
+	ChallengeID            string    `json:"challengeId,omitempty"`
+	AttestationSHA256      string    `json:"attestationSHA256,omitempty"`
+	ObserverSubject        string    `json:"observerSubject,omitempty"`
+	ObserverKeyID          string    `json:"observerKeyId,omitempty"`
+	RawJournalSHA256       string    `json:"rawJournalSHA256,omitempty"`
 	Backend                Backend   `json:"backend"`
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -67,7 +68,9 @@ func receiptFor(g offline.EffectGrant, observed time.Time) offline.TerminalEvide
 		GrantID: g.ID, BindingSHA256: g.BindingSHA256, TargetID: g.TargetID, FenceGeneration: g.FenceGeneration,
 		AuthorityEpoch: g.AuthorityEpoch, ObservedAt: observed, RecordedAt: observed,
 		EvidenceSHA256: strings.Repeat("a", 64), ProviderEvidenceSHA256: strings.Repeat("b", 64),
-		BackendEvidenceSHA256: strings.Repeat("c", 64), WorkloadEvidenceSHA256: strings.Repeat("d", 64), Backend: backend}
+		BackendEvidenceSHA256: strings.Repeat("c", 64), WorkloadEvidenceSHA256: strings.Repeat("d", 64),
+		ChallengeID: "44444444-4444-4444-8444-444444444444", AttestationSHA256: strings.Repeat("e", 64),
+		ObserverSubject: "observer", ObserverKeyID: "key-1", RawJournalSHA256: strings.Repeat("f", 64), Backend: backend}
 }
 
 func TestExistingExactTerminalReceiptSkipsObservation(t *testing.T) {
@@ -122,6 +125,13 @@ func (s *flowClient) CreateChallenge(context.Context, string, string) (offline.T
 func (s *flowClient) SubmitAttestation(_ context.Context, _, _ string, envelope offline.SignedTerminalAttestationV1) (offline.TerminalEvidence, error) {
 	s.submissions++
 	s.terminal = receiptFor(s.grant, envelope.Attestation.ObservedTo)
+	raw, _ := json.Marshal(envelope)
+	digest := sha256.Sum256(raw)
+	s.terminal.ChallengeID = envelope.Attestation.ChallengeID
+	s.terminal.AttestationSHA256 = hex.EncodeToString(digest[:])
+	s.terminal.ObserverSubject = envelope.Attestation.ObserverSubject
+	s.terminal.ObserverKeyID = envelope.KeyID
+	s.terminal.RawJournalSHA256 = envelope.Attestation.RawJournalSHA256
 	if s.responseLost {
 		return offline.TerminalEvidence{}, errors.New("response lost after commit")
 	}
