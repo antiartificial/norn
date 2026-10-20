@@ -22,6 +22,15 @@ type TerminalWorkloadObservation struct {
 	RawEvidence      []byte
 }
 
+// EffectWorkloadObservation is the independently fetched, bounded pre-effect
+// transcript. Unlike terminal proof, the target node must still be present
+// and empty; the source never reads from a runner receipt.
+type EffectWorkloadObservation struct {
+	WorkloadEvidence WorkloadEvidence
+	EvidenceSHA256   string
+	RawEvidence      []byte
+}
+
 type workloadRawRecorder struct {
 	rows []json.RawMessage
 	size int
@@ -46,6 +55,32 @@ func (r *workloadRawRecorder) append(u *url.URL, h http.Header, body []byte) err
 	r.rows = append(r.rows, row)
 	r.size += len(row)
 	return nil
+}
+
+// ObserveEffectNomadConsul proves the target is present but free of live
+// allocations, with two healthy survivor placements and headroom. Its raw
+// transcript belongs in an owner-only effect journal before signing.
+func ObserveEffectNomadConsul(ctx context.Context, source NomadConsulSource, now time.Time) (EffectWorkloadObservation, error) {
+	var zero EffectWorkloadObservation
+	recorder := &workloadRawRecorder{}
+	source.recorder = recorder
+	evidence, err := ObserveWorkload(ctx, source, now)
+	if err != nil || len(recorder.rows) == 0 {
+		return zero, ErrWorkloadObservation
+	}
+	raw, err := json.Marshal(struct {
+		Schema       string            `json:"schema"`
+		ObservedAt   time.Time         `json:"observedAt"`
+		SnapshotHash string            `json:"snapshotSHA256"`
+		Reads        []json.RawMessage `json:"reads"`
+	}{Schema: "norn.fleet-effect-workload-reads/v1", ObservedAt: evidence.ObservedAt,
+		SnapshotHash: evidence.SHA256, Reads: recorder.rows})
+	if err != nil || len(raw) == 0 || len(raw) > maxTerminalWorkloadRawBytes || !json.Valid(raw) {
+		return zero, ErrWorkloadObservation
+	}
+	digest := sha256.Sum256(raw)
+	return EffectWorkloadObservation{WorkloadEvidence: evidence,
+		EvidenceSHA256: hex.EncodeToString(digest[:]), RawEvidence: bytes.Clone(raw)}, nil
 }
 
 // ObserveTerminalNomadConsul independently scans all Nomad namespaces twice,
