@@ -2,9 +2,12 @@ package offline
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,12 +34,19 @@ func TestDigitalOceanEffectSourceExactIndependentTranscript(t *testing.T) {
 	if err := b.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	project := "11111111-1111-4111-8111-111111111111"
-	base := DigitalOceanEffectSource{ProjectID: project, VPCUUID: WorkVPCUUID, RequiredTags: []string{"norn-work-staging"}, App03PrivateIP: "10.43.0.13", App03PublicIP: "159.203.100.16", Token: func(context.Context) (string, error) { return "secret-token", nil }}
+	project := WorkProjectUUID
+	tokenFile := filepath.Join(t.TempDir(), "provider-token")
+	if err := os.WriteFile(tokenFile, []byte("secret-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	base, err := NewDigitalOceanEffectSource(tokenFile, x509.NewCertPool())
+	if err != nil {
+		t.Fatal(err)
+	}
 	fixtures := func(mutate func(string, map[string]any)) (DigitalOceanEffectSource, *int) {
 		calls := 0
 		s := base
-		s.Client = &http.Client{Transport: providerEffectTransport(func(req *http.Request) (*http.Response, error) {
+		s.transport = providerEffectTransport(func(req *http.Request) (*http.Response, error) {
 			calls++
 			if req.Method != http.MethodGet || req.URL.Host != "api.digitalocean.com" || req.Header.Get("Authorization") != "Bearer secret-token" {
 				t.Errorf("untrusted provider request: %s", req.URL)
@@ -66,7 +76,7 @@ func TestDigitalOceanEffectSourceExactIndependentTranscript(t *testing.T) {
 					return nil, ErrProviderEffectSource
 				}
 				numeric, _ := strconv.ParseUint(id, 10, 64)
-				body = map[string]any{"droplet": map[string]any{"id": numeric, "name": name, "status": "active", "vpc_uuid": WorkVPCUUID, "tags": []string{"norn-work-staging"}, "privateField": "not retained", "networks": map[string]any{"v4": []any{map[string]any{"type": "private", "ip_address": "10.43.0.13"}, map[string]any{"type": "public", "ip_address": "159.203.100.16"}}}}}
+				body = map[string]any{"droplet": map[string]any{"id": numeric, "name": "tk-staging-nyc3-" + name, "status": "active", "vpc_uuid": WorkVPCUUID, "tags": []string{workFleetTag, workFleetTag + ":pool:" + providerNodePool(name)}, "privateField": "not retained", "networks": map[string]any{"v4": []any{map[string]any{"type": "private", "ip_address": "10.43.0.13"}, map[string]any{"type": "public", "ip_address": "159.203.100.16"}}}}}
 			default:
 				t.Errorf("unexpected provider path %s", path)
 				return nil, ErrProviderEffectSource
@@ -76,19 +86,19 @@ func TestDigitalOceanEffectSourceExactIndependentTranscript(t *testing.T) {
 			}
 			encoded, _ := json.Marshal(body)
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: http.Header{}, Request: req}, nil
-		})}
+		})
 		return s, &calls
 	}
 	s, calls := fixtures(nil)
 	raw, err := s.Observe(context.Background(), b)
-	if err != nil || *calls != 11 {
+	if err != nil || *calls != 19 {
 		t.Fatalf("exact provider read: %v, calls=%d", err, *calls)
 	}
 	if strings.Contains(string(raw), "secret-token") || strings.Contains(string(raw), "privateField") || strings.Contains(string(raw), "extraSecret") {
 		t.Fatal("transcript leaked redacted material")
 	}
 	var transcript providerEffectTranscript
-	if err = json.Unmarshal(raw, &transcript); err != nil || len(transcript.Nodes) != 8 || len(transcript.Reads) != 11 {
+	if err = json.Unmarshal(raw, &transcript); err != nil || len(transcript.Nodes) != 8 || len(transcript.Reads) != 19 {
 		t.Fatalf("bad bounded transcript: %v %+v", err, transcript)
 	}
 	wrongAccount := func(path string, body map[string]any) {
@@ -129,5 +139,45 @@ func TestDigitalOceanEffectSourceExactIndependentTranscript(t *testing.T) {
 				t.Fatal("changed provider topology accepted")
 			}
 		})
+	}
+	t.Run("changed second droplet pass", func(t *testing.T) {
+		reads := 0
+		s, _ := fixtures(func(path string, body map[string]any) {
+			if strings.HasSuffix(path, "/"+WorkDropletID) {
+				reads++
+				if reads == 2 {
+					body["droplet"].(map[string]any)["status"] = "off"
+				}
+			}
+		})
+		if _, err := s.Observe(context.Background(), b); err == nil || reads != 2 {
+			t.Fatalf("changed second pass accepted: %v, reads=%d", err, reads)
+		}
+	})
+	t.Run("token permissions", func(t *testing.T) {
+		if err := os.Chmod(tokenFile, 0644); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := fixtures(nil)
+		if _, err := s.Observe(context.Background(), b); err == nil {
+			t.Fatal("world-readable token accepted")
+		}
+	})
+}
+
+func TestProviderEffectUniqueJSON(t *testing.T) {
+	for _, raw := range []string{
+		`{"account":{"uuid":"work","uuid":"personal"}}`,
+		`{"droplet":{"networks":{"v4":[{"type":"public","ip_address":"1.2.3.4","ip_address":"5.6.7.8"}]}}}`,
+		`{"meta":{"total":8},"meta":{"total":9}}`,
+		`{"account":{},"unused":{"x":1,"x":2}}`,
+		`{"account":{}} {"account":{}}`,
+	} {
+		if providerEffectUniqueJSON([]byte(raw)) {
+			t.Fatalf("ambiguous provider JSON accepted: %s", raw)
+		}
+	}
+	if !providerEffectUniqueJSON([]byte(`{"account":{"uuid":"work"},"meta":{"total":8}}`)) {
+		t.Fatal("ordinary provider JSON rejected")
 	}
 }
