@@ -19,6 +19,7 @@ import (
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/fleet/offline"
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 var offlineTestPrivateKey = ed25519.NewKeyFromSeed([]byte("01234567890123456789012345678901"))
@@ -151,6 +152,38 @@ func TestOfflineDispatchReservationAcquiresSharedFenceAtomically(t *testing.T) {
 	}
 	if _, err := h.s.ReserveOfflineDispatch(h.ctx(), first, verified, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
 		t.Fatalf("released fence allowed reservation replay: %v", err)
+	}
+}
+
+func TestOfflineDispatchReservationAtomicallyRejectsRevokedRunnerProof(t *testing.T) {
+	h, targetID := offlineTestHarness(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	planID, deviceID, tokenID := uuid.NewString(), uuid.NewString(), "norn_"+uuid.NewString()
+	offlineTestPlan(h, planID)
+	auth := NewAuthStore(h.s.kv, h.s.prefix)
+	if err := auth.CreateAccessDevice(h.ctx(), &store.AccessDevice{ID: deviceID, Name: "offline", Platform: "fleet-offline-runner", CreatedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	subject := "fleet-offline-device:" + deviceID
+	if err := auth.RecordAccessToken(h.ctx(), &store.AccessToken{JTI: tokenID, DeviceID: deviceID, Subject: subject,
+		Scopes: []string{"fleet:offline-attempt"}, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	proof, err := auth.ProveOfflineRunner(h.ctx(), subject, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := offlineTestBinding(planID, targetID, now)
+	binding.RunnerPrincipalSubject = subject
+	binding, approval := offlineTestApproval(t, binding, now)
+	if _, err := auth.RevokeAccessToken(h.ctx(), tokenID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.ReserveOfflineDispatchWithRunnerProof(h.ctx(), binding, approval, proof, now); !errors.Is(err, ErrOfflineDispatchReservationConflict) {
+		t.Fatalf("revoked token proof reservation error = %v", err)
+	}
+	if _, err := h.s.GetOfflineDispatchReservation(h.ctx(), planID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reservation after revoked proof = %v", err)
 	}
 }
 

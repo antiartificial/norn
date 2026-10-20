@@ -21,13 +21,11 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
-	"norn/v2/api/handler"
-	storepkg "norn/v2/api/store"
 )
 
 type reservationHTTPStore struct{ saved offline.Binding }
 
-func (s *reservationHTTPStore) ReserveOfflineDispatch(_ context.Context, b offline.Binding, _ offline.VerifiedApproval, _ time.Time) (offline.Binding, error) {
+func (s *reservationHTTPStore) ReserveOfflineDispatchWithRunnerProof(_ context.Context, b offline.Binding, _ offline.VerifiedApproval, _ etcdstore.OfflineRunnerProof, _ time.Time) (offline.Binding, error) {
 	s.saved = b
 	return b, nil
 }
@@ -43,20 +41,24 @@ type reservationEvidenceVerifier struct {
 	calls int
 }
 
-type reservationDeviceStore struct{ device *storepkg.AccessDevice }
-
-func (s reservationDeviceStore) ActiveAccessDevice(_ context.Context, id string) (*storepkg.AccessDevice, error) {
-	if s.device == nil || s.device.ID != id {
-		return nil, errors.New("device not found")
-	}
-	return s.device, nil
+type reservationDeviceStore struct {
+	proof etcdstore.OfflineRunnerProof
+	err   error
+	calls int
 }
 
-func reservationDevices(b offline.Binding) reservationDeviceStore {
+func (s *reservationDeviceStore) ProveOfflineRunner(_ context.Context, subject string, _ time.Time) (etcdstore.OfflineRunnerProof, error) {
+	s.calls++
+	if s.err != nil || s.proof.Subject != subject {
+		return etcdstore.OfflineRunnerProof{}, errors.New("device not found")
+	}
+	return s.proof, nil
+}
+
+func reservationDevices(b offline.Binding) *reservationDeviceStore {
 	id := strings.TrimPrefix(b.RunnerPrincipalSubject, "fleet-offline-device:")
-	return reservationDeviceStore{device: &storepkg.AccessDevice{ID: id, Platform: handler.FleetOfflineRunnerPlatform,
-		Tokens: []storepkg.AccessToken{{JTI: uuid.NewString(), DeviceID: id, Subject: b.RunnerPrincipalSubject,
-			Scopes: []string{handler.ScopeFleetOfflineAttempt}, IssuedAt: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(time.Hour)}}}}
+	return &reservationDeviceStore{proof: etcdstore.OfflineRunnerProof{DeviceID: id, TokenID: uuid.NewString(), Subject: b.RunnerPrincipalSubject,
+		DeviceRevision: 2, TokenRevision: 3, TokenExpiresAt: time.Now().Add(time.Hour)}}
 }
 
 func (v *reservationEvidenceVerifier) VerifyOfflineReservation(_ context.Context, _ offline.Binding) error {
@@ -65,13 +67,17 @@ func (v *reservationEvidenceVerifier) VerifyOfflineReservation(_ context.Context
 }
 
 func signedReservation(t *testing.T, now time.Time) (offline.Binding, offline.SignedApproval, ed25519.PublicKey) {
+	return signedReservationSubject(t, now, "fleet-offline-device:"+uuid.NewString())
+}
+
+func signedReservationSubject(t *testing.T, now time.Time, subject string) (offline.Binding, offline.SignedApproval, ed25519.PublicKey) {
 	t.Helper()
 	private := ed25519.NewKeyFromSeed([]byte("01234567890123456789012345678901"))
 	b := offline.Binding{SchemaVersion: offline.BindingSchema, PlanID: uuid.NewString(), TargetID: "tgt_01",
 		Resource: offline.WorkResource, SourceCommit: strings.Repeat("a", 40), SavedPlanSHA256: strings.Repeat("b", 64),
 		EffectSHA256: strings.Repeat("c", 64), Backend: offline.Backend{Bucket: "work-state", Key: "staging/terraform.tfstate", VersionID: "v7", Lineage: "lineage", Serial: 22, RawSHA256: strings.Repeat("d", 64)},
 		ProviderAccountUUID: "account", NodeName: offline.WorkNode, DropletID: offline.WorkDropletID,
-		RunnerPrincipalSubject: "fleet-offline-device:" + uuid.NewString(), DispatchNonceSHA256: strings.Repeat("f", 64), FenceGeneration: 1,
+		RunnerPrincipalSubject: subject, DispatchNonceSHA256: strings.Repeat("f", 64), FenceGeneration: 1,
 		CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(10 * time.Minute)}
 	authID := sha256.Sum256([]byte(b.PlanID))
 	b.OwnerAuthorizationID = hex.EncodeToString(authID[:])
@@ -184,7 +190,8 @@ func TestOfflineReservationRequiresLiveEnrolledRunnerSubject(t *testing.T) {
 	b, approval, public := signedReservation(t, time.Now().UTC().Truncate(time.Second))
 	devices := reservationDevices(b)
 	revoked := time.Now().UTC()
-	devices.device.RevokedAt = &revoked
+	_ = revoked
+	devices.err = errors.New("revoked")
 	store, verifier := &reservationHTTPStore{}, &reservationEvidenceVerifier{}
 	router := chi.NewRouter()
 	router.Post("/api/v1/fleet/offline/plans/{planID}/reservation", etcdOfflineReservationCreate(store, devices, verifier, "owner-2026", public))
@@ -202,5 +209,16 @@ func TestOfflineReservationRuntimeIsDisabledOrFailsClosed(t *testing.T) {
 	}
 	if _, _, err := newOfflineReservationRuntime(&config.Config{FleetOfflineReservationEnabled: true}); err == nil {
 		t.Fatal("enabled runtime without pinned authority and verifier was accepted")
+	}
+}
+
+func TestOfflineReservationCapabilityIsConditional(t *testing.T) {
+	disabled := etcdFleetCapabilities(&config.Config{}, false)
+	if _, ok := disabled["endpoints"].(map[string]string)["fleetOfflineReservation"]; ok {
+		t.Fatal("disabled route advertised")
+	}
+	enabled := etcdFleetCapabilities(&config.Config{FleetOfflineReservationEnabled: true}, false)
+	if enabled["endpoints"].(map[string]string)["fleetOfflineReservation"] == "" {
+		t.Fatal("enabled route not advertised")
 	}
 }

@@ -27,12 +27,15 @@ import (
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
 	"norn/v2/api/handler"
-	"norn/v2/api/store"
 )
 
 type offlineReservationStore interface {
-	ReserveOfflineDispatch(context.Context, offline.Binding, offline.VerifiedApproval, time.Time) (offline.Binding, error)
+	ReserveOfflineDispatchWithRunnerProof(context.Context, offline.Binding, offline.VerifiedApproval, etcdstore.OfflineRunnerProof, time.Time) (offline.Binding, error)
 	GetOfflineDispatchReservation(context.Context, string) (offline.Binding, error)
+}
+
+type offlineRunnerAuthority interface {
+	ProveOfflineRunner(context.Context, string, time.Time) (etcdstore.OfflineRunnerProof, error)
 }
 
 // OfflineReservationEvidenceVerifier is deliberately independent of the
@@ -115,7 +118,7 @@ func decodeOfflineOwnerPublicKey(encoded string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(raw), nil
 }
 
-func etcdOfflineReservationCreate(store offlineReservationStore, devices offlineAttemptDeviceStore, verifier OfflineReservationEvidenceVerifier,
+func etcdOfflineReservationCreate(store offlineReservationStore, devices offlineRunnerAuthority, verifier OfflineReservationEvidenceVerifier,
 	ownerKeyID string, ownerPublicKey ed25519.PublicKey) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		planID := chi.URLParam(r, "planID")
@@ -133,17 +136,13 @@ func etcdOfflineReservationCreate(store offlineReservationStore, devices offline
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_offline_reservation", "binding and owner approval must be strict and match the path")
 			return
 		}
-		deviceID := strings.TrimPrefix(binding.RunnerPrincipalSubject, "fleet-offline-device:")
 		if devices == nil {
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "offline_reservation_unavailable", "offline device authority is unavailable")
 			return
 		}
-		device, deviceErr := devices.ActiveAccessDevice(r.Context(), deviceID)
 		now := time.Now().UTC()
-		if deviceErr != nil || device == nil || uuid.Validate(deviceID) != nil ||
-			binding.RunnerPrincipalSubject != "fleet-offline-device:"+deviceID || device.ID != deviceID || device.RevokedAt != nil ||
-			!strings.EqualFold(strings.TrimSpace(device.Platform), handler.FleetOfflineRunnerPlatform) ||
-			!offlineReservationDeviceTokenLive(device, binding.RunnerPrincipalSubject, now) {
+		runnerProof, deviceErr := devices.ProveOfflineRunner(r.Context(), binding.RunnerPrincipalSubject, now)
+		if deviceErr != nil {
 			handler.WriteControlProblem(w, r, http.StatusPreconditionFailed, "offline_runner_not_enrolled", "runner principal must name a live enrolled offline device")
 			return
 		}
@@ -156,13 +155,21 @@ func etcdOfflineReservationCreate(store offlineReservationStore, devices offline
 			handler.WriteControlProblem(w, r, http.StatusPreconditionFailed, "offline_evidence_not_verified", "independent reservation evidence did not match")
 			return
 		}
-		reserved, err := store.ReserveOfflineDispatch(r.Context(), binding, approval, now)
+		// Refresh after the potentially slow verifier read. The store additionally
+		// compares these exact revisions in the reservation transaction.
+		now = time.Now().UTC()
+		runnerProof, deviceErr = devices.ProveOfflineRunner(r.Context(), binding.RunnerPrincipalSubject, now)
+		if deviceErr != nil {
+			handler.WriteControlProblem(w, r, http.StatusPreconditionFailed, "offline_runner_not_enrolled", "runner principal must name a live enrolled offline device token")
+			return
+		}
+		reserved, err := store.ReserveOfflineDispatchWithRunnerProof(r.Context(), binding, approval, runnerProof, now)
 		if err != nil {
 			status, code := http.StatusConflict, "offline_reservation_conflict"
 			if !errors.Is(err, offline.ErrInvalidBinding) && !errors.Is(err, etcdstore.ErrOfflineDispatchReservationConflict) {
 				status, code = http.StatusServiceUnavailable, "offline_reservation_uncertain"
 			}
-			handler.WriteControlProblem(w, r, status, code, "offline reservation was not committed; read exact state before retry")
+			handler.WriteControlProblem(w, r, status, code, "offline reservation outcome is unknown; GET the exact reservation before retrying")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -170,16 +177,6 @@ func etcdOfflineReservationCreate(store offlineReservationStore, devices offline
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(reserved)
 	}
-}
-
-func offlineReservationDeviceTokenLive(device *store.AccessDevice, subject string, now time.Time) bool {
-	for _, token := range device.Tokens {
-		if token.DeviceID == device.ID && token.Subject == subject && token.RevokedAt == nil &&
-			token.ExpiresAt.After(now) && len(token.Scopes) == 1 && token.Scopes[0] == handler.ScopeFleetOfflineAttempt {
-			return true
-		}
-	}
-	return false
 }
 
 func etcdOfflineReservationGet(store offlineReservationStore) http.HandlerFunc {

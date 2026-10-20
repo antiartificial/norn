@@ -46,7 +46,9 @@ func TestEtcdOfflineEnrollmentMountedRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := chi.NewRouter()
-	registerEtcdFleetOfflineRoutes(router, cfg, identities, attempts, make(ed25519.PublicKey, ed25519.PublicKeySize), &reservationEvidenceVerifier{})
+	owner := ed25519.NewKeyFromSeed([]byte("01234567890123456789012345678901"))
+	reservationVerifier := &reservationEvidenceVerifier{}
+	registerEtcdFleetOfflineRoutes(router, cfg, identities, attempts, owner.Public().(ed25519.PublicKey), reservationVerifier)
 	adminRecord, err := handler.NewManagedAccessTokenRecord("test-operator", []string{handler.ScopeAdmin}, time.Hour, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +116,13 @@ func TestEtcdOfflineEnrollmentMountedRoutes(t *testing.T) {
 	principal, authenticated := handler.VerifyAccessTokenWithIdentityStore(cfg.APIToken, issued.Token, time.Time{}, identities)
 	if !authenticated || principal.Subject != "fleet-offline-device:"+issued.DeviceID {
 		t.Fatalf("offline bearer not bound to device ID: %+v", principal)
+	}
+	binding, approval, _ := signedReservationSubject(t, time.Now().UTC().Truncate(time.Second), principal.Subject)
+	reservationPath := "/api/v1/fleet/offline/plans/" + binding.PlanID + "/reservation"
+	reservation := call(http.MethodPost, reservationPath, adminToken, string(reservationBody(t, binding, approval)), false)
+	if reservation.Code != http.StatusServiceUnavailable || reservationVerifier.calls != 1 ||
+		!strings.Contains(reservation.Body.String(), "outcome is unknown; GET the exact reservation") {
+		t.Fatalf("mounted reservation with real etcd identity=%d calls=%d body=%s", reservation.Code, reservationVerifier.calls, reservation.Body)
 	}
 	if again := call(http.MethodPost, enrollment.PollPath, "", `{"verifier":"`+enrollment.Verifier+`"}`, true); again.Code != http.StatusConflict {
 		t.Fatalf("exchange replay=%d", again.Code)

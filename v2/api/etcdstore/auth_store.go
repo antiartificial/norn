@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/store"
@@ -210,6 +211,53 @@ func (s *AuthStore) ActiveAccessDevice(ctx context.Context, id string) (*store.A
 		return nil, ErrNotFound
 	}
 	return d, nil
+}
+
+// OfflineRunnerProof identifies the exact durable device and token revisions
+// that reservation admission must compare in its etcd transaction.
+type OfflineRunnerProof struct {
+	DeviceID, TokenID, Subject    string
+	DeviceRevision, TokenRevision int64
+	TokenExpiresAt                time.Time
+}
+
+// ProveOfflineRunner resolves a canonical offline runner subject from durable
+// device and token records. The caller must pass the proof into the same-etcd
+// reservation transaction; this read alone is not a revocation fence.
+func (s *AuthStore) ProveOfflineRunner(ctx context.Context, subject string, now time.Time) (OfflineRunnerProof, error) {
+	const prefix = "fleet-offline-device:"
+	deviceID := strings.TrimPrefix(subject, prefix)
+	if subject != prefix+deviceID || uuid.Validate(deviceID) != nil {
+		return OfflineRunnerProof{}, ErrNotFound
+	}
+	device, deviceRevision, err := s.loadDevice(ctx, deviceID)
+	if err != nil || device.RevokedAt != nil || !strings.EqualFold(strings.TrimSpace(device.Platform), "fleet-offline-runner") {
+		return OfflineRunnerProof{}, ErrNotFound
+	}
+	response, err := s.kv.Get(ctx, s.tokenPrefix(), clientv3.WithPrefix())
+	if err != nil {
+		return OfflineRunnerProof{}, err
+	}
+	var proof OfflineRunnerProof
+	for _, kv := range response.Kvs {
+		var token store.AccessToken
+		if json.Unmarshal(kv.Value, &token) != nil {
+			return OfflineRunnerProof{}, fmt.Errorf("decode offline runner token")
+		}
+		if token.DeviceID != deviceID || token.Subject != subject || token.RevokedAt != nil || !token.ExpiresAt.After(now) ||
+			len(token.Scopes) != 1 || token.Scopes[0] != "fleet:offline-attempt" {
+			continue
+		}
+		if proof.TokenID != "" {
+			return OfflineRunnerProof{}, fmt.Errorf("offline runner has multiple active exact-scope tokens")
+		}
+		proof = OfflineRunnerProof{DeviceID: deviceID, TokenID: token.JTI, Subject: subject, DeviceRevision: deviceRevision,
+			TokenRevision: kv.ModRevision, TokenExpiresAt: token.ExpiresAt.UTC()}
+	}
+	if proof.TokenID == "" {
+		return OfflineRunnerProof{}, ErrNotFound
+	}
+	return proof, nil
 }
 
 func (s *AuthStore) TouchAccessDevice(ctx context.Context, id string) error {

@@ -51,6 +51,22 @@ func (s *V3OperationStore) GetOfflineDispatchReservation(ctx context.Context, pl
 // The method does not consume owner authorization or permit an attempt.
 func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding offline.Binding,
 	approval offline.VerifiedApproval, now time.Time) (offline.Binding, error) {
+	return s.reserveOfflineDispatch(ctx, binding, approval, OfflineRunnerProof{}, now)
+}
+
+// ReserveOfflineDispatchWithRunnerProof binds the live enrolled runner token
+// into the same etcd transaction as the reservation and target fence.
+func (s *V3OperationStore) ReserveOfflineDispatchWithRunnerProof(ctx context.Context, binding offline.Binding,
+	approval offline.VerifiedApproval, runner OfflineRunnerProof, now time.Time) (offline.Binding, error) {
+	if runner.DeviceID == "" || runner.TokenID == "" || runner.Subject != binding.RunnerPrincipalSubject ||
+		runner.DeviceRevision <= 0 || runner.TokenRevision <= 0 || !runner.TokenExpiresAt.After(now) {
+		return offline.Binding{}, offline.ErrInvalidBinding
+	}
+	return s.reserveOfflineDispatch(ctx, binding, approval, runner, now)
+}
+
+func (s *V3OperationStore) reserveOfflineDispatch(ctx context.Context, binding offline.Binding,
+	approval offline.VerifiedApproval, runner OfflineRunnerProof, now time.Time) (offline.Binding, error) {
 	if s == nil || binding.Validate() != nil || !approval.Match(binding) ||
 		now.Before(binding.CreatedAt) || !now.Before(binding.ExpiresAt) {
 		return offline.Binding{}, offline.ErrInvalidBinding
@@ -133,6 +149,11 @@ func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding o
 		clientv3.Compare(clientv3.CreateRevision(s.fleetGitHubDispatchPreparationKey(binding.PlanID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(binding.PlanID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(binding.PlanID)).WithPrefix(), "=", 0),
+	}
+	if runner.DeviceID != "" {
+		compares = append(compares,
+			clientv3.Compare(clientv3.ModRevision(s.prefix+"/auth/device/"+runner.DeviceID), "=", runner.DeviceRevision),
+			clientv3.Compare(clientv3.ModRevision(s.prefix+"/auth/token/"+runner.TokenID), "=", runner.TokenRevision))
 	}
 	committed, err := s.kv.Txn(ctx).If(compares...).Then(
 		clientv3.OpPut(s.offlineDispatchKey(binding.PlanID), string(bound)),
