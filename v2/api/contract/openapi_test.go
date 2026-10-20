@@ -31,6 +31,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/validate/infraspec", "/api/v1/fleet/validate", "/api/v1/fleet/node-pools", "/api/v1/fleet/plans", "/api/v1/fleet/node-pools/{pool}/plan",
 		"/api/v1/fleet/plans/{planID}/reconciliations", "/api/v1/fleet/github",
 		"/api/v1/fleet/plans/{planID}/attempts", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}",
+		"/api/v1/fleet/offline/plans/{planID}/attempt", "/api/v1/fleet/offline/enrollments", "/api/v1/fleet/offline/enrollments/approve", "/api/v1/fleet/offline/enrollments/{id}/exchange", "/api/v1/fleet/offline/devices/{id}",
 		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance",
 		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
 		"/api/v1/deployments", "/api/v1/deployments/{id}", "/api/v1/deployments/{id}/steps", "/api/v1/services/manifest",

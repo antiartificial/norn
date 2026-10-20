@@ -9,11 +9,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
 	"norn/v2/api/handler"
@@ -29,6 +31,19 @@ type offlineAttemptDeviceStore interface {
 	ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error)
 }
 
+func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, attempts *etcdstore.V3OperationStore) {
+	offlineAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOfflineAttempt)
+	router.With(offlineAuth).Post("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptCreate(attempts, identities))
+	router.With(offlineAuth).Get("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptGet(attempts, identities))
+	enrollment := handler.NewEtcdOfflineEnrollmentHandler(cfg, identities)
+	adminAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
+	router.Post("/api/v1/fleet/offline/enrollments", enrollment.StartDeviceEnrollment)
+	router.With(adminAuth).Get("/api/v1/fleet/offline/enrollments", enrollment.ListDeviceEnrollments)
+	router.With(adminAuth).Post("/api/v1/fleet/offline/enrollments/approve", enrollment.ApproveDeviceEnrollment)
+	router.Post("/api/v1/fleet/offline/enrollments/{id}/exchange", enrollment.ExchangeDeviceEnrollment)
+	router.With(adminAuth).Delete("/api/v1/fleet/offline/devices/{id}", enrollment.RevokeDevice)
+}
+
 func offlineAttemptPrincipal(w http.ResponseWriter, r *http.Request, devices offlineAttemptDeviceStore) (handler.AccessPrincipal, bool) {
 	p, ok := handler.AccessPrincipalFromRequest(r)
 	if !ok || !handler.IsFleetOfflineAttemptPrincipal(p) || devices == nil {
@@ -36,7 +51,7 @@ func offlineAttemptPrincipal(w http.ResponseWriter, r *http.Request, devices off
 		return handler.AccessPrincipal{}, false
 	}
 	device, err := devices.ActiveAccessDevice(r.Context(), p.DeviceID)
-	if err != nil || device == nil || device.ID != p.DeviceID || device.RevokedAt != nil || device.Platform != handler.FleetOfflineRunnerPlatform {
+	if err != nil || device == nil || device.ID != p.DeviceID || device.RevokedAt != nil || !strings.EqualFold(strings.TrimSpace(device.Platform), handler.FleetOfflineRunnerPlatform) {
 		handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_runner_required", "a live offline runner device is required")
 		return handler.AccessPrincipal{}, false
 	}

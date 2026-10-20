@@ -300,6 +300,100 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/plans/{planID}/attempt:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: admitFleetOfflineAttempt
+      description: Records one queued offline contraction attempt against an existing immutable, owner-authorized dispatch reservation and held target fence. Requires a managed token from a live fleet-offline-runner device with only fleet:offline-attempt scope; GitHub OIDC, admin and fleet:operate cannot call it. This does not grant provider access or execute an effect. On an uncertain response, GET the exact plan before considering another request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [planId, targetId, resource, sourceCommit, savedPlanSHA256, effectSHA256, backend, providerAccountUUID, nodeName, dropletId, ownerAuthorizationId, ownerEnvelopeSHA256, runnerPrincipalSubject, dispatchNonceSHA256, fenceGeneration]
+              properties:
+                planId: { type: string, format: uuid }
+                targetId: { type: string }
+                resource: { type: string, const: staging/nyc3 }
+                sourceCommit: { type: string }
+                savedPlanSHA256: { type: string }
+                effectSHA256: { type: string }
+                backend: { type: object, required: [bucket, key, versionId, lineage, serial, rawSHA256] }
+                providerAccountUUID: { type: string }
+                nodeName: { type: string, const: app-03 }
+                dropletId: { type: string, const: '610327215' }
+                ownerAuthorizationId: { type: string }
+                ownerEnvelopeSHA256: { type: string }
+                runnerPrincipalSubject: { type: string }
+                dispatchNonceSHA256: { type: string }
+                fenceGeneration: { type: integer, minimum: 1 }
+      responses:
+        '201': { description: Queued attempt admitted without effect authority }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    get:
+      operationId: readFleetOfflineAttempt
+      description: Reads the exact queued attempt for the same live offline runner principal; used after an uncertain admission response.
+      responses:
+        '200': { description: Queued offline attempt }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/enrollments:
+    post:
+      operationId: startFleetOfflineEnrollment
+      security: []
+      description: Starts the existing short-lived trusted-transport pairing protocol, restricted to the fleet-offline-runner platform and sole fleet:offline-attempt scope.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentStartRequest' } } } }
+      responses:
+        '201': { description: Offline runner pairing session, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentStartResponse' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '426': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    get:
+      operationId: listFleetOfflineEnrollments
+      description: Lists etcd-backed enrollment requests; requires a managed admin token.
+      responses:
+        '200': { description: Enrollment requests }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/enrollments/approve:
+    post:
+      operationId: approveFleetOfflineEnrollment
+      description: Approves the short-lived pairing code using a managed admin token over trusted transport; grants only the requested offline scope.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [userCode], properties: { userCode: { type: string }, scopes: { type: array, items: { type: string } } } } } } }
+      responses:
+        '200': { description: Approved offline enrollment }
+        '403': { $ref: '#/components/responses/Problem' }
+        '426': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/enrollments/{id}/exchange:
+    post:
+      operationId: exchangeFleetOfflineEnrollment
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/EnrollmentID'
+      description: Exchanges the approved enrollment once with its secret verifier; token and device are recorded atomically in etcd.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [verifier], properties: { verifier: { type: string } } } } } }
+      responses:
+        '200': { description: Dedicated offline device token, content: { application/json: { schema: { $ref: '#/components/schemas/IssuedToken' } } } }
+        '401': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '426': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/devices/{id}:
+    delete:
+      operationId: revokeFleetOfflineDevice
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      description: Revokes only a live fleet-offline-runner device and its tokens atomically; requires a managed admin token.
+      responses:
+        '204': { description: Offline runner device revoked }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/attempts/{attemptID}:
     parameters:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }

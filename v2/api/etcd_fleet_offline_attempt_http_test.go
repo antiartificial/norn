@@ -55,12 +55,12 @@ func offlineHTTPRouter(attempts *offlineAttemptHTTPStore, devices offlineDeviceH
 }
 
 func offlinePrincipal() handler.AccessPrincipal {
-	return handler.AccessPrincipal{Subject: "offline-runner-1", TokenID: "token-1", DeviceID: "device-1", Source: handler.AccessPrincipalSourceManagedToken, Scopes: []string{handler.ScopeFleetOfflineAttempt}, ExpiresAt: time.Now().Add(time.Hour)}
+	return handler.AccessPrincipal{Subject: "fleet-offline-device:device-1", TokenID: "token-1", DeviceID: "device-1", Source: handler.AccessPrincipalSourceManagedToken, Scopes: []string{handler.ScopeFleetOfflineAttempt}, ExpiresAt: time.Now().Add(time.Hour)}
 }
 
 func TestOfflineAttemptHTTPAdmissionRequiresDistinctLiveDevice(t *testing.T) {
 	planID := uuid.NewString()
-	claim := offline.AttemptClaim{PlanID: planID, RunnerPrincipalSubject: "offline-runner-1"}
+	claim := offline.AttemptClaim{PlanID: planID, RunnerPrincipalSubject: "fleet-offline-device:device-1"}
 	body, err := json.Marshal(claim)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestOfflineAttemptHTTPAdmissionRequiresDistinctLiveDevice(t *testing.T) {
 		t.Fatalf("readback failed: %d %s", response.Code, response.Body)
 	}
 	other := p
-	other.Subject = "other"
+	other.DeviceID, other.Subject = "device-2", "fleet-offline-device:device-2"
 	read = handler.WithAccessPrincipal(httptest.NewRequest(http.MethodGet, "/api/v1/fleet/offline/plans/"+planID+"/attempt", nil), &other)
 	response = httptest.NewRecorder()
 	offlineHTTPRouter(s, offlineDeviceHTTPStore{platform: handler.FleetOfflineRunnerPlatform}).ServeHTTP(response, read)

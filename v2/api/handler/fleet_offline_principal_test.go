@@ -26,7 +26,7 @@ func TestOfflineAttemptScopeOnlyDedicatedDevice(t *testing.T) {
 	if _, err := NewManagedAccessTokenRecord("offline", []string{ScopeFleetOfflineAttempt}, time.Hour, time.Now()); err == nil {
 		t.Fatal("general token issuance accepted offline scope")
 	}
-	p := AccessPrincipal{Subject: "offline", TokenID: "token", DeviceID: "device", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeFleetOfflineAttempt}, ExpiresAt: time.Now().Add(time.Hour)}
+	p := AccessPrincipal{Subject: "fleet-offline-device:device", TokenID: "token", DeviceID: "device", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeFleetOfflineAttempt}, ExpiresAt: time.Now().Add(time.Hour)}
 	if !IsFleetOfflineAttemptPrincipal(p) {
 		t.Fatal("dedicated device principal rejected")
 	}

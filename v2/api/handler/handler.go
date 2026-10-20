@@ -48,6 +48,8 @@ const maxReleaseEvidenceJSONBody = 12 << 20
 
 type Handler struct {
 	db                     *store.DB
+	deviceIdentities       store.AuthStore
+	offlineEnrollmentOnly  bool
 	nomad                  *nomad.Client
 	consul                 *consul.Client
 	workloads              connector.Connector

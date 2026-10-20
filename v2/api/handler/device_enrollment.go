@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/config"
+	"norn/v2/api/etcdstore"
 	"norn/v2/api/store"
 )
 
@@ -37,6 +38,26 @@ type enrollmentStartRequest struct {
 	RequestedScopes []string `json:"requestedScopes"`
 }
 
+// NewEtcdOfflineEnrollmentHandler reuses the existing pairing protocol with
+// the etcd identity aggregate. Its scope policy permits only the dedicated
+// offline attempt device, so it cannot bootstrap a general control token.
+func NewEtcdOfflineEnrollmentHandler(cfg *config.Config, identities store.AuthStore) *Handler {
+	return &Handler{cfg: cfg, deviceIdentities: identities, offlineEnrollmentOnly: true}
+}
+
+func (h *Handler) deviceIdentityStore() store.AuthStore {
+	if h == nil {
+		return nil
+	}
+	if h.deviceIdentities != nil {
+		return h.deviceIdentities
+	}
+	if h.db != nil {
+		return h.db
+	}
+	return nil
+}
+
 func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) {
 	if !requireTrustedPairingTransport(w, r) {
 		return
@@ -47,6 +68,7 @@ func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.DeviceName = strings.TrimSpace(req.DeviceName)
+	req.Platform = strings.ToLower(strings.TrimSpace(req.Platform))
 	if req.DeviceName == "" || len(req.DeviceName) > 120 {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_device_name", "deviceName is required and must not exceed 120 characters")
 		return
@@ -83,11 +105,12 @@ func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) 
 		AppVersion: bounded(req.AppVersion, 80), PublicKey: req.PublicKey, RequestedScopes: scopes, Status: "pending",
 		SourceHash: enrollmentRequestSourceHash(h.cfg.APIToken, r), CreatedAt: now, ExpiresAt: now.Add(enrollmentTTL),
 	}
-	if h.db == nil {
+	identities := h.deviceIdentityStore()
+	if identities == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "enrollment_store_unavailable", "device enrollment is unavailable")
 		return
 	}
-	if err := h.db.CreateAccessEnrollment(r.Context(), enrollment); err != nil {
+	if err := identities.CreateAccessEnrollment(r.Context(), enrollment); err != nil {
 		if err == store.ErrRateLimited {
 			w.Header().Set("Retry-After", "600")
 			WriteControlProblem(w, r, http.StatusTooManyRequests, "enrollment_rate_limited", "too many recent enrollment requests")
@@ -97,10 +120,14 @@ func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	preventSensitiveResponseCaching(w)
+	verificationPath, pollPath := "/api/v1/enrollments/approve", "/api/v1/enrollments/"+enrollment.ID+"/exchange"
+	if h.offlineEnrollmentOnly {
+		verificationPath, pollPath = "/api/v1/fleet/offline/enrollments/approve", "/api/v1/fleet/offline/enrollments/"+enrollment.ID+"/exchange"
+	}
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"id": enrollment.ID, "userCode": code, "verifier": verifier,
-		"expiresAt": enrollment.ExpiresAt, "verificationPath": "/api/v1/enrollments/approve",
-		"pollPath": "/api/v1/enrollments/" + enrollment.ID + "/exchange",
+		"expiresAt": enrollment.ExpiresAt, "verificationPath": verificationPath,
+		"pollPath": pollPath,
 	})
 }
 
@@ -108,10 +135,19 @@ func (h *Handler) ListDeviceEnrollments(w http.ResponseWriter, r *http.Request) 
 	if _, ok := requireControlScope(w, r, ScopeAdmin); !ok {
 		return
 	}
-	enrollments, err := h.db.ListAccessEnrollments(r.Context(), r.URL.Query().Get("status"))
+	enrollments, err := h.deviceIdentityStore().ListAccessEnrollments(r.Context(), r.URL.Query().Get("status"))
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "enrollment_list_failed", "failed to list enrollments")
 		return
+	}
+	if h.offlineEnrollmentOnly {
+		offlineOnly := make([]store.AccessEnrollment, 0, len(enrollments))
+		for _, enrollment := range enrollments {
+			if strings.EqualFold(strings.TrimSpace(enrollment.Platform), FleetOfflineRunnerPlatform) {
+				offlineOnly = append(offlineOnly, enrollment)
+			}
+		}
+		enrollments = offlineOnly
 	}
 	writeJSON(w, map[string]interface{}{"enrollments": enrollments})
 }
@@ -131,8 +167,8 @@ func (h *Handler) ApproveDeviceEnrollment(w http.ResponseWriter, r *http.Request
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_request", "invalid approval request")
 		return
 	}
-	enrollment, err := h.db.GetAccessEnrollmentByCodeHash(r.Context(), hashSecret(normalizeCode(req.UserCode)))
-	if err == pgx.ErrNoRows {
+	enrollment, err := h.deviceIdentityStore().GetAccessEnrollmentByCodeHash(r.Context(), hashSecret(normalizeCode(req.UserCode)))
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrIdentityNotFound) || errors.Is(err, etcdstore.ErrNotFound) {
 		WriteControlProblem(w, r, http.StatusNotFound, "enrollment_not_found", "enrollment code was not found")
 		return
 	}
@@ -165,7 +201,7 @@ func (h *Handler) ApproveDeviceEnrollment(w http.ResponseWriter, r *http.Request
 	}
 	deviceID := uuid.NewString()
 	device := &store.AccessDevice{ID: deviceID, Name: enrollment.DeviceName, Platform: enrollment.Platform, Model: enrollment.Model, AppVersion: enrollment.AppVersion, PublicKey: enrollment.PublicKey, CreatedAt: time.Now().UTC()}
-	approved, err := h.db.ApproveAccessEnrollmentWithDevice(r.Context(), enrollment.ID, device, scopes)
+	approved, err := h.deviceIdentityStore().ApproveAccessEnrollmentWithDevice(r.Context(), enrollment.ID, device, scopes)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusConflict, "enrollment_not_pending", "enrollment could not be approved")
 		return
@@ -185,8 +221,8 @@ func (h *Handler) ExchangeDeviceEnrollment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	id := chi.URLParam(r, "id")
-	enrollment, err := h.db.GetAccessEnrollment(r.Context(), id)
-	if err == pgx.ErrNoRows {
+	enrollment, err := h.deviceIdentityStore().GetAccessEnrollment(r.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrIdentityNotFound) || errors.Is(err, etcdstore.ErrNotFound) {
 		WriteControlProblem(w, r, http.StatusNotFound, "enrollment_not_found", "enrollment was not found")
 		return
 	}
@@ -196,8 +232,8 @@ func (h *Handler) ExchangeDeviceEnrollment(w http.ResponseWriter, r *http.Reques
 	}
 	provided, expected := []byte(hashSecret(req.Verifier)), []byte(enrollment.VerifierHash)
 	if len(provided) != len(expected) || subtle.ConstantTimeCompare(provided, expected) != 1 {
-		failureErr := h.db.RecordAccessEnrollmentFailure(r.Context(), id)
-		if failureErr != nil && failureErr != store.ErrEnrollmentLocked && failureErr != pgx.ErrNoRows {
+		failureErr := h.deviceIdentityStore().RecordAccessEnrollmentFailure(r.Context(), id)
+		if failureErr != nil && failureErr != store.ErrEnrollmentLocked && !errors.Is(failureErr, pgx.ErrNoRows) && !errors.Is(failureErr, etcdstore.ErrNotFound) {
 			WriteControlProblem(w, r, http.StatusServiceUnavailable, "enrollment_store_unavailable", "device enrollment is unavailable")
 			return
 		}
@@ -213,12 +249,16 @@ func (h *Handler) ExchangeDeviceEnrollment(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusForbidden, "invalid_scope", "approved device scopes are unavailable on this authority")
 		return
 	}
-	token, record, err := issueDeviceTokenForPlatform(h.cfg, enrollment.Platform, enrollment.DeviceID, enrollment.DeviceName, scopes, "", deviceTokenLifetimeForPlatform(enrollment.Platform))
+	subject := enrollment.DeviceName
+	if h.offlineEnrollmentOnly {
+		subject = fleetOfflineDeviceSubjectPrefix + enrollment.DeviceID
+	}
+	token, record, err := issueDeviceTokenForPlatform(h.cfg, enrollment.Platform, enrollment.DeviceID, subject, scopes, "", deviceTokenLifetimeForPlatform(enrollment.Platform))
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to issue device token")
 		return
 	}
-	if err := h.db.ExchangeAccessEnrollmentWithToken(r.Context(), id, record); err != nil {
+	if err := h.deviceIdentityStore().ExchangeAccessEnrollmentWithToken(r.Context(), id, record); err != nil {
 		WriteControlProblem(w, r, http.StatusConflict, "enrollment_already_exchanged", "enrollment has already been exchanged")
 		return
 	}
@@ -230,7 +270,7 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireControlScope(w, r, ScopeAdmin); !ok {
 		return
 	}
-	devices, err := h.db.ListAccessDevices(r.Context())
+	devices, err := h.deviceIdentityStore().ListAccessDevices(r.Context())
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "device_list_failed", "failed to list devices")
 		return
@@ -242,9 +282,16 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireControlScope(w, r, ScopeAdmin); !ok {
 		return
 	}
-	sessions, err := h.db.RevokeAccessDevice(r.Context(), chi.URLParam(r, "id"))
+	if h.offlineEnrollmentOnly {
+		device, err := h.deviceIdentityStore().ActiveAccessDevice(r.Context(), chi.URLParam(r, "id"))
+		if err != nil || device == nil || !strings.EqualFold(strings.TrimSpace(device.Platform), FleetOfflineRunnerPlatform) {
+			WriteControlProblem(w, r, http.StatusNotFound, "device_not_found", "offline runner device was not found")
+			return
+		}
+	}
+	sessions, err := h.deviceIdentityStore().RevokeAccessDevice(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, etcdstore.ErrNotFound) {
 			WriteControlProblem(w, r, http.StatusNotFound, "device_not_found", "device was not found")
 			return
 		}
