@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
 	"norn/v2/api/handler"
 	"norn/v2/api/store"
@@ -19,14 +21,15 @@ import (
 
 type offlineAttemptHTTPStore struct {
 	claim     offline.AttemptClaim
-	principal string
+	principal etcdstore.OfflineRunnerProof
 	count     int
 	item      offline.Attempt
 }
 
-func (s *offlineAttemptHTTPStore) AdmitOfflineAttempt(_ context.Context, c offline.AttemptClaim, p, id string, _ time.Time) (offline.Attempt, error) {
+func (s *offlineAttemptHTTPStore) AdmitOfflineAttemptWithRunnerProof(_ context.Context, c offline.AttemptClaim, p etcdstore.OfflineRunnerProof, id string, _ time.Time) (offline.Attempt, error) {
 	s.claim, s.principal, s.count = c, p, s.count+1
-	s.item = offline.Attempt{SchemaVersion: offline.AttemptSchema, ID: id, PlanID: c.PlanID, PrincipalSubject: p, Status: "queued", CurrentPhase: "prechange_verified"}
+	s.item = offline.Attempt{SchemaVersion: offline.AttemptSchema, ID: id, PlanID: c.PlanID, PrincipalSubject: p.Subject,
+		PrincipalTokenID: p.TokenID, PrincipalDeviceID: p.DeviceID, Status: "queued", CurrentPhase: "prechange_verified"}
 	return s.item, nil
 }
 func (s *offlineAttemptHTTPStore) GetOfflineAttempt(_ context.Context, _ string) (offline.Attempt, error) {
@@ -45,6 +48,15 @@ func (s offlineDeviceHTTPStore) ActiveAccessDevice(_ context.Context, id string)
 		device.RevokedAt = &now
 	}
 	return device, nil
+}
+
+func (s offlineDeviceHTTPStore) ProveOfflineRunner(_ context.Context, subject string, now time.Time) (etcdstore.OfflineRunnerProof, error) {
+	p := offlinePrincipal()
+	if s.revoked || s.platform != handler.FleetOfflineRunnerPlatform || subject != p.Subject {
+		return etcdstore.OfflineRunnerProof{}, errors.New("runner unavailable")
+	}
+	return etcdstore.OfflineRunnerProof{Subject: subject, TokenID: p.TokenID, DeviceID: p.DeviceID,
+		DeviceRevision: 1, TokenRevision: 1, TokenExpiresAt: now.Add(time.Hour)}, nil
 }
 
 func offlineHTTPRouter(attempts *offlineAttemptHTTPStore, devices offlineDeviceHTTPStore) http.Handler {
@@ -96,8 +108,8 @@ func TestOfflineAttemptHTTPAdmissionRequiresDistinctLiveDevice(t *testing.T) {
 	req := handler.WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/fleet/offline/plans/"+planID+"/attempt", strings.NewReader(string(body))), &p)
 	response := httptest.NewRecorder()
 	offlineHTTPRouter(s, offlineDeviceHTTPStore{platform: handler.FleetOfflineRunnerPlatform}).ServeHTTP(response, req)
-	if response.Code != http.StatusCreated || s.count != 1 || s.principal != p.Subject || s.claim.PlanID != planID {
-		t.Fatalf("admission failed: status=%d count=%d principal=%q claim=%+v body=%s", response.Code, s.count, s.principal, s.claim, response.Body)
+	if response.Code != http.StatusCreated || s.count != 1 || s.principal.Subject != p.Subject || s.principal.TokenID != p.TokenID || s.claim.PlanID != planID {
+		t.Fatalf("admission failed: status=%d count=%d principal=%+v claim=%+v body=%s", response.Code, s.count, s.principal, s.claim, response.Body)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("attempt response cacheable")

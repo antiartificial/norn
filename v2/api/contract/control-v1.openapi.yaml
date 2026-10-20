@@ -345,6 +345,68 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: issueFleetOfflineEffectGrant
+      description: Atomically records one short-lived inert grant for the exact queued attempt, current device token, owner reservation, target fence and authority epoch. The grant explicitly does not authorize or execute a provider effect. Requires an exactly empty JSON object. Every response is private and no-store; recover an uncertain result with GET.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        '200': { description: Inert issue event committed and returned }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    get:
+      operationId: recoverFleetOfflineEffectGrant
+      description: Reads the single immutable issue or consume transition for the exact plan, attempt and still-current runner credential. This never issues another grant. Every response is private and no-store.
+      responses:
+        '200': { description: Exact inert grant transition }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants/{grantID}:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: grantID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: recoverFleetOfflineEffectGrantByID
+      description: Reads the exact immutable grant transition by ID without issuing or consuming it. Every response is private and no-store.
+      responses:
+        '200': { description: Exact inert grant transition }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants/{grantID}/consume:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: grantID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: consumeFleetOfflineEffectGrant
+      description: Atomically records the sole consume event for the exact inert grant while its device token, reservation and target fence remain current. This performs no provider call. Requires an exactly empty JSON object. Every response is private and no-store; recover an uncertain result with GET.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        '200': { description: Inert consume event committed and returned }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/offline/plans/{planID}/reservation:
     parameters:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }

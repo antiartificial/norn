@@ -42,7 +42,8 @@ func decodeOfflineAttempt(raw []byte, planID string) (offline.Attempt, error) {
 	var attempt offline.Attempt
 	if err := decodeV3Record(raw, &attempt); err != nil ||
 		attempt.SchemaVersion != offline.AttemptSchema || attempt.PlanID != planID ||
-		attempt.ID == "" || attempt.Status != "queued" || attempt.CurrentPhase != "prechange_verified" {
+		attempt.ID == "" || attempt.Status != "queued" || attempt.CurrentPhase != "prechange_verified" ||
+		attempt.PrincipalSubject == "" || (attempt.PrincipalTokenID == "") != (attempt.PrincipalDeviceID == "") {
 		return offline.Attempt{}, ErrOfflineAttemptCorrupt
 	}
 	return attempt, nil
@@ -54,8 +55,21 @@ func decodeOfflineAttempt(raw []byte, planID string) (offline.Attempt, error) {
 // shared fence in one etcd Txn. No retry/recovery or effect capability exists.
 func (s *V3OperationStore) AdmitOfflineAttempt(ctx context.Context, claim offline.AttemptClaim,
 	authenticatedPrincipal, attemptID string, now time.Time) (offline.Attempt, error) {
-	if s == nil || uuid.Validate(attemptID) != nil || authenticatedPrincipal == "" ||
-		claim.RunnerPrincipalSubject != authenticatedPrincipal {
+	return s.admitOfflineAttempt(ctx, claim, OfflineRunnerProof{Subject: authenticatedPrincipal}, attemptID, now, false)
+}
+
+// AdmitOfflineAttemptWithRunnerProof is the live device route. The exact token
+// and device revisions participate in the same CAS that creates the attempt.
+func (s *V3OperationStore) AdmitOfflineAttemptWithRunnerProof(ctx context.Context, claim offline.AttemptClaim,
+	runner OfflineRunnerProof, attemptID string, now time.Time) (offline.Attempt, error) {
+	return s.admitOfflineAttempt(ctx, claim, runner, attemptID, now, true)
+}
+
+func (s *V3OperationStore) admitOfflineAttempt(ctx context.Context, claim offline.AttemptClaim,
+	runner OfflineRunnerProof, attemptID string, now time.Time, requireProof bool) (offline.Attempt, error) {
+	if s == nil || uuid.Validate(attemptID) != nil || runner.Subject == "" ||
+		(requireProof && !validOfflineRunnerProof(runner, now)) ||
+		claim.RunnerPrincipalSubject != runner.Subject {
 		return offline.Attempt{}, offline.ErrAttemptMismatch
 	}
 	bindingResponse, err := s.kv.Get(ctx, s.offlineDispatchKey(claim.PlanID))
@@ -99,14 +113,15 @@ func (s *V3OperationStore) AdmitOfflineAttempt(ctx context.Context, claim offlin
 	}
 	digest := sha256.Sum256(bindingResponse.Kvs[0].Value)
 	attempt := offline.Attempt{SchemaVersion: offline.AttemptSchema, ID: attemptID, PlanID: binding.PlanID,
-		BindingSHA256: hex.EncodeToString(digest[:]), PrincipalSubject: authenticatedPrincipal,
+		BindingSHA256: hex.EncodeToString(digest[:]), PrincipalSubject: runner.Subject,
+		PrincipalTokenID: runner.TokenID, PrincipalDeviceID: runner.DeviceID,
 		TargetID: binding.TargetID, FenceGeneration: binding.FenceGeneration,
 		Status: "queued", CurrentPhase: "prechange_verified", CreatedAt: now.UTC()}
 	encoded, err := json.Marshal(attempt)
 	if err != nil {
 		return offline.Attempt{}, err
 	}
-	committed, err := s.kv.Txn(ctx).If(
+	compares := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(s.offlineDispatchKey(binding.PlanID)), "=", bindingResponse.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(consumptionKey), "=", consumption.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(s.opKey(binding.PlanID)), "=", planRevision),
@@ -118,7 +133,13 @@ func (s *V3OperationStore) AdmitOfflineAttempt(ctx context.Context, claim offlin
 		clientv3.Compare(clientv3.CreateRevision(s.fleetGitHubDispatchPreparationKey(binding.PlanID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(binding.PlanID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptPrefix(binding.PlanID)).WithPrefix(), "=", 0),
-	).Then(clientv3.OpPut(s.offlineAttemptKey(binding.PlanID), string(encoded))).Commit()
+	}
+	if requireProof {
+		compares = append(compares,
+			clientv3.Compare(clientv3.ModRevision(s.prefix+"/auth/device/"+runner.DeviceID), "=", runner.DeviceRevision),
+			clientv3.Compare(clientv3.ModRevision(s.prefix+"/auth/token/"+runner.TokenID), "=", runner.TokenRevision))
+	}
+	committed, err := s.kv.Txn(ctx).If(compares...).Then(clientv3.OpPut(s.offlineAttemptKey(binding.PlanID), string(encoded))).Commit()
 	if err != nil {
 		return offline.Attempt{}, err
 	} // indeterminate: GET, never retry blindly

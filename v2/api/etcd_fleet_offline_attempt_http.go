@@ -24,12 +24,13 @@ import (
 )
 
 type offlineAttemptAdmissionStore interface {
-	AdmitOfflineAttempt(context.Context, offline.AttemptClaim, string, string, time.Time) (offline.Attempt, error)
+	AdmitOfflineAttemptWithRunnerProof(context.Context, offline.AttemptClaim, etcdstore.OfflineRunnerProof, string, time.Time) (offline.Attempt, error)
 	GetOfflineAttempt(context.Context, string) (offline.Attempt, error)
 }
 
 type offlineAttemptDeviceStore interface {
 	ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error)
+	ProveOfflineRunner(context.Context, string, time.Time) (etcdstore.OfflineRunnerProof, error)
 }
 
 func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, attempts *etcdstore.V3OperationStore,
@@ -37,6 +38,7 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 	offlineAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOfflineAttempt)
 	router.With(offlineAuth).Post("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptCreate(attempts, identities))
 	router.With(offlineAuth).Get("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptGet(attempts, identities))
+	registerEtcdFleetOfflineEffectGrantRoutes(router, offlineAuth, attempts, identities)
 	enrollment := handler.NewEtcdOfflineEnrollmentHandler(cfg, identities)
 	adminAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
 	router.Post("/api/v1/fleet/offline/enrollments", enrollment.StartDeviceEnrollment)
@@ -85,7 +87,13 @@ func etcdOfflineAttemptCreate(attempts offlineAttemptAdmissionStore, devices off
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_offline_attempt", "claim must exactly match the path and authenticated principal")
 			return
 		}
-		attempt, err := attempts.AdmitOfflineAttempt(r.Context(), claim, p.Subject, uuid.NewString(), time.Now().UTC())
+		now := time.Now().UTC()
+		proof, err := devices.ProveOfflineRunner(r.Context(), p.Subject, now)
+		if err != nil || proof.TokenID != p.TokenID || proof.DeviceID != p.DeviceID {
+			handler.WriteControlProblem(w, r, http.StatusPreconditionFailed, "offline_runner_not_current", "the authenticated offline runner token is not the reserved live credential")
+			return
+		}
+		attempt, err := attempts.AdmitOfflineAttemptWithRunnerProof(r.Context(), claim, proof, uuid.NewString(), now)
 		if err != nil {
 			status, code := http.StatusConflict, "offline_attempt_conflict"
 			if errors.Is(err, etcdstore.ErrNotFound) {

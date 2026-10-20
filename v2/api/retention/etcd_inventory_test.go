@@ -4,9 +4,11 @@ import "testing"
 
 func TestOfflineEtcdPayloadInventory(t *testing.T) {
 	want := map[string]string{
-		"/v3/fleet-offline-dispatches/":         ClassHotEvidence,
-		"/v3/fleet-offline-owner-consumptions/": ClassCurrentState,
-		"/v3/fleet-offline-attempts/":           ClassHotEvidence,
+		"/v3/fleet-offline-dispatches/":          ClassHotEvidence,
+		"/v3/fleet-offline-owner-consumptions/":  ClassCurrentState,
+		"/v3/fleet-offline-attempts/":            ClassHotEvidence,
+		"/v3/fleet-offline-effect-grants/":       ClassCurrentState,
+		"/v3/fleet-offline-effect-grant-events/": ClassCurrentState,
 	}
 	for _, entry := range OfflineEtcdPayloadInventory {
 		class, ok := want[entry.Prefix]

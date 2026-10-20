@@ -227,6 +227,12 @@ type OfflineRunnerProof struct {
 // independently authenticates the then-live runner token.
 const OfflineRunnerReservationHeadroom = 30 * time.Second
 
+func validOfflineRunnerProof(proof OfflineRunnerProof, now time.Time) bool {
+	return proof.DeviceID != "" && proof.TokenID != "" && proof.Subject != "" &&
+		proof.DeviceRevision > 0 && proof.TokenRevision > 0 &&
+		proof.TokenExpiresAt.After(now.Add(OfflineRunnerReservationHeadroom))
+}
+
 // ProveOfflineRunner resolves a canonical offline runner subject from durable
 // device and token records. The caller must pass the proof into the same-etcd
 // reservation transaction; this read alone is not a revocation fence.
