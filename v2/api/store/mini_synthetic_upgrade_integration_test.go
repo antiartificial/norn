@@ -160,8 +160,8 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 		t.Fatalf("additive migrations 45-%d status=%+v err=%v", latestVersion, status, err)
 	}
 	var fencedWriter *SchemaCompatibilityError
-	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); !errors.As(err, &fencedWriter) || fencedWriter.Contract != "writer" || fencedWriter.Required != FleetTargetFenceWriterVersion {
-		t.Fatalf("previous writer after migration 48 = %T %v, want writer %d refusal", err, err, FleetTargetFenceWriterVersion)
+	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); !errors.As(err, &fencedWriter) || fencedWriter.Contract != "writer" || fencedWriter.Required != FleetRunnerFenceBindingWriterVersion {
+		t.Fatalf("previous writer after migration 51 = %T %v, want writer %d refusal", err, err, FleetRunnerFenceBindingWriterVersion)
 	}
 	// Migration 21 retires the preceding reader contract because it cannot
 	// decode function evidence bundles. A rollback to that reader must refuse
@@ -193,7 +193,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = oldWriter.Check(ctx, SchemaAccessReadWrite)
-	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != FleetTargetFenceWriterVersion {
+	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != FleetRunnerFenceBindingWriterVersion {
 		t.Fatalf("old writer check = %T %v, want writer compatibility refusal", err, err)
 	}
 	if _, err := migrator.Check(ctx, SchemaAccessReadWrite); err != nil {

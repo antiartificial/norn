@@ -557,7 +557,7 @@ const controlSchemaBaselineSQL = `
 const (
 	EvidenceArchiveReaderVersion int64 = 2
 	ControlSchemaReaderVersion   int64 = MySQLRetainedArtifactReaderVersion
-	ControlSchemaWriterVersion   int64 = FleetTargetFenceWriterVersion
+	ControlSchemaWriterVersion   int64 = FleetRunnerFenceBindingWriterVersion
 )
 
 // ControlSchemaMigrations returns a copy of the ordered, forward-only control

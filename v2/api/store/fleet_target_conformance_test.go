@@ -155,32 +155,30 @@ func TestFleetTargetConformancePostgres(t *testing.T) {
 	fleettest.RunFleetTargetConformance(t, fleetTargetTestHarness{db: db})
 }
 
-// TestFleetTargetSchemaMigrationRaisesWriterFloor confirms migration 48's H1
-// writer floor: once it is applied, a writer declaring the previous control
-// schema writer version (31) is rejected, and the current writer version
-// (32) is accepted, independent of whether any Fleet target is registered.
-// Migration 51 keeps the same floor, so it is now the last migration checked.
+// TestFleetTargetSchemaMigrationRaisesWriterFloor confirms migration 51
+// retires writer 32, which can create a protected attempt without a fence
+// binding. The latest writer is admitted after the migration.
 func TestFleetTargetSchemaMigrationRaisesWriterFloor(t *testing.T) {
 	db := fleetTargetConformanceDB(t)
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
 	last := migrations[len(migrations)-1]
-	if last.Version != 51 || last.MinimumWriterVersion != FleetTargetFenceWriterVersion || FleetTargetFenceWriterVersion != 32 {
-		t.Fatalf("migration 51 contract = %+v, FleetTargetFenceWriterVersion=%d", last, FleetTargetFenceWriterVersion)
+	if last.Version != 51 || last.MinimumWriterVersion != FleetRunnerFenceBindingWriterVersion || FleetRunnerFenceBindingWriterVersion != 33 {
+		t.Fatalf("migration 51 contract = %+v, FleetRunnerFenceBindingWriterVersion=%d", last, FleetRunnerFenceBindingWriterVersion)
 	}
-	if ControlSchemaWriterVersion != FleetTargetFenceWriterVersion {
-		t.Fatalf("ControlSchemaWriterVersion = %d, want %d", ControlSchemaWriterVersion, FleetTargetFenceWriterVersion)
+	if ControlSchemaWriterVersion != FleetRunnerFenceBindingWriterVersion {
+		t.Fatalf("ControlSchemaWriterVersion = %d, want %d", ControlSchemaWriterVersion, FleetRunnerFenceBindingWriterVersion)
 	}
-	oldWriter, err := NewSchemaMigrator(db.Pool, migrations, BinarySchemaCompatibility{ReaderVersion: ControlSchemaReaderVersion, WriterVersion: 31}, SchemaMigratorOptions{})
+	oldWriter, err := NewSchemaMigrator(db.Pool, migrations[:50], BinarySchemaCompatibility{ReaderVersion: ControlSchemaReaderVersion, WriterVersion: FleetTargetFenceWriterVersion}, SchemaMigratorOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = oldWriter.Check(ctx, SchemaAccessReadWrite)
 	var compatibilityErr *SchemaCompatibilityError
-	if !errors.As(err, &compatibilityErr) || compatibilityErr.Required != FleetTargetFenceWriterVersion || compatibilityErr.Provided != 31 {
+	if !errors.As(err, &compatibilityErr) || compatibilityErr.Required != FleetRunnerFenceBindingWriterVersion || compatibilityErr.Provided != FleetTargetFenceWriterVersion {
 		t.Fatalf("a writer below the new floor must be rejected, got %T %v", err, err)
 	}
-	currentWriter, err := NewSchemaMigrator(db.Pool, migrations, BinarySchemaCompatibility{ReaderVersion: ControlSchemaReaderVersion, WriterVersion: FleetTargetFenceWriterVersion}, SchemaMigratorOptions{})
+	currentWriter, err := NewSchemaMigrator(db.Pool, migrations, BinarySchemaCompatibility{ReaderVersion: ControlSchemaReaderVersion, WriterVersion: FleetRunnerFenceBindingWriterVersion}, SchemaMigratorOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

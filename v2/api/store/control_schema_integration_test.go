@@ -91,7 +91,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 51 || len(status.AppliedVersions) != 51 || status.AppliedVersions[50] != 51 || status.MinimumReaderVersion != MySQLRetainedArtifactReaderVersion || status.MinimumWriterVersion != FleetTargetFenceWriterVersion {
+	if status.CurrentMigrationVersion != 51 || len(status.AppliedVersions) != 51 || status.AppliedVersions[50] != 51 || status.MinimumReaderVersion != MySQLRetainedArtifactReaderVersion || status.MinimumWriterVersion != FleetRunnerFenceBindingWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 
