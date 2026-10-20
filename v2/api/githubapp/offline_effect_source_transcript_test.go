@@ -37,4 +37,7 @@ func TestOfflineEffectSourceTranscriptRequiresPinnedClient(t *testing.T) {
 	if !ok || transport.Proxy != nil || transport.TLSClientConfig == nil || transport.TLSClientConfig.ServerName != "api.github.com" || transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("production source transport is not pinned")
 	}
+	if _, err := NewOfflineEffectSourceClient(Config{APIBaseURL: "https://proxy.example.test"}); err == nil {
+		t.Fatal("alternate GitHub origin accepted")
+	}
 }

@@ -16,6 +16,9 @@ import (
 // the fixed api.github.com hostname to the system trust store.
 func NewOfflineEffectSourceClient(cfg Config) (*Client, error) {
 	cfg.Production = true
+	if cfg.APIBaseURL != "" && cfg.APIBaseURL != "https://api.github.com" {
+		return nil, errors.New("offline effect GitHub API must be api.github.com")
+	}
 	cfg.APIBaseURL = "https://api.github.com"
 	transport := &http.Transport{
 		Proxy:                 nil,
