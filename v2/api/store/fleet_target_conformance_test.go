@@ -159,15 +159,14 @@ func TestFleetTargetConformancePostgres(t *testing.T) {
 // writer floor: once it is applied, a writer declaring the previous control
 // schema writer version (31) is rejected, and the current writer version
 // (32) is accepted, independent of whether any Fleet target is registered.
-// Migration 50 keeps the same
-// floor, so it is now the last migration this checks against.
+// Migration 51 keeps the same floor, so it is now the last migration checked.
 func TestFleetTargetSchemaMigrationRaisesWriterFloor(t *testing.T) {
 	db := fleetTargetConformanceDB(t)
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
 	last := migrations[len(migrations)-1]
-	if last.Version != 50 || last.MinimumWriterVersion != FleetTargetFenceWriterVersion || FleetTargetFenceWriterVersion != 32 {
-		t.Fatalf("migration 50 contract = %+v, FleetTargetFenceWriterVersion=%d", last, FleetTargetFenceWriterVersion)
+	if last.Version != 51 || last.MinimumWriterVersion != FleetTargetFenceWriterVersion || FleetTargetFenceWriterVersion != 32 {
+		t.Fatalf("migration 51 contract = %+v, FleetTargetFenceWriterVersion=%d", last, FleetTargetFenceWriterVersion)
 	}
 	if ControlSchemaWriterVersion != FleetTargetFenceWriterVersion {
 		t.Fatalf("ControlSchemaWriterVersion = %d, want %d", ControlSchemaWriterVersion, FleetTargetFenceWriterVersion)

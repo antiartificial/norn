@@ -362,6 +362,25 @@ func (h *EtcdFleetRunnerHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *EtcdFleetRunnerHandler) ValidateFenceBinding(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.workload(w, r); !ok {
+		return
+	}
+	preventSensitiveResponseCaching(w)
+	item, ok := h.ownAttempt(w, r)
+	if !ok {
+		return
+	}
+	binding, err := h.operations.ValidateFleetRunnerFenceBinding(r.Context(), item.PlanID, item.ID, item.FenceBinding)
+	if err != nil {
+		if !writeFleetFenceError(w, r, err) {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_read_failed", "runner fence could not be validated")
+		}
+		return
+	}
+	writeJSON(w, map[string]interface{}{"planId": item.PlanID, "attemptId": item.ID, "fenceBinding": binding, "validatedAt": time.Now().UTC()})
+}
+
 func (h *EtcdFleetRunnerHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	item, ok := h.ownAttempt(w, r)
 	if !ok {

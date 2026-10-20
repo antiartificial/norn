@@ -187,7 +187,7 @@ func bindFleetTargetFenceTxForTest(ctx context.Context, db *DB, planID string) e
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := bindFleetTargetFenceTx(ctx, tx, planID); err != nil {
+	if _, err := bindFleetTargetFenceTx(ctx, tx, planID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

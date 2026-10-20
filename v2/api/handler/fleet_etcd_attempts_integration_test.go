@@ -21,6 +21,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
@@ -54,6 +55,9 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	authority := uuid.NewString()
 	operations, err := etcdstore.NewV3OperationStore(client, prefix, authority, signer)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operations.RegisterFleetTarget(context.Background(), lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "runner-http", StateBackend: "s3://runner-http/state"}, []string{"cluster:fleet", "environment:staging/nyc3"}, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
 	planID := uuid.NewString()
@@ -103,6 +107,7 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	router.Post("/api/v1/fleet/plans/{planID}/attempts", h.Create)
 	router.Post("/api/v1/fleet/plans/{planID}/reconciliations", h.Reconcile)
 	router.Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", h.Advance)
+	router.Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/validate-fence", h.ValidateFenceBinding)
 	ci := &CIIdentity{Provider: "github-actions", Repository: "acme/fleet", RunID: "7", RunAttempt: "1", SHA: commitSHA, Intent: "apply"}
 	principal := AccessPrincipal{Source: AccessPrincipalSourceManagedToken, TokenID: "oidc-managed-token-1", Scopes: []string{ScopeFleetOperate}, CI: ci}
 	call := func(path, key string, body interface{}) *httptest.ResponseRecorder {
@@ -127,6 +132,17 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	if attempt.ID == "" || attempt.CurrentPhase != "prechange_verified" {
 		t.Fatalf("created attempt=%+v", attempt)
 	}
+	validationPath := path + "/attempts/" + attempt.ID + "/validate-fence"
+	if got := call(validationPath, "", map[string]interface{}{}); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"fenceBinding"`) {
+		t.Fatalf("current attempt fence was not validated: %d %s", got.Code, got.Body.String())
+	}
+	wrongCI := *ci
+	wrongCI.RunID = "999"
+	principal.CI = &wrongCI
+	if got := call(validationPath, "", map[string]interface{}{}); got.Code != http.StatusForbidden {
+		t.Fatalf("wrong workload validated: %d %s", got.Code, got.Body.String())
+	}
+	principal.CI = ci
 	if replay := call(path+"/attempts", "create-one", create); replay.Code != http.StatusOK {
 		t.Fatalf("create replay: %d %s", replay.Code, replay.Body.String())
 	}

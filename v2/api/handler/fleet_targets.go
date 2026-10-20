@@ -65,7 +65,7 @@ func FleetPlanRunnerScopedPath(path string) bool {
 	case 3:
 		return parts[1] == "attempts"
 	case 4:
-		return parts[1] == "attempts" && (parts[3] == "heartbeat" || parts[3] == "advance" || parts[3] == "cancel")
+		return parts[1] == "attempts" && (parts[3] == "heartbeat" || parts[3] == "advance" || parts[3] == "cancel" || parts[3] == "validate-fence")
 	}
 	return false
 }

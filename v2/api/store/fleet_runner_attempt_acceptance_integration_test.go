@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 )
 
@@ -32,6 +33,27 @@ func insertFleetAttemptDispatch(t *testing.T, db *DB, planID string) (rawNonce, 
 		t.Fatal(err)
 	}
 	return rawNonce, nonceHash
+}
+
+func registerFleetAcceptanceTarget(t *testing.T, db *DB, planID string) string {
+	t.Helper()
+	ctx := context.Background()
+	cluster := "runner-" + uuid.NewString()
+	target, err := db.RegisterFleetTarget(ctx, lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: cluster, StateBackend: "s3://" + cluster + "/state"}, []string{"cluster:" + cluster, "environment:staging/nyc3"}, uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET payload=jsonb_set(payload,'{cluster}',to_jsonb($2::text)) WHERE id=$1`, planID, cluster); err != nil {
+		t.Fatal(err)
+	}
+	return target.TargetID
+}
+
+func seedFleetAcceptanceFence(t *testing.T, db *DB, targetID, planID, nonceHash string) {
+	t.Helper()
+	if _, err := db.Pool.Exec(context.Background(), `UPDATE fleet_target_fences SET generation=1,held=true,holder_plan_id=$2,holder_nonce_sha256=$3,authority_epoch=1,revision=1 WHERE target_id=$1`, targetID, planID, nonceHash); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newFleetRunnerAttemptAcceptance(t *testing.T, operationStore *PGOperationStore, planID, key, nonceHash, runID, intent string, resume bool, predecessorID string, timeout int) OperationAcceptance {
@@ -116,7 +138,9 @@ func TestFleetRunnerAttemptAcceptanceReplaysGeneratedIdentityAndKeepsNoncePrivat
 func TestFleetRunnerAttemptAcceptanceRestartsDestructiveRecoveryAtPrechange(t *testing.T) {
 	stores, dbs := acceptanceIntegrationStores(t, 1)
 	plan := insertFleetAcceptancePlan(t, dbs[0], "replace")
+	targetID := registerFleetAcceptanceTarget(t, dbs[0], plan.ID)
 	_, nonceHash := insertFleetAttemptDispatch(t, dbs[0], plan.ID)
+	seedFleetAcceptanceFence(t, dbs[0], targetID, plan.ID, nonceHash)
 	initialRequest := newFleetRunnerAttemptAcceptance(t, stores[0], plan.ID, "destructive-initial", nonceHash, "7", "apply", false, "", 120)
 	initial, err := stores[0].Accept(context.Background(), initialRequest)
 	if err != nil {
@@ -125,6 +149,12 @@ func TestFleetRunnerAttemptAcceptanceRestartsDestructiveRecoveryAtPrechange(t *t
 	if initial.FleetRunnerAttempt.CurrentPhase != "prechange_verified" {
 		t.Fatalf("destructive initial phase=%q", initial.FleetRunnerAttempt.CurrentPhase)
 	}
+	if initial.FleetRunnerAttempt.FenceBinding == nil {
+		t.Fatal("destructive root has no fence binding")
+	}
+	if _, err := dbs[0].AdvanceFleetAuthorityEpoch(context.Background(), 1, "destructive-recovery-binding-test"); err != nil {
+		t.Fatal(err)
+	}
 	recoveryRequest := newFleetRunnerAttemptAcceptance(t, stores[0], plan.ID, "destructive-recovery", nonceHash, "8", "recover", true, initial.FleetRunnerAttempt.ID, 120)
 	recovery, err := stores[0].Accept(context.Background(), recoveryRequest)
 	if err != nil {
@@ -132,6 +162,63 @@ func TestFleetRunnerAttemptAcceptanceRestartsDestructiveRecoveryAtPrechange(t *t
 	}
 	if recovery.FleetRunnerAttempt.CurrentPhase != "prechange_verified" {
 		t.Fatalf("destructive recovery phase=%q", recovery.FleetRunnerAttempt.CurrentPhase)
+	}
+	if recovery.FleetRunnerAttempt.FenceBinding == nil || recovery.FleetRunnerAttempt.FenceBinding.Generation != initial.FleetRunnerAttempt.FenceBinding.Generation+1 || recovery.FleetRunnerAttempt.FenceBinding.AuthorityEpoch != 2 {
+		t.Fatalf("recovery binding=%+v root=%+v", recovery.FleetRunnerAttempt.FenceBinding, initial.FleetRunnerAttempt.FenceBinding)
+	}
+	if _, err := dbs[0].ValidateFleetRunnerFenceBinding(context.Background(), plan.ID, recovery.FleetRunnerAttempt.ID); err != nil {
+		t.Fatalf("recovery binding validation: %v", err)
+	}
+}
+
+func TestFleetRunnerAcceptancePersistsCurrentFenceBindingPostgres(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	ctx := context.Background()
+	plan := insertFleetAcceptancePlan(t, dbs[0], "scale")
+	targetID := registerFleetAcceptanceTarget(t, dbs[0], plan.ID)
+	_, nonceHash := insertFleetAttemptDispatch(t, dbs[0], plan.ID)
+	seedFleetAcceptanceFence(t, dbs[0], targetID, plan.ID, nonceHash)
+	request := newFleetRunnerAttemptAcceptance(t, stores[0], plan.ID, "bound-attempt", nonceHash, "7", "apply", false, "", 120)
+	first, err := stores[0].Accept(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := first.FleetRunnerAttempt.FenceBinding
+	if binding == nil || binding.TargetID != targetID || binding.Generation != 1 || binding.AuthorityEpoch != 1 {
+		t.Fatalf("binding=%+v", binding)
+	}
+	got, err := dbs[0].GetV3FleetRunnerAttempt(ctx, plan.ID, first.FleetRunnerAttempt.ID)
+	if err != nil || got.FenceBinding == nil || *got.FenceBinding != *binding {
+		t.Fatalf("stored=%+v err=%v", got, err)
+	}
+	if _, err := dbs[0].ValidateFleetRunnerFenceBinding(ctx, plan.ID, got.ID); err != nil {
+		t.Fatalf("valid current binding: %v", err)
+	}
+	replay, err := stores[0].Accept(ctx, request)
+	if err != nil || !replay.Replayed || replay.FleetRunnerAttempt.FenceBinding == nil || *replay.FleetRunnerAttempt.FenceBinding != *binding {
+		t.Fatalf("replay=%+v err=%v", replay.FleetRunnerAttempt, err)
+	}
+	if _, err := dbs[0].AdvanceFleetAuthorityEpoch(ctx, 1, "binding-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].ValidateFleetRunnerFenceBinding(ctx, plan.ID, got.ID); err == nil {
+		t.Fatal("stale epoch validated")
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE fleet_runner_attempts SET fence_binding=jsonb_set(fence_binding,'{fenceGeneration}','99'::jsonb) WHERE id=$1`, got.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].Resolve(ctx, request.Identity, request.Fingerprint); err == nil {
+		t.Fatal("tampered attempt binding passed signed acceptance verification")
+	}
+}
+
+func TestFleetRunnerAcceptanceDestructiveNeedsTargetPostgres(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	plan := insertFleetAcceptancePlan(t, dbs[0], "replace")
+	_, nonceHash := insertFleetAttemptDispatch(t, dbs[0], plan.ID)
+	request := newFleetRunnerAttemptAcceptance(t, stores[0], plan.ID, "unregistered-destructive", nonceHash, "7", "apply", false, "", 120)
+	if _, err := stores[0].Accept(context.Background(), request); err == nil {
+		t.Fatal("unregistered destructive attempt was accepted")
 	}
 }
 

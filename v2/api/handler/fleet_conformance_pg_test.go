@@ -73,6 +73,7 @@ var pgLegacyFleetRunnerRoutes = []pgLegacyFleetRunnerRoute{
 	{"Get", "/fleet/plans/{planID}/attempts", "ListFleetRunnerAttempts", func(h *Handler) http.HandlerFunc { return h.ListFleetRunnerAttempts }},
 	{"Post", "/fleet/plans/{planID}/attempts", "StartFleetRunnerAttempt", func(h *Handler) http.HandlerFunc { return h.StartFleetRunnerAttempt }},
 	{"Get", "/fleet/plans/{planID}/attempts/{attemptID}", "GetFleetRunnerAttempt", func(h *Handler) http.HandlerFunc { return h.GetFleetRunnerAttempt }},
+	{"Post", "/fleet/plans/{planID}/attempts/{attemptID}/validate-fence", "ValidateFleetRunnerFenceBinding", func(h *Handler) http.HandlerFunc { return h.ValidateFleetRunnerFenceBinding }},
 	{"Post", "/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", "HeartbeatFleetRunnerAttempt", func(h *Handler) http.HandlerFunc { return h.HeartbeatFleetRunnerAttempt }},
 	{"Post", "/fleet/plans/{planID}/attempts/{attemptID}/advance", "AdvanceFleetRunnerAttempt", func(h *Handler) http.HandlerFunc { return h.AdvanceFleetRunnerAttempt }},
 	{"Post", "/fleet/plans/{planID}/attempts/{attemptID}/cancel", "CancelFleetRunnerAttempt", func(h *Handler) http.HandlerFunc { return h.CancelFleetRunnerAttempt }},

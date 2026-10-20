@@ -200,17 +200,26 @@ func CanonicalIngressInventory(raw json.RawMessage) ([]byte, error) {
 
 const RunnerAttemptSchemaVersion = "norn.fleet-runner-attempt/v1"
 
+// RunnerFenceBinding is the server-owned fence committed with a protected
+// runner attempt. An absent binding belongs only to an older unfenced lane.
+type RunnerFenceBinding struct {
+	TargetID       string `json:"targetId"`
+	Generation     int64  `json:"fenceGeneration"`
+	AuthorityEpoch int64  `json:"authorityEpoch"`
+}
+
 // RunnerAttempt is the server-owned, restart-safe lease held by a protected
 // fleet runner. It never contains credentials or provider state.
 type RunnerAttempt struct {
-	SchemaVersion   string `json:"schemaVersion"`
-	ID              string `json:"id"`
-	PlanID          string `json:"planId"`
-	Attempt         int    `json:"attempt"`
-	RunnerAttemptID string `json:"runnerAttemptId"`
-	Status          string `json:"status"`
-	CurrentPhase    string `json:"currentPhase"`
-	CommitSHA       string `json:"commitSha"`
+	SchemaVersion   string              `json:"schemaVersion"`
+	ID              string              `json:"id"`
+	PlanID          string              `json:"planId"`
+	Attempt         int                 `json:"attempt"`
+	RunnerAttemptID string              `json:"runnerAttemptId"`
+	FenceBinding    *RunnerFenceBinding `json:"fenceBinding,omitempty"`
+	Status          string              `json:"status"`
+	CurrentPhase    string              `json:"currentPhase"`
+	CommitSHA       string              `json:"commitSha"`
 	// RecoveryWorkflowHeadSHA is the authenticated workflow commit, separate
 	// from CommitSHA, which remains the original reviewed plan commit.
 	RecoveryWorkflowHeadSHA string `json:"recoveryWorkflowHeadSha,omitempty"`

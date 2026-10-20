@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -154,10 +155,14 @@ func TestAcceptanceEvidenceVerifierCoversAdmissionReconciliationAndRunnerVariant
 	})
 
 	// Fleet plan, protected dispatch, runner attempt 1 and a recovery attempt 2.
+	target, err := db.RegisterFleetTarget(ctx, lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "recovery-runner", StateBackend: "s3://recovery-runner/state"}, []string{"cluster:recovery-runner", "environment:staging/nyc3"}, uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
 	planID := uuid.NewString()
 	finished := now
 	plan := model.Operation{ID: planID, Kind: "fleet.capacity-plan", Ref: "app", Status: model.OperationSucceeded, Source: "control-api", StartedAt: now, FinishedAt: &finished, MaxAttempts: 1,
-		Payload: map[string]interface{}{"id": planID, "pool": "app", "action": "replace", "digest": "sha256:" + strings.Repeat("a", 64), "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 2}}, Metadata: map[string]interface{}{}}
+		Payload: map[string]interface{}{"id": planID, "cluster": "recovery-runner", "pool": "app", "action": "replace", "digest": "sha256:" + strings.Repeat("a", 64), "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 2}}, Metadata: map[string]interface{}{}}
 	if err := db.InsertCompletedOperation(ctx, &plan); err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +173,9 @@ func TestAcceptanceEvidenceVerifierCoversAdmissionReconciliationAndRunnerVariant
 		t.Fatal(err)
 	}
 	if _, err := db.FinishFleetGitHubDispatch(ctx, planID, nonceHash, 7, 1, "https://github.com/acme/fleet/actions/runs/7"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE fleet_target_fences SET generation=1,held=true,holder_plan_id=$2,holder_nonce_sha256=$3,authority_epoch=1,revision=1 WHERE target_id=$1`, target.TargetID, planID, nonceHash); err != nil {
 		t.Fatal(err)
 	}
 	runner := func(key, runID, intent string, resume bool, predecessor string) store.AcceptedOperation {

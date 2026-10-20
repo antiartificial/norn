@@ -366,6 +366,32 @@ func (h *Handler) GetFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, attempt)
 }
 
+// ValidateFleetRunnerFenceBinding is an exact-attempt, workload-bound check
+// immediately before a protected runner reads its provider backend.
+func (h *Handler) ValidateFleetRunnerFenceBinding(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requireFleetRunnerPrincipal(w, r)
+	if !ok {
+		return
+	}
+	preventSensitiveResponseCaching(w)
+	attempt, ok := h.requireFleetAttempt(w, r)
+	if !ok {
+		return
+	}
+	if !fleetRunnerPrincipalOwnsAttempt(principal, attempt) {
+		WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_binding_conflict", "only the bound GitHub Actions runner may validate this fence")
+		return
+	}
+	binding, err := h.db.ValidateFleetRunnerFenceBinding(r.Context(), attempt.PlanID, attempt.ID)
+	if err != nil {
+		if !writeFleetFenceError(w, r, err) {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_attempt_read_failed", "runner fence could not be validated")
+		}
+		return
+	}
+	writeJSON(w, map[string]interface{}{"planId": attempt.PlanID, "attemptId": attempt.ID, "fenceBinding": binding, "validatedAt": time.Now().UTC()})
+}
+
 func (h *Handler) HeartbeatFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
 	principal, ok := h.requireFleetRunnerOrAttemptPrincipal(w, r)
 	if !ok {

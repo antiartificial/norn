@@ -541,7 +541,7 @@ func TestFleetTargetReadRoutesRequireAPIRead(t *testing.T) {
 func TestAttemptsMatcherNarrowedToPlans(t *testing.T) {
 	for _, path := range []string{
 		"/api/v1/fleet/plans/p/attempts", "/api/v1/fleet/plans/p/attempts/a", "/api/v1/fleet/plans/p/attempts/a/heartbeat",
-		"/api/v1/fleet/plans/p/attempts/a/advance", "/api/v1/fleet/plans/p/attempts/a/cancel", "/api/v1/fleet/plans/p/reconciliations",
+		"/api/v1/fleet/plans/p/attempts/a/advance", "/api/v1/fleet/plans/p/attempts/a/cancel", "/api/v1/fleet/plans/p/attempts/a/validate-fence", "/api/v1/fleet/plans/p/reconciliations",
 	} {
 		if !FleetPlanRunnerScopedPath(path) {
 			t.Fatalf("%s must keep deferring to the runner handler", path)

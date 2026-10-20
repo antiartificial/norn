@@ -53,6 +53,7 @@ var etcdFleetRunnerRoutes = [][3]string{
 	{"Get", "/api/v1/fleet/plans/{planID}/attempts", "List"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts", "Create"},
 	{"Get", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}", "Get"},
+	{"Post", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/validate-fence", "ValidateFenceBinding"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", "Heartbeat"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", "Advance"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", "Cancel"},

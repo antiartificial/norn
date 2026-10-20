@@ -2,6 +2,12 @@ package model
 
 import "time"
 
+type FleetRunnerFenceBinding struct {
+	TargetID       string `json:"targetId"`
+	Generation     int64  `json:"fenceGeneration"`
+	AuthorityEpoch int64  `json:"authorityEpoch"`
+}
+
 const FleetRunnerAttemptSchemaVersion = "norn.fleet-runner-attempt/v1"
 
 type FleetRunnerAttemptStatus string
@@ -32,6 +38,7 @@ type FleetRunnerAttempt struct {
 	// retry to the first attempt for a plan and must never be caller-controlled.
 	RootAttemptID           string                   `json:"rootAttemptId"`
 	RunnerAttemptID         string                   `json:"runnerAttemptId,omitempty"`
+	FenceBinding            *FleetRunnerFenceBinding `json:"fenceBinding,omitempty"`
 	SourceDispatchRunID     int64                    `json:"sourceDispatchRunId"`
 	PilotRunID              string                   `json:"pilotRunId"`
 	Recovery                bool                     `json:"recovery,omitempty"`

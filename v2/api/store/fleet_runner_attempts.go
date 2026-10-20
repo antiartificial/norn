@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 )
@@ -40,13 +41,13 @@ func fleetTargetEpochRefusalSQL(planIDExpr string) string {
 // inserted, so the fence (lock-order position 4) is always locked before
 // attempts (position 6). An abandoned plan refuses permanently (B1/H7); an
 // empty registry is byte-identical to no fence check at all (Q1).
-func bindFleetTargetFenceTx(ctx context.Context, tx pgx.Tx, planID string) error {
+func bindFleetTargetFenceTx(ctx context.Context, tx pgx.Tx, planID string) (*fleet.RunnerFenceBinding, error) {
 	abandoned, err := IsFleetPlanAbandoned(ctx, tx, planID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if abandoned {
-		return &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetHolderAbandoned}
+		return nil, &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetHolderAbandoned}
 	}
 	// Bind resolves the plan's own cluster alias exactly as acquire did
 	// (strict, plan.md §2.2 and the etcd backend): an empty registry is
@@ -55,14 +56,31 @@ func bindFleetTargetFenceTx(ctx context.Context, tx pgx.Tx, planID string) error
 	// registered target whose fence this plan and nonce do not hold is
 	// refused by DecideBind, never treated as unfenced.
 	targetID, fence, epoch, nonceHash, err := lockFleetTargetFenceForPlanID(ctx, tx, planID, true, true)
-	if err != nil || targetID == "" {
-		return err
+	if err != nil {
+		return nil, err
+	}
+	if targetID == "" {
+		var rawPlan []byte
+		if err := tx.QueryRow(ctx, `SELECT payload FROM operations WHERE id=$1`, planID).Scan(&rawPlan); err != nil {
+			return nil, err
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(rawPlan, &payload); err != nil {
+			return nil, err
+		}
+		if fleetAcceptancePlanRequiresDrain(&model.Operation{Payload: payload}) {
+			return nil, &lifecycle.FenceError{Code: lifecycle.CodeFleetTargetUnregistered, Reason: "protected destructive attempt requires a registered target"}
+		}
+		return nil, nil
 	}
 	next, decErr := lifecycle.DecideBind(fence, planID, nonceHash, epoch)
 	if decErr != nil {
-		return decErr
+		return nil, decErr
 	}
-	return PutFleetTargetFence(ctx, tx, next)
+	if err := PutFleetTargetFence(ctx, tx, next); err != nil {
+		return nil, err
+	}
+	return &fleet.RunnerFenceBinding{TargetID: targetID, Generation: next.Generation, AuthorityEpoch: next.AuthorityEpoch}, nil
 }
 
 var ErrFleetRunnerAttemptConflict = fmt.Errorf("fleet runner attempt changed or is not transitionable")
@@ -82,8 +100,18 @@ func (db *DB) CreateFleetRunnerAttempt(ctx context.Context, attempt *model.Fleet
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('norn.fleet-runner:' || $1))`, attempt.PlanID); err != nil {
 		return err
 	}
-	if err := bindFleetTargetFenceTx(ctx, tx, attempt.PlanID); err != nil {
+	binding, err := bindFleetTargetFenceTx(ctx, tx, attempt.PlanID)
+	if err != nil {
 		return err
+	}
+	if binding != nil {
+		attempt.FenceBinding = &model.FleetRunnerFenceBinding{TargetID: binding.TargetID, Generation: binding.Generation, AuthorityEpoch: binding.AuthorityEpoch}
+	}
+	if binding != nil {
+		if attempt.Metadata == nil {
+			attempt.Metadata = map[string]interface{}{}
+		}
+		attempt.Metadata["fenceBinding"] = binding
 	}
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt), 0) + 1 FROM fleet_runner_attempts WHERE plan_id = $1`, attempt.PlanID).Scan(&attempt.Attempt); err != nil {
 		return err
@@ -456,8 +484,18 @@ func (db *DB) RecoverFleetRunnerAttempt(ctx context.Context, previous *model.Fle
 	// Bind (fence lock-order position 4) must be locked and written before
 	// any fleet_runner_attempts row (position 6) is locked below, so this
 	// path's order can never invert against one that locks fences first.
-	if err := bindFleetTargetFenceTx(ctx, tx, previous.PlanID); err != nil {
+	binding, err := bindFleetTargetFenceTx(ctx, tx, previous.PlanID)
+	if err != nil {
 		return err
+	}
+	if binding != nil {
+		recovery.FenceBinding = &model.FleetRunnerFenceBinding{TargetID: binding.TargetID, Generation: binding.Generation, AuthorityEpoch: binding.AuthorityEpoch}
+	}
+	if binding != nil {
+		if recovery.Metadata == nil {
+			recovery.Metadata = map[string]interface{}{}
+		}
+		recovery.Metadata["fenceBinding"] = binding
 	}
 	var status model.FleetRunnerAttemptStatus
 	var revision int64
@@ -547,6 +585,14 @@ func scanFleetRunnerAttempt(row fleetRunnerScanner) (*model.FleetRunnerAttempt, 
 		return nil, err
 	}
 	_ = json.Unmarshal(metadata, &attempt.Metadata)
+	if raw, ok := attempt.Metadata["fenceBinding"]; ok {
+		if encoded, err := json.Marshal(raw); err == nil {
+			var binding fleet.RunnerFenceBinding
+			if json.Unmarshal(encoded, &binding) == nil && binding.TargetID != "" {
+				attempt.FenceBinding = &model.FleetRunnerFenceBinding{TargetID: binding.TargetID, Generation: binding.Generation, AuthorityEpoch: binding.AuthorityEpoch}
+			}
+		}
+	}
 	attempt.SetDerivedFields()
 	return &attempt, nil
 }

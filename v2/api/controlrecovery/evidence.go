@@ -251,10 +251,18 @@ func loadAcceptedDomain(ctx context.Context, tx pgx.Tx, schema string, evidence 
 		return nil
 	}
 	var attempt fleet.RunnerAttempt
-	if err := tx.QueryRow(ctx, `SELECT id,plan_id,attempt,runner_attempt_id,commit_sha,plan_sha256,workflow_url,status,current_phase,root_attempt_id,retry_of,heartbeat_timeout_seconds FROM `+q("fleet_runner_attempts")+` WHERE plan_id=$1 AND id=$2`,
+	var rawBinding []byte
+	if err := tx.QueryRow(ctx, `SELECT id,plan_id,attempt,runner_attempt_id,commit_sha,plan_sha256,workflow_url,status,current_phase,root_attempt_id,retry_of,heartbeat_timeout_seconds,fence_binding FROM `+q("fleet_runner_attempts")+` WHERE plan_id=$1 AND id=$2`,
 		request.FleetRunnerAttempt.PlanID, envelope.FleetRunnerAttempt.ID).
-		Scan(&attempt.ID, &attempt.PlanID, &attempt.Attempt, &attempt.RunnerAttemptID, &attempt.CommitSHA, &attempt.PlanSHA256, &attempt.WorkflowURL, &attempt.Status, &attempt.CurrentPhase, &attempt.RootAttemptID, &attempt.RetryOf, &attempt.HeartbeatTimeoutSeconds); err != nil {
+		Scan(&attempt.ID, &attempt.PlanID, &attempt.Attempt, &attempt.RunnerAttemptID, &attempt.CommitSHA, &attempt.PlanSHA256, &attempt.WorkflowURL, &attempt.Status, &attempt.CurrentPhase, &attempt.RootAttemptID, &attempt.RetryOf, &attempt.HeartbeatTimeoutSeconds, &rawBinding); err != nil {
 		return fmt.Errorf("accepted runner attempt is unavailable")
+	}
+	if len(rawBinding) != 0 {
+		var binding fleet.RunnerFenceBinding
+		if err := json.Unmarshal(rawBinding, &binding); err != nil {
+			return fmt.Errorf("accepted runner fence binding is malformed")
+		}
+		attempt.FenceBinding = &binding
 	}
 	evidence.FleetRunnerAttempt = &attempt
 	if attempt.Attempt == 1 {

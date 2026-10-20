@@ -242,6 +242,9 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	}
 	var fencePut clientv3.Op
 	hasFencePut := false
+	if fenceCtx.TargetID == "" && fleetPlanRequiresDrain(plan.Operation.Payload) {
+		return store.AcceptedOperation{}, fleetAttemptError(lifecycle.CodeFleetTargetUnregistered, "protected destructive attempt requires a registered target")
+	}
 	if fenceCtx.TargetID != "" {
 		nextFence, decideErr := lifecycle.DecideBind(fenceCtx.Fence, admission.PlanID, admission.DispatchNonceSHA256, fenceCtx.Epoch)
 		if decideErr != nil {
@@ -256,6 +259,7 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 			clientv3.Compare(clientv3.ModRevision(s.fleetAuthorityEpochKey()), "=", fenceCtx.EpochRevision),
 		)
 		fencePut, hasFencePut = clientv3.OpPut(s.fleetTargetFenceKey(fenceCtx.TargetID), string(fenceRecord)), true
+		item.FenceBinding = &fleet.RunnerFenceBinding{TargetID: fenceCtx.TargetID, Generation: nextFence.Generation, AuthorityEpoch: nextFence.AuthorityEpoch}
 	}
 	compares = append(compares, s.registryCompare(fenceCtx), s.abandonedCompare(admission.PlanID))
 	store.BindAcceptedFleetRunnerAttempt(&acceptance, &item)

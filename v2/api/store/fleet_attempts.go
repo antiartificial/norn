@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -13,16 +14,24 @@ import (
 func scanV3FleetRunnerAttempt(row pgx.Row) (*fleet.RunnerAttempt, error) {
 	var item fleet.RunnerAttempt
 	var retryOf string
-	err := row.Scan(&item.ID, &item.PlanID, &item.Attempt, &item.RunnerAttemptID, &item.CommitSHA, &item.PlanSHA256, &item.WorkflowURL, &item.Status, &item.CurrentPhase, &item.RootAttemptID, &retryOf, &item.HeartbeatSequence, &item.HeartbeatTimeoutSeconds, &item.Revision, &item.HeartbeatAt, &item.HeartbeatExpiresAt, &item.LastError, &item.StartedAt, &item.UpdatedAt, &item.FinishedAt)
+	var rawBinding []byte
+	err := row.Scan(&item.ID, &item.PlanID, &item.Attempt, &item.RunnerAttemptID, &item.CommitSHA, &item.PlanSHA256, &item.WorkflowURL, &item.Status, &item.CurrentPhase, &item.RootAttemptID, &retryOf, &item.HeartbeatSequence, &item.HeartbeatTimeoutSeconds, &item.Revision, &item.HeartbeatAt, &item.HeartbeatExpiresAt, &item.LastError, &item.StartedAt, &item.UpdatedAt, &item.FinishedAt, &rawBinding)
 	if err != nil {
 		return nil, err
+	}
+	if len(rawBinding) > 0 {
+		var binding fleet.RunnerFenceBinding
+		if err := json.Unmarshal(rawBinding, &binding); err != nil {
+			return nil, err
+		}
+		item.FenceBinding = &binding
 	}
 	item.SchemaVersion = fleet.RunnerAttemptSchemaVersion
 	item.RetryOf = retryOf
 	return &item, nil
 }
 
-const fleetRunnerAttemptColumns = `id, plan_id, attempt, runner_attempt_id, commit_sha, plan_sha256, workflow_url, status, current_phase, root_attempt_id, retry_of, heartbeat_sequence, heartbeat_timeout_seconds, revision, heartbeat_at, heartbeat_expires_at, message, started_at, updated_at, finished_at`
+const fleetRunnerAttemptColumns = `id, plan_id, attempt, runner_attempt_id, commit_sha, plan_sha256, workflow_url, status, current_phase, root_attempt_id, retry_of, heartbeat_sequence, heartbeat_timeout_seconds, revision, heartbeat_at, heartbeat_expires_at, message, started_at, updated_at, finished_at, fence_binding`
 
 // Read paths project an expired live lease as abandoned without mutating it.
 // Expiry reconciliation belongs to a plan-serialized mutation transaction.
@@ -31,7 +40,7 @@ const fleetRunnerAttemptReadColumns = `id, plan_id, attempt, runner_attempt_id, 
 	current_phase, root_attempt_id, retry_of, heartbeat_sequence, heartbeat_timeout_seconds, revision, heartbeat_at, heartbeat_expires_at,
 	CASE WHEN status IN ('queued','running') AND heartbeat_expires_at < statement_timestamp() THEN 'heartbeat lease expired; external execution termination unproven' ELSE message END,
 	started_at, updated_at,
-	CASE WHEN status IN ('queued','running') AND heartbeat_expires_at < statement_timestamp() THEN COALESCE(finished_at,heartbeat_expires_at) ELSE finished_at END`
+	CASE WHEN status IN ('queued','running') AND heartbeat_expires_at < statement_timestamp() THEN COALESCE(finished_at,heartbeat_expires_at) ELSE finished_at END, fence_binding`
 
 func (db *DB) ListV3FleetRunnerAttempts(ctx context.Context, planID string) ([]fleet.RunnerAttempt, error) {
 	if db == nil || db.Pool == nil {

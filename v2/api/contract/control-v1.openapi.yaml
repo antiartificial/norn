@@ -498,6 +498,19 @@ paths:
         '200': { description: Durable runner attempt, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/validate-fence:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: validateFleetRunnerFenceBinding
+      description: Read-only, exact-attempt validation immediately before backend read. Requires the bound GitHub Actions fleet:operate workload. Checks live attempt, held target, generation, nonce and current authority epoch in one store snapshot. It does not grant provider access.
+      responses:
+        '200': { description: Current binding, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerFenceValidation' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat:
     parameters:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
@@ -3525,6 +3538,7 @@ components:
         attempt: { type: integer, minimum: 1 }
         rootAttemptId: { type: string, format: uuid, readOnly: true }
         runnerAttemptId: { type: string, maxLength: 200 }
+        fenceBinding: { $ref: '#/components/schemas/FleetRunnerFenceBinding', description: Server-owned binding committed with the attempt. Absent only for historical unfenced attempts. }
         # Pre-dispatch historical attempts are backfilled with 0 because no
         # source run existed when they were created. New starts require >0.
         sourceDispatchRunId: { type: integer, format: int64, minimum: 0, readOnly: true }
@@ -3553,6 +3567,23 @@ components:
         lastError: { type: string }
         metadata: { type: object, additionalProperties: true }
         timing: { $ref: '#/components/schemas/FleetRunnerTiming' }
+    FleetRunnerFenceBinding:
+      type: object
+      additionalProperties: false
+      required: [targetId, fenceGeneration, authorityEpoch]
+      properties:
+        targetId: { type: string, pattern: '^tgt_[0-9a-f]{64}$' }
+        fenceGeneration: { type: integer, format: int64, minimum: 1 }
+        authorityEpoch: { type: integer, format: int64, minimum: 1 }
+    FleetRunnerFenceValidation:
+      type: object
+      additionalProperties: false
+      required: [planId, attemptId, fenceBinding, validatedAt]
+      properties:
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        fenceBinding: { $ref: '#/components/schemas/FleetRunnerFenceBinding' }
+        validatedAt: { type: string, format: date-time }
     FleetRunnerAttemptList:
       type: object
       required: [schemaVersion, planId, attempts, count, serverTime]

@@ -226,6 +226,12 @@ func acceptFleetRunnerAttempt(ctx context.Context, tx pgx.Tx, acceptance Operati
 	if err := json.Unmarshal(rawPlan, &planPayload); err != nil {
 		return nil, fleetRunnerAttemptAdmissionError("fleet_plan_invalid", "fleet capacity plan payload is invalid")
 	}
+	// Bind before locking dispatch and attempt rows (registry, epoch, fence,
+	// dispatch, attempts). A later admission failure rolls this write back.
+	fenceBinding, err := bindFleetTargetFenceTx(ctx, tx, admission.PlanID)
+	if err != nil {
+		return nil, err
+	}
 	dispatch, err := scanFleetGitHubDispatch(tx.QueryRow(ctx, `SELECT `+fleetGitHubDispatchColumns+` FROM fleet_github_dispatches WHERE plan_id=$1 FOR UPDATE`, admission.PlanID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fleetRunnerAttemptAdmissionError("fleet_runner_attempt_dispatch_mismatch", "runner attempt has no protected dispatch binding")
@@ -322,7 +328,8 @@ func acceptFleetRunnerAttempt(ctx context.Context, tx pgx.Tx, acceptance Operati
 
 	item := &fleet.RunnerAttempt{
 		SchemaVersion: fleet.RunnerAttemptSchemaVersion, ID: admission.AttemptID, PlanID: admission.PlanID,
-		Attempt: attemptNumber, RunnerAttemptID: admission.RunnerAttemptID, Status: "queued", CurrentPhase: phase,
+		FenceBinding: fenceBinding,
+		Attempt:      attemptNumber, RunnerAttemptID: admission.RunnerAttemptID, Status: "queued", CurrentPhase: phase,
 		CommitSHA: admission.CommitSHA, PlanSHA256: admission.PlanSHA256, WorkflowURL: admission.WorkflowURL,
 		RootAttemptID: rootAttemptID, RetryOf: retryOf, HeartbeatTimeoutSeconds: admission.HeartbeatTimeoutSeconds,
 		Revision: 1, StartedAt: databaseNow, HeartbeatAt: databaseNow, HeartbeatExpiresAt: databaseNow.Add(time.Duration(admission.HeartbeatTimeoutSeconds) * time.Second), UpdatedAt: databaseNow,
@@ -330,7 +337,14 @@ func acceptFleetRunnerAttempt(ctx context.Context, tx pgx.Tx, acceptance Operati
 	// The protected Fleet read and checkpoint handlers bind a persisted attempt
 	// to its verified runner principal. The signed acceptance actor is derived
 	// from the GitHub Actions claims, rather than the token's display subject.
-	if _, err := tx.Exec(ctx, `INSERT INTO fleet_runner_attempts (`+fleetRunnerAttemptColumns+`,principal_subject) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, item.ID, item.PlanID, item.Attempt, item.RunnerAttemptID, item.CommitSHA, item.PlanSHA256, item.WorkflowURL, item.Status, item.CurrentPhase, item.RootAttemptID, item.RetryOf, item.HeartbeatSequence, item.HeartbeatTimeoutSeconds, item.Revision, item.HeartbeatAt, item.HeartbeatExpiresAt, item.LastError, item.StartedAt, item.UpdatedAt, item.FinishedAt, acceptance.Identity.Actor.Subject); err != nil {
+	var rawBinding []byte
+	if item.FenceBinding != nil {
+		rawBinding, err = json.Marshal(item.FenceBinding)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO fleet_runner_attempts (`+fleetRunnerAttemptColumns+`,principal_subject) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, item.ID, item.PlanID, item.Attempt, item.RunnerAttemptID, item.CommitSHA, item.PlanSHA256, item.WorkflowURL, item.Status, item.CurrentPhase, item.RootAttemptID, item.RetryOf, item.HeartbeatSequence, item.HeartbeatTimeoutSeconds, item.Revision, item.HeartbeatAt, item.HeartbeatExpiresAt, item.LastError, item.StartedAt, item.UpdatedAt, item.FinishedAt, rawBinding, acceptance.Identity.Actor.Subject); err != nil {
 		return nil, err
 	}
 	return item, nil
@@ -359,6 +373,9 @@ func verifyImmutableFleetRunnerAttempt(expected *FleetRunnerAttemptAdmission, ou
 	}
 	if output.ID != actual.ID || output.PlanID != actual.PlanID || output.Attempt != actual.Attempt || output.RunnerAttemptID != actual.RunnerAttemptID || output.CommitSHA != actual.CommitSHA || output.PlanSHA256 != actual.PlanSHA256 || output.WorkflowURL != actual.WorkflowURL || (output.WorkloadSHA != "" && output.WorkloadSHA != actual.WorkloadSHA) || output.RootAttemptID != actual.RootAttemptID || output.RetryOf != actual.RetryOf || output.HeartbeatTimeoutSeconds != actual.HeartbeatTimeoutSeconds {
 		return fmt.Errorf("signed fleet runner-attempt output differs from durable lineage")
+	}
+	if (output.FenceBinding == nil) != (actual.FenceBinding == nil) || output.FenceBinding != nil && *output.FenceBinding != *actual.FenceBinding {
+		return fmt.Errorf("signed fleet runner-attempt fence binding differs from durable attempt")
 	}
 	if actual.PlanID != expected.PlanID || actual.RunnerAttemptID != expected.RunnerAttemptID || actual.CommitSHA != expected.CommitSHA || actual.PlanSHA256 != expected.PlanSHA256 || actual.WorkflowURL != expected.WorkflowURL || actual.HeartbeatTimeoutSeconds != expected.HeartbeatTimeoutSeconds {
 		return fmt.Errorf("immutable fleet runner-attempt fields differ from accepted request")

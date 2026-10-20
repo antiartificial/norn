@@ -14,6 +14,7 @@ import (
 
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -158,12 +159,64 @@ func TestV3FleetRunnerAttemptAcceptanceReplayAndRevisionCASEtcd(t *testing.T) {
 	}
 }
 
+func TestV3FleetRunnerAttemptFenceBindingIsAtomicAndEpochBoundEtcd(t *testing.T) {
+	adapter, _, _ := fleetRunnerEtcdStore(t)
+	ctx := context.Background()
+	target, err := adapter.RegisterFleetTarget(ctx, lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "runner-binding", StateBackend: "s3://runner-binding/state"}, []string{"cluster:norn-staging", "environment:staging/nyc3"}, uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := fleetRunnerPlan(t, adapter, "scale")
+	nonce := bindFleetRunnerDispatch(t, adapter, plan)
+	request := fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "binding-first", "7", "apply", "")
+	first, err := adapter.Accept(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := first.FleetRunnerAttempt.FenceBinding
+	if binding == nil || binding.TargetID != target.TargetID || binding.Generation <= 0 || binding.AuthorityEpoch != 1 {
+		t.Fatalf("attempt binding = %+v", binding)
+	}
+	if _, err := adapter.ValidateFleetRunnerFenceBinding(ctx, plan.ID, first.FleetRunnerAttempt.ID, binding); err != nil {
+		t.Fatalf("current binding: %v", err)
+	}
+	replay, err := adapter.Accept(ctx, request)
+	if err != nil || !replay.Replayed || replay.FleetRunnerAttempt.FenceBinding == nil || *replay.FleetRunnerAttempt.FenceBinding != *binding {
+		t.Fatalf("replay binding = %+v err=%v", replay.FleetRunnerAttempt, err)
+	}
+	if _, err := adapter.AdvanceFleetAuthorityEpoch(ctx, 1, "binding-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ValidateFleetRunnerFenceBinding(ctx, plan.ID, first.FleetRunnerAttempt.ID, binding); err == nil {
+		t.Fatal("stale authority epoch validated")
+	}
+}
+
+func TestV3FleetRunnerDestructiveAttemptRequiresRegisteredTargetEtcd(t *testing.T) {
+	adapter, _, _ := fleetRunnerEtcdStore(t)
+	plan := fleetRunnerPlan(t, adapter, "replace")
+	nonce := bindFleetRunnerDispatch(t, adapter, plan)
+	request := fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "unregistered-destructive", "7", "apply", "")
+	if _, err := adapter.Accept(context.Background(), request); err == nil {
+		t.Fatal("unregistered destructive attempt was accepted")
+	}
+}
+
 func TestV3FleetRunnerAttemptAllowsOneVerifiedRecoverySuccessorEtcd(t *testing.T) {
 	adapter, client, prefix := fleetRunnerEtcdStore(t)
+	if _, err := adapter.RegisterFleetTarget(context.Background(), lifecycle.TargetIdentity{Provider: "aws", ProviderAccount: "runner-recovery", StateBackend: "s3://runner-recovery/state"}, []string{"cluster:norn-staging", "environment:staging/nyc3"}, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
 	plan := fleetRunnerPlan(t, adapter, "scale")
 	nonce := bindFleetRunnerDispatch(t, adapter, plan)
 	root, err := adapter.Accept(context.Background(), fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "root", "7", "apply", ""))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if root.FleetRunnerAttempt.FenceBinding == nil {
+		t.Fatal("root has no fence binding")
+	}
+	if _, err := adapter.AdvanceFleetAuthorityEpoch(context.Background(), 1, "runner-recovery-binding-test"); err != nil {
 		t.Fatal(err)
 	}
 	authority, err := adapter.Authority(context.Background())
@@ -216,6 +269,12 @@ func TestV3FleetRunnerAttemptAllowsOneVerifiedRecoverySuccessorEtcd(t *testing.T
 	}
 	if len(attempts) != 2 || attempts[0].Attempt != 2 || attempts[0].RetryOf != root.FleetRunnerAttempt.ID || attempts[0].RootAttemptID != root.FleetRunnerAttempt.ID || attempts[1].ID != root.FleetRunnerAttempt.ID || attempts[1].Status != "failed" {
 		t.Fatalf("attempts=%#v", attempts)
+	}
+	if attempts[0].FenceBinding == nil || attempts[0].FenceBinding.Generation != root.FleetRunnerAttempt.FenceBinding.Generation+1 || attempts[0].FenceBinding.AuthorityEpoch != 2 {
+		t.Fatalf("recovery binding=%+v root=%+v", attempts[0].FenceBinding, root.FleetRunnerAttempt.FenceBinding)
+	}
+	if _, err := adapter.ValidateFleetRunnerFenceBinding(context.Background(), plan.ID, attempts[0].ID, attempts[0].FenceBinding); err != nil {
+		t.Fatalf("recovery binding validation: %v", err)
 	}
 	if _, err := adapter.Accept(context.Background(), verifiedFleetRecoveryAcceptance(t, adapter, plan.ID, nonce, "recover-third", "10", &attempts[0])); !errors.Is(err, store.ErrFleetRunnerAttemptAdmission) {
 		t.Fatalf("third successor err=%v", err)
