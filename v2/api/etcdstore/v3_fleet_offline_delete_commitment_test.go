@@ -2,6 +2,7 @@ package etcdstore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -10,6 +11,18 @@ import (
 	"github.com/google/uuid"
 	"norn/v2/api/fleet/offline"
 )
+
+func admittedOfflineDelete(t *testing.T) (*etcdExecutorHarness, offline.Binding, offline.EffectGrant, offline.DeleteCommitment, []byte, time.Time) {
+	t.Helper()
+	h, binding, attempt, grant, now := consumedOfflineGrant(t)
+	commitAt := now.Add(10 * time.Second)
+	commitment, raw, err := h.s.commitOfflineDeleteWithClock(h.ctx(), binding.PlanID, attempt.ID, grant.ID,
+		uuid.NewString(), uuid.NewString(), uuid.NewString(), func() time.Time { return commitAt })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, binding, grant, commitment, raw, commitAt.Add(10 * time.Second)
+}
 
 func TestOfflineDeleteCommitmentCASRecoveryAndRestore(t *testing.T) {
 	h, b, a, g, _ := consumedOfflineGrant(t)
@@ -110,5 +123,132 @@ func TestOfflineDeleteCommitmentRestoreRejectsChangedGrant(t *testing.T) {
 	}
 	if _, _, err := h.s.GetOfflineDeleteCommitment(h.ctx(), b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
 		t.Fatalf("changed grant restored: %v", err)
+	}
+}
+
+func TestOfflineDeleteAdmissionBindsExactLedgerAndSupervisor(t *testing.T) {
+	h, _, grant, commitment, raw, admissionAt := admittedOfflineDelete(t)
+	calls := 0
+	verify := func(_ context.Context, rootID, executionID, runtimeID string) error {
+		calls++
+		if rootID != commitment.SupervisorRootID || executionID != commitment.SupervisorExecutionID || runtimeID != commitment.RuntimeInstanceID {
+			t.Fatalf("supervisor identities changed: %q %q %q", rootID, executionID, runtimeID)
+		}
+		return nil
+	}
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw, verify, func() time.Time { return admissionAt }); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("supervisor verification calls = %d, want 1", calls)
+	}
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), append(append([]byte(nil), raw...), '\n'), verify,
+		func() time.Time { return admissionAt }); !errors.Is(err, offline.ErrDeleteCommitment) {
+		t.Fatalf("non-canonical commitment admitted: %v", err)
+	}
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw, verify,
+		func() time.Time { return grant.ExpiresAt }); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
+		t.Fatalf("expired grant admitted: %v", err)
+	}
+	supervisorErr := errors.New("supervisor runtime is not running")
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw,
+		func(context.Context, string, string, string) error { return supervisorErr },
+		func() time.Time { return admissionAt }); !errors.Is(err, supervisorErr) {
+		t.Fatalf("supervisor refusal lost: %v", err)
+	}
+}
+
+func TestOfflineDeleteAdmissionRejectsExpiredCheckpoint(t *testing.T) {
+	h, binding, _, _, raw, admissionAt := admittedOfflineDelete(t)
+	response, err := h.s.kv.Get(h.ctx(), h.s.offlineCheckpointKey(binding.PlanID))
+	if err != nil || len(response.Kvs) != 1 {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	var checkpoint offline.Checkpoint
+	if err := json.Unmarshal(response.Kvs[0].Value, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.Prechange.ObservedAt = admissionAt.Add(-5 * time.Minute)
+	checkpoint.Prechange.ExpiresAt = admissionAt
+	changed, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineCheckpointKey(binding.PlanID), string(changed)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineCheckpointEventKey(binding.PlanID, 1), string(changed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw,
+		func(context.Context, string, string, string) error { return nil },
+		func() time.Time { return admissionAt }); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
+		t.Fatalf("expired checkpoint admitted: %v", err)
+	}
+}
+
+func TestOfflineDeleteAdmissionRejectsLostAuthorityAndCompetingLanes(t *testing.T) {
+	tests := map[string]func(*testing.T, *etcdExecutorHarness, offline.Binding){
+		"owner": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineOwnerConsumptionKey(b.OwnerAuthorizationID)); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"fence": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			response, err := h.s.kv.Get(h.ctx(), h.s.fleetTargetFenceKey(b.TargetID))
+			if err != nil || len(response.Kvs) != 1 {
+				t.Fatalf("fence: %v", err)
+			}
+			var fence v3FleetTargetFence
+			if err := json.Unmarshal(response.Kvs[0].Value, &fence); err != nil {
+				t.Fatal(err)
+			}
+			fence.Held = false
+			changed, _ := json.Marshal(fence)
+			if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetFenceKey(b.TargetID), string(changed)); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"epoch": func(t *testing.T, h *etcdExecutorHarness, _ offline.Binding) {
+			if _, err := h.s.kv.Put(h.ctx(), h.s.fleetAuthorityEpochKey(), "2"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"abandoned": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Put(h.ctx(), h.s.fleetTargetAbandonedKey(b.PlanID), `{}`); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"terminal": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Put(h.ctx(), h.s.offlineTerminalEventKey(b.PlanID), `{}`); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"github lane": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Put(h.ctx(), h.s.fleetGitHubDispatchPreparationKey(b.PlanID), `{}`); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"runner lane": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Put(h.ctx(), h.s.fleetRunnerAttemptPrefix(b.PlanID)+"1", `{}`); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"executor lane": func(t *testing.T, h *etcdExecutorHarness, b offline.Binding) {
+			if _, err := h.s.kv.Put(h.ctx(), h.s.fleetExecutorMetaKey(b.PlanID, "attempt"), `{}`); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			h, binding, _, _, raw, admissionAt := admittedOfflineDelete(t)
+			mutate(t, h, binding)
+			if err := h.s.admitOfflineDeleteWithClock(h.ctx(), raw,
+				func(context.Context, string, string, string) error { return nil },
+				func() time.Time { return admissionAt }); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
+				t.Fatalf("changed authority admitted: %v", err)
+			}
+		})
 	}
 }

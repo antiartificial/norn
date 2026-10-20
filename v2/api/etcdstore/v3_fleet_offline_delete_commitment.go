@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +15,12 @@ import (
 )
 
 var ErrOfflineDeleteCommitmentConflict = errors.New("offline delete commitment changed or authority is stale")
+
+// offlineDeleteSupervisorVerifier is supplied only by the local supervised
+// execution path. It must prove that all three identifiers still name the
+// running supervisor root, execution journal and runtime instance. The store
+// deliberately knows nothing about supervisor implementation details.
+type offlineDeleteSupervisorVerifier func(context.Context, string, string, string) error
 
 func (s *V3OperationStore) offlineDeleteCommitmentKey(planID string) string {
 	return s.prefix + "/v3/fleet-offline-delete-commitments/" + planID
@@ -220,4 +228,171 @@ func (s *V3OperationStore) commitOfflineDeleteWithClock(ctx context.Context, pla
 		return offline.DeleteCommitment{}, nil, ErrOfflineDeleteCommitmentConflict
 	}
 	return c, encoded, nil
+}
+
+// admitOfflineDelete is the final local authority check for the exact
+// commitment bytes a supervised runtime is about to use. It has no HTTP route,
+// provider client or credential side effect. The caller must treat a returned
+// error or an ambiguous result as a permanent refusal to dispatch DELETE.
+func (s *V3OperationStore) admitOfflineDelete(ctx context.Context, exactCommitment []byte, verify offlineDeleteSupervisorVerifier) error {
+	return s.admitOfflineDeleteWithClock(ctx, exactCommitment, verify, time.Now)
+}
+
+func (s *V3OperationStore) admitOfflineDeleteWithClock(ctx context.Context, exactCommitment []byte, verify offlineDeleteSupervisorVerifier, clock func() time.Time) error {
+	if s == nil || verify == nil || clock == nil {
+		return offline.ErrDeleteCommitment
+	}
+	commitment, err := offline.DecodeDeleteCommitment(exactCommitment)
+	if err != nil {
+		return err
+	}
+	// Supervisor proof happens before the authority snapshot so a slow local
+	// observation cannot consume the grant's remaining lifetime unnoticed.
+	if err := verify(ctx, commitment.SupervisorRootID, commitment.SupervisorExecutionID, commitment.RuntimeInstanceID); err != nil {
+		return err
+	}
+
+	// The binding probe selects the owner-consumption key only. The following
+	// transaction re-reads that binding together with every admission row at
+	// one current etcd revision and binds it back to the exact commitment.
+	probe, err := s.kv.Get(ctx, s.offlineDispatchKey(commitment.PlanID))
+	if err != nil {
+		return err
+	}
+	if len(probe.Kvs) != 1 {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	candidate, err := offline.DecodeBinding(probe.Kvs[0].Value)
+	if err != nil || candidate.PlanID != commitment.PlanID || candidate.OwnerAuthorizationID == "" {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+
+	const (
+		commitmentHead = iota
+		commitmentEvent
+		bindingKey
+		attemptKey
+		grantHead
+		grantIssued
+		grantConsumed
+		checkpointHead
+		checkpointEvent
+		ownerKey
+		planKey
+		fenceKey
+		epochKey
+		abandonedKey
+		terminalHead
+		terminalEvent
+		githubPreparation
+		runnerDispatch
+		runnerAttempts
+		executorAttempts
+	)
+	response, err := s.kv.Txn(ctx).Then(
+		clientv3.OpGet(s.offlineDeleteCommitmentKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineDeleteCommitmentEventKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineDispatchKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineAttemptKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineEffectGrantKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineEffectGrantEventKey(commitment.PlanID, 1)),
+		clientv3.OpGet(s.offlineEffectGrantEventKey(commitment.PlanID, 2)),
+		clientv3.OpGet(s.offlineCheckpointKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineCheckpointEventKey(commitment.PlanID, 1)),
+		clientv3.OpGet(s.offlineOwnerConsumptionKey(candidate.OwnerAuthorizationID)),
+		clientv3.OpGet(s.opKey(commitment.PlanID)),
+		clientv3.OpGet(s.fleetTargetFenceKey(commitment.TargetID)),
+		clientv3.OpGet(s.fleetAuthorityEpochKey()),
+		clientv3.OpGet(s.fleetTargetAbandonedKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineTerminalKey(commitment.PlanID)),
+		clientv3.OpGet(s.offlineTerminalEventKey(commitment.PlanID)),
+		clientv3.OpGet(s.fleetGitHubDispatchPreparationKey(commitment.PlanID)),
+		clientv3.OpGet(s.fleetRunnerDispatchKey(commitment.PlanID)),
+		clientv3.OpGet(s.fleetRunnerAttemptPrefix(commitment.PlanID), clientv3.WithPrefix()),
+		clientv3.OpGet(s.fleetExecutorMetaKey(commitment.PlanID, ""), clientv3.WithPrefix()),
+	).Commit()
+	if err != nil {
+		return err
+	}
+	if len(response.Responses) != 20 {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	rows := func(index int) [][]byte {
+		rangeResult := response.Responses[index].GetResponseRange()
+		if rangeResult == nil {
+			return nil
+		}
+		out := make([][]byte, 0, len(rangeResult.Kvs))
+		for _, kv := range rangeResult.Kvs {
+			out = append(out, kv.Value)
+		}
+		return out
+	}
+	required := []int{commitmentHead, commitmentEvent, bindingKey, attemptKey, grantHead, grantIssued,
+		grantConsumed, checkpointHead, checkpointEvent, ownerKey, planKey, fenceKey, epochKey}
+	for _, index := range required {
+		if len(rows(index)) != 1 {
+			return ErrOfflineDeleteCommitmentConflict
+		}
+	}
+	for _, index := range []int{abandonedKey, terminalHead, terminalEvent, githubPreparation, runnerDispatch, runnerAttempts, executorAttempts} {
+		if len(rows(index)) != 0 {
+			return ErrOfflineDeleteCommitmentConflict
+		}
+	}
+	if !bytes.Equal(rows(commitmentHead)[0], exactCommitment) || !bytes.Equal(rows(commitmentEvent)[0], exactCommitment) {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+
+	binding, err := offline.DecodeBinding(rows(bindingKey)[0])
+	if err != nil || binding.SchemaVersion != offline.BindingSchemaV2 || binding.PlanID != commitment.PlanID ||
+		binding.TargetID != commitment.TargetID || binding.OwnerAuthorizationID != candidate.OwnerAuthorizationID ||
+		offline.DeleteCommitmentSHA256(rows(bindingKey)[0]) != commitment.BindingSHA256 {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	attempt, err := decodeOfflineAttempt(rows(attemptKey)[0], commitment.PlanID)
+	if err != nil || attempt.ID != commitment.AttemptID || offline.DeleteCommitmentSHA256(rows(attemptKey)[0]) != commitment.AttemptSHA256 {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	grant, err := decodeOfflineEffectGrantPair(rows(grantHead)[0], rows(grantIssued)[0], rows(grantConsumed)[0], commitment.PlanID)
+	if err != nil || grant.Phase != "consumed" || grant.ConsumedAt == nil || grant.ID != commitment.GrantID ||
+		offline.DeleteCommitmentSHA256(rows(grantHead)[0]) != commitment.EffectGrantSHA256 {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	checkpoint, err := decodeOfflineCheckpointPair(rows(checkpointHead)[0], rows(checkpointEvent)[0], commitment.PlanID)
+	if err != nil || checkpoint.Prechange == nil || !checkpoint.Prechange.ProviderTopologyVerified ||
+		checkpoint.AttemptID != attempt.ID || checkpoint.EvidenceSHA256 != grant.PrechangeSHA256 ||
+		checkpoint.Prechange.BindingSHA256 != commitment.BindingSHA256 ||
+		checkpoint.FenceGeneration != commitment.FenceGeneration || checkpoint.AuthorityEpoch != commitment.AuthorityEpoch {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	if string(rows(ownerKey)[0]) != commitment.PlanID+":"+binding.OwnerEnvelopeSHA256 {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	var plan v3Record
+	var typed fleet.CapacityPlan
+	if decodeV3Record(rows(planKey)[0], &plan) != nil || !validOfflineContractionPlan(plan.Operation, commitment.PlanID, &typed) {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	var fence v3FleetTargetFence
+	if decodeV3Record(rows(fenceKey)[0], &fence) != nil || !fence.Held || fence.HolderPlanID != commitment.PlanID ||
+		fence.HolderNonceSHA256 != binding.DispatchNonceSHA256 || uint64(fence.Generation) != commitment.FenceGeneration ||
+		fence.AuthorityEpoch != commitment.AuthorityEpoch {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	epoch, err := strconv.ParseInt(strings.TrimSpace(string(rows(epochKey)[0])), 10, 64)
+	if err != nil || epoch <= 0 || epoch != commitment.AuthorityEpoch {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	_, reconstructed, err := offline.NewDeleteCommitment(binding, attempt, grant, commitment.SupervisorRootID,
+		commitment.SupervisorExecutionID, commitment.RuntimeInstanceID, commitment.CommittedAt)
+	if err != nil || !bytes.Equal(reconstructed, exactCommitment) {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	now := clock().UTC()
+	if now.IsZero() || now.Before(commitment.CommittedAt) || now.Before(*grant.ConsumedAt) ||
+		!now.Before(grant.ExpiresAt) || !now.Before(binding.ExpiresAt) || !now.Before(checkpoint.Prechange.ExpiresAt) {
+		return ErrOfflineDeleteCommitmentConflict
+	}
+	return nil
 }
