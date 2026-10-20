@@ -198,7 +198,11 @@ func (s *httpOfflineEffectEvidenceSourceV2) ObserveOfflineCompletion(ctx context
 	return offline.CompletionObservationV2{PlanID: e.PlanID, AttemptID: e.AttemptID, GrantID: e.GrantID,
 		BindingSHA256: e.BindingSHA256, TargetID: e.TargetID, TargetFenceGeneration: e.TargetFenceGeneration,
 		AuthorityEpoch: e.AuthorityEpoch, WriterFence: e.WriterFence, TerminalEvidenceSHA256: e.TerminalEvidenceSHA256,
-		ReceiptSHA256: e.ReleaseReceiptSHA256, ReleasedAt: e.ReleasedAt, ObservedAt: e.ObservedAt}, nil
+		ReceiptSHA256: e.ReleaseReceiptSHA256, ProviderEvidenceSHA256: e.ProviderEvidenceSHA256,
+		BackendEvidenceSHA256: e.BackendEvidenceSHA256, WorkloadEvidenceSHA256: e.WorkloadEvidenceSHA256,
+		ProviderAbsent: true, BackendAdvanced: true, BackendTargetAbsent: true, AllNamespacesInspected: true,
+		WorkloadTargetAbsent: true, SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true,
+		ReleasedAt: e.ReleasedAt, ObservedAt: e.ObservedAt}, nil
 }
 
 func (s *httpOfflineEffectEvidenceSourceV2) boundState(ctx context.Context, planID, attemptID string) (offline.Binding, offline.Attempt, error) {

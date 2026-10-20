@@ -84,6 +84,16 @@ func (f *offlineEffectV2Fixture) effectObservation(at time.Time) offline.EffectO
 		SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true}
 }
 
+func (f *offlineEffectV2Fixture) terminalObservation(grant offline.EffectGrantV2, at time.Time) offline.TerminalObservationV2 {
+	return offline.TerminalObservationV2{PlanID: f.binding.PlanID, AttemptID: f.attempt.ID, GrantID: grant.ID,
+		BindingSHA256: f.attempt.BindingSHA256, TargetID: f.binding.TargetID, TargetFenceGeneration: f.binding.FenceGeneration,
+		AuthorityEpoch: 1, WriterFence: grant.WriterFence, ObservedAt: at,
+		EvidenceSHA256: strings.Repeat("1", 64), ProviderEvidenceSHA256: strings.Repeat("2", 64),
+		BackendEvidenceSHA256: strings.Repeat("3", 64), WorkloadEvidenceSHA256: strings.Repeat("4", 64),
+		ProviderAbsent: true, BackendAdvanced: true, BackendTargetAbsent: true, AllNamespacesInspected: true,
+		WorkloadTargetAbsent: true, SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true}
+}
+
 func (f *offlineEffectV2Fixture) issue(t *testing.T) offline.EffectGrantV2 {
 	t.Helper()
 	at := f.now.Add(time.Second)
@@ -113,13 +123,7 @@ func (f *offlineEffectV2Fixture) terminal(t *testing.T) offline.EffectGrantV2 {
 		t.Fatal(err)
 	}
 	terminalAt := f.now.Add(5 * time.Second)
-	observation := offline.TerminalObservationV2{PlanID: f.binding.PlanID, AttemptID: f.attempt.ID, GrantID: grant.ID,
-		BindingSHA256: f.attempt.BindingSHA256, TargetID: f.binding.TargetID, TargetFenceGeneration: f.binding.FenceGeneration,
-		AuthorityEpoch: 1, WriterFence: grant.WriterFence, ObservedAt: terminalAt,
-		EvidenceSHA256: strings.Repeat("1", 64), ProviderEvidenceSHA256: strings.Repeat("2", 64),
-		BackendEvidenceSHA256: strings.Repeat("3", 64), WorkloadEvidenceSHA256: strings.Repeat("4", 64),
-		ProviderAbsent: true, BackendAdvanced: true, BackendTargetAbsent: true, AllNamespacesInspected: true,
-		WorkloadTargetAbsent: true, SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true}
+	observation := f.terminalObservation(grant, terminalAt)
 	if _, err := f.h.s.RecordOfflineTerminalV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, observation, terminalAt); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +135,10 @@ func (f *offlineEffectV2Fixture) completionObservation(grant offline.EffectGrant
 		BindingSHA256: f.attempt.BindingSHA256, TargetID: f.binding.TargetID,
 		TargetFenceGeneration: f.binding.FenceGeneration, AuthorityEpoch: 1, WriterFence: grant.WriterFence,
 		TerminalEvidenceSHA256: strings.Repeat("1", 64), ReceiptSHA256: strings.Repeat("5", 64),
+		ProviderEvidenceSHA256: strings.Repeat("2", 64), BackendEvidenceSHA256: strings.Repeat("3", 64),
+		WorkloadEvidenceSHA256: strings.Repeat("4", 64), ProviderAbsent: true, BackendAdvanced: true,
+		BackendTargetAbsent: true, AllNamespacesInspected: true, WorkloadTargetAbsent: true,
+		SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true,
 		ReleasedAt: at.Add(-time.Second), ObservedAt: at}
 }
 
@@ -209,6 +217,48 @@ func TestOfflineEffectV2RequiresTargetPresentBeforeDeleteDispatch(t *testing.T) 
 			mutate(&observation)
 			if _, err := f.h.s.IssueOfflineEffectGrantV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, f.proof, observation, at); !errors.Is(err, offline.ErrEffectProofV2) {
 				t.Fatalf("pre-delete absence admitted: %v", err)
+			}
+		})
+	}
+}
+
+func TestOfflineEffectV2DispatchRechecksTargetPresent(t *testing.T) {
+	for name, mutate := range map[string]func(*offline.EffectObservationV2){
+		"provider absent": func(o *offline.EffectObservationV2) { o.ProviderTargetPresent = false },
+		"backend absent":  func(o *offline.EffectObservationV2) { o.BackendTargetPresent = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newOfflineEffectV2Fixture(t)
+			grant := f.issue(t)
+			f.commit(t, grant)
+			at := f.now.Add(3 * time.Second)
+			observation := f.effectObservation(at)
+			mutate(&observation)
+			if _, err := f.h.s.DispatchOfflineDeleteV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, observation, at); !errors.Is(err, offline.ErrEffectProofV2) {
+				t.Fatalf("dispatch without live target admitted: %v", err)
+			}
+		})
+	}
+}
+
+func TestOfflineEffectV2TerminalRejectsTargetStillPresent(t *testing.T) {
+	for name, mutate := range map[string]func(*offline.TerminalObservationV2){
+		"provider present": func(o *offline.TerminalObservationV2) { o.ProviderAbsent = false },
+		"backend present":  func(o *offline.TerminalObservationV2) { o.BackendTargetAbsent = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newOfflineEffectV2Fixture(t)
+			grant := f.issue(t)
+			f.commit(t, grant)
+			at := f.now.Add(3 * time.Second)
+			if _, err := f.h.s.DispatchOfflineDeleteV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, f.effectObservation(at), at); err != nil {
+				t.Fatal(err)
+			}
+			terminalAt := f.now.Add(5 * time.Second)
+			observation := f.terminalObservation(grant, terminalAt)
+			mutate(&observation)
+			if _, err := f.h.s.RecordOfflineTerminalV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, observation, terminalAt); !errors.Is(err, offline.ErrTerminalProofV2) {
+				t.Fatalf("terminal target presence admitted: %v", err)
 			}
 		})
 	}
@@ -349,6 +399,28 @@ func TestOfflineEffectV2CompletionRequiresTerminalEvidenceAndLiveLease(t *testin
 	})
 }
 
+func TestOfflineEffectV2CompletionRejectsTargetStillPresent(t *testing.T) {
+	for name, mutate := range map[string]func(*offline.CompletionObservationV2){
+		"provider present": func(o *offline.CompletionObservationV2) { o.ProviderAbsent = false },
+		"backend present":  func(o *offline.CompletionObservationV2) { o.BackendTargetAbsent = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newOfflineEffectV2Fixture(t)
+			grant := f.terminal(t)
+			at := f.now.Add(6 * time.Second)
+			observation := f.completionObservation(grant, at)
+			mutate(&observation)
+			if _, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, observation, at); !errors.Is(err, offline.ErrCompletionProofV2) {
+				t.Fatalf("completion target presence admitted: %v", err)
+			}
+			fence, _, _ := f.h.s.GetFleetTargetFence(f.h.ctx(), f.binding.TargetID)
+			if !fence.Held {
+				t.Fatal("failed completion released target fence")
+			}
+		})
+	}
+}
+
 func TestOfflineAttemptRejectsCorruptCompletionEvidence(t *testing.T) {
 	f := newOfflineEffectV2Fixture(t)
 	grant := f.terminal(t)
@@ -358,10 +430,13 @@ func TestOfflineAttemptRejectsCorruptCompletionEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := map[string]func(*offline.Attempt){
-		"receipt digest":  func(a *offline.Attempt) { a.Completion.ReceiptSHA256 = "" },
-		"writer holder":   func(a *offline.Attempt) { a.Completion.WriterFence.Holder = uuid.NewString() },
-		"terminal digest": func(a *offline.Attempt) { a.Completion.TerminalEvidenceSHA256 = "" },
-		"timestamp order": func(a *offline.Attempt) { a.Completion.RecordedAt = a.Completion.ObservedAt.Add(-time.Second) },
+		"receipt digest":    func(a *offline.Attempt) { a.Completion.ReceiptSHA256 = "" },
+		"provider digest":   func(a *offline.Attempt) { a.Completion.ProviderEvidenceSHA256 = "" },
+		"provider presence": func(a *offline.Attempt) { a.Completion.ProviderAbsent = false },
+		"backend presence":  func(a *offline.Attempt) { a.Completion.BackendTargetAbsent = false },
+		"writer holder":     func(a *offline.Attempt) { a.Completion.WriterFence.Holder = uuid.NewString() },
+		"terminal digest":   func(a *offline.Attempt) { a.Completion.TerminalEvidenceSHA256 = "" },
+		"timestamp order":   func(a *offline.Attempt) { a.Completion.RecordedAt = a.Completion.ObservedAt.Add(-time.Second) },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

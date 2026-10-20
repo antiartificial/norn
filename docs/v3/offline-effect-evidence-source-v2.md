@@ -30,8 +30,10 @@ requires:
   target remain absent; a newer object version in the same backend lineage is
   observed; all evidence digests are present;
 - completion: the exact writer generation is released; the release receipt is
-  bound to the recorded terminal evidence; provider absence, newer backend
-  identity, and workload facts are observed again.
+  bound to the recorded terminal evidence; provider absence, backend target
+  absence with a newer version in the same lineage, all-namespace workload
+  absence, survivor health, and their evidence digests are observed again and
+  persisted in the completed attempt.
 
 ## Activation gate
 

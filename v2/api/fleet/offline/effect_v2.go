@@ -163,12 +163,16 @@ type TerminalEvidenceV2 struct {
 // source after PostgreSQL has durably released the exact all-writer fence.
 // ReceiptSHA256 identifies that PostgreSQL release receipt.
 type CompletionObservationV2 struct {
-	PlanID, AttemptID, GrantID, BindingSHA256, TargetID string
-	TargetFenceGeneration                               uint64
-	AuthorityEpoch                                      int64
-	WriterFence                                         WriterFence
-	TerminalEvidenceSHA256, ReceiptSHA256               string
-	ReleasedAt, ObservedAt                              time.Time
+	PlanID, AttemptID, GrantID, BindingSHA256, TargetID                                 string
+	TargetFenceGeneration                                                               uint64
+	AuthorityEpoch                                                                      int64
+	WriterFence                                                                         WriterFence
+	TerminalEvidenceSHA256, ReceiptSHA256                                               string
+	ProviderEvidenceSHA256, BackendEvidenceSHA256, WorkloadEvidenceSHA256               string
+	ProviderAbsent, BackendAdvanced, BackendTargetAbsent                                bool
+	AllNamespacesInspected, WorkloadTargetAbsent, SurvivingPlacement, SurvivingHeadroom bool
+	ServicePassing                                                                      bool
+	ReleasedAt, ObservedAt                                                              time.Time
 }
 
 type CompletionEvidenceV2 struct {
@@ -183,6 +187,17 @@ type CompletionEvidenceV2 struct {
 	WriterFence            WriterFence `json:"writerFence"`
 	TerminalEvidenceSHA256 string      `json:"terminalEvidenceSHA256"`
 	ReceiptSHA256          string      `json:"receiptSHA256"`
+	ProviderEvidenceSHA256 string      `json:"providerEvidenceSHA256"`
+	BackendEvidenceSHA256  string      `json:"backendEvidenceSHA256"`
+	WorkloadEvidenceSHA256 string      `json:"workloadEvidenceSHA256"`
+	ProviderAbsent         bool        `json:"providerAbsent"`
+	BackendAdvanced        bool        `json:"backendAdvanced"`
+	BackendTargetAbsent    bool        `json:"backendTargetAbsent"`
+	AllNamespacesInspected bool        `json:"allNamespacesInspected"`
+	WorkloadTargetAbsent   bool        `json:"workloadTargetAbsent"`
+	SurvivingPlacement     bool        `json:"survivingPlacement"`
+	SurvivingHeadroom      bool        `json:"survivingHeadroom"`
+	ServicePassing         bool        `json:"servicePassing"`
 	ReleasedAt             time.Time   `json:"releasedAt"`
 	ObservedAt             time.Time   `json:"observedAt"`
 	RecordedAt             time.Time   `json:"recordedAt"`
@@ -193,6 +208,9 @@ func (c CompletionEvidenceV2) Validate(a Attempt) error {
 		uuid.Validate(c.GrantID) != nil || c.BindingSHA256 != a.BindingSHA256 || c.TargetID != a.TargetID ||
 		c.TargetFenceGeneration != a.FenceGeneration || c.AuthorityEpoch <= 0 || !c.WriterFence.valid(a.ID) ||
 		!hex64.MatchString(c.TerminalEvidenceSHA256) || !hex64.MatchString(c.ReceiptSHA256) ||
+		!hex64.MatchString(c.ProviderEvidenceSHA256) || !hex64.MatchString(c.BackendEvidenceSHA256) || !hex64.MatchString(c.WorkloadEvidenceSHA256) ||
+		!c.ProviderAbsent || !c.BackendAdvanced || !c.BackendTargetAbsent || !c.AllNamespacesInspected ||
+		!c.WorkloadTargetAbsent || !c.SurvivingPlacement || !c.SurvivingHeadroom || !c.ServicePassing ||
 		c.ReleasedAt.IsZero() || c.ObservedAt.Before(c.ReleasedAt) || c.RecordedAt.Before(c.ObservedAt) {
 		return ErrCompletionProofV2
 	}
@@ -205,7 +223,11 @@ func VerifyCompletionObservationV2(o CompletionObservationV2, g EffectGrantV2, n
 		o.BindingSHA256 != g.BindingSHA256 || o.TargetID != g.TargetID ||
 		o.TargetFenceGeneration != g.TargetFenceGeneration || o.AuthorityEpoch != g.AuthorityEpoch ||
 		o.WriterFence != g.WriterFence || o.TerminalEvidenceSHA256 != g.Terminal.EvidenceSHA256 ||
-		!hex64.MatchString(o.ReceiptSHA256) || o.ReleasedAt.Before(g.Terminal.RecordedAt) ||
+		!hex64.MatchString(o.ReceiptSHA256) || !hex64.MatchString(o.ProviderEvidenceSHA256) ||
+		!hex64.MatchString(o.BackendEvidenceSHA256) || !hex64.MatchString(o.WorkloadEvidenceSHA256) ||
+		!o.ProviderAbsent || !o.BackendAdvanced || !o.BackendTargetAbsent || !o.AllNamespacesInspected ||
+		!o.WorkloadTargetAbsent || !o.SurvivingPlacement || !o.SurvivingHeadroom || !o.ServicePassing ||
+		o.ReleasedAt.Before(g.Terminal.RecordedAt) ||
 		o.ObservedAt.Before(o.ReleasedAt) || o.ObservedAt.After(now) || now.Sub(o.ObservedAt) > 30*time.Second {
 		return CompletionEvidenceV2{}, ErrCompletionProofV2
 	}
@@ -213,6 +235,11 @@ func VerifyCompletionObservationV2(o CompletionObservationV2, g EffectGrantV2, n
 		GrantID: o.GrantID, BindingSHA256: o.BindingSHA256, TargetID: o.TargetID,
 		TargetFenceGeneration: o.TargetFenceGeneration, AuthorityEpoch: o.AuthorityEpoch, WriterFence: o.WriterFence,
 		TerminalEvidenceSHA256: o.TerminalEvidenceSHA256, ReceiptSHA256: o.ReceiptSHA256,
+		ProviderEvidenceSHA256: o.ProviderEvidenceSHA256, BackendEvidenceSHA256: o.BackendEvidenceSHA256,
+		WorkloadEvidenceSHA256: o.WorkloadEvidenceSHA256, ProviderAbsent: o.ProviderAbsent,
+		BackendAdvanced: o.BackendAdvanced, BackendTargetAbsent: o.BackendTargetAbsent,
+		AllNamespacesInspected: o.AllNamespacesInspected, WorkloadTargetAbsent: o.WorkloadTargetAbsent,
+		SurvivingPlacement: o.SurvivingPlacement, SurvivingHeadroom: o.SurvivingHeadroom, ServicePassing: o.ServicePassing,
 		ReleasedAt: o.ReleasedAt.UTC(), ObservedAt: o.ObservedAt.UTC(), RecordedAt: now.UTC()}
 	if receipt.Validate(Attempt{ID: g.AttemptID, PlanID: g.PlanID, BindingSHA256: g.BindingSHA256,
 		TargetID: g.TargetID, FenceGeneration: g.TargetFenceGeneration}) != nil {

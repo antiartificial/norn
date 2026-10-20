@@ -127,7 +127,9 @@ func TestOfflineEffectEvidenceSourceV2ReadsExactServerOwnedFacts(t *testing.T) {
 		t.Fatalf("terminal observation=%+v err=%v", observed, err)
 	}
 	if observed, err := source.ObserveOfflineCompletion(context.Background(), state.binding.PlanID, state.attempt.ID, state.grant.ID); err != nil ||
-		observed.ReceiptSHA256 != evidence.ReleaseReceiptSHA256 || observed.TerminalEvidenceSHA256 != state.grant.Terminal.EvidenceSHA256 {
+		observed.ReceiptSHA256 != evidence.ReleaseReceiptSHA256 || observed.TerminalEvidenceSHA256 != state.grant.Terminal.EvidenceSHA256 ||
+		!observed.ProviderAbsent || !observed.BackendAdvanced || !observed.BackendTargetAbsent || !observed.AllNamespacesInspected ||
+		!observed.WorkloadTargetAbsent || !observed.SurvivingPlacement || !observed.SurvivingHeadroom || !observed.ServicePassing {
 		t.Fatalf("completion observation=%+v err=%v", observed, err)
 	}
 }
