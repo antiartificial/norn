@@ -1,0 +1,369 @@
+{
+  "jobs": [
+    {
+      "completed_at": "2026-10-18T06:34:11Z",
+      "conclusion": "success",
+      "head_sha": "602a3867eb590341218efb93295d7afe018a842a",
+      "id": 117607337776,
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "name": "pilot_admission",
+      "run_attempt": 1,
+      "run_id": 39104495159,
+      "runner_id": 1000020754,
+      "runner_name": "GitHub Actions 1000020754",
+      "started_at": "2026-10-18T06:34:08Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Require selected admission runner",
+          "number": 2,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run set -euo pipefail",
+          "number": 3,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 4,
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-10-18T06:36:00Z",
+      "conclusion": "failure",
+      "head_sha": "602a3867eb590341218efb93295d7afe018a842a",
+      "id": 117607354084,
+      "labels": [
+        "self-hosted",
+        "Linux",
+        "X64",
+        "norn-fleet-protected",
+        "norn-work-staging-fleet-effect"
+      ],
+      "name": "apply",
+      "run_attempt": 1,
+      "run_id": 39104495159,
+      "runner_id": 260,
+      "runner_name": "norn-work-staging-work39009200347-runner",
+      "started_at": "2026-10-18T06:35:52Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "name": "Set up runner",
+          "number": 2,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Reject GitHub workflow reruns",
+          "number": 3,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Require exact protected pilot effect runner",
+          "number": 4,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Validate manual approval inputs",
+          "number": 5,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "number": 6,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Bind staging provider token to work account",
+          "number": 7,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Configure protected macOS Python trust",
+          "number": 8,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prepare pinned external-Mac Python runtime",
+          "number": 9,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Authenticate admitted owner Mac and active runner before effects",
+          "number": 10,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prepare pinned disposable provider inventory runtime",
+          "number": 11,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Validate selected Fleet topology before provider apply",
+          "number": 12,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prove runner access to a configured Droplet SSH key",
+          "number": 13,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Verify the approved plan workflow run",
+          "number": 14,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Download approved review artifact",
+          "number": 15,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Bind approved pilot artifact to exact dispatch run",
+          "number": 16,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Run opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f",
+          "number": 17,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Preflight disposable Fleet runner inputs",
+          "number": 18,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Bind disposable target to exact run config before provider access",
+          "number": 19,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Bind external-Mac root, runner, live price approval, and five node keys",
+          "number": 20,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prove pre-issued disposable public ingress TLS before provider apply",
+          "number": 21,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prove exact disposable precreate provider absence",
+          "number": 22,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Require hands-off reconciliation configuration",
+          "number": 23,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Collect fresh empty external-Mac inventory immediately before first create",
+          "number": 24,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prove external-Mac state and lock are absent before first provider apply",
+          "number": 25,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Record verified pre-create external-Mac registry boundaries",
+          "number": 26,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Initialize locked provider selections and remote state",
+          "number": 27,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Revalidate temporary runner SSH route against current state",
+          "number": 28,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Re-create and bind the approved plan",
+          "number": 29,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Classify and bind a staged contraction",
+          "number": 30,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Consume external-Mac owner approval before recovery authority",
+          "number": 31,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Persist recovery binding before provider mutation",
+          "number": 32,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "number": 33,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "number": 34,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Verify external-Mac ACL immediately before durable attempt",
+          "number": 35,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Start durable Fleet runner attempt",
+          "number": 36,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Create contraction identity receipt before any node fencing",
+          "number": 37,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Persist contraction identity receipt before provider deletion",
+          "number": 38,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prove headroom, readiness, and drain before deletion",
+          "number": 39,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prove existing work Fleet private routes before provider mutation",
+          "number": 40,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Apply verified plan",
+          "number": 41,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Resume node configuration, enrollment, and assurance",
+          "number": 42,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Close temporary runner SSH after bootstrap or failure",
+          "number": 43,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Prove the external-Mac controller reaches all enrolled Tailscale identities",
+          "number": 44,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Close and authenticate first-bootstrap SSH after external-Mac enrollment",
+          "number": 45,
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "name": "Record non-secret evidence",
+          "number": 46,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Admit the separately executed disposable MySQL workload",
+          "number": 47,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "number": 48,
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "number": 49,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 50,
+          "status": "completed"
+        }
+      ]
+    }
+  ],
+  "total_count": 2
+}

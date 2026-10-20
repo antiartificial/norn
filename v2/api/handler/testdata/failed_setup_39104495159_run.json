@@ -1,0 +1,18 @@
+{
+  "actor": {
+    "login": "norn-work-staging-fleet[bot]",
+    "type": "Bot"
+  },
+  "conclusion": "failure",
+  "display_title": "Apply staging/nyc3 pilot  Norn plan dab170e6-5677-4187-abc7-c0bf195775a6 nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "event": "workflow_dispatch",
+  "head_branch": "main",
+  "head_sha": "602a3867eb590341218efb93295d7afe018a842a",
+  "html_url": "https://github.com/antiartificial/norn-fleet/actions/runs/39104495159",
+  "id": 39104495159,
+  "inputs": null,
+  "name": "Apply staging/nyc3 pilot  Norn plan dab170e6-5677-4187-abc7-c0bf195775a6 nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "path": ".github/workflows/apply.yml",
+  "run_attempt": 1,
+  "status": "completed"
+}

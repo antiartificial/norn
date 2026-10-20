@@ -22,7 +22,8 @@ type canceledRunJobs struct {
 type canceledRunArtifacts struct {
 	TotalCount int `json:"total_count"`
 	Artifacts  []struct {
-		ID int64 `json:"id"`
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
 	} `json:"artifacts"`
 }
 
@@ -119,6 +120,101 @@ func (c *Client) ReconcileCanceledBeforeExecution(ctx context.Context, planID, f
 		return nil, fmt.Errorf("required cancelled run jobs are absent: %w", ErrDispatchAmbiguous)
 	}
 	return &Reconciliation{Outcome: "verified-cancelled-before-execution", CanceledRun: &CanceledBeforeExecution{RunID: runID, RunAttempt: runAttempt, URL: run.HTMLURL, Conclusion: run.Conclusion, JobCount: first.Jobs.TotalCount, ArtifactCount: first.Artifacts.TotalCount, ObservedAt: c.now().UTC()}}, nil
+}
+
+// ReconcileFailedRunnerSetup covers the observed work-staging failure in which
+// the apply job acquired its runner but failed during Set up runner, before
+// checkout, provider binding, durable Norn attempt, or any apply step. The
+// strict step and artifact shape is intentional: another failure must receive
+// its own reviewed proof rather than broadening this no-effect inference.
+func (c *Client) ReconcileFailedRunnerSetup(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonceHash string, runID, runAttempt int64) (*Reconciliation, error) {
+	if planID != "dab170e6-5677-4187-abc7-c0bf195775a6" || fleetEnvironment != "staging/nyc3" || fleetEnvironment != c.fleetRoot() || c.cfg.PilotRunID != "" || approved == nil || runID != 39104495159 || runAttempt != 1 || approved.PlanRunID <= 0 || approved.PilotRunID != "" || !sha256Re.MatchString(approved.PlanSHA) || approved.ApprovedHeadSHA != "602a3867eb590341218efb93295d7afe018a842a" || !sha256Re.MatchString(nonceHash) {
+		return nil, ErrDispatchAmbiguous
+	}
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read"})
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	actor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	read := func() (canceledRunSnapshot, error) {
+		var s canceledRunSnapshot
+		run, err := c.getApplyRun(ctx, token, runID)
+		if err != nil {
+			return s, err
+		}
+		s.Run = *run
+		if err = c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d/jobs?filter=all&per_page=100", runID)), nil, &s.Jobs); err != nil {
+			return s, err
+		}
+		if err = c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d/artifacts?per_page=100", runID)), nil, &s.Artifacts); err != nil {
+			return s, err
+		}
+		return s, nil
+	}
+	first, err := read()
+	if err != nil {
+		return nil, fmt.Errorf("read failed setup snapshot: %w", ErrDispatchAmbiguous)
+	}
+	second, err := read()
+	if err != nil || !reflect.DeepEqual(first, second) {
+		return nil, fmt.Errorf("failed setup snapshot changed: %w", ErrDispatchAmbiguous)
+	}
+	run := &first.Run
+	if run.ID != runID || int64(run.RunAttempt) != runAttempt || run.Status != "completed" || run.Conclusion != "failure" || c.verifyApplyRunByNonceHash(run, planID, fleetEnvironment, approved, nonceHash, actor) != nil {
+		return nil, fmt.Errorf("failed setup run identity differs: %w", ErrDispatchAmbiguous)
+	}
+	_, _, nonce, ok := parseApplyRunDisplayTitle(run.DisplayTitle, c.cfg.PilotRunID)
+	if !ok || (len(run.Inputs) != 0 && verifyObservedApplyInputs(run, planID, fleetEnvironment, allowDestructive, approved, nonce) != nil) {
+		return nil, fmt.Errorf("failed setup inputs differ: %w", ErrDispatchAmbiguous)
+	}
+	if first.Jobs.TotalCount != 2 || len(first.Jobs.Jobs) != 2 || first.Artifacts.TotalCount != 1 || len(first.Artifacts.Artifacts) != 1 || first.Artifacts.Artifacts[0].ID != 12127871960 || first.Artifacts.Artifacts[0].Name != "fleet-apply-39104495159-1" {
+		return nil, fmt.Errorf("failed setup job or artifact set differs: %w", ErrDispatchAmbiguous)
+	}
+	seenAdmission, seenApply := false, false
+	for _, job := range first.Jobs.Jobs {
+		if job.ID <= 0 || job.RunID != runID || int64(job.RunAttempt) != runAttempt || job.HeadSHA != approved.ApprovedHeadSHA || job.Status != "completed" || job.StartedAt == "" || job.CompletedAt == "" {
+			return nil, fmt.Errorf("failed setup job identity differs: %w", ErrDispatchAmbiguous)
+		}
+		switch job.Name {
+		case "pilot_admission":
+			if seenAdmission || job.ID != 117607337776 || job.Conclusion != "success" || job.RunnerID != 1000020754 || job.RunnerName != "GitHub Actions 1000020754" || !reflect.DeepEqual(job.Labels, []string{"ubuntu-24.04"}) || !reflect.DeepEqual(job.Steps, []reconciliationStep{{1, "Set up job", "completed", "success"}, {2, "Require selected admission runner", "completed", "success"}, {3, "Run set -euo pipefail", "completed", "success"}, {4, "Complete job", "completed", "success"}}) {
+				return nil, fmt.Errorf("failed setup admission differs: %w", ErrDispatchAmbiguous)
+			}
+			seenAdmission = true
+		case "apply":
+			if seenApply || job.ID != 117607354084 || job.Conclusion != "failure" || job.RunnerID != 260 || job.RunnerName != "norn-work-staging-work39009200347-runner" || !reflect.DeepEqual(job.Labels, []string{"self-hosted", "Linux", "X64", "norn-fleet-protected", "norn-work-staging-fleet-effect"}) || !reflect.DeepEqual(job.Steps, failedRunnerSetupSteps()) {
+				return nil, fmt.Errorf("failed setup apply differs: %w", ErrDispatchAmbiguous)
+			}
+			seenApply = true
+		default:
+			return nil, fmt.Errorf("unexpected failed setup job: %w", ErrDispatchAmbiguous)
+		}
+	}
+	if !seenAdmission || !seenApply {
+		return nil, fmt.Errorf("failed setup jobs absent: %w", ErrDispatchAmbiguous)
+	}
+	return &Reconciliation{Outcome: "verified-failed-runner-setup-before-execution", CanceledRun: &CanceledBeforeExecution{RunID: runID, RunAttempt: runAttempt, URL: run.HTMLURL, Conclusion: run.Conclusion, JobCount: 2, ArtifactCount: 1, ObservedAt: c.now().UTC()}}, nil
+}
+
+func failedRunnerSetupSteps() []reconciliationStep {
+	names := []string{
+		"Set up job", "Set up runner", "Reject GitHub workflow reruns", "Require exact protected pilot effect runner", "Validate manual approval inputs", "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", "Bind staging provider token to work account", "Configure protected macOS Python trust", "Prepare pinned external-Mac Python runtime", "Authenticate admitted owner Mac and active runner before effects", "Prepare pinned disposable provider inventory runtime", "Validate selected Fleet topology before provider apply", "Prove runner access to a configured Droplet SSH key", "Verify the approved plan workflow run", "Download approved review artifact", "Bind approved pilot artifact to exact dispatch run", "Run opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f", "Preflight disposable Fleet runner inputs", "Bind disposable target to exact run config before provider access", "Bind external-Mac root, runner, live price approval, and five node keys", "Prove pre-issued disposable public ingress TLS before provider apply", "Prove exact disposable precreate provider absence", "Require hands-off reconciliation configuration", "Collect fresh empty external-Mac inventory immediately before first create", "Prove external-Mac state and lock are absent before first provider apply", "Record verified pre-create external-Mac registry boundaries", "Initialize locked provider selections and remote state", "Revalidate temporary runner SSH route against current state", "Re-create and bind the approved plan", "Classify and bind a staged contraction", "Consume external-Mac owner approval before recovery authority", "Persist recovery binding before provider mutation", "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "Verify external-Mac ACL immediately before durable attempt", "Start durable Fleet runner attempt", "Create contraction identity receipt before any node fencing", "Persist contraction identity receipt before provider deletion", "Prove headroom, readiness, and drain before deletion", "Prove existing work Fleet private routes before provider mutation", "Apply verified plan", "Resume node configuration, enrollment, and assurance", "Close temporary runner SSH after bootstrap or failure", "Prove the external-Mac controller reaches all enrolled Tailscale identities", "Close and authenticate first-bootstrap SSH after external-Mac enrollment", "Record non-secret evidence", "Admit the separately executed disposable MySQL workload", "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "Complete job",
+	}
+	steps := make([]reconciliationStep, len(names))
+	for i, name := range names {
+		conclusion := "skipped"
+		switch i + 1 {
+		case 1, 48, 50:
+			conclusion = "success"
+		case 2, 46:
+			conclusion = "failure"
+		}
+		steps[i] = reconciliationStep{Number: i + 1, Name: name, Status: "completed", Conclusion: conclusion}
+	}
+	return steps
 }
 
 // RunSummary is one entry of a bounded, unauthoritative listing snapshot used
