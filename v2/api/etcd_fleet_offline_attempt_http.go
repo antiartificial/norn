@@ -1,0 +1,118 @@
+package main
+
+// Admission and readback for an offline Fleet attempt. This surface records a
+// queued attempt only; it has no credential, phase advance or provider route.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
+	"norn/v2/api/etcdstore"
+	"norn/v2/api/fleet/offline"
+	"norn/v2/api/handler"
+	"norn/v2/api/store"
+)
+
+type offlineAttemptAdmissionStore interface {
+	AdmitOfflineAttempt(context.Context, offline.AttemptClaim, string, string, time.Time) (offline.Attempt, error)
+	GetOfflineAttempt(context.Context, string) (offline.Attempt, error)
+}
+
+type offlineAttemptDeviceStore interface {
+	ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error)
+}
+
+func offlineAttemptPrincipal(w http.ResponseWriter, r *http.Request, devices offlineAttemptDeviceStore) (handler.AccessPrincipal, bool) {
+	p, ok := handler.AccessPrincipalFromRequest(r)
+	if !ok || !handler.IsFleetOfflineAttemptPrincipal(p) || devices == nil {
+		handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_runner_required", "a dedicated offline runner device token is required")
+		return handler.AccessPrincipal{}, false
+	}
+	device, err := devices.ActiveAccessDevice(r.Context(), p.DeviceID)
+	if err != nil || device == nil || device.ID != p.DeviceID || device.RevokedAt != nil || device.Platform != handler.FleetOfflineRunnerPlatform {
+		handler.WriteControlProblem(w, r, http.StatusForbidden, "offline_runner_required", "a live offline runner device is required")
+		return handler.AccessPrincipal{}, false
+	}
+	return p, true
+}
+
+func etcdOfflineAttemptCreate(attempts offlineAttemptAdmissionStore, devices offlineAttemptDeviceStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := offlineAttemptPrincipal(w, r, devices)
+		if !ok {
+			return
+		}
+		planID := chi.URLParam(r, "planID")
+		if uuid.Validate(planID) != nil {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_id", "plan ID must be a UUID")
+			return
+		}
+		if attempts == nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "offline_attempt_store_unavailable", "offline attempt store is unavailable")
+			return
+		}
+		raw, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 16*1024))
+		claim, claimErr := offline.DecodeAttemptClaim(raw)
+		if readErr != nil || claimErr != nil || claim.PlanID != planID || claim.RunnerPrincipalSubject != p.Subject {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_offline_attempt", "claim must exactly match the path and authenticated principal")
+			return
+		}
+		attempt, err := attempts.AdmitOfflineAttempt(r.Context(), claim, p.Subject, uuid.NewString(), time.Now().UTC())
+		if err != nil {
+			status, code := http.StatusConflict, "offline_attempt_conflict"
+			if errors.Is(err, etcdstore.ErrNotFound) {
+				status, code = http.StatusNotFound, "offline_dispatch_not_found"
+			}
+			if !errors.Is(err, offline.ErrAttemptMismatch) && !errors.Is(err, etcdstore.ErrOfflineAttemptConflict) && !errors.Is(err, etcdstore.ErrNotFound) {
+				status, code = http.StatusServiceUnavailable, "offline_attempt_admission_uncertain"
+			}
+			handler.WriteControlProblem(w, r, status, code, "offline attempt was not admitted; read exact state before retry")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(attempt)
+	}
+}
+
+func etcdOfflineAttemptGet(attempts offlineAttemptAdmissionStore, devices offlineAttemptDeviceStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := offlineAttemptPrincipal(w, r, devices)
+		if !ok {
+			return
+		}
+		planID := chi.URLParam(r, "planID")
+		if uuid.Validate(planID) != nil {
+			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_id", "plan ID must be a UUID")
+			return
+		}
+		if attempts == nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "offline_attempt_store_unavailable", "offline attempt store is unavailable")
+			return
+		}
+		attempt, err := attempts.GetOfflineAttempt(r.Context(), planID)
+		if errors.Is(err, etcdstore.ErrNotFound) {
+			handler.WriteControlProblem(w, r, http.StatusNotFound, "offline_attempt_not_found", "offline attempt not found")
+			return
+		}
+		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "offline_attempt_read_failed", "offline attempt could not be read")
+			return
+		}
+		if attempt.PrincipalSubject != p.Subject {
+			handler.WriteControlProblem(w, r, http.StatusNotFound, "offline_attempt_not_found", "offline attempt not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(attempt)
+	}
+}

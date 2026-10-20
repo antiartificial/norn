@@ -10,7 +10,8 @@ import (
 const (
 	// FleetExecutorPlatform is the only device platform that may hold
 	// fleet:execute.
-	FleetExecutorPlatform = "fleet-executor"
+	FleetExecutorPlatform      = "fleet-executor"
+	FleetOfflineRunnerPlatform = "fleet-offline-runner"
 	// fleetExecutorTokenTTL is the executor token lifetime (D8). Rotation keeps it.
 	fleetExecutorTokenTTL = 7 * 24 * time.Hour
 )
@@ -23,6 +24,16 @@ func isFleetExecutorPlatform(platform string) bool {
 // deviceEnrollmentScopes: the scope is valid only alone and only for the
 // fleet-executor platform. Every other request is unchanged.
 func (h *Handler) deviceEnrollmentScopesForPlatform(platform string, requested []string) ([]string, error) {
+	if containsScope(requested, ScopeFleetOfflineAttempt) {
+		scopes, err := normalizeAccessTokenScopes(requested)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(strings.TrimSpace(platform), FleetOfflineRunnerPlatform) || len(scopes) != 1 || scopes[0] != ScopeFleetOfflineAttempt {
+			return nil, fmt.Errorf("%s must be granted alone to %s devices", ScopeFleetOfflineAttempt, FleetOfflineRunnerPlatform)
+		}
+		return scopes, nil
+	}
 	hasExecute := false
 	for _, scope := range requested {
 		if strings.TrimSpace(scope) == ScopeFleetExecute {
@@ -53,6 +64,16 @@ func IsFleetExecutorPrincipal(p AccessPrincipal) bool {
 	return p.Source == AccessPrincipalSourceManagedToken && !p.Legacy &&
 		p.TokenID != "" && p.DeviceID != "" && p.CI == nil &&
 		len(p.Scopes) == 1 && p.Scopes[0] == ScopeFleetExecute &&
+		!p.ExpiresAt.IsZero() && time.Now().Before(p.ExpiresAt)
+}
+
+// IsFleetOfflineAttemptPrincipal is a device-bound admission identity. It is
+// distinct from the GitHub fleet:operate and executor lanes and grants no
+// credential, provider access or effect transition.
+func IsFleetOfflineAttemptPrincipal(p AccessPrincipal) bool {
+	return p.Source == AccessPrincipalSourceManagedToken && !p.Legacy &&
+		p.TokenID != "" && p.DeviceID != "" && p.Subject != "" && p.CI == nil &&
+		len(p.Scopes) == 1 && p.Scopes[0] == ScopeFleetOfflineAttempt &&
 		!p.ExpiresAt.IsZero() && time.Now().Before(p.ExpiresAt)
 }
 

@@ -143,21 +143,37 @@ func rejectDuplicateKeys(decoder *json.Decoder) error {
 // AttemptClaim is presented by a distinct offline principal. The server must
 // additionally prove that principal, dispatch, owner signature, and fence.
 type AttemptClaim struct {
-	PlanID                 string
-	TargetID               string
-	Resource               string
-	SourceCommit           string
-	SavedPlanSHA256        string
-	EffectSHA256           string
-	Backend                Backend
-	ProviderAccountUUID    string
-	NodeName               string
-	DropletID              string
-	OwnerAuthorizationID   string
-	OwnerEnvelopeSHA256    string
-	RunnerPrincipalSubject string
-	DispatchNonceSHA256    string
-	FenceGeneration        uint64
+	PlanID                 string  `json:"planId"`
+	TargetID               string  `json:"targetId"`
+	Resource               string  `json:"resource"`
+	SourceCommit           string  `json:"sourceCommit"`
+	SavedPlanSHA256        string  `json:"savedPlanSHA256"`
+	EffectSHA256           string  `json:"effectSHA256"`
+	Backend                Backend `json:"backend"`
+	ProviderAccountUUID    string  `json:"providerAccountUUID"`
+	NodeName               string  `json:"nodeName"`
+	DropletID              string  `json:"dropletId"`
+	OwnerAuthorizationID   string  `json:"ownerAuthorizationId"`
+	OwnerEnvelopeSHA256    string  `json:"ownerEnvelopeSHA256"`
+	RunnerPrincipalSubject string  `json:"runnerPrincipalSubject"`
+	DispatchNonceSHA256    string  `json:"dispatchNonceSHA256"`
+	FenceGeneration        uint64  `json:"fenceGeneration"`
+}
+
+// DecodeAttemptClaim rejects ambiguous or extended request shapes before the
+// server compares every claim with the immutable reservation.
+func DecodeAttemptClaim(raw []byte) (AttemptClaim, error) {
+	var claim AttemptClaim
+	if len(raw) == 0 || len(raw) > 16*1024 || !json.Valid(raw) ||
+		rejectDuplicateKeys(json.NewDecoder(bytes.NewReader(raw))) != nil {
+		return claim, ErrAttemptMismatch
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&claim) != nil {
+		return AttemptClaim{}, ErrAttemptMismatch
+	}
+	return claim, nil
 }
 
 // MatchAttempt checks exact dispatch inheritance and expiry, without granting

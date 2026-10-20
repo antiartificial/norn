@@ -57,6 +57,9 @@ const (
 	// ScopeFleetExecute is the Fleet executor lane. It is grantable only alone
 	// and only to a fleet-executor device (see fleet_executor_principal.go).
 	ScopeFleetExecute = "fleet:execute"
+	// ScopeFleetOfflineAttempt admits only a queued offline contraction attempt.
+	// It is exclusive to a live fleet-offline-runner device and grants no effect.
+	ScopeFleetOfflineAttempt = "fleet:offline-attempt"
 )
 
 var accessTokenScopes = map[string]struct{}{
@@ -65,11 +68,12 @@ var accessTokenScopes = map[string]struct{}{
 	ScopeFleetOperate:           {},
 	ScopeFleetExternalAdmission: {},
 	ScopeFleetExecute:           {},
+	ScopeFleetOfflineAttempt:    {},
 	ScopeReleaseAttest:          {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetOfflineAttempt, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own
@@ -267,8 +271,8 @@ func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Durat
 	if err != nil {
 		return nil, err
 	}
-	if containsScope(normalized, ScopeFleetExecute) {
-		return nil, fmt.Errorf("%s is grantable only to %s devices", ScopeFleetExecute, FleetExecutorPlatform)
+	if containsScope(normalized, ScopeFleetExecute) || containsScope(normalized, ScopeFleetOfflineAttempt) {
+		return nil, fmt.Errorf("Fleet runner scopes are grantable only to dedicated devices")
 	}
 	issuedAt = issuedAt.UTC()
 	return &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl)}, nil
@@ -337,8 +341,8 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
-	if containsScope(scopes, ScopeFleetExecute) {
-		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", ScopeFleetExecute+" is grantable only to "+FleetExecutorPlatform+" devices")
+	if containsScope(scopes, ScopeFleetExecute) || containsScope(scopes, ScopeFleetOfflineAttempt) {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", "Fleet runner scopes are grantable only to dedicated devices")
 		return
 	}
 	token, record, err := IssueManagedAccessToken(r.Context(), h.cfg.APIToken, h.db, req.Note, scopes, ttl)

@@ -27,6 +27,7 @@
       "fleet:operate",
       "fleet:external-admission",
       "fleet:execute",
+      "fleet:offline-attempt",
       "admin"
     ],
     "stepUp": {

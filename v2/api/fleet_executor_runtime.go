@@ -129,11 +129,14 @@ func fleetLaneAdmits(principal *handler.AccessPrincipal, r *http.Request) (restr
 	if handler.IsFleetExecutorPrincipal(*principal) {
 		return true, fleetLaneSafePath(r) && fleetExecutorRouteAllowed(r.Method, r.URL.Path)
 	}
+	if handler.IsFleetOfflineAttemptPrincipal(*principal) {
+		return true, false // Offline admission uses its own exact-route middleware.
+	}
 	if _, credential := handler.FleetAttemptCredentialAttemptID(*principal); credential {
 		return true, fleetLaneSafePath(r) && handler.FleetAttemptCredentialAllowsRoute(*principal, r.Method, r.URL.Path)
 	}
 	for _, scope := range principal.Scopes {
-		if scope == handler.ScopeFleetAttempt || scope == handler.ScopeFleetExecute {
+		if scope == handler.ScopeFleetAttempt || scope == handler.ScopeFleetExecute || scope == handler.ScopeFleetOfflineAttempt {
 			// Carries a lane scope but fails the lane principal's checks
 			// (no live subject binding, a device or CI claim, another scope
 			// beside fleet:execute, ...): never generic.

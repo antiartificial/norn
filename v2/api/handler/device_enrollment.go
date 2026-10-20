@@ -354,7 +354,7 @@ func issueDeviceTokenWithTTL(cfg *config.Config, deviceID, subject string, scope
 // issueDeviceTokenForPlatform is issueDeviceTokenWithTTL with the device's
 // persisted platform, which fleet:execute validation needs.
 func issueDeviceTokenForPlatform(cfg *config.Config, platform, deviceID, subject string, scopes []string, rotatedFrom string, lifetime time.Duration) (string, *store.AccessToken, error) {
-	if cfg != nil && cfg.IsFleetAuthorityOnly() || containsScope(scopes, ScopeFleetExecute) {
+	if cfg != nil && cfg.IsFleetAuthorityOnly() || containsScope(scopes, ScopeFleetExecute) || containsScope(scopes, ScopeFleetOfflineAttempt) {
 		var err error
 		scopes, err = (&Handler{cfg: cfg}).deviceEnrollmentScopesForPlatform(platform, scopes)
 		if err != nil {
