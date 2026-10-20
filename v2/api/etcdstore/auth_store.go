@@ -221,6 +221,11 @@ type OfflineRunnerProof struct {
 	TokenExpiresAt                time.Time
 }
 
+// OfflineRunnerReservationHeadroom bounds verifier and etcd commit latency.
+// It proves the token remains valid through reservation admission; it does not
+// extend token lifetime or authorize a later attempt.
+const OfflineRunnerReservationHeadroom = 30 * time.Second
+
 // ProveOfflineRunner resolves a canonical offline runner subject from durable
 // device and token records. The caller must pass the proof into the same-etcd
 // reservation transaction; this read alone is not a revocation fence.
@@ -244,7 +249,7 @@ func (s *AuthStore) ProveOfflineRunner(ctx context.Context, subject string, now 
 		if json.Unmarshal(kv.Value, &token) != nil {
 			return OfflineRunnerProof{}, fmt.Errorf("decode offline runner token")
 		}
-		if token.DeviceID != deviceID || token.Subject != subject || token.RevokedAt != nil || !token.ExpiresAt.After(now) ||
+		if token.DeviceID != deviceID || token.Subject != subject || token.RevokedAt != nil || !token.ExpiresAt.After(now.Add(OfflineRunnerReservationHeadroom)) ||
 			len(token.Scopes) != 1 || token.Scopes[0] != "fleet:offline-attempt" {
 			continue
 		}

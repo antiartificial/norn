@@ -163,6 +163,9 @@ func etcdOfflineReservationCreate(store offlineReservationStore, devices offline
 			handler.WriteControlProblem(w, r, http.StatusPreconditionFailed, "offline_runner_not_enrolled", "runner principal must name a live enrolled offline device token")
 			return
 		}
+		// Read the clock after the durable proof read so the transaction gate
+		// applies its full minimum-expiry headroom from this point.
+		now = time.Now().UTC()
 		reserved, err := store.ReserveOfflineDispatchWithRunnerProof(r.Context(), binding, approval, runnerProof, now)
 		if err != nil {
 			status, code := http.StatusConflict, "offline_reservation_conflict"

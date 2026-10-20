@@ -176,6 +176,11 @@ func TestOfflineDispatchReservationAtomicallyRejectsRevokedRunnerProof(t *testin
 	binding := offlineTestBinding(planID, targetID, now)
 	binding.RunnerPrincipalSubject = subject
 	binding, approval := offlineTestApproval(t, binding, now)
+	nearExpiry := proof
+	nearExpiry.TokenExpiresAt = now.Add(OfflineRunnerReservationHeadroom)
+	if _, err := h.s.ReserveOfflineDispatchWithRunnerProof(h.ctx(), binding, approval, nearExpiry, now); !errors.Is(err, offline.ErrInvalidBinding) {
+		t.Fatalf("near-expiry transaction proof error = %v", err)
+	}
 	if _, err := auth.RevokeAccessToken(h.ctx(), tokenID); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +189,24 @@ func TestOfflineDispatchReservationAtomicallyRejectsRevokedRunnerProof(t *testin
 	}
 	if _, err := h.s.GetOfflineDispatchReservation(h.ctx(), planID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("reservation after revoked proof = %v", err)
+	}
+}
+
+func TestOfflineRunnerProofRejectsNearExpiryToken(t *testing.T) {
+	h := newEtcdExecutorHarness(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	deviceID, tokenID := uuid.NewString(), "norn_"+uuid.NewString()
+	auth := NewAuthStore(h.s.kv, h.s.prefix)
+	if err := auth.CreateAccessDevice(h.ctx(), &store.AccessDevice{ID: deviceID, Name: "offline", Platform: "fleet-offline-runner", CreatedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	subject := "fleet-offline-device:" + deviceID
+	if err := auth.RecordAccessToken(h.ctx(), &store.AccessToken{JTI: tokenID, DeviceID: deviceID, Subject: subject,
+		Scopes: []string{"fleet:offline-attempt"}, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(OfflineRunnerReservationHeadroom)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.ProveOfflineRunner(h.ctx(), subject, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("near-expiry token proof error = %v", err)
 	}
 }
 

@@ -59,7 +59,7 @@ func (s *V3OperationStore) ReserveOfflineDispatch(ctx context.Context, binding o
 func (s *V3OperationStore) ReserveOfflineDispatchWithRunnerProof(ctx context.Context, binding offline.Binding,
 	approval offline.VerifiedApproval, runner OfflineRunnerProof, now time.Time) (offline.Binding, error) {
 	if runner.DeviceID == "" || runner.TokenID == "" || runner.Subject != binding.RunnerPrincipalSubject ||
-		runner.DeviceRevision <= 0 || runner.TokenRevision <= 0 || !runner.TokenExpiresAt.After(now) {
+		runner.DeviceRevision <= 0 || runner.TokenRevision <= 0 || !runner.TokenExpiresAt.After(now.Add(OfflineRunnerReservationHeadroom)) {
 		return offline.Binding{}, offline.ErrInvalidBinding
 	}
 	return s.reserveOfflineDispatch(ctx, binding, approval, runner, now)
