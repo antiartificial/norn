@@ -114,6 +114,96 @@ func TestReconcileCanceledBeforeExecutionRequiresStableZeroExecution(t *testing.
 	}
 }
 
+func TestReconcileFailedRunnerSetupMatchesObservedPreCheckoutFailureOnly(t *testing.T) {
+	const runID int64 = 39104495159
+	planID := "dab170e6-5677-4187-abc7-c0bf195775a6"
+	nonce := strings.Repeat("a", 64)
+	sum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(sum[:])
+	headSHA := "602a3867eb590341218efb93295d7afe018a842a"
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("c", 64), ApprovedHeadSHA: headSHA}
+	run := applyRun{ID: runID, HTMLURL: "https://github.com/acme/norn-fleet/actions/runs/39104495159", Event: "workflow_dispatch", HeadSHA: headSHA, HeadBranch: "main", Path: ".github/workflows/apply.yml", Name: "apply", DisplayTitle: fmt.Sprintf(applyRunDisplayTitleFormat, "staging/nyc3", planID, nonce), RunAttempt: 1, Status: "completed", Conclusion: "failure"}
+	run.Actor.Login, run.Actor.Type = "norn[bot]", "Bot"
+	admission := reconciliationJob{ID: 117607337776, RunID: runID, RunAttempt: 1, HeadSHA: headSHA, Name: "pilot_admission", Status: "completed", Conclusion: "success", StartedAt: "2026-10-20T12:00:00Z", CompletedAt: "2026-10-20T12:01:00Z", RunnerID: 1000020754, RunnerName: "GitHub Actions 1000020754", Labels: []string{"ubuntu-24.04"}, Steps: []reconciliationStep{{1, "Set up job", "completed", "success"}, {2, "Require selected admission runner", "completed", "success"}, {3, "Run set -euo pipefail", "completed", "success"}, {4, "Complete job", "completed", "success"}}}
+	apply := reconciliationJob{ID: 117607354084, RunID: runID, RunAttempt: 1, HeadSHA: headSHA, Name: "apply", Status: "completed", Conclusion: "failure", StartedAt: "2026-10-20T12:02:00Z", CompletedAt: "2026-10-20T12:03:00Z", RunnerID: 260, RunnerName: "norn-work-staging-work39009200347-runner", Labels: []string{"self-hosted", "Linux", "X64", "norn-fleet-protected", "norn-work-staging-fleet-effect"}, Steps: failedRunnerSetupSteps()}
+	jobs := canceledRunJobs{TotalCount: 2, Jobs: []reconciliationJob{admission, apply}}
+	artifacts := canceledRunArtifacts{TotalCount: 1}
+	artifacts.Artifacts = append(artifacts.Artifacts, struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}{12127871960, "fleet-apply-39104495159-1"})
+	var reads int
+	var changeBetweenSnapshots bool
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
+			return
+		}
+		switch r.URL.Path {
+		case "/repos/acme/norn-fleet/actions/runs/39104495159":
+			reads++
+			if changeBetweenSnapshots && reads%2 == 0 {
+				changed := run
+				changed.RunAttempt = 2
+				_ = json.NewEncoder(w).Encode(changed)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(run)
+		case "/repos/acme/norn-fleet/actions/runs/39104495159/jobs":
+			_ = json.NewEncoder(w).Encode(jobs)
+		case "/repos/acme/norn-fleet/actions/runs/39104495159/artifacts":
+			_ = json.NewEncoder(w).Encode(artifacts)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	client.cfg.Environment, client.cfg.ConfigPath = "staging", "environments/staging/nyc3/cluster.yaml"
+	check := func(want bool) {
+		t.Helper()
+		result, err := client.ReconcileFailedRunnerSetup(context.Background(), planID, "staging/nyc3", false, approved, nonceHash, runID, 1)
+		if (err == nil) != want {
+			t.Fatalf("accepted=%t want=%t result=%+v err=%v", err == nil, want, result, err)
+		}
+		if want && (result.Outcome != "verified-failed-runner-setup-before-execution" || result.CanceledRun.ArtifactCount != 1) {
+			t.Fatalf("result=%+v", result)
+		}
+	}
+	check(true)
+	if reads != 2 {
+		t.Fatalf("expected independent snapshots, reads=%d", reads)
+	}
+	changeBetweenSnapshots = true
+	check(false)
+	changeBetweenSnapshots = false
+	for name, mutate := range map[string]func(){
+		"checkout reached":         func() { jobs.Jobs[1].Steps[5].Conclusion = "success" },
+		"provider binding reached": func() { jobs.Jobs[1].Steps[6].Conclusion = "success" },
+		"attempt reached":          func() { jobs.Jobs[1].Steps[35].Conclusion = "success" },
+		"apply reached":            func() { jobs.Jobs[1].Steps[40].Conclusion = "success" },
+		"setup succeeded":          func() { jobs.Jobs[1].Steps[1].Conclusion = "success" },
+		"evidence changed":         func() { jobs.Jobs[1].Steps[45].Conclusion = "success" },
+		"unexpected job":           func() { jobs.TotalCount = 3 },
+		"artifact changed":         func() { artifacts.Artifacts[0].Name = "other" },
+		"wrong head":               func() { run.HeadSHA = strings.Repeat("d", 40) },
+		"rerun":                    func() { run.RunAttempt = 2 },
+		"wrong nonce":              func() { run.DisplayTitle = strings.Replace(run.DisplayTitle, nonce, strings.Repeat("b", 64), 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			originalJobs, _ := json.Marshal(jobs)
+			originalArtifacts, _ := json.Marshal(artifacts)
+			originalRun := run
+			mutate()
+			check(false)
+			_ = json.Unmarshal(originalJobs, &jobs)
+			_ = json.Unmarshal(originalArtifacts, &artifacts)
+			run = originalRun
+		})
+	}
+}
+
 func TestListPlanRunsBounded(t *testing.T) {
 	planID := "66666666-6666-4666-8666-666666666666"
 	otherPlanID := "77777777-7777-4777-8777-777777777777"

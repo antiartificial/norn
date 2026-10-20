@@ -230,6 +230,9 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 					return
 				}
 				observed, err = h.fleetGitHub.ReconcileCanceledBeforeExecution(r.Context(), plan.ID, binding.FleetEnvironment, binding.AllowDestructive, approved, binding.DispatchNonceSHA256, request.ExactRunID, request.ExactRunAttempt)
+				if err != nil {
+					observed, err = h.fleetGitHub.ReconcileFailedRunnerSetup(r.Context(), plan.ID, binding.FleetEnvironment, binding.AllowDestructive, approved, binding.DispatchNonceSHA256, request.ExactRunID, request.ExactRunAttempt)
+				}
 			} else {
 				recovered, err = h.fleetGitHub.RecoverBoundPlan(r.Context(), plan.ID, binding.FleetEnvironment, approved, binding.DispatchNonceSHA256)
 			}
@@ -296,6 +299,9 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 	}
 	if observed.CanceledRun != nil {
 		message = "fleet GitHub reservation canceled after the provider apply job was verified unexecuted"
+		if observed.Outcome == "verified-failed-runner-setup-before-execution" {
+			message = "fleet GitHub reservation canceled after runner setup failed before provider execution"
+		}
 		result["runId"], result["runAttempt"], result["url"], result["conclusion"] = observed.CanceledRun.RunID, observed.CanceledRun.RunAttempt, observed.CanceledRun.URL, observed.CanceledRun.Conclusion
 		result["jobCount"], result["artifactCount"], result["providerApplyExecution"] = observed.CanceledRun.JobCount, observed.CanceledRun.ArtifactCount, "none-observed"
 	}
