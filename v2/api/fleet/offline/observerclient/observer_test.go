@@ -96,6 +96,10 @@ func TestMissingChallengeReadFailureDoesNotCreateOrObserve(t *testing.T) {
 	if _, err := testRunner(c, s).Run(context.Background(), "plan", "attempt"); err == nil || s.calls != 0 || c.creates != 0 {
 		t.Fatalf("ambiguous challenge read must stop: err=%v source=%d create=%d", err, s.calls, c.creates)
 	}
+	c.challengeErr = ErrNotFound
+	if _, err := testRunner(c, s).Run(context.Background(), "plan", "attempt"); !errors.Is(err, ErrNotFound) || s.calls != 0 || c.creates != 0 {
+		t.Fatalf("observer issued absent verifier challenge: err=%v source=%d create=%d", err, s.calls, c.creates)
+	}
 }
 
 type flowClient struct {

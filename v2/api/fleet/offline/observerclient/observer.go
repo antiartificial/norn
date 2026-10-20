@@ -15,8 +15,8 @@ import (
 	"norn/v2/api/fleet/offline"
 )
 
-// ErrNotFound is the only response that permits creating a challenge or
-// observing an effect. Transport failures and ambiguous reads fail closed.
+// ErrNotFound identifies an authoritative exact-resource 404. The observer
+// cannot issue a challenge; a verifier must create one before observation.
 var ErrNotFound = errors.New("exact terminal resource not found")
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -28,7 +28,6 @@ type Client interface {
 	ReadConsumedGrant(context.Context, string, string) (offline.EffectGrant, error)
 	ReadTerminal(context.Context, string, string) (offline.TerminalEvidence, error)
 	ReadChallenge(context.Context, string, string) (offline.TerminalChallengeV1, error)
-	CreateChallenge(context.Context, string, string) (offline.TerminalChallengeV1, error)
 	SubmitAttestation(context.Context, string, string, offline.SignedTerminalAttestationV1) (offline.TerminalEvidence, error)
 }
 
@@ -69,13 +68,6 @@ func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.Term
 		return zero, fmt.Errorf("read exact terminal receipt: %w", err)
 	}
 	challenge, err := r.Client.ReadChallenge(ctx, planID, attemptID)
-	if errors.Is(err, ErrNotFound) {
-		challenge, err = r.Client.CreateChallenge(ctx, planID, attemptID)
-		if err != nil {
-			// The create may have committed before its response was lost.
-			challenge, err = r.Client.ReadChallenge(ctx, planID, attemptID)
-		}
-	}
 	if err != nil {
 		return zero, fmt.Errorf("read exact terminal challenge: %w", err)
 	}
