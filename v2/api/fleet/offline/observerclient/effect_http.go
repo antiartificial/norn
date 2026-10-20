@@ -28,6 +28,12 @@ type EffectHTTPClient struct {
 var _ EffectClient = (*EffectHTTPClient)(nil)
 
 func NewEffectHTTPClient(config HTTPConfig) (*EffectHTTPClient, error) {
+	// Effect receipts can authorize later provider effects. They must be
+	// authenticated by a dedicated target CA, never ambient system roots.
+	if config.RootCAs == nil {
+		return nil, errors.New("effect observer target requires dedicated CA roots")
+	}
+	config.RootCAs = config.RootCAs.Clone()
 	client, err := NewHTTPClient(config)
 	if err != nil {
 		return nil, err
@@ -176,7 +182,8 @@ func (c *EffectHTTPClient) callEffect(ctx context.Context, method, path string, 
 			}
 			if readErr == nil && len(raw) <= 4096 && strictEffectJSON(raw, &problem) == nil &&
 				problem.Type == "https://norn.dev/problems/offline_effect_not_found" && problem.Title == "Not Found" &&
-				problem.Status == http.StatusNotFound && problem.Code == "offline_effect_not_found" {
+				problem.Status == http.StatusNotFound && problem.Code == "offline_effect_not_found" &&
+				problem.Detail == "signed effect state is absent or inconsistent" && problem.Error == problem.Detail {
 				return ErrNotFound
 			}
 		}

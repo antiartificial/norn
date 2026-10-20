@@ -3,6 +3,7 @@ package observerclient
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -99,6 +100,10 @@ func TestEffectHTTPClientRejectsUntrustedAbsenceAndReceipt(t *testing.T) {
 		{"route missing", 404, "text/plain", "404 page not found", false},
 		{"generic 404", 404, "application/problem+json", `{"error":"not_found"}`, false},
 		{"exact absence", 404, "application/problem+json", `{"type":"https://norn.dev/problems/offline_effect_not_found","title":"Not Found","status":404,"code":"offline_effect_not_found","detail":"signed effect state is absent or inconsistent","error":"signed effect state is absent or inconsistent"}` + "\n", true},
+		{"exact absence with request ID", 404, "application/problem+json", `{"type":"https://norn.dev/problems/offline_effect_not_found","title":"Not Found","status":404,"code":"offline_effect_not_found","detail":"signed effect state is absent or inconsistent","requestId":"request-17","error":"signed effect state is absent or inconsistent"}` + "\n", true},
+		{"wrong detail", 404, "application/problem+json", `{"type":"https://norn.dev/problems/offline_effect_not_found","title":"Not Found","status":404,"code":"offline_effect_not_found","detail":"not the target ledger","error":"not the target ledger"}` + "\n", false},
+		{"wrong error", 404, "application/problem+json", `{"type":"https://norn.dev/problems/offline_effect_not_found","title":"Not Found","status":404,"code":"offline_effect_not_found","detail":"signed effect state is absent or inconsistent","error":"different cause"}` + "\n", false},
+		{"missing detail", 404, "application/problem+json", `{"type":"https://norn.dev/problems/offline_effect_not_found","title":"Not Found","status":404,"code":"offline_effect_not_found","error":"signed effect state is absent or inconsistent"}` + "\n", false},
 		{"duplicate key", 200, "application/json", `{"challenge":{},"challenge":{}}`, false},
 		{"unexpected field", 200, "application/json", `{"challenge":{},"other":1}`, false},
 	} {
@@ -127,6 +132,24 @@ func TestEffectHTTPClientRejectsUntrustedAbsenceAndReceipt(t *testing.T) {
 	c := &EffectHTTPClient{terminal: terminal, paths: map[string]string{effectReceiptKey(testPlanID, testAttemptID, challenge.ID): offline.EffectIssuePurpose}}
 	if _, err := c.ReadAcceptedEffectAttestation(context.Background(), testPlanID, testAttemptID, challenge.ID); err == nil {
 		t.Fatal("tampered accepted receipt")
+	}
+}
+
+func TestEffectHTTPClientRequiresDedicatedClonedCA(t *testing.T) {
+	if _, err := NewEffectHTTPClient(HTTPConfig{ServerName: "fleet.test", Address: "127.0.0.1:443", ObserverBearer: "observer-secret"}); err == nil {
+		t.Fatal("effect client inherited system roots")
+	}
+	_, server := testHTTPClient(t, http.NotFoundHandler())
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	client, err := NewEffectHTTPClient(HTTPConfig{ServerName: "fleet.test", Address: server.Listener.Addr().String(),
+		RootCAs: pool, ObserverBearer: "observer-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := client.terminal.client.Transport.(*http.Transport).TLSClientConfig.RootCAs
+	if actual == nil || actual == pool || len(actual.Subjects()) != len(pool.Subjects()) {
+		t.Fatal("dedicated CA pool was not cloned into TLS transport")
 	}
 }
 
