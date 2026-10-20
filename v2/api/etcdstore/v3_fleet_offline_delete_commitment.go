@@ -88,6 +88,16 @@ func (s *V3OperationStore) GetOfflineDeleteDispatchReservation(ctx context.Conte
 // deliberately knows nothing about supervisor implementation details.
 type offlineDeleteSupervisorVerifier func(context.Context, string, string, string) error
 
+type OfflineDeleteRuntimeIdentity struct {
+	SupervisorRootID, SupervisorExecutionID, RuntimeInstanceID string
+}
+
+// CommitOfflineDelete persists one exact pre-dispatch commitment. Runtime
+// identity is supplied by server-owned supervisor resolution, never HTTP.
+func (s *V3OperationStore) CommitOfflineDelete(ctx context.Context, planID, attemptID, grantID string, identity OfflineDeleteRuntimeIdentity) (offline.DeleteCommitment, []byte, error) {
+	return s.commitOfflineDelete(ctx, planID, attemptID, grantID, identity.SupervisorRootID, identity.SupervisorExecutionID, identity.RuntimeInstanceID)
+}
+
 func (s *V3OperationStore) offlineDeleteCommitmentKey(planID string) string {
 	return s.prefix + "/v3/fleet-offline-delete-commitments/" + planID
 }
@@ -223,8 +233,9 @@ func validateOfflineDeleteCommitment(planID string, rows offlineDeleteLedgerRows
 	return c, rows.raw[0], nil
 }
 
-// commitOfflineDelete is deliberately internal and has no live route. The
-// caller must supervise the identified runtime before using its bytes. The
+// commitOfflineDelete is deliberately internal. The private transport resolves
+// the server-owned runtime identity before calling it. The caller must
+// supervise the identified runtime before using its bytes. The
 // CAS consumes no additional provider capability and never releases a fence.
 // Caller-supplied time cannot extend the one-minute grant. The local pre-CAS
 // clock read cannot prove freshness at the networked etcd commit instant.

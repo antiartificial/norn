@@ -29,6 +29,27 @@ type offlineTerminalReobserver interface {
 	reobserveTerminal(context.Context, offline.Binding, offline.Attempt, offline.EffectGrant) (offline.TerminalObservation, error)
 }
 
+// OfflineTerminalObserver is implemented only by server-owned read clients.
+// HTTP callers cannot provide an observation or terminal proof.
+type OfflineTerminalObserver interface {
+	ObserveOfflineTerminal(context.Context, offline.Binding, offline.Attempt, offline.EffectGrant) (offline.TerminalObservation, error)
+}
+
+type offlineTerminalObserverAdapter struct{ OfflineTerminalObserver }
+
+func (a offlineTerminalObserverAdapter) reobserveTerminal(ctx context.Context, b offline.Binding, attempt offline.Attempt, grant offline.EffectGrant) (offline.TerminalObservation, error) {
+	return a.ObserveOfflineTerminal(ctx, b, attempt, grant)
+}
+
+// RecordOfflineTerminal records one terminal receipt from server-owned reads.
+// It does not release the target fence.
+func (s *V3OperationStore) RecordOfflineTerminal(ctx context.Context, planID, attemptID, grantID string, now time.Time, observer OfflineTerminalObserver) (offline.TerminalEvidence, error) {
+	if observer == nil {
+		return offline.TerminalEvidence{}, offline.ErrTerminalProof
+	}
+	return s.recordOfflineTerminal(ctx, planID, attemptID, grantID, now, offlineTerminalObserverAdapter{observer})
+}
+
 func (s *V3OperationStore) offlineTerminalKey(planID string) string {
 	return s.prefix + "/v3/fleet-offline-terminals/" + planID
 }
