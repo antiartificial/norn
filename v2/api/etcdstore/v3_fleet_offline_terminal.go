@@ -87,16 +87,18 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
 	probe, err := s.kv.Txn(ctx).Then(clientv3.OpGet(s.offlineTerminalKey(planID)), clientv3.OpGet(s.offlineTerminalEventKey(planID)),
-		clientv3.OpGet(s.offlineDispatchKey(planID))).Commit()
+		clientv3.OpGet(s.offlineDispatchKey(planID)), clientv3.OpGet(s.offlineTerminalChallengeConsumedKey(planID)),
+		clientv3.OpGet(s.offlineTerminalAttestationProvenanceKey(planID))).Commit()
 	if err != nil {
 		return offline.TerminalEvidence{}, err
 	}
-	if len(probe.Responses) != 3 {
+	if len(probe.Responses) != 5 {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
 	terminalProbe := probe.Responses[0].GetResponseRange().Kvs
 	if len(terminalProbe) == 0 {
-		if len(probe.Responses[1].GetResponseRange().Kvs) != 0 {
+		if len(probe.Responses[1].GetResponseRange().Kvs) != 0 ||
+			len(probe.Responses[3].GetResponseRange().Kvs) != 0 || len(probe.Responses[4].GetResponseRange().Kvs) != 0 {
 			return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 		}
 		return offline.TerminalEvidence{}, ErrNotFound
@@ -124,14 +126,18 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 		clientv3.OpGet(s.fleetTargetKey(candidate.TargetID)),
 		clientv3.OpGet(s.fleetTargetAliasKey("cluster:tk-staging-nyc3")),
 		clientv3.OpGet(s.fleetTargetAliasKey("environment:staging")),
+		clientv3.OpGet(s.offlineTerminalChallengeKey(planID)),
+		clientv3.OpGet(s.offlineTerminalChallengeEventKey(planID)),
+		clientv3.OpGet(s.offlineTerminalChallengeConsumedKey(planID)),
+		clientv3.OpGet(s.offlineTerminalAttestationProvenanceKey(planID)),
 	).Commit()
 	if err != nil {
 		return offline.TerminalEvidence{}, err
 	}
-	if len(response.Responses) != 16 {
+	if len(response.Responses) != 20 {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
 	}
-	var raw [16][]byte
+	var raw [20][]byte
 	for i := range raw {
 		rows := response.Responses[i].GetResponseRange().Kvs
 		if len(rows) == 1 {
@@ -203,6 +209,9 @@ func (s *V3OperationStore) GetOfflineTerminal(ctx context.Context, planID string
 	if err != nil || checkpoint.AttemptID != terminal.AttemptID || checkpoint.EvidenceSHA256 != grant.PrechangeSHA256 ||
 		checkpoint.FenceGeneration != terminal.FenceGeneration || checkpoint.AuthorityEpoch != terminal.AuthorityEpoch {
 		return offline.TerminalEvidence{}, ErrOfflineAttemptCorrupt
+	}
+	if err := validateSignedTerminalProvenance(terminal, grant, raw[16], raw[17], raw[18], raw[19]); err != nil {
+		return offline.TerminalEvidence{}, err
 	}
 	return terminal, nil
 }
