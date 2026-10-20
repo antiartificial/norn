@@ -51,6 +51,8 @@ const (
 	ScopeFleetOperate    = "fleet:operate"
 	// ScopeFleetVerify is a read-only Fleet evidence scope.
 	ScopeFleetVerify = "fleet:verify"
+	// ScopeFleetObserve belongs only to the independent terminal observer.
+	ScopeFleetObserve = "fleet:observe"
 	// ScopeFleetExternalAdmission is intentionally separate from fleet:operate.
 	// A protected runner needs it only to submit an independently verified
 	// staging receipt for the one configured external workload.
@@ -66,13 +68,14 @@ var accessTokenScopes = map[string]struct{}{
 	ScopePlatformOperate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
 	ScopeFleetOperate:           {},
 	ScopeFleetVerify:            {},
+	ScopeFleetObserve:           {},
 	ScopeFleetExternalAdmission: {},
 	ScopeFleetExecute:           {},
 	ScopeReleaseAttest:          {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetVerify, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetVerify, ScopeFleetObserve, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own

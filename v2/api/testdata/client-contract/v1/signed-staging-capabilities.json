@@ -26,6 +26,7 @@
       "release:rollback",
       "fleet:operate",
       "fleet:verify",
+      "fleet:observe",
       "fleet:external-admission",
       "fleet:execute",
       "admin"
