@@ -35,7 +35,7 @@ func TestTargetTerminalTrustFailsClosed(t *testing.T) {
 	m := targetTerminalManifest{SchemaVersion: targetTerminalManifestSchema, TargetID: "work-staging",
 		EtcdPrefix: "/norn/work-staging", ControlAuthority: "authority-1", SourceCommit: strings.Repeat("a", 40),
 		ExpiresAt: now.Add(24 * time.Hour), RunnerSubject: "runner", VerifierSubject: "verifier", ObserverSubject: "observer",
-		VerifierDeviceID: "verifier-device", ObserverDeviceID: "observer-device", ObserverKeyID: "observer-key-1",
+		RunnerDeviceID: "runner-device", VerifierDeviceID: "verifier-device", ObserverDeviceID: "observer-device", ObserverKeyID: "observer-key-1",
 		ObserverPublicKey: base64.RawStdEncoding.EncodeToString(observer), TrustGeneration: 1}
 	write := func(manifest targetTerminalManifest) {
 		t.Helper()
@@ -105,6 +105,8 @@ func TestTargetTerminalTrustFailsClosed(t *testing.T) {
 		{"wrong authority", func(v *targetTerminalManifest) { v.ControlAuthority = "other" }},
 		{"bad source", func(v *targetTerminalManifest) { v.SourceCommit = "main" }},
 		{"same device", func(v *targetTerminalManifest) { v.ObserverDeviceID = v.VerifierDeviceID }},
+		{"missing runner device", func(v *targetTerminalManifest) { v.RunnerDeviceID = "" }},
+		{"runner observer device", func(v *targetTerminalManifest) { v.RunnerDeviceID = v.ObserverDeviceID }},
 		{"same subject", func(v *targetTerminalManifest) { v.ObserverSubject = v.VerifierSubject }},
 		{"bad key", func(v *targetTerminalManifest) { v.ObserverPublicKey = "garbage" }},
 		{"zero generation", func(v *targetTerminalManifest) { v.TrustGeneration = 0 }},

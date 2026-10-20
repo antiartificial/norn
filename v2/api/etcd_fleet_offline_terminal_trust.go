@@ -38,6 +38,7 @@ type targetTerminalManifest struct {
 	SourceCommit      string    `json:"sourceCommit"`
 	ExpiresAt         time.Time `json:"expiresAt"`
 	RunnerSubject     string    `json:"runnerSubject"`
+	RunnerDeviceID    string    `json:"runnerDeviceId"`
 	VerifierSubject   string    `json:"verifierSubject"`
 	ObserverSubject   string    `json:"observerSubject"`
 	VerifierDeviceID  string    `json:"verifierDeviceId"`
@@ -166,10 +167,12 @@ func loadTargetOfflineTerminalTrustForOwners(cfg *config.Config, backend startup
 		return nil, fmt.Errorf("target terminal manifest signature is invalid")
 	}
 	observer, err := base64.RawStdEncoding.Strict().DecodeString(m.ObserverPublicKey)
-	transport := offlineTerminalTransportTrust{runnerSubject: m.RunnerSubject, verifierSubject: m.VerifierSubject,
+	transport := offlineTerminalTransportTrust{runnerSubject: m.RunnerSubject, runnerDeviceID: m.RunnerDeviceID, verifierSubject: m.VerifierSubject,
 		observerSubject: m.ObserverSubject, verifierDeviceID: m.VerifierDeviceID, observerDeviceID: m.ObserverDeviceID}
 	if err != nil || len(observer) != ed25519.PublicKeySize || m.SchemaVersion != targetTerminalManifestSchema ||
-		!transport.valid() || m.TargetID != cfg.FleetTargetTerminalTargetID || !targetTerminalAtom(m.ObserverKeyID) ||
+		!transport.valid() || !targetTerminalAtom(m.RunnerDeviceID) ||
+		m.RunnerDeviceID == m.VerifierDeviceID || m.RunnerDeviceID == m.ObserverDeviceID ||
+		m.TargetID != cfg.FleetTargetTerminalTargetID || !targetTerminalAtom(m.ObserverKeyID) ||
 		m.EtcdPrefix != backend.EtcdPrefix || m.ControlAuthority != cfg.ControlAuthority ||
 		!targetTerminalSHA.MatchString(m.SourceCommit) || m.TrustGeneration == 0 ||
 		m.ExpiresAt.IsZero() || !now.Before(m.ExpiresAt) || now.Add(30*24*time.Hour).Before(m.ExpiresAt) {

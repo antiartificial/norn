@@ -38,6 +38,7 @@ type offlineTerminalTransportTrust struct {
 	sourceCommit     string
 	expiresAt        time.Time
 	runnerSubject    string
+	runnerDeviceID   string
 	verifierSubject  string
 	observerSubject  string
 	verifierDeviceID string
