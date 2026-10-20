@@ -104,3 +104,20 @@ func TestOfflineEffectGrantFailsClosedOnCredentialAndEventDriftRealEtcd(t *testi
 		t.Fatalf("partial history recovery = %v", err)
 	}
 }
+
+func TestOfflineEffectGrantRecoveryRejectsCredentialRevokedBetweenReadsRealEtcd(t *testing.T) {
+	f := newOfflineGrantFixture(t)
+	if _, err := f.h.s.IssueOfflineEffectGrant(f.h.ctx(), f.binding.PlanID, f.attempt.ID, f.proof, f.now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	interleaved := false
+	_, err := f.h.s.recoverOfflineEffectGrant(f.h.ctx(), f.binding.PlanID, f.attempt.ID, f.proof, f.now.Add(2*time.Second), func() {
+		interleaved = true
+		if _, revokeErr := f.auth.RevokeAccessToken(context.Background(), f.proof.TokenID); revokeErr != nil {
+			t.Fatalf("revoke between state and grant reads: %v", revokeErr)
+		}
+	})
+	if !interleaved || !errors.Is(err, ErrOfflineEffectGrantConflict) {
+		t.Fatalf("raced recovery = %v, hook=%t", err, interleaved)
+	}
+}

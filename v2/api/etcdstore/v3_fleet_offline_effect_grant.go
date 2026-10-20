@@ -297,11 +297,42 @@ func (s *V3OperationStore) ConsumeOfflineEffectGrant(ctx context.Context, planID
 // the same credential, owner reservation and shared target fence remain live.
 func (s *V3OperationStore) RecoverOfflineEffectGrant(ctx context.Context, planID, attemptID string,
 	runner OfflineRunnerProof, now time.Time) (offline.EffectGrant, error) {
+	return s.recoverOfflineEffectGrant(ctx, planID, attemptID, runner, now, nil)
+}
+
+func (s *V3OperationStore) recoverOfflineEffectGrant(ctx context.Context, planID, attemptID string,
+	runner OfflineRunnerProof, now time.Time, beforeConditionalRead func()) (offline.EffectGrant, error) {
 	state, err := s.loadOfflineGrantState(ctx, planID, attemptID, runner, now)
 	if err != nil {
 		return offline.EffectGrant{}, err
 	}
-	grant, err := s.GetOfflineEffectGrant(ctx, planID)
+	if beforeConditionalRead != nil {
+		beforeConditionalRead()
+	}
+	response, err := s.kv.Txn(ctx).If(s.offlineGrantStateCompares(state, runner)...).Then(
+		clientv3.OpGet(s.offlineEffectGrantKey(planID)),
+		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 1)),
+		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 2)),
+	).Commit()
+	if err != nil {
+		return offline.EffectGrant{}, err
+	}
+	if !response.Succeeded {
+		return offline.EffectGrant{}, ErrOfflineEffectGrantConflict
+	}
+	if len(response.Responses) != 3 {
+		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
+	}
+	var raw [3][]byte
+	for i := range raw {
+		rows := response.Responses[i].GetResponseRange().Kvs
+		if len(rows) == 1 {
+			raw[i] = rows[0].Value
+		} else if len(rows) > 1 {
+			return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
+		}
+	}
+	grant, err := decodeOfflineEffectGrantPair(raw[0], raw[1], raw[2], planID)
 	if err != nil {
 		return offline.EffectGrant{}, err
 	}
