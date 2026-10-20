@@ -50,7 +50,7 @@ func (s *stubSource) Observe(context.Context, offline.TerminalChallengeV1, offli
 
 func testRunner(client Client, source Source) Runner {
 	_, key, _ := ed25519.GenerateKey(nil)
-	return Runner{Client: client, Source: source, ObserverSubject: "observer", KeyID: "key-1", PrivateKey: key, Clock: time.Now}
+	return Runner{Client: client, Source: source, ObserverSubject: "observer", KeyID: "key-1", TrustGeneration: 1, PrivateKey: key, Clock: time.Now}
 }
 
 func testGrant() offline.EffectGrant {
@@ -194,5 +194,11 @@ func TestLostSubmitResponseRecoversWithoutSecondEffect(t *testing.T) {
 	client.wrongReceipt = true
 	if _, err := runner.Run(context.Background(), g.PlanID, g.AttemptID); !errors.Is(err, offline.ErrTerminalProof) || client.submissions != 1 {
 		t.Fatalf("mismatched attestation digest accepted or retried: err=%v submissions=%d", err, client.submissions)
+	}
+	client.reads, client.submissions = 0, 0
+	client.challenge.ObserverKeyID = "different-key"
+	beforeReads := source.calls
+	if _, err := runner.Run(context.Background(), g.PlanID, g.AttemptID); !errors.Is(err, offline.ErrTerminalProof) || source.calls != beforeReads || client.submissions != 0 {
+		t.Fatalf("key-mismatched challenge reached source: err=%v observations=%d submissions=%d", err, source.calls-beforeReads, client.submissions)
 	}
 }

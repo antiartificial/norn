@@ -5,6 +5,8 @@ package observerclient
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -42,6 +44,7 @@ type Runner struct {
 	Source          Source
 	ObserverSubject string
 	KeyID           string
+	TrustGeneration uint64
 	PrivateKey      ed25519.PrivateKey
 	Clock           func() time.Time
 }
@@ -51,7 +54,7 @@ type Runner struct {
 // A later invocation likewise recovers that receipt before doing new work.
 func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.TerminalEvidence, error) {
 	var zero offline.TerminalEvidence
-	if r.Client == nil || r.Source == nil || r.Clock == nil || r.ObserverSubject == "" || r.KeyID == "" || len(r.PrivateKey) != ed25519.PrivateKeySize || planID == "" || attemptID == "" {
+	if r.Client == nil || r.Source == nil || r.Clock == nil || r.ObserverSubject == "" || r.KeyID == "" || r.TrustGeneration == 0 || len(r.PrivateKey) != ed25519.PrivateKeySize || planID == "" || attemptID == "" {
 		return zero, fmt.Errorf("terminal observer is not configured")
 	}
 	grant, err := r.Client.ReadConsumedGrant(ctx, planID, attemptID)
@@ -76,7 +79,15 @@ func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.Term
 	if err != nil {
 		return zero, fmt.Errorf("read exact terminal challenge: %w", err)
 	}
-	if challenge.PlanID != planID || challenge.AttemptID != attemptID || challenge.ObserverSubject != r.ObserverSubject || challenge.ValidateForGrant(grant, r.Clock().UTC()) != nil {
+	public, ok := r.PrivateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return zero, offline.ErrTerminalProof
+	}
+	publicDigest := sha256.Sum256(public)
+	if challenge.PlanID != planID || challenge.AttemptID != attemptID || challenge.ObserverSubject != r.ObserverSubject ||
+		challenge.ObserverKeyID != r.KeyID || challenge.TrustGeneration != r.TrustGeneration ||
+		challenge.ObserverPublicKeySHA256 != hex.EncodeToString(publicDigest[:]) ||
+		challenge.ValidateForGrant(grant, r.Clock().UTC()) != nil {
 		return zero, offline.ErrTerminalProof
 	}
 	attestation, err := r.Source.Observe(ctx, challenge, grant)
@@ -92,10 +103,6 @@ func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.Term
 	}
 	// Reject malformed or stale source output locally before sending anything.
 	// The target repeats verification against its durable current epoch/fence.
-	public, ok := r.PrivateKey.Public().(ed25519.PublicKey)
-	if !ok {
-		return zero, offline.ErrTerminalProof
-	}
 	verified, err := offline.VerifyTerminalAttestationV1(signed, challenge, grant, r.ObserverSubject, r.KeyID, public, r.Clock().UTC())
 	if err != nil {
 		return zero, err
@@ -118,7 +125,7 @@ func requireReceipt(receipt offline.TerminalEvidence, grant offline.EffectGrant,
 		receipt.BindingSHA256 != grant.BindingSHA256 || receipt.TargetID != grant.TargetID || receipt.FenceGeneration != grant.FenceGeneration || receipt.AuthorityEpoch != grant.AuthorityEpoch ||
 		grant.ConsumedAt == nil || !receipt.ObservedAt.After(*grant.ConsumedAt) || receipt.RecordedAt.Before(receipt.ObservedAt) ||
 		receipt.Backend.Bucket != grant.Backend.Bucket || receipt.Backend.Key != grant.Backend.Key || receipt.Backend.Lineage != grant.Backend.Lineage ||
-		receipt.Backend.Serial != grant.Backend.Serial+1 || receipt.Backend.VersionID == "" || receipt.Backend.VersionID == "null" || receipt.Backend.VersionID == grant.Backend.VersionID ||
+		grant.Backend.Serial == ^uint64(0) || receipt.Backend.Serial != grant.Backend.Serial+1 || receipt.Backend.VersionID == "" || receipt.Backend.VersionID == "null" || receipt.Backend.VersionID == grant.Backend.VersionID ||
 		!sha256Hex.MatchString(receipt.Backend.RawSHA256) || !sha256Hex.MatchString(receipt.EvidenceSHA256) ||
 		!sha256Hex.MatchString(receipt.ProviderEvidenceSHA256) || !sha256Hex.MatchString(receipt.BackendEvidenceSHA256) || !sha256Hex.MatchString(receipt.WorkloadEvidenceSHA256) ||
 		!sha256Hex.MatchString(receipt.AttestationSHA256) || !sha256Hex.MatchString(receipt.RawJournalSHA256) ||
