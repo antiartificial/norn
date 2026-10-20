@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -19,6 +20,97 @@ import (
 type FileEffectJournal struct {
 	Directory     string
 	beforePublish func() error // test fault; never configured by production callers
+}
+
+func openEffectJournalRoot(path string) (*os.Root, *os.File, error) {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	dir, err := root.Open(".")
+	if err != nil {
+		root.Close()
+		return nil, nil, err
+	}
+	info, err := dir.Stat()
+	if err != nil {
+		dir.Close()
+		root.Close()
+		return nil, nil, err
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !info.IsDir() || info.Mode().Perm() != 0700 || !ok || owner.Uid != uint32(os.Geteuid()) {
+		dir.Close()
+		root.Close()
+		return nil, nil, errors.New("effect journal directory is not owner-only")
+	}
+	return root, dir, nil
+}
+
+func lockEffectJournal(ctx context.Context, root *os.Root) (*os.File, error) {
+	lock, err := root.OpenFile(".effect-journal.lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := lock.Stat()
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || !ok || owner.Uid != uint32(os.Geteuid()) {
+		lock.Close()
+		return nil, errors.New("effect journal lock is unsafe")
+	}
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return lock, nil
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			lock.Close()
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			lock.Close()
+			return nil, ctx.Err()
+		case <-deadline.C:
+			lock.Close()
+			return nil, errors.New("effect journal lock wait timed out")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+// All cooperative writers hold the same OS lock. Only then can a new writer
+// remove a temp left by a crashed writer without racing an active fsync.
+func cleanupEffectJournalTemps(root *os.Root, dir *os.File) error {
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	removed := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".effect-") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, ".effect-"), ".tmp")
+		if uuid.Validate(id) != nil {
+			continue
+		}
+		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		removed = true
+	}
+	if removed {
+		return dir.Sync()
+	}
+	return nil
 }
 
 func effectJournalName(key string) (string, error) {
@@ -40,19 +132,12 @@ func (j FileEffectJournal) Read(ctx context.Context, key string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Lstat(j.Directory)
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("effect journal directory is not owner-only")
-	}
-	owner, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || owner.Uid != uint32(os.Geteuid()) {
-		return nil, errors.New("effect journal directory has a foreign owner")
-	}
-	root, err := os.OpenRoot(j.Directory)
+	root, dir, err := openEffectJournalRoot(j.Directory)
 	if err != nil {
 		return nil, err
 	}
 	defer root.Close()
+	defer dir.Close()
 	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
@@ -84,21 +169,22 @@ func (j FileEffectJournal) WriteOnce(ctx context.Context, key string, raw []byte
 	if keyErr != nil || len(raw) == 0 || len(raw) > 36<<20 {
 		return "", errors.New("invalid effect journal record")
 	}
-	info, err := os.Lstat(j.Directory)
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("effect journal directory is not owner-only")
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || st.Uid != uint32(os.Geteuid()) {
-		return "", errors.New("effect journal directory has a foreign owner")
-	}
-	root, err := os.OpenRoot(j.Directory)
+	root, dir, err := openEffectJournalRoot(j.Directory)
 	if err != nil {
 		return "", err
 	}
 	defer root.Close()
+	defer dir.Close()
+	lock, err := lockEffectJournal(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close()
+	if err := cleanupEffectJournalTemps(root, dir); err != nil {
+		return "", err
+	}
 	if _, err := root.Lstat(name); err == nil {
-		return effectJournalExactReplay(root, j.Directory, name, raw)
+		return effectJournalExactReplay(root, dir, name, raw)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
@@ -124,23 +210,23 @@ func (j FileEffectJournal) WriteOnce(ctx context.Context, key string, raw []byte
 	// A hard link is an atomic, no-replace publication within this one
 	// directory. The final name is never visible with incomplete bytes.
 	if err := root.Link(temporary, name); errors.Is(err, os.ErrExist) {
-		return effectJournalExactReplay(root, j.Directory, name, raw)
+		return effectJournalExactReplay(root, dir, name, raw)
 	} else if err != nil {
 		return "", err
 	}
-	if err := syncEffectJournalDirectory(j.Directory); err != nil {
+	if err := dir.Sync(); err != nil {
 		return "", err
 	}
 	if err := root.Remove(temporary); err != nil {
 		return "", err
 	}
-	if err := syncEffectJournalDirectory(j.Directory); err != nil {
+	if err := dir.Sync(); err != nil {
 		return "", err
 	}
 	return digestEffectBytes(raw), nil
 }
 
-func effectJournalExactReplay(root *os.Root, directory, name string, raw []byte) (string, error) {
+func effectJournalExactReplay(root *os.Root, dir *os.File, name string, raw []byte) (string, error) {
 	existing, readErr := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if readErr != nil {
 		return "", readErr
@@ -161,20 +247,8 @@ func effectJournalExactReplay(root *os.Root, directory, name string, raw []byte)
 	if err := existing.Sync(); err != nil {
 		return "", err
 	}
-	if err := syncEffectJournalDirectory(directory); err != nil {
+	if err := dir.Sync(); err != nil {
 		return "", err
 	}
 	return digestEffectBytes(raw), nil
-}
-
-func syncEffectJournalDirectory(path string) error {
-	dir, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return err
-	}
-	syncErr, closeErr := dir.Sync(), dir.Close()
-	if syncErr != nil || closeErr != nil {
-		return fmt.Errorf("effect journal directory sync: %v; close: %v", syncErr, closeErr)
-	}
-	return nil
 }
