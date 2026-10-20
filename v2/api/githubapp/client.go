@@ -112,13 +112,13 @@ type Config struct {
 }
 
 type Client struct {
-	cfg        Config
-	httpClient *http.Client
+	cfg                     Config
+	httpClient              *http.Client
 	offlineEffectSourceSafe bool
-	now        func() time.Time
-	pause      func(time.Duration)
-	tokenMu    sync.Mutex
-	tokens     map[string]cachedToken
+	now                     func() time.Time
+	pause                   func(time.Duration)
+	tokenMu                 sync.Mutex
+	tokens                  map[string]cachedToken
 }
 
 type cachedToken struct {
