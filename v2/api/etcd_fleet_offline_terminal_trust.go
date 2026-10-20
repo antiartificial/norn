@@ -62,6 +62,7 @@ type targetTerminalTrust struct {
 	targetID       string
 	sourceCommit   string
 	expiresAt      time.Time
+	reconciled     bool
 }
 
 func targetTerminalAtom(s string) bool {
@@ -192,12 +193,14 @@ func (t *targetTerminalTrust) reconcile(ctx context.Context, store targetTermina
 	if t == nil {
 		return nil
 	}
+	t.reconciled = false
 	if store == nil {
 		return fmt.Errorf("target terminal trust requires an etcd store")
 	}
 	if err := store.VerifyOfflineTerminalObserverTrust(ctx, t.generation, t.transport.observerSubject, t.observerKeyID, t.observerPublic); err != nil {
 		return fmt.Errorf("verify target terminal observer trust: %w", err)
 	}
+	t.reconciled = true
 	return nil
 }
 

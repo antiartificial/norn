@@ -1,8 +1,8 @@
 package main
 
-// Inert target-etcd transport for signed effect evidence. Deliberately not
-// registered by the production router. No source/provider/backend credential
-// or proxy is held here; the target ledger owns every transition.
+// Target-etcd transport for signed effect evidence. It mounts only when the
+// separate target manifest and observer trust have reconciled and its runtime
+// gate is enabled. The target ledger owns every transition.
 
 import (
 	"bytes"
@@ -15,10 +15,29 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
 	"norn/v2/api/handler"
 )
+
+// The authority-only offline trust must never authorize these target routes.
+// Reconciliation is performed against the target etcd ledger before the
+// runtime constructs its router; this additional check makes the route helper
+// fail closed if it is ever called from a different startup path.
+func registerEtcdFleetTargetSignedEffectRoutes(router chi.Router, cfg *config.Config, identities offlineIdentityStore,
+	store offlineSignedEffectStore, trust *targetTerminalTrust) {
+	if router == nil || cfg == nil || !cfg.FleetTargetSignedEffectEnabled || !cfg.FleetTargetTerminalEnabled || cfg.FleetAuthorityOnly ||
+		identities == nil || store == nil ||
+		trust == nil || !trust.reconciled || !validOfflineSignedEffectTransportTrust(trust.transport) {
+		return
+	}
+	registerEtcdFleetOfflineSignedEffectRoutesWithAuth(router,
+		etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate),
+		etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetVerify),
+		etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetObserve),
+		identities, store, trust.transport)
+}
 
 type offlineSignedEffectStore interface {
 	GetOfflineEffectChallenge(context.Context, string, string) (offline.EffectChallengeV1, error)

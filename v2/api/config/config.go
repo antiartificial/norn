@@ -69,6 +69,7 @@ type Config struct {
 	// Target Fleet terminal observation trust is separate from the PostgreSQL
 	// management authority. It is inert unless explicitly enabled on etcd.
 	FleetTargetTerminalEnabled             bool
+	FleetTargetSignedEffectEnabled         bool
 	FleetTargetTerminalTargetID            string
 	FleetTargetTerminalManifestFile        string
 	FleetTargetTerminalSignerKeyID         string
@@ -336,6 +337,7 @@ func Load() *Config {
 		FleetOfflineVerifierSubject:            strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_VERIFIER_SUBJECT")),
 		FleetOfflineEffectConfigFile:           strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_CONFIG_FILE")),
 		FleetTargetTerminalEnabled:             envBoolOr("NORN_FLEET_TARGET_TERMINAL_ENABLED", false),
+		FleetTargetSignedEffectEnabled:         envBoolOr("NORN_FLEET_TARGET_SIGNED_EFFECT_ENABLED", false),
 		FleetTargetTerminalTargetID:            strings.TrimSpace(os.Getenv("NORN_FLEET_TARGET_TERMINAL_TARGET_ID")),
 		FleetTargetTerminalManifestFile:        strings.TrimSpace(os.Getenv("NORN_FLEET_TARGET_TERMINAL_MANIFEST_FILE")),
 		FleetTargetTerminalSignerKeyID:         strings.TrimSpace(os.Getenv("NORN_FLEET_TARGET_TERMINAL_SIGNER_KEY_ID")),

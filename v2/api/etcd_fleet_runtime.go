@@ -87,6 +87,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err := terminalTrust.reconcile(context.Background(), operations); err != nil {
 		return err
 	}
+	if cfg.FleetTargetSignedEffectEnabled && terminalTrust == nil {
+		return fmt.Errorf("signed effect transport requires reconciled target terminal trust")
+	}
 	catalogWorker := worker.NewOperationWorkerForKinds(operations, &pipeline.EtcdCatalogExecutor{Catalog: operations}, []string{pipeline.CatalogActivationKind})
 	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, operations); err != nil {
 		return fmt.Errorf("private invocation startup preflight: %w", err)
@@ -202,6 +205,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		commits = fleetGitHub
 	}
 	watcher := registerEtcdFleetControllerRoutes(router, cfg, identities, operations, fleetGitHub, commits, reconciler, etcdFleetExecutorLaneEnabled)
+	registerEtcdFleetTargetSignedEffectRoutes(router, cfg, identities, operations, terminalTrust)
 	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))
