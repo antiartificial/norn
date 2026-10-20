@@ -17,6 +17,7 @@ type TerminalBackendReader interface {
 
 type TerminalBackendObservation struct {
 	Backend        Backend
+	ObservedAt     time.Time
 	EvidenceSHA256 string
 	RawEvidence    []byte
 }
@@ -88,7 +89,7 @@ func ObserveTerminalBackend(ctx context.Context, reader TerminalBackendReader, b
 		Raw   json.RawMessage `json:"rawState"`
 	}{binding.Backend, backend, postRaw})
 	evidenceDigest := sha256.Sum256(evidence)
-	return TerminalBackendObservation{Backend: backend, EvidenceSHA256: hex.EncodeToString(evidenceDigest[:]), RawEvidence: evidence}, nil
+	return TerminalBackendObservation{Backend: backend, ObservedAt: time.Now().UTC(), EvidenceSHA256: hex.EncodeToString(evidenceDigest[:]), RawEvidence: evidence}, nil
 }
 
 func decodeTerminalState(raw []byte) (terminalState, error) {
