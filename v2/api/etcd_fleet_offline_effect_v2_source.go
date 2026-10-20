@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"norn/v2/api/config"
@@ -19,6 +20,8 @@ import (
 )
 
 const offlineEffectEvidenceSchemaV2 = "norn.fleet-offline-independent-effect-evidence/v2"
+
+const offlineEffectTokenMaxBytes = 4096
 
 var offlineEffectHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -92,11 +95,7 @@ func newOfflineEffectEvidenceSourceV2(cfg *config.Config, state offlineEffectEvi
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && !(parsed.Scheme == "http" && (parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost"))) {
 		return nil, errors.New("offline effect v2 verifier requires HTTPS or loopback HTTP")
 	}
-	info, err := os.Stat(cfg.FleetOfflineEffectV2TokenFile)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("offline effect v2 token file must be a regular owner-only file")
-	}
-	raw, err := os.ReadFile(cfg.FleetOfflineEffectV2TokenFile)
+	raw, err := readOfflineEffectToken(cfg.FleetOfflineEffectV2TokenFile)
 	token := strings.TrimSpace(string(raw))
 	if err != nil || token == "" || strings.ContainsAny(token, "\r\n") {
 		return nil, errors.New("offline effect v2 token file is unreadable or invalid")
@@ -107,6 +106,34 @@ func newOfflineEffectEvidenceSourceV2(cfg *config.Config, state offlineEffectEvi
 			return errors.New("offline effect v2 redirects are forbidden")
 		},
 	}}, nil
+}
+
+func readOfflineEffectToken(path string) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, errors.New("offline effect v2 token file must be a regular owner-only file")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || validateOfflineEffectTokenInfo(info, uint32(os.Geteuid())) != nil {
+		return nil, errors.New("offline effect v2 token file must be a regular owner-only file")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, offlineEffectTokenMaxBytes+1))
+	if err != nil || len(raw) > offlineEffectTokenMaxBytes {
+		return nil, errors.New("offline effect v2 token file is unreadable or too large")
+	}
+	return raw, nil
+}
+
+func validateOfflineEffectTokenInfo(info os.FileInfo, euid uint32) error {
+	if info == nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return errors.New("not an owner-only regular file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != euid || stat.Nlink != 1 {
+		return errors.New("token file has wrong owner or link count")
+	}
+	return nil
 }
 
 func (s *httpOfflineEffectEvidenceSourceV2) ObserveOfflineEffect(ctx context.Context, planID, attemptID string) (offline.EffectObservationV2, error) {

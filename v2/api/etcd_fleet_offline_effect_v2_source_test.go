@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -22,6 +23,13 @@ type offlineEffectSourceState struct {
 	attempt offline.Attempt
 	grant   offline.EffectGrantV2
 }
+
+type offlineEffectTokenInfo struct {
+	os.FileInfo
+	stat *syscall.Stat_t
+}
+
+func (i offlineEffectTokenInfo) Sys() any { return i.stat }
 
 func (s offlineEffectSourceState) GetOfflineDispatchReservation(context.Context, string) (offline.Binding, error) {
 	return s.binding, nil
@@ -151,5 +159,48 @@ func TestOfflineEffectEvidenceSourceV2FailsClosed(t *testing.T) {
 	if _, err := newOfflineEffectEvidenceSourceV2(&config.Config{FleetOfflineEffectV2Enabled: true,
 		FleetOfflineEffectV2VerifierURL: server.URL, FleetOfflineEffectV2TokenFile: tokenFile}, state); err == nil {
 		t.Fatal("broadly readable evidence credential was accepted")
+	}
+
+	privateToken := filepath.Join(t.TempDir(), "private-token")
+	if err := os.WriteFile(privateToken, []byte("scoped-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(t.TempDir(), "token-link")
+	if err := os.Symlink(privateToken, symlink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readOfflineEffectToken(symlink); err == nil {
+		t.Fatal("symlinked evidence credential was accepted")
+	}
+
+	largeToken := filepath.Join(t.TempDir(), "large-token")
+	if err := os.WriteFile(largeToken, []byte(strings.Repeat("x", offlineEffectTokenMaxBytes+1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readOfflineEffectToken(largeToken); err == nil {
+		t.Fatal("oversized evidence credential was accepted")
+	}
+
+	info, err := os.Stat(privateToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat := *info.Sys().(*syscall.Stat_t)
+	stat.Uid++
+	if err := validateOfflineEffectTokenInfo(offlineEffectTokenInfo{FileInfo: info, stat: &stat}, uint32(os.Geteuid())); err == nil {
+		t.Fatal("evidence credential owned by another user was accepted")
+	}
+}
+
+func TestOfflineEffectEvidenceV2CapabilityIsConditional(t *testing.T) {
+	disabled := etcdFleetCapabilities(&config.Config{}, false)
+	if containsString(disabled["features"].([]string), "fleet-offline-effect-evidence-v2") ||
+		disabled["endpoints"].(map[string]string)["fleetOfflineEffectV2"] != "" {
+		t.Fatal("disabled offline effect v2 source was advertised")
+	}
+	enabled := etcdFleetCapabilities(&config.Config{FleetOfflineEffectV2Enabled: true}, false)
+	if !containsString(enabled["features"].([]string), "fleet-offline-effect-evidence-v2") ||
+		enabled["endpoints"].(map[string]string)["fleetOfflineEffectV2"] == "" {
+		t.Fatal("enabled offline effect v2 source was not advertised")
 	}
 }

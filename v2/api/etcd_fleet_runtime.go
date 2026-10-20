@@ -295,6 +295,10 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		features = append(features, "fleet-offline-owner-reservation-v1")
 		endpoints["fleetOfflineReservation"] = "/api/v1/fleet/offline/plans/{planID}/reservation"
 	}
+	if cfg != nil && cfg.FleetOfflineEffectV2Enabled {
+		features = append(features, "fleet-offline-effect-evidence-v2")
+		endpoints["fleetOfflineEffectV2"] = "/api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants/v2"
+	}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
 		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
 		endpoints["fleetGitHubPullRequest"] = "/api/v1/fleet/plans/{planID}/github/pull-request"
