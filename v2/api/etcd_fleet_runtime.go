@@ -59,6 +59,10 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if _, err := loadOfflineFleetTrust(cfg); err != nil {
 		return fmt.Errorf("offline Fleet admission: %w", err)
 	}
+	terminalTrust, err := loadTargetOfflineTerminalTrust(cfg, backend, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("target Fleet terminal trust: %w", err)
+	}
 	signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...)
 	if err != nil {
 		return fmt.Errorf("acceptance signer: %w", err)
@@ -76,6 +80,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	operations, err := etcdstore.NewV3OperationStoreWithPolicy(client, backend.EtcdPrefix, cfg.ControlAuthority, signer, store.AcceptancePolicy{ReplayTTL: cfg.OperationReplayTTL})
 	if err != nil {
+		return err
+	}
+	if err := terminalTrust.reconcile(context.Background(), operations); err != nil {
 		return err
 	}
 	catalogWorker := worker.NewOperationWorkerForKinds(operations, &pipeline.EtcdCatalogExecutor{Catalog: operations}, []string{pipeline.CatalogActivationKind})

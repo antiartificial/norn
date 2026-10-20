@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -67,11 +68,26 @@ func targetTerminalAtom(s string) bool {
 }
 
 // readTargetTrustFile rejects symlinks, writes by other users, oversized and
-// non-owner-only manifests. The manifest is owned by the unprivileged Norn
-// service user; the public signer key may instead be root-owned and readable.
-func readTargetTrustFile(path string, max int64, ownerOnly bool, requiredUID uint32) ([]byte, error) {
+// non-owner-only manifests. The manifest belongs to the Norn service user;
+// the separately pinned signer key is root-owned on the production runtime.
+func readTargetTrustFile(path string, max int64, ownerOnly bool, requiredUID uint32, secureParents bool) ([]byte, error) {
 	if !filepath.IsAbs(path) || max <= 0 {
 		return nil, fmt.Errorf("target terminal trust file path must be absolute")
+	}
+	if secureParents {
+		for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+			info, err := os.Lstat(dir)
+			if err != nil {
+				return nil, fmt.Errorf("stat target terminal signer parent: %w", err)
+			}
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 {
+				return nil, fmt.Errorf("target terminal signer key requires root-owned non-writable parent directories")
+			}
+			if dir == string(filepath.Separator) {
+				break
+			}
+		}
 	}
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
@@ -85,7 +101,7 @@ func readTargetTrustFile(path string, max int64, ownerOnly bool, requiredUID uin
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || !info.Mode().IsRegular() || info.Size() > max || info.Size() == 0 ||
-		(stat.Uid != requiredUID && (ownerOnly || stat.Uid != 0)) ||
+		stat.Uid != requiredUID ||
 		info.Mode().Perm()&0022 != 0 || (ownerOnly && info.Mode().Perm() != 0400) {
 		return nil, fmt.Errorf("target terminal trust file must be bounded, owned, regular and non-writable by others")
 	}
@@ -97,10 +113,14 @@ func readTargetTrustFile(path string, max int64, ownerOnly bool, requiredUID uin
 }
 
 func loadTargetOfflineTerminalTrust(cfg *config.Config, backend startup.ControlBackendConfig, now time.Time) (*targetTerminalTrust, error) {
-	return loadTargetOfflineTerminalTrustForOwner(cfg, backend, now, uint32(os.Geteuid()))
+	return loadTargetOfflineTerminalTrustForOwners(cfg, backend, now, uint32(os.Geteuid()), 0, true)
 }
 
 func loadTargetOfflineTerminalTrustForOwner(cfg *config.Config, backend startup.ControlBackendConfig, now time.Time, requiredUID uint32) (*targetTerminalTrust, error) {
+	return loadTargetOfflineTerminalTrustForOwners(cfg, backend, now, requiredUID, requiredUID, false)
+}
+
+func loadTargetOfflineTerminalTrustForOwners(cfg *config.Config, backend startup.ControlBackendConfig, now time.Time, manifestUID, signerUID uint32, secureSignerParents bool) (*targetTerminalTrust, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -117,7 +137,7 @@ func loadTargetOfflineTerminalTrustForOwner(cfg *config.Config, backend startup.
 		manifestPath == "" || signerPath == "" || !targetTerminalAtom(signerID) || !targetTerminalAtom(cfg.FleetTargetTerminalTargetID) {
 		return nil, fmt.Errorf("target terminal trust requires explicit production/staging etcd target and complete separate trust settings")
 	}
-	keyRaw, err := readTargetTrustFile(signerPath, 256, false, requiredUID)
+	keyRaw, err := readTargetTrustFile(signerPath, 256, false, signerUID, secureSignerParents)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +145,7 @@ func loadTargetOfflineTerminalTrustForOwner(cfg *config.Config, backend startup.
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("target terminal signer key must be raw-base64 Ed25519")
 	}
-	raw, err := readTargetTrustFile(manifestPath, 4096, true, requiredUID)
+	raw, err := readTargetTrustFile(manifestPath, 4096, true, manifestUID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -155,9 +175,31 @@ func loadTargetOfflineTerminalTrustForOwner(cfg *config.Config, backend startup.
 		m.ExpiresAt.IsZero() || !now.Before(m.ExpiresAt) || now.Add(30*24*time.Hour).Before(m.ExpiresAt) {
 		return nil, fmt.Errorf("target terminal manifest identity, lane or expiry differs")
 	}
+	transport.targetID, transport.sourceCommit = m.TargetID, m.SourceCommit
 	return &targetTerminalTrust{transport: transport, observerKeyID: m.ObserverKeyID,
 		observerPublic: ed25519.PublicKey(observer), generation: m.TrustGeneration,
 		targetID: m.TargetID, sourceCommit: m.SourceCommit, expiresAt: m.ExpiresAt}, nil
+}
+
+type targetTerminalTrustStore interface {
+	ProvisionOfflineTerminalObserverTrust(context.Context, uint64, string, string, ed25519.PublicKey) error
+	VerifyOfflineTerminalObserverTrust(context.Context, uint64, string, string, ed25519.PublicKey) error
+}
+
+func (t *targetTerminalTrust) reconcile(ctx context.Context, store targetTerminalTrustStore) error {
+	if t == nil {
+		return nil
+	}
+	if store == nil {
+		return fmt.Errorf("target terminal trust requires an etcd store")
+	}
+	if err := store.ProvisionOfflineTerminalObserverTrust(ctx, t.generation, t.transport.observerSubject, t.observerKeyID, t.observerPublic); err != nil {
+		return fmt.Errorf("provision target terminal observer trust: %w", err)
+	}
+	if err := store.VerifyOfflineTerminalObserverTrust(ctx, t.generation, t.transport.observerSubject, t.observerKeyID, t.observerPublic); err != nil {
+		return fmt.Errorf("verify target terminal observer trust: %w", err)
+	}
+	return nil
 }
 
 func (t targetTerminalTrust) observerPublicSHA256() string {

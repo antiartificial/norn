@@ -31,6 +31,10 @@ type offlineTerminalAttestationStore interface {
 // This trust is supplied only by a future target-etcd-controller wiring path.
 // It must never be sourced from the PostgreSQL management authority config.
 type offlineTerminalTransportTrust struct {
+	// Present only for loaded target-etcd trust. Legacy transport fixtures keep
+	// these empty while production wiring must compare the exact Fleet plan.
+	targetID         string
+	sourceCommit     string
 	runnerSubject    string
 	verifierSubject  string
 	observerSubject  string
@@ -40,6 +44,7 @@ type offlineTerminalTransportTrust struct {
 
 func (t offlineTerminalTransportTrust) valid() bool {
 	return t.runnerSubject != "" && t.verifierSubject != "" && t.observerSubject != "" &&
+		(t.targetID == "") == (t.sourceCommit == "") &&
 		t.verifierDeviceID != "" && t.observerDeviceID != "" && t.verifierDeviceID != t.observerDeviceID &&
 		t.runnerSubject != t.verifierSubject && t.runnerSubject != t.observerSubject && t.verifierSubject != t.observerSubject &&
 		!strings.ContainsAny(t.runnerSubject+t.verifierSubject+t.observerSubject+t.verifierDeviceID+t.observerDeviceID, " \t\r\n")
@@ -112,7 +117,8 @@ func registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router chi.Router
 			fail(w, r, err)
 			return offline.EffectGrant{}, false
 		}
-		if grant.PlanID != planID || grant.AttemptID != attemptID || grant.Phase != "consumed" || uuid.Validate(grant.ID) != nil {
+		if grant.PlanID != planID || grant.AttemptID != attemptID || grant.Phase != "consumed" || uuid.Validate(grant.ID) != nil ||
+			(trust.targetID != "" && grant.TargetID != trust.targetID) || (trust.sourceCommit != "" && grant.SourceCommit != trust.sourceCommit) {
 			fail(w, r, offline.ErrTerminalAttestation)
 			return offline.EffectGrant{}, false
 		}
@@ -160,7 +166,8 @@ func registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router chi.Router
 			fail(w, r, err)
 			return
 		}
-		if value.PlanID != planID || value.AttemptID != attemptID || value.ObserverSubject != trust.observerSubject || value.VerifierSubject != trust.verifierSubject {
+		if value.PlanID != planID || value.AttemptID != attemptID || value.ObserverSubject != trust.observerSubject || value.VerifierSubject != trust.verifierSubject ||
+			(trust.targetID != "" && value.TargetID != trust.targetID) || (trust.sourceCommit != "" && value.SourceCommit != trust.sourceCommit) {
 			fail(w, r, offline.ErrTerminalAttestation)
 			return
 		}
@@ -180,7 +187,8 @@ func registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router chi.Router
 			fail(w, r, err)
 			return
 		}
-		if value.PlanID != planID || value.AttemptID != attemptID || value.VerifierSubject != trust.verifierSubject || value.ObserverSubject != trust.observerSubject {
+		if value.PlanID != planID || value.AttemptID != attemptID || value.VerifierSubject != trust.verifierSubject || value.ObserverSubject != trust.observerSubject ||
+			(trust.targetID != "" && value.TargetID != trust.targetID) || (trust.sourceCommit != "" && value.SourceCommit != trust.sourceCommit) {
 			fail(w, r, offline.ErrTerminalAttestation)
 			return
 		}
@@ -204,7 +212,8 @@ func registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router chi.Router
 			fail(w, r, err)
 			return
 		}
-		if value.PlanID != grant.PlanID || value.AttemptID != grant.AttemptID || value.GrantID != grant.ID || value.VerifierSubject != trust.verifierSubject || value.ObserverSubject != trust.observerSubject {
+		if value.PlanID != grant.PlanID || value.AttemptID != grant.AttemptID || value.GrantID != grant.ID || value.VerifierSubject != trust.verifierSubject || value.ObserverSubject != trust.observerSubject ||
+			(trust.targetID != "" && value.TargetID != trust.targetID) || (trust.sourceCommit != "" && value.SourceCommit != trust.sourceCommit) {
 			fail(w, r, offline.ErrTerminalAttestation)
 			return
 		}
@@ -226,7 +235,8 @@ func registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router chi.Router
 			return
 		}
 		envelope, err := offline.DecodeSignedTerminalAttestationV1(body)
-		if err != nil || envelope.Attestation.PlanID != planID || envelope.Attestation.AttemptID != attemptID || envelope.Attestation.ChallengeID != challengeID || envelope.Attestation.ObserverSubject != trust.observerSubject {
+		if err != nil || envelope.Attestation.PlanID != planID || envelope.Attestation.AttemptID != attemptID || envelope.Attestation.ChallengeID != challengeID || envelope.Attestation.ObserverSubject != trust.observerSubject ||
+			(trust.targetID != "" && envelope.Attestation.TargetID != trust.targetID) || (trust.sourceCommit != "" && envelope.Attestation.SourceCommit != trust.sourceCommit) {
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "offline_terminal_attestation_invalid", "attestation body is noncanonical or mismatched")
 			return
 		}

@@ -66,6 +66,11 @@ func (terminalTransportIdentity) ActiveAccessDevice(_ context.Context, deviceID 
 }
 
 func terminalTransportTestRouter(t *testing.T, fixture *terminalTransportStoreFixture) (http.Handler, **handler.AccessPrincipal) {
+	return terminalTransportTestRouterWithTrust(t, fixture, offlineTerminalTransportTrust{runnerSubject: "runner", verifierSubject: "verifier", observerSubject: "observer",
+		verifierDeviceID: "verifier-device", observerDeviceID: "observer-device"})
+}
+
+func terminalTransportTestRouterWithTrust(t *testing.T, fixture *terminalTransportStoreFixture, trust offlineTerminalTransportTrust) (http.Handler, **handler.AccessPrincipal) {
 	t.Helper()
 	var principal *handler.AccessPrincipal
 	auth := func(next http.Handler) http.Handler {
@@ -77,10 +82,42 @@ func terminalTransportTestRouter(t *testing.T, fixture *terminalTransportStoreFi
 		})
 	}
 	router := chi.NewRouter()
-	registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router, auth, auth, terminalTransportIdentity{}, fixture,
-		offlineTerminalTransportTrust{runnerSubject: "runner", verifierSubject: "verifier", observerSubject: "observer",
-			verifierDeviceID: "verifier-device", observerDeviceID: "observer-device"})
+	registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router, auth, auth, terminalTransportIdentity{}, fixture, trust)
 	return router, &principal
+}
+
+func TestOfflineTerminalTransportPinsFleetPlanSourceAndTarget(t *testing.T) {
+	source := strings.Repeat("a", 40)
+	trust := offlineTerminalTransportTrust{runnerSubject: "runner", verifierSubject: "verifier", observerSubject: "observer",
+		verifierDeviceID: "verifier-device", observerDeviceID: "observer-device", targetID: "target-1", sourceCommit: source}
+	fixture := &terminalTransportStoreFixture{grant: offline.EffectGrant{PlanID: terminalPlanID, AttemptID: terminalAttemptID,
+		ID: terminalGrantID, Phase: "consumed", TargetID: "target-1", SourceCommit: source},
+		challenge: offline.TerminalChallengeV1{PlanID: terminalPlanID, AttemptID: terminalAttemptID,
+			GrantID: terminalGrantID, ID: terminalChallengeID, TargetID: "target-1", SourceCommit: source,
+			VerifierSubject: "verifier", ObserverSubject: "observer"}}
+	router, principal := terminalTransportTestRouterWithTrust(t, fixture, trust)
+	observer := handler.AccessPrincipal{Source: handler.AccessPrincipalSourceManagedToken, Subject: "observer", TokenID: "o-token", DeviceID: "observer-device", Scopes: []string{handler.ScopeFleetObserve}}
+	verifier := handler.AccessPrincipal{Source: handler.AccessPrincipalSourceManagedToken, Subject: "verifier", TokenID: "v-token", DeviceID: "verifier-device", Scopes: []string{handler.ScopeFleetVerify}}
+	base := "/api/v1/fleet/offline/attempts/" + terminalPlanID + "/" + terminalAttemptID
+	*principal = &observer
+	if got := terminalRequest(router, http.MethodGet, base+"/terminal-observer/grant", "").Code; got != http.StatusOK {
+		t.Fatalf("valid grant: %d", got)
+	}
+	fixture.grant.SourceCommit = strings.Repeat("b", 40)
+	if got := terminalRequest(router, http.MethodGet, base+"/terminal-observer/grant", "").Code; got != http.StatusConflict {
+		t.Fatalf("wrong source exposed: %d", got)
+	}
+	fixture.grant.SourceCommit = source
+	fixture.grant.TargetID = "target-2"
+	*principal = &verifier
+	if got := terminalRequest(router, http.MethodPost, base+"/terminal-challenges", `{}`).Code; got != http.StatusConflict || fixture.issued != 0 {
+		t.Fatalf("wrong target issued challenge: %d", got)
+	}
+	fixture.grant.TargetID = "target-1"
+	fixture.challenge.SourceCommit = strings.Repeat("b", 40)
+	if got := terminalRequest(router, http.MethodPost, base+"/terminal-challenges", `{}`).Code; got != http.StatusConflict || fixture.issued != 1 {
+		t.Fatalf("wrong source challenge accepted: %d", got)
+	}
 }
 
 func terminalRequest(router http.Handler, method, path, body string) *httptest.ResponseRecorder {

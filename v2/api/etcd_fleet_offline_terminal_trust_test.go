@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -58,8 +59,13 @@ func TestTargetTerminalTrustFailsClosed(t *testing.T) {
 	if err != nil || loaded == nil || loaded.transport.observerSubject != "observer" || loaded.observerPublicSHA256() == "" {
 		t.Fatalf("valid target trust rejected: %v", err)
 	}
-	if _, err := loadTargetOfflineTerminalTrust(&cfg, backend, now); err != nil {
-		t.Fatalf("runtime rejected service-owner trust files: %v", err)
+	if os.Geteuid() != 0 {
+		if _, err := loadTargetOfflineTerminalTrust(&cfg, backend, now); err == nil {
+			t.Fatal("runtime accepted service-owned signer key")
+		}
+	}
+	if _, err := readTargetTrustFile(keyPath, 256, false, uint32(os.Geteuid()), true); err == nil {
+		t.Fatal("accepted signer key beneath non-root-owned parent")
 	}
 	if _, err := loadTargetOfflineTerminalTrustForOwner(&cfg, backend, now, uint32(os.Geteuid()+1)); err == nil {
 		t.Fatal("accepted manifest owned by another service UID")
@@ -172,4 +178,39 @@ func TestTargetTerminalTrustFailsClosed(t *testing.T) {
 			t.Fatal("accepted noncanonical manifest")
 		}
 	})
+}
+
+type terminalTrustStoreFixture struct {
+	provisioned, verified int
+	err                   error
+}
+
+func (s *terminalTrustStoreFixture) ProvisionOfflineTerminalObserverTrust(_ context.Context, generation uint64, subject, keyID string, public ed25519.PublicKey) error {
+	s.provisioned++
+	if generation != 2 || subject != "observer" || keyID != "key-2" || len(public) != ed25519.PublicKeySize {
+		return os.ErrInvalid
+	}
+	return s.err
+}
+func (s *terminalTrustStoreFixture) VerifyOfflineTerminalObserverTrust(_ context.Context, generation uint64, subject, keyID string, public ed25519.PublicKey) error {
+	s.verified++
+	if generation != 2 || subject != "observer" || keyID != "key-2" || len(public) != ed25519.PublicKeySize {
+		return os.ErrInvalid
+	}
+	return s.err
+}
+func TestTargetTerminalTrustReconcilesBeforeService(t *testing.T) {
+	trust := &targetTerminalTrust{generation: 2, observerKeyID: "key-2", observerPublic: make(ed25519.PublicKey, ed25519.PublicKeySize),
+		transport: offlineTerminalTransportTrust{observerSubject: "observer", targetID: "target", sourceCommit: strings.Repeat("a", 40)}}
+	store := &terminalTrustStoreFixture{}
+	if err := trust.reconcile(context.Background(), store); err != nil || store.provisioned != 1 || store.verified != 1 {
+		t.Fatalf("reconcile: %v %#v", err, store)
+	}
+	if err := trust.reconcile(context.Background(), nil); err == nil {
+		t.Fatal("accepted missing store")
+	}
+	store.err = os.ErrPermission
+	if err := trust.reconcile(context.Background(), store); err == nil {
+		t.Fatal("accepted trust conflict")
+	}
 }
