@@ -82,6 +82,8 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err != nil {
 		return err
 	}
+	// Startup never creates a durable trust pin: a later startup failure must
+	// not strand one. Provision it in a separate reviewed bootstrap step.
 	if err := terminalTrust.reconcile(context.Background(), operations); err != nil {
 		return err
 	}

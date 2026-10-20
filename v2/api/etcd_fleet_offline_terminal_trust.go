@@ -175,14 +175,13 @@ func loadTargetOfflineTerminalTrustForOwners(cfg *config.Config, backend startup
 		m.ExpiresAt.IsZero() || !now.Before(m.ExpiresAt) || now.Add(30*24*time.Hour).Before(m.ExpiresAt) {
 		return nil, fmt.Errorf("target terminal manifest identity, lane or expiry differs")
 	}
-	transport.targetID, transport.sourceCommit = m.TargetID, m.SourceCommit
+	transport.targetID, transport.sourceCommit, transport.expiresAt = m.TargetID, m.SourceCommit, m.ExpiresAt
 	return &targetTerminalTrust{transport: transport, observerKeyID: m.ObserverKeyID,
 		observerPublic: ed25519.PublicKey(observer), generation: m.TrustGeneration,
 		targetID: m.TargetID, sourceCommit: m.SourceCommit, expiresAt: m.ExpiresAt}, nil
 }
 
 type targetTerminalTrustStore interface {
-	ProvisionOfflineTerminalObserverTrust(context.Context, uint64, string, string, ed25519.PublicKey) error
 	VerifyOfflineTerminalObserverTrust(context.Context, uint64, string, string, ed25519.PublicKey) error
 }
 
@@ -192,9 +191,6 @@ func (t *targetTerminalTrust) reconcile(ctx context.Context, store targetTermina
 	}
 	if store == nil {
 		return fmt.Errorf("target terminal trust requires an etcd store")
-	}
-	if err := store.ProvisionOfflineTerminalObserverTrust(ctx, t.generation, t.transport.observerSubject, t.observerKeyID, t.observerPublic); err != nil {
-		return fmt.Errorf("provision target terminal observer trust: %w", err)
 	}
 	if err := store.VerifyOfflineTerminalObserverTrust(ctx, t.generation, t.transport.observerSubject, t.observerKeyID, t.observerPublic); err != nil {
 		return fmt.Errorf("verify target terminal observer trust: %w", err)

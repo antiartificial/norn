@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"norn/v2/api/etcdstore"
@@ -91,7 +92,9 @@ func TestOfflineTerminalTransportPinsFleetPlanSourceAndTarget(t *testing.T) {
 	trust := offlineTerminalTransportTrust{runnerSubject: "runner", verifierSubject: "verifier", observerSubject: "observer",
 		verifierDeviceID: "verifier-device", observerDeviceID: "observer-device", targetID: "target-1", sourceCommit: source}
 	fixture := &terminalTransportStoreFixture{grant: offline.EffectGrant{PlanID: terminalPlanID, AttemptID: terminalAttemptID,
-		ID: terminalGrantID, Phase: "consumed", TargetID: "target-1", SourceCommit: source},
+		ID: terminalGrantID, Phase: "consumed", TargetID: "target-1", SourceCommit: source, BindingSHA256: strings.Repeat("c", 64)},
+		evidence: offline.TerminalEvidence{PlanID: terminalPlanID, AttemptID: terminalAttemptID, GrantID: terminalGrantID,
+			TargetID: "target-1", BindingSHA256: strings.Repeat("c", 64)},
 		challenge: offline.TerminalChallengeV1{PlanID: terminalPlanID, AttemptID: terminalAttemptID,
 			GrantID: terminalGrantID, ID: terminalChallengeID, TargetID: "target-1", SourceCommit: source,
 			VerifierSubject: "verifier", ObserverSubject: "observer"}}
@@ -103,11 +106,22 @@ func TestOfflineTerminalTransportPinsFleetPlanSourceAndTarget(t *testing.T) {
 	if got := terminalRequest(router, http.MethodGet, base+"/terminal-observer/grant", "").Code; got != http.StatusOK {
 		t.Fatalf("valid grant: %d", got)
 	}
+	if got := terminalRequest(router, http.MethodGet, base+"/terminal-observer/evidence", "").Code; got != http.StatusOK {
+		t.Fatalf("valid evidence: %d", got)
+	}
 	fixture.grant.SourceCommit = strings.Repeat("b", 40)
 	if got := terminalRequest(router, http.MethodGet, base+"/terminal-observer/grant", "").Code; got != http.StatusConflict {
 		t.Fatalf("wrong source exposed: %d", got)
 	}
+	if got := terminalRequest(router, http.MethodGet, base+"/terminal-observer/evidence", "").Code; got != http.StatusConflict {
+		t.Fatalf("wrong source evidence exposed: %d", got)
+	}
 	fixture.grant.SourceCommit = source
+	fixture.evidence.TargetID = "target-2"
+	if got := terminalRequest(router, http.MethodGet, base+"/terminal-observer/evidence", "").Code; got != http.StatusConflict {
+		t.Fatalf("wrong target evidence exposed: %d", got)
+	}
+	fixture.evidence.TargetID = "target-1"
 	fixture.grant.TargetID = "target-2"
 	*principal = &verifier
 	if got := terminalRequest(router, http.MethodPost, base+"/terminal-challenges", `{}`).Code; got != http.StatusConflict || fixture.issued != 0 {
@@ -117,6 +131,16 @@ func TestOfflineTerminalTransportPinsFleetPlanSourceAndTarget(t *testing.T) {
 	fixture.challenge.SourceCommit = strings.Repeat("b", 40)
 	if got := terminalRequest(router, http.MethodPost, base+"/terminal-challenges", `{}`).Code; got != http.StatusConflict || fixture.issued != 1 {
 		t.Fatalf("wrong source challenge accepted: %d", got)
+	}
+	trust.expiresAt = time.Now().UTC().Add(-time.Second)
+	expiredRouter, expiredPrincipal := terminalTransportTestRouterWithTrust(t, fixture, trust)
+	*expiredPrincipal = &observer
+	if got := terminalRequest(expiredRouter, http.MethodGet, base+"/terminal-observer/evidence", "").Code; got != http.StatusForbidden {
+		t.Fatalf("expired observer read accepted: %d", got)
+	}
+	*expiredPrincipal = &verifier
+	if got := terminalRequest(expiredRouter, http.MethodPost, base+"/terminal-challenges", `{}`).Code; got != http.StatusForbidden {
+		t.Fatalf("expired verifier request accepted: %d", got)
 	}
 }
 

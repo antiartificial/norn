@@ -181,17 +181,10 @@ func TestTargetTerminalTrustFailsClosed(t *testing.T) {
 }
 
 type terminalTrustStoreFixture struct {
-	provisioned, verified int
-	err                   error
+	verified int
+	err      error
 }
 
-func (s *terminalTrustStoreFixture) ProvisionOfflineTerminalObserverTrust(_ context.Context, generation uint64, subject, keyID string, public ed25519.PublicKey) error {
-	s.provisioned++
-	if generation != 2 || subject != "observer" || keyID != "key-2" || len(public) != ed25519.PublicKeySize {
-		return os.ErrInvalid
-	}
-	return s.err
-}
 func (s *terminalTrustStoreFixture) VerifyOfflineTerminalObserverTrust(_ context.Context, generation uint64, subject, keyID string, public ed25519.PublicKey) error {
 	s.verified++
 	if generation != 2 || subject != "observer" || keyID != "key-2" || len(public) != ed25519.PublicKeySize {
@@ -203,7 +196,7 @@ func TestTargetTerminalTrustReconcilesBeforeService(t *testing.T) {
 	trust := &targetTerminalTrust{generation: 2, observerKeyID: "key-2", observerPublic: make(ed25519.PublicKey, ed25519.PublicKeySize),
 		transport: offlineTerminalTransportTrust{observerSubject: "observer", targetID: "target", sourceCommit: strings.Repeat("a", 40)}}
 	store := &terminalTrustStoreFixture{}
-	if err := trust.reconcile(context.Background(), store); err != nil || store.provisioned != 1 || store.verified != 1 {
+	if err := trust.reconcile(context.Background(), store); err != nil || store.verified != 1 {
 		t.Fatalf("reconcile: %v %#v", err, store)
 	}
 	if err := trust.reconcile(context.Background(), nil); err == nil {

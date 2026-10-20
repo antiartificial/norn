@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -35,6 +36,7 @@ type offlineTerminalTransportTrust struct {
 	// these empty while production wiring must compare the exact Fleet plan.
 	targetID         string
 	sourceCommit     string
+	expiresAt        time.Time
 	runnerSubject    string
 	verifierSubject  string
 	observerSubject  string
@@ -52,7 +54,8 @@ func (t offlineTerminalTransportTrust) valid() bool {
 
 func offlineTerminalPrincipal(r *http.Request, trust offlineTerminalTransportTrust, identities offlineIdentityStore, subject, scope, deviceID string) (handler.AccessPrincipal, bool) {
 	principal, ok := handler.AccessPrincipalFromRequest(r)
-	if !ok || !trust.valid() || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy ||
+	if !ok || !trust.valid() || (!trust.expiresAt.IsZero() && !time.Now().UTC().Before(trust.expiresAt)) ||
+		principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy ||
 		principal.Subject != subject || principal.TokenID == "" || principal.DeviceID != deviceID || principal.CI != nil ||
 		len(principal.Scopes) != 1 || principal.Scopes[0] != scope ||
 		!offlineReservationDeviceActive(r.Context(), identities, principal.DeviceID) {
@@ -146,9 +149,20 @@ func registerEtcdFleetOfflineTerminalAttestationRoutesWithAuth(router chi.Router
 			fail(w, r, err)
 			return
 		}
-		if value.PlanID != planID || value.AttemptID != attemptID {
+		if value.PlanID != planID || value.AttemptID != attemptID ||
+			(trust.targetID != "" && value.TargetID != trust.targetID) {
 			fail(w, r, offline.ErrTerminalAttestation)
 			return
+		}
+		if trust.sourceCommit != "" {
+			grant, ok := readGrant(w, r)
+			if !ok {
+				return
+			}
+			if value.GrantID != grant.ID || value.TargetID != grant.TargetID || value.BindingSHA256 != grant.BindingSHA256 {
+				fail(w, r, offline.ErrTerminalAttestation)
+				return
+			}
 		}
 		write(w, http.StatusOK, "terminalEvidence", value)
 	})
