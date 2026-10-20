@@ -27,7 +27,7 @@ type etcdScaleRuntime struct {
 	nomad  *nomad.Client
 	// resolveTarget is injectable only for local admission tests; production
 	// always resolves the completed active route from the etcd authority.
-	resolveTarget func(context.Context, string, string, string) (string, string, error)
+	resolveTarget func(context.Context, string, string, string) (etcdstore.FleetScaleTarget, error)
 }
 
 func newEtcdScaleRuntime(cfg *config.Config, operations *etcdstore.V3OperationStore) (*etcdScaleRuntime, error) {
@@ -61,8 +61,8 @@ func (e *etcdScaleRuntime) ExecuteOperationWithAppLock(ctx context.Context, op *
 		return nil, fmt.Errorf("claimed etcd scale is unavailable")
 	}
 	region, _ := op.Payload["region"].(string)
-	jobID, deploymentID, err := e.resolveTarget(ctx, op.App, e.env, region)
-	if err != nil || jobID != op.Payload["nomadJobId"] || deploymentID != op.Payload["deploymentId"] {
+	target, err := e.resolveTarget(ctx, op.App, e.env, region)
+	if err != nil || target.JobID != op.Payload["nomadJobId"] || target.DeploymentID != op.Payload["deploymentId"] || target.SpecDigest != op.Payload["specDigest"] {
 		return nil, fmt.Errorf("claimed scale target differs from the active Fleet route: %v", err)
 	}
 	return e.pipe.ExecuteOperationWithAppLock(ctx, op, claim, lock)

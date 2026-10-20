@@ -139,17 +139,22 @@ func etcdScaleApp(cfg *config.Config, operations *etcdstore.V3OperationStore, id
 			handler.WriteControlProblem(w, r, http.StatusConflict, "scale_target_mismatch", "declared app region differs from the active Fleet target")
 			return
 		}
-		jobID, deploymentID, err := runtime.resolveTarget(r.Context(), app, cfg.EnvironmentID(), request.Region)
+		active, err := runtime.resolveTarget(r.Context(), app, cfg.EnvironmentID(), request.Region)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "active_scale_target_unavailable", "a completed active Fleet route is required")
 			return
 		}
-		enqueue.Semantics = map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "count": request.Count, "deploymentId": deploymentID, "nomadJobId": jobID}
+		specDigest, err := model.InfraSpecDigest(spec)
+		if err != nil || specDigest != active.SpecDigest {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "scale_spec_mismatch", "local app intent differs from the accepted active deployment")
+			return
+		}
+		enqueue.Semantics = map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "count": request.Count, "deploymentId": active.DeploymentID, "nomadJobId": active.JobID, "specDigest": specDigest}
 		enqueue.Admission.OneActiveMutablePerApp = true
 		now := time.Now().UTC()
 		op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: app, SagaID: uuid.NewString(), Ref: request.Region + "/" + request.Group,
 			Status: model.OperationQueued, Risk: "managed Nomad task-group scale", Source: "etcd-scale", Message: fmt.Sprintf("queued scale for %s/%s process %q to %d", app, request.Region, request.Group, request.Count),
-			StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "requestedRegion": requestedRegion, "nomadRegion": nomadRegion, "count": request.Count, "nomadJobId": jobID, "deploymentId": deploymentID}}
+			StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "requestedRegion": requestedRegion, "nomadRegion": nomadRegion, "count": request.Count, "nomadJobId": active.JobID, "deploymentId": active.DeploymentID, "specDigest": specDigest}}
 		accepted, err := runtime.pipe.QueueOperation(r.Context(), op, enqueue)
 		if err != nil {
 			writeEtcdCanaryAcceptanceError(w, r, err)
@@ -227,7 +232,7 @@ func etcdScaleStatus(cfg *config.Config, operations *etcdstore.V3OperationStore,
 			if region.Name != target.Region || region.NomadRegion != target.NomadRegion {
 				continue
 			}
-			jobID, _, err := runtime.resolveTarget(r.Context(), app, cfg.EnvironmentID(), region.Name)
+			active, err := runtime.resolveTarget(r.Context(), app, cfg.EnvironmentID(), region.Name)
 			if err != nil {
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "active_scale_target_unavailable", "active Fleet route is unavailable")
 				return
@@ -237,7 +242,7 @@ func etcdScaleStatus(cfg *config.Config, operations *etcdstore.V3OperationStore,
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "scale_intent_unavailable", "accepted replica intent is unavailable")
 				return
 			}
-			observed, err := runtime.nomad.JobScaleStatusRegion(jobID, region.NomadRegion)
+			observed, err := runtime.nomad.JobScaleStatusRegion(active.JobID, region.NomadRegion)
 			if err != nil || observed == nil {
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "nomad_scale_status_unavailable", "Nomad scale status is unavailable")
 				return
@@ -266,4 +271,35 @@ func etcdScaleStatus(cfg *config.Config, operations *etcdstore.V3OperationStore,
 		}
 		writeEtcdSourceJSON(w, http.StatusOK, rows)
 	}
+}
+
+func currentEtcdScaleSpecDigest(appsDir, app string) (string, error) {
+	specs, err := model.DiscoverApps(appsDir)
+	if err != nil {
+		return "", err
+	}
+	var matched *model.InfraSpec
+	for _, candidate := range specs {
+		if candidate.App == app {
+			if matched != nil {
+				return "", fmt.Errorf("app intent is duplicated")
+			}
+			matched = candidate
+		}
+	}
+	if matched == nil || !matched.Deploy {
+		return "", fmt.Errorf("deployable app intent is unavailable")
+	}
+	return model.InfraSpecDigest(matched)
+}
+
+func requireCurrentEtcdScaleSpecDigest(appsDir, app, accepted string) (string, error) {
+	digest, err := currentEtcdScaleSpecDigest(appsDir, app)
+	if err != nil {
+		return "", err
+	}
+	if digest != accepted {
+		return "", fmt.Errorf("local app intent differs from the accepted active deployment")
+	}
+	return digest, nil
 }

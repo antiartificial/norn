@@ -71,6 +71,7 @@ func (e *NomadScaleEffects) available() bool {
 type scaleRequest struct {
 	App         string `json:"app"`
 	NomadJobID  string `json:"nomadJobId,omitempty"`
+	SpecDigest  string `json:"specDigest,omitempty"`
 	Group       string `json:"group"`
 	Region      string `json:"region"`
 	NomadRegion string `json:"nomadRegion"`
@@ -173,7 +174,7 @@ func scaleRequestFromOperation(op *model.Operation) (scaleRequest, error) {
 	if op == nil || strings.TrimSpace(op.App) == "" {
 		return scaleRequest{}, fmt.Errorf("scale operation app is required")
 	}
-	request := scaleRequest{App: op.App, NomadJobID: stringFromMap(op.Payload, "nomadJobId"), Group: stringFromMap(op.Payload, "group"), Region: stringFromMap(op.Payload, "region"), NomadRegion: stringFromMap(op.Payload, "nomadRegion")}
+	request := scaleRequest{App: op.App, NomadJobID: stringFromMap(op.Payload, "nomadJobId"), SpecDigest: stringFromMap(op.Payload, "specDigest"), Group: stringFromMap(op.Payload, "group"), Region: stringFromMap(op.Payload, "region"), NomadRegion: stringFromMap(op.Payload, "nomadRegion")}
 	value, ok := op.Payload["count"]
 	if !ok {
 		return scaleRequest{}, fmt.Errorf("scale operation count is required")
