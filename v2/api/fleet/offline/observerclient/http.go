@@ -187,13 +187,23 @@ func (c *HTTPClient) call(ctx context.Context, method, plan, attempt, suffix str
 			resp.Header.Get("Content-Type") == "application/problem+json" &&
 			resp.Header.Get("Cache-Control") == "private, no-store" {
 			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4097))
-			var problem map[string]json.RawMessage
-			decodeErr := json.Unmarshal(raw, &problem)
+			var problem struct {
+				Type      string `json:"type"`
+				Title     string `json:"title"`
+				Status    int    `json:"status"`
+				Code      string `json:"code"`
+				Detail    string `json:"detail,omitempty"`
+				RequestID string `json:"requestId,omitempty"`
+				Error     string `json:"error,omitempty"`
+			}
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.DisallowUnknownFields()
+			decodeErr := decoder.Decode(&problem)
 			canonical, marshalErr := json.Marshal(problem)
 			if readErr == nil && len(raw) <= 4096 && decodeErr == nil &&
-				marshalErr == nil && bytes.Equal(bytes.TrimSuffix(raw, []byte("\n")), canonical) && len(problem) >= 3 &&
-				string(problem["type"]) == `"https://norn.dev/problems/offline_terminal_not_found"` &&
-				string(problem["status"]) == `404` && string(problem["code"]) == `"offline_terminal_not_found"` {
+				marshalErr == nil && bytes.Equal(bytes.TrimSuffix(raw, []byte("\n")), canonical) &&
+				problem.Type == "https://norn.dev/problems/offline_terminal_not_found" &&
+				problem.Title == "Not Found" && problem.Status == http.StatusNotFound && problem.Code == "offline_terminal_not_found" {
 				return ErrNotFound
 			}
 		}

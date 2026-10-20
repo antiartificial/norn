@@ -124,7 +124,7 @@ func TestHTTPClientRejectsRedirectProxyAndAmbiguousBodies(t *testing.T) {
 // A generic ingress 404 must never be interpreted as authoritative absence.
 func TestHTTPClientRequiresExactAbsenceProblem(t *testing.T) {
 	for _, body := range []string{"404 page not found", `{"error":"not_found"}`,
-		`{"code":"offline_terminal_not_found","status":404,"type":"https://norn.dev/problems/offline_terminal_not_found"}`} {
+		`{"type":"https://norn.dev/problems/offline_terminal_not_found","title":"Not Found","status":404,"code":"offline_terminal_not_found","detail":"terminal state is absent or inconsistent","error":"terminal state is absent or inconsistent"}`} {
 		t.Run(body, func(t *testing.T) {
 			c, _ := testHTTPClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/problem+json")
