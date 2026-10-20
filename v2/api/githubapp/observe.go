@@ -128,7 +128,9 @@ func (c *Client) ReconcileCanceledBeforeExecution(ctx context.Context, planID, f
 // strict step and artifact shape is intentional: another failure must receive
 // its own reviewed proof rather than broadening this no-effect inference.
 func (c *Client) ReconcileFailedRunnerSetup(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonceHash string, runID, runAttempt int64) (*Reconciliation, error) {
-	if planID != "dab170e6-5677-4187-abc7-c0bf195775a6" || fleetEnvironment != "staging/nyc3" || fleetEnvironment != c.fleetRoot() || c.cfg.PilotRunID != "" || approved == nil || runID != 39104495159 || runAttempt != 1 || approved.PlanRunID <= 0 || approved.PilotRunID != "" || !sha256Re.MatchString(approved.PlanSHA) || approved.ApprovedHeadSHA != "602a3867eb590341218efb93295d7afe018a842a" || !sha256Re.MatchString(nonceHash) {
+	const approvedHead = "7f37223ff770983a33ba59cbb5fdc90d45cdd39d"
+	const observedHead = "602a3867eb590341218efb93295d7afe018a842a"
+	if planID != "dab170e6-5677-4187-abc7-c0bf195775a6" || fleetEnvironment != "staging/nyc3" || fleetEnvironment != c.fleetRoot() || c.cfg.PilotRunID != "" || !allowDestructive || approved == nil || runID != 39104495159 || runAttempt != 1 || approved.PlanRunID != 39103588128 || approved.PilotRunID != "" || approved.PlanSHA != "02a6e5c079ddc27793c416d133c54c8c1310ef8be562cd6cc24a7a1a309192d1" || approved.ApprovedHeadSHA != approvedHead || approved.ScaleUpApprovalRunID != 0 || !sha256Re.MatchString(nonceHash) {
 		return nil, ErrDispatchAmbiguous
 	}
 	token, err := c.installationToken(ctx, map[string]string{"actions": "read"})
@@ -163,7 +165,12 @@ func (c *Client) ReconcileFailedRunnerSetup(ctx context.Context, planID, fleetEn
 		return nil, fmt.Errorf("failed setup snapshot changed: %w", ErrDispatchAmbiguous)
 	}
 	run := &first.Run
-	if run.ID != runID || int64(run.RunAttempt) != runAttempt || run.Status != "completed" || run.Conclusion != "failure" || c.verifyApplyRunByNonceHash(run, planID, fleetEnvironment, approved, nonceHash, actor) != nil {
+	// GitHub selected the newer workflow HEAD before runner setup. This one-run
+	// exception pins both the approved binding and observed HEAD; no checkout
+	// or provider-bearing step ran, so the drift cannot be treated as an apply.
+	observedApproval := *approved
+	observedApproval.ApprovedHeadSHA = observedHead
+	if run.ID != runID || int64(run.RunAttempt) != runAttempt || run.Status != "completed" || run.Conclusion != "failure" || c.verifyApplyRunByNonceHash(run, planID, fleetEnvironment, &observedApproval, nonceHash, actor) != nil {
 		return nil, fmt.Errorf("failed setup run identity differs: %w", ErrDispatchAmbiguous)
 	}
 	_, _, nonce, ok := parseApplyRunDisplayTitle(run.DisplayTitle, c.cfg.PilotRunID)
@@ -175,7 +182,7 @@ func (c *Client) ReconcileFailedRunnerSetup(ctx context.Context, planID, fleetEn
 	}
 	seenAdmission, seenApply := false, false
 	for _, job := range first.Jobs.Jobs {
-		if job.ID <= 0 || job.RunID != runID || int64(job.RunAttempt) != runAttempt || job.HeadSHA != approved.ApprovedHeadSHA || job.Status != "completed" || job.StartedAt == "" || job.CompletedAt == "" {
+		if job.ID <= 0 || job.RunID != runID || int64(job.RunAttempt) != runAttempt || job.HeadSHA != observedHead || job.Status != "completed" || job.StartedAt == "" || job.CompletedAt == "" {
 			return nil, fmt.Errorf("failed setup job identity differs: %w", ErrDispatchAmbiguous)
 		}
 		switch job.Name {
