@@ -36,6 +36,13 @@ func (s *V3OperationStore) offlineSignedEffectGrantProofKey(planID string) strin
 	return s.prefix + "/v3/fleet-offline-signed-effect-grant-proofs/" + planID + "/00000000000000000001"
 }
 
+// This separate append-only high-watermark catches a selective rollback of
+// grant head/event/proof while target etcd continuity survives. Total etcd
+// rollback remains an external state-continuity and fence-recovery concern.
+func (s *V3OperationStore) offlineSignedEffectGrantWatermarkKey(planID string) string {
+	return s.prefix + "/v3/fleet-offline-signed-effect-grant-watermarks/" + planID
+}
+
 func effectAttemptMatchesIdentity(attempt offline.Attempt, identity OfflineRunnerIdentity) bool {
 	return attempt.PrincipalSubject == identity.Subject && attempt.PrincipalTokenID == identity.TokenID &&
 		attempt.PrincipalDeviceID == identity.DeviceID
@@ -47,6 +54,7 @@ func (s *V3OperationStore) GetOfflineSignedEffectGrant(ctx context.Context, plan
 	}
 	response, err := s.kv.Txn(ctx).Then(
 		clientv3.OpGet(s.offlineSignedEffectGrantProofKey(planID)),
+		clientv3.OpGet(s.offlineSignedEffectGrantWatermarkKey(planID)),
 		clientv3.OpGet(s.offlineEffectGrantKey(planID)),
 		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 1)),
 		clientv3.OpGet(s.offlineEffectGrantEventKey(planID, 2)),
@@ -54,10 +62,10 @@ func (s *V3OperationStore) GetOfflineSignedEffectGrant(ctx context.Context, plan
 	if err != nil {
 		return offline.EffectGrant{}, err
 	}
-	if len(response.Responses) != 4 {
+	if len(response.Responses) != 5 {
 		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
 	}
-	var raw [4][]byte
+	var raw [5][]byte
 	for i, item := range response.Responses {
 		rows := item.GetResponseRange().Kvs
 		if len(rows) > 1 {
@@ -67,11 +75,14 @@ func (s *V3OperationStore) GetOfflineSignedEffectGrant(ctx context.Context, plan
 			raw[i] = rows[0].Value
 		}
 	}
-	if len(raw[0]) == 0 && len(raw[1]) == 0 && len(raw[2]) == 0 && len(raw[3]) == 0 {
+	if len(raw[0]) == 0 && len(raw[1]) == 0 && len(raw[2]) == 0 && len(raw[3]) == 0 && len(raw[4]) == 0 {
 		return offline.EffectGrant{}, ErrNotFound
 	}
-	if len(raw[0]) == 0 {
+	if len(raw[0]) == 0 && len(raw[1]) == 0 {
 		return offline.EffectGrant{}, ErrOfflineEffectGrantConflict
+	}
+	if len(raw[0]) == 0 || !bytes.Equal(raw[0], raw[1]) {
+		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
 	}
 	var proof signedEffectGrantProof
 	if decodeV3Record(raw[0], &proof) != nil || proof.SchemaVersion != signedEffectGrantProofSchema || proof.PlanID != planID ||
@@ -83,11 +94,11 @@ func (s *V3OperationStore) GetOfflineSignedEffectGrant(ctx context.Context, plan
 	if err != nil || !bytes.Equal(canonical, raw[0]) {
 		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
 	}
-	grant, err := decodeOfflineEffectGrantPair(raw[1], raw[2], raw[3], planID)
+	grant, err := decodeOfflineEffectGrantPair(raw[2], raw[3], raw[4], planID)
 	if err != nil {
 		return offline.EffectGrant{}, err
 	}
-	issuedDigest := sha256.Sum256(raw[2])
+	issuedDigest := sha256.Sum256(raw[3])
 	if grant.ID != proof.GrantID || grant.AttemptID != attemptID || hex.EncodeToString(issuedDigest[:]) != proof.IssuedGrantSHA256 {
 		return offline.EffectGrant{}, ErrOfflineAttemptCorrupt
 	}
@@ -200,7 +211,7 @@ func (s *V3OperationStore) issueOfflineEffectGrantFromAcceptedWithClock(ctx cont
 		snapshot.trust.ObserverSubject, snapshot.trust.KeyID, ed25519.PublicKey(public), decisionTime); err != nil {
 		return offline.EffectGrant{}, err
 	}
-	compares := make([]clientv3.Cmp, 0, len(snapshot.keys)+1)
+	compares := make([]clientv3.Cmp, 0, len(snapshot.keys)+2)
 	for i, key := range snapshot.keys {
 		if i == effectChallengeRunnerAttempts {
 			compares = append(compares, clientv3.Compare(clientv3.CreateRevision(key).WithPrefix(), "=", 0))
@@ -209,12 +220,20 @@ func (s *V3OperationStore) issueOfflineEffectGrantFromAcceptedWithClock(ctx cont
 		}
 	}
 	compares = append(compares, clientv3.Compare(clientv3.CreateRevision(s.offlineSignedEffectGrantProofKey(planID)), "=", 0))
+	compares = append(compares, clientv3.Compare(clientv3.CreateRevision(s.offlineSignedEffectGrantWatermarkKey(planID)), "=", 0))
 	result, err := s.kv.Txn(ctx).If(compares...).Then(
 		clientv3.OpPut(s.offlineEffectGrantKey(planID), string(grantRaw)),
 		clientv3.OpPut(s.offlineEffectGrantEventKey(planID, 1), string(grantRaw)),
 		clientv3.OpPut(s.offlineSignedEffectGrantProofKey(planID), string(proofRaw)),
+		clientv3.OpPut(s.offlineSignedEffectGrantWatermarkKey(planID), string(proofRaw)),
 	).Commit()
 	if err != nil {
+		if recovered, readErr := s.GetOfflineSignedEffectGrant(ctx, planID, attemptID, challengeID); readErr == nil {
+			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(ctx, planID, offline.EffectIssuePurpose, challengeID)
+			if acceptedErr == nil && effectAttemptMatchesIdentity(accepted.Attempt, identity) {
+				return recovered, nil
+			}
+		}
 		return offline.EffectGrant{}, err
 	}
 	if !result.Succeeded {

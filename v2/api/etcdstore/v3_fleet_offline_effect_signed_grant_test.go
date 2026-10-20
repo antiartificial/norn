@@ -94,3 +94,31 @@ func TestSignedEffectGrantRejectsStaleAndWrongIdentity(t *testing.T) {
 		t.Fatalf("stale attempt issued grant: %v", err)
 	}
 }
+
+func TestSignedEffectGrantWatermarkBlocksGrantTupleRollback(t *testing.T) {
+	h, b, a, c, envelope, now := signedEffectIssueFixture(t)
+	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope,
+		func() time.Time { return now }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.issueOfflineEffectGrantFromAcceptedWithClock(h.ctx(), b.PlanID, a.ID, c.ID,
+		offlineEffectIdentity(b, a), func() time.Time { return now.Add(time.Millisecond) }); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		h.s.offlineEffectGrantKey(b.PlanID),
+		h.s.offlineEffectGrantEventKey(b.PlanID, 1),
+		h.s.offlineSignedEffectGrantProofKey(b.PlanID),
+	} {
+		if _, err := h.s.kv.Delete(h.ctx(), key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.s.GetOfflineSignedEffectGrant(h.ctx(), b.PlanID, a.ID, c.ID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("surviving grant watermark ignored on readback: %v", err)
+	}
+	if _, err := h.s.issueOfflineEffectGrantFromAcceptedWithClock(h.ctx(), b.PlanID, a.ID, c.ID,
+		offlineEffectIdentity(b, a), func() time.Time { return now.Add(2 * time.Millisecond) }); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("surviving grant watermark ignored on reissue: %v", err)
+	}
+}

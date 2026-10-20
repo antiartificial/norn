@@ -214,6 +214,12 @@ func (s *V3OperationStore) consumeOfflineEffectGrantFromAcceptedWithClock(ctx co
 		clientv3.OpPut(s.offlineSignedEffectConsumeWatermarkKey(planID), string(consumeProofRaw)),
 	).Commit()
 	if err != nil {
+		if recovered, readErr := s.GetOfflineSignedConsumedGrant(ctx, planID, attemptID, challengeID); readErr == nil && recovered.ID == grantID {
+			accepted, acceptedErr := s.ReadAcceptedOfflineEffectAttestation(ctx, planID, offline.EffectConsumePurpose, challengeID)
+			if acceptedErr == nil && effectAttemptMatchesIdentity(accepted.Attempt, identity) {
+				return recovered, nil
+			}
+		}
 		return offline.EffectGrant{}, err
 	}
 	if !result.Succeeded {
