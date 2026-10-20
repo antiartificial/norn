@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,7 +64,7 @@ func validEffectBackend(b Backend) bool {
 	return b.Bucket != "" && b.Key != "" && b.VersionID != "" && b.Lineage != "" && b.Serial > 0 && hex64.MatchString(b.RawSHA256)
 }
 
-func validIssuedEffectGrant(g EffectGrant, c EffectChallengeV1, now time.Time) bool {
+func validIssuedEffectGrant(g EffectGrant, c EffectChallengeV1, b Binding, a Attempt, now time.Time) bool {
 	return g.SchemaVersion == EffectGrantSchema && g.Phase == "issued" && g.ConsumedAt == nil &&
 		g.ID == c.GrantID && uuid.Validate(g.ID) == nil && g.PlanID == c.PlanID && g.AttemptID == c.AttemptID &&
 		g.BindingSHA256 == c.BindingSHA256 && g.TargetID == c.TargetID &&
@@ -72,14 +73,28 @@ func validIssuedEffectGrant(g EffectGrant, c EffectChallengeV1, now time.Time) b
 		g.EffectSHA256 == c.EffectSHA256 && g.Backend == c.CurrentBackend &&
 		g.ProviderAccountUUID == c.ProviderAccountUUID && g.NodeName == c.NodeName && g.DropletID == c.DropletID &&
 		hex64.MatchString(g.PrechangeSHA256) && hex64.MatchString(g.IndependentlyObservedSHA256) &&
-		!g.IssuedAt.IsZero() && !g.ExpiresAt.IsZero() && g.ExpiresAt.After(g.IssuedAt) && now.Before(g.ExpiresAt)
+		!g.IssuedAt.IsZero() && !g.ExpiresAt.IsZero() && !g.IssuedAt.Before(b.CreatedAt) &&
+		!g.IssuedAt.Before(a.CreatedAt) && !now.Before(g.IssuedAt) && !c.IssuedAt.Before(g.IssuedAt) &&
+		g.ExpiresAt.After(g.IssuedAt) && g.ExpiresAt.Sub(g.IssuedAt) <= time.Minute && now.Before(g.ExpiresAt)
+}
+
+func validEffectAttempt(b Binding, a Attempt, now time.Time) bool {
+	bindingRaw, err := json.Marshal(b)
+	return err == nil && a.SchemaVersion == AttemptSchema && uuid.Validate(a.ID) == nil &&
+		a.PlanID == b.PlanID && equalDigest(a.BindingSHA256, effectDigest(bindingRaw)) &&
+		a.PrincipalSubject == b.RunnerPrincipalSubject && a.PrincipalTokenID != "" && a.PrincipalDeviceID != "" &&
+		!strings.ContainsAny(a.PrincipalTokenID+a.PrincipalDeviceID, " \t\r\n") &&
+		a.TargetID == b.TargetID && a.FenceGeneration == b.FenceGeneration &&
+		a.Status == "queued" && a.CurrentPhase == "prechange_verified" &&
+		!a.CreatedAt.IsZero() && !a.CreatedAt.Before(b.CreatedAt) && !now.Before(a.CreatedAt)
 }
 
 func (c EffectChallengeV1) Validate(b Binding, a Attempt, epoch int64, now time.Time) error {
 	nonce, err := base64.RawURLEncoding.Strict().DecodeString(c.Nonce)
 	if err != nil || len(nonce) != 32 || b.SchemaVersion != BindingSchemaV2 || b.Validate() != nil ||
 		c.SchemaVersion != EffectChallengeSchemaV1 || (c.Purpose != EffectIssuePurpose && c.Purpose != EffectConsumePurpose) ||
-		uuid.Validate(c.ID) != nil || c.PlanID != b.PlanID || c.AttemptID != a.ID || a.PlanID != b.PlanID ||
+		uuid.Validate(c.ID) != nil || !validEffectAttempt(b, a, now) ||
+		c.PlanID != b.PlanID || c.AttemptID != a.ID ||
 		c.BindingSHA256 != a.BindingSHA256 || c.TargetID != b.TargetID || c.FenceGeneration != b.FenceGeneration ||
 		c.AuthorityEpoch != epoch || epoch <= 0 || c.SourceCommit != b.SourceCommit ||
 		c.SavedPlanSHA256 != b.SavedPlanSHA256 || c.EffectSHA256 != b.EffectSHA256 ||
@@ -121,7 +136,9 @@ func NewEffectChallengeV1(purpose string, b Binding, a Attempt, epoch int64, obs
 			grant.FenceGeneration != b.FenceGeneration || grant.AuthorityEpoch != epoch || grant.Backend != b.Backend ||
 			grant.SourceCommit != b.SourceCommit || grant.SavedPlanSHA256 != b.SavedPlanSHA256 || grant.EffectSHA256 != b.EffectSHA256 ||
 			grant.ProviderAccountUUID != b.ProviderAccountUUID || grant.NodeName != b.NodeName || grant.DropletID != b.DropletID ||
-			!now.Before(grant.ExpiresAt) {
+			grant.IssuedAt.IsZero() || grant.IssuedAt.Before(b.CreatedAt) || grant.IssuedAt.Before(a.CreatedAt) ||
+			now.Before(grant.IssuedAt) || grant.ExpiresAt.Sub(grant.IssuedAt) > time.Minute ||
+			!grant.ExpiresAt.After(grant.IssuedAt) || !now.Before(grant.ExpiresAt) {
 			return EffectChallengeV1{}, ErrEffectAttestation
 		}
 		raw, err := json.Marshal(grant)
@@ -247,7 +264,7 @@ func VerifyEffectAttestationV1(s SignedEffectAttestationV1, c EffectChallengeV1,
 			return "", ErrEffectAttestation
 		}
 	} else {
-		if grant == nil || !validIssuedEffectGrant(*grant, c, now) || now.Sub(a.ObservedTo) > 10*time.Second {
+		if grant == nil || !validIssuedEffectGrant(*grant, c, b, attempt, now) || now.Sub(a.ObservedTo) > 10*time.Second {
 			return "", ErrEffectAttestation
 		}
 		grantRaw, e := json.Marshal(grant)

@@ -117,3 +117,50 @@ func TestEffectAttestationRejectsPurposeTamperReplayAndStaleReads(t *testing.T) 
 		t.Fatal("accepted terminal schema")
 	}
 }
+
+func TestEffectChallengeRejectsFabricatedAttemptAndBinding(t *testing.T) {
+	c, b, a, _, _, pub, now := effectAttestationFixture(t, EffectIssuePurpose)
+	for name, change := range map[string]func(*Binding, *Attempt){
+		"unrelated binding":        func(b *Binding, _ *Attempt) { b.CandidateSHA256 = strings.Repeat("f", 64) },
+		"fabricated digest":        func(_ *Binding, a *Attempt) { a.BindingSHA256 = strings.Repeat("f", 64) },
+		"wrong attempt schema":     func(_ *Binding, a *Attempt) { a.SchemaVersion = "invented" },
+		"wrong attempt status":     func(_ *Binding, a *Attempt) { a.Status = "succeeded" },
+		"missing runner device":    func(_ *Binding, a *Attempt) { a.PrincipalDeviceID = "" },
+		"attempt predates binding": func(b *Binding, a *Attempt) { a.CreatedAt = b.CreatedAt.Add(-time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bb, aa := b, a
+			change(&bb, &aa)
+			if c.Validate(bb, aa, 2, now) != ErrEffectAttestation {
+				t.Fatal("accepted bad provenance")
+			}
+		})
+	}
+	bad := a
+	bad.BindingSHA256 = strings.Repeat("f", 64)
+	if _, err := NewEffectChallengeV1(EffectIssuePurpose, b, bad, 2, "management-observer", "observer-key-1", 7, pub, bytes.Repeat([]byte{0x71}, 32), nil, now); err == nil {
+		t.Fatal("constructed challenge for fabricated attempt")
+	}
+}
+
+func TestEffectConsumeRejectsInvalidGrantTimeProvenance(t *testing.T) {
+	c, b, a, g, s, pub, now := effectAttestationFixture(t, EffectConsumePurpose)
+	for name, change := range map[string]func(*EffectGrant){
+		"zero issue":     func(g *EffectGrant) { g.IssuedAt = time.Time{} },
+		"future issue":   func(g *EffectGrant) { g.IssuedAt = now.Add(time.Second) },
+		"early issue":    func(g *EffectGrant) { g.IssuedAt = a.CreatedAt.Add(-time.Second) },
+		"long lifetime":  func(g *EffectGrant) { g.ExpiresAt = g.IssuedAt.Add(61 * time.Second) },
+		"consumed phase": func(g *EffectGrant) { g.Phase = "consumed" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := *g
+			change(&changed)
+			if _, err := VerifyEffectAttestationV1(s, c, b, a, &changed, 2, "management-observer", "observer-key-1", pub, now); err == nil {
+				t.Fatal("accepted invalid issued grant")
+			}
+			if _, err := NewEffectChallengeV1(EffectConsumePurpose, b, a, 2, "management-observer", "observer-key-1", 7, pub, bytes.Repeat([]byte{0x71}, 32), &changed, c.IssuedAt); err == nil {
+				t.Fatal("constructed from invalid issued grant")
+			}
+		})
+	}
+}
