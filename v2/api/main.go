@@ -1997,6 +1997,9 @@ func validateControlSecurityForBackend(cfg *config.Config, backend startup.Contr
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
 	}
+	if _, err := loadTargetOfflineTerminalTrust(cfg, backend, time.Now().UTC()); err != nil {
+		return fmt.Errorf("target Fleet terminal trust: %w", err)
+	}
 	if cfg.FunctionV3PreviewEnabled && (!cfg.PrivateInvocationEnabled || backend.Backend != startup.BackendPostgres) {
 		return fmt.Errorf("NORN_FUNCTION_V3_PREVIEW_ENABLED requires private invocation acceptance on PostgreSQL")
 	}
