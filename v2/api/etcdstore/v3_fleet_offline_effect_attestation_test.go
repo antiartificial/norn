@@ -112,6 +112,56 @@ func TestOfflineEffectAttestationFullReceiptTupleRollbackFailsClosed(t *testing.
 	}
 }
 
+func TestOfflineEffectAttestationHeadAndReceiptRollbackRetainsWatermark(t *testing.T) {
+	h, b, a, c, envelope, now := signedEffectIssueFixture(t)
+	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope,
+		func() time.Time { return now }); err != nil {
+		t.Fatal(err)
+	}
+	// Restore the original issue-event bytes over the advanced head and remove
+	// the entire receipt tuple. The independent high-watermark must survive.
+	issueRaw, _ := json.Marshal(c)
+	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineEffectChallengeKey(b.PlanID, c.Purpose), string(issueRaw)); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		h.s.offlineEffectAttestationKey(b.PlanID, c.Purpose),
+		h.s.offlineEffectAttestationEventKey(b.PlanID, c.Purpose),
+		h.s.offlineEffectChallengeConsumedKey(b.PlanID, c.Purpose),
+	} {
+		if _, err := h.s.kv.Delete(h.ctx(), key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.s.ReadAcceptedOfflineEffectAttestation(h.ctx(), b.PlanID, c.Purpose, c.ID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("watermark ignored on receipt read: %v", err)
+	}
+	if _, err := h.s.GetOfflineEffectChallenge(h.ctx(), b.PlanID, c.Purpose); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("watermark ignored on challenge read: %v", err)
+	}
+	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope,
+		func() time.Time { return now.Add(time.Second) }); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("watermark ignored on resubmission: %v", err)
+	}
+}
+
+func TestOfflineEffectAttestationMissingWatermarkFailsClosed(t *testing.T) {
+	h, b, a, c, envelope, now := signedEffectIssueFixture(t)
+	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope,
+		func() time.Time { return now }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Delete(h.ctx(), h.s.offlineEffectAcceptanceWatermarkKey(b.PlanID, c.Purpose)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.ReadAcceptedOfflineEffectAttestation(h.ctx(), b.PlanID, c.Purpose, c.ID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("missing watermark accepted: %v", err)
+	}
+	if _, err := h.s.GetOfflineEffectChallenge(h.ctx(), b.PlanID, c.Purpose); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+		t.Fatalf("missing watermark on historical challenge: %v", err)
+	}
+}
+
 func TestOfflineEffectChallengeHistoricalReadAfterTransitions(t *testing.T) {
 	h, b, a, c, envelope, now := signedEffectIssueFixture(t)
 	if _, err := h.s.submitOfflineEffectAttestationWithClock(h.ctx(), b.PlanID, a.ID, c.Purpose, c.ID, envelope, func() time.Time { return now }); err != nil {

@@ -49,6 +49,40 @@ type effectChallengeAcceptedHead struct {
 	AcceptedAt        time.Time                 `json:"acceptedAt"`
 }
 
+const effectAcceptanceWatermarkSchema = "norn.fleet-offline-effect-acceptance-watermark/v1"
+
+// A separate append-only key catches coordinated rollback of the challenge
+// head and receipt tuple while this etcd ledger survives. Total rollback of
+// etcd, including this watermark, is outside the local ledger and must be
+// detected by external state-continuity and target-fence recovery before any
+// effect lane is reactivated.
+type effectAcceptanceWatermark struct {
+	SchemaVersion     string    `json:"schemaVersion"`
+	PlanID            string    `json:"planId"`
+	Purpose           string    `json:"purpose"`
+	ChallengeID       string    `json:"challengeId"`
+	AttestationSHA256 string    `json:"attestationSHA256"`
+	AcceptedAt        time.Time `json:"acceptedAt"`
+}
+
+func (s *V3OperationStore) offlineEffectAcceptanceWatermarkKey(planID, purpose string) string {
+	return s.prefix + "/v3/fleet-offline-effect-acceptance-watermarks/" + planID + "/" + purpose
+}
+
+func decodeEffectAcceptanceWatermark(raw []byte, planID, purpose string) (effectAcceptanceWatermark, error) {
+	var watermark effectAcceptanceWatermark
+	if len(raw) == 0 || decodeV3Record(raw, &watermark) != nil || watermark.SchemaVersion != effectAcceptanceWatermarkSchema ||
+		watermark.PlanID != planID || watermark.Purpose != purpose || uuid.Validate(watermark.ChallengeID) != nil ||
+		watermark.AcceptedAt.IsZero() || !offlineEvidenceDigest.MatchString(watermark.AttestationSHA256) {
+		return effectAcceptanceWatermark{}, ErrOfflineAttemptCorrupt
+	}
+	canonical, err := json.Marshal(watermark)
+	if err != nil || !bytes.Equal(canonical, raw) {
+		return effectAcceptanceWatermark{}, ErrOfflineAttemptCorrupt
+	}
+	return watermark, nil
+}
+
 func decodeEffectChallengeHead(headRaw, eventRaw []byte, planID, purpose string) (offline.EffectChallengeV1, *effectChallengeAcceptedHead, error) {
 	if len(headRaw) == 0 && len(eventRaw) == 0 {
 		return offline.EffectChallengeV1{}, nil, ErrNotFound
@@ -127,14 +161,15 @@ func (s *V3OperationStore) ReadAcceptedOfflineEffectAttestation(ctx context.Cont
 		clientv3.OpGet(s.offlineEffectChallengeConsumedKey(planID, purpose)),
 		clientv3.OpGet(s.offlineEffectChallengeKey(planID, purpose)),
 		clientv3.OpGet(s.offlineEffectChallengeEventKey(planID, purpose)),
+		clientv3.OpGet(s.offlineEffectAcceptanceWatermarkKey(planID, purpose)),
 	).Commit()
 	if err != nil {
 		return AcceptedOfflineEffectAttestation{}, err
 	}
-	if len(response.Responses) != 5 {
+	if len(response.Responses) != 6 {
 		return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
 	}
-	var raw [5][]byte
+	var raw [6][]byte
 	for i, item := range response.Responses {
 		rows := item.GetResponseRange().Kvs
 		if len(rows) > 1 {
@@ -147,20 +182,21 @@ func (s *V3OperationStore) ReadAcceptedOfflineEffectAttestation(ctx context.Cont
 	return verifyAcceptedEffectRows(raw, planID, purpose, challengeID)
 }
 
-// The five rows are read at one etcd revision. A transitioned challenge head
-// with a missing receipt tuple is corruption, never pristine eligibility.
-func verifyAcceptedEffectRows(raw [5][]byte, planID, purpose, challengeID string) (AcceptedOfflineEffectAttestation, error) {
+// The six rows are read at one etcd revision. A surviving watermark with a
+// restored pristine head or missing receipt tuple is corruption, not eligibility.
+func verifyAcceptedEffectRows(raw [6][]byte, planID, purpose, challengeID string) (AcceptedOfflineEffectAttestation, error) {
 	challenge, acceptedHead, headErr := decodeEffectChallengeHead(raw[3], raw[4], planID, purpose)
 	if headErr != nil && headErr != ErrNotFound {
 		return AcceptedOfflineEffectAttestation{}, headErr
 	}
 	if len(raw[0]) == 0 && len(raw[1]) == 0 && len(raw[2]) == 0 {
-		if acceptedHead != nil {
+		if acceptedHead != nil || len(raw[5]) != 0 {
 			return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
 		}
 		return AcceptedOfflineEffectAttestation{}, ErrNotFound
 	}
-	if len(raw[0]) == 0 || !bytes.Equal(raw[0], raw[1]) || len(raw[2]) == 0 || acceptedHead == nil || headErr != nil {
+	if len(raw[0]) == 0 || !bytes.Equal(raw[0], raw[1]) || len(raw[2]) == 0 || len(raw[5]) == 0 ||
+		acceptedHead == nil || headErr != nil {
 		return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
 	}
 	var candidate AcceptedOfflineEffectAttestation
@@ -176,6 +212,11 @@ func verifyAcceptedEffectRows(raw [5][]byte, planID, purpose, challengeID string
 	}
 	if challenge != receipt.Challenge || acceptedHead.AttestationSHA256 != receipt.AttestationSHA256 ||
 		!acceptedHead.AcceptedAt.Equal(receipt.AcceptedAt) {
+		return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
+	}
+	watermark, err := decodeEffectAcceptanceWatermark(raw[5], planID, purpose)
+	if err != nil || watermark.ChallengeID != challengeID || watermark.AttestationSHA256 != receipt.AttestationSHA256 ||
+		!watermark.AcceptedAt.Equal(receipt.AcceptedAt) {
 		return AcceptedOfflineEffectAttestation{}, ErrOfflineAttemptCorrupt
 	}
 	return receipt, nil
@@ -246,7 +287,13 @@ func (s *V3OperationStore) submitOfflineEffectAttestationWithClock(ctx context.C
 	if err != nil {
 		return AcceptedOfflineEffectAttestation{}, err
 	}
-	compares := make([]clientv3.Cmp, 0, len(snapshot.keys)+3)
+	watermark := effectAcceptanceWatermark{SchemaVersion: effectAcceptanceWatermarkSchema, PlanID: planID,
+		Purpose: purpose, ChallengeID: challengeID, AttestationSHA256: digest, AcceptedAt: receipt.AcceptedAt}
+	watermarkRaw, err := json.Marshal(watermark)
+	if err != nil {
+		return AcceptedOfflineEffectAttestation{}, err
+	}
+	compares := make([]clientv3.Cmp, 0, len(snapshot.keys)+4)
 	for i, key := range snapshot.keys {
 		if i == effectChallengeRunnerAttempts {
 			compares = append(compares, clientv3.Compare(clientv3.CreateRevision(key).WithPrefix(), "=", 0))
@@ -258,12 +305,14 @@ func (s *V3OperationStore) submitOfflineEffectAttestationWithClock(ctx context.C
 		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectChallengeConsumedKey(planID, purpose)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectAttestationKey(planID, purpose)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectAttestationEventKey(planID, purpose)), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(s.offlineEffectAcceptanceWatermarkKey(planID, purpose)), "=", 0),
 	)
 	result, err := s.kv.Txn(ctx).If(compares...).Then(
 		clientv3.OpPut(s.offlineEffectChallengeKey(planID, purpose), string(headRaw)),
 		clientv3.OpPut(s.offlineEffectChallengeConsumedKey(planID, purpose), digest),
 		clientv3.OpPut(s.offlineEffectAttestationKey(planID, purpose), string(raw)),
 		clientv3.OpPut(s.offlineEffectAttestationEventKey(planID, purpose), string(raw)),
+		clientv3.OpPut(s.offlineEffectAcceptanceWatermarkKey(planID, purpose), string(watermarkRaw)),
 	).Commit()
 	if err != nil {
 		return AcceptedOfflineEffectAttestation{}, err

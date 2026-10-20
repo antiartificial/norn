@@ -310,14 +310,15 @@ func (s *V3OperationStore) GetOfflineEffectChallenge(ctx context.Context, planID
 		clientv3.OpGet(s.offlineEffectAttestationEventKey(planID, purpose)),
 		clientv3.OpGet(s.offlineEffectChallengeConsumedKey(planID, purpose)),
 		clientv3.OpGet(s.offlineEffectChallengeKey(planID, purpose)),
-		clientv3.OpGet(s.offlineEffectChallengeEventKey(planID, purpose))).Commit()
+		clientv3.OpGet(s.offlineEffectChallengeEventKey(planID, purpose)),
+		clientv3.OpGet(s.offlineEffectAcceptanceWatermarkKey(planID, purpose))).Commit()
 	if err != nil {
 		return offline.EffectChallengeV1{}, err
 	}
-	if len(result.Responses) != 5 {
+	if len(result.Responses) != 6 {
 		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
 	}
-	var raw [5][]byte
+	var raw [6][]byte
 	for i, item := range result.Responses {
 		rows := item.GetResponseRange().Kvs
 		if len(rows) > 1 {
@@ -329,13 +330,16 @@ func (s *V3OperationStore) GetOfflineEffectChallenge(ctx context.Context, planID
 	}
 	challenge, acceptedHead, err := decodeEffectChallengeHead(raw[3], raw[4], planID, purpose)
 	if err != nil {
+		if err == ErrNotFound && (len(raw[0]) != 0 || len(raw[1]) != 0 || len(raw[2]) != 0 || len(raw[5]) != 0) {
+			return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
+		}
 		return offline.EffectChallengeV1{}, err
 	}
 	if acceptedHead != nil {
 		if _, err := verifyAcceptedEffectRows(raw, planID, purpose, challenge.ID); err != nil {
 			return offline.EffectChallengeV1{}, err
 		}
-	} else if len(raw[0]) != 0 || len(raw[1]) != 0 || len(raw[2]) != 0 {
+	} else if len(raw[0]) != 0 || len(raw[1]) != 0 || len(raw[2]) != 0 || len(raw[5]) != 0 {
 		return offline.EffectChallengeV1{}, ErrOfflineAttemptCorrupt
 	}
 	return challenge, nil
