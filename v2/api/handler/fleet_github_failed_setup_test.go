@@ -59,7 +59,7 @@ func TestReconcileAbandonedFailedRunnerSetupSignsTerminalReceipt(t *testing.T) {
 	nonce := strings.Repeat("a", 64)
 	nonceSum := sha256.Sum256([]byte(nonce))
 	nonceHash := hex.EncodeToString(nonceSum[:])
-	if _, err := p.db.CreateFleetGitHubDispatch(ctx, store.FleetGitHubDispatch{PlanID: planID, PlanRunID: 91, PlanSHA256: strings.Repeat("c", 64), ApprovedHeadSHA: headSHA, FleetEnvironment: "staging/nyc3", DispatchNonceSHA256: nonceHash, DispatchState: "prepared"}); err != nil {
+	if _, err := p.db.CreateFleetGitHubDispatch(ctx, store.FleetGitHubDispatch{PlanID: planID, PlanRunID: 39103588128, PlanSHA256: "02a6e5c079ddc27793c416d133c54c8c1310ef8be562cd6cc24a7a1a309192d1", ApprovedHeadSHA: "7f37223ff770983a33ba59cbb5fdc90d45cdd39d", FleetEnvironment: "staging/nyc3", AllowDestructive: true, DispatchNonceSHA256: nonceHash, DispatchState: "prepared"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.db.MarkFleetGitHubDispatchSubmitting(ctx, planID, nonceHash); err != nil {

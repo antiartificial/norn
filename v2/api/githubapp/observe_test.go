@@ -121,7 +121,7 @@ func TestReconcileFailedRunnerSetupMatchesObservedPreCheckoutFailureOnly(t *test
 	sum := sha256.Sum256([]byte(nonce))
 	nonceHash := hex.EncodeToString(sum[:])
 	headSHA := "602a3867eb590341218efb93295d7afe018a842a"
-	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("c", 64), ApprovedHeadSHA: headSHA}
+	approved := &Dispatch{PlanRunID: 39103588128, PlanSHA: "02a6e5c079ddc27793c416d133c54c8c1310ef8be562cd6cc24a7a1a309192d1", ApprovedHeadSHA: "7f37223ff770983a33ba59cbb5fdc90d45cdd39d"}
 	run := applyRun{ID: runID, HTMLURL: "https://github.com/acme/norn-fleet/actions/runs/39104495159", Event: "workflow_dispatch", HeadSHA: headSHA, HeadBranch: "main", Path: ".github/workflows/apply.yml", Name: "apply", DisplayTitle: fmt.Sprintf(applyRunDisplayTitleFormat, "staging/nyc3", planID, nonce), RunAttempt: 1, Status: "completed", Conclusion: "failure"}
 	run.Actor.Login, run.Actor.Type = "norn[bot]", "Bot"
 	admission := reconciliationJob{ID: 117607337776, RunID: runID, RunAttempt: 1, HeadSHA: headSHA, Name: "pilot_admission", Status: "completed", Conclusion: "success", StartedAt: "2026-10-20T12:00:00Z", CompletedAt: "2026-10-20T12:01:00Z", RunnerID: 1000020754, RunnerName: "GitHub Actions 1000020754", Labels: []string{"ubuntu-24.04"}, Steps: []reconciliationStep{{1, "Set up job", "completed", "success"}, {2, "Require selected admission runner", "completed", "success"}, {3, "Run set -euo pipefail", "completed", "success"}, {4, "Complete job", "completed", "success"}}}
@@ -163,7 +163,7 @@ func TestReconcileFailedRunnerSetupMatchesObservedPreCheckoutFailureOnly(t *test
 	client.cfg.Environment, client.cfg.ConfigPath = "staging", "environments/staging/nyc3/cluster.yaml"
 	check := func(want bool) {
 		t.Helper()
-		result, err := client.ReconcileFailedRunnerSetup(context.Background(), planID, "staging/nyc3", false, approved, nonceHash, runID, 1)
+		result, err := client.ReconcileFailedRunnerSetup(context.Background(), planID, "staging/nyc3", true, approved, nonceHash, runID, 1)
 		if (err == nil) != want {
 			t.Fatalf("accepted=%t want=%t result=%+v err=%v", err == nil, want, result, err)
 		}
@@ -188,6 +188,7 @@ func TestReconcileFailedRunnerSetupMatchesObservedPreCheckoutFailureOnly(t *test
 		"unexpected job":           func() { jobs.TotalCount = 3 },
 		"artifact changed":         func() { artifacts.Artifacts[0].Name = "other" },
 		"wrong head":               func() { run.HeadSHA = strings.Repeat("d", 40) },
+		"wrong approved head":      func() { approved.ApprovedHeadSHA = headSHA },
 		"rerun":                    func() { run.RunAttempt = 2 },
 		"wrong nonce":              func() { run.DisplayTitle = strings.Replace(run.DisplayTitle, nonce, strings.Repeat("b", 64), 1) },
 	} {
@@ -195,11 +196,13 @@ func TestReconcileFailedRunnerSetupMatchesObservedPreCheckoutFailureOnly(t *test
 			originalJobs, _ := json.Marshal(jobs)
 			originalArtifacts, _ := json.Marshal(artifacts)
 			originalRun := run
+			originalApproved := *approved
 			mutate()
 			check(false)
 			_ = json.Unmarshal(originalJobs, &jobs)
 			_ = json.Unmarshal(originalArtifacts, &artifacts)
 			run = originalRun
+			*approved = originalApproved
 		})
 	}
 }
