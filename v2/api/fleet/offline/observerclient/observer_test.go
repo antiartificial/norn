@@ -52,13 +52,26 @@ func testRunner(client Client, source Source) Runner {
 
 func testGrant() offline.EffectGrant {
 	now := time.Now().UTC()
-	return offline.EffectGrant{SchemaVersion: offline.EffectGrantSchema, ID: "grant", PlanID: "plan", AttemptID: "attempt", BindingSHA256: "binding", TargetID: "target", FenceGeneration: 2, AuthorityEpoch: 3, Phase: "consumed", ConsumedAt: &now}
+	return offline.EffectGrant{SchemaVersion: offline.EffectGrantSchema, ID: "grant", PlanID: "plan", AttemptID: "attempt", BindingSHA256: "binding", TargetID: "target", FenceGeneration: 2, AuthorityEpoch: 3, Phase: "consumed", ConsumedAt: &now,
+		Backend: offline.Backend{Bucket: "bucket", Key: "key", Lineage: "lineage", VersionID: "old", Serial: 1}}
+}
+
+func receiptFor(g offline.EffectGrant, observed time.Time) offline.TerminalEvidence {
+	backend := g.Backend
+	backend.Serial++
+	backend.VersionID = "new"
+	backend.RawSHA256 = strings.Repeat("9", 64)
+	return offline.TerminalEvidence{SchemaVersion: offline.TerminalSchema, PlanID: g.PlanID, AttemptID: g.AttemptID,
+		GrantID: g.ID, BindingSHA256: g.BindingSHA256, TargetID: g.TargetID, FenceGeneration: g.FenceGeneration,
+		AuthorityEpoch: g.AuthorityEpoch, ObservedAt: observed, RecordedAt: observed,
+		EvidenceSHA256: strings.Repeat("a", 64), ProviderEvidenceSHA256: strings.Repeat("b", 64),
+		BackendEvidenceSHA256: strings.Repeat("c", 64), WorkloadEvidenceSHA256: strings.Repeat("d", 64), Backend: backend}
 }
 
 func TestExistingExactTerminalReceiptSkipsObservation(t *testing.T) {
 	g := testGrant()
 	s := &stubSource{}
-	c := &stubClient{grant: g, terminal: offline.TerminalEvidence{SchemaVersion: offline.TerminalSchema, PlanID: g.PlanID, AttemptID: g.AttemptID, GrantID: g.ID, BindingSHA256: g.BindingSHA256, TargetID: g.TargetID, FenceGeneration: g.FenceGeneration, AuthorityEpoch: g.AuthorityEpoch, ObservedAt: time.Now(), RecordedAt: time.Now()}}
+	c := &stubClient{grant: g, terminal: receiptFor(g, g.ConsumedAt.Add(time.Second))}
 	if _, err := testRunner(c, s).Run(context.Background(), "plan", "attempt"); err != nil || s.calls != 0 || c.creates != 0 {
 		t.Fatalf("exact receipt should recover without observation or challenge: err=%v source=%d create=%d", err, s.calls, c.creates)
 	}
@@ -106,10 +119,7 @@ func (s *flowClient) CreateChallenge(context.Context, string, string) (offline.T
 }
 func (s *flowClient) SubmitAttestation(_ context.Context, _, _ string, envelope offline.SignedTerminalAttestationV1) (offline.TerminalEvidence, error) {
 	s.submissions++
-	s.terminal = offline.TerminalEvidence{SchemaVersion: offline.TerminalSchema, PlanID: s.grant.PlanID, AttemptID: s.grant.AttemptID,
-		GrantID: s.grant.ID, BindingSHA256: s.grant.BindingSHA256, TargetID: s.grant.TargetID, FenceGeneration: s.grant.FenceGeneration,
-		AuthorityEpoch: s.grant.AuthorityEpoch, ObservedAt: envelope.Attestation.ObservedTo, RecordedAt: envelope.Attestation.ObservedTo,
-		EvidenceSHA256: envelope.Attestation.Observation.EvidenceSHA256}
+	s.terminal = receiptFor(s.grant, envelope.Attestation.ObservedTo)
 	if s.responseLost {
 		return offline.TerminalEvidence{}, errors.New("response lost after commit")
 	}

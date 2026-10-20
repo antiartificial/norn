@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"norn/v2/api/fleet/offline"
@@ -15,6 +16,8 @@ import (
 // ErrNotFound is the only response that permits creating a challenge or
 // observing an effect. Transport failures and ambiguous reads fail closed.
 var ErrNotFound = errors.New("exact terminal resource not found")
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Client is an authenticated, TLS-pinned adapter for the target Fleet Norn.
 // Implementations must return ErrNotFound only for an authoritative 404 from
@@ -111,7 +114,12 @@ func (r Runner) Run(ctx context.Context, planID, attemptID string) (offline.Term
 func requireReceipt(receipt offline.TerminalEvidence, grant offline.EffectGrant, evidenceSHA string) (offline.TerminalEvidence, error) {
 	if receipt.SchemaVersion != offline.TerminalSchema || receipt.PlanID != grant.PlanID || receipt.AttemptID != grant.AttemptID || receipt.GrantID != grant.ID ||
 		receipt.BindingSHA256 != grant.BindingSHA256 || receipt.TargetID != grant.TargetID || receipt.FenceGeneration != grant.FenceGeneration || receipt.AuthorityEpoch != grant.AuthorityEpoch ||
-		receipt.RecordedAt.IsZero() || receipt.ObservedAt.IsZero() || (evidenceSHA != "" && receipt.EvidenceSHA256 != evidenceSHA) {
+		grant.ConsumedAt == nil || !receipt.ObservedAt.After(*grant.ConsumedAt) || receipt.RecordedAt.Before(receipt.ObservedAt) ||
+		receipt.Backend.Bucket != grant.Backend.Bucket || receipt.Backend.Key != grant.Backend.Key || receipt.Backend.Lineage != grant.Backend.Lineage ||
+		receipt.Backend.Serial != grant.Backend.Serial+1 || receipt.Backend.VersionID == "" || receipt.Backend.VersionID == "null" || receipt.Backend.VersionID == grant.Backend.VersionID ||
+		!sha256Hex.MatchString(receipt.Backend.RawSHA256) || !sha256Hex.MatchString(receipt.EvidenceSHA256) ||
+		!sha256Hex.MatchString(receipt.ProviderEvidenceSHA256) || !sha256Hex.MatchString(receipt.BackendEvidenceSHA256) || !sha256Hex.MatchString(receipt.WorkloadEvidenceSHA256) ||
+		(evidenceSHA != "" && receipt.EvidenceSHA256 != evidenceSHA) {
 		return offline.TerminalEvidence{}, offline.ErrTerminalProof
 	}
 	return receipt, nil
