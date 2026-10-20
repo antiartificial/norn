@@ -280,6 +280,11 @@ func (s NomadConsulSource) scan(ctx context.Context, nomad, consul *http.Client)
 			return out, ErrWorkloadObservation
 		}
 		for _, check := range entry.Checks {
+			// A service entry is not passing if its node-level health check
+			// fails, even when its named application checks still pass.
+			if check.Status != "passing" {
+				return out, ErrWorkloadObservation
+			}
 			if check.Name != "readyz" && check.Name != "healthz" {
 				continue
 			} // Consul also returns its node-level checks.

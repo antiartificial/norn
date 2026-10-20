@@ -21,6 +21,7 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	filtered := false
 	targetGone := false
 	ghostAllocation := false
+	nodeCheckCritical := false
 	pages := 0
 	nomad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.Header.Get("X-Nomad-Token") != "nomad-read" {
@@ -89,7 +90,11 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 		if mismatch {
 			status = "critical"
 		}
-		fmt.Fprintf(w, `[{"Service":{"Service":"hello-norn-mysql-web","Meta":{"norn_alloc_id":"alloc-1","norn_node_id":"node-1","norn_job_id":"hello-norn-mysql","norn_namespace":"default"}},"Checks":[{"CheckID":"a-ready","Name":"readyz","Status":"passing"},{"CheckID":"a-health","Name":"healthz","Status":"passing"}]},{"Service":{"Service":"hello-norn-mysql-web","Meta":{"norn_alloc_id":"alloc-2","norn_node_id":"node-2","norn_job_id":"hello-norn-mysql","norn_namespace":"default"}},"Checks":[{"CheckID":"b-ready","Name":"readyz","Status":%q},{"CheckID":"b-health","Name":"healthz","Status":"passing"}]}]`, status)
+		nodeStatus := "passing"
+		if nodeCheckCritical {
+			nodeStatus = "critical"
+		}
+		fmt.Fprintf(w, `[{"Service":{"Service":"hello-norn-mysql-web","Meta":{"norn_alloc_id":"alloc-1","norn_node_id":"node-1","norn_job_id":"hello-norn-mysql","norn_namespace":"default"}},"Checks":[{"CheckID":"node-check","Name":"serfHealth","Status":%q},{"CheckID":"a-ready","Name":"readyz","Status":"passing"},{"CheckID":"a-health","Name":"healthz","Status":"passing"}]},{"Service":{"Service":"hello-norn-mysql-web","Meta":{"norn_alloc_id":"alloc-2","norn_node_id":"node-2","norn_job_id":"hello-norn-mysql","norn_namespace":"default"}},"Checks":[{"CheckID":"b-ready","Name":"readyz","Status":%q},{"CheckID":"b-health","Name":"healthz","Status":"passing"}]}]`, nodeStatus, status)
 	}))
 	defer consul.Close()
 	roots := func(s *httptest.Server) *x509.CertPool { p := x509.NewCertPool(); p.AddCert(s.Certificate()); return p }
@@ -133,5 +138,10 @@ func TestNomadConsulSourceStableScopedHTTPS(t *testing.T) {
 	ghostAllocation = true
 	if _, err = ObserveTerminalNomadConsul(context.Background(), source, now); err == nil {
 		t.Fatal("historical allocation on removed node accepted in another namespace")
+	}
+	ghostAllocation = false
+	nodeCheckCritical = true
+	if _, err = ObserveTerminalNomadConsul(context.Background(), source, now); err == nil {
+		t.Fatal("failing Consul node health accepted")
 	}
 }
