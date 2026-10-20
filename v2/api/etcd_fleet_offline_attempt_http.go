@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
@@ -31,7 +32,8 @@ type offlineAttemptDeviceStore interface {
 	ActiveAccessDevice(context.Context, string) (*store.AccessDevice, error)
 }
 
-func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, attempts *etcdstore.V3OperationStore) {
+func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, attempts *etcdstore.V3OperationStore,
+	ownerPublicKey ed25519.PublicKey, reservationVerifier OfflineReservationEvidenceVerifier) {
 	offlineAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOfflineAttempt)
 	router.With(offlineAuth).Post("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptCreate(attempts, identities))
 	router.With(offlineAuth).Get("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptGet(attempts, identities))
@@ -42,6 +44,10 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 	router.With(adminAuth).Post("/api/v1/fleet/offline/enrollments/approve", enrollment.ApproveDeviceEnrollment)
 	router.Post("/api/v1/fleet/offline/enrollments/{id}/exchange", enrollment.ExchangeDeviceEnrollment)
 	router.With(adminAuth).Delete("/api/v1/fleet/offline/devices/{id}", enrollment.RevokeDevice)
+	if cfg.FleetOfflineReservationEnabled {
+		router.With(adminAuth).Post("/api/v1/fleet/offline/plans/{planID}/reservation", etcdOfflineReservationCreate(attempts, identities, reservationVerifier, cfg.FleetOfflineOwnerKeyID, ownerPublicKey))
+		router.With(adminAuth).Get("/api/v1/fleet/offline/plans/{planID}/reservation", etcdOfflineReservationGet(attempts))
+	}
 }
 
 func offlineAttemptPrincipal(w http.ResponseWriter, r *http.Request, devices offlineAttemptDeviceStore) (handler.AccessPrincipal, bool) {

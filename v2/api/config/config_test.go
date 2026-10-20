@@ -138,6 +138,24 @@ func TestFleetGitHubAppConfig(t *testing.T) {
 	}
 }
 
+func TestFleetOfflineReservationIsExplicitAndDisabledByDefault(t *testing.T) {
+	for _, key := range []string{"NORN_FLEET_OFFLINE_RESERVATION_ENABLED", "NORN_FLEET_OFFLINE_OWNER_KEY_ID", "NORN_FLEET_OFFLINE_OWNER_PUBLIC_KEY_FILE", "NORN_FLEET_OFFLINE_EVIDENCE_VERIFIER_URL", "NORN_FLEET_OFFLINE_EVIDENCE_TOKEN_FILE"} {
+		t.Setenv(key, "")
+	}
+	if cfg := Load(); cfg.FleetOfflineReservationEnabled {
+		t.Fatal("offline reservation enabled by default")
+	}
+	t.Setenv("NORN_FLEET_OFFLINE_RESERVATION_ENABLED", "true")
+	t.Setenv("NORN_FLEET_OFFLINE_OWNER_KEY_ID", "owner-2026")
+	t.Setenv("NORN_FLEET_OFFLINE_OWNER_PUBLIC_KEY_FILE", "/etc/norn/offline-owner.pub")
+	t.Setenv("NORN_FLEET_OFFLINE_EVIDENCE_VERIFIER_URL", "https://evidence.internal/")
+	t.Setenv("NORN_FLEET_OFFLINE_EVIDENCE_TOKEN_FILE", "/run/secrets/offline-evidence-token")
+	cfg := Load()
+	if !cfg.FleetOfflineReservationEnabled || cfg.FleetOfflineOwnerKeyID != "owner-2026" || cfg.FleetOfflineEvidenceVerifierURL != "https://evidence.internal" || cfg.FleetOfflineEvidenceTokenFile == "" {
+		t.Fatalf("offline reservation config = %#v", cfg)
+	}
+}
+
 func TestGitHubActionsReleaseBindingsConfig(t *testing.T) {
 	t.Setenv("NORN_GITHUB_ACTIONS_RELEASE_BINDINGS", "orders-api=acme/orders-api@123@456, billing-api=acme/billing-api@789@456")
 	t.Setenv("NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES", "acme/orders-api@123@456")

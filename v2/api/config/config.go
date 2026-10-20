@@ -55,10 +55,18 @@ type Config struct {
 	// binding for a recovery attempt created before its workflow head was
 	// recorded separately from the reviewed plan commit. Empty by default.
 	FleetLegacyRecoveryHeadBinding string
-	FleetGitHubAPIBaseURL          string
-	GitToken                       string
-	GitSSHKey                      string
-	APIToken                       string
+	// FleetOfflineReservation* enables the owner-approved offline reservation
+	// admission surface. It is disabled by default and requires both a pinned
+	// Ed25519 owner key and a separately credentialed evidence verifier.
+	FleetOfflineReservationEnabled  bool
+	FleetOfflineOwnerKeyID          string
+	FleetOfflineOwnerPublicKeyFile  string
+	FleetOfflineEvidenceVerifierURL string
+	FleetOfflineEvidenceTokenFile   string
+	FleetGitHubAPIBaseURL           string
+	GitToken                        string
+	GitSSHKey                       string
+	APIToken                        string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
 	RequireExplicitAuth      bool
@@ -345,6 +353,11 @@ func Load() *Config {
 		GitHubActionsFleetAllowedWorkflowRefs: splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS")),
 		GitHubActionsFleetAllowedEnvironments: splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS")),
 		GitHubActionsFleetAllowedIntents:      splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS")),
+		FleetOfflineReservationEnabled:        envBoolOr("NORN_FLEET_OFFLINE_RESERVATION_ENABLED", false),
+		FleetOfflineOwnerKeyID:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_KEY_ID")),
+		FleetOfflineOwnerPublicKeyFile:        strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_OWNER_PUBLIC_KEY_FILE")),
+		FleetOfflineEvidenceVerifierURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_VERIFIER_URL")), "/"),
+		FleetOfflineEvidenceTokenFile:         strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_TOKEN_FILE")),
 
 		ExternalFleetAdmissionApp:                  strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_APP")),
 		ExternalFleetAdmissionNamespace:            strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_NAMESPACE")),

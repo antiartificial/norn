@@ -345,6 +345,37 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/offline/plans/{planID}/reservation:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: reserveFleetOfflineDispatch
+      description: Owner-signed, admin-only reservation of the fixed work-staging contraction. Disabled unless a pinned Ed25519 owner key and separately credentialed evidence verifier are configured. The server requires a live enrolled offline-device subject and verifies fresh source, saved-plan, versioned-state, effect, provider-account, and node-to-droplet evidence before atomically acquiring the target fence. It never grants provider access or runs an effect.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [binding, approval]
+              properties:
+                binding: { $ref: '#/components/schemas/FleetOfflineDispatchBinding' }
+                approval: { $ref: '#/components/schemas/FleetOfflineOwnerApproval' }
+      responses:
+        '201': { description: Exact reservation and target fence committed, content: { application/json: { schema: { $ref: '#/components/schemas/FleetOfflineDispatchBinding' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    get:
+      operationId: readFleetOfflineDispatchReservation
+      description: Admin-only exact reservation readback for resolving an uncertain commit response.
+      responses:
+        '200': { description: Exact committed reservation, content: { application/json: { schema: { $ref: '#/components/schemas/FleetOfflineDispatchBinding' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/offline/enrollments:
     post:
       operationId: startFleetOfflineEnrollment
@@ -2109,6 +2140,69 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Operation' }
   schemas:
+    FleetOfflineBackend:
+      type: object
+      additionalProperties: false
+      required: [bucket, key, versionId, lineage, serial, rawSHA256]
+      properties:
+        bucket: { type: string, minLength: 1 }
+        key: { type: string, minLength: 1 }
+        versionId: { type: string, minLength: 1 }
+        lineage: { type: string, minLength: 1 }
+        serial: { type: integer, format: uint64, minimum: 1 }
+        rawSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    FleetOfflineDispatchBinding:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, targetId, resource, sourceCommit, savedPlanSHA256, effectSHA256, backend, providerAccountUUID, nodeName, dropletId, ownerAuthorizationId, ownerEnvelopeSHA256, runnerPrincipalSubject, dispatchNonceSHA256, fenceGeneration, createdAt, expiresAt]
+      properties:
+        schemaVersion: { const: norn.fleet-offline-dispatch-binding/v1 }
+        planId: { type: string, format: uuid }
+        targetId: { type: string, minLength: 1 }
+        resource: { const: staging/nyc3 }
+        sourceCommit: { type: string, pattern: '^[0-9a-f]{40}$' }
+        savedPlanSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        effectSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        backend: { $ref: '#/components/schemas/FleetOfflineBackend' }
+        providerAccountUUID: { type: string, minLength: 1 }
+        nodeName: { const: app-03 }
+        dropletId: { const: '610327215' }
+        ownerAuthorizationId: { type: string, pattern: '^[0-9a-f]{64}$' }
+        ownerEnvelopeSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        runnerPrincipalSubject: { type: string, pattern: '^fleet-offline-device:[0-9a-f-]{36}$' }
+        dispatchNonceSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        fenceGeneration: { type: integer, format: uint64, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    FleetOfflineOwnerApproval:
+      type: object
+      additionalProperties: false
+      required: [intent, keyId, signature]
+      properties:
+        intent:
+          type: object
+          additionalProperties: false
+          required: [schemaVersion, authorizationId, allowDestructive, planId, targetId, resource, sourceCommit, savedPlanSHA256, effectSHA256, backend, providerAccountUUID, nodeName, dropletId, runnerPrincipalSubject, dispatchNonceSHA256, fenceGeneration, expiresAt]
+          properties:
+            schemaVersion: { const: norn.fleet-offline-owner-approval/v1 }
+            authorizationId: { type: string, pattern: '^[0-9a-f]{64}$' }
+            allowDestructive: { const: true }
+            planId: { type: string, format: uuid }
+            targetId: { type: string, minLength: 1 }
+            resource: { const: staging/nyc3 }
+            sourceCommit: { type: string, pattern: '^[0-9a-f]{40}$' }
+            savedPlanSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+            effectSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+            backend: { $ref: '#/components/schemas/FleetOfflineBackend' }
+            providerAccountUUID: { type: string, minLength: 1 }
+            nodeName: { const: app-03 }
+            dropletId: { const: '610327215' }
+            runnerPrincipalSubject: { type: string, pattern: '^fleet-offline-device:[0-9a-f-]{36}$' }
+            dispatchNonceSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+            fenceGeneration: { type: integer, format: uint64, minimum: 1 }
+            expiresAt: { type: string, format: date-time }
+        keyId: { type: string, minLength: 1 }
+        signature: { type: string, minLength: 1 }
     Problem:
       type: object
       required: [type, title, status, code]

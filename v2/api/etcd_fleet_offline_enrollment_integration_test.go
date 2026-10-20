@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
@@ -35,7 +36,7 @@ func TestEtcdOfflineEnrollmentMountedRoutes(t *testing.T) {
 	prefix := "/norn-test/offline-enrollment/" + uuid.NewString()
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()); _ = client.Close() })
 	identities := etcdstore.NewAuthStore(client, prefix)
-	cfg := &config.Config{APIToken: strings.Repeat("s", 40), FleetAuthorityOnly: true}
+	cfg := &config.Config{APIToken: strings.Repeat("s", 40), FleetAuthorityOnly: true, FleetOfflineReservationEnabled: true, FleetOfflineOwnerKeyID: "test-owner"}
 	signer, err := store.NewHMACAcceptanceSigner(strings.Repeat("a", 40))
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +46,7 @@ func TestEtcdOfflineEnrollmentMountedRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := chi.NewRouter()
-	registerEtcdFleetOfflineRoutes(router, cfg, identities, attempts)
+	registerEtcdFleetOfflineRoutes(router, cfg, identities, attempts, make(ed25519.PublicKey, ed25519.PublicKeySize), &reservationEvidenceVerifier{})
 	adminRecord, err := handler.NewManagedAccessTokenRecord("test-operator", []string{handler.ScopeAdmin}, time.Hour, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +69,9 @@ func TestEtcdOfflineEnrollmentMountedRoutes(t *testing.T) {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, req)
 		return response
+	}
+	if response := call(http.MethodGet, "/api/v1/fleet/offline/plans/"+uuid.NewString()+"/reservation", "", "", true); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated reservation readback=%d", response.Code)
 	}
 	startPath := "/api/v1/fleet/offline/enrollments"
 	request := `{"deviceName":"offline runner","platform":" FLEET-OFFLINE-RUNNER ","requestedScopes":["fleet:offline-attempt"],"publicKey":"BAD"}`
