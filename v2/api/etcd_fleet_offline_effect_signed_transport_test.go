@@ -199,6 +199,23 @@ func TestOfflineSignedEffectTransportRejectsMismatchedAndUnpinned(t *testing.T) 
 	}
 }
 
+func TestOfflineSignedEffectTransportDoesNotReissueConsumedGrant(t *testing.T) {
+	f, trust := effectTransportFixture()
+	f.grant.Phase = "consumed"
+	consumedAt := time.Now().UTC()
+	f.grant.ConsumedAt = &consumedAt
+	router, p := effectTransportRouter(f, trust)
+	*p = effectTransportPrincipal("runner", "runner-device", "runner-token", handler.ScopeFleetOperate)
+	path := "/api/v1/fleet/offline/attempts/" + effectTransportPlan + "/" + effectTransportAttempt +
+		"/signed-effect/effect-issue/runner/grants/" + effectTransportChallenge
+	if r := effectRequest(router, http.MethodGet, path, ""); r.Code != http.StatusConflict {
+		t.Fatalf("consumed grant recovered as issued: %d", r.Code)
+	}
+	if r := effectRequest(router, http.MethodPost, path, `{}`); r.Code != http.StatusConflict || f.granted != 1 {
+		t.Fatalf("consumed grant returned as issuance: %d grants=%d", r.Code, f.granted)
+	}
+}
+
 func TestOfflineSignedEffectTransportConsumeAndCanonicalObserverBody(t *testing.T) {
 	f, trust := effectTransportFixture()
 	router, p := effectTransportRouter(f, trust)

@@ -246,7 +246,7 @@ func registerEtcdFleetOfflineSignedEffectRoutesWithAuth(router chi.Router, runne
 			fail(w, r, err)
 			return
 		}
-		if !matchGrant(grant, plan, attempt) {
+		if !matchGrant(grant, plan, attempt) || grant.Phase != "issued" || grant.ConsumedAt != nil {
 			fail(w, r, offline.ErrEffectProofMismatch)
 			return
 		}
@@ -272,7 +272,7 @@ func registerEtcdFleetOfflineSignedEffectRoutesWithAuth(router chi.Router, runne
 			fail(w, r, err)
 			return
 		}
-		if !matchGrant(grant, plan, attempt) {
+		if !matchGrant(grant, plan, attempt) || grant.Phase != "issued" || grant.ConsumedAt != nil {
 			fail(w, r, offline.ErrEffectProofMismatch)
 			return
 		}
