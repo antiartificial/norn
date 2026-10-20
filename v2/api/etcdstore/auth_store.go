@@ -221,9 +221,10 @@ type OfflineRunnerProof struct {
 	TokenExpiresAt                time.Time
 }
 
-// OfflineRunnerReservationHeadroom bounds verifier and etcd commit latency.
-// It proves the token remains valid through reservation admission; it does not
-// extend token lifetime or authorize a later attempt.
+// OfflineRunnerReservationHeadroom is practical room for verifier and etcd
+// commit latency. It does not prove validity across an unbounded etcd stall,
+// extend token lifetime, or authorize a later attempt; attempt admission
+// independently authenticates the then-live runner token.
 const OfflineRunnerReservationHeadroom = 30 * time.Second
 
 // ProveOfflineRunner resolves a canonical offline runner subject from durable

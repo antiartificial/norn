@@ -213,7 +213,6 @@ func etcdOfflineReservationGet(store offlineReservationStore) http.HandlerFunc {
 type offlineEvidence struct {
 	SchemaVersion       string          `json:"schemaVersion"`
 	PlanID              string          `json:"planId"`
-	TargetID            string          `json:"targetId"`
 	Resource            string          `json:"resource"`
 	SourceCommit        string          `json:"sourceCommit"`
 	SavedPlanSHA256     string          `json:"savedPlanSHA256"`
@@ -312,7 +311,7 @@ func (v *httpOfflineEvidenceVerifier) VerifyOfflineReservation(ctx context.Conte
 	}
 	now := v.now().UTC()
 	if evidence.ObservedAt.IsZero() || evidence.ObservedAt.After(now.Add(time.Minute)) || now.Sub(evidence.ObservedAt) > 5*time.Minute ||
-		evidence.PlanID != binding.PlanID || evidence.TargetID != binding.TargetID || evidence.Resource != binding.Resource ||
+		evidence.PlanID != binding.PlanID || evidence.Resource != binding.Resource ||
 		evidence.SourceCommit != binding.SourceCommit || evidence.SavedPlanSHA256 != binding.SavedPlanSHA256 ||
 		evidence.EffectSHA256 != binding.EffectSHA256 || evidence.Backend != binding.Backend ||
 		evidence.ProviderAccountUUID != binding.ProviderAccountUUID || evidence.NodeName != binding.NodeName || evidence.DropletID != binding.DropletID {

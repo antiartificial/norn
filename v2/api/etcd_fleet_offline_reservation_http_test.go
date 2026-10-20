@@ -152,7 +152,7 @@ func TestHTTPOfflineEvidenceVerifierComparesAuthenticatedEvidence(t *testing.T) 
 	var token string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token = r.Header.Get("Authorization")
-		_ = json.NewEncoder(w).Encode(offlineEvidence{SchemaVersion: "norn.fleet-offline-independent-evidence/v1", PlanID: evidenceBinding.PlanID, TargetID: evidenceBinding.TargetID, Resource: evidenceBinding.Resource, SourceCommit: evidenceBinding.SourceCommit, SavedPlanSHA256: evidenceBinding.SavedPlanSHA256, EffectSHA256: evidenceBinding.EffectSHA256, Backend: evidenceBinding.Backend, ProviderAccountUUID: evidenceBinding.ProviderAccountUUID, NodeName: evidenceBinding.NodeName, DropletID: evidenceBinding.DropletID, ObservedAt: now})
+		_ = json.NewEncoder(w).Encode(offlineEvidence{SchemaVersion: "norn.fleet-offline-independent-evidence/v1", PlanID: evidenceBinding.PlanID, Resource: evidenceBinding.Resource, SourceCommit: evidenceBinding.SourceCommit, SavedPlanSHA256: evidenceBinding.SavedPlanSHA256, EffectSHA256: evidenceBinding.EffectSHA256, Backend: evidenceBinding.Backend, ProviderAccountUUID: evidenceBinding.ProviderAccountUUID, NodeName: evidenceBinding.NodeName, DropletID: evidenceBinding.DropletID, ObservedAt: now})
 	}))
 	defer server.Close()
 	tokenFile := t.TempDir() + "/token"
