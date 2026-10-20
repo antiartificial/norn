@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"norn/v2/api/fleet/offline"
 )
 
 func TestOfflineDeleteCommitmentCASRecoveryAndRestore(t *testing.T) {
-	h, b, a, g, now := consumedOfflineGrant(t)
+	h, b, a, g, _ := consumedOfflineGrant(t)
 	root, execution, runtime := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	c, raw, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, runtime, now)
+	c, raw, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +22,7 @@ func TestOfflineDeleteCommitmentCASRecoveryAndRestore(t *testing.T) {
 	if err != nil || got != c || !bytes.Equal(recovered, raw) {
 		t.Fatalf("recovery: %+v %v", got, err)
 	}
-	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, uuid.NewString(), now); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
+	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, uuid.NewString()); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
 		t.Fatalf("second runtime admitted: %v", err)
 	}
 	fence, _, err := h.s.GetFleetTargetFence(h.ctx(), b.TargetID)
@@ -48,13 +49,35 @@ func TestOfflineDeleteCommitmentCASRecoveryAndRestore(t *testing.T) {
 	}
 }
 
+func TestOfflineDeleteCommitmentRefreshesGrantExpiryBeforeCAS(t *testing.T) {
+	h, b, a, g, _ := consumedOfflineGrant(t)
+	reads := 0
+	clock := func() time.Time {
+		reads++
+		if reads == 1 {
+			return g.ConsumedAt.Add(time.Nanosecond)
+		}
+		return g.ExpiresAt
+	}
+	if _, _, err := h.s.commitOfflineDeleteWithClock(h.ctx(), b.PlanID, a.ID, g.ID,
+		uuid.NewString(), uuid.NewString(), uuid.NewString(), clock); !errors.Is(err, offline.ErrDeleteCommitment) {
+		t.Fatalf("grant expired during preparation: %v", err)
+	}
+	if reads != 2 {
+		t.Fatalf("clock reads = %d, want fresh pre-CAS read", reads)
+	}
+	if _, _, err := h.s.GetOfflineDeleteCommitment(h.ctx(), b.PlanID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired grant committed: %v", err)
+	}
+}
+
 func TestOfflineDeleteCommitmentRejectsChangedAuthority(t *testing.T) {
-	h, b, a, g, now := consumedOfflineGrant(t)
+	h, b, a, g, _ := consumedOfflineGrant(t)
 	root, execution, runtime := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetAuthorityEpochKey(), "2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, runtime, now); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
+	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, runtime); !errors.Is(err, ErrOfflineDeleteCommitmentConflict) {
 		t.Fatalf("changed epoch accepted: %v", err)
 	}
 	if _, err := h.s.kv.Put(h.ctx(), h.s.fleetAuthorityEpochKey(), "1"); err != nil {
@@ -63,7 +86,7 @@ func TestOfflineDeleteCommitmentRejectsChangedAuthority(t *testing.T) {
 	if _, err := h.s.kv.Put(h.ctx(), h.s.offlineCheckpointEventKey(b.PlanID, 1), "corrupt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, runtime, now); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, root, execution, runtime); !errors.Is(err, ErrOfflineAttemptCorrupt) {
 		t.Fatalf("changed checkpoint accepted: %v", err)
 	}
 	if _, _, err := h.s.GetOfflineDeleteCommitment(h.ctx(), b.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
@@ -72,8 +95,8 @@ func TestOfflineDeleteCommitmentRejectsChangedAuthority(t *testing.T) {
 }
 
 func TestOfflineDeleteCommitmentRestoreRejectsChangedGrant(t *testing.T) {
-	h, b, a, g, now := consumedOfflineGrant(t)
-	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, uuid.NewString(), uuid.NewString(), uuid.NewString(), now); err != nil {
+	h, b, a, g, _ := consumedOfflineGrant(t)
+	if _, _, err := h.s.commitOfflineDelete(h.ctx(), b.PlanID, a.ID, g.ID, uuid.NewString(), uuid.NewString(), uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
 	changed := g

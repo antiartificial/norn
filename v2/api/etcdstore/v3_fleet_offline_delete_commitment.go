@@ -125,7 +125,14 @@ func (s *V3OperationStore) GetOfflineDeleteCommitment(ctx context.Context, planI
 // commitOfflineDelete is deliberately internal and has no live route. The
 // caller must supervise the identified runtime before using its bytes. The
 // CAS consumes no additional provider capability and never releases a fence.
-func (s *V3OperationStore) commitOfflineDelete(ctx context.Context, planID, attemptID, grantID, rootID, executionID, runtimeID string, now time.Time) (offline.DeleteCommitment, []byte, error) {
+// Caller-supplied time cannot extend the one-minute grant. Future executor
+// admission must independently recheck this commitment and current authority
+// before DELETE; a committed record alone never grants retry permission.
+func (s *V3OperationStore) commitOfflineDelete(ctx context.Context, planID, attemptID, grantID, rootID, executionID, runtimeID string) (offline.DeleteCommitment, []byte, error) {
+	return s.commitOfflineDeleteWithClock(ctx, planID, attemptID, grantID, rootID, executionID, runtimeID, time.Now)
+}
+
+func (s *V3OperationStore) commitOfflineDeleteWithClock(ctx context.Context, planID, attemptID, grantID, rootID, executionID, runtimeID string, clock func() time.Time) (offline.DeleteCommitment, []byte, error) {
 	if s == nil || uuid.Validate(planID) != nil {
 		return offline.DeleteCommitment{}, nil, offline.ErrDeleteCommitment
 	}
@@ -167,9 +174,18 @@ func (s *V3OperationStore) commitOfflineDelete(ctx context.Context, planID, atte
 	if err != nil || !validOfflineContractionPlan(plan.Operation, planID, &typed) {
 		return offline.DeleteCommitment{}, nil, ErrOfflineAttemptCorrupt
 	}
-	c, encoded, err := offline.NewDeleteCommitment(rows.binding, rows.attempt, rows.grant, rootID, executionID, runtimeID, now)
+	if clock == nil {
+		return offline.DeleteCommitment{}, nil, offline.ErrDeleteCommitment
+	}
+	c, encoded, err := offline.NewDeleteCommitment(rows.binding, rows.attempt, rows.grant, rootID, executionID, runtimeID, clock().UTC())
 	if err != nil {
 		return offline.DeleteCommitment{}, nil, err
+	}
+	// Time is refreshed at the last possible point before the authority CAS.
+	// No caller-provided observation timestamp may authorize an expired grant.
+	decisionTime := clock().UTC()
+	if decisionTime.Before(c.CommittedAt) || !decisionTime.Before(rows.grant.ExpiresAt) || !decisionTime.Before(rows.binding.ExpiresAt) {
+		return offline.DeleteCommitment{}, nil, offline.ErrDeleteCommitment
 	}
 	compares := []clientv3.Cmp{
 		clientv3.Compare(clientv3.CreateRevision(s.offlineDeleteCommitmentKey(planID)), "=", 0),
