@@ -282,6 +282,76 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	}
 }
 
+// A missed cleanup pass must never let a late runner renew its lease or
+// advance from a previously accepted checkpoint. Both transitions must
+// reject the expired row in their own atomic UPDATE predicate.
+func TestFleetRunnerExpiredLeaseCannotResumeBeforeCleanup(t *testing.T) {
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	db, err := Connect(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	planID, attemptID, checkpointID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM operations WHERE id IN ($1,$2)`, checkpointID, planID)
+	})
+	if err := db.InsertCompletedOperation(ctx, &model.Operation{
+		ID: planID, Kind: "fleet.capacity-plan", Ref: "app", Status: model.OperationSucceeded,
+		Payload: map[string]interface{}{"action": "scale"}, StartedAt: now, UpdatedAt: now, FinishedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt := &model.FleetRunnerAttempt{
+		ID: attemptID, PlanID: planID, RunnerAttemptID: "expired-runner", Status: model.FleetRunnerAttemptRunning,
+		CurrentPhase: "infrastructure_applied", CommitSHA: strings.Repeat("a", 40), PlanSHA256: strings.Repeat("b", 64),
+		SourceDispatchRunID: 93, PilotRunID: "pilot20260907", HeartbeatTimeoutSeconds: 120,
+		Revision: 1, StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
+	}
+	if err := db.CreateFleetRunnerAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertFleetReconciliation(ctx, &model.Operation{
+		ID: checkpointID, Kind: "fleet.reconciliation", Ref: planID, Status: model.OperationSucceeded,
+		Payload: map[string]interface{}{"phase": attempt.CurrentPhase, "attemptId": attemptID,
+			"commitSha": attempt.CommitSHA, "planSha256": attempt.PlanSHA256},
+		StartedAt: now, UpdatedAt: now, FinishedAt: &now,
+	}, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately leave status and revision live: this exercises the mutation
+	// predicate, not GetFleetRunnerAttempt's expiry cleanup.
+	if _, err := db.Pool.Exec(ctx, `UPDATE fleet_runner_attempts SET heartbeat_expires_at=statement_timestamp()-interval '1 second' WHERE id=$1`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.HeartbeatFleetRunnerAttempt(ctx, attemptID, attempt.CurrentPhase, 1, attempt.Revision, "late"); !errors.Is(err, ErrFleetRunnerAttemptConflict) {
+		t.Fatalf("late heartbeat: want conflict, got %v", err)
+	}
+	if _, err := db.AdvanceFleetRunnerAttempt(ctx, attemptID, attempt.CurrentPhase, "inventory_generated", attempt.Revision, false); !errors.Is(err, ErrFleetRunnerAttemptConflict) {
+		t.Fatalf("late advance: want conflict, got %v", err)
+	}
+	if _, err := db.AdvanceFleetRunnerAttempt(ctx, attemptID, attempt.CurrentPhase, "complete", attempt.Revision, true); !errors.Is(err, ErrFleetRunnerAttemptConflict) {
+		t.Fatalf("late terminal advance: want conflict, got %v", err)
+	}
+	var status, phase string
+	var revision, sequence int64
+	var expired bool
+	if err := db.Pool.QueryRow(ctx, `SELECT status,current_phase,revision,heartbeat_sequence,heartbeat_expires_at < statement_timestamp() FROM fleet_runner_attempts WHERE id=$1`, attemptID).Scan(&status, &phase, &revision, &sequence, &expired); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" || phase != attempt.CurrentPhase || revision != attempt.Revision || sequence != 0 || !expired {
+		t.Fatalf("late transition mutated expired row: status=%s phase=%s revision=%d sequence=%d expired=%t", status, phase, revision, sequence, expired)
+	}
+}
+
 // TestFleetRunnerLegacyReadWritesExpiry pins D8 (plan.md §1.4): on the PG
 // legacy path, GetFleetRunnerAttempt itself writes the 'abandoned' status
 // and a bumped revision once the heartbeat lease has lapsed, rather than

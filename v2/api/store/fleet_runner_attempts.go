@@ -198,6 +198,8 @@ func (db *DB) abandonStaleFleetRunnerAttempt(ctx context.Context, id string, now
 }
 
 func (db *DB) HeartbeatFleetRunnerAttempt(ctx context.Context, id, phase string, sequence, expectedRevision int64, message string) (*model.FleetRunnerAttempt, error) {
+	// Check the lease in the UPDATE itself. clock_timestamp observes time after
+	// any row-lock wait; now()/statement_timestamp() could predate expiry.
 	row := db.Pool.QueryRow(ctx, `
 		UPDATE fleet_runner_attempts
 		SET status = 'running', heartbeat_sequence = $1, heartbeat_at = now(),
@@ -206,6 +208,7 @@ func (db *DB) HeartbeatFleetRunnerAttempt(ctx context.Context, id, phase string,
 		    metadata = metadata || jsonb_build_object('heartbeatMessage', $2::text)
 		WHERE id = $3 AND current_phase = $4 AND revision = $5
 		  AND status IN ('queued', 'running') AND heartbeat_sequence < $1
+		  AND heartbeat_expires_at > clock_timestamp()
 		  `+fleetTargetEpochRefusalSQL("plan_id")+`
 		RETURNING id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, pilot_run_id, recovery, runner_attempt_id, status, current_phase,
 		          commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
@@ -221,7 +224,8 @@ func (db *DB) HeartbeatFleetRunnerAttempt(ctx context.Context, id, phase string,
 
 // fleetRunnerAdvanceSQL is shared by the non-terminal (lock-free) and
 // terminal (fenced) branches of AdvanceFleetRunnerAttempt below: it is the
-// one statement that transitions the attempt row, identical either way.
+// one statement that transitions the attempt row, identical either way. Its
+// lease predicate also runs after any row-lock wait, before either transition.
 var fleetRunnerAdvanceSQL = `
 	UPDATE fleet_runner_attempts a
 	SET current_phase = $1, status = $2, updated_at = now(), heartbeat_at = now(),
@@ -230,6 +234,7 @@ var fleetRunnerAdvanceSQL = `
 	    revision = revision + 1, finished_at = $3
 	WHERE a.id = $4 AND a.current_phase = $5 AND a.revision = $6
 	  AND a.status IN ('queued', 'running')
+	  AND a.heartbeat_expires_at > clock_timestamp()
 	  AND EXISTS (
 	    SELECT 1 FROM operations o
 	    WHERE o.kind = 'fleet.reconciliation' AND o.ref = a.plan_id
