@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
 	"norn/v2/api/handler"
 )
 
 type offlineDeleteRuntimeResolver interface {
-	ResolveOfflineDeleteRuntime(context.Context, string, string, string) (etcdstore.OfflineDeleteRuntimeIdentity, error)
+	ResolveOfflineDeleteRuntime(context.Context, string, string, string) (supervisor.OfflineDeleteRuntimeIdentity, error)
 }
 
 type offlineDeleteTransportAuthority interface {
@@ -64,7 +65,9 @@ func (a *serverOwnedOfflineDeleteAuthority) Commit(ctx context.Context, planID, 
 	if err != nil {
 		return offline.DeleteCommitment{}, nil, err
 	}
-	value, raw, err := a.store.CommitOfflineDelete(ctx, planID, attemptID, grant.ID, identity)
+	value, raw, err := a.store.CommitOfflineDelete(ctx, planID, attemptID, grant.ID, etcdstore.OfflineDeleteRuntimeIdentity{
+		SupervisorRootID: identity.SupervisorRootID, SupervisorExecutionID: identity.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID,
+	})
 	if errors.Is(err, etcdstore.ErrOfflineDeleteCommitmentConflict) {
 		prior, recovered, recoverErr := a.store.GetOfflineDeleteCommitment(ctx, planID)
 		if recoverErr == nil && prior.AttemptID == attemptID && prior.RunnerPrincipalSubject == runner.Subject && prior.RunnerTokenID == runner.TokenID && prior.RunnerDeviceID == runner.DeviceID && prior.SupervisorRootID == identity.SupervisorRootID && prior.SupervisorExecutionID == identity.SupervisorExecutionID && prior.RuntimeInstanceID == identity.RuntimeInstanceID {

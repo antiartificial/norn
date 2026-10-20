@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet/offline"
 	"norn/v2/api/handler"
@@ -61,9 +62,9 @@ func (f *offlineDeleteStoreFixture) RecordOfflineTerminal(ctx context.Context, p
 
 type offlineRuntimeFixture struct{ calls int }
 
-func (f *offlineRuntimeFixture) ResolveOfflineDeleteRuntime(context.Context, string, string, string) (etcdstore.OfflineDeleteRuntimeIdentity, error) {
+func (f *offlineRuntimeFixture) ResolveOfflineDeleteRuntime(context.Context, string, string, string) (supervisor.OfflineDeleteRuntimeIdentity, error) {
 	f.calls++
-	return etcdstore.OfflineDeleteRuntimeIdentity{SupervisorRootID: "root", SupervisorExecutionID: "execution", RuntimeInstanceID: "runtime"}, nil
+	return supervisor.OfflineDeleteRuntimeIdentity{SupervisorRootID: "root", SupervisorExecutionID: "execution", RuntimeInstanceID: "runtime"}, nil
 }
 
 type offlineTerminalObserverFixture struct{ calls int }
