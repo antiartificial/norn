@@ -112,6 +112,11 @@ func etcdOfflineAttemptCreate(attempts offlineAttemptAdmissionStore, devices off
 	}
 }
 
+// etcdOfflineAttemptGet is the canonical nonauthorizing readback for both
+// queued and completed attempts. It requires a currently authenticated runner;
+// POST completion replay is guaranteed only while that HTTP credential remains
+// current. Store-level exact-tuple recovery remains independent of later fence,
+// epoch and credential-revision changes.
 func etcdOfflineAttemptGet(attempts offlineAttemptAdmissionStore, devices offlineAttemptDeviceStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := offlineAttemptPrincipal(w, r, devices)

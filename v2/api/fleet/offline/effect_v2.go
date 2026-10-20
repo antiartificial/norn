@@ -10,17 +10,19 @@ import (
 )
 
 const (
-	EffectGrantSchemaV2      = "norn.fleet-offline-effect-grant/v2"
-	DeleteCommitmentSchemaV2 = "norn.fleet-offline-delete-commitment/v2"
-	DeleteDispatchSchemaV2   = "norn.fleet-offline-delete-dispatch/v2"
-	TerminalEvidenceSchemaV2 = "norn.fleet-offline-terminal-evidence/v2"
-	DeleteRetryPolicyV2      = "never-reissue-after-dispatch-reservation"
+	EffectGrantSchemaV2        = "norn.fleet-offline-effect-grant/v2"
+	DeleteCommitmentSchemaV2   = "norn.fleet-offline-delete-commitment/v2"
+	DeleteDispatchSchemaV2     = "norn.fleet-offline-delete-dispatch/v2"
+	TerminalEvidenceSchemaV2   = "norn.fleet-offline-terminal-evidence/v2"
+	CompletionEvidenceSchemaV2 = "norn.fleet-offline-completion-evidence/v2"
+	DeleteRetryPolicyV2        = "never-reissue-after-dispatch-reservation"
 )
 
 var (
 	ErrEffectProofV2      = errors.New("independent offline effect-time proof is incomplete or mismatched")
 	ErrDeleteCommitmentV2 = errors.New("offline delete commitment is incomplete or mismatched")
 	ErrTerminalProofV2    = errors.New("independent offline terminal proof is incomplete or mismatched")
+	ErrCompletionProofV2  = errors.New("independent offline completion proof is incomplete or mismatched")
 )
 
 type WriterFence struct {
@@ -151,6 +153,68 @@ type TerminalEvidenceV2 struct {
 	ProviderEvidenceSHA256 string      `json:"providerEvidenceSHA256"`
 	BackendEvidenceSHA256  string      `json:"backendEvidenceSHA256"`
 	WorkloadEvidenceSHA256 string      `json:"workloadEvidenceSHA256"`
+}
+
+// CompletionObservationV2 is populated only by the independent evidence
+// source after PostgreSQL has durably released the exact all-writer fence.
+// ReceiptSHA256 identifies that PostgreSQL release receipt.
+type CompletionObservationV2 struct {
+	PlanID, AttemptID, GrantID, BindingSHA256, TargetID string
+	TargetFenceGeneration                               uint64
+	AuthorityEpoch                                      int64
+	WriterFence                                         WriterFence
+	TerminalEvidenceSHA256, ReceiptSHA256               string
+	ReleasedAt, ObservedAt                              time.Time
+}
+
+type CompletionEvidenceV2 struct {
+	SchemaVersion          string      `json:"schemaVersion"`
+	PlanID                 string      `json:"planId"`
+	AttemptID              string      `json:"attemptId"`
+	GrantID                string      `json:"grantId"`
+	BindingSHA256          string      `json:"bindingSHA256"`
+	TargetID               string      `json:"targetId"`
+	TargetFenceGeneration  uint64      `json:"targetFenceGeneration"`
+	AuthorityEpoch         int64       `json:"authorityEpoch"`
+	WriterFence            WriterFence `json:"writerFence"`
+	TerminalEvidenceSHA256 string      `json:"terminalEvidenceSHA256"`
+	ReceiptSHA256          string      `json:"receiptSHA256"`
+	ReleasedAt             time.Time   `json:"releasedAt"`
+	ObservedAt             time.Time   `json:"observedAt"`
+	RecordedAt             time.Time   `json:"recordedAt"`
+}
+
+func (c CompletionEvidenceV2) Validate(a Attempt) error {
+	if c.SchemaVersion != CompletionEvidenceSchemaV2 || c.PlanID != a.PlanID || c.AttemptID != a.ID ||
+		uuid.Validate(c.GrantID) != nil || c.BindingSHA256 != a.BindingSHA256 || c.TargetID != a.TargetID ||
+		c.TargetFenceGeneration != a.FenceGeneration || c.AuthorityEpoch <= 0 || !c.WriterFence.valid(a.ID) ||
+		!hex64.MatchString(c.TerminalEvidenceSHA256) || !hex64.MatchString(c.ReceiptSHA256) ||
+		c.ReleasedAt.IsZero() || c.ObservedAt.Before(c.ReleasedAt) || c.RecordedAt.Before(c.ObservedAt) {
+		return ErrCompletionProofV2
+	}
+	return nil
+}
+
+func VerifyCompletionObservationV2(o CompletionObservationV2, g EffectGrantV2, now time.Time) (CompletionEvidenceV2, error) {
+	if g.Validate() != nil || g.Phase != "terminal_verified" || g.Terminal == nil ||
+		o.PlanID != g.PlanID || o.AttemptID != g.AttemptID || o.GrantID != g.ID ||
+		o.BindingSHA256 != g.BindingSHA256 || o.TargetID != g.TargetID ||
+		o.TargetFenceGeneration != g.TargetFenceGeneration || o.AuthorityEpoch != g.AuthorityEpoch ||
+		o.WriterFence != g.WriterFence || o.TerminalEvidenceSHA256 != g.Terminal.EvidenceSHA256 ||
+		!hex64.MatchString(o.ReceiptSHA256) || o.ReleasedAt.Before(g.Terminal.RecordedAt) ||
+		o.ObservedAt.Before(o.ReleasedAt) || o.ObservedAt.After(now) || now.Sub(o.ObservedAt) > 30*time.Second {
+		return CompletionEvidenceV2{}, ErrCompletionProofV2
+	}
+	receipt := CompletionEvidenceV2{SchemaVersion: CompletionEvidenceSchemaV2, PlanID: o.PlanID, AttemptID: o.AttemptID,
+		GrantID: o.GrantID, BindingSHA256: o.BindingSHA256, TargetID: o.TargetID,
+		TargetFenceGeneration: o.TargetFenceGeneration, AuthorityEpoch: o.AuthorityEpoch, WriterFence: o.WriterFence,
+		TerminalEvidenceSHA256: o.TerminalEvidenceSHA256, ReceiptSHA256: o.ReceiptSHA256,
+		ReleasedAt: o.ReleasedAt.UTC(), ObservedAt: o.ObservedAt.UTC(), RecordedAt: now.UTC()}
+	if receipt.Validate(Attempt{ID: g.AttemptID, PlanID: g.PlanID, BindingSHA256: g.BindingSHA256,
+		TargetID: g.TargetID, FenceGeneration: g.TargetFenceGeneration}) != nil {
+		return CompletionEvidenceV2{}, ErrCompletionProofV2
+	}
+	return receipt, nil
 }
 
 type EffectGrantV2 struct {

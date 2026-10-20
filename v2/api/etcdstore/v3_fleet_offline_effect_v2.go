@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/fleet/offline"
 )
 
@@ -302,6 +303,116 @@ func (s *V3OperationStore) RecordOfflineTerminalV2(ctx context.Context, planID, 
 		return offline.TerminalEvidenceV2{}, err
 	}
 	return receipt, nil
+}
+
+// CompleteOfflineAttemptV2 closes only the attempt named by terminal_verified
+// evidence and releases its exact target fence in the same etcd transaction.
+// The caller supplies no success claim. A replay after an uncertain commit is
+// an idempotent readback of the already-completed attempt.
+func (s *V3OperationStore) CompleteOfflineAttemptV2(ctx context.Context, planID, attemptID, grantID string,
+	runner OfflineRunnerProof, observation offline.CompletionObservationV2, now time.Time) (offline.Attempt, error) {
+	return s.completeOfflineAttemptV2(ctx, planID, attemptID, grantID, runner, observation, now, true)
+}
+
+func (s *V3OperationStore) completeOfflineAttemptV2(ctx context.Context, planID, attemptID, grantID string,
+	runner OfflineRunnerProof, observation offline.CompletionObservationV2, now time.Time, readback bool) (offline.Attempt, error) {
+	attemptResponse, err := s.kv.Get(ctx, s.offlineAttemptKey(planID))
+	if err != nil || len(attemptResponse.Kvs) != 1 {
+		if err == nil {
+			err = ErrNotFound
+		}
+		return offline.Attempt{}, err
+	}
+	attempt, err := decodeOfflineAttempt(attemptResponse.Kvs[0].Value, planID)
+	if err != nil || attempt.ID != attemptID || attempt.PrincipalSubject != runner.Subject ||
+		attempt.PrincipalTokenID != runner.TokenID || attempt.PrincipalDeviceID != runner.DeviceID {
+		return offline.Attempt{}, offline.ErrEffectGrantMismatch
+	}
+	if attempt.Status == "succeeded" {
+		if attempt.Completion == nil || attempt.Completion.GrantID != grantID {
+			return offline.Attempt{}, ErrOfflineEffectV2Conflict
+		}
+		result, err := s.kv.Txn(ctx).If(
+			clientv3.Compare(clientv3.ModRevision(s.offlineAttemptKey(planID)), "=", attemptResponse.Kvs[0].ModRevision),
+		).Then(clientv3.OpGet(s.offlineAttemptKey(planID))).Commit()
+		if err != nil {
+			return offline.Attempt{}, err
+		}
+		if !result.Succeeded {
+			return offline.Attempt{}, ErrOfflineEffectV2Conflict
+		}
+		return attempt, nil
+	}
+	read, err := s.readOfflineEffectV2(ctx, planID)
+	if err != nil || read.grant.ID != grantID || read.grant.AttemptID != attemptID ||
+		read.grant.Phase != "terminal_verified" || read.grant.Terminal == nil {
+		if err != nil {
+			return offline.Attempt{}, err
+		}
+		return offline.Attempt{}, offline.ErrTerminalProofV2
+	}
+	if attempt.BindingSHA256 != read.grant.BindingSHA256 || attempt.TargetID != read.grant.TargetID ||
+		attempt.FenceGeneration != read.grant.TargetFenceGeneration {
+		return offline.Attempt{}, offline.ErrEffectGrantMismatch
+	}
+	fence, fenceRevision, err := s.GetFleetTargetFence(ctx, read.grant.TargetID)
+	if err != nil {
+		return offline.Attempt{}, err
+	}
+	if !validOfflineRunnerProof(runner, now) {
+		return offline.Attempt{}, offline.ErrEffectGrantMismatch
+	}
+	epoch, _, err := s.fleetAuthorityEpochWithRevision(ctx)
+	if err != nil {
+		return offline.Attempt{}, err
+	}
+	if epoch != read.grant.AuthorityEpoch {
+		return offline.Attempt{}, ErrOfflineEffectV2Conflict
+	}
+	if !fence.Held || fence.HolderPlanID != planID || fence.Generation != int64(read.grant.TargetFenceGeneration) ||
+		fence.AuthorityEpoch != read.grant.AuthorityEpoch {
+		return offline.Attempt{}, ErrOfflineEffectV2Conflict
+	}
+	state, _, err := s.loadCurrentEffectV2(ctx, planID, attemptID, grantID, runner, now, false)
+	if err != nil {
+		return offline.Attempt{}, err
+	}
+	completion, err := offline.VerifyCompletionObservationV2(observation, read.grant, now)
+	if err != nil {
+		return offline.Attempt{}, offline.ErrCompletionProofV2
+	}
+	finished := now.UTC()
+	attempt.Status, attempt.CurrentPhase, attempt.FinishedAt, attempt.Completion = "succeeded", "complete", &finished, &completion
+	attemptRaw, err := json.Marshal(attempt)
+	if err != nil {
+		return offline.Attempt{}, err
+	}
+	fence.Held, fence.HolderPlanID, fence.HolderNonceSHA256 = false, "", ""
+	fence.LastRelease = &lifecycle.Release{PlanID: planID, Reason: "succeeded", At: finished}
+	fence.Revision++
+	fenceRaw, err := json.Marshal(fleetTargetFenceRecord(fence))
+	if err != nil {
+		return offline.Attempt{}, err
+	}
+	compares := append(s.offlineGrantStateCompares(state, runner),
+		clientv3.Compare(clientv3.ModRevision(s.offlineEffectV2Key(planID)), "=", read.revision),
+		clientv3.Compare(clientv3.ModRevision(s.fleetTargetFenceKey(read.grant.TargetID)), "=", fenceRevision))
+	for i, revision := range read.eventRevisions {
+		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.offlineEffectV2EventKey(planID, uint64(i+1))), "=", revision))
+	}
+	result, err := s.kv.Txn(ctx).If(compares...).Then(
+		clientv3.OpPut(s.offlineAttemptKey(planID), string(attemptRaw)),
+		clientv3.OpPut(s.fleetTargetFenceKey(read.grant.TargetID), string(fenceRaw))).Commit()
+	if err != nil {
+		return offline.Attempt{}, err
+	}
+	if !result.Succeeded {
+		if readback {
+			return s.completeOfflineAttemptV2(ctx, planID, attemptID, grantID, runner, observation, now, false)
+		}
+		return offline.Attempt{}, ErrOfflineEffectV2Conflict
+	}
+	return attempt, nil
 }
 
 // RecoverOfflineEffectGrantV2 is read-only and never returns effect authority.

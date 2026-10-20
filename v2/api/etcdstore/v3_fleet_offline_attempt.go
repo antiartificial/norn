@@ -41,9 +41,21 @@ func (s *V3OperationStore) GetOfflineAttempt(ctx context.Context, planID string)
 func decodeOfflineAttempt(raw []byte, planID string) (offline.Attempt, error) {
 	var attempt offline.Attempt
 	if err := decodeV3Record(raw, &attempt); err != nil ||
-		attempt.SchemaVersion != offline.AttemptSchema || attempt.PlanID != planID ||
-		attempt.ID == "" || attempt.Status != "queued" || attempt.CurrentPhase != "prechange_verified" ||
+		attempt.SchemaVersion != offline.AttemptSchema || attempt.PlanID != planID || attempt.ID == "" ||
 		attempt.PrincipalSubject == "" || (attempt.PrincipalTokenID == "") != (attempt.PrincipalDeviceID == "") {
+		return offline.Attempt{}, ErrOfflineAttemptCorrupt
+	}
+	if attempt.Status == "queued" {
+		if attempt.CurrentPhase != "prechange_verified" || attempt.FinishedAt != nil || attempt.Completion != nil {
+			return offline.Attempt{}, ErrOfflineAttemptCorrupt
+		}
+	} else if attempt.Status == "succeeded" {
+		c := attempt.Completion
+		if attempt.CurrentPhase != "complete" || attempt.FinishedAt == nil || attempt.FinishedAt.Before(attempt.CreatedAt) ||
+			c == nil || c.Validate(attempt) != nil || c.RecordedAt.After(*attempt.FinishedAt) {
+			return offline.Attempt{}, ErrOfflineAttemptCorrupt
+		}
+	} else {
 		return offline.Attempt{}, ErrOfflineAttemptCorrupt
 	}
 	return attempt, nil

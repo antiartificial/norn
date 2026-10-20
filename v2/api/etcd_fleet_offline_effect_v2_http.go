@@ -18,11 +18,14 @@ import (
 
 // OfflineEffectEvidenceSourceV2 is the server-owned effect-time trust
 // boundary. A runner can trigger a read but cannot submit either observation.
-// Production wiring is intentionally absent until the independent verifier
-// and all-writer PostgreSQL fence are qualified together.
+// ObserveOfflineCompletion must return only after PostgreSQL has durably
+// released the exact all-writer fence and emitted its bound release receipt.
+// Production wiring is intentionally absent; a nil source keeps every v2
+// mutation, including completion, default-off with 503.
 type OfflineEffectEvidenceSourceV2 interface {
 	ObserveOfflineEffect(context.Context, string, string) (offline.EffectObservationV2, error)
 	ObserveOfflineTerminal(context.Context, string, string, string) (offline.TerminalObservationV2, error)
+	ObserveOfflineCompletion(context.Context, string, string, string) (offline.CompletionObservationV2, error)
 }
 
 type offlineEffectV2Store interface {
@@ -30,6 +33,7 @@ type offlineEffectV2Store interface {
 	CommitOfflineDeleteV2(context.Context, string, string, string, etcdstore.OfflineRunnerProof, string, string, time.Time) (offline.EffectGrantV2, error)
 	DispatchOfflineDeleteV2(context.Context, string, string, string, etcdstore.OfflineRunnerProof, offline.EffectObservationV2, time.Time) (offline.DeleteDispatchV2, error)
 	RecordOfflineTerminalV2(context.Context, string, string, string, etcdstore.OfflineRunnerProof, offline.TerminalObservationV2, time.Time) (offline.TerminalEvidenceV2, error)
+	CompleteOfflineAttemptV2(context.Context, string, string, string, etcdstore.OfflineRunnerProof, offline.CompletionObservationV2, time.Time) (offline.Attempt, error)
 	RecoverOfflineEffectGrantV2(context.Context, string, string, etcdstore.OfflineRunnerProof, time.Time) (offline.EffectGrantV2, error)
 }
 
@@ -41,9 +45,38 @@ func registerEtcdFleetOfflineEffectV2Routes(router chi.Router, auth func(http.Ha
 	router.With(offlineEffectNoStore, auth).Post(base+"/effect-grants/{grantID}/delete-commitment", etcdOfflineEffectV2Commit(store, identities))
 	router.With(offlineEffectNoStore, auth).Post(base+"/effect-grants/{grantID}/dispatch", etcdOfflineEffectV2Dispatch(store, identities, source))
 	router.With(offlineEffectNoStore, auth).Post(base+"/effect-grants/{grantID}/terminal", etcdOfflineEffectV2Terminal(store, identities, source))
+	router.With(offlineEffectNoStore, auth).Post(base+"/effect-grants/{grantID}/complete", etcdOfflineEffectV2Complete(store, identities, source))
 	router.With(offlineEffectNoStore, auth).Get(base+"/delete-commitment", etcdOfflineEffectV2Read(store, identities, "commitment"))
 	router.With(offlineEffectNoStore, auth).Get(base+"/delete-dispatch-reservation", etcdOfflineEffectV2Read(store, identities, "dispatch"))
 	router.With(offlineEffectNoStore, auth).Get(base+"/terminal-evidence", etcdOfflineEffectV2Read(store, identities, "terminal"))
+}
+
+func etcdOfflineEffectV2Complete(store offlineEffectV2Store, identities offlineEffectIdentityStore, source OfflineEffectEvidenceSourceV2) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		planID, attemptID, grantID, ok := offlineEffectGrantPath(w, r, true)
+		if !ok || !offlineEffectEmptyRequest(w, r) || offlineEffectV2Unavailable(w, r, store, source, true) {
+			return
+		}
+		proof, ok := refreshOfflineEffectProof(w, r, identities, etcdstore.OfflineRunnerProof{})
+		if !ok {
+			return
+		}
+		observation, err := source.ObserveOfflineCompletion(r.Context(), planID, attemptID, grantID)
+		if err != nil {
+			offlineEffectV2Error(w, r, err)
+			return
+		}
+		proof, ok = refreshOfflineEffectProof(w, r, identities, proof)
+		if !ok {
+			return
+		}
+		attempt, err := store.CompleteOfflineAttemptV2(r.Context(), planID, attemptID, grantID, proof, observation, time.Now().UTC())
+		if err != nil {
+			offlineEffectV2Error(w, r, err)
+			return
+		}
+		writeOfflineEffectV2(w, http.StatusOK, "attempt", attempt, false)
+	}
 }
 
 func offlineEffectV2Unavailable(w http.ResponseWriter, r *http.Request, store offlineEffectV2Store, source OfflineEffectEvidenceSourceV2, needsSource bool) bool {
@@ -78,7 +111,8 @@ func offlineEffectV2Error(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusNotFound, "offline_effect_v2_not_found"
 	}
 	if !errors.Is(err, offline.ErrEffectProofV2) && !errors.Is(err, offline.ErrDeleteCommitmentV2) &&
-		!errors.Is(err, offline.ErrTerminalProofV2) && !errors.Is(err, etcdstore.ErrOfflineEffectV2Conflict) && !errors.Is(err, etcdstore.ErrNotFound) {
+		!errors.Is(err, offline.ErrTerminalProofV2) && !errors.Is(err, offline.ErrCompletionProofV2) &&
+		!errors.Is(err, etcdstore.ErrOfflineEffectV2Conflict) && !errors.Is(err, etcdstore.ErrNotFound) {
 		status, code = http.StatusServiceUnavailable, "offline_effect_v2_uncertain"
 	}
 	handler.WriteControlProblem(w, r, status, code, "offline effect v2 transition failed; use nonauthorizing GET readback")

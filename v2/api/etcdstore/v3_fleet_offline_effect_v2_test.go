@@ -2,6 +2,7 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -102,6 +103,36 @@ func (f *offlineEffectV2Fixture) commit(t *testing.T, grant offline.EffectGrantV
 	return result
 }
 
+func (f *offlineEffectV2Fixture) terminal(t *testing.T) offline.EffectGrantV2 {
+	t.Helper()
+	grant := f.issue(t)
+	f.commit(t, grant)
+	dispatchAt := f.now.Add(3 * time.Second)
+	if _, err := f.h.s.DispatchOfflineDeleteV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, f.effectObservation(dispatchAt), dispatchAt); err != nil {
+		t.Fatal(err)
+	}
+	terminalAt := f.now.Add(5 * time.Second)
+	observation := offline.TerminalObservationV2{PlanID: f.binding.PlanID, AttemptID: f.attempt.ID, GrantID: grant.ID,
+		BindingSHA256: f.attempt.BindingSHA256, TargetID: f.binding.TargetID, TargetFenceGeneration: f.binding.FenceGeneration,
+		AuthorityEpoch: 1, WriterFence: grant.WriterFence, ObservedAt: terminalAt,
+		EvidenceSHA256: strings.Repeat("1", 64), ProviderEvidenceSHA256: strings.Repeat("2", 64),
+		BackendEvidenceSHA256: strings.Repeat("3", 64), WorkloadEvidenceSHA256: strings.Repeat("4", 64),
+		ProviderAbsent: true, BackendAdvanced: true, BackendTargetAbsent: true, AllNamespacesInspected: true,
+		WorkloadTargetAbsent: true, SurvivingPlacement: true, SurvivingHeadroom: true, ServicePassing: true}
+	if _, err := f.h.s.RecordOfflineTerminalV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, observation, terminalAt); err != nil {
+		t.Fatal(err)
+	}
+	return grant
+}
+
+func (f *offlineEffectV2Fixture) completionObservation(grant offline.EffectGrantV2, at time.Time) offline.CompletionObservationV2 {
+	return offline.CompletionObservationV2{PlanID: f.binding.PlanID, AttemptID: f.attempt.ID, GrantID: grant.ID,
+		BindingSHA256: f.attempt.BindingSHA256, TargetID: f.binding.TargetID,
+		TargetFenceGeneration: f.binding.FenceGeneration, AuthorityEpoch: 1, WriterFence: grant.WriterFence,
+		TerminalEvidenceSHA256: strings.Repeat("1", 64), ReceiptSHA256: strings.Repeat("5", 64),
+		ReleasedAt: at.Add(-time.Second), ObservedAt: at}
+}
+
 func TestOfflineEffectV2LifecycleOneDispatchWinnerAndTerminal(t *testing.T) {
 	f := newOfflineEffectV2Fixture(t)
 	grant := f.issue(t)
@@ -185,6 +216,147 @@ func TestOfflineEffectV2RejectsAuthorityDrift(t *testing.T) {
 			mutate(f)
 			if _, err := f.h.s.IssueOfflineEffectGrantV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, f.proof, observation, at); err == nil {
 				t.Fatal("drift admitted")
+			}
+		})
+	}
+}
+
+func TestOfflineEffectV2CompletionIsAtomicAndIdempotent(t *testing.T) {
+	f := newOfflineEffectV2Fixture(t)
+	grant := f.terminal(t)
+	completedAt := f.now.Add(6 * time.Second)
+	results := make(chan struct {
+		attempt offline.Attempt
+		err     error
+	}, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			attempt, err := f.h.s.CompleteOfflineAttemptV2(context.Background(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, f.completionObservation(grant, completedAt), completedAt)
+			results <- struct {
+				attempt offline.Attempt
+				err     error
+			}{attempt, err}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err != nil || result.attempt.Status != "succeeded" || result.attempt.CurrentPhase != "complete" || result.attempt.FinishedAt == nil || !result.attempt.FinishedAt.Equal(completedAt) {
+			t.Fatalf("completed=%+v err=%v", result.attempt, result.err)
+		}
+	}
+	fence, _, err := f.h.s.GetFleetTargetFence(f.h.ctx(), f.binding.TargetID)
+	if err != nil || fence.Held || fence.LastRelease == nil || fence.LastRelease.PlanID != f.binding.PlanID || fence.LastRelease.Reason != "succeeded" {
+		t.Fatalf("fence=%+v err=%v", fence, err)
+	}
+	if _, err := f.h.s.AdvanceFleetAuthorityEpoch(f.h.ctx(), 1, "post-completion"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.auth.RevokeAccessToken(f.h.ctx(), f.proof.TokenID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.s.kv.Delete(f.h.ctx(), f.h.s.fleetTargetFenceKey(f.binding.TargetID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.s.kv.Delete(f.h.ctx(), f.h.s.offlineEffectV2Key(f.binding.PlanID)); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, offline.CompletionObservationV2{}, f.proof.TokenExpiresAt)
+	if err != nil || replayed.FinishedAt == nil || !replayed.FinishedAt.Equal(completedAt) {
+		t.Fatalf("replay=%+v err=%v", replayed, err)
+	}
+}
+
+func TestOfflineEffectV2CompletionRequiresTerminalEvidenceAndLiveLease(t *testing.T) {
+	t.Run("terminal evidence", func(t *testing.T) {
+		f := newOfflineEffectV2Fixture(t)
+		grant := f.issue(t)
+		if _, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, offline.CompletionObservationV2{}, f.now.Add(2*time.Second)); !errors.Is(err, offline.ErrTerminalProofV2) {
+			t.Fatalf("completion before terminal=%v", err)
+		}
+		fence, _, _ := f.h.s.GetFleetTargetFence(f.h.ctx(), f.binding.TargetID)
+		if !fence.Held {
+			t.Fatal("completion before terminal released fence")
+		}
+	})
+	t.Run("runner lease", func(t *testing.T) {
+		f := newOfflineEffectV2Fixture(t)
+		grant := f.terminal(t)
+		if _, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, f.completionObservation(grant, f.proof.TokenExpiresAt), f.proof.TokenExpiresAt); err == nil {
+			t.Fatal("expired runner lease completed attempt")
+		}
+		fence, _, _ := f.h.s.GetFleetTargetFence(f.h.ctx(), f.binding.TargetID)
+		if !fence.Held {
+			t.Fatal("expired runner lease released fence")
+		}
+	})
+	t.Run("fresh postgres release receipt", func(t *testing.T) {
+		f := newOfflineEffectV2Fixture(t)
+		grant := f.terminal(t)
+		at := f.now.Add(6 * time.Second)
+		observation := f.completionObservation(grant, at)
+		observation.ObservedAt = at.Add(-31 * time.Second)
+		observation.ReleasedAt = observation.ObservedAt
+		if _, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, observation, at); !errors.Is(err, offline.ErrCompletionProofV2) {
+			t.Fatalf("stale release receipt=%v", err)
+		}
+		fence, _, _ := f.h.s.GetFleetTargetFence(f.h.ctx(), f.binding.TargetID)
+		if !fence.Held {
+			t.Fatal("stale release receipt released fence")
+		}
+	})
+	t.Run("exact grant", func(t *testing.T) {
+		f := newOfflineEffectV2Fixture(t)
+		f.terminal(t)
+		if _, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, uuid.NewString(), f.proof, offline.CompletionObservationV2{}, f.now.Add(6*time.Second)); !errors.Is(err, offline.ErrTerminalProofV2) {
+			t.Fatalf("wrong grant completion=%v", err)
+		}
+		fence, _, _ := f.h.s.GetFleetTargetFence(f.h.ctx(), f.binding.TargetID)
+		if !fence.Held {
+			t.Fatal("wrong grant released fence")
+		}
+	})
+	t.Run("authority epoch", func(t *testing.T) {
+		f := newOfflineEffectV2Fixture(t)
+		grant := f.terminal(t)
+		if _, err := f.h.s.AdvanceFleetAuthorityEpoch(f.h.ctx(), 1, "completion-race"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, f.completionObservation(grant, f.now.Add(6*time.Second)), f.now.Add(6*time.Second)); err == nil {
+			t.Fatal("superseded authority completed attempt")
+		}
+		fence, _, _ := f.h.s.GetFleetTargetFence(f.h.ctx(), f.binding.TargetID)
+		if !fence.Held {
+			t.Fatal("superseded authority released fence")
+		}
+	})
+}
+
+func TestOfflineAttemptRejectsCorruptCompletionEvidence(t *testing.T) {
+	f := newOfflineEffectV2Fixture(t)
+	grant := f.terminal(t)
+	at := f.now.Add(6 * time.Second)
+	attempt, err := f.h.s.CompleteOfflineAttemptV2(f.h.ctx(), f.binding.PlanID, f.attempt.ID, grant.ID, f.proof, f.completionObservation(grant, at), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]func(*offline.Attempt){
+		"receipt digest":  func(a *offline.Attempt) { a.Completion.ReceiptSHA256 = "" },
+		"writer holder":   func(a *offline.Attempt) { a.Completion.WriterFence.Holder = uuid.NewString() },
+		"terminal digest": func(a *offline.Attempt) { a.Completion.TerminalEvidenceSHA256 = "" },
+		"timestamp order": func(a *offline.Attempt) { a.Completion.RecordedAt = a.Completion.ObservedAt.Add(-time.Second) },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			copy := attempt
+			completion := *attempt.Completion
+			copy.Completion = &completion
+			mutate(&copy)
+			raw, err := json.Marshal(copy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeOfflineAttempt(raw, copy.PlanID); !errors.Is(err, ErrOfflineAttemptCorrupt) {
+				t.Fatalf("corrupt completion decoded: %v", err)
 			}
 		})
 	}

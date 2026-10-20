@@ -18,6 +18,7 @@ import (
 type offlineEffectV2HTTPStore struct {
 	grant         offline.EffectGrantV2
 	dispatchCalls int
+	completeCalls int
 }
 
 func (s *offlineEffectV2HTTPStore) IssueOfflineEffectGrantV2(context.Context, string, string, etcdstore.OfflineRunnerProof, offline.EffectObservationV2, time.Time) (offline.EffectGrantV2, error) {
@@ -35,6 +36,10 @@ func (s *offlineEffectV2HTTPStore) DispatchOfflineDeleteV2(_ context.Context, pl
 func (s *offlineEffectV2HTTPStore) RecordOfflineTerminalV2(context.Context, string, string, string, etcdstore.OfflineRunnerProof, offline.TerminalObservationV2, time.Time) (offline.TerminalEvidenceV2, error) {
 	return offline.TerminalEvidenceV2{}, nil
 }
+func (s *offlineEffectV2HTTPStore) CompleteOfflineAttemptV2(_ context.Context, plan, attempt, _ string, _ etcdstore.OfflineRunnerProof, _ offline.CompletionObservationV2, _ time.Time) (offline.Attempt, error) {
+	s.completeCalls++
+	return offline.Attempt{PlanID: plan, ID: attempt, Status: "succeeded", CurrentPhase: "complete"}, nil
+}
 func (s *offlineEffectV2HTTPStore) RecoverOfflineEffectGrantV2(context.Context, string, string, etcdstore.OfflineRunnerProof, time.Time) (offline.EffectGrantV2, error) {
 	return s.grant, nil
 }
@@ -48,6 +53,9 @@ func (s *offlineEffectV2HTTPSource) ObserveOfflineEffect(context.Context, string
 func (s *offlineEffectV2HTTPSource) ObserveOfflineTerminal(context.Context, string, string, string) (offline.TerminalObservationV2, error) {
 	return offline.TerminalObservationV2{}, nil
 }
+func (s *offlineEffectV2HTTPSource) ObserveOfflineCompletion(context.Context, string, string, string) (offline.CompletionObservationV2, error) {
+	return offline.CompletionObservationV2{}, nil
+}
 
 func offlineEffectV2Router(store offlineEffectV2Store, source OfflineEffectEvidenceSourceV2) http.Handler {
 	r := chi.NewRouter()
@@ -57,12 +65,17 @@ func offlineEffectV2Router(store offlineEffectV2Store, source OfflineEffectEvide
 }
 
 func TestOfflineEffectV2RoutesDefaultOffWithoutIndependentSource(t *testing.T) {
-	plan, attempt := uuid.NewString(), uuid.NewString()
+	plan, attempt, grant := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	router := offlineEffectV2Router(&offlineEffectV2HTTPStore{}, nil)
 	response := grantHTTPRequest(router, offlinePrincipal(), http.MethodPost,
 		"/api/v1/fleet/offline/attempts/"+plan+"/"+attempt+"/effect-grants/v2", "{}")
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "qualified independent evidence source") || response.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("default-off response=%d cache=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Body)
+	}
+	complete := grantHTTPRequest(router, offlinePrincipal(), http.MethodPost,
+		"/api/v1/fleet/offline/attempts/"+plan+"/"+attempt+"/effect-grants/"+grant+"/complete", "{}")
+	if complete.Code != http.StatusServiceUnavailable || !strings.Contains(complete.Body.String(), "qualified independent evidence source") {
+		t.Fatalf("default-off completion=%d body=%s", complete.Code, complete.Body)
 	}
 }
 
@@ -83,5 +96,20 @@ func TestOfflineEffectV2OnlyDispatchResponseAuthorizes(t *testing.T) {
 	grantRead := grantHTTPRequest(router, offlinePrincipal(), http.MethodGet, base+"/effect-grants/v2", "")
 	if grantRead.Code != http.StatusOK || !strings.Contains(grantRead.Body.String(), `"authorizesEffect":false`) {
 		t.Fatalf("grant read=%d body=%s", grantRead.Code, grantRead.Body)
+	}
+}
+
+func TestOfflineEffectV2CompletionAcceptsNoRunnerSuccessClaim(t *testing.T) {
+	plan, attempt, grantID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	store := &offlineEffectV2HTTPStore{}
+	router := offlineEffectV2Router(store, &offlineEffectV2HTTPSource{})
+	path := "/api/v1/fleet/offline/attempts/" + plan + "/" + attempt + "/effect-grants/" + grantID + "/complete"
+	rejected := grantHTTPRequest(router, offlinePrincipal(), http.MethodPost, path, `{"succeeded":true}`)
+	if rejected.Code != http.StatusBadRequest || store.completeCalls != 0 {
+		t.Fatalf("runner success claim=%d calls=%d body=%s", rejected.Code, store.completeCalls, rejected.Body)
+	}
+	completed := grantHTTPRequest(router, offlinePrincipal(), http.MethodPost, path, "{}")
+	if completed.Code != http.StatusOK || store.completeCalls != 1 || !strings.Contains(completed.Body.String(), `"status":"succeeded"`) || !strings.Contains(completed.Body.String(), `"authorizesEffect":false`) {
+		t.Fatalf("completion=%d calls=%d body=%s", completed.Code, store.completeCalls, completed.Body)
 	}
 }
