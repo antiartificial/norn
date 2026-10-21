@@ -8,12 +8,13 @@ IDs in the work Fleet's managed **application MySQL** cluster, not Norn's
 control PostgreSQL or etcd. No credentials, cluster IDs, node IDs or pilot
 run IDs are checked in.
 
-The Norn catalog InfraSpec remains `deploy: false`. Its current translator
-does not preserve the reviewed direct job's namespace, source/image metadata,
-restricted Traefik routers, liveness restart, or rolling update policy. The
-first Fleet-fitness proof may submit this reviewed digest-pinned job directly
-to Nomad. That proves the substrate and workload continuity, **not** Norn's
-declarative deployment or upgrade capability.
+The Norn catalog InfraSpec remains `deploy: false`. The separate managed
+candidate now declares the reviewed namespace, source repository and image
+digest, liveness restart and rolling update policy. Its restricted public
+paths must survive the managed file-provider route publication as well as job
+translation before deployment can be enabled. The serving direct Nomad job
+proves substrate and workload continuity, **not** Norn's declarative deploy or
+upgrade capability.
 
 ## Native Norn scaling handoff
 
@@ -25,10 +26,10 @@ it is not `hello-norn-mysql`. External deployment admission records the direct
 job's evidence but does not publish a native Fleet route or change its owner.
 
 To prove Norn-operated app scale, deploy an equivalent **separate** pilot
-revision through Norn after the catalog is promoted: replace the inert repo,
-image digest and endpoint, preserve the direct job's runtime behavior in the
-managed renderer, deliver the four runtime variable keys to the revision's
-job-owned variable path, and enable deployment. Keep the existing direct job
+revision through Norn after the catalog is promoted: bind a reviewed dedicated
+hostname, prove restricted route publication, deliver the four runtime
+variable keys to the revision's job-owned variable path, and enable
+deployment. Keep the existing direct job
 running until the new managed job has healthy allocations and its route is
 verified. Then issue `app.scale` for `web` from 2 to 3 through Norn and check
 the operation receipt, desired count, three healthy allocations on eligible
