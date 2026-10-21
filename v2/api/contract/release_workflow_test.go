@@ -205,6 +205,9 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	if got := caller.Jobs["staging"].With["app_id"]; got != "hello-norn-mysql-managed" {
 		t.Fatalf("staging release must target the separate managed candidate, got %q", got)
 	}
+	if got := caller.Jobs["production"].With["app_id"]; got != caller.Jobs["staging"].With["app_id"] {
+		t.Fatalf("production qualification must use the staged app ID, got %q", got)
+	}
 }
 
 func diffStringMaps(want, got map[string]string) string {

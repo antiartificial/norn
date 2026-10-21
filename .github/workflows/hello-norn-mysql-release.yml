@@ -55,5 +55,5 @@ jobs:
     uses: antiartificial/norn/.github/workflows/norn-app-release.yml@1d3f5802b5554e06ea1593146f00402d00ca9b2b
     with:
       lane: production
-      app_id: hello-norn-mysql
+      app_id: hello-norn-mysql-managed
       image_repository: ghcr.io/antiartificial/hello-norn-mysql
