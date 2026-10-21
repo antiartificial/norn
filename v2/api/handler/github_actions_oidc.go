@@ -159,7 +159,8 @@ func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Reque
 }
 
 // ExchangeFleetGitHubActionsOIDC uses the same protected claim policy with
-// the Fleet controller's durable identity store and only fleet:operate.
+// the Fleet controller's durable identity store. Fleet CI keeps fleet:operate;
+// staging app releases use the existing app-bound attest/stage/qualify policy.
 func ExchangeFleetGitHubActionsOIDC(cfg *config.Config, identities store.AuthStore, w http.ResponseWriter, r *http.Request) {
 	(&Handler{cfg: cfg}).exchangeGitHubActionsOIDC(identities, true, w, r)
 }
@@ -179,7 +180,7 @@ func (h *Handler) exchangeGitHubActionsOIDC(identities store.IdentityStore, flee
 		return
 	}
 	request.Scope, request.App, request.Environment, request.Intent = strings.TrimSpace(request.Scope), strings.TrimSpace(request.App), strings.TrimSpace(request.Environment), strings.TrimSpace(request.Intent)
-	if !githubActionsExchangeScopeAllowed(request.Scope) || (fleetOnly && request.Scope != ScopeFleetOperate) || request.Environment != h.cfg.EnvironmentID() || (request.Scope != ScopeFleetOperate && request.App == "") {
+	if !githubActionsExchangeScopeAllowed(request.Scope) || (fleetOnly && !fleetControllerExchangeScopeAllowed(request.Scope)) || request.Environment != h.cfg.EnvironmentID() || (request.Scope != ScopeFleetOperate && request.App == "") {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_github_actions_exchange", "scope, app, and environment are not valid for this exchange")
 		return
 	}
@@ -237,6 +238,17 @@ func missingGitHubIdentityStore(identities store.IdentityStore) bool {
 	}
 	value := reflect.ValueOf(identities)
 	return value.Kind() == reflect.Ptr && value.IsNil()
+}
+
+// The etcd Fleet router exposes only the staging release lifecycle. Promotion,
+// rollback, and external admission keep their separate authority boundaries.
+func fleetControllerExchangeScopeAllowed(scope string) bool {
+	switch scope {
+	case ScopeFleetOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify:
+		return true
+	default:
+		return false
+	}
 }
 
 func githubActionsExchangeScopeAllowed(scope string) bool {
