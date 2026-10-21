@@ -14,10 +14,8 @@ build:
   # deployable evidence.
   image: registry.invalid/norn/hello-norn-mysql@sha256:0000000000000000000000000000000000000000000000000000000000000000
   test: go test ./...
-# The deployment gate remains disabled: this schema closes the secret file
-# transport gap, but does not yet express every reviewed direct-job property
-# (namespace/provenance metadata, restricted TLS router, liveness and rollout).
-# A catalog promotion must preserve those before it enables deployment.
+# The deployment gate remains disabled until the managed deployment path can
+# target the reviewed namespace and publish the restricted TLS ingress route.
 env:
   MYSQL_DSN_FILE: "${NOMAD_SECRETS_DIR}/mysql-dsn"
   MYSQL_CA_FILE: "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
@@ -40,6 +38,17 @@ processes:
       path: /readyz
       interval: 5s
       timeout: 3s
+    liveness:
+      path: /healthz
+      interval: 10s
+      timeout: 3s
+      restartLimit: 3
+      restartGrace: 30s
+    rollout:
+      minHealthyTime: 15s
+      healthyDeadline: 3m
+      progressDeadline: 10m
+    shutdownDelay: 10s
     metrics:
       enabled: true
       path: /metrics

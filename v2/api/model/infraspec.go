@@ -111,21 +111,24 @@ type ResolvedRegion struct {
 }
 
 type Process struct {
-	Port      int               `yaml:"port,omitempty" json:"port,omitempty"`
-	HostPort  int               `yaml:"hostPort,omitempty" json:"hostPort,omitempty"`
-	Command   string            `yaml:"command,omitempty" json:"command,omitempty"`
-	Schedule  string            `yaml:"schedule,omitempty" json:"schedule,omitempty"`
-	Timezone  string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
-	Function  *FunctionSpec     `yaml:"function,omitempty" json:"function,omitempty"`
-	Health    *HealthSpec       `yaml:"health,omitempty" json:"health,omitempty"`
-	Metrics   *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
-	Scaling   *Scaling          `yaml:"scaling,omitempty" json:"scaling,omitempty"`
-	Placement *ProcessPlacement `yaml:"placement,omitempty" json:"placement,omitempty"`
-	Drain     *Drain            `yaml:"drain,omitempty" json:"drain,omitempty"`
-	Resources *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
-	Tuning    *TuningPolicy     `yaml:"tuning,omitempty" json:"tuning,omitempty"`
-	Canary    *CanaryConfig     `yaml:"canary,omitempty" json:"canary,omitempty"`
-	Env       map[string]string `yaml:"env,omitempty" json:"-"`
+	Port          int               `yaml:"port,omitempty" json:"port,omitempty"`
+	HostPort      int               `yaml:"hostPort,omitempty" json:"hostPort,omitempty"`
+	Command       string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Schedule      string            `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Timezone      string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	Function      *FunctionSpec     `yaml:"function,omitempty" json:"function,omitempty"`
+	Health        *HealthSpec       `yaml:"health,omitempty" json:"health,omitempty"`
+	Liveness      *LivenessSpec     `yaml:"liveness,omitempty" json:"liveness,omitempty"`
+	Rollout       *RolloutSpec      `yaml:"rollout,omitempty" json:"rollout,omitempty"`
+	ShutdownDelay string            `yaml:"shutdownDelay,omitempty" json:"shutdownDelay,omitempty"`
+	Metrics       *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
+	Scaling       *Scaling          `yaml:"scaling,omitempty" json:"scaling,omitempty"`
+	Placement     *ProcessPlacement `yaml:"placement,omitempty" json:"placement,omitempty"`
+	Drain         *Drain            `yaml:"drain,omitempty" json:"drain,omitempty"`
+	Resources     *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Tuning        *TuningPolicy     `yaml:"tuning,omitempty" json:"tuning,omitempty"`
+	Canary        *CanaryConfig     `yaml:"canary,omitempty" json:"canary,omitempty"`
+	Env           map[string]string `yaml:"env,omitempty" json:"-"`
 	// NomadVariables is a process-scoped, ACL-restricted file transport. It
 	// cannot select a path, inject environment values, or provide template text.
 	NomadVariables *NomadVariableFiles `yaml:"nomadVariables,omitempty" json:"nomadVariables,omitempty"`
@@ -172,6 +175,22 @@ type HealthSpec struct {
 	Path     string `yaml:"path" json:"path"`
 	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
 	Timeout  string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// Liveness restarts a wedged allocation independently of readiness. A failed
+// database readiness check must never by itself restart the pilot process.
+type LivenessSpec struct {
+	Path         string `yaml:"path" json:"path"`
+	Interval     string `yaml:"interval" json:"interval"`
+	Timeout      string `yaml:"timeout" json:"timeout"`
+	RestartLimit int    `yaml:"restartLimit" json:"restartLimit"`
+	RestartGrace string `yaml:"restartGrace" json:"restartGrace"`
+}
+
+type RolloutSpec struct {
+	MinHealthyTime   string `yaml:"minHealthyTime" json:"minHealthyTime"`
+	HealthyDeadline  string `yaml:"healthyDeadline" json:"healthyDeadline"`
+	ProgressDeadline string `yaml:"progressDeadline" json:"progressDeadline"`
 }
 
 type MetricsSpec struct {

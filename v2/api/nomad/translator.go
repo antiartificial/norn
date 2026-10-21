@@ -100,6 +100,22 @@ func translateForRegionAtWithJobID(spec *model.InfraSpec, imageTag string, env m
 			MinHealthyTime: &healthy,
 			AutoRevert:     &autoRevert,
 		}
+		if proc.Rollout != nil {
+			if d, err := time.ParseDuration(proc.Rollout.MinHealthyTime); err == nil {
+				tg.Update.MinHealthyTime = &d
+			}
+			if d, err := time.ParseDuration(proc.Rollout.HealthyDeadline); err == nil {
+				tg.Update.HealthyDeadline = &d
+			}
+			if d, err := time.ParseDuration(proc.Rollout.ProgressDeadline); err == nil {
+				tg.Update.ProgressDeadline = &d
+			}
+		}
+		if proc.ShutdownDelay != "" {
+			if d, err := time.ParseDuration(proc.ShutdownDelay); err == nil {
+				tg.ShutdownDelay = &d
+			}
+		}
 
 		// Canary deployment: Norn manages promotion/failure instead of Nomad auto-revert
 		if proc.Canary != nil && proc.Canary.Count > 0 {
@@ -225,6 +241,13 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 			PortLabel: portLabel,
 			Provider:  "consul",
 		}
+		svc.Meta = map[string]string{
+			"norn_alloc_id":  "${NOMAD_ALLOC_ID}",
+			"norn_node_id":   "${node.unique.id}",
+			"norn_job_id":    "${NOMAD_JOB_ID}",
+			"norn_namespace": "${NOMAD_NAMESPACE}",
+			"norn_region":    "${node.region}",
+		}
 		svc.Tags = regionalIngressTags(spec, procName, proc, region)
 		if proc.Health != nil {
 			interval, _ := time.ParseDuration(proc.Health.Interval)
@@ -243,6 +266,16 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 					Timeout:  timeout,
 				},
 			}
+		}
+		if proc.Liveness != nil {
+			interval, _ := time.ParseDuration(proc.Liveness.Interval)
+			timeout, _ := time.ParseDuration(proc.Liveness.Timeout)
+			grace, _ := time.ParseDuration(proc.Liveness.RestartGrace)
+			svc.Checks = append(svc.Checks, nomadapi.ServiceCheck{
+				Name: "liveness", Type: "http", Path: proc.Liveness.Path,
+				Interval: interval, Timeout: timeout,
+				CheckRestart: &nomadapi.CheckRestart{Limit: proc.Liveness.RestartLimit, Grace: &grace},
+			})
 		}
 		services = append(services, svc)
 	}

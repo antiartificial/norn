@@ -2,13 +2,55 @@ package nomad
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/model"
 )
+
+func TestPilotInfraSpecRendersReadinessLivenessAndRollingContract(t *testing.T) {
+	path := filepath.Join("..", "..", "infra", "fleet-pilot", "hello-norn-mysql", "infraspec.yaml")
+	spec, err := model.LoadInfraSpec(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Deploy {
+		t.Fatal("pilot declaration must remain inert")
+	}
+	if result := model.ValidateSpec(spec); !result.Valid {
+		t.Fatalf("invalid pilot spec: %+v", result.Findings)
+	}
+	job := mustTranslate(t, spec, "example.test/pilot@sha256:"+strings.Repeat("a", 64), nil)
+	if job.NodePool == nil || *job.NodePool != "ingress" || len(job.TaskGroups) != 1 {
+		t.Fatalf("placement: %+v", job)
+	}
+	group := job.TaskGroups[0]
+	if group.Count == nil || *group.Count != 2 || group.ShutdownDelay == nil || *group.ShutdownDelay != 10*time.Second {
+		t.Fatalf("group: %+v", group)
+	}
+	if group.Update == nil || group.Update.MinHealthyTime == nil || *group.Update.MinHealthyTime != 15*time.Second || group.Update.HealthyDeadline == nil || *group.Update.HealthyDeadline != 3*time.Minute || group.Update.ProgressDeadline == nil || *group.Update.ProgressDeadline != 10*time.Minute {
+		t.Fatalf("rollout: %+v", group.Update)
+	}
+	if len(group.Services) == 0 || len(group.Services[0].Checks) != 2 {
+		t.Fatalf("checks: %+v", group.Services)
+	}
+	service := group.Services[0]
+	if service.Checks[0].Path != "/readyz" || service.Checks[0].CheckRestart != nil || service.Checks[1].Path != "/healthz" || service.Checks[1].CheckRestart == nil || service.Checks[1].CheckRestart.Limit != 3 {
+		t.Fatalf("readiness/liveness: %+v", service.Checks)
+	}
+	for _, key := range []string{"norn_alloc_id", "norn_node_id", "norn_job_id", "norn_namespace", "norn_region"} {
+		if service.Meta[key] == "" {
+			t.Fatalf("missing provenance %s", key)
+		}
+	}
+	if len(group.Tasks) != 1 || len(group.Tasks[0].Templates) != 4 {
+		t.Fatalf("secret files: %+v", group.Tasks)
+	}
+}
 
 func testIntPointer(value int) *int { return &value }
 

@@ -116,6 +116,28 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 		if proc.Port > 0 && proc.Health == nil {
 			r.add("warning", field+".health", "port defined without health check")
 		}
+		if proc.Liveness != nil {
+			if proc.Port == 0 || !strings.HasPrefix(proc.Liveness.Path, "/") || (proc.Health != nil && proc.Liveness.Path == proc.Health.Path) || proc.Liveness.RestartLimit < 1 {
+				r.add("error", field+".liveness", "liveness requires a port, a distinct absolute path, and positive restart limit")
+			}
+			for name, value := range map[string]string{"interval": proc.Liveness.Interval, "timeout": proc.Liveness.Timeout, "restartGrace": proc.Liveness.RestartGrace} {
+				if d, err := time.ParseDuration(value); err != nil || d <= 0 {
+					r.add("error", field+".liveness."+name, "duration must be positive")
+				}
+			}
+		}
+		if proc.Rollout != nil {
+			for name, value := range map[string]string{"minHealthyTime": proc.Rollout.MinHealthyTime, "healthyDeadline": proc.Rollout.HealthyDeadline, "progressDeadline": proc.Rollout.ProgressDeadline} {
+				if d, err := time.ParseDuration(value); err != nil || d <= 0 {
+					r.add("error", field+".rollout."+name, "duration must be positive")
+				}
+			}
+		}
+		if proc.ShutdownDelay != "" {
+			if d, err := time.ParseDuration(proc.ShutdownDelay); err != nil || d < 0 {
+				r.add("error", field+".shutdownDelay", "duration must be nonnegative")
+			}
+		}
 		if proc.HostPort < 0 || proc.HostPort > 65535 {
 			r.add("error", field+".hostPort", "hostPort must be between 1 and 65535")
 		}
