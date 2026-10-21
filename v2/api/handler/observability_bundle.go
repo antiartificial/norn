@@ -364,8 +364,8 @@ processes:
 // infraspec process has. The web port is the OTLP/HTTP receiver (4318) with a
 // fixed hostPort, so apps can use a stable NORN_APP_OTLP_ENDPOINT; it has no
 // health check because the receiver answers no GET with 2xx. The query API
-// (3200, Consul service norn-tempo-web-metrics) is the metrics port, whose
-// /metrics check doubles as Tempo's liveness check.
+// (3200, Consul service norn-tempo-web-metrics) is the metrics port, also on
+// a fixed hostPort, whose /metrics check doubles as Tempo's liveness check.
 func tempoServiceSpec() string {
 	return `name: norn-tempo
 deploy: true
@@ -380,6 +380,7 @@ processes:
       enabled: true
       path: /metrics
       port: 3200
+      hostPort: 3200
     resources:
       cpu: 100
       memory: 512

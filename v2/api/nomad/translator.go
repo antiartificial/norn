@@ -260,7 +260,11 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 		metricsLabel := fmt.Sprintf("%s-metrics", procName)
 		if metricsPort > 0 && metricsPort != proc.Port {
 			ports = append(ports, metricsLabel)
-			net.DynamicPorts = append(net.DynamicPorts, nomadapi.Port{Label: metricsLabel, To: metricsPort})
+			if proc.Metrics.HostPort > 0 {
+				net.ReservedPorts = append(net.ReservedPorts, nomadapi.Port{Label: metricsLabel, Value: proc.Metrics.HostPort, To: metricsPort})
+			} else {
+				net.DynamicPorts = append(net.DynamicPorts, nomadapi.Port{Label: metricsLabel, To: metricsPort})
+			}
 		} else if proc.Port > 0 {
 			metricsLabel = fmt.Sprintf("%s-http", procName)
 		}

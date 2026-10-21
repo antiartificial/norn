@@ -178,6 +178,9 @@ type MetricsSpec struct {
 	Enabled bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Path    string `yaml:"path,omitempty" json:"path,omitempty"`
 	Port    int    `yaml:"port,omitempty" json:"port,omitempty"`
+	// HostPort optionally reserves a fixed host port for a separate metrics
+	// port (same single-allocation rule as the process hostPort).
+	HostPort int `yaml:"hostPort,omitempty" json:"hostPort,omitempty"`
 }
 
 type Scaling struct {

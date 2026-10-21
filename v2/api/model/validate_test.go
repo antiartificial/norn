@@ -265,6 +265,17 @@ func TestValidateSpecRejectsInvalidProcessMetrics(t *testing.T) {
 	assertErrorFinding(t, result, "processes.worker.metrics.port")
 }
 
+func TestValidateSpecRejectsInvalidMetricsHostPort(t *testing.T) {
+	for name, proc := range map[string]Process{
+		"shared port":    {Port: 8080, Metrics: &MetricsSpec{Enabled: true, HostPort: 9000}},
+		"same host port": {Port: 8080, HostPort: 9000, Metrics: &MetricsSpec{Enabled: true, Port: 9100, HostPort: 9000}},
+		"scaled":         {Port: 8080, Scaling: &Scaling{Min: 2}, Metrics: &MetricsSpec{Enabled: true, Port: 9100, HostPort: 9100}},
+	} {
+		result := ValidateSpec(&InfraSpec{App: "metrics-app", Processes: map[string]Process{"web": proc}})
+		t.Run(name, func(t *testing.T) { assertErrorFinding(t, result, "processes.web.metrics.hostPort") })
+	}
+}
+
 func TestValidateSpecAcceptsTuningPolicy(t *testing.T) {
 	spec := &InfraSpec{
 		App: "tuned-app",
