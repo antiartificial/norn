@@ -17,17 +17,20 @@ func observedRawData(t *testing.T, desired RenderedRoute) map[string]any {
 	if err := yaml.Unmarshal(desired.YAML, &document); err != nil {
 		t.Fatal(err)
 	}
-	router := document.HTTP.Routers[desired.RouterName]
 	service := document.HTTP.Services[desired.ServiceName]
-	routerValue := map[string]any{"status": "enabled", "rule": router.Rule, "entryPoints": router.EntryPoints, "service": desired.ServiceName + "@file"}
-	if router.TLS != nil {
-		routerValue["tls"] = map[string]any{}
+	routers := map[string]any{}
+	for name, router := range document.HTTP.Routers {
+		routerValue := map[string]any{"status": "enabled", "rule": router.Rule, "entryPoints": router.EntryPoints, "service": desired.ServiceName + "@file", "priority": router.Priority, "middlewares": router.Middlewares}
+		if router.TLS != nil {
+			routerValue["tls"] = map[string]any{}
+		}
+		routers[name+"@file"] = routerValue
 	}
 	services := map[string]any{desired.ServiceName + "@file": map[string]any{"status": "enabled", "weighted": service.Weighted}}
 	for _, backend := range service.Weighted.Services {
 		services[backend.Name] = map[string]any{"status": "enabled"}
 	}
-	return map[string]any{"routers": map[string]any{desired.RouterName + "@file": routerValue}, "services": services}
+	return map[string]any{"routers": routers, "services": services}
 }
 
 func testRawDataServer(t *testing.T, data map[string]any) *httptest.Server {
@@ -65,6 +68,23 @@ func TestObserveRenderedRouteRequiresEveryIngressNode(t *testing.T) {
 	nodes[1].APIURL = staleNode.URL
 	if observed, err := ObserveRenderedRoute(context.Background(), first.Client(), nodes, desired); err == nil || len(observed) != 0 {
 		t.Fatalf("partial propagation accepted: observations=%+v err=%v", observed, err)
+	}
+}
+
+func TestObserveRestrictedRenderedRouteAcceptsOnlyManagedSiblingRouters(t *testing.T) {
+	desired, err := RenderWeightedRoute(WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com",
+		Backends: []WeightedBackend{{DeploymentID: "release-a", Weight: 100}}, PublicPaths: []string{"/records/", "/version"}, RetryGETPaths: []string{"/records/"}, PrivateReadinessPath: "/readyz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := observedRawData(t, desired)
+	server := testRawDataServer(t, data)
+	if _, err := ObserveRenderedRoute(context.Background(), server.Client(), []IngressNode{{ID: "ingress-a", APIURL: server.URL}}, desired); err != nil {
+		t.Fatalf("restricted managed sibling routers were rejected: %v", err)
+	}
+	data["routers"].(map[string]any)["host-wide@file"] = map[string]any{"status": "enabled", "rule": "Host(`orders.example.com`)", "service": desired.ServiceName + "@file"}
+	if _, err := ObserveRenderedRoute(context.Background(), server.Client(), []IngressNode{{ID: "ingress-a", APIURL: server.URL}}, desired); err == nil {
+		t.Fatal("host-wide public fallback was accepted alongside restricted managed routers")
 	}
 }
 

@@ -246,16 +246,50 @@ func validateRenderedRoute(desired RenderedRoute) error {
 		return fmt.Errorf("decode route: %w", err)
 	}
 	canonical, err := yaml.Marshal(document)
-	if err != nil || string(canonical) != string(desired.YAML) || len(document.HTTP.Routers) != 1 || len(document.HTTP.Services) != 1 {
+	if err != nil || string(canonical) != string(desired.YAML) || len(document.HTTP.Services) != 1 {
 		return fmt.Errorf("route is not canonical and single-purpose")
 	}
 	router, routerOK := document.HTTP.Routers[desired.RouterName]
 	service, serviceOK := document.HTTP.Services[desired.ServiceName]
-	if !routerOK || !serviceOK || !routeHostname.MatchString(desired.EndpointHost) || router.Rule != "Host(`"+desired.EndpointHost+"`)" || router.Service != desired.ServiceName || len(router.EntryPoints) != 1 || len(service.Weighted.Services) == 0 {
+	if !routerOK || !serviceOK || !routeHostname.MatchString(desired.EndpointHost) || router.Service != desired.ServiceName || len(router.EntryPoints) != 1 || len(service.Weighted.Services) == 0 {
 		return fmt.Errorf("route metadata differs from content")
 	}
 	if router.EntryPoints[0] != "web" && router.EntryPoints[0] != "websecure" || (router.EntryPoints[0] == "websecure") != (router.TLS != nil) {
 		return fmt.Errorf("route entry point is invalid")
+	}
+	if len(desired.PublicPaths) == 0 {
+		if len(document.HTTP.Routers) != 1 || len(document.HTTP.Middlewares) != 0 || len(desired.RetryGETPaths) != 0 || desired.PrivateReadinessPath != "" || router.Rule != "Host(`"+desired.EndpointHost+"`)" {
+			return fmt.Errorf("unrestricted route metadata differs from content")
+		}
+	} else {
+		publicRule, err := restrictedPathRule(desired.PublicPaths)
+		if err != nil || router.Rule != "Host(`"+desired.EndpointHost+"`) && ("+publicRule+")" || router.EntryPoints[0] != "websecure" || router.TLS == nil {
+			return fmt.Errorf("restricted public route differs from policy")
+		}
+		privateName := desired.RouterName + "-private-readyz"
+		private, ok := document.HTTP.Routers[privateName]
+		if !ok || private.Rule != "Host(`"+desired.EndpointHost+"`) && Path(`"+desired.PrivateReadinessPath+"`)" || private.Service != desired.ServiceName || len(private.EntryPoints) != 1 || private.EntryPoints[0] != "private-readiness" || private.TLS == nil || len(private.Middlewares) != 0 || private.Priority != 0 {
+			return fmt.Errorf("private readiness route differs from policy")
+		}
+		expectedRouters := 2
+		if len(desired.RetryGETPaths) == 0 {
+			if len(document.HTTP.Middlewares) != 0 {
+				return fmt.Errorf("restricted route has unexpected middleware")
+			}
+		} else {
+			expectedRouters++
+			retryRule, err := restrictedPathRule(desired.RetryGETPaths)
+			readName := desired.RouterName + "-read"
+			read, ok := document.HTTP.Routers[readName]
+			middlewareName := readName + "-retry"
+			middleware, middlewareOK := document.HTTP.Middlewares[middlewareName]
+			if err != nil || !ok || read.Rule != "Host(`"+desired.EndpointHost+"`) && Method(`GET`) && ("+retryRule+")" || read.Service != desired.ServiceName || len(read.EntryPoints) != 1 || read.EntryPoints[0] != "websecure" || read.TLS == nil || read.Priority != 1000 || len(read.Middlewares) != 1 || read.Middlewares[0] != middlewareName || !middlewareOK || middleware.Retry == nil || middleware.Retry.Attempts != 2 || middleware.Retry.InitialInterval != "50ms" || len(document.HTTP.Middlewares) != 1 {
+				return fmt.Errorf("restricted retry route differs from policy")
+			}
+		}
+		if len(document.HTTP.Routers) != expectedRouters {
+			return fmt.Errorf("restricted route contains an unexpected router")
+		}
 	}
 	if len(desired.BackendNames) != len(service.Weighted.Services) {
 		return fmt.Errorf("route backends differ from metadata")

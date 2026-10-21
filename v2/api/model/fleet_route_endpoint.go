@@ -9,11 +9,14 @@ import (
 // InfraSpec. Control-store route intent and workers must derive it from the
 // spec rather than accept endpoint or process values from a request.
 type FleetRouteEndpoint struct {
-	Origin          string
-	Process         string
-	Port            int
-	ProbePath       string
-	ProbeBodySHA256 string
+	Origin               string
+	Process              string
+	Port                 int
+	ProbePath            string
+	ProbeBodySHA256      string
+	PublicPaths          []string
+	RetryGETPaths        []string
+	PrivateReadinessPath string
 }
 
 func ResolveFleetRouteEndpoint(spec *InfraSpec, region string) (FleetRouteEndpoint, error) {
@@ -43,6 +46,14 @@ func ResolveFleetRouteEndpoint(spec *InfraSpec, region string) (FleetRouteEndpoi
 		return FleetRouteEndpoint{}, fmt.Errorf("fleet route endpoint must be an HTTPS origin")
 	}
 	endpoint := FleetRouteEndpoint{Origin: selected.URL, Process: selected.Process, Port: process.Port}
+	if selected.RestrictedIngress != nil {
+		if err := ValidateRestrictedIngress(selected.RestrictedIngress, *selected, spec.Processes); err != nil {
+			return FleetRouteEndpoint{}, err
+		}
+		endpoint.PublicPaths = append([]string(nil), selected.RestrictedIngress.PublicPaths...)
+		endpoint.RetryGETPaths = append([]string(nil), selected.RestrictedIngress.RetryGETPaths...)
+		endpoint.PrivateReadinessPath = selected.RestrictedIngress.PrivateReadinessPath
+	}
 	if selected.TrafficProbe != nil {
 		if err := ValidateTrafficProbe(selected.TrafficProbe); err != nil {
 			return FleetRouteEndpoint{}, err

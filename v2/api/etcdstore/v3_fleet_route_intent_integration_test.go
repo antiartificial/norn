@@ -189,7 +189,7 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 	adapter, client, _ := deploymentEtcdStore(t)
 	ctx := context.Background()
 	activeFleetIngressForRouteIntent(t, adapter, ingressCount)
-	spec := &model.InfraSpec{App: "demo", Regions: map[string]model.RegionTarget{"west": {NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}}}, Processes: map[string]model.Process{"web": {Port: 8080}}, Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "west", Process: "web", TrafficProbe: &model.TrafficProbeSpec{Path: "/ready", BodySHA256: strings.Repeat("d", 64)}}}}
+	spec := &model.InfraSpec{App: "demo", Regions: map[string]model.RegionTarget{"west": {NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}}}, Processes: map[string]model.Process{"web": {Port: 8080, Health: &model.HealthSpec{Path: "/readyz"}}}, Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "west", Process: "web", TrafficProbe: &model.TrafficProbeSpec{Path: "/ready", BodySHA256: strings.Repeat("d", 64)}, RestrictedIngress: &model.RestrictedIngressSpec{PublicPaths: []string{"/ready", "/records/"}, RetryGETPaths: []string{"/records/"}, PrivateReadinessPath: "/readyz"}}}}
 	request := deploymentAdmissionRequest(t, adapter.authority)
 	var err error
 	request.Deployment.SpecDigest, err = model.InfraSpecDigest(spec)
@@ -236,6 +236,10 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 	first, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082)
 	if err != nil || first == nil || first.Generation != 1 || first.DeploymentID != accepted.Deployment.ID || first.Inventory.ActivePointerRevision <= 0 || first.RenderedRoute.SHA256 == "" {
 		t.Fatalf("route intent=%+v err=%v", first, err)
+	}
+	routeYAML := string(first.RenderedRoute.YAML)
+	if strings.Contains(routeYAML, "rule: Host(`demo.example.test`)\n") || strings.Contains(routeYAML, "PathPrefix(`/readyz`)") || !strings.Contains(routeYAML, "Path(`/ready`) || PathPrefix(`/records/`)") || !strings.Contains(routeYAML, "Method(`GET`) && (PathPrefix(`/records/`))") || !strings.Contains(routeYAML, "private-readiness") {
+		t.Fatalf("managed route intent lost restricted ingress policy:\n%s", routeYAML)
 	}
 	intentKey := adapter.initialFleetRouteKey("demo", "staging", "west", accepted.Deployment.ID)
 	indexKey := adapter.initialFleetRouteIDKey(first.ID)

@@ -2,6 +2,8 @@ package ingress
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,6 +48,60 @@ func TestRenderWeightedRouteBindsDistinctRevisionsWithoutPublicBackendRouter(t *
 	}
 	if strings.Contains(string(result.YAML), "norn.invalid") {
 		t.Fatal("public file route referenced private placeholder hostname")
+	}
+}
+
+func TestPublishRestrictedWeightedRouteHasNoPublicHostFallback(t *testing.T) {
+	input := WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com",
+		Backends: []WeightedBackend{{DeploymentID: "release-a", Weight: 100}}, PublicPaths: []string{"/records/", "/version"}, RetryGETPaths: []string{"/records/"}, PrivateReadinessPath: "/readyz"}
+	result, err := RenderWeightedRoute(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	if err := PublishRenderedRoute(directory, result, PublishedRouteRevision{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	published, err := os.ReadFile(filepath.Join(directory, result.RouterName+".yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(published)
+	for _, want := range []string{
+		"rule: Host(`orders.example.com`) && (PathPrefix(`/records/`) || Path(`/version`))",
+		"rule: Host(`orders.example.com`) && Method(`GET`) && (PathPrefix(`/records/`))",
+		"- private-readiness",
+		"rule: Host(`orders.example.com`) && Path(`/readyz`)",
+		"attempts: 2",
+		"initialInterval: 50ms",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("published restricted route missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "rule: Host(`orders.example.com`)\n") || strings.Contains(content, "PathPrefix(`/readyz`)") {
+		t.Fatalf("published restricted route has a public host fallback or readiness prefix:\n%s", content)
+	}
+	var doc routeDocument
+	if err := yaml.Unmarshal(published, &doc); err != nil {
+		t.Fatal(err)
+	}
+	wantWebsecure := map[string]bool{
+		"Host(`orders.example.com`) && (PathPrefix(`/records/`) || Path(`/version`))": true,
+		"Host(`orders.example.com`) && Method(`GET`) && (PathPrefix(`/records/`))":    true,
+	}
+	websecure := 0
+	for _, router := range doc.HTTP.Routers {
+		if len(router.EntryPoints) != 1 || router.EntryPoints[0] != "websecure" {
+			continue
+		}
+		websecure++
+		if !wantWebsecure[router.Rule] || strings.Contains(router.Rule, "/readyz") || strings.Contains(router.Rule, "/admin") {
+			t.Fatalf("websecure router permits readiness or an unlisted path: %q", router.Rule)
+		}
+	}
+	if websecure != len(wantWebsecure) {
+		t.Fatalf("published route has %d websecure routers, want %d", websecure, len(wantWebsecure))
 	}
 }
 

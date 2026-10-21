@@ -30,6 +30,8 @@ type rawRoute struct {
 	Rule        string          `json:"rule"`
 	EntryPoints []string        `json:"entryPoints"`
 	Service     string          `json:"service"`
+	Middlewares []string        `json:"middlewares"`
+	Priority    int             `json:"priority"`
 	Status      string          `json:"status"`
 	TLS         json.RawMessage `json:"tls"`
 }
@@ -165,19 +167,30 @@ func verifyRawData(body []byte, desired RenderedRoute, document routeDocument) e
 	if len(observed.Errors) != 0 && string(observed.Errors) != "null" && string(observed.Errors) != "{}" && string(observed.Errors) != "[]" {
 		return fmt.Errorf("Traefik reports configuration errors")
 	}
-	wantRouter := document.HTTP.Routers[desired.RouterName]
 	wantService := document.HTTP.Services[desired.ServiceName]
-	routerKey := desired.RouterName + "@file"
 	serviceKey := desired.ServiceName + "@file"
-	router, ok := observed.Routers[routerKey]
-	if !ok || router.Status != "enabled" || router.Rule != wantRouter.Rule || (router.Service != desired.ServiceName && router.Service != serviceKey) || len(router.EntryPoints) != len(wantRouter.EntryPoints) || len(router.EntryPoints) != 1 || router.EntryPoints[0] != wantRouter.EntryPoints[0] {
-		return fmt.Errorf("effective public router differs from desired route")
-	}
-	if (wantRouter.TLS != nil) != (len(router.TLS) != 0 && string(router.TLS) != "null") {
-		return fmt.Errorf("effective router TLS mode differs from desired route")
+	desiredRouterKeys := make(map[string]bool, len(document.HTTP.Routers))
+	for name, wantRouter := range document.HTTP.Routers {
+		routerKey := name + "@file"
+		desiredRouterKeys[routerKey] = true
+		router, ok := observed.Routers[routerKey]
+		if !ok || router.Status != "enabled" || router.Rule != wantRouter.Rule || (router.Service != desired.ServiceName && router.Service != serviceKey) || len(router.EntryPoints) != len(wantRouter.EntryPoints) || len(router.EntryPoints) != 1 || router.EntryPoints[0] != wantRouter.EntryPoints[0] || (wantRouter.Priority > 0 && router.Priority != wantRouter.Priority) {
+			return fmt.Errorf("effective managed router %s differs from desired route", name)
+		}
+		if (wantRouter.TLS != nil) != (len(router.TLS) != 0 && string(router.TLS) != "null") {
+			return fmt.Errorf("effective managed router %s TLS mode differs from desired route", name)
+		}
+		if len(router.Middlewares) != len(wantRouter.Middlewares) {
+			return fmt.Errorf("effective managed router %s middleware differs from desired route", name)
+		}
+		for index, middleware := range wantRouter.Middlewares {
+			if router.Middlewares[index] != middleware && router.Middlewares[index] != middleware+"@file" {
+				return fmt.Errorf("effective managed router %s middleware differs from desired route", name)
+			}
+		}
 	}
 	for name, other := range observed.Routers {
-		if name != routerKey && mayClaimPublicHost(other.Rule, desired.EndpointHost) && other.Status == "enabled" {
+		if !desiredRouterKeys[name] && mayClaimPublicHost(other.Rule, desired.EndpointHost) && other.Status == "enabled" {
 			return fmt.Errorf("competing enabled public-host router %s", name)
 		}
 	}

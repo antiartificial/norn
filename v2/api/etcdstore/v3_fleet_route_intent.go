@@ -184,7 +184,7 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 	if err != nil {
 		return nil, err
 	}
-	rendered, err := ingress.RenderWeightedRoute(ingress.WeightedRoute{App: spec.App, Process: endpoint.Process, Region: region.Name, Endpoint: endpoint.Origin, Backends: []ingress.WeightedBackend{{DeploymentID: accepted.Deployment.ID, Weight: 100}}})
+	rendered, err := ingress.RenderWeightedRoute(ingress.WeightedRoute{App: spec.App, Process: endpoint.Process, Region: region.Name, Endpoint: endpoint.Origin, Backends: []ingress.WeightedBackend{{DeploymentID: accepted.Deployment.ID, Weight: 100}}, PublicPaths: endpoint.PublicPaths, RetryGETPaths: endpoint.RetryGETPaths, PrivateReadinessPath: endpoint.PrivateReadinessPath})
 	if err != nil || ingress.RequireTLSRenderedRoute(rendered) != nil {
 		return nil, fmt.Errorf("initial Fleet route cannot be rendered securely: %v", err)
 	}
@@ -340,8 +340,8 @@ func (s *V3OperationStore) replayInitialFleetRouteIntent(ctx context.Context, re
 	var intent InitialFleetRouteIntent
 	if err := decodeV3Record(response.Kvs[0].Value, &intent); err != nil || intent.SchemaVersion != initialFleetRouteIntentSchema || intent.ID != reservation.IntentID || intent.Generation != reservation.Generation ||
 		intent.OperationID != accepted.Operation.ID || intent.DeploymentID != accepted.Deployment.ID || intent.AcceptanceID != accepted.Intent.ID || intent.AcceptanceDigest != accepted.Intent.CanonicalDigest || intent.SpecDigest != accepted.Deployment.SpecDigest ||
-		intent.Endpoint != endpoint || intent.App != accepted.Operation.App || intent.ControlEnvironment != accepted.Deployment.Environment || intent.Region != accepted.Regions[0].Name || intent.NomadRegion != accepted.Regions[0].NomadRegion ||
-		intent.RenderedRoute.SHA256 != rendered.SHA256 || !bytes.Equal(intent.RenderedRoute.YAML, rendered.YAML) || intent.RenderedRoute.RouterName != rendered.RouterName || intent.RenderedRoute.ServiceName != rendered.ServiceName || intent.RenderedRoute.EndpointHost != rendered.EndpointHost || !slices.Equal(intent.RenderedRoute.BackendNames, rendered.BackendNames) ||
+		!sameFleetRouteEndpoint(intent.Endpoint, endpoint) || intent.App != accepted.Operation.App || intent.ControlEnvironment != accepted.Deployment.Environment || intent.Region != accepted.Regions[0].Name || intent.NomadRegion != accepted.Regions[0].NomadRegion ||
+		intent.RenderedRoute.SHA256 != rendered.SHA256 || !bytes.Equal(intent.RenderedRoute.YAML, rendered.YAML) || intent.RenderedRoute.RouterName != rendered.RouterName || intent.RenderedRoute.ServiceName != rendered.ServiceName || intent.RenderedRoute.EndpointHost != rendered.EndpointHost || !slices.Equal(intent.RenderedRoute.BackendNames, rendered.BackendNames) || !slices.Equal(intent.RenderedRoute.PublicPaths, rendered.PublicPaths) || !slices.Equal(intent.RenderedRoute.RetryGETPaths, rendered.RetryGETPaths) || intent.RenderedRoute.PrivateReadinessPath != rendered.PrivateReadinessPath ||
 		intent.Inventory.Cluster != accepted.FleetAppTarget.Cluster || intent.Inventory.Environment != accepted.FleetAppTarget.FleetEnvironment || intent.Inventory.ActivePointerRevision <= 0 || intent.Inventory.ActiveClusterEpochRevision <= 0 || len(intent.Inventory.Nodes) < 2 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
 		return nil, 0, 0, fmt.Errorf("Fleet route reservation conflicts with signed deployment")
 	}
@@ -350,4 +350,8 @@ func (s *V3OperationStore) replayInitialFleetRouteIntent(ctx context.Context, re
 		return nil, 0, 0, fmt.Errorf("Fleet route intent ID index differs from reservation")
 	}
 	return &intent, response.Kvs[0].ModRevision, index.Kvs[0].ModRevision, nil
+}
+
+func sameFleetRouteEndpoint(left, right model.FleetRouteEndpoint) bool {
+	return left.Origin == right.Origin && left.Process == right.Process && left.Port == right.Port && left.ProbePath == right.ProbePath && left.ProbeBodySHA256 == right.ProbeBodySHA256 && left.PrivateReadinessPath == right.PrivateReadinessPath && slices.Equal(left.PublicPaths, right.PublicPaths) && slices.Equal(left.RetryGETPaths, right.RetryGETPaths)
 }
