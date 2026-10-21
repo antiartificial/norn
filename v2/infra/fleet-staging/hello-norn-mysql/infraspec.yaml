@@ -1,4 +1,4 @@
-name: hello-norn-mysql
+name: hello-norn-mysql-managed
 nomadNamespace: norn-work-staging
 deploy: false
 repo:
@@ -15,10 +15,9 @@ build:
   # deployable evidence.
   image: registry.invalid/norn/hello-norn-mysql@sha256:0000000000000000000000000000000000000000000000000000000000000000
   test: go test ./...
-# The deployment gate remains disabled: this schema closes the secret file
-# transport gap and declares the reviewed namespace, but does not yet express
-# every direct-job property (provenance metadata and restricted TLS router).
-# A catalog promotion must preserve those before it enables deployment.
+# Separate managed candidate. Its Consul service and router names cannot mix
+# with the live direct-Nomad pilot. Deployment remains disabled pending catalog,
+# exact image, credential and runtime qualification.
 env:
   MYSQL_DSN_FILE: "${NOMAD_SECRETS_DIR}/mysql-dsn"
   MYSQL_CA_FILE: "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
@@ -66,7 +65,7 @@ processes:
       # Nomad Docker driver use its idempotent stop path after a hard reboot,
       # including when Docker has already restored the container as stopped.
       timeout: 20s
-    # Nomad derives nomad/jobs/hello-norn-mysql from this service job ID; the
+    # Nomad derives nomad/jobs/hello-norn-mysql-managed from this service job ID; the
     # source path is not configurable in InfraSpec. Every value is rendered as
     # a 0400 allocation file owned by the image's non-root runtime user.
     nomadVariables:
@@ -87,6 +86,10 @@ endpoints:
   - url: https://work-staging-hello-norn-mysql.invalid
     region: nyc3
     process: web
+    restrictedIngress:
+      publicPaths: [/records/, /version]
+      retryGETPaths: [/records/, /version]
+      privateReadinessPath: /readyz
     trafficProbe:
       path: /route-proof
       bodySHA256: c2f21436748914ff673d5bb71c7e5fb50bcc64eced18dae230eface10d65b1cc

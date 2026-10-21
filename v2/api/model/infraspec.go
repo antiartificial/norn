@@ -91,10 +91,20 @@ type PlacementSpec struct {
 }
 
 type Endpoint struct {
-	URL          string            `yaml:"url" json:"url"`
-	Region       string            `yaml:"region,omitempty" json:"region,omitempty"`
-	Process      string            `yaml:"process,omitempty" json:"process,omitempty"`
-	TrafficProbe *TrafficProbeSpec `yaml:"trafficProbe,omitempty" json:"trafficProbe,omitempty"`
+	URL               string                 `yaml:"url" json:"url"`
+	Region            string                 `yaml:"region,omitempty" json:"region,omitempty"`
+	Process           string                 `yaml:"process,omitempty" json:"process,omitempty"`
+	TrafficProbe      *TrafficProbeSpec      `yaml:"trafficProbe,omitempty" json:"trafficProbe,omitempty"`
+	RestrictedIngress *RestrictedIngressSpec `yaml:"restrictedIngress,omitempty" json:"restrictedIngress,omitempty"`
+}
+
+// RestrictedIngressSpec confines public routing to reviewed paths on TLS and
+// exposes readiness only on the platform's private-readiness entrypoint.
+// A trailing slash denotes a path prefix; other paths match exactly.
+type RestrictedIngressSpec struct {
+	PublicPaths          []string `yaml:"publicPaths" json:"publicPaths"`
+	RetryGETPaths        []string `yaml:"retryGETPaths,omitempty" json:"retryGETPaths,omitempty"`
+	PrivateReadinessPath string   `yaml:"privateReadinessPath" json:"privateReadinessPath"`
 }
 
 // RegionTarget maps an InfraSpec region name to a Nomad federation target.

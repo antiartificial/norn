@@ -331,13 +331,49 @@ func regionalIngressTags(spec *model.InfraSpec, procName string, proc model.Proc
 		return tags
 	}
 	router := strings.ReplaceAll(fmt.Sprintf("%s-%s-%s", spec.App, procName, region.Name), "_", "-")
-	tags = append(tags,
-		"traefik.enable=true",
-		fmt.Sprintf("traefik.http.routers.%s.entrypoints=web", router),
-		fmt.Sprintf("norn.traffic-weight=%d", region.TrafficWeight),
-	)
-	var hosts []string
+	for i, endpoint := range spec.Endpoints {
+		if endpoint.RestrictedIngress == nil || (endpoint.Region != "" && endpoint.Region != region.Name) || endpoint.Process != procName {
+			continue
+		}
+		parsed, err := url.Parse(endpoint.URL)
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		} // validated before translation
+		name := fmt.Sprintf("%s-%d", router, i)
+		policy := endpoint.RestrictedIngress
+		publicRule := fmt.Sprintf("Host(`%s`) && (%s)", parsed.Hostname(), ingressPathRule(policy.PublicPaths))
+		tags = append(tags,
+			"traefik.enable=true",
+			fmt.Sprintf("traefik.http.routers.%s.rule=%s", name, publicRule),
+			fmt.Sprintf("traefik.http.routers.%s.entrypoints=websecure", name),
+			fmt.Sprintf("traefik.http.routers.%s.tls=true", name),
+			fmt.Sprintf("traefik.http.routers.%s-private-readyz.rule=Host(`%s`) && Path(`%s`)", name, parsed.Hostname(), policy.PrivateReadinessPath),
+			fmt.Sprintf("traefik.http.routers.%s-private-readyz.entrypoints=private-readiness", name),
+			fmt.Sprintf("traefik.http.routers.%s-private-readyz.tls=true", name),
+		)
+		if len(policy.RetryGETPaths) > 0 {
+			read := name + "-read"
+			tags = append(tags,
+				fmt.Sprintf("traefik.http.routers.%s.rule=Host(`%s`) && Method(`GET`) && (%s)", read, parsed.Hostname(), ingressPathRule(policy.RetryGETPaths)),
+				fmt.Sprintf("traefik.http.routers.%s.entrypoints=websecure", read),
+				fmt.Sprintf("traefik.http.routers.%s.tls=true", read),
+				fmt.Sprintf("traefik.http.routers.%s.priority=1000", read),
+				fmt.Sprintf("traefik.http.routers.%s.middlewares=%s-retry", read, read),
+				fmt.Sprintf("traefik.http.middlewares.%s-retry.retry.attempts=2", read),
+				fmt.Sprintf("traefik.http.middlewares.%s-retry.retry.initialinterval=50ms", read),
+			)
+		}
+	}
+	// Restricted endpoints have their own TLS-only routers. Legacy endpoints
+	// retain the existing web router until they explicitly adopt this policy.
+	var legacy []model.Endpoint
 	for _, endpoint := range spec.Endpoints {
+		if endpoint.RestrictedIngress == nil && (endpoint.Process == "" || endpoint.Process == procName) {
+			legacy = append(legacy, endpoint)
+		}
+	}
+	var hosts []string
+	for _, endpoint := range legacy {
 		if endpoint.Region != "" && endpoint.Region != region.Name {
 			continue
 		}
@@ -346,10 +382,28 @@ func regionalIngressTags(spec *model.InfraSpec, procName string, proc model.Proc
 			hosts = append(hosts, fmt.Sprintf("Host(`%s`)", parsed.Hostname()))
 		}
 	}
-	if len(hosts) > 0 {
-		tags = append(tags, fmt.Sprintf("traefik.http.routers.%s.rule=%s", router, strings.Join(hosts, " || ")))
+	if len(hosts) == 0 {
+		return tags
 	}
+	tags = append(tags,
+		"traefik.enable=true",
+		fmt.Sprintf("traefik.http.routers.%s.entrypoints=web", router),
+		fmt.Sprintf("norn.traffic-weight=%d", region.TrafficWeight),
+		fmt.Sprintf("traefik.http.routers.%s.rule=%s", router, strings.Join(hosts, " || ")),
+	)
 	return tags
+}
+
+func ingressPathRule(paths []string) string {
+	rules := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.HasSuffix(path, "/") {
+			rules = append(rules, fmt.Sprintf("PathPrefix(`%s`)", path))
+		} else {
+			rules = append(rules, fmt.Sprintf("Path(`%s`)", path))
+		}
+	}
+	return strings.Join(rules, " || ")
 }
 
 func servicePlacementTags(spec *model.InfraSpec, region model.ResolvedRegion) []string {

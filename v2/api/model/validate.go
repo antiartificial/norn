@@ -211,6 +211,9 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	// Endpoint URLs valid
 	for i, ep := range spec.Endpoints {
+		if err := ValidateRestrictedIngress(ep.RestrictedIngress, ep, spec.Processes); err != nil {
+			r.add("error", fmt.Sprintf("endpoints[%d].restrictedIngress", i), err.Error())
+		}
 		if ep.TrafficProbe != nil {
 			if err := ValidateTrafficProbe(ep.TrafficProbe); err != nil {
 				r.add("error", fmt.Sprintf("endpoints[%d].trafficProbe", i), err.Error())
