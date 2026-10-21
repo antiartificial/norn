@@ -52,7 +52,7 @@ func TestPilotInfraSpecRendersReadinessLivenessAndRollingContract(t *testing.T) 
 	}
 }
 
-func TestStagingMySQLPilotCanRenderThreeManagedReplicas(t *testing.T) {
+func TestStagingMySQLPilotAllowsFourthManagedReplica(t *testing.T) {
 	path := filepath.Join("..", "..", "infra", "fleet-staging", "hello-norn-mysql", "infraspec.yaml")
 	spec, err := model.LoadInfraSpec(path)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestStagingMySQLPilotCanRenderThreeManagedReplicas(t *testing.T) {
 		t.Fatalf("staging placement: %+v", job)
 	}
 	group := job.TaskGroups[0]
-	if spec.Processes["web"].Scaling.Max != 3 || group.Count == nil || *group.Count != 2 || len(group.Services) == 0 || len(group.Services[0].Checks) != 2 || len(group.Tasks) != 1 || len(group.Tasks[0].Templates) != 4 {
+	if spec.Processes["web"].Scaling.Max != 4 || group.Count == nil || *group.Count != 2 || len(group.Services) == 0 || len(group.Services[0].Checks) != 2 || len(group.Tasks) != 1 || len(group.Tasks[0].Templates) != 4 {
 		t.Fatalf("staging managed workload differs: %+v", group)
 	}
 }
