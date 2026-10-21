@@ -52,7 +52,7 @@ func TestEtcdFleetAppTargetOperatorConfiguration(t *testing.T) {
 	if err := os.Mkdir(appDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte("name: pilot\ndeploy: true\nregions:\n  west:\n    nomadRegion: global\n    datacenters: [dc1, dc2]\nprocesses:\n  web:\n    command: sleep 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte("name: pilot\nnomadNamespace: norn-work-staging\ndeploy: true\nregions:\n  west:\n    nomadRegion: global\n    datacenters: [dc1, dc2]\nprocesses:\n  web:\n    command: sleep 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Environment: "staging", EnvironmentExplicit: true, FleetConfig: path, AppsDir: appsDir}
@@ -89,7 +89,7 @@ func TestEtcdFleetAppTargetOperatorConfiguration(t *testing.T) {
 		Target   store.FleetAppTarget `json:"target"`
 		Revision int64                `json:"revision"`
 	}
-	if err := json.Unmarshal(created.Body.Bytes(), &receipt); err != nil || receipt.Revision <= 0 || receipt.Target.Cluster != "norn-staging" || receipt.Target.FleetEnvironment != "staging/nyc3" || receipt.Target.Generation != 1 || strings.Join(receipt.Target.Datacenters, ",") != "dc1,dc2" {
+	if err := json.Unmarshal(created.Body.Bytes(), &receipt); err != nil || receipt.Revision <= 0 || receipt.Target.Cluster != "norn-staging" || receipt.Target.FleetEnvironment != "staging/nyc3" || receipt.Target.NomadNamespace != "norn-work-staging" || receipt.Target.Generation != 1 || strings.Join(receipt.Target.Datacenters, ",") != "dc1,dc2" {
 		t.Fatalf("configured target=%+v err=%v", receipt, err)
 	}
 	if response := put(body, operator); response.Code != http.StatusConflict {
@@ -99,6 +99,12 @@ func TestEtcdFleetAppTargetOperatorConfiguration(t *testing.T) {
 	router.ServeHTTP(read, httptest.NewRequest(http.MethodGet, url, nil))
 	if read.Code != http.StatusOK {
 		t.Fatalf("target read status=%d", read.Code)
+	}
+	var readback struct {
+		Target store.FleetAppTarget `json:"target"`
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &readback); err != nil || readback.Target.NomadNamespace != "norn-work-staging" {
+		t.Fatalf("target readback=%+v err=%v", readback, err)
 	}
 	replacement := `{"expectedRevision":` + strconv.FormatInt(receipt.Revision, 10) + `,"region":"west","nomadRegion":"global","datacenters":["dc1","dc2"]}`
 	if response := put(replacement, operator); response.Code != http.StatusOK {

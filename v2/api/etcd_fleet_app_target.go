@@ -82,6 +82,7 @@ func etcdFleetAppTargetConfigure(cfg *config.Config, operations *etcdstore.V3Ope
 			return
 		}
 		matching := 0
+		nomadNamespace := ""
 		for _, spec := range specs {
 			if spec.App != app {
 				continue
@@ -98,6 +99,7 @@ func etcdFleetAppTargetConfigure(cfg *config.Config, operations *etcdstore.V3Ope
 				handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_app_placement_mismatch", "target placement differs from the enabled app source")
 				return
 			}
+			nomadNamespace = spec.NomadNamespace
 		}
 		if matching != 1 {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_app_source_unavailable", "exactly one enabled app source is required")
@@ -106,7 +108,8 @@ func etcdFleetAppTargetConfigure(cfg *config.Config, operations *etcdstore.V3Ope
 		target := store.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: app,
 			ControlEnvironment: cfg.EnvironmentID(), Cluster: inventory.Document.Cluster.Name,
 			FleetEnvironment: strings.Join([]string{inventory.Document.Metadata.Environment, inventory.Document.Cluster.Region}, "/"),
-			Region:           request.Region, NomadRegion: request.NomadRegion, Datacenters: datacenters, Generation: generation}
+			Region:           request.Region, NomadRegion: request.NomadRegion, NomadNamespace: nomadNamespace,
+			Datacenters: datacenters, Generation: generation}
 		revision, err := operations.ConfigureFleetAppTarget(r.Context(), target, request.ExpectedRevision)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_app_target_refused", "Fleet app target was not configured at the expected revision")
