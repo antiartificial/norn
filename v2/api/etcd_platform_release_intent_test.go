@@ -24,10 +24,13 @@ func (platformReleaseAuthIdentity) AccessTokenActive(context.Context, string) (b
 }
 func (platformReleaseAuthIdentity) TouchAccessDevice(context.Context, string) error { return nil }
 
-func platformReleaseTestToken(t *testing.T, secret string, scopes []string, deviceID string) string {
+func platformReleaseTestToken(t *testing.T, secret string, scopes []string, deviceID string, ci bool) string {
 	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	claims := map[string]interface{}{"sub": "norn-exec", "iss": "norn", "aud": "norn-control", "use": "access", "managed": true, "iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Hour).Unix(), "jti": "test-token", "did": deviceID, "scp": scopes}
+	if ci {
+		claims["ci"] = map[string]interface{}{"repository": "test/repo"}
+	}
 	body, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +59,7 @@ func TestPlatformReleaseCheckpointReadAuth(t *testing.T) {
 		{"widened executor", []string{handler.ScopeFleetExecute, handler.ScopeAPIRead}, "device-1", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			token := platformReleaseTestToken(t, cfg.APIToken, tc.scopes, tc.deviceID)
+			token := platformReleaseTestToken(t, cfg.APIToken, tc.scopes, tc.deviceID, false)
 			for _, route := range []struct {
 				method     string
 				middleware func(http.Handler) http.Handler
@@ -79,6 +82,35 @@ func TestPlatformReleaseCheckpointReadAuth(t *testing.T) {
 	}
 }
 
+func TestPlatformReleaseApprovalRequiresEnrolledNonCIOperator(t *testing.T) {
+	cfg := &config.Config{APIToken: "platform-release-approval-test-secret"}
+	auth := platformReleaseOperatorApprovalAuth(cfg, platformReleaseAuthIdentity{})
+	for _, tc := range []struct {
+		name     string
+		scopes   []string
+		deviceID string
+		ci, want bool
+	}{
+		{"enrolled operator", []string{handler.ScopePlatformOperate}, "operator-device", false, true},
+		{"generic operator", []string{handler.ScopePlatformOperate}, "", false, false},
+		{"CI with operator scope", []string{handler.ScopePlatformOperate}, "operator-device", true, false},
+		{"admin without device", []string{handler.ScopeAdmin}, "", false, false},
+		{"executor device", []string{handler.ScopeFleetExecute}, "executor-device", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { called = true; w.WriteHeader(http.StatusNoContent) }))
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/platform-releases/example/approval", nil)
+			req.Header.Set("Authorization", "Bearer "+platformReleaseTestToken(t, cfg.APIToken, tc.scopes, tc.deviceID, tc.ci))
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, req)
+			if called != tc.want {
+				t.Fatalf("called=%v want=%v status=%d", called, tc.want, res.Code)
+			}
+		})
+	}
+}
+
 func TestEtcdPlatformReleaseIntentRoutesDefaultOff(t *testing.T) {
 	router := chi.NewRouter()
 	registerEtcdPlatformReleaseIntentRoutes(router, &config.Config{}, nil, nil)
@@ -88,6 +120,19 @@ func TestEtcdPlatformReleaseIntentRoutesDefaultOff(t *testing.T) {
 		router.ServeHTTP(response, request)
 		if response.Code != http.StatusNotFound {
 			t.Errorf("%s: expected disabled route, got %d", path, response.Code)
+		}
+	}
+}
+
+func TestEtcdPlatformReleaseRecoveryRoutesStayClosed(t *testing.T) {
+	router := chi.NewRouter()
+	registerEtcdPlatformReleaseIntentRoutes(router, &config.Config{FleetPlatformReleaseIntentEnabled: true}, nil, nil)
+	for _, path := range []string{"/api/v1/fleet/platform-releases/example/attempt/recover", "/api/v1/fleet/platform-releases/example/attempt/recovery-authorizations"} {
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Errorf("%s: expected closed recovery route, got %d", path, response.Code)
 		}
 	}
 }

@@ -69,6 +69,18 @@ type PlatformReleaseCheckpoint struct {
 	RecordedAt     time.Time `json:"recordedAt"`
 }
 
+type PlatformReleaseRecoveryAuthorization struct {
+	AttemptID                       string     `json:"attemptId"`
+	ExpectedFenceEpoch              int64      `json:"expectedFenceEpoch"`
+	IntentDigest                    string     `json:"intentDigest"`
+	RecoveryNonce                   string     `json:"recoveryNonce"`
+	OldOwnerStopAttestationSHA256   string     `json:"oldOwnerStopAttestationSha256"`
+	ObservedSignedMemberStateSHA256 string     `json:"observedSignedMemberStateSha256"`
+	ApprovedBy                      string     `json:"approvedBy"`
+	ApprovedAt                      time.Time  `json:"approvedAt"`
+	ConsumedAt                      *time.Time `json:"consumedAt,omitempty"`
+}
+
 type PlatformReleaseControl struct {
 	Name      string `json:"name"`
 	TailnetIP string `json:"tailnetIp"`
@@ -256,6 +268,119 @@ func (s *V3OperationStore) platformReleaseAttemptKey(name string) string {
 }
 func (s *V3OperationStore) platformReleaseCheckpointPrefix(name string) string {
 	return s.prefix + "/v3/platform-release-checkpoints/" + name + "/"
+}
+
+func (s *V3OperationStore) platformReleaseRecoveryKey(name string, epoch int64) string {
+	return fmt.Sprintf("%s/v3/platform-release-recoveries/%s/%020d", s.prefix, name, epoch)
+}
+
+// AuthorizePlatformReleaseRecovery records a one-use, operator-approved
+// recovery binding. Evidence digests are immutable references; an independent
+// verifier and the executor must validate the underlying signed artifacts.
+func (s *V3OperationStore) AuthorizePlatformReleaseRecovery(ctx context.Context, name string, auth PlatformReleaseRecoveryAuthorization) (*PlatformReleaseRecoveryAuthorization, error) {
+	auth.ConsumedAt = nil
+	if !platformReleaseNameRe.MatchString(name) || !platformReleaseDigestRe.MatchString(auth.AttemptID) ||
+		!platformReleaseDigestRe.MatchString(auth.IntentDigest) || !platformReleaseDigestRe.MatchString(auth.OldOwnerStopAttestationSHA256) ||
+		!platformReleaseDigestRe.MatchString(auth.ObservedSignedMemberStateSHA256) || auth.ExpectedFenceEpoch < 1 ||
+		len(auth.RecoveryNonce) < 32 || len(auth.RecoveryNonce) > 128 || strings.TrimSpace(auth.ApprovedBy) == "" {
+		return nil, ErrPlatformReleaseInvalid
+	}
+	attemptKey, key := s.platformReleaseAttemptKey(name), s.platformReleaseRecoveryKey(name, auth.ExpectedFenceEpoch)
+	read, err := s.kv.Get(ctx, attemptKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(read.Kvs) == 0 {
+		return nil, ErrPlatformReleaseNotFound
+	}
+	var attempt PlatformReleaseAttempt
+	if err := decodeV3Record(read.Kvs[0].Value, &attempt); err != nil {
+		return nil, err
+	}
+	if attempt.ID != auth.AttemptID || attempt.IntentDigest != auth.IntentDigest || attempt.FenceEpoch != auth.ExpectedFenceEpoch ||
+		attempt.Status == "Succeeded" || (attempt.Status == "Running" && time.Now().Before(attempt.LeaseExpiresAt)) {
+		return nil, ErrPlatformReleaseConflict
+	}
+	prior, err := s.kv.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(prior.Kvs) > 0 {
+		var existing PlatformReleaseRecoveryAuthorization
+		if err := decodeV3Record(prior.Kvs[0].Value, &existing); err != nil {
+			return nil, err
+		}
+		if existing.RecoveryNonce == auth.RecoveryNonce && existing.AttemptID == auth.AttemptID && existing.ExpectedFenceEpoch == auth.ExpectedFenceEpoch && existing.OldOwnerStopAttestationSHA256 == auth.OldOwnerStopAttestationSHA256 && existing.ObservedSignedMemberStateSHA256 == auth.ObservedSignedMemberStateSHA256 && existing.ApprovedBy == auth.ApprovedBy {
+			return &existing, nil
+		}
+		return nil, ErrPlatformReleaseConflict
+	}
+	auth.ApprovedAt = time.Now().UTC().Truncate(time.Microsecond)
+	encoded, _ := json.Marshal(auth)
+	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(attemptKey), "=", read.Kvs[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, string(encoded))).Commit()
+	if err != nil {
+		return nil, err
+	}
+	if !txn.Succeeded {
+		return nil, ErrPlatformReleaseConflict
+	}
+	return &auth, nil
+}
+
+// RecoverPlatformReleaseAttempt consumes the exact authorization and bumps the
+// fencing epoch in one etcd transaction. There is no expiry based takeover.
+func (s *V3OperationStore) RecoverPlatformReleaseAttempt(ctx context.Context, name, attemptID, ownerID, ownerSession, recoveryNonce, stopDigest, stateDigest string, expectedFenceEpoch int64) (*PlatformReleaseAttempt, error) {
+	if !platformReleaseNameRe.MatchString(name) || !platformReleaseDigestRe.MatchString(attemptID) || len(ownerID) < 8 || len(ownerID) > 128 || len(ownerSession) < 16 || len(ownerSession) > 128 || len(recoveryNonce) < 32 || len(recoveryNonce) > 128 || !platformReleaseDigestRe.MatchString(stopDigest) || !platformReleaseDigestRe.MatchString(stateDigest) || expectedFenceEpoch < 1 {
+		return nil, ErrPlatformReleaseInvalid
+	}
+	attemptKey, authKey := s.platformReleaseAttemptKey(name), s.platformReleaseRecoveryKey(name, expectedFenceEpoch)
+	read, err := s.kv.Get(ctx, attemptKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(read.Kvs) == 0 {
+		return nil, ErrPlatformReleaseNotFound
+	}
+	authRead, err := s.kv.Get(ctx, authKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(authRead.Kvs) == 0 {
+		return nil, ErrPlatformReleaseConflict
+	}
+	var attempt PlatformReleaseAttempt
+	var auth PlatformReleaseRecoveryAuthorization
+	if err := decodeV3Record(read.Kvs[0].Value, &attempt); err != nil {
+		return nil, err
+	}
+	if err := decodeV3Record(authRead.Kvs[0].Value, &auth); err != nil {
+		return nil, err
+	}
+	if attempt.ID != attemptID || attempt.FenceEpoch != expectedFenceEpoch || attempt.Status == "Succeeded" ||
+		(attempt.Status == "Running" && time.Now().Before(attempt.LeaseExpiresAt)) ||
+		auth.AttemptID != attemptID || auth.IntentDigest != attempt.IntentDigest || auth.ExpectedFenceEpoch != expectedFenceEpoch || auth.ConsumedAt != nil ||
+		auth.RecoveryNonce != recoveryNonce || auth.OldOwnerStopAttestationSHA256 != stopDigest || auth.ObservedSignedMemberStateSHA256 != stateDigest ||
+		ownerSession == attempt.OwnerSession {
+		return nil, ErrPlatformReleaseConflict
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	attempt.OwnerID = ownerID
+	attempt.OwnerSession = ownerSession
+	attempt.FenceEpoch++
+	attempt.Status = "Running"
+	attempt.LeaseExpiresAt = now.Add(10 * time.Minute)
+	attempt.UpdatedAt = now
+	auth.ConsumedAt = &now
+	attemptEncoded, _ := json.Marshal(attempt)
+	authEncoded, _ := json.Marshal(auth)
+	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(attemptKey), "=", read.Kvs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(authKey), "=", authRead.Kvs[0].ModRevision)).Then(clientv3.OpPut(attemptKey, string(attemptEncoded)), clientv3.OpPut(authKey, string(authEncoded))).Commit()
+	if err != nil {
+		return nil, err
+	}
+	if !txn.Succeeded {
+		return nil, ErrPlatformReleaseConflict
+	}
+	return &attempt, nil
 }
 
 func (s *V3OperationStore) GetPlatformReleaseAttempt(ctx context.Context, name string) (*PlatformReleaseAttempt, error) {

@@ -66,6 +66,20 @@ func platformReleaseExecutorAuth(cfg *config.Config, identities store.IdentitySt
 	}
 }
 
+func platformReleaseOperatorApprovalAuth(cfg *config.Config, identities store.IdentityStore) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			principal, ok := handler.VerifyAccessTokenWithIdentityStore(cfg.APIToken, value, cfg.LegacyTokenSigningUntil, identities)
+			if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.Legacy || principal.DeviceID == "" || principal.CI != nil || !principal.Allows(handler.ScopePlatformOperate) || !fleetLaneSafePath(r) {
+				handler.WriteControlProblem(w, r, http.StatusForbidden, "platform_release_operator_required", "an enrolled non-CI platform operator is required")
+				return
+			}
+			next.ServeHTTP(w, handler.WithAccessPrincipal(r, principal))
+		})
+	}
+}
+
 func platformReleaseReadOrExecutorAuth(cfg *config.Config, identities store.IdentityStore) func(http.Handler) http.Handler {
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
 	return func(next http.Handler) http.Handler {
@@ -87,6 +101,7 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 		return
 	}
 	operate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
+	approve := platformReleaseOperatorApprovalAuth(cfg, identities)
 	// The platform release effect surface accepts only a live enrolled norn-exec
 	// device credential. A generic fleet:operate or admin token cannot impersonate
 	// the controller worker or claim its owner lease.
@@ -138,7 +153,7 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 		}
 		platformReleaseResponse(w, status, record)
 	})
-	router.With(operate).Post(root+"/{name}/approval", func(w http.ResponseWriter, r *http.Request) {
+	router.With(approve).Post(root+"/{name}/approval", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			IntentDigest string `json:"intentDigest"`
 		}
@@ -259,4 +274,7 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 		}
 		platformReleaseResponse(w, http.StatusOK, record)
 	})
+	// Recovery is deliberately not mounted. The store has an atomic handoff
+	// primitive, but a trusted verifier must first attest old-owner stop and
+	// fresh signed member state. Digest strings alone are not proof of either.
 }
