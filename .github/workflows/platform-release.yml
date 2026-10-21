@@ -7,12 +7,17 @@ on:
         description: Exact 40-character commit SHA already merged to master
         required: true
         type: string
+      qualification_run_id:
+        description: Successful full Norn CI workflow_dispatch run at commit_sha on protected master
+        required: true
+        type: string
 
 # Builds never receive secrets. Only the protected publish job receives the
 # Ed25519 key and contents:write permission. Configure the `platform-release`
 # environment with approval and NORN_RELEASE_SIGNING_KEY before first use.
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: platform-release-${{ inputs.commit_sha }}
@@ -25,6 +30,7 @@ jobs:
       - name: Require protected master and exact commit
         env:
           REQUESTED_SHA: ${{ inputs.commit_sha }}
+          QUALIFICATION_RUN: ${{ inputs.qualification_run_id }}
           REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
@@ -40,6 +46,10 @@ jobs:
             echo "commit_sha must be an exact lowercase 40-character SHA." >&2
             exit 1
           }
+          [[ "$QUALIFICATION_RUN" =~ ^[1-9][0-9]*$ ]] || {
+            echo "qualification_run_id must be a positive GitHub run ID." >&2
+            exit 1
+          }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -49,6 +59,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_SHA: ${{ inputs.commit_sha }}
+          QUALIFICATION_RUN: ${{ inputs.qualification_run_id }}
         run: |
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "$REQUESTED_SHA" ]]
@@ -57,6 +68,14 @@ jobs:
             echo "The requested commit is not reachable from master." >&2
             exit 1
           }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN" \
+            > "$RUNNER_TEMP/norn-v3-qualification-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN/jobs?per_page=100" \
+            > "$RUNNER_TEMP/norn-v3-qualification-jobs.json"
+          python3 v2/scripts/platform-release-qualification \
+            "$RUNNER_TEMP/norn-v3-qualification-run.json" \
+            "$RUNNER_TEMP/norn-v3-qualification-jobs.json" \
+            "$REQUESTED_SHA" "$QUALIFICATION_RUN" "$GITHUB_REPOSITORY"
           # Public repositories publish public, signed bundles. Private
           # repositories keep the same bundles private and require a read-only
           # host token. Authenticity never depends on repository visibility.

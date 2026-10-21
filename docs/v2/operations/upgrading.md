@@ -95,8 +95,10 @@ ingress config before activation, and retires only a matching or broken legacy
 ## Signed GitHub Release Checklist
 
 For an operational signed release, merge the reviewed change to protected
-`master` before building. Dispatch `.github/workflows/platform-release.yml`
-from `master` with that exact 40-character SHA. Approve only the matching
+`master` before building. First dispatch full `.github/workflows/v3-ci.yml`
+qualification on protected `master` at that exact SHA and require its first
+attempt to succeed. Dispatch `.github/workflows/platform-release.yml` from
+`master` with the exact 40-character SHA and qualification run ID. Approve only the matching
 `platform-release` environment run after authorization, UI, and all four
 OS/architecture bundle jobs succeed.
 

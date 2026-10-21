@@ -101,8 +101,13 @@ Before the first publish, configure the repository deliberately:
    Add a narrowly scoped environment secret named
    `NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN` with repository Administration
    read-only access. It is used only to confirm that immutability is enabled.
-5. Dispatch `.github/workflows/platform-release.yml` from `master` with an
-   exact 40-character commit SHA already reachable from `origin/master`.
+5. Dispatch `.github/workflows/v3-ci.yml` manually from protected `master` at
+   the exact release commit. Wait for the full Linux etcd/PostgreSQL and CLI
+   qualification to succeed on the first attempt; the required PR M4 check
+   does not replace this run. Dispatch `.github/workflows/platform-release.yml`
+   from `master` with that exact 40-character commit SHA and the successful
+   full qualification run ID. The publisher verifies both identities before
+   building any bundle.
 
 The workflow builds requested source without signing credentials, then gives
 only the protected publish job the Ed25519 key and `contents:write`. That job

@@ -15,6 +15,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-qualification:
+    name: Platform release qualification gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest v2/scripts/test_platform_release_qualification.py -v
+
   api:
     name: API Go tests
     # The control plane includes Apple Container coverage that is meaningful
