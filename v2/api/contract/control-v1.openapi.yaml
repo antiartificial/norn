@@ -1882,6 +1882,36 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/traces:
+    get:
+      operationId: searchAppTraces
+      description: Recent traces with spans whose resource norn.app is the app (Tempo TraceQL search built server-side), newest first, with root name and service, start, duration and the number of the app's matched spans. Requires api:read; an app-bound credential may read only its own app. 503 when NORN_TEMPO_URL is not set; Tempo errors are 502.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: minDurationMs, in: query, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200': { description: Trace summaries, content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/traces/{traceId}:
+    get:
+      operationId: getAppTrace
+      description: Every span of one trace, normalized (hex ids, RFC 3339 times, kind, status, attributes, and the norn.app, norn.process and nomad.alloc_id resource attributes). An unscoped credential sees all spans; an app-bound credential sees only its own app's spans and the rest are counted in omittedSpans. Requires api:read. 404 when Tempo has no such trace, 503 when NORN_TEMPO_URL is not set, 502 on Tempo errors.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: traceId, in: path, required: true, schema: { type: string, pattern: '^[0-9a-f]{32}$' } }
+      responses:
+        '200': { description: Trace spans, content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/evidence/archive:
     get:
       operationId: getEvidenceArchiveHealth
