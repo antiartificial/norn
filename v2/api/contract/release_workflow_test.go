@@ -21,6 +21,7 @@ type releaseWorkflow struct {
 type releaseCallerWorkflow struct {
 	Jobs map[string]struct {
 		Permissions map[string]string `yaml:"permissions"`
+		With        map[string]string `yaml:"with"`
 	} `yaml:"jobs"`
 }
 
@@ -159,7 +160,7 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		`github.ref == 'refs/heads/master' && github.ref_protected`,
 		`startsWith(github.ref, 'refs/tags/v') && github.ref_protected`,
 		`antiartificial/norn/.github/workflows/norn-app-release.yml@1d3f5802b5554e06ea1593146f00402d00ca9b2b`,
-		`app_id: hello-norn-mysql`,
+		`app_id: hello-norn-mysql-managed`,
 		`image_repository: ghcr.io/antiartificial/hello-norn-mysql`,
 		`build_contract: pilot-go`,
 		`go_image: golang@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466`,
@@ -200,6 +201,9 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		if diff := diffStringMaps(wantPermissions, job.Permissions); diff != "" {
 			t.Errorf("%s caller permissions (-want +got):\n%s", lane, diff)
 		}
+	}
+	if got := caller.Jobs["staging"].With["app_id"]; got != "hello-norn-mysql-managed" {
+		t.Fatalf("staging release must target the separate managed candidate, got %q", got)
 	}
 }
 
