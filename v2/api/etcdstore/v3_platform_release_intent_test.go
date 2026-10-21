@@ -163,7 +163,7 @@ func TestPlatformReleaseRecoveryRequiresOperatorBindingAndFencesStaleOwner(t *te
 		t.Fatal(err)
 	}
 	stopDigest, stateDigest := strings.Repeat("1", 64), strings.Repeat("2", 64)
-	auth := PlatformReleaseRecoveryAuthorization{AttemptID: attempt.ID, ExpectedFenceEpoch: 1, IntentDigest: intent.IntentDigest, RecoveryNonce: strings.Repeat("n", 32), OldOwnerStopAttestationSHA256: stopDigest, ObservedSignedMemberStateSHA256: stateDigest, ApprovedBy: "operator-test"}
+	auth := PlatformReleaseRecoveryAuthorization{AttemptID: attempt.ID, ExpectedFenceEpoch: 1, IntentDigest: intent.IntentDigest, RecoveryNonce: strings.Repeat("n", 32), OldOwnerStopAttestationSHA256: stopDigest, ObservedSignedMemberStateSHA256: stateDigest, ApprovedBy: "operator-test", ApprovedByDeviceID: "operator-device", SupervisorID: "management-root-supervisor", SupervisorPublicKeySHA256: strings.Repeat("3", 64), AttestationBytesBase64: "signed-bytes", AttestationSignatureBase64: "signature"}
 	if _, err = s.AuthorizePlatformReleaseRecovery(ctx, request.Name, auth); !errors.Is(err, ErrPlatformReleaseConflict) {
 		t.Fatalf("authorized before failed lease expiry: %v", err)
 	}

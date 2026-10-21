@@ -77,6 +77,11 @@ type PlatformReleaseRecoveryAuthorization struct {
 	OldOwnerStopAttestationSHA256   string     `json:"oldOwnerStopAttestationSha256"`
 	ObservedSignedMemberStateSHA256 string     `json:"observedSignedMemberStateSha256"`
 	ApprovedBy                      string     `json:"approvedBy"`
+	ApprovedByDeviceID              string     `json:"approvedByDeviceId"`
+	SupervisorID                    string     `json:"supervisorId"`
+	SupervisorPublicKeySHA256       string     `json:"supervisorPublicKeySha256"`
+	AttestationBytesBase64          string     `json:"attestationBytesBase64"`
+	AttestationSignatureBase64      string     `json:"attestationSignatureBase64"`
 	ApprovedAt                      time.Time  `json:"approvedAt"`
 	ConsumedAt                      *time.Time `json:"consumedAt,omitempty"`
 }
@@ -318,7 +323,7 @@ func (s *V3OperationStore) AuthorizePlatformReleaseRecovery(ctx context.Context,
 	if !platformReleaseNameRe.MatchString(name) || !platformReleaseDigestRe.MatchString(auth.AttemptID) ||
 		!platformReleaseDigestRe.MatchString(auth.IntentDigest) || !platformReleaseDigestRe.MatchString(auth.OldOwnerStopAttestationSHA256) ||
 		!platformReleaseDigestRe.MatchString(auth.ObservedSignedMemberStateSHA256) || auth.ExpectedFenceEpoch < 1 ||
-		len(auth.RecoveryNonce) < 32 || len(auth.RecoveryNonce) > 128 || strings.TrimSpace(auth.ApprovedBy) == "" {
+		len(auth.RecoveryNonce) < 32 || len(auth.RecoveryNonce) > 128 || strings.TrimSpace(auth.ApprovedBy) == "" || auth.ApprovedByDeviceID == "" || auth.SupervisorID == "" || !platformReleaseDigestRe.MatchString(auth.SupervisorPublicKeySHA256) || auth.AttestationBytesBase64 == "" || auth.AttestationSignatureBase64 == "" {
 		return nil, ErrPlatformReleaseInvalid
 	}
 	attemptKey, key := s.platformReleaseAttemptKey(name), s.platformReleaseRecoveryKey(name, auth.ExpectedFenceEpoch)
@@ -348,7 +353,7 @@ func (s *V3OperationStore) AuthorizePlatformReleaseRecovery(ctx context.Context,
 		if err := decodeV3Record(prior.Kvs[0].Value, &existing); err != nil {
 			return nil, err
 		}
-		if existing.RecoveryNonce == auth.RecoveryNonce && existing.AttemptID == auth.AttemptID && existing.ExpectedFenceEpoch == auth.ExpectedFenceEpoch && existing.OldOwnerStopAttestationSHA256 == auth.OldOwnerStopAttestationSHA256 && existing.ObservedSignedMemberStateSHA256 == auth.ObservedSignedMemberStateSHA256 && existing.ApprovedBy == auth.ApprovedBy {
+		if existing.RecoveryNonce == auth.RecoveryNonce && existing.AttemptID == auth.AttemptID && existing.ExpectedFenceEpoch == auth.ExpectedFenceEpoch && existing.OldOwnerStopAttestationSHA256 == auth.OldOwnerStopAttestationSHA256 && existing.ObservedSignedMemberStateSHA256 == auth.ObservedSignedMemberStateSHA256 && existing.ApprovedBy == auth.ApprovedBy && existing.ApprovedByDeviceID == auth.ApprovedByDeviceID && existing.SupervisorID == auth.SupervisorID && existing.SupervisorPublicKeySHA256 == auth.SupervisorPublicKeySHA256 && existing.AttestationBytesBase64 == auth.AttestationBytesBase64 && existing.AttestationSignatureBase64 == auth.AttestationSignatureBase64 {
 			return &existing, nil
 		}
 		return nil, ErrPlatformReleaseConflict
