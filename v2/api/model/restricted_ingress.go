@@ -41,6 +41,9 @@ func ValidateRestrictedIngress(policy *RestrictedIngressSpec, endpoint Endpoint,
 		}
 		retried[path] = true
 	}
+	if endpoint.TrafficProbe != nil && !public[endpoint.TrafficProbe.Path] {
+		return fmt.Errorf("restricted ingress traffic probe must be a public path")
+	}
 	if !validRestrictedPath(policy.PrivateReadinessPath) || strings.HasSuffix(policy.PrivateReadinessPath, "/") || public[policy.PrivateReadinessPath] || proc.Health == nil || proc.Health.Path != policy.PrivateReadinessPath {
 		return fmt.Errorf("private readiness must be the process health path and outside public routes")
 	}

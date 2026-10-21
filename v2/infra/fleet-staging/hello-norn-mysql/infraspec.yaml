@@ -87,7 +87,7 @@ endpoints:
     region: nyc3
     process: web
     restrictedIngress:
-      publicPaths: [/records/, /version]
+      publicPaths: [/records/, /version, /route-proof]
       retryGETPaths: [/records/, /version]
       privateReadinessPath: /readyz
     trafficProbe:

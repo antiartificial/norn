@@ -34,6 +34,9 @@ func TestManagedMySQLStagingDocumentKeepsPilotSeparate(t *testing.T) {
 	if !strings.Contains(tags, "entrypoints=private-readiness") || !strings.Contains(tags, "entrypoints=websecure") || strings.Contains(tags, "entrypoints=web\n") {
 		t.Fatalf("invalid managed route: %s", tags)
 	}
+	if !strings.Contains(tags, "Path(`/route-proof`)") {
+		t.Fatalf("signed traffic probe is not publicly routed: %s", tags)
+	}
 }
 
 func TestManagedMySQLRestrictedIngressMatchesReviewedPilot(t *testing.T) {
