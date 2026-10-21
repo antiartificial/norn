@@ -162,16 +162,17 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	// require api:read.
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
-	catalogOperate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
+	platformOperate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
+	catalogActivate := etcdManagedTokenAuth(cfg, identities, handler.ScopeCatalogActivate)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
 	router.With(read).Get("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetRead(cfg, operations))
 	if releaseHTTPEnabled {
 		releaseStage := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)
 		router.With(releaseStage).Post("/api/v1/apps/{id}/releases/deployments", etcdFleetReleaseDeployment(cfg, operations, releaseVerifier))
 	}
-	router.With(catalogOperate).Put("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetConfigure(cfg, operations))
+	router.With(platformOperate).Put("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetConfigure(cfg, operations))
 	router.With(read).Get("/api/v1/database/catalog", etcdFleetDatabaseCatalog(operations))
-	router.With(catalogOperate).Post("/api/v1/database/catalog/activations", etcdFleetCatalogActivation(operations))
+	router.With(catalogActivate).Post("/api/v1/database/catalog/activations", etcdFleetCatalogActivation(operations))
 	router.With(read).Get("/api/v1/fleet/plans", etcdFleetPlans(operations))
 	router.With(plan).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
 	if canaryHTTPEnabled {

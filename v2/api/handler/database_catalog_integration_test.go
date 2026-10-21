@@ -55,7 +55,7 @@ func TestCatalogActivationOperationReadsAreRedacted(t *testing.T) {
 		encoded, _ := json.Marshal(map[string]interface{}{"expectedRevision": 0, "catalog": catalog})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/database/catalog/activations", bytes.NewReader(encoded))
 		req.Header.Set("Idempotency-Key", "redaction-1")
-		req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", Source: AccessPrincipalSourceSharedAPI, Scopes: []string{ScopePlatformOperate}})
+		req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", Source: AccessPrincipalSourceSharedAPI, Scopes: []string{ScopeCatalogActivate}})
 		rec := httptest.NewRecorder()
 		h.MutationAuditMiddleware(http.HandlerFunc(h.ActivateDatabaseCatalog)).ServeHTTP(rec, req)
 		return rec
@@ -145,30 +145,33 @@ func TestDatabaseCatalogActivationUsesDurableAuditedAcceptance(t *testing.T) {
 	}
 	body := map[string]interface{}{"expectedRevision": 0, "catalog": handlerTestCatalog(1)}
 
-	// Authorization: no principal, and a principal without platform:operate.
+	// Authorization: no principal, and a principal without database:catalog-activate.
 	if rec := serve(nil, "a1", body); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous = %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := serve([]string{ScopeAPIRead, ScopeAPIWrite}, "a1", body); rec.Code != http.StatusForbidden {
-		t.Fatalf("api:write without platform:operate = %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("api:write without database:catalog-activate = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := serve([]string{ScopePlatformOperate}, "a1", body); rec.Code != http.StatusForbidden {
+		t.Fatalf("platform:operate without database:catalog-activate = %d %s", rec.Code, rec.Body.String())
 	}
 	// Invalid documents are refused before acceptance.
 	invalid := handlerTestCatalog(1)
 	invalid.Bindings[0].ServiceID = "missing"
-	if rec := serve([]string{ScopePlatformOperate}, "a2", map[string]interface{}{"expectedRevision": 0, "catalog": invalid}); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "catalog_activation_refused") {
+	if rec := serve([]string{ScopeCatalogActivate}, "a2", map[string]interface{}{"expectedRevision": 0, "catalog": invalid}); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "catalog_activation_refused") {
 		t.Fatalf("invalid catalog = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := serve([]string{ScopePlatformOperate}, "a3", map[string]interface{}{"expectedRevision": 0, "catalog": handlerTestCatalog(1), "force": true}); rec.Code != http.StatusBadRequest {
+	if rec := serve([]string{ScopeCatalogActivate}, "a3", map[string]interface{}{"expectedRevision": 0, "catalog": handlerTestCatalog(1), "force": true}); rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := serve([]string{ScopePlatformOperate}, "a4", map[string]interface{}{"expectedRevision": 3, "catalog": handlerTestCatalog(1)}); rec.Code != http.StatusConflict {
+	if rec := serve([]string{ScopeCatalogActivate}, "a4", map[string]interface{}{"expectedRevision": 3, "catalog": handlerTestCatalog(1)}); rec.Code != http.StatusConflict {
 		t.Fatalf("wrong expected revision = %d %s", rec.Code, rec.Body.String())
 	}
 	if operations() != 0 {
 		t.Fatal("refused requests created operations")
 	}
 
-	first := serve([]string{ScopePlatformOperate}, "activate-1", body)
+	first := serve([]string{ScopeCatalogActivate}, "activate-1", body)
 	if first.Code != http.StatusAccepted || strings.Contains(first.Body.String(), catalogRefCanary) {
 		t.Fatalf("activation = %d %s", first.Code, first.Body.String())
 	}
@@ -176,13 +179,13 @@ func TestDatabaseCatalogActivationUsesDurableAuditedAcceptance(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &accepted); err != nil {
 		t.Fatal(err)
 	}
-	replay := serve([]string{ScopePlatformOperate}, "activate-1", body)
+	replay := serve([]string{ScopeCatalogActivate}, "activate-1", body)
 	var replayed model.Operation
 	_ = json.Unmarshal(replay.Body.Bytes(), &replayed)
 	if replay.Code != http.StatusOK || replayed.ID != accepted.ID {
 		t.Fatalf("identical retry = %d %s", replay.Code, replay.Body.String())
 	}
-	if changed := serve([]string{ScopePlatformOperate}, "activate-1", map[string]interface{}{"expectedRevision": 0, "catalog": handlerTestCatalog(2)}); changed.Code != http.StatusConflict || !strings.Contains(changed.Body.String(), "idempotency_key_reused") {
+	if changed := serve([]string{ScopeCatalogActivate}, "activate-1", map[string]interface{}{"expectedRevision": 0, "catalog": handlerTestCatalog(2)}); changed.Code != http.StatusConflict || !strings.Contains(changed.Body.String(), "idempotency_key_reused") {
 		t.Fatalf("changed catalog under the same key = %d %s", changed.Code, changed.Body.String())
 	}
 	if operations() != 1 {
@@ -239,8 +242,8 @@ func TestDatabaseCatalogActivationUsesDurableAuditedAcceptance(t *testing.T) {
 	// Two activations accepted against the same revision: one applies, the
 	// other is refused at execution by the compare-and-set.
 	bump := map[string]interface{}{"expectedRevision": 1, "catalog": handlerTestCatalog(2)}
-	second := serve([]string{ScopePlatformOperate}, "activate-2", bump)
-	third := serve([]string{ScopePlatformOperate}, "activate-3", map[string]interface{}{"expectedRevision": 1, "catalog": handlerTestCatalog(3)})
+	second := serve([]string{ScopeCatalogActivate}, "activate-2", bump)
+	third := serve([]string{ScopeCatalogActivate}, "activate-3", map[string]interface{}{"expectedRevision": 1, "catalog": handlerTestCatalog(3)})
 	var secondOp, thirdOp model.Operation
 	_ = json.Unmarshal(second.Body.Bytes(), &secondOp)
 	_ = json.Unmarshal(third.Body.Bytes(), &thirdOp)

@@ -62,7 +62,10 @@ func TestEtcdFleetCatalogActivationThroughWorker(t *testing.T) {
 	if response := call("catalog-once", body, handler.ScopeAPIWrite); response.Code != http.StatusForbidden {
 		t.Fatalf("scope=%d", response.Code)
 	}
-	first := call("catalog-once", body, handler.ScopePlatformOperate)
+	if response := call("catalog-platform-only", body, handler.ScopePlatformOperate); response.Code != http.StatusForbidden {
+		t.Fatalf("platform-only scope crossed catalog boundary: %d", response.Code)
+	}
+	first := call("catalog-once", body, handler.ScopeCatalogActivate)
 	if first.Code != http.StatusAccepted || strings.Contains(first.Body.String(), `"catalog":`) {
 		t.Fatalf("accepted=%d %s", first.Code, first.Body)
 	}
@@ -70,12 +73,12 @@ func TestEtcdFleetCatalogActivationThroughWorker(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &accepted); err != nil || accepted.ID == "" {
 		t.Fatalf("accepted body: %s %v", first.Body, err)
 	}
-	replay := call("catalog-once", body, handler.ScopePlatformOperate)
+	replay := call("catalog-once", body, handler.ScopeCatalogActivate)
 	if replay.Code != http.StatusOK || !strings.Contains(replay.Body.String(), accepted.ID) {
 		t.Fatalf("replay=%d %s", replay.Code, replay.Body)
 	}
 	changed := []byte(`{"expectedRevision":1,"catalog":{"apiVersion":"norn.database/v1alpha1","services":[],"bindings":[],"profiles":[]}}`)
-	if response := call("catalog-once", changed, handler.ScopePlatformOperate); response.Code != http.StatusConflict {
+	if response := call("catalog-once", changed, handler.ScopeCatalogActivate); response.Code != http.StatusConflict {
 		t.Fatalf("changed key=%d %s", response.Code, response.Body)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -90,16 +93,16 @@ func TestEtcdFleetCatalogActivationThroughWorker(t *testing.T) {
 			if err != nil || active.Revision != 1 {
 				t.Fatalf("active: %+v %v", active, err)
 			}
-			if response := call("catalog-once", body, handler.ScopePlatformOperate); response.Code != http.StatusOK {
+			if response := call("catalog-once", body, handler.ScopeCatalogActivate); response.Code != http.StatusOK {
 				t.Fatalf("terminal replay=%d %s", response.Code, response.Body)
 			}
-			if response := call("catalog-stale", body, handler.ScopePlatformOperate); response.Code != http.StatusConflict {
+			if response := call("catalog-stale", body, handler.ScopeCatalogActivate); response.Code != http.StatusConflict {
 				t.Fatalf("stale revision=%d %s", response.Code, response.Body)
 			}
 			if _, err := client.Put(context.Background(), prefix+"/v3/database-catalog/active", "malformed"); err != nil {
 				t.Fatal(err)
 			}
-			if response := call("catalog-corrupt", changed, handler.ScopePlatformOperate); response.Code != http.StatusServiceUnavailable {
+			if response := call("catalog-corrupt", changed, handler.ScopeCatalogActivate); response.Code != http.StatusServiceUnavailable {
 				t.Fatalf("corrupt active pointer=%d %s", response.Code, response.Body)
 			}
 			return

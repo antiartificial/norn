@@ -18,6 +18,7 @@
       "events:read",
       "apps:exec",
       "platform:operate",
+      "database:catalog-activate",
       "host:operate",
       "release:attest",
       "release:stage",

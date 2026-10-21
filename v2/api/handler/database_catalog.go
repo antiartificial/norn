@@ -44,7 +44,7 @@ func (h *Handler) GetDatabaseCatalog(w http.ResponseWriter, r *http.Request) {
 // idempotent operation bound to the request's mutation-audit receipt; the
 // operation worker applies it with the expected-revision compare-and-set.
 func (h *Handler) ActivateDatabaseCatalog(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireControlScope(w, r, ScopePlatformOperate); !ok {
+	if _, ok := requireControlScope(w, r, ScopeCatalogActivate); !ok {
 		return
 	}
 	if h.db == nil || h.pipeline == nil {

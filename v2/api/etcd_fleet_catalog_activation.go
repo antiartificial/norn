@@ -30,8 +30,8 @@ type etcdCatalogActivationRequest struct {
 func etcdFleetCatalogActivation(operations *etcdstore.V3OperationStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := handler.AccessPrincipalFromRequest(r)
-		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.TokenID == "" || principal.CI != nil || !principal.Allows(handler.ScopePlatformOperate) {
-			handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "catalog activation requires a non-CI managed platform:operate principal")
+		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || principal.TokenID == "" || principal.CI != nil || !principal.Allows(handler.ScopeCatalogActivate) {
+			handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "catalog activation requires a non-CI managed database:catalog-activate principal")
 			return
 		}
 		key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))

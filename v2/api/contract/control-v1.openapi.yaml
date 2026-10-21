@@ -569,7 +569,7 @@ paths:
   /api/v1/fleet/targets:
     post:
       operationId: registerFleetTarget
-      description: Registers a Fleet target identity with immutable aliases as the signed operation fleet.target.register. Idempotent for an identical target. The body is intent only. Served by the Fleet authority-only router and the etcd Fleet runtime. Requires platform:operate.
+      description: Registers a Fleet target identity with immutable aliases as the signed operation fleet.target.register. Idempotent for an identical target. The body is intent only. Served by the Fleet authority-only router and the etcd Fleet runtime. Requires a non-CI managed platform:operate principal (or an admin-scoped principal).
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -2113,7 +2113,7 @@ paths:
   /api/v1/database/catalog/activations:
     post:
       operationId: activateDatabaseCatalog
-      description: Accepts a norn.database/v1alpha1 catalog activation as a durable, idempotent operation bound to the request's audit receipt. The catalog and its transition from expectedRevision are validated before acceptance; the operation worker applies it with an expected-revision compare-and-set. Requires platform:operate.
+      description: Accepts a norn.database/v1alpha1 catalog activation as a durable, idempotent operation bound to the request's audit receipt. The catalog and its transition from expectedRevision are validated before acceptance; the operation worker applies it with an expected-revision compare-and-set. Requires database:catalog-activate.
       parameters:
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
       requestBody:
