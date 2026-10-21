@@ -223,7 +223,7 @@ func etcdScaleStatus(cfg *config.Config, operations *etcdstore.V3OperationStore,
 			return
 		}
 		target, _, err := operations.CurrentFleetAppTarget(r.Context(), app, cfg.EnvironmentID())
-		if err != nil {
+		if err != nil || target.NomadNamespace != spec.NomadNamespace {
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "scale_target_unavailable", "Fleet app target is unavailable")
 			return
 		}
@@ -233,7 +233,7 @@ func etcdScaleStatus(cfg *config.Config, operations *etcdstore.V3OperationStore,
 				continue
 			}
 			active, err := runtime.resolveTarget(r.Context(), app, cfg.EnvironmentID(), region.Name)
-			if err != nil {
+			if err != nil || active.NomadNamespace != spec.NomadNamespace {
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "active_scale_target_unavailable", "active Fleet route is unavailable")
 				return
 			}
@@ -242,7 +242,7 @@ func etcdScaleStatus(cfg *config.Config, operations *etcdstore.V3OperationStore,
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "scale_intent_unavailable", "accepted replica intent is unavailable")
 				return
 			}
-			observed, err := runtime.nomad.JobScaleStatusRegion(active.JobID, region.NomadRegion)
+			observed, err := runtime.nomad.JobScaleStatusRegion(active.JobID, region.NomadRegion, active.NomadNamespace)
 			if err != nil || observed == nil {
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "nomad_scale_status_unavailable", "Nomad scale status is unavailable")
 				return
