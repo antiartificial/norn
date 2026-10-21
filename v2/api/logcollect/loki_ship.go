@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -12,6 +13,7 @@ import (
 // LokiStats are the shipper's counters.
 type LokiStats struct {
 	ShippedLines  int64     `json:"shippedLines"`
+	DroppedLines  int64     `json:"droppedLines"`
 	FailedPushes  int64     `json:"failedPushes"`
 	LastError     string    `json:"lastError,omitempty"`
 	LastErrorTime time.Time `json:"lastErrorTime,omitzero"`
@@ -62,28 +64,29 @@ func (l *LokiShipper) Run(ctx context.Context) {
 	}
 }
 
-// Flush ships everything pending once. Streams Loki rejects permanently
-// (4xx other than 408/429) do not stop other streams; any other failure ends
-// the pass and the first error is returned.
+// Flush ships everything pending once. Any failure ends the pass and is
+// returned; batches Loki rejects as invalid are dropped instead (see
+// rejected), so they cannot stall a stream.
 func (l *LokiShipper) Flush(ctx context.Context) error {
-	var firstErr error
 	for _, state := range l.Spool.StreamStates() {
 		if state.Idle() {
 			continue
 		}
-		err := l.shipStream(ctx, state)
-		if err == nil {
-			continue
-		}
-		if firstErr == nil {
-			firstErr = err
-		}
-		var status *LokiStatusError
-		if !errors.As(err, &status) || status.Retryable() {
-			break
+		if err := l.shipStream(ctx, state); err != nil {
+			return err
 		}
 	}
-	return firstErr
+	return nil
+}
+
+// rejected reports a push Loki refused for its content (e.g. entries too
+// old or out of order, or too large). Retrying cannot succeed, so the
+// batch is dropped and counted like any other diagnostic loss (ADR 0001).
+// Auth and routing failures (401/403/404) are configuration errors and keep
+// retrying, so fixing the configuration loses nothing.
+func rejected(err error) bool {
+	var status *LokiStatusError
+	return errors.As(err, &status) && (status.Code == http.StatusBadRequest || status.Code == http.StatusRequestEntityTooLarge)
 }
 
 func (l *LokiShipper) shipStream(ctx context.Context, state StreamState) error {
@@ -113,7 +116,15 @@ func (l *LokiShipper) shipStream(ctx context.Context, state StreamState) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				return l.fail(err)
+				if !rejected(err) {
+					return l.fail(err)
+				}
+				log.Printf("loki shipping: dropped %d lines of %s/%s/%s: %v", len(lines), labels.App, labels.AllocID, labels.Stream, err)
+				l.mu.Lock()
+				l.stats.DroppedLines += int64(len(lines))
+				l.stats.LastError, l.stats.LastErrorTime = err.Error(), time.Now()
+				l.mu.Unlock()
+				lines = nil
 			}
 		}
 		if err := l.Spool.SetShipped(labels, cursor); err != nil {

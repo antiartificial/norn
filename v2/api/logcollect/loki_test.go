@@ -1,6 +1,7 @@
 package logcollect
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"io"
@@ -16,6 +17,7 @@ import (
 type fakeLoki struct {
 	mu     sync.Mutex
 	fail   bool
+	code   int // status while failing (default 500)
 	pushes []lokiPush
 	header http.Header
 }
@@ -33,7 +35,7 @@ func (f *fakeLoki) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	f.header = r.Header.Clone()
 	if r.URL.Path != "/loki/api/v1/push" || f.fail {
-		http.Error(w, "boom", http.StatusInternalServerError)
+		http.Error(w, "boom", cmp.Or(f.code, http.StatusInternalServerError))
 		return
 	}
 	var push lokiPush
@@ -206,6 +208,32 @@ func TestLokiShipperRetriesWithoutAdvancingCursor(t *testing.T) {
 	}
 	if state := spool.StreamStates()[0]; !state.Idle() {
 		t.Fatalf("cursor not caught up: %+v", state)
+	}
+}
+
+func TestLokiShipperDropsRejectedBatchesButRetriesAuthFailures(t *testing.T) {
+	fake := &fakeLoki{fail: true, code: http.StatusUnauthorized}
+	spool, shipper := newLokiTest(t, t.TempDir()+"/spool", fake, 5000)
+	if err := spool.Append(lokiTestLabels, Record{Time: time.Now().UTC(), Data: []byte("a\nb\n")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := shipper.Flush(context.Background()); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	if state := spool.StreamStates()[0]; state.Shipped.Known {
+		t.Fatalf("cursor advanced after auth failure: %+v", state.Shipped)
+	}
+	fake.mu.Lock()
+	fake.code = http.StatusBadRequest
+	fake.mu.Unlock()
+	if err := shipper.Flush(context.Background()); err != nil {
+		t.Fatalf("rejected batch should be dropped, got %v", err)
+	}
+	if state := spool.StreamStates()[0]; !state.Idle() {
+		t.Fatalf("cursor stalled on a rejected batch: %+v", state)
+	}
+	if stats := shipper.Stats(); stats.DroppedLines != 2 || stats.ShippedLines != 0 {
+		t.Fatalf("stats = %+v", stats)
 	}
 }
 
