@@ -172,6 +172,17 @@ func TestFleetOfflineEffectV2IsExplicitAndDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestFleetOfflineVerifierReadIsExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", "")
+	if cfg := Load(); cfg.FleetOfflineVerifierReadEnabled {
+		t.Fatal("offline verifier read enabled by default")
+	}
+	t.Setenv("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", "true")
+	if cfg := Load(); !cfg.FleetOfflineVerifierReadEnabled {
+		t.Fatal("explicit offline verifier read was not enabled")
+	}
+}
+
 func TestGitHubActionsReleaseBindingsConfig(t *testing.T) {
 	t.Setenv("NORN_GITHUB_ACTIONS_RELEASE_BINDINGS", "orders-api=acme/orders-api@123@456, billing-api=acme/billing-api@789@456")
 	t.Setenv("NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES", "acme/orders-api@123@456")

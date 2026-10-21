@@ -60,6 +60,9 @@ const (
 	// ScopeFleetOfflineAttempt admits only a queued offline contraction attempt.
 	// It is exclusive to a live fleet-offline-runner device and grants no effect.
 	ScopeFleetOfflineAttempt = "fleet:offline-attempt"
+	// ScopeFleetOfflineVerify permits only independent, read-only inspection of
+	// the exact work-staging offline contraction state.
+	ScopeFleetOfflineVerify = "fleet:offline-verify"
 )
 
 var accessTokenScopes = map[string]struct{}{
@@ -69,11 +72,12 @@ var accessTokenScopes = map[string]struct{}{
 	ScopeFleetExternalAdmission: {},
 	ScopeFleetExecute:           {},
 	ScopeFleetOfflineAttempt:    {},
+	ScopeFleetOfflineVerify:     {},
 	ScopeReleaseAttest:          {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetOfflineAttempt, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetOfflineAttempt, ScopeFleetOfflineVerify, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own
@@ -274,6 +278,9 @@ func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Durat
 	if containsScope(normalized, ScopeFleetExecute) || containsScope(normalized, ScopeFleetOfflineAttempt) {
 		return nil, fmt.Errorf("Fleet runner scopes are grantable only to dedicated devices")
 	}
+	if containsScope(normalized, ScopeFleetOfflineVerify) && (len(normalized) != 1 || subject != "fleet-offline-verifier:work-staging") {
+		return nil, fmt.Errorf("offline verifier scope requires its dedicated work-staging identity alone")
+	}
 	issuedAt = issuedAt.UTC()
 	return &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl)}, nil
 }
@@ -343,6 +350,10 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if containsScope(scopes, ScopeFleetExecute) || containsScope(scopes, ScopeFleetOfflineAttempt) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", "Fleet runner scopes are grantable only to dedicated devices")
+		return
+	}
+	if containsScope(scopes, ScopeFleetOfflineVerify) && (len(scopes) != 1 || req.Note != "fleet-offline-verifier:work-staging") {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", "offline verifier scope requires its dedicated work-staging identity alone")
 		return
 	}
 	token, record, err := IssueManagedAccessToken(r.Context(), h.cfg.APIToken, h.db, req.Note, scopes, ttl)

@@ -68,6 +68,7 @@ type Config struct {
 	// gate and credential from reservation admission so enabling reservations
 	// cannot accidentally enable provider deletion.
 	FleetOfflineEffectV2Enabled     bool
+	FleetOfflineVerifierReadEnabled bool
 	FleetOfflineEffectV2VerifierURL string
 	FleetOfflineEffectV2TokenFile   string
 	FleetGitHubAPIBaseURL           string
@@ -366,6 +367,7 @@ func Load() *Config {
 		FleetOfflineEvidenceVerifierURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_VERIFIER_URL")), "/"),
 		FleetOfflineEvidenceTokenFile:         strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_TOKEN_FILE")),
 		FleetOfflineEffectV2Enabled:           envBoolOr("NORN_FLEET_OFFLINE_EFFECT_V2_ENABLED", false),
+		FleetOfflineVerifierReadEnabled:       envBoolOr("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", false),
 		FleetOfflineEffectV2VerifierURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_VERIFIER_URL")), "/"),
 		FleetOfflineEffectV2TokenFile:         strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_TOKEN_FILE")),
 

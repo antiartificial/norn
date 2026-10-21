@@ -39,6 +39,7 @@ func registerEtcdFleetOfflineRoutes(router chi.Router, cfg *config.Config, ident
 	router.With(offlineAuth).Post("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptCreate(attempts, identities))
 	router.With(offlineAuth).Get("/api/v1/fleet/offline/plans/{planID}/attempt", etcdOfflineAttemptGet(attempts, identities))
 	registerEtcdFleetOfflineEffectGrantRoutes(router, offlineAuth, attempts, identities, effectSource...)
+	registerEtcdFleetOfflineVerifierRoute(router, cfg, identities, attempts)
 	enrollment := handler.NewEtcdOfflineEnrollmentHandler(cfg, identities)
 	adminAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
 	router.Post("/api/v1/fleet/offline/enrollments", enrollment.StartDeviceEnrollment)
