@@ -29,6 +29,8 @@ type pgExecutorHarness struct {
 	targets map[string]string // cluster -> target ID
 }
 
+func (h *pgExecutorHarness) ExpectedInitialPhase() string { return "infrastructure_applied" }
+
 func (h *pgExecutorHarness) ctx() context.Context { return context.Background() }
 
 func (h *pgExecutorHarness) RegisterTarget(cluster string) string {

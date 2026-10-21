@@ -45,6 +45,13 @@ func NewEtcdOfflineEnrollmentHandler(cfg *config.Config, identities store.AuthSt
 	return &Handler{cfg: cfg, deviceIdentities: identities, offlineEnrollmentOnly: true}
 }
 
+// NewEtcdEnrollmentHandler serves the normal device pairing protocol from the
+// etcd identity aggregate. Platform-specific scope admission still lives in
+// deviceEnrollmentScopesForPlatform, including the exact fleet-executor rule.
+func NewEtcdEnrollmentHandler(cfg *config.Config, identities store.AuthStore) *Handler {
+	return &Handler{cfg: cfg, deviceIdentities: identities}
+}
+
 func (h *Handler) deviceIdentityStore() store.AuthStore {
 	if h == nil {
 		return nil

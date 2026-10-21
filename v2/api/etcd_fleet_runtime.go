@@ -150,6 +150,13 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		reconciler = newFleetReconciler(operations, func(err error) bool { return errors.Is(err, etcdstore.ErrFleetResourceNotFound) })
 		router.Use(fleetReconcilerNotify(reconciler))
 	}
+	executorLaneEnabled := cfg.FleetEtcdExecutorEnabled
+	if executorLaneEnabled && fleetGitHub == nil {
+		return fmt.Errorf("NORN_FLEET_ETCD_EXECUTOR_ENABLED requires a configured Fleet GitHub App")
+	}
+	if executorLaneEnabled && reconciler == nil {
+		return fmt.Errorf("NORN_FLEET_ETCD_EXECUTOR_ENABLED requires %s=true", fleetReconcilerEnv)
+	}
 	router.Get("/api/health", sourceValidationHealthHandler(client, backend.EtcdPrefix))
 	router.Get("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
@@ -190,7 +197,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if fleetGitHub != nil {
 		commits = fleetGitHub
 	}
-	watcher := registerEtcdFleetControllerRoutes(router, cfg, identities, operations, fleetGitHub, commits, reconciler, etcdFleetExecutorLaneEnabled)
+	watcher := registerEtcdFleetControllerRoutes(router, cfg, identities, operations, fleetGitHub, commits, reconciler, executorLaneEnabled)
 	offlineOwnerKey, offlineReservationVerifier, err := newOfflineReservationRuntime(cfg)
 	if err != nil {
 		return fmt.Errorf("configure offline Fleet reservation: %w", err)
@@ -205,7 +212,8 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/pull-request", etcdFleetGitHubPullRequest(cfg, operations, fleetGitHub))
 	}
-	registerEtcdFleetCredentialRoutes(router, cfg, identities, etcdFleetExecutorLaneEnabled)
+	registerEtcdFleetCredentialRoutes(router, cfg, identities, executorLaneEnabled)
+	registerEtcdFleetExecutorEnrollmentRoutes(router, cfg, identities, executorLaneEnabled)
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			handler.WriteControlProblem(w, r, http.StatusNotImplemented, "backend_route_unsupported", "route is not implemented by the etcd normal Fleet capability set")
@@ -310,7 +318,7 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		endpoints["fleetGitHubDispatch"] = "/api/v1/fleet/plans/{planID}/github/dispatch"
 		endpoints["fleetRunnerAttempts"] = "/api/v1/fleet/plans/{planID}/attempts"
 		endpoints["fleetReconciliations"] = "/api/v1/fleet/plans/{planID}/reconciliations"
-		if etcdFleetExecutorLaneEnabled {
+		if cfg != nil && cfg.FleetEtcdExecutorEnabled {
 			features, endpoints = withFleetExecutorCapabilities(features, endpoints)
 		}
 		unsupported = []string{"app-mutations", "operation-cancellation"}
@@ -331,6 +339,14 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		endpoints["appScaleStatus"] = "/api/v1/apps/{id}/scale-status"
 		unsupported[0] = "other-app-mutations"
 	}
+	auth := map[string]interface{}{
+		"scopes":                handler.AccessTokenScopeNames(),
+		"principal":             map[string]interface{}{"authenticated": false, "scopes": []string{}},
+		"websocketBearerHeader": false, "websocketQueryToken": false,
+	}
+	if cfg != nil && cfg.FleetEtcdExecutorEnabled && len(githubEnabled) > 0 && githubEnabled[0] {
+		auth["enrollmentScopesByPlatform"] = fleetExecutorEnrollmentScopes()
+	}
 	return map[string]interface{}{
 		"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet",
 		"environment": map[string]string{"id": cfg.EnvironmentID(), "profile": cfg.ProfileID()},
@@ -338,11 +354,7 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		// host inventories that the narrow Fleet router does not expose.
 		"authority": "fleet-only",
 		"features":  features, "endpoints": endpoints, "unsupported": unsupported,
-		"auth": map[string]interface{}{
-			"scopes":                handler.AccessTokenScopeNames(),
-			"principal":             map[string]interface{}{"authenticated": false, "scopes": []string{}},
-			"websocketBearerHeader": false, "websocketQueryToken": false,
-		},
+		"auth": auth,
 	}
 }
 
@@ -702,16 +714,6 @@ func refreshEtcdCapacityPlanSignature(plan *fleet.CapacityPlan, key string) erro
 	return nil
 }
 
-// etcdFleetExecutorLaneEnabled gates the executor lane off the etcd runtime
-// (plan-5-7 P2 and E2e hand-offs): the executor's converge pipeline is pinned
-// to the PG legacy phase profile, and an etcd/v3 attempt (prechange_verified
-// -> provider_applying) has no executor support yet. Until that profile
-// exists the etcd runtime mounts none of the executor-lane routes, runs no
-// converge watcher, admits neither the executor principal nor the
-// attempt-bound credential to any route, and does not advertise
-// fleet-executor-v1. The lane's code stays tested with the gate open.
-const etcdFleetExecutorLaneEnabled = false
-
 // registerEtcdFleetControllerRoutes mounts the Fleet target, resource and
 // runner routes of the etcd runtime and, with executorLane, the executor-lane
 // routes; it returns the converge watcher (nil without executorLane, when this
@@ -788,4 +790,22 @@ func registerEtcdFleetCredentialRoutes(router chi.Router, cfg *config.Config, id
 	router.With(managed).Post("/api/v1/auth/revoke", func(w http.ResponseWriter, r *http.Request) {
 		handler.RevokeManagedToken(identities, nil, w, r)
 	})
+}
+
+// registerEtcdFleetExecutorEnrollmentRoutes mounts the normal pairing and
+// revocation protocol against the etcd identity aggregate only while the
+// executor lane is active. The handler admits fleet:execute only by itself and
+// only for fleet-executor devices.
+func registerEtcdFleetExecutorEnrollmentRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, executorLane bool) {
+	if !executorLane {
+		return
+	}
+	enrollment := handler.NewEtcdEnrollmentHandler(cfg, identities)
+	admin := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
+	router.Post("/api/v1/enrollments", enrollment.StartDeviceEnrollment)
+	router.With(admin).Get("/api/v1/enrollments", enrollment.ListDeviceEnrollments)
+	router.With(admin).Post("/api/v1/enrollments/approve", enrollment.ApproveDeviceEnrollment)
+	router.Post("/api/v1/enrollments/{id}/exchange", enrollment.ExchangeDeviceEnrollment)
+	router.With(admin).Get("/api/v1/devices", enrollment.ListDevices)
+	router.With(admin).Delete("/api/v1/devices/{id}", enrollment.RevokeDevice)
 }

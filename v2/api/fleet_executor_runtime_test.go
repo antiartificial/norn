@@ -292,13 +292,22 @@ func TestFleetExecutorCapabilitiesOnBothProcesses(t *testing.T) {
 		t.Errorf("fleet:execute is not listed in AccessTokenScopeNames: %v", pg.Auth.Scopes)
 	}
 
-	// The etcd executor lane is gated off (etcdFleetExecutorLaneEnabled), so
+	// The etcd executor lane is gated off by default, so
 	// the etcd runtime does not advertise it even with the GitHub App.
 	etcd := etcdFleetCapabilities(&config.Config{}, false, true)
 	features, _ := etcd["features"].([]string)
 	endpoints, _ := etcd["endpoints"].(map[string]string)
-	if containsCapability(features, "fleet-executor-v1") != etcdFleetExecutorLaneEnabled || (endpoints["fleetCredentialGrants"] != "") != etcdFleetExecutorLaneEnabled {
+	if containsCapability(features, "fleet-executor-v1") || endpoints["fleetCredentialGrants"] != "" {
 		t.Errorf("etcd capabilities with the GitHub App: %#v", etcd)
+	}
+	enabled := etcdFleetCapabilities(&config.Config{FleetEtcdExecutorEnabled: true}, false, true)
+	if !containsCapability(enabled["features"].([]string), "fleet-executor-v1") || enabled["endpoints"].(map[string]string)["fleetCredentialGrants"] == "" {
+		t.Errorf("enabled etcd executor capabilities: %#v", enabled)
+	}
+	auth := enabled["auth"].(map[string]interface{})
+	byPlatform := auth["enrollmentScopesByPlatform"].(map[string][]string)
+	if got := byPlatform[handler.FleetExecutorPlatform]; len(got) != 1 || got[0] != handler.ScopeFleetExecute {
+		t.Errorf("enabled etcd executor enrollment scopes: %#v", byPlatform)
 	}
 	// Without the GitHub App the etcd executor lane is not mounted, so it is
 	// not advertised.
