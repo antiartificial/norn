@@ -50,6 +50,7 @@ type Handler struct {
 	db                     *store.DB
 	deviceIdentities       store.AuthStore
 	offlineEnrollmentOnly  bool
+	executorEnrollOnly     bool
 	nomad                  *nomad.Client
 	consul                 *consul.Client
 	workloads              connector.Connector

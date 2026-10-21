@@ -45,11 +45,11 @@ func NewEtcdOfflineEnrollmentHandler(cfg *config.Config, identities store.AuthSt
 	return &Handler{cfg: cfg, deviceIdentities: identities, offlineEnrollmentOnly: true}
 }
 
-// NewEtcdEnrollmentHandler serves the normal device pairing protocol from the
-// etcd identity aggregate. Platform-specific scope admission still lives in
-// deviceEnrollmentScopesForPlatform, including the exact fleet-executor rule.
-func NewEtcdEnrollmentHandler(cfg *config.Config, identities store.AuthStore) *Handler {
-	return &Handler{cfg: cfg, deviceIdentities: identities}
+// NewEtcdFleetExecutorEnrollmentHandler serves the executor pairing protocol
+// from the etcd identity aggregate. Every enrollment and token issuance path
+// is restricted to the fleet-executor platform and fleet:execute alone.
+func NewEtcdFleetExecutorEnrollmentHandler(cfg *config.Config, identities store.AuthStore) *Handler {
+	return &Handler{cfg: cfg, deviceIdentities: identities, executorEnrollOnly: true}
 }
 
 func (h *Handler) deviceIdentityStore() store.AuthStore {
@@ -155,6 +155,15 @@ func (h *Handler) ListDeviceEnrollments(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		enrollments = offlineOnly
+	}
+	if h.executorEnrollOnly {
+		executorOnly := make([]store.AccessEnrollment, 0, len(enrollments))
+		for _, enrollment := range enrollments {
+			if isFleetExecutorPlatform(enrollment.Platform) {
+				executorOnly = append(executorOnly, enrollment)
+			}
+		}
+		enrollments = executorOnly
 	}
 	writeJSON(w, map[string]interface{}{"enrollments": enrollments})
 }
@@ -282,6 +291,15 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "device_list_failed", "failed to list devices")
 		return
 	}
+	if h.executorEnrollOnly {
+		executorOnly := make([]store.AccessDevice, 0, len(devices))
+		for _, device := range devices {
+			if isFleetExecutorPlatform(device.Platform) {
+				executorOnly = append(executorOnly, device)
+			}
+		}
+		devices = executorOnly
+	}
 	writeJSON(w, map[string]interface{}{"devices": devices})
 }
 
@@ -293,6 +311,13 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 		device, err := h.deviceIdentityStore().ActiveAccessDevice(r.Context(), chi.URLParam(r, "id"))
 		if err != nil || device == nil || !strings.EqualFold(strings.TrimSpace(device.Platform), FleetOfflineRunnerPlatform) {
 			WriteControlProblem(w, r, http.StatusNotFound, "device_not_found", "offline runner device was not found")
+			return
+		}
+	}
+	if h.executorEnrollOnly {
+		device, err := h.deviceIdentityStore().ActiveAccessDevice(r.Context(), chi.URLParam(r, "id"))
+		if err != nil || device == nil || !isFleetExecutorPlatform(device.Platform) {
+			WriteControlProblem(w, r, http.StatusNotFound, "device_not_found", "fleet executor device was not found")
 			return
 		}
 	}

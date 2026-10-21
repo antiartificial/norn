@@ -55,14 +55,14 @@ func Phases(profile Profile, requiresDrain bool) []string {
 	return canonicalPhases
 }
 
-// ExecutorInitialPhase returns the first effect-bearing phase for a
-// non-destructive controller executor attempt. Planning and destructive
-// classification happen before attempt admission on this lane.
+// ExecutorInitialPhase returns the first durable reconciliation phase for an
+// executor attempt. V3 preserves the canonical prechange checkpoint so shared
+// reconciliation admission can require it before provider effects.
 func ExecutorInitialPhase(profile Profile) string {
 	if profile == PostgresLegacy {
 		return legacyNoDrainPhases[0]
 	}
-	return "provider_applying"
+	return canonicalPhases[0]
 }
 
 // NextPhase returns the phase after current for profile, or current with

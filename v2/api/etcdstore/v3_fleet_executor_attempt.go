@@ -437,9 +437,8 @@ func (s *V3OperationStore) tryFleetExecutorStart(ctx context.Context, in store.F
 		if err != nil {
 			return nil, false, err
 		}
-		// The executor has already planned and refused destructive work before
-		// starting an attempt. Its canonical V3 provider effect therefore starts
-		// at provider_applying; the GitHub lane retains prechange_verified.
+		// V3 begins at prechange_verified. The executor must append that signed
+		// checkpoint before shared reconciliation admission permits provider work.
 		item.CurrentPhase = lifecycle.ExecutorInitialPhase(lifecycle.V3)
 	} else {
 		if len(attempts) == 0 {

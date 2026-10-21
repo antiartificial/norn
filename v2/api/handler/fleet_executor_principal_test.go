@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,35 @@ func TestFleetExecuteOnlyForExecutorPlatform(t *testing.T) {
 	cfg := &config.Config{APIToken: "0123456789abcdef0123456789abcdef"}
 	if _, _, err := issueDeviceTokenForPlatform(cfg, "ios", "d", "s", []string{ScopeFleetExecute}, "old", 0); err == nil {
 		t.Fatal("issue for wrong platform accepted")
+	}
+}
+
+func TestEtcdFleetExecutorEnrollmentHandlerRejectsEveryOtherPlatformAndScope(t *testing.T) {
+	h := NewEtcdFleetExecutorEnrollmentHandler(&config.Config{}, nil)
+	for _, tc := range []struct {
+		platform string
+		scopes   []string
+	}{
+		{platform: "ios", scopes: []string{ScopeAPIRead}},
+		{platform: FleetExecutorPlatform, scopes: []string{ScopeAPIRead}},
+		{platform: FleetExecutorPlatform, scopes: []string{ScopeFleetExecute, ScopeAPIRead}},
+		{platform: FleetExecutorPlatform},
+	} {
+		if _, err := h.deviceEnrollmentScopesForPlatform(tc.platform, tc.scopes); err == nil {
+			t.Fatalf("restricted etcd enrollment accepted platform=%q scopes=%v", tc.platform, tc.scopes)
+		}
+	}
+	if got, err := h.deviceEnrollmentScopesForPlatform(FleetExecutorPlatform, []string{ScopeFleetExecute}); err != nil || !reflect.DeepEqual(got, []string{ScopeFleetExecute}) {
+		t.Fatalf("exact executor enrollment rejected: scopes=%v err=%v", got, err)
+	}
+
+	// Exercise the public route handler and prove rejection happens before a
+	// missing identity store or key validation can turn it into another result.
+	req := httptest.NewRequest(http.MethodPost, "https://authority.example/api/v1/enrollments", strings.NewReader(`{"deviceName":"wrong","platform":"ios","requestedScopes":["api:read"]}`))
+	rec := httptest.NewRecorder()
+	h.StartDeviceEnrollment(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_scope") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
