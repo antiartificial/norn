@@ -52,6 +52,28 @@ func TestPilotInfraSpecRendersReadinessLivenessAndRollingContract(t *testing.T) 
 	}
 }
 
+func TestStagingMySQLPilotCanRenderThreeManagedReplicas(t *testing.T) {
+	path := filepath.Join("..", "..", "infra", "fleet-staging", "hello-norn-mysql", "infraspec.yaml")
+	spec, err := model.LoadInfraSpec(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Deploy {
+		t.Fatal("staging declaration must remain inert until catalog promotion")
+	}
+	if result := model.ValidateSpec(spec); !result.Valid {
+		t.Fatalf("invalid staging spec: %+v", result.Findings)
+	}
+	job := mustTranslate(t, spec, "example.test/pilot@sha256:"+strings.Repeat("a", 64), nil)
+	if job.NodePool == nil || *job.NodePool != "app" || len(job.TaskGroups) != 1 {
+		t.Fatalf("staging placement: %+v", job)
+	}
+	group := job.TaskGroups[0]
+	if spec.Processes["web"].Scaling.Max != 3 || group.Count == nil || *group.Count != 2 || len(group.Services) == 0 || len(group.Services[0].Checks) != 2 || len(group.Tasks) != 1 || len(group.Tasks[0].Templates) != 4 {
+		t.Fatalf("staging managed workload differs: %+v", group)
+	}
+}
+
 func testIntPointer(value int) *int { return &value }
 
 func mustTranslate(t *testing.T, spec *model.InfraSpec, image string, env map[string]string) *nomadapi.Job {
