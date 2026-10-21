@@ -125,6 +125,32 @@ func (r PlatformReleaseIntent) Validate() error {
 	return nil
 }
 
+// PlatformReleaseIntentDigest is SHA256 of compact JSON with recursively
+// sorted object keys (Go's encoding/json map order), over immutable bindings
+// only. Python json.dumps(..., sort_keys=True, separators=(",",":")) yields
+// the same bytes for these ASCII-only fields. Status and timestamps never
+// change this identity.
+func PlatformReleaseIntentDigest(r PlatformReleaseIntent) (string, error) {
+	roster := make([]map[string]string, 0, len(r.ControlRoster))
+	for _, control := range r.ControlRoster {
+		roster = append(roster, map[string]string{"name": control.Name, "tailnetIp": control.TailnetIP, "privateIp": control.PrivateIP})
+	}
+	bindings := map[string]interface{}{
+		"schemaVersion": 1, "name": r.Name, "generation": r.Generation, "environment": r.Environment,
+		"oldSourceSha": r.OldSourceSHA, "newSourceSha": r.NewSourceSHA,
+		"oldPublisherRunId": r.OldPublisherRunID, "publisherRunId": r.PublisherRunID,
+		"oldSignedManifestSha256": r.OldSignedManifestSHA256, "newSignedManifestSha256": r.NewSignedManifestSHA256,
+		"signedReleaseTag": r.SignedReleaseTag, "controlRoster": roster,
+		"stateSha256": r.StateSHA256, "hostKeysSha256": r.HostKeysSHA256,
+	}
+	bytes, err := json.Marshal(bindings)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(bytes)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func (s *V3OperationStore) platformReleaseIntentKey(name string) string {
 	return s.prefix + "/v3/platform-release-intents/" + name
 }
@@ -141,10 +167,19 @@ func (s *V3OperationStore) EnsurePlatformReleaseIntent(ctx context.Context, requ
 	request.ApprovedBy = ""
 	request.ApprovedAt = nil
 	request.CreatedAt = time.Time{}
-	canonical, _ := json.Marshal(request)
-	digest := sha256.Sum256(canonical)
-	request.IntentDigest = hex.EncodeToString(digest[:])
+	digest, err := PlatformReleaseIntentDigest(request)
+	if err != nil {
+		return nil, false, err
+	}
+	request.IntentDigest = digest
 	key := s.platformReleaseIntentKey(request.Name)
+	genesis, err := s.kv.Get(ctx, s.platformReleaseGenesisKey(request.Name))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(genesis.Kvs) > 0 {
+		return nil, false, ErrPlatformReleaseConflict
+	}
 	existing, err := s.kv.Get(ctx, key)
 	if err != nil {
 		return nil, false, err
@@ -168,7 +203,7 @@ func (s *V3OperationStore) EnsurePlatformReleaseIntent(ctx context.Context, requ
 	if err != nil {
 		return nil, false, err
 	}
-	committed, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, string(encoded))).Commit()
+	committed, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.platformReleaseGenesisKey(request.Name)), "=", 0)).Then(clientv3.OpPut(key, string(encoded))).Commit()
 	if err != nil {
 		return nil, false, err
 	}
@@ -297,8 +332,10 @@ func (s *V3OperationStore) AuthorizePlatformReleaseRecovery(ctx context.Context,
 	if err := decodeV3Record(read.Kvs[0].Value, &attempt); err != nil {
 		return nil, err
 	}
+	// A Failed attempt can still have an already issued remote promote grant.
+	// Recovery waits until the full lease window has passed for every status.
 	if attempt.ID != auth.AttemptID || attempt.IntentDigest != auth.IntentDigest || attempt.FenceEpoch != auth.ExpectedFenceEpoch ||
-		attempt.Status == "Succeeded" || (attempt.Status == "Running" && time.Now().Before(attempt.LeaseExpiresAt)) {
+		attempt.Status == "Succeeded" || time.Now().Before(attempt.LeaseExpiresAt) {
 		return nil, ErrPlatformReleaseConflict
 	}
 	prior, err := s.kv.Get(ctx, key)
@@ -357,7 +394,7 @@ func (s *V3OperationStore) RecoverPlatformReleaseAttempt(ctx context.Context, na
 		return nil, err
 	}
 	if attempt.ID != attemptID || attempt.FenceEpoch != expectedFenceEpoch || attempt.Status == "Succeeded" ||
-		(attempt.Status == "Running" && time.Now().Before(attempt.LeaseExpiresAt)) ||
+		time.Now().Before(attempt.LeaseExpiresAt) ||
 		auth.AttemptID != attemptID || auth.IntentDigest != attempt.IntentDigest || auth.ExpectedFenceEpoch != expectedFenceEpoch || auth.ConsumedAt != nil ||
 		auth.RecoveryNonce != recoveryNonce || auth.OldOwnerStopAttestationSHA256 != stopDigest || auth.ObservedSignedMemberStateSHA256 != stateDigest ||
 		ownerSession == attempt.OwnerSession {

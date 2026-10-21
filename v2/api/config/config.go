@@ -23,6 +23,9 @@ type Config struct {
 	// FleetPlatformReleaseIntentEnabled exposes durable, effect-free platform
 	// release intent records. The platform release executor has a separate gate.
 	FleetPlatformReleaseIntentEnabled bool
+	// FleetPlatformGenesisPublicKeyFile pins the dedicated management signer
+	// for importing an externally completed first controller rollout.
+	FleetPlatformGenesisPublicKeyFile string
 	// Environment is the release lane, deliberately separate from Profile.
 	Environment string
 	// EnvironmentExplicit distinguishes an omitted variable (which defaults to
@@ -316,6 +319,7 @@ func Load() *Config {
 		FleetAuthorityOnly:                    envBoolOr("NORN_FLEET_AUTHORITY_ONLY", false),
 		FleetEtcdExecutorEnabled:              envBoolOr("NORN_FLEET_ETCD_EXECUTOR_ENABLED", false),
 		FleetPlatformReleaseIntentEnabled:     envBoolOr("NORN_FLEET_PLATFORM_RELEASE_INTENT_ENABLED", false),
+		FleetPlatformGenesisPublicKeyFile:     strings.TrimSpace(os.Getenv("NORN_FLEET_PLATFORM_GENESIS_PUBLIC_KEY_FILE")),
 		Environment:                           environment,
 		EnvironmentExplicit:                   environmentExplicit,
 		Port:                                  envOr("NORN_PORT", "8800"),

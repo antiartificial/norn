@@ -156,6 +156,15 @@ func TestPlatformReleaseRecoveryRequiresOperatorBindingAndFencesStaleOwner(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.FinishPlatformReleaseAttempt(ctx, request.Name, attempt.ID, attempt.OwnerID, attempt.OwnerSession, 1, "Failed"); err != nil {
+		t.Fatal(err)
+	}
+	stopDigest, stateDigest := strings.Repeat("1", 64), strings.Repeat("2", 64)
+	auth := PlatformReleaseRecoveryAuthorization{AttemptID: attempt.ID, ExpectedFenceEpoch: 1, IntentDigest: intent.IntentDigest, RecoveryNonce: strings.Repeat("n", 32), OldOwnerStopAttestationSHA256: stopDigest, ObservedSignedMemberStateSHA256: stateDigest, ApprovedBy: "operator-test"}
+	if _, err = s.AuthorizePlatformReleaseRecovery(ctx, request.Name, auth); !errors.Is(err, ErrPlatformReleaseConflict) {
+		t.Fatalf("authorized before failed lease expiry: %v", err)
+	}
+	attempt.Status = "Failed"
 	// Force an expired lease in the isolated test prefix; no automatic takeover
 	// occurs even though the old process has missed its deadline.
 	attempt.LeaseExpiresAt = time.Now().Add(-time.Minute)
@@ -166,8 +175,6 @@ func TestPlatformReleaseRecoveryRequiresOperatorBindingAndFencesStaleOwner(t *te
 	if _, err = client.Put(ctx, s.platformReleaseAttemptKey(request.Name), string(encoded)); err != nil {
 		t.Fatal(err)
 	}
-	stopDigest, stateDigest := strings.Repeat("1", 64), strings.Repeat("2", 64)
-	auth := PlatformReleaseRecoveryAuthorization{AttemptID: attempt.ID, ExpectedFenceEpoch: 1, IntentDigest: intent.IntentDigest, RecoveryNonce: strings.Repeat("n", 32), OldOwnerStopAttestationSHA256: stopDigest, ObservedSignedMemberStateSHA256: stateDigest, ApprovedBy: "operator-test"}
 	if _, err = s.RecoverPlatformReleaseAttempt(ctx, request.Name, attempt.ID, "executor-12345678", "session-new-123456789", auth.RecoveryNonce, stopDigest, stateDigest, 1); !errors.Is(err, ErrPlatformReleaseConflict) {
 		t.Fatalf("recovered without authorization: %v", err)
 	}
