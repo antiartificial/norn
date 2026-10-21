@@ -13,6 +13,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -645,6 +646,10 @@ func newLaneEtcd(t *testing.T) *laneEtcd {
 			payload, _ = json.Marshal(body)
 		}
 		req := httptest.NewRequest(method, path, bytes.NewReader(payload))
+		// The production executor pairs through the private HTTPS authority.
+		// Exercise scope and handler admission behind that transport gate rather
+		// than letting httptest's non-loopback HTTP peer stop at 426 first.
+		req.TLS = &tls.ConnectionState{}
 		req.Header.Set("Content-Type", "application/json")
 		if bearer != "" {
 			req.Header.Set("Authorization", "Bearer "+bearer)
@@ -1097,14 +1102,21 @@ func TestPGWatcherVerdictsReachTheResourceView(t *testing.T) {
 	}
 }
 
-// TestEtcdRuntimeServesNoEnrollmentRoutes pins the documented decision: the
-// etcd runtime has no enrollment or DELETE /devices/{id} routes (those
-// handlers are bound to the PostgreSQL store), so executor devices are enrolled
-// and revoked only through the PG authority.
-func TestEtcdRuntimeServesNoEnrollmentRoutes(t *testing.T) {
-	for _, route := range newLaneEtcd(t).routes {
-		if strings.Contains(route, "/enrollments") || strings.Contains(route, "/devices") {
-			t.Errorf("the etcd runtime serves %s", route)
+// TestEtcdRuntimeServesExecutorEnrollmentRoutes pins the enabled lane's exact
+// pairing and device-revocation surface. The handler behind these routes is
+// restricted to platform fleet-executor and scope fleet:execute alone.
+func TestEtcdRuntimeServesExecutorEnrollmentRoutes(t *testing.T) {
+	served := laneRouteSet(newLaneEtcd(t).routes)
+	for _, route := range []string{
+		"POST /api/v1/enrollments",
+		"GET /api/v1/enrollments",
+		"POST /api/v1/enrollments/approve",
+		"POST /api/v1/enrollments/{id}/exchange",
+		"GET /api/v1/devices",
+		"DELETE /api/v1/devices/{id}",
+	} {
+		if !served[route] {
+			t.Errorf("enabled etcd executor lane does not serve %s", route)
 		}
 	}
 }
@@ -1178,6 +1190,9 @@ func TestEtcdExecutorLaneGatedOff(t *testing.T) {
 		"POST /api/v1/fleet/plans/{planID}/converge/approve", "POST /api/v1/fleet/plans/{planID}/credential-grants",
 		"POST /api/v1/fleet/plans/{planID}/converge-refusals", "POST /api/v1/fleet/plans/{planID}/provider-evidence",
 		"POST /api/v1/fleet/executor/stop-attestations",
+		"POST /api/v1/enrollments", "GET /api/v1/enrollments",
+		"POST /api/v1/enrollments/approve", "POST /api/v1/enrollments/{id}/exchange",
+		"GET /api/v1/devices", "DELETE /api/v1/devices/{id}",
 	} {
 		if served[route] {
 			t.Errorf("gated-off etcd runtime serves %s", route)
