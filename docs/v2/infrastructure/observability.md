@@ -118,6 +118,8 @@ The bundle contains:
 | `norn-prometheus` | Scrapes Norn, app metrics services, and alert rules with 30-day/8GB retention |
 | `norn-grafana` | Provisions the Norn Prometheus datasource and starter platform dashboard |
 | `norn-cadvisor` | Provides container-level metrics for Prometheus when host policy allows it |
+| `norn-loki` | Grafana Loki 3.x (single binary, filesystem storage, 30-day retention, structured metadata enabled) |
+| `norn-tempo` | Grafana Tempo 2.x (local storage, 30-day block retention) receiving OTLP/HTTP and serving the trace query API |
 
 The generated apps are normal Norn apps. Review ports, container privileges, and host policy before deploying:
 
@@ -128,6 +130,39 @@ norn deploy norn-prometheus HEAD
 ```
 
 When the API binds to loopback, the managed Prometheus config targets `host.docker.internal:<port>` so Prometheus can scrape the host-local Norn API from inside Docker. Override this with `NORN_OBSERVABILITY_NORN_TARGET` if the Docker host path differs.
+
+## App Traces
+
+Norn can point apps at an OTLP collector and read the resulting traces back from Tempo. Both settings are opt-in:
+
+| Variable | Meaning |
+|----------|---------|
+| `NORN_APP_OTLP_ENDPOINT` | OTLP/HTTP endpoint injected into app tasks, for example `http://norn-tempo-web.service.consul:4318`. Empty disables injection. |
+| `NORN_TEMPO_URL` | Tempo query origin used by `GET /api/v1/apps/{id}/traces`, for example `http://norn-tempo-web-metrics.service.consul:3200` (an origin only: no path or credentials). Unset returns 503 `tracing_unavailable`. |
+
+When `NORN_APP_OTLP_ENDPOINT` is set, service, cron, and one-shot batch tasks receive these variables at the next deploy (running allocations are not changed, so redeploy after enabling it):
+
+```text
+OTEL_EXPORTER_OTLP_ENDPOINT=<NORN_APP_OTLP_ENDPOINT>
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=<app>
+OTEL_RESOURCE_ATTRIBUTES=norn.app=<app>,norn.process=<process>,nomad.alloc_id=${NOMAD_ALLOC_ID},nomad.task_group=${NOMAD_GROUP_NAME}
+```
+
+Variables the app already sets in `env`, process `env`, or secrets are never overridden. Function invocation jobs are not injected: their job shape is fixed and carries no environment. Apps must still use an OpenTelemetry SDK; Norn only supplies the configuration.
+
+Read traces with the CLI, API, or MCP tools (`norn_search_traces`, `norn_get_trace`):
+
+```bash
+norn traces web --since 2h --min-duration 250ms
+norn traces web 4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+An app-bound credential sees only spans whose resource `norn.app` is its own app; spans from other apps in the same trace are counted in `omittedSpans`.
+
+`norn-tempo` has two ports but an infraspec process publishes one container port plus an optional metrics port. The OTLP/HTTP receiver (4318) is the `web` port with a fixed `hostPort`, so the injected endpoint is stable, and it has no health check because the receiver answers no GET with a success status. The query API (3200) is the metrics port, registered as Consul service `norn-tempo-web-metrics` with its `/metrics` check as the liveness check. Metrics ports are dynamic Nomad ports, like the existing Prometheus and Grafana service addresses in the generated datasources; pin `NORN_TEMPO_URL` to the address Consul reports if DNS plus the container port does not reach it on your host.
+
+Grafana correlation is provisioned in the `norn-grafana` app: the Loki datasource has a derived field that turns `trace_id`, `traceId`, or a W3C `traceparent` value in a log line into a link to the Tempo datasource, and the Tempo datasource opens the matching Loki logs for a span, filtered by trace id and `norn.app`. Log shipping to Loki is configured separately with `NORN_LOKI_URL`.
 
 ## App Metrics
 
