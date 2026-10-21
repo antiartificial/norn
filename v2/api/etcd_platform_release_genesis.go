@@ -37,6 +37,7 @@ type platformGenesisCompletion struct {
 	OldSourceSHA          string    `json:"oldSourceSha"`
 	NewSourceSHA          string    `json:"newSourceSha"`
 	SignerPublicKeySHA256 string    `json:"signerPublicKeySha256"`
+	TargetCapability      string    `json:"targetCapability"`
 }
 
 type platformGenesisCheckpoint struct {
@@ -173,7 +174,7 @@ func verifyPlatformGenesisImport(request platformGenesisImportRequest, name stri
 	if err := platformGenesisStrict(completionBytes, &completion); err != nil {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
-	if completion.SchemaVersion != "norn.fleet-platform-genesis-completion/v1" || completion.Status != "Succeeded" || completion.CompletedAt.IsZero() || completion.CompletedAt.After(time.Now().Add(5*time.Minute)) || completion.IntentDigest != digest || completion.OldSourceSHA != intent.OldSourceSHA || completion.NewSourceSHA != intent.NewSourceSHA || completion.AttemptID == "" || completion.OwnerID == "" || completion.FenceEpoch < 1 || completion.CheckpointCount < 1 || completion.CheckpointCount > 1024 {
+	if completion.SchemaVersion != "norn.fleet-platform-genesis-completion/v1" || completion.Status != "Succeeded" || completion.TargetCapability != "fleet-platform-release-intent-v1" || completion.CompletedAt.IsZero() || completion.CompletedAt.After(time.Now().Add(5*time.Minute)) || completion.IntentDigest != digest || completion.OldSourceSHA != intent.OldSourceSHA || completion.NewSourceSHA != intent.NewSourceSHA || completion.AttemptID == "" || completion.OwnerID == "" || completion.FenceEpoch < 1 || completion.CheckpointCount < 1 || completion.CheckpointCount > 1024 {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
 	if completion.SignerPublicKeySHA256 != completionPEMSHA256 {

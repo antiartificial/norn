@@ -132,6 +132,7 @@ func TestVerifyPlatformGenesisImportSignedBindings(t *testing.T) {
 		"schemaVersion": "norn.fleet-platform-genesis-completion/v1", "status": "Succeeded", "completedAt": time.Now().UTC().Format(time.RFC3339Nano),
 		"controlRosterSha256": rosterHash, "intentDigest": digest, "attemptId": "attempt-123", "ownerId": "device-123", "fenceEpoch": 1,
 		"checkpointCount": 1, "checkpointsSha256": hex.EncodeToString(checkpointHash[:]), "oldSourceSha": intent.OldSourceSHA, "newSourceSha": intent.NewSourceSHA, "signerPublicKeySha256": publicPEMSHA,
+		"targetCapability": "fleet-platform-release-intent-v1",
 	}
 	rawCompletion, err := json.Marshal(completion)
 	if err != nil {
