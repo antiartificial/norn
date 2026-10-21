@@ -38,6 +38,14 @@ func TestManagedDeploymentJobDigestIsStableAcrossReconstruction(t *testing.T) {
 	}
 }
 
+func TestManagedDeploymentJobUsesExplicitNomadNamespace(t *testing.T) {
+	spec := &model.InfraSpec{App: "pilot", NomadNamespace: "norn-work-staging", Processes: map[string]model.Process{"web": {Port: 8080}}}
+	job, err := TranslateForManagedDeployment(spec, "pilot:test", nil, spec.ResolvedRegions()[0], "deployment-one")
+	if err != nil || job.Namespace == nil || *job.Namespace != "norn-work-staging" {
+		t.Fatalf("managed job lost namespace: job=%+v err=%v", job, err)
+	}
+}
+
 func TestManagedDeploymentBackendsAreRevisionSpecificAndDoNotClaimPublicHost(t *testing.T) {
 	spec := &model.InfraSpec{
 		App: "orders",

@@ -199,6 +199,7 @@ type FleetAppTarget struct {
 	FleetEnvironment   string   `json:"fleetEnvironment"`
 	Region             string   `json:"region"`
 	NomadRegion        string   `json:"nomadRegion"`
+	NomadNamespace     string   `json:"nomadNamespace,omitempty"`
 	Datacenters        []string `json:"datacenters"`
 	Generation         uint64   `json:"generation"`
 }

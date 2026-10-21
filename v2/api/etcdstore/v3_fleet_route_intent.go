@@ -166,7 +166,7 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 	target := *accepted.FleetAppTarget
 	region := accepted.Regions[0]
 	digest, err := model.InfraSpecDigest(spec)
-	if err != nil || digest != accepted.Deployment.SpecDigest || target.App != spec.App || target.ControlEnvironment != accepted.Deployment.Environment || target.Region != region.Name || target.NomadRegion != region.NomadRegion || !slices.Equal(target.Datacenters, region.Datacenters) || region.TrafficWeight != 100 {
+	if err != nil || digest != accepted.Deployment.SpecDigest || target.App != spec.App || target.ControlEnvironment != accepted.Deployment.Environment || target.Region != region.Name || target.NomadRegion != region.NomadRegion || target.NomadNamespace != spec.NomadNamespace || !slices.Equal(target.Datacenters, region.Datacenters) || region.TrafficWeight != 100 {
 		return nil, fmt.Errorf("initial Fleet route differs from pinned source or signed placement")
 	}
 	var pinnedRegion *model.ResolvedRegion

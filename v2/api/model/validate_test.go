@@ -26,6 +26,21 @@ func TestValidateSpecWarnsForPlainSecretLikeEnv(t *testing.T) {
 	assertFinding(t, result, "processes.web.env.OIDC_CLIENT_SECRET")
 }
 
+func TestValidateNomadNamespace(t *testing.T) {
+	for _, namespace := range []string{"norn-work-staging", "default"} {
+		spec := &InfraSpec{App: "pilot", NomadNamespace: namespace, Processes: map[string]Process{"web": {}}}
+		if result := ValidateSpec(spec); !result.Valid {
+			t.Fatalf("namespace %q rejected: %+v", namespace, result.Findings)
+		}
+	}
+	for _, namespace := range []string{"../other", "staging/other", " staging", "Other", "staging?namespace=*"} {
+		spec := &InfraSpec{App: "pilot", NomadNamespace: namespace, Processes: map[string]Process{"web": {}}}
+		if result := ValidateSpec(spec); result.Valid {
+			t.Fatalf("unsafe namespace %q accepted", namespace)
+		}
+	}
+}
+
 func TestValidateSpecStrictSecretsTurnsPlainEnvWarningsIntoErrors(t *testing.T) {
 	spec := &InfraSpec{
 		App:       "secret-app",

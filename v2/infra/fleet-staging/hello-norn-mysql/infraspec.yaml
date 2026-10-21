@@ -1,4 +1,5 @@
 name: hello-norn-mysql
+nomadNamespace: norn-work-staging
 deploy: false
 repo:
   # Work-staging contract only. A future catalog promotion replaces this inert source with the reviewed
@@ -15,8 +16,8 @@ build:
   image: registry.invalid/norn/hello-norn-mysql@sha256:0000000000000000000000000000000000000000000000000000000000000000
   test: go test ./...
 # The deployment gate remains disabled: this schema closes the secret file
-# transport gap, but does not yet express every reviewed direct-job property
-# (namespace/provenance metadata, restricted TLS router, liveness and rollout).
+# transport gap and declares the reviewed namespace, but does not yet express
+# every direct-job property (provenance metadata and restricted TLS router).
 # A catalog promotion must preserve those before it enables deployment.
 env:
   MYSQL_DSN_FILE: "${NOMAD_SECRETS_DIR}/mysql-dsn"

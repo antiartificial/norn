@@ -20,14 +20,17 @@ type FunctionSpec struct {
 
 type InfraSpec struct {
 	// SchemaVersion is omitted for v1 specs; AppSchemaV2 enables Databases.
-	SchemaVersion string             `yaml:"schemaVersion,omitempty" json:"schemaVersion,omitempty"`
-	App           string             `yaml:"name" json:"name"`
-	Repo          *RepoSpec          `yaml:"repo,omitempty" json:"repo,omitempty"`
-	Build         *BuildSpec         `yaml:"build,omitempty" json:"build,omitempty"`
-	Processes     map[string]Process `yaml:"processes" json:"processes"`
-	Services      []string           `yaml:"services,omitempty" json:"services,omitempty"`
-	Secrets       []string           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	Migrations    string             `yaml:"migrations,omitempty" json:"migrations,omitempty"`
+	SchemaVersion string `yaml:"schemaVersion,omitempty" json:"schemaVersion,omitempty"`
+	App           string `yaml:"name" json:"name"`
+	// NomadNamespace selects an existing ACL-scoped Nomad namespace. Empty
+	// retains the legacy default namespace for existing applications.
+	NomadNamespace string             `yaml:"nomadNamespace,omitempty" json:"nomadNamespace,omitempty"`
+	Repo           *RepoSpec          `yaml:"repo,omitempty" json:"repo,omitempty"`
+	Build          *BuildSpec         `yaml:"build,omitempty" json:"build,omitempty"`
+	Processes      map[string]Process `yaml:"processes" json:"processes"`
+	Services       []string           `yaml:"services,omitempty" json:"services,omitempty"`
+	Secrets        []string           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	Migrations     string             `yaml:"migrations,omitempty" json:"migrations,omitempty"`
 	// MigrationPostcondition is a reviewed scalar check on the accepted
 	// migration database. Its query and expected value travel with the pinned
 	// source; only their digest enters the durable effect reservation.

@@ -28,6 +28,10 @@ type ValidationFinding struct {
 }
 
 var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+var nomadNamespaceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
+
+func ValidNomadNamespace(value string) bool { return nomadNamespaceRe.MatchString(value) }
+
 var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 var kafkaTopicNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -65,6 +69,9 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 		r.add("error", "name", "app name is required")
 	} else if !appNameRe.MatchString(spec.App) {
 		r.add("error", "name", "app name must match ^[a-z0-9][a-z0-9-]*$")
+	}
+	if spec.NomadNamespace != "" && !nomadNamespaceRe.MatchString(spec.NomadNamespace) {
+		r.add("error", "nomadNamespace", "Nomad namespace must match ^[a-z0-9][a-z0-9-]{0,127}$")
 	}
 
 	// Processes

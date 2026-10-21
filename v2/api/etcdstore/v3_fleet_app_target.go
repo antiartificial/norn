@@ -12,6 +12,7 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -35,6 +36,9 @@ func validateFleetAppTarget(target FleetAppTarget) error {
 			return fmt.Errorf("Fleet app target identity is invalid")
 		}
 	}
+	if target.NomadNamespace != "" && !model.ValidNomadNamespace(target.NomadNamespace) {
+		return fmt.Errorf("Fleet app target Nomad namespace is invalid")
+	}
 	for i, dc := range target.Datacenters {
 		if dc == "" || len(dc) > 256 || dc != strings.TrimSpace(dc) || strings.ContainsAny(dc, "\x00\r\n\t") || (i > 0 && dc == target.Datacenters[i-1]) {
 			return fmt.Errorf("Fleet app target datacenter is invalid")
@@ -46,7 +50,7 @@ func validateFleetAppTarget(target FleetAppTarget) error {
 func sameFleetAppTarget(a, b FleetAppTarget) bool {
 	return a.SchemaVersion == b.SchemaVersion && a.App == b.App && a.ControlEnvironment == b.ControlEnvironment &&
 		a.Cluster == b.Cluster && a.FleetEnvironment == b.FleetEnvironment && a.Region == b.Region &&
-		a.NomadRegion == b.NomadRegion && a.Generation == b.Generation && slices.Equal(a.Datacenters, b.Datacenters)
+		a.NomadRegion == b.NomadRegion && a.NomadNamespace == b.NomadNamespace && a.Generation == b.Generation && slices.Equal(a.Datacenters, b.Datacenters)
 }
 
 func (s *V3OperationStore) loadFleetAppTarget(ctx context.Context, app, environment string) (FleetAppTarget, int64, error) {

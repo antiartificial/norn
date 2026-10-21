@@ -41,6 +41,9 @@ func translateForRegionAtWithJobID(spec *model.InfraSpec, imageTag string, env m
 	jobType := "service"
 
 	job := nomadapi.NewServiceJob(jobID, jobID, region.NomadRegion, 50)
+	if spec.NomadNamespace != "" {
+		job.Namespace = strPtr(spec.NomadNamespace)
+	}
 	if pool := spec.EffectiveNodePool(); pool != "" {
 		job.NodePool = strPtr(pool)
 	}
