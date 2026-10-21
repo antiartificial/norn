@@ -128,10 +128,6 @@ func etcdOfflineVerifierRead(state offlineVerifierStateStore) http.HandlerFunc {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_verifier_attempt_mismatch", "offline attempt is missing or differs from the binding")
 			return
 		}
-		if attempt.Status == "queued" && !time.Now().Before(binding.ExpiresAt) {
-			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_verifier_binding_expired", "offline reservation expired")
-			return
-		}
 		bindingBytes, err := json.Marshal(binding)
 		bindingDigest := sha256.Sum256(bindingBytes)
 		if err != nil || attempt.BindingSHA256 != hex.EncodeToString(bindingDigest[:]) {
@@ -166,6 +162,13 @@ func etcdOfflineVerifierRead(state offlineVerifierStateStore) http.HandlerFunc {
 				TargetID: grant.TargetID, TargetFenceGeneration: grant.TargetFenceGeneration, AuthorityEpoch: grant.AuthorityEpoch,
 				WriterFence: grant.WriterFence, Phase: grant.Phase, ExpiresAt: grant.ExpiresAt, EffectEvidence: grant.EffectEvidence,
 				Dispatch: grant.Dispatch, Terminal: grant.Terminal}
+		}
+		// An expired reservation cannot serve a new effect proof. Historical
+		// dispatch and terminal readback remains available to resolve uncertainty.
+		if attempt.Status == "queued" && !time.Now().Before(binding.ExpiresAt) &&
+			(grantView == nil || (grantView.Phase != "delete_dispatched" && grantView.Phase != "terminal_verified")) {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "offline_verifier_binding_expired", "offline reservation expired")
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {

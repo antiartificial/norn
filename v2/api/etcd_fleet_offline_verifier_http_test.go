@@ -131,10 +131,8 @@ func TestOfflineVerifierReadIsExactNonauthorizingAndSecretFree(t *testing.T) {
 	}
 }
 
-func TestOfflineVerifierReadIncludesOnlyBoundGrantFields(t *testing.T) {
-	s := verifierReadFixture(t)
-	now := time.Now().UTC()
-	s.grant = offline.EffectGrantV2{SchemaVersion: offline.EffectGrantSchemaV2, ID: uuid.NewString(), PlanID: s.binding.PlanID,
+func verifierIssuedGrant(s *verifierReadStore, issuedAt time.Time) offline.EffectGrantV2 {
+	return offline.EffectGrantV2{SchemaVersion: offline.EffectGrantSchemaV2, ID: uuid.NewString(), PlanID: s.binding.PlanID,
 		AttemptID: s.attempt.ID, BindingSHA256: s.attempt.BindingSHA256, TargetID: s.binding.TargetID,
 		TargetFenceGeneration: s.binding.FenceGeneration, AuthorityEpoch: s.epoch,
 		OwnerAuthorizationID: s.binding.OwnerAuthorizationID, SourceCommit: s.binding.SourceCommit,
@@ -143,8 +141,13 @@ func TestOfflineVerifierReadIncludesOnlyBoundGrantFields(t *testing.T) {
 		NodeName: s.binding.NodeName, DropletID: s.binding.DropletID,
 		RunnerSubject: s.binding.RunnerPrincipalSubject, RunnerTokenID: "secret-token", RunnerDeviceID: "secret-device",
 		WriterFence:         offline.WriterFence{BackendID: "work-staging-postgres", Generation: 7, Holder: s.attempt.ID, SessionSHA256: strings.Repeat("7", 64)},
-		EffectEvidence:      offline.EffectEvidenceV2{SHA256: strings.Repeat("8", 64), ObservedAt: now, ValidUntil: now.Add(20 * time.Second)},
-		DeleteRequestSHA256: offline.ExactDeleteRequestSHA256V2(), Phase: "issued", IssuedAt: now, ExpiresAt: now.Add(20 * time.Second)}
+		EffectEvidence:      offline.EffectEvidenceV2{SHA256: strings.Repeat("8", 64), ObservedAt: issuedAt, ValidUntil: issuedAt.Add(20 * time.Second)},
+		DeleteRequestSHA256: offline.ExactDeleteRequestSHA256V2(), Phase: "issued", IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(20 * time.Second)}
+}
+
+func TestOfflineVerifierReadIncludesOnlyBoundGrantFields(t *testing.T) {
+	s := verifierReadFixture(t)
+	s.grant = verifierIssuedGrant(s, time.Now().UTC())
 	if err := s.grant.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +195,56 @@ func TestOfflineVerifierReadRejectsRunnerAdminAndStaleOrMissingState(t *testing.
 	stale.fence.AuthorityEpoch = 2
 	if got := verifierReadRequest(&stale, verifierPrincipal(), base+"?audience=work-staging&authorityEpoch=3"); got.Code != http.StatusConflict {
 		t.Fatalf("stale fence=%d %s", got.Code, got.Body)
+	}
+	expired := *s
+	expired.binding.CreatedAt = time.Now().Add(-10 * time.Minute)
+	expired.binding.ExpiresAt = time.Now().Add(-time.Minute)
+	bound, _ := json.Marshal(expired.binding)
+	digest := sha256.Sum256(bound)
+	expired.attempt.BindingSHA256 = hex.EncodeToString(digest[:])
+	if got := verifierReadRequest(&expired, verifierPrincipal(), base+"?audience=work-staging&authorityEpoch=3"); got.Code != http.StatusConflict || !strings.Contains(got.Body.String(), "offline_verifier_binding_expired") {
+		t.Fatalf("expired queued reservation=%d %s", got.Code, got.Body)
+	}
+}
+
+func TestOfflineVerifierReadRetainsPostDispatchRecoveryAfterBindingExpiry(t *testing.T) {
+	s := verifierReadFixture(t)
+	issuedAt := time.Now().UTC().Add(-2 * time.Minute)
+	s.binding.CreatedAt = issuedAt.Add(-time.Minute)
+	s.binding.ExpiresAt = issuedAt.Add(time.Minute)
+	bound, _ := json.Marshal(s.binding)
+	digest := sha256.Sum256(bound)
+	s.attempt.BindingSHA256 = hex.EncodeToString(digest[:])
+	s.grant = verifierIssuedGrant(s, issuedAt)
+	s.grant.Commitment = &offline.DeleteCommitmentV2{SchemaVersion: offline.DeleteCommitmentSchemaV2,
+		SHA256: strings.Repeat("a", 64), DeleteRequestSHA256: s.grant.DeleteRequestSHA256, CommittedAt: issuedAt.Add(time.Second)}
+	s.grant.Dispatch = &offline.DeleteDispatchV2{SchemaVersion: offline.DeleteDispatchSchemaV2,
+		PlanID: s.binding.PlanID, AttemptID: s.attempt.ID, GrantID: s.grant.ID, CommitmentSHA256: s.grant.Commitment.SHA256,
+		TargetID: s.binding.TargetID, TargetFenceGeneration: s.binding.FenceGeneration, WriterFence: s.grant.WriterFence,
+		AuthorityEpoch: s.epoch, RetryPolicy: offline.DeleteRetryPolicyV2, AdmittedAt: issuedAt.Add(2 * time.Second)}
+	s.grant.Phase = "delete_dispatched"
+	if err := s.grant.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/fleet/offline/verifier/plans/" + s.binding.PlanID + "/attempts/" + s.attempt.ID + "?audience=work-staging&authorityEpoch=3"
+	for _, phase := range []string{"delete_dispatched", "terminal_verified"} {
+		if phase == "terminal_verified" {
+			s.grant.Phase = phase
+			s.grant.Terminal = &offline.TerminalEvidenceV2{SchemaVersion: offline.TerminalEvidenceSchemaV2,
+				PlanID: s.binding.PlanID, AttemptID: s.attempt.ID, GrantID: s.grant.ID, BindingSHA256: s.attempt.BindingSHA256,
+				TargetID: s.binding.TargetID, TargetFenceGeneration: s.binding.FenceGeneration, WriterFence: s.grant.WriterFence,
+				AuthorityEpoch: s.epoch, ObservedAt: issuedAt.Add(3 * time.Second), RecordedAt: issuedAt.Add(4 * time.Second),
+				EvidenceSHA256: strings.Repeat("b", 64), ProviderEvidenceSHA256: strings.Repeat("c", 64),
+				BackendEvidenceSHA256: strings.Repeat("d", 64), WorkloadEvidenceSHA256: strings.Repeat("e", 64)}
+		}
+		if err := s.grant.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		got := verifierReadRequest(s, verifierPrincipal(), path)
+		if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"phase":"`+phase+`"`) ||
+			!strings.Contains(got.Body.String(), `"authorizesEffect":false`) {
+			t.Fatalf("expired %s recovery=%d %s", phase, got.Code, got.Body)
+		}
 	}
 }
 
