@@ -800,7 +800,7 @@ func registerEtcdFleetExecutorEnrollmentRoutes(router chi.Router, cfg *config.Co
 	if !executorLane {
 		return
 	}
-	enrollment := handler.NewEtcdEnrollmentHandler(cfg, identities)
+	enrollment := handler.NewEtcdFleetExecutorEnrollmentHandler(cfg, identities)
 	admin := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
 	router.Post("/api/v1/enrollments", enrollment.StartDeviceEnrollment)
 	router.With(admin).Get("/api/v1/enrollments", enrollment.ListDeviceEnrollments)

@@ -25,6 +25,9 @@ func isFleetExecutorPlatform(platform string) bool {
 // deviceEnrollmentScopes: the scope is valid only alone and only for the
 // fleet-executor platform. Every other request is unchanged.
 func (h *Handler) deviceEnrollmentScopesForPlatform(platform string, requested []string) ([]string, error) {
+	if h != nil && h.executorEnrollOnly && (!isFleetExecutorPlatform(platform) || len(requested) != 1 || strings.TrimSpace(requested[0]) != ScopeFleetExecute) {
+		return nil, fmt.Errorf("executor enrollment permits only %s on %s", ScopeFleetExecute, FleetExecutorPlatform)
+	}
 	if h != nil && h.offlineEnrollmentOnly && (!strings.EqualFold(strings.TrimSpace(platform), FleetOfflineRunnerPlatform) || len(requested) != 1 || requested[0] != ScopeFleetOfflineAttempt) {
 		return nil, fmt.Errorf("offline enrollment permits only %s on %s", ScopeFleetOfflineAttempt, FleetOfflineRunnerPlatform)
 	}
