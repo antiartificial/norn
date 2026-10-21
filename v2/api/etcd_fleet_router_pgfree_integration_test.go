@@ -56,7 +56,7 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	const auditKey = "fleet-router-pgfree-audit-signing-key-000"
 	authority := uuid.NewString()
 	bootstrap := filepath.Join(t.TempDir(), "initial-token")
-	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secret, etcdBootstrapRequest{Output: bootstrap, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite, handler.ScopePlatformOperate}, TTL: time.Hour}, publishBootstrapTokenFile); err != nil {
+	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secret, etcdBootstrapRequest{Output: bootstrap, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite, handler.ScopePlatformOperate, handler.ScopeCatalogActivate}, TTL: time.Hour}, publishBootstrapTokenFile); err != nil {
 		t.Fatal(err)
 	}
 	operatorBytes, err := os.ReadFile(bootstrap)

@@ -36,7 +36,7 @@ func TestEtcdOfflineEnrollmentMountedRoutes(t *testing.T) {
 	prefix := "/norn-test/offline-enrollment/" + uuid.NewString()
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()); _ = client.Close() })
 	identities := etcdstore.NewAuthStore(client, prefix)
-	cfg := &config.Config{APIToken: strings.Repeat("s", 40), FleetAuthorityOnly: true, FleetOfflineReservationEnabled: true, FleetOfflineOwnerKeyID: "test-owner"}
+	cfg := &config.Config{APIToken: strings.Repeat("s", 40), FleetAuthorityOnly: true, FleetOfflineReservationEnabled: true, FleetOfflineOwnerKeyID: "owner-2026"}
 	signer, err := store.NewHMACAcceptanceSigner(strings.Repeat("a", 40))
 	if err != nil {
 		t.Fatal(err)

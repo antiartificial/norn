@@ -243,7 +243,7 @@ func TestEtcdScaleCrashAfterNomadAcceptRecoversWithoutSecondLaunch(t *testing.T)
 	}
 	id := uuid.NewString()
 	op := model.Operation{ID: id, Kind: "app.scale", App: app, Ref: region + "/web", Status: model.OperationQueued, MaxAttempts: 1,
-		Payload: map[string]interface{}{"app": app, "group": "web", "region": region, "nomadRegion": "global", "count": 3, "nomadJobId": jobID, "deploymentId": deploymentID, "specDigest": specDigest}}
+		Payload: map[string]interface{}{"app": app, "group": "web", "region": region, "nomadRegion": "global", "nomadNamespace": "", "count": 3, "nomadJobId": jobID, "deploymentId": deploymentID, "specDigest": specDigest}}
 	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: op.Kind, Resource: "app/widgets", Key: id}, Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"app": app, "count": 3}}
 	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
 	if err != nil {
