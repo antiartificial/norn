@@ -45,7 +45,7 @@ func main() {
 ## 3. Add a Dockerfile
 
 ```dockerfile
-FROM golang:1.25-alpine AS build
+FROM golang:1.26.10-alpine AS build
 WORKDIR /app
 COPY . .
 RUN go build -o server .

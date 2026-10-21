@@ -57,7 +57,7 @@ state credentials remain in the protected infrastructure runner.
 
 | Tool | Supported baseline | Purpose |
 |---|---:|---|
-| Go | 1.26.6 | API, CLI, and host agent |
+| Go | 1.26.10 | API, CLI, and host agent |
 | Node.js | 24 LTS | Dashboard and documentation |
 | pnpm | 10+ | Front-end dependencies |
 | PostgreSQL | 16+ | Durable control-plane state |

@@ -6,7 +6,7 @@ RUN pnpm install --frozen-lockfile || pnpm install
 COPY ui/ .
 RUN pnpm build
 
-FROM golang:1.25-alpine AS api-build
+FROM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS api-build
 WORKDIR /app
 COPY api/go.mod api/go.sum ./
 RUN go mod download

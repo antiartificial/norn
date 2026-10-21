@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.26.6
+          go-version: 1.26.10
           cache-dependency-path: v2/api/go.sum
       - name: Run API tests
         working-directory: v2/api
@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.26.6
+          go-version: 1.26.10
           cache-dependency-path: v2/cli/go.sum
       - name: Run CLI tests
         working-directory: v2/cli
@@ -66,7 +66,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.26.6
+          go-version: 1.26.10
           cache-dependency-path: |
             v2/api/go.sum
             v2/infra/fleet-pilot/hello-norn-mysql/go.sum
@@ -112,7 +112,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.26.6
+          go-version: 1.26.10
           cache-dependency-path: v2/api/go.sum
       # This test parses the OpenAPI YAML and resolves every local reference.
       - name: Parse and validate the OpenAPI contract
@@ -153,6 +153,6 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.26.6
+          go-version: 1.26.10
       - name: Lint GitHub Actions workflows
         run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml

@@ -4,7 +4,7 @@
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Go | 1.26.6 | API, CLI, and host agent |
+| Go | 1.26.10 | API, CLI, and host agent |
 | pnpm | 10+ | UI dependencies |
 | Node.js | 24 LTS | UI and docs builds |
 | PostgreSQL | 16+ | Application database |
