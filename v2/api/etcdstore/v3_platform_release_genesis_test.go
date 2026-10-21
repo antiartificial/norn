@@ -34,7 +34,7 @@ func TestPlatformReleaseGenesisImportEtcdIdempotence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := PlatformReleaseGenesisImport{Name: "genesis-test", IntentDigest: strings.Repeat("1", 64), IntentBytesBase64: "a", IntentSignatureBase64: "b", CompletionBytesBase64: "c", CompletionSignatureBase64: "d", CheckpointsJSON: json.RawMessage(`[]`), CheckpointCount: 1, CheckpointsSHA256: strings.Repeat("2", 64), SignerPublicKeySHA256: strings.Repeat("3", 64), OperatorSubject: "operator", OperatorDeviceID: "operator-device"}
+	request := PlatformReleaseGenesisImport{Name: "genesis-test", IntentDigest: strings.Repeat("1", 64), IntentBytesBase64: "a", IntentSignatureBase64: "b", CompletionBytesBase64: "c", CompletionSignatureBase64: "d", CheckpointsJSON: json.RawMessage(`[]`), CheckpointCount: 1, CheckpointsSHA256: strings.Repeat("2", 64), SignerPublicKeySHA256: strings.Repeat("3", 64), IntentPublicKeySHA256: strings.Repeat("4", 64), OperatorSubject: "operator", OperatorDeviceID: "operator-device"}
 	got, created, err := s.ImportPlatformReleaseGenesis(context.Background(), request)
 	if err != nil || !created {
 		t.Fatalf("create: %+v %v", got, err)

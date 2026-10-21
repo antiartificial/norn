@@ -124,6 +124,15 @@ func TestEtcdPlatformReleaseIntentRoutesDefaultOff(t *testing.T) {
 	}
 }
 
+func TestEtcdPlatformReleaseIntentCapabilityDefaultOff(t *testing.T){
+	for _,enabled:=range []bool{false,true}{
+		capabilities:=etcdFleetCapabilities(&config.Config{FleetPlatformReleaseIntentEnabled:enabled},false)
+		endpoints:=capabilities["endpoints"].(map[string]string)
+		_,present:=endpoints["fleetPlatformReleases"]
+		if present!=enabled{t.Fatalf("enabled=%v endpoint=%v",enabled,present)}
+	}
+}
+
 func TestEtcdPlatformReleaseRecoveryRoutesStayClosed(t *testing.T) {
 	router := chi.NewRouter()
 	registerEtcdPlatformReleaseIntentRoutes(router, &config.Config{FleetPlatformReleaseIntentEnabled: true}, nil, nil)

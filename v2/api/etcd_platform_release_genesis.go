@@ -127,9 +127,9 @@ func platformGenesisRosterDigest(roster []etcdstore.PlatformReleaseControl) (str
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func verifyPlatformGenesisImport(request platformGenesisImportRequest, name string, key ed25519.PublicKey, publicPEMSHA256 string) (etcdstore.PlatformReleaseGenesisImport, error) {
+func verifyPlatformGenesisImport(request platformGenesisImportRequest, name string, intentKey, completionKey ed25519.PublicKey, intentPEMSHA256, completionPEMSHA256 string) (etcdstore.PlatformReleaseGenesisImport, error) {
 	invalid := etcdstore.PlatformReleaseGenesisImport{}
-	if len(key) != ed25519.PublicKeySize {
+	if len(intentKey) != ed25519.PublicKeySize || len(completionKey) != ed25519.PublicKeySize || bytes.Equal(intentKey, completionKey) {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
 	decode := func(value string) ([]byte, error) { return base64.StdEncoding.Strict().DecodeString(value) }
@@ -149,7 +149,7 @@ func verifyPlatformGenesisImport(request platformGenesisImportRequest, name stri
 	if err != nil {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
-	if len(intentBytes) > 64<<10 || len(completionBytes) > 64<<10 || len(intentSig) != ed25519.SignatureSize || len(completionSig) != ed25519.SignatureSize || !ed25519.Verify(key, intentBytes, intentSig) || !ed25519.Verify(key, completionBytes, completionSig) {
+	if len(intentBytes) > 64<<10 || len(completionBytes) > 64<<10 || len(intentSig) != ed25519.SignatureSize || len(completionSig) != ed25519.SignatureSize || !ed25519.Verify(intentKey, intentBytes, intentSig) || !ed25519.Verify(completionKey, completionBytes, completionSig) {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
 	if _, err := platformGenesisCanonical(intentBytes); err != nil {
@@ -176,7 +176,7 @@ func verifyPlatformGenesisImport(request platformGenesisImportRequest, name stri
 	if completion.SchemaVersion != "norn.fleet-platform-genesis-completion/v1" || completion.Status != "Succeeded" || completion.CompletedAt.IsZero() || completion.CompletedAt.After(time.Now().Add(5*time.Minute)) || completion.IntentDigest != digest || completion.OldSourceSHA != intent.OldSourceSHA || completion.NewSourceSHA != intent.NewSourceSHA || completion.AttemptID == "" || completion.OwnerID == "" || completion.FenceEpoch < 1 || completion.CheckpointCount < 1 || completion.CheckpointCount > 1024 {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
-	if completion.SignerPublicKeySHA256 != publicPEMSHA256 {
+	if completion.SignerPublicKeySHA256 != completionPEMSHA256 {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
 	rosterDigest, err := platformGenesisRosterDigest(intent.ControlRoster)
@@ -207,17 +207,24 @@ func verifyPlatformGenesisImport(request platformGenesisImportRequest, name stri
 	if completion.CheckpointsSHA256 != hex.EncodeToString(checkpointDigest[:]) {
 		return invalid, etcdstore.ErrPlatformReleaseInvalid
 	}
-	return etcdstore.PlatformReleaseGenesisImport{Name: name, IntentDigest: digest, IntentBytesBase64: request.IntentBytesBase64, IntentSignatureBase64: request.IntentSignatureBase64, CompletionBytesBase64: request.CompletionBytesBase64, CompletionSignatureBase64: request.CompletionSignatureBase64, CheckpointsJSON: append(json.RawMessage(nil), checkpointBytes...), CheckpointCount: completion.CheckpointCount, CheckpointsSHA256: completion.CheckpointsSHA256, SignerPublicKeySHA256: completion.SignerPublicKeySHA256}, nil
+	return etcdstore.PlatformReleaseGenesisImport{Name: name, IntentDigest: digest, IntentBytesBase64: request.IntentBytesBase64, IntentSignatureBase64: request.IntentSignatureBase64, CompletionBytesBase64: request.CompletionBytesBase64, CompletionSignatureBase64: request.CompletionSignatureBase64, CheckpointsJSON: append(json.RawMessage(nil), checkpointBytes...), CheckpointCount: completion.CheckpointCount, CheckpointsSHA256: completion.CheckpointsSHA256, SignerPublicKeySHA256: completion.SignerPublicKeySHA256, IntentPublicKeySHA256: intentPEMSHA256}, nil
 }
 
 func registerEtcdPlatformGenesisImportRoutes(router chi.Router, cfg *config.Config, identities store.IdentityStore, operations *etcdstore.V3OperationStore) {
-	if !cfg.FleetPlatformReleaseIntentEnabled || cfg.FleetPlatformGenesisPublicKeyFile == "" {
+	if !cfg.FleetPlatformReleaseIntentEnabled || cfg.FleetPlatformGenesisIntentPublicKeyFile == "" || cfg.FleetPlatformGenesisCompletionPublicKeyFile == "" {
 		return
 	}
-	key, publicPEMSHA256, err := platformGenesisPublicKey(cfg.FleetPlatformGenesisPublicKeyFile)
+	intentKey, intentPEMSHA256, err := platformGenesisPublicKey(cfg.FleetPlatformGenesisIntentPublicKeyFile)
+	if err != nil {
+		return
+	}
+	completionKey, completionPEMSHA256, err := platformGenesisPublicKey(cfg.FleetPlatformGenesisCompletionPublicKeyFile)
 	if err != nil {
 		return
 	} // invalid pin fails closed; readiness validation is separate
+	if bytes.Equal(intentKey, completionKey) {
+		return
+	}
 	root := "/api/v1/fleet/platform-releases/{name}/genesis-import"
 	router.With(platformReleaseReadOrExecutorAuth(cfg, identities)).Get(root, func(w http.ResponseWriter, r *http.Request) {
 		record, err := operations.GetPlatformReleaseGenesisImport(r.Context(), chi.URLParam(r, "name"))
@@ -240,7 +247,7 @@ func registerEtcdPlatformGenesisImportRoutes(router chi.Router, cfg *config.Conf
 			platformReleaseError(w, r, etcdstore.ErrPlatformReleaseInvalid)
 			return
 		}
-		record, err := verifyPlatformGenesisImport(request, chi.URLParam(r, "name"), key, publicPEMSHA256)
+		record, err := verifyPlatformGenesisImport(request, chi.URLParam(r, "name"), intentKey, completionKey, intentPEMSHA256, completionPEMSHA256)
 		if err != nil {
 			platformReleaseError(w, r, err)
 			return

@@ -12,6 +12,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,10 +22,41 @@ import (
 	"norn/v2/api/etcdstore"
 )
 
+func TestVerifyPlatformGenesisPythonFixture(t *testing.T) {
+	directory := os.Getenv("NORN_TEST_GENESIS_FIXTURE_DIR")
+	if directory == "" {
+		t.Skip("NORN_TEST_GENESIS_FIXTURE_DIR is not set")
+	}
+	read := func(name string) []byte {
+		data, err := os.ReadFile(filepath.Join(directory, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	intentKey, intentKeyHash, err := platformGenesisPublicKey(filepath.Join(directory, "fixture-intent-public.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionKey, completionKeyHash, err := platformGenesisPublicKey(filepath.Join(directory, "fixture-completion-public.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentBytes := read("intent.json")
+	var intent etcdstore.PlatformReleaseIntent
+	if err := json.Unmarshal(intentBytes, &intent); err != nil {
+		t.Fatal(err)
+	}
+	request := platformGenesisImportRequest{IntentBytesBase64: base64.StdEncoding.EncodeToString(intentBytes), IntentSignatureBase64: base64.StdEncoding.EncodeToString(read("intent.sig")), CompletionBytesBase64: base64.StdEncoding.EncodeToString(read("completion.json")), CompletionSignatureBase64: base64.StdEncoding.EncodeToString(read("completion.sig")), Checkpoints: read("checkpoints.json")}
+	if _, err := verifyPlatformGenesisImport(request, intent.Name, intentKey, completionKey, intentKeyHash, completionKeyHash); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlatformGenesisImportRouteRequiresPinnedKey(t *testing.T) {
 	for _, path := range []string{"", "/missing/genesis-public.pem"} {
 		router := chi.NewRouter()
-		registerEtcdPlatformGenesisImportRoutes(router, &config.Config{FleetPlatformReleaseIntentEnabled: true, FleetPlatformGenesisPublicKeyFile: path}, nil, nil)
+		registerEtcdPlatformGenesisImportRoutes(router, &config.Config{FleetPlatformReleaseIntentEnabled: true, FleetPlatformGenesisIntentPublicKeyFile: path, FleetPlatformGenesisCompletionPublicKeyFile: path}, nil, nil)
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/platform-releases/example/genesis-import", nil)
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
@@ -34,6 +67,10 @@ func TestPlatformGenesisImportRouteRequiresPinnedKey(t *testing.T) {
 }
 
 func TestVerifyPlatformGenesisImportSignedBindings(t *testing.T) {
+	intentPublic, intentPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +82,13 @@ func TestVerifyPlatformGenesisImportSignedBindings(t *testing.T) {
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 	pemHash := sha256.Sum256(pemBytes)
 	publicPEMSHA := hex.EncodeToString(pemHash[:])
+	intentDER, err := x509.MarshalPKIXPublicKey(intentPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: intentDER})
+	intentHash := sha256.Sum256(intentPEM)
+	intentPEMSHA := hex.EncodeToString(intentHash[:])
 	intent := etcdstore.PlatformReleaseIntent{
 		SchemaVersion: 1, Name: "platform-genesis", Generation: 1, Environment: "staging",
 		OldSourceSHA: strings.Repeat("a", 40), NewSourceSHA: strings.Repeat("b", 40), OldPublisherRunID: 123, PublisherRunID: 124,
@@ -94,8 +138,8 @@ func TestVerifyPlatformGenesisImportSignedBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	encode := base64.StdEncoding.EncodeToString
-	request := platformGenesisImportRequest{IntentBytesBase64: encode(rawIntent), IntentSignatureBase64: encode(ed25519.Sign(private, rawIntent)), CompletionBytesBase64: encode(rawCompletion), CompletionSignatureBase64: encode(ed25519.Sign(private, rawCompletion)), Checkpoints: checkpointBytes}
-	imported, err := verifyPlatformGenesisImport(request, intent.Name, public, publicPEMSHA)
+	request := platformGenesisImportRequest{IntentBytesBase64: encode(rawIntent), IntentSignatureBase64: encode(ed25519.Sign(intentPrivate, rawIntent)), CompletionBytesBase64: encode(rawCompletion), CompletionSignatureBase64: encode(ed25519.Sign(private, rawCompletion)), Checkpoints: checkpointBytes}
+	imported, err := verifyPlatformGenesisImport(request, intent.Name, intentPublic, public, intentPEMSHA, publicPEMSHA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,15 +148,21 @@ func TestVerifyPlatformGenesisImportSignedBindings(t *testing.T) {
 	}
 	tampered := request
 	tampered.Checkpoints = []byte(`[]`)
-	if _, err := verifyPlatformGenesisImport(tampered, intent.Name, public, publicPEMSHA); err == nil {
+	if _, err := verifyPlatformGenesisImport(tampered, intent.Name, intentPublic, public, intentPEMSHA, publicPEMSHA); err == nil {
 		t.Fatal("accepted changed checkpoints")
 	}
 	tampered = request
 	tampered.CompletionSignatureBase64 = encode(make([]byte, ed25519.SignatureSize))
-	if _, err := verifyPlatformGenesisImport(tampered, intent.Name, public, publicPEMSHA); err == nil {
+	if _, err := verifyPlatformGenesisImport(tampered, intent.Name, intentPublic, public, intentPEMSHA, publicPEMSHA); err == nil {
 		t.Fatal("accepted bad signature")
 	}
-	if _, err := verifyPlatformGenesisImport(request, intent.Name, public, strings.Repeat("0", 64)); err == nil {
+	if _, err := verifyPlatformGenesisImport(request, intent.Name, intentPublic, public, intentPEMSHA, strings.Repeat("0", 64)); err == nil {
 		t.Fatal("accepted unpinned public key hash")
+	}
+	if _, err := verifyPlatformGenesisImport(request, intent.Name, public, intentPublic, publicPEMSHA, intentPEMSHA); err == nil {
+		t.Fatal("accepted swapped approval and completion keys")
+	}
+	if _, err := verifyPlatformGenesisImport(request, intent.Name, public, public, publicPEMSHA, publicPEMSHA); err == nil {
+		t.Fatal("accepted one key for both authorities")
 	}
 }

@@ -22,6 +22,7 @@ type PlatformReleaseGenesisImport struct {
 	CheckpointCount           int             `json:"checkpointCount"`
 	CheckpointsSHA256         string          `json:"checkpointsSha256"`
 	SignerPublicKeySHA256     string          `json:"signerPublicKeySha256"`
+	IntentPublicKeySHA256     string          `json:"intentPublicKeySha256"`
 	OperatorSubject           string          `json:"operatorSubject"`
 	OperatorDeviceID          string          `json:"operatorDeviceId"`
 	ImportedAt                time.Time       `json:"importedAt"`
@@ -53,7 +54,7 @@ func (s *V3OperationStore) GetPlatformReleaseGenesisImport(ctx context.Context, 
 // genesis and normal intent namespaces. Exact replay returns the prior record;
 // a different receipt cannot replace or shadow a prior release identity.
 func (s *V3OperationStore) ImportPlatformReleaseGenesis(ctx context.Context, request PlatformReleaseGenesisImport) (*PlatformReleaseGenesisImport, bool, error) {
-	if !platformReleaseNameRe.MatchString(request.Name) || !platformReleaseDigestRe.MatchString(request.IntentDigest) || !platformReleaseDigestRe.MatchString(request.CheckpointsSHA256) || !platformReleaseDigestRe.MatchString(request.SignerPublicKeySHA256) || request.OperatorSubject == "" || request.OperatorDeviceID == "" || request.CheckpointCount < 1 || request.CheckpointCount > 1024 {
+	if !platformReleaseNameRe.MatchString(request.Name) || !platformReleaseDigestRe.MatchString(request.IntentDigest) || !platformReleaseDigestRe.MatchString(request.CheckpointsSHA256) || !platformReleaseDigestRe.MatchString(request.SignerPublicKeySHA256) || !platformReleaseDigestRe.MatchString(request.IntentPublicKeySHA256) || request.OperatorSubject == "" || request.OperatorDeviceID == "" || request.CheckpointCount < 1 || request.CheckpointCount > 1024 {
 		return nil, false, ErrPlatformReleaseInvalid
 	}
 	key := s.platformReleaseGenesisKey(request.Name)
