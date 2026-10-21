@@ -279,6 +279,12 @@ type Config struct {
 	LogSpoolStreamMaxBytes int64         // NORN_LOG_SPOOL_STREAM_MAX_BYTES
 	LogSpoolSegmentBytes   int64         // NORN_LOG_SPOOL_SEGMENT_BYTES
 	LogCollectInterval     time.Duration // NORN_LOG_COLLECT_INTERVAL
+	// Optional Loki (>= 3.0): the spool is shipped to it and log queries are
+	// served from it. The URL is an origin (scheme and host only).
+	LokiURL          string        // NORN_LOKI_URL
+	LokiTenant       string        // NORN_LOKI_TENANT (X-Scope-OrgID)
+	LokiToken        string        // NORN_LOKI_TOKEN (bearer)
+	LokiPushInterval time.Duration // NORN_LOKI_PUSH_INTERVAL
 }
 
 func Load() *Config {
@@ -472,6 +478,10 @@ func Load() *Config {
 		LogSpoolStreamMaxBytes:       envInt64Or("NORN_LOG_SPOOL_STREAM_MAX_BYTES", 64<<20),
 		LogSpoolSegmentBytes:         envInt64Or("NORN_LOG_SPOOL_SEGMENT_BYTES", 4<<20),
 		LogCollectInterval:           envDurationOr("NORN_LOG_COLLECT_INTERVAL", 30*time.Second),
+		LokiURL:                      strings.TrimSpace(os.Getenv("NORN_LOKI_URL")),
+		LokiTenant:                   strings.TrimSpace(os.Getenv("NORN_LOKI_TENANT")),
+		LokiToken:                    strings.TrimSpace(os.Getenv("NORN_LOKI_TOKEN")),
+		LokiPushInterval:             envDurationOr("NORN_LOKI_PUSH_INTERVAL", 2*time.Second),
 		EvidenceArchiveMaxBytes: func() int64 {
 			value, err := strconv.ParseInt(envOr("NORN_EVIDENCE_ARCHIVE_MAX_BYTES", "10737418240"), 10, 64)
 			if err != nil {

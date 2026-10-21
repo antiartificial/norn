@@ -683,6 +683,15 @@ func main() {
 		go logCollector.Run(workerCtx, cfg.LogCollectInterval)
 	}
 
+	lokiShipper, err := configureLokiShipping(cfg, logSpool)
+	if err != nil {
+		log.Fatalf("loki: %v", err)
+	}
+	if lokiShipper != nil {
+		log.Printf("shipping collected logs to Loki at %s", cfg.LokiURL)
+		go lokiShipper.Run(workerCtx)
+	}
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -856,6 +865,7 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/databases/baseline", h.RecordDatabaseBaseline)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/sagas/{sagaId}", h.GetAppSagaHistory)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/logs/history", h.GetAppLogHistory)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/logs/query", h.GetAppLogQuery)
 		r.Get("/v1/evidence/archive", h.GetEvidenceArchiveHealth)
 		r.Get("/v1/database/catalog", h.GetDatabaseCatalog)
 		r.Post("/v1/database/catalog/activations", h.ActivateDatabaseCatalog)

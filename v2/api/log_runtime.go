@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"time"
 
 	"norn/v2/api/config"
 	"norn/v2/api/logcollect"
@@ -40,4 +42,21 @@ func configureLogCollection(cfg *config.Config, client *nomad.Client) (*logcolle
 		return jobs
 	}}
 	return spool, collector, nil
+}
+
+// configureLokiShipping validates NORN_LOKI_URL and returns the shipper that
+// copies the spool to Loki. It is nil unless both the spool and the URL are
+// configured; the URL is validated whenever it is set (queries use it too).
+func configureLokiShipping(cfg *config.Config, spool *logcollect.Spool) (*logcollect.LokiShipper, error) {
+	if cfg.LokiURL == "" {
+		return nil, nil
+	}
+	client, err := logcollect.NewLokiClient(cfg.LokiURL, cfg.LokiTenant, cfg.LokiToken)
+	if err != nil {
+		return nil, fmt.Errorf("NORN_LOKI_URL: %w", err)
+	}
+	if spool == nil {
+		return nil, nil
+	}
+	return &logcollect.LokiShipper{Spool: spool, Client: client, Interval: cfg.LokiPushInterval, MaxBackoff: time.Minute, MaxBatchBytes: 1 << 20, MaxBatchLines: 5000}, nil
 }

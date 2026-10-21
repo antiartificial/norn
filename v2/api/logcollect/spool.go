@@ -17,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,6 +88,9 @@ type spoolStream struct {
 	labels   Labels
 	segments []segment // ascending seq; the last is current
 	position Position
+	// shipped is the Loki shipper's cursor, loaded lazily from shipped.json.
+	shipped       Cursor
+	shippedLoaded bool
 }
 
 func (s *spoolStream) bytes() int64 {
@@ -176,6 +180,8 @@ func streamDir(labels Labels) (string, error) {
 	}
 	return path.Join("streams", labels.App, labels.AllocID, labels.Task+"."+labels.Stream), nil
 }
+
+func errStreamNotOpen(dir string) error { return fmt.Errorf("log stream %s is not open", dir) }
 
 func segmentName(dir string, seq int) string {
 	return path.Join(dir, fmt.Sprintf("seg-%010d.jsonl", seq))
@@ -532,6 +538,12 @@ type Query struct {
 	Task   string
 	Stream string
 	Since  time.Time
+	// Until, when set, excludes records at or after it.
+	Until     time.Time
+	TaskGroup string
+	// Newest reads each stream's newest segments first, so ScanBytes
+	// bounds the oldest output instead of the newest.
+	Newest bool
 	// Limit bounds returned records; ScanBytes bounds bytes read.
 	Limit     int
 	ScanBytes int64
@@ -563,10 +575,15 @@ func (s *Spool) Read(query Query) (Result, error) {
 	var scanned int64
 	for _, stream := range s.streams {
 		labels := stream.labels
-		if labels.App != query.App || (query.Alloc != "" && labels.AllocID != query.Alloc) || (query.Task != "" && labels.Task != query.Task) || (query.Stream != "" && labels.Stream != query.Stream) {
+		if labels.App != query.App || (query.Alloc != "" && labels.AllocID != query.Alloc) || (query.Task != "" && labels.Task != query.Task) || (query.TaskGroup != "" && labels.TaskGroup != query.TaskGroup) || (query.Stream != "" && labels.Stream != query.Stream) {
 			continue
 		}
-		for _, seg := range stream.segments {
+		segments := stream.segments
+		if query.Newest {
+			segments = slices.Clone(segments)
+			slices.Reverse(segments)
+		}
+		for _, seg := range segments {
 			if scanned+seg.size > query.ScanBytes {
 				result.Truncated = true
 				break
@@ -583,7 +600,7 @@ func (s *Spool) Read(query Query) (Result, error) {
 				if json.Unmarshal(scanner.Bytes(), &record) != nil {
 					continue
 				}
-				if !query.Since.IsZero() && record.Time.Before(query.Since) {
+				if (!query.Since.IsZero() && record.Time.Before(query.Since)) || (!query.Until.IsZero() && !record.Time.Before(query.Until)) {
 					continue
 				}
 				result.Entries = append(result.Entries, Entry{Labels: labels, Record: record})
