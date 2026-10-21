@@ -89,6 +89,44 @@ func TestIssueCatalogTokenRequiresPrivateNewOutputAndEtcdMode(t *testing.T) {
 	}
 }
 
+func TestCatalogTokenIssuerModeMatchesStagingControlProfiles(t *testing.T) {
+	backend := startup.ControlBackendConfig{Backend: startup.BackendEtcd}
+	base := config.Config{
+		Profile: "production", Environment: "staging", EnvironmentExplicit: true,
+		AppCatalogReadOnly: true, RequireExplicitAuth: true, APIToken: strings.Repeat("k", 40),
+	}
+	if !catalogTokenIssuerMode(&base, backend) {
+		t.Fatal("normal production-profile Fleet control refused")
+	}
+	authority := base
+	authority.Profile = "development"
+	authority.FleetAuthorityOnly = true
+	if !catalogTokenIssuerMode(&authority, backend) {
+		t.Fatal("staging management authority refused")
+	}
+	for name, change := range map[string]func(*config.Config){
+		"normal development profile": func(c *config.Config) { c.Profile = "development" },
+		"production environment":     func(c *config.Config) { c.Environment = "production" },
+		"implicit environment":       func(c *config.Config) { c.EnvironmentExplicit = false },
+		"mutable catalog":            func(c *config.Config) { c.AppCatalogReadOnly = false },
+		"implicit auth":              func(c *config.Config) { c.RequireExplicitAuth = false },
+		"short signing key":          func(c *config.Config) { c.APIToken = "short" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			change(&candidate)
+			if catalogTokenIssuerMode(&candidate, backend) {
+				t.Fatal("unsafe issuer configuration accepted")
+			}
+		})
+	}
+	sourceValidation := backend
+	sourceValidation.SourceValidation = true
+	if catalogTokenIssuerMode(&base, sourceValidation) || catalogTokenIssuerMode(&base, startup.ControlBackendConfig{}) {
+		t.Fatal("non-normal etcd backend accepted")
+	}
+}
+
 func TestIssueCatalogTokenRegistryFailureLeavesNoFile(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "owner")
 	if err := os.Mkdir(parent, 0700); err != nil {

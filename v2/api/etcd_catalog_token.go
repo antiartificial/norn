@@ -28,8 +28,7 @@ func runEtcdCatalogTokenIssue(args []string, cfg *config.Config, backend startup
 	if len(args) != 1 || args[0] != etcdIssueCatalogTokenArgument {
 		return false, nil
 	}
-	if cfg == nil || backend.Backend != startup.BackendEtcd || backend.SourceValidation ||
-		!cfg.IsFleetAuthorityOnly() || !cfg.RequireExplicitAuth || len(cfg.APIToken) < 32 {
+	if !catalogTokenIssuerMode(cfg, backend) {
 		return true, errors.New("catalog token issuance requires authenticated normal Fleet etcd")
 	}
 	output := os.Getenv(etcdCatalogTokenFileEnv)
@@ -47,6 +46,21 @@ func runEtcdCatalogTokenIssue(args []string, cfg *config.Config, backend startup
 		return true, err
 	}
 	return true, issueCatalogToken(ctx, cfg.APIToken, etcdstore.NewAuthStore(client, backend.EtcdPrefix), output)
+}
+
+func catalogTokenIssuerMode(cfg *config.Config, backend startup.ControlBackendConfig) bool {
+	if cfg == nil || backend.Backend != startup.BackendEtcd || backend.SourceValidation ||
+		!cfg.EnvironmentExplicit || cfg.EnvironmentID() != "staging" ||
+		!cfg.IsAppCatalogReadOnly() || !cfg.RequireExplicitAuth || len(cfg.APIToken) < 32 {
+		return false
+	}
+	// The management authority uses the development security profile. Fleet
+	// controls use the production profile and must not impersonate the authority
+	// merely to issue this one scoped, registry-backed token.
+	if cfg.IsFleetAuthorityOnly() {
+		return cfg.ProfileID() == "development"
+	}
+	return cfg.Production()
 }
 
 func validateCatalogTokenOutput(output string) error {
