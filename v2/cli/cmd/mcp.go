@@ -152,6 +152,18 @@ type mcpQueryLogsInput struct {
 	Direction string `json:"direction,omitempty" jsonschema:"backward (newest first, default) or forward (oldest first)"`
 }
 
+type mcpSearchTracesInput struct {
+	App           string `json:"app" jsonschema:"app name"`
+	Since         string `json:"since,omitempty" jsonschema:"look back this far, a Go duration such as 30m or 2h (default 1h)"`
+	Limit         int    `json:"limit,omitempty" jsonschema:"max traces (default 20, max 100)"`
+	MinDurationMs int    `json:"min_duration_ms,omitempty" jsonschema:"only traces slower than this many milliseconds"`
+}
+
+type mcpGetTraceInput struct {
+	App     string `json:"app" jsonschema:"app name"`
+	TraceID string `json:"trace_id" jsonschema:"32 lowercase hex character trace id from norn_search_traces or a log line"`
+}
+
 type mcpRefInput struct {
 	App            string `json:"app" jsonschema:"app name"`
 	Ref            string `json:"ref,omitempty" jsonschema:"git ref to use (default HEAD)"`
@@ -328,6 +340,33 @@ func newMCPServer(c *api.Client, allowWrites bool) *mcp.Server {
 				return nil, nil, err
 			}
 			out, err := c.QueryLogs(app, q)
+			return nil, out, err
+		})
+	mcp.AddTool(s, readTool("norn_search_traces", "Search recent distributed traces of an app (requires tracing to be configured on the server)."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in mcpSearchTracesInput) (*mcp.CallToolResult, any, error) {
+			app, err := mcpID("app", in.App)
+			if err != nil {
+				return nil, nil, err
+			}
+			since := time.Hour
+			if in.Since != "" {
+				if since, err = time.ParseDuration(in.Since); err != nil || since <= 0 {
+					return nil, nil, fmt.Errorf("invalid since %q", in.Since)
+				}
+			}
+			out, err := c.SearchTraces(app, time.Now().Add(-since), mcpLimit(in.Limit, 20, 100), max(in.MinDurationMs, 0))
+			return nil, map[string]any{"traces": out}, err
+		})
+	mcp.AddTool(s, readTool("norn_get_trace", "Get every span of one trace of an app, with timings, status and attributes."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in mcpGetTraceInput) (*mcp.CallToolResult, any, error) {
+			app, err := mcpID("app", in.App)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !traceIDPattern.MatchString(in.TraceID) {
+				return nil, nil, fmt.Errorf("invalid trace_id %q: must be 32 lowercase hex characters", in.TraceID)
+			}
+			out, err := c.GetTrace(app, in.TraceID)
 			return nil, out, err
 		})
 	mcp.AddTool(s, readTool("norn_cron_history", "Cron process state and recent runs for an app."),

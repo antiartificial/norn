@@ -1181,6 +1181,74 @@ func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
 	return resp.Operations, nil
 }
 
+// TraceSummary is one row of the app trace search.
+type TraceSummary struct {
+	TraceID     string  `json:"traceId"`
+	RootName    string  `json:"rootName"`
+	RootService string  `json:"rootService"`
+	Start       string  `json:"start"`
+	DurationMs  float64 `json:"durationMs"`
+	SpanCount   int     `json:"spanCount"`
+}
+
+// TraceSpan is one normalized span of a trace.
+type TraceSpan struct {
+	SpanID       string         `json:"spanId"`
+	ParentSpanID string         `json:"parentSpanId"`
+	Name         string         `json:"name"`
+	Service      string         `json:"service"`
+	App          string         `json:"app"`
+	Process      string         `json:"process"`
+	AllocID      string         `json:"allocId"`
+	Kind         string         `json:"kind"`
+	Start        string         `json:"start"`
+	End          string         `json:"end"`
+	DurationMs   float64        `json:"durationMs"`
+	Status       string         `json:"status"`
+	StatusMsg    string         `json:"statusMessage"`
+	Attributes   map[string]any `json:"attributes"`
+}
+
+type Trace struct {
+	TraceID      string      `json:"traceId"`
+	App          string      `json:"app"`
+	OmittedSpans int         `json:"omittedSpans"`
+	Spans        []TraceSpan `json:"spans"`
+}
+
+// SearchTraces lists recent traces of an app; zero values use server defaults.
+func (c *Client) SearchTraces(app string, since time.Time, limit, minDurationMs int) ([]TraceSummary, error) {
+	values := url.Values{}
+	if !since.IsZero() {
+		values.Set("since", since.UTC().Format(time.RFC3339Nano))
+	}
+	if limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if minDurationMs > 0 {
+		values.Set("minDurationMs", fmt.Sprintf("%d", minDurationMs))
+	}
+	path := "/api/v1/apps/" + url.PathEscape(app) + "/traces"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var resp struct {
+		Traces []TraceSummary `json:"traces"`
+	}
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Traces, nil
+}
+
+func (c *Client) GetTrace(app, traceID string) (*Trace, error) {
+	var trace Trace
+	if err := c.get("/api/v1/apps/"+url.PathEscape(app)+"/traces/"+url.PathEscape(traceID), &trace); err != nil {
+		return nil, err
+	}
+	return &trace, nil
+}
+
 func (c *Client) GetOperation(id string) (*Operation, error) {
 	var op Operation
 	if err := c.get("/api/v1/operations/"+url.PathEscape(id), &op); err != nil {
