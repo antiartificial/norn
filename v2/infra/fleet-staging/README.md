@@ -39,6 +39,12 @@ the direct pilot is useful Fleet substrate evidence, but not Norn controller
 evidence. The direct pilot may be retired after the replacement proves service
 and data continuity; it is not a permanent fixture.
 
+The managed spec permits a fourth replica for the later fresh app-04 node
+exercise. Keep the first live proof at 2→3 on already tracked app-03. After
+Fleet creates and qualifies app-04 through a separate signed capacity plan,
+scale 3→4 through Norn and compare surviving allocation IDs; adding capacity
+alone should not move healthy allocations.
+
 ## Preconditions
 
 - PR #574's separate `app` pool is merged and deployed to the **work** Fleet:

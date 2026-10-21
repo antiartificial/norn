@@ -54,7 +54,7 @@ processes:
       path: /metrics
     scaling:
       min: 2
-      max: 3
+      max: 4
     resources:
       cpu: 200
       memory: 128

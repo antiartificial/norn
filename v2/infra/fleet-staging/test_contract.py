@@ -10,6 +10,7 @@ class StagingContractTests(unittest.TestCase):
         migration = (root / "nomad/hello-norn-mysql-migrate.nomad.hcl").read_text()
         self.assertIn("deploy: false", spec)
         self.assertIn("nodePool: app", spec)
+        self.assertIn("      max: 4", spec)
         for job in (service, migration):
             self.assertIn('node_pool   = "app"', job)
             self.assertNotIn('node_pool   = "ingress"', job)
