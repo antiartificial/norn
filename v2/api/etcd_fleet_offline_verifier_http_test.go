@@ -154,6 +154,8 @@ func TestOfflineVerifierReadIncludesOnlyBoundGrantFields(t *testing.T) {
 	path := "/api/v1/fleet/offline/verifier/plans/" + s.binding.PlanID + "/attempts/" + s.attempt.ID + "?audience=work-staging&authorityEpoch=3"
 	response := verifierReadRequest(s, verifierPrincipal(), path)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"phase":"issued"`) ||
+		!strings.Contains(response.Body.String(), `"deleteRequestSHA256":"`+s.grant.DeleteRequestSHA256+`"`) ||
+		strings.Contains(response.Body.String(), `"commitment":`) ||
 		!strings.Contains(response.Body.String(), `"generation":7`) || strings.Contains(response.Body.String(), "secret-token") ||
 		strings.Contains(response.Body.String(), "secret-device") || strings.Contains(response.Body.String(), s.binding.RunnerPrincipalSubject) {
 		t.Fatalf("bound grant view=%d %s", response.Code, response.Body)
@@ -242,6 +244,8 @@ func TestOfflineVerifierReadRetainsPostDispatchRecoveryAfterBindingExpiry(t *tes
 		}
 		got := verifierReadRequest(s, verifierPrincipal(), path)
 		if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"phase":"`+phase+`"`) ||
+			!strings.Contains(got.Body.String(), `"commitment":{"schemaVersion":"`+offline.DeleteCommitmentSchemaV2+`"`) ||
+			!strings.Contains(got.Body.String(), `"deleteRequestSHA256":"`+s.grant.DeleteRequestSHA256+`"`) ||
 			!strings.Contains(got.Body.String(), `"authorizesEffect":false`) {
 			t.Fatalf("expired %s recovery=%d %s", phase, got.Code, got.Body)
 		}

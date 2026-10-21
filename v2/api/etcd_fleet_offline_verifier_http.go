@@ -74,6 +74,8 @@ type offlineVerifierGrant struct {
 	Phase                 string                      `json:"phase"`
 	ExpiresAt             time.Time                   `json:"expiresAt"`
 	EffectEvidence        offline.EffectEvidenceV2    `json:"effectEvidence"`
+	DeleteRequestSHA256   string                      `json:"deleteRequestSHA256"`
+	Commitment            *offline.DeleteCommitmentV2 `json:"commitment,omitempty"`
 	Dispatch              *offline.DeleteDispatchV2   `json:"dispatch,omitempty"`
 	Terminal              *offline.TerminalEvidenceV2 `json:"terminal,omitempty"`
 }
@@ -161,6 +163,7 @@ func etcdOfflineVerifierRead(state offlineVerifierStateStore) http.HandlerFunc {
 			grantView = &offlineVerifierGrant{ID: grant.ID, AttemptID: grant.AttemptID, BindingSHA256: grant.BindingSHA256,
 				TargetID: grant.TargetID, TargetFenceGeneration: grant.TargetFenceGeneration, AuthorityEpoch: grant.AuthorityEpoch,
 				WriterFence: grant.WriterFence, Phase: grant.Phase, ExpiresAt: grant.ExpiresAt, EffectEvidence: grant.EffectEvidence,
+				DeleteRequestSHA256: grant.DeleteRequestSHA256, Commitment: grant.Commitment,
 				Dispatch: grant.Dispatch, Terminal: grant.Terminal}
 		}
 		// An expired reservation cannot serve a new effect proof. Historical
