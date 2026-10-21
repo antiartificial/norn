@@ -20,8 +20,12 @@ func validPlatformReleaseIntent() PlatformReleaseIntent {
 		OldPublisherRunID: 123, PublisherRunID: 124,
 		OldSignedManifestSHA256: strings.Repeat("c", 64), NewSignedManifestSHA256: strings.Repeat("d", 64),
 		SignedReleaseTag: "platform-" + strings.Repeat("b", 40),
-		ControlRoster:    []PlatformReleaseControl{{Name: "control-01", TailnetIP: "100.1.2.3", PrivateIP: "10.1.2.3"}},
-		StateSHA256:      strings.Repeat("e", 64), HostKeysSHA256: strings.Repeat("f", 64),
+		ControlRoster: []PlatformReleaseControl{
+			{Name: "control-01", TailnetIP: "100.1.2.3", PrivateIP: "10.1.2.3"},
+			{Name: "control-02", TailnetIP: "100.1.2.4", PrivateIP: "10.1.2.4"},
+			{Name: "control-03", TailnetIP: "100.1.2.5", PrivateIP: "10.1.2.5"},
+		},
+		StateSHA256: strings.Repeat("e", 64), HostKeysSHA256: strings.Repeat("f", 64),
 	}
 }
 
@@ -91,25 +95,25 @@ func TestPlatformReleaseIntentEtcdLifecycle(t *testing.T) {
 	if err != nil || approved.Status != "Approved" {
 		t.Fatalf("approval: %+v %v", approved, err)
 	}
-	attempt, created, err := s.StartPlatformReleaseAttempt(ctx, request.Name, record.IntentDigest, "operation-12345678", "executor-12345678")
+	attempt, created, err := s.StartPlatformReleaseAttempt(ctx, request.Name, record.IntentDigest, "operation-12345678", "executor-12345678", "session-1234567890123456")
 	if err != nil || !created {
 		t.Fatalf("attempt: %+v %v", attempt, err)
 	}
-	if _, _, err = s.StartPlatformReleaseAttempt(ctx, request.Name, record.IntentDigest, "operation-other", "executor-other"); !errors.Is(err, ErrPlatformReleaseConflict) {
+	if _, _, err = s.StartPlatformReleaseAttempt(ctx, request.Name, record.IntentDigest, "operation-other", "executor-other", "session-other-12345678"); !errors.Is(err, ErrPlatformReleaseConflict) {
 		t.Fatalf("expected active attempt conflict, got %v", err)
 	}
 	checkpoint := PlatformReleaseCheckpoint{Ordinal: 1, Phase: "preflight", Health: "healthy", EvidenceSHA256: strings.Repeat("e", 64)}
-	updated, err := s.AppendPlatformReleaseCheckpoint(ctx, request.Name, attempt.ID, attempt.OwnerID, attempt.FenceEpoch, checkpoint)
+	updated, err := s.AppendPlatformReleaseCheckpoint(ctx, request.Name, attempt.ID, attempt.OwnerID, attempt.OwnerSession, attempt.FenceEpoch, checkpoint)
 	if err != nil || updated.NextOrdinal != 2 {
 		t.Fatalf("checkpoint: %+v %v", updated, err)
 	}
-	if _, err = s.AppendPlatformReleaseCheckpoint(ctx, request.Name, attempt.ID, attempt.OwnerID, attempt.FenceEpoch, checkpoint); !errors.Is(err, ErrPlatformReleaseConflict) {
+	if _, err = s.AppendPlatformReleaseCheckpoint(ctx, request.Name, attempt.ID, attempt.OwnerID, attempt.OwnerSession, attempt.FenceEpoch, checkpoint); !errors.Is(err, ErrPlatformReleaseConflict) {
 		t.Fatalf("expected ordinal conflict, got %v", err)
 	}
-	if _, err = s.RenewPlatformReleaseAttempt(ctx, request.Name, attempt.ID, "wrong-owner", attempt.FenceEpoch); !errors.Is(err, ErrPlatformReleaseConflict) {
+	if _, err = s.RenewPlatformReleaseAttempt(ctx, request.Name, attempt.ID, "wrong-owner", attempt.OwnerSession, attempt.FenceEpoch); !errors.Is(err, ErrPlatformReleaseConflict) {
 		t.Fatalf("expected owner fence, got %v", err)
 	}
-	if _, err = s.FinishPlatformReleaseAttempt(ctx, request.Name, attempt.ID, attempt.OwnerID, attempt.FenceEpoch, "Succeeded"); err != nil {
+	if _, err = s.FinishPlatformReleaseAttempt(ctx, request.Name, attempt.ID, attempt.OwnerID, attempt.OwnerSession, attempt.FenceEpoch, "Succeeded"); err != nil {
 		t.Fatal(err)
 	}
 	items, err := s.ListPlatformReleaseCheckpoints(ctx, request.Name)

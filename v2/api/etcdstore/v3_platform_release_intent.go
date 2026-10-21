@@ -51,6 +51,7 @@ type PlatformReleaseAttempt struct {
 	IdempotencyKey string    `json:"idempotencyKey"`
 	Status         string    `json:"status"`
 	OwnerID        string    `json:"ownerId"`
+	OwnerSession   string    `json:"ownerSession"`
 	FenceEpoch     int64     `json:"fenceEpoch"`
 	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
 	NextOrdinal    int64     `json:"nextOrdinal"`
@@ -84,20 +85,30 @@ var (
 )
 
 func (r PlatformReleaseIntent) Validate() error {
-	if !platformReleaseNameRe.MatchString(r.Name) || r.Generation != 1 || r.Environment == "" ||
+	if !platformReleaseNameRe.MatchString(r.Name) || r.Generation != 1 || r.Environment != "staging" ||
 		!platformReleaseSHARe.MatchString(r.OldSourceSHA) || !platformReleaseSHARe.MatchString(r.NewSourceSHA) ||
 		r.OldSourceSHA == r.NewSourceSHA || r.OldPublisherRunID <= 0 || r.PublisherRunID <= 0 || r.SignedReleaseTag != "platform-"+r.NewSourceSHA ||
 		!platformReleaseDigestRe.MatchString(r.OldSignedManifestSHA256) || !platformReleaseDigestRe.MatchString(r.NewSignedManifestSHA256) ||
 		!platformReleaseDigestRe.MatchString(r.StateSHA256) || !platformReleaseDigestRe.MatchString(r.HostKeysSHA256) ||
-		len(r.ControlRoster) == 0 || len(r.ControlRoster) > 16 {
+		len(r.ControlRoster) != 3 {
 		return ErrPlatformReleaseInvalid
 	}
 	seen := map[string]bool{}
+	addressSeen := map[string]bool{}
 	for _, control := range r.ControlRoster {
 		if !platformReleaseNameRe.MatchString(control.Name) || net.ParseIP(control.TailnetIP) == nil || net.ParseIP(control.PrivateIP) == nil || seen[control.Name] {
 			return ErrPlatformReleaseInvalid
 		}
+		if addressSeen[control.TailnetIP] || addressSeen[control.PrivateIP] {
+			return ErrPlatformReleaseInvalid
+		}
 		seen[control.Name] = true
+		addressSeen[control.TailnetIP], addressSeen[control.PrivateIP] = true, true
+	}
+	for _, name := range []string{"control-01", "control-02", "control-03"} {
+		if !seen[name] {
+			return ErrPlatformReleaseInvalid
+		}
 	}
 	return nil
 }
@@ -265,8 +276,8 @@ func (s *V3OperationStore) GetPlatformReleaseAttempt(ctx context.Context, name s
 	return &record, nil
 }
 
-func (s *V3OperationStore) StartPlatformReleaseAttempt(ctx context.Context, name, digest, idempotencyKey, ownerID string) (*PlatformReleaseAttempt, bool, error) {
-	if !platformReleaseNameRe.MatchString(name) || !platformReleaseDigestRe.MatchString(digest) || len(idempotencyKey) < 8 || len(idempotencyKey) > 128 || len(ownerID) < 8 || len(ownerID) > 128 {
+func (s *V3OperationStore) StartPlatformReleaseAttempt(ctx context.Context, name, digest, idempotencyKey, ownerID, ownerSession string) (*PlatformReleaseAttempt, bool, error) {
+	if !platformReleaseNameRe.MatchString(name) || !platformReleaseDigestRe.MatchString(digest) || len(idempotencyKey) < 8 || len(idempotencyKey) > 128 || len(ownerID) < 8 || len(ownerID) > 128 || len(ownerSession) < 16 || len(ownerSession) > 128 {
 		return nil, false, ErrPlatformReleaseInvalid
 	}
 	intentKey, attemptKey := s.platformReleaseIntentKey(name), s.platformReleaseAttemptKey(name)
@@ -293,14 +304,14 @@ func (s *V3OperationStore) StartPlatformReleaseAttempt(ctx context.Context, name
 		if err := decodeV3Record(prior.Kvs[0].Value, &existing); err != nil {
 			return nil, false, err
 		}
-		if existing.IdempotencyKey == idempotencyKey && existing.IntentDigest == digest && existing.OwnerID == ownerID {
+		if existing.IdempotencyKey == idempotencyKey && existing.IntentDigest == digest && existing.OwnerID == ownerID && existing.OwnerSession == ownerSession {
 			return &existing, false, nil
 		}
 		return nil, false, ErrPlatformReleaseConflict
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	sum := sha256.Sum256([]byte(name + ":" + digest + ":" + idempotencyKey))
-	attempt := PlatformReleaseAttempt{ID: hex.EncodeToString(sum[:]), IntentName: name, Generation: intent.Generation, IntentDigest: digest, IdempotencyKey: idempotencyKey, Status: "Running", OwnerID: ownerID, FenceEpoch: 1, LeaseExpiresAt: now.Add(10 * time.Minute), NextOrdinal: 1, StartedAt: now, UpdatedAt: now}
+	attempt := PlatformReleaseAttempt{ID: hex.EncodeToString(sum[:]), IntentName: name, Generation: intent.Generation, IntentDigest: digest, IdempotencyKey: idempotencyKey, Status: "Running", OwnerID: ownerID, OwnerSession: ownerSession, FenceEpoch: 1, LeaseExpiresAt: now.Add(10 * time.Minute), NextOrdinal: 1, StartedAt: now, UpdatedAt: now}
 	encoded, _ := json.Marshal(attempt)
 	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(intentKey), "=", intentKV.Kvs[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(attemptKey), "=", 0)).Then(clientv3.OpPut(attemptKey, string(encoded))).Commit()
 	if err != nil {
@@ -312,7 +323,7 @@ func (s *V3OperationStore) StartPlatformReleaseAttempt(ctx context.Context, name
 	return &attempt, true, nil
 }
 
-func (s *V3OperationStore) AppendPlatformReleaseCheckpoint(ctx context.Context, name, attemptID, ownerID string, fenceEpoch int64, checkpoint PlatformReleaseCheckpoint) (*PlatformReleaseAttempt, error) {
+func (s *V3OperationStore) AppendPlatformReleaseCheckpoint(ctx context.Context, name, attemptID, ownerID, ownerSession string, fenceEpoch int64, checkpoint PlatformReleaseCheckpoint) (*PlatformReleaseAttempt, error) {
 	if !platformReleaseNameRe.MatchString(name) || !platformReleaseDigestRe.MatchString(attemptID) || checkpoint.Ordinal < 1 || checkpoint.Ordinal > 1024 || checkpoint.Phase == "" || checkpoint.Health == "" || !platformReleaseDigestRe.MatchString(checkpoint.EvidenceSHA256) {
 		return nil, ErrPlatformReleaseInvalid
 	}
@@ -334,7 +345,7 @@ func (s *V3OperationStore) AppendPlatformReleaseCheckpoint(ctx context.Context, 
 	if err := decodeV3Record(result.Kvs[0].Value, &attempt); err != nil {
 		return nil, err
 	}
-	if attempt.ID != attemptID || attempt.Status != "Running" || attempt.NextOrdinal != checkpoint.Ordinal || attempt.OwnerID != ownerID || attempt.FenceEpoch != fenceEpoch || !time.Now().Before(attempt.LeaseExpiresAt) {
+	if attempt.ID != attemptID || attempt.Status != "Running" || attempt.NextOrdinal != checkpoint.Ordinal || attempt.OwnerID != ownerID || attempt.OwnerSession != ownerSession || attempt.FenceEpoch != fenceEpoch || !time.Now().Before(attempt.LeaseExpiresAt) {
 		return nil, ErrPlatformReleaseConflict
 	}
 	checkpoint.RecordedAt = time.Now().UTC().Truncate(time.Microsecond)
@@ -375,7 +386,7 @@ func (s *V3OperationStore) ListPlatformReleaseCheckpoints(ctx context.Context, n
 	return records, nil
 }
 
-func (s *V3OperationStore) FinishPlatformReleaseAttempt(ctx context.Context, name, attemptID, ownerID string, fenceEpoch int64, status string) (*PlatformReleaseAttempt, error) {
+func (s *V3OperationStore) FinishPlatformReleaseAttempt(ctx context.Context, name, attemptID, ownerID, ownerSession string, fenceEpoch int64, status string) (*PlatformReleaseAttempt, error) {
 	if status != "Succeeded" && status != "Failed" {
 		return nil, ErrPlatformReleaseInvalid
 	}
@@ -391,7 +402,7 @@ func (s *V3OperationStore) FinishPlatformReleaseAttempt(ctx context.Context, nam
 	if err := decodeV3Record(result.Kvs[0].Value, &attempt); err != nil {
 		return nil, err
 	}
-	if attempt.ID != attemptID || attempt.OwnerID != ownerID || attempt.FenceEpoch != fenceEpoch || !time.Now().Before(attempt.LeaseExpiresAt) {
+	if attempt.ID != attemptID || attempt.OwnerID != ownerID || attempt.OwnerSession != ownerSession || attempt.FenceEpoch != fenceEpoch || !time.Now().Before(attempt.LeaseExpiresAt) {
 		return nil, ErrPlatformReleaseConflict
 	}
 	if attempt.Status == status {
@@ -413,7 +424,7 @@ func (s *V3OperationStore) FinishPlatformReleaseAttempt(ctx context.Context, nam
 	return &attempt, nil
 }
 
-func (s *V3OperationStore) RenewPlatformReleaseAttempt(ctx context.Context, name, attemptID, ownerID string, fenceEpoch int64) (*PlatformReleaseAttempt, error) {
+func (s *V3OperationStore) RenewPlatformReleaseAttempt(ctx context.Context, name, attemptID, ownerID, ownerSession string, fenceEpoch int64) (*PlatformReleaseAttempt, error) {
 	key := s.platformReleaseAttemptKey(name)
 	result, err := s.kv.Get(ctx, key)
 	if err != nil {
@@ -427,7 +438,7 @@ func (s *V3OperationStore) RenewPlatformReleaseAttempt(ctx context.Context, name
 		return nil, err
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	if attempt.ID != attemptID || attempt.OwnerID != ownerID || attempt.FenceEpoch != fenceEpoch || attempt.Status != "Running" || !now.Before(attempt.LeaseExpiresAt) {
+	if attempt.ID != attemptID || attempt.OwnerID != ownerID || attempt.OwnerSession != ownerSession || attempt.FenceEpoch != fenceEpoch || attempt.Status != "Running" || !now.Before(attempt.LeaseExpiresAt) {
 		return nil, ErrPlatformReleaseConflict
 	}
 	attempt.LeaseExpiresAt = now.Add(10 * time.Minute)

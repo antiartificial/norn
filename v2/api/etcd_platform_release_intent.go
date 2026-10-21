@@ -49,16 +49,11 @@ func platformReleaseError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Config, identities store.IdentityStore, operations *etcdstore.V3OperationStore) {
-	if !cfg.FleetPlatformReleaseIntentEnabled {
-		return
-	}
-	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
-	operate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
-	// The platform release effect surface accepts only a live enrolled norn-exec
-	// device credential. A generic fleet:operate or admin token cannot impersonate
-	// the controller worker or claim its owner lease.
-	executorAuth := func(next http.Handler) http.Handler {
+// platformReleaseExecutorAuth deliberately does not consult generic scopes.
+// The enrolled device identity is checked on each request against the durable
+// revocation store by VerifyAccessTokenWithIdentityStore.
+func platformReleaseExecutorAuth(cfg *config.Config, identities store.IdentityStore) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			principal, ok := handler.VerifyAccessTokenWithIdentityStore(cfg.APIToken, value, cfg.LegacyTokenSigningUntil, identities)
@@ -69,7 +64,11 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 			next.ServeHTTP(w, handler.WithAccessPrincipal(r, principal))
 		})
 	}
-	readOrExecutor := func(next http.Handler) http.Handler {
+}
+
+func platformReleaseReadOrExecutorAuth(cfg *config.Config, identities store.IdentityStore) func(http.Handler) http.Handler {
+	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
+	return func(next http.Handler) http.Handler {
 		operatorRead := read(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -81,6 +80,18 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 			operatorRead.ServeHTTP(w, r)
 		})
 	}
+}
+
+func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Config, identities store.IdentityStore, operations *etcdstore.V3OperationStore) {
+	if !cfg.FleetPlatformReleaseIntentEnabled {
+		return
+	}
+	operate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
+	// The platform release effect surface accepts only a live enrolled norn-exec
+	// device credential. A generic fleet:operate or admin token cannot impersonate
+	// the controller worker or claim its owner lease.
+	executorAuth := platformReleaseExecutorAuth(cfg, identities)
+	readOrExecutor := platformReleaseReadOrExecutorAuth(cfg, identities)
 	requireOwner := func(w http.ResponseWriter, r *http.Request, ownerID string) bool {
 		principal, ok := handler.AccessPrincipalFromRequest(r)
 		if !ok || principal.DeviceID != ownerID {
@@ -159,6 +170,7 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 			IntentDigest   string `json:"intentDigest"`
 			IdempotencyKey string `json:"idempotencyKey"`
 			OwnerID        string `json:"ownerId"`
+			OwnerSession   string `json:"ownerSession"`
 		}
 		if !platformReleaseJSON(w, r, &request) {
 			return
@@ -166,7 +178,7 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 		if !requireOwner(w, r, request.OwnerID) {
 			return
 		}
-		record, created, err := operations.StartPlatformReleaseAttempt(r.Context(), chi.URLParam(r, "name"), request.IntentDigest, request.IdempotencyKey, request.OwnerID)
+		record, created, err := operations.StartPlatformReleaseAttempt(r.Context(), chi.URLParam(r, "name"), request.IntentDigest, request.IdempotencyKey, request.OwnerID, request.OwnerSession)
 		if err != nil {
 			platformReleaseError(w, r, err)
 			return
@@ -179,9 +191,10 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 	})
 	router.With(executorAuth).Post(root+"/{name}/attempt/renew", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			AttemptID  string `json:"attemptId"`
-			OwnerID    string `json:"ownerId"`
-			FenceEpoch int64  `json:"fenceEpoch"`
+			AttemptID    string `json:"attemptId"`
+			OwnerID      string `json:"ownerId"`
+			OwnerSession string `json:"ownerSession"`
+			FenceEpoch   int64  `json:"fenceEpoch"`
 		}
 		if !platformReleaseJSON(w, r, &request) {
 			return
@@ -189,14 +202,14 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 		if !requireOwner(w, r, request.OwnerID) {
 			return
 		}
-		record, err := operations.RenewPlatformReleaseAttempt(r.Context(), chi.URLParam(r, "name"), request.AttemptID, request.OwnerID, request.FenceEpoch)
+		record, err := operations.RenewPlatformReleaseAttempt(r.Context(), chi.URLParam(r, "name"), request.AttemptID, request.OwnerID, request.OwnerSession, request.FenceEpoch)
 		if err != nil {
 			platformReleaseError(w, r, err)
 			return
 		}
 		platformReleaseResponse(w, http.StatusOK, record)
 	})
-	router.With(read).Get(root+"/{name}/attempt/checkpoints", func(w http.ResponseWriter, r *http.Request) {
+	router.With(readOrExecutor).Get(root+"/{name}/attempt/checkpoints", func(w http.ResponseWriter, r *http.Request) {
 		records, err := operations.ListPlatformReleaseCheckpoints(r.Context(), chi.URLParam(r, "name"))
 		if err != nil {
 			platformReleaseError(w, r, err)
@@ -206,10 +219,11 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 	})
 	router.With(executorAuth).Post(root+"/{name}/attempt/checkpoints", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			AttemptID  string                              `json:"attemptId"`
-			OwnerID    string                              `json:"ownerId"`
-			FenceEpoch int64                               `json:"fenceEpoch"`
-			Checkpoint etcdstore.PlatformReleaseCheckpoint `json:"checkpoint"`
+			AttemptID    string                              `json:"attemptId"`
+			OwnerID      string                              `json:"ownerId"`
+			OwnerSession string                              `json:"ownerSession"`
+			FenceEpoch   int64                               `json:"fenceEpoch"`
+			Checkpoint   etcdstore.PlatformReleaseCheckpoint `json:"checkpoint"`
 		}
 		if !platformReleaseJSON(w, r, &request) {
 			return
@@ -217,7 +231,7 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 		if !requireOwner(w, r, request.OwnerID) {
 			return
 		}
-		record, err := operations.AppendPlatformReleaseCheckpoint(r.Context(), chi.URLParam(r, "name"), request.AttemptID, request.OwnerID, request.FenceEpoch, request.Checkpoint)
+		record, err := operations.AppendPlatformReleaseCheckpoint(r.Context(), chi.URLParam(r, "name"), request.AttemptID, request.OwnerID, request.OwnerSession, request.FenceEpoch, request.Checkpoint)
 		if err != nil {
 			platformReleaseError(w, r, err)
 			return
@@ -226,10 +240,11 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 	})
 	router.With(executorAuth).Post(root+"/{name}/attempt/finish", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			AttemptID  string `json:"attemptId"`
-			OwnerID    string `json:"ownerId"`
-			FenceEpoch int64  `json:"fenceEpoch"`
-			Status     string `json:"status"`
+			AttemptID    string `json:"attemptId"`
+			OwnerID      string `json:"ownerId"`
+			OwnerSession string `json:"ownerSession"`
+			FenceEpoch   int64  `json:"fenceEpoch"`
+			Status       string `json:"status"`
 		}
 		if !platformReleaseJSON(w, r, &request) {
 			return
@@ -237,7 +252,7 @@ func registerEtcdPlatformReleaseIntentRoutes(router chi.Router, cfg *config.Conf
 		if !requireOwner(w, r, request.OwnerID) {
 			return
 		}
-		record, err := operations.FinishPlatformReleaseAttempt(r.Context(), chi.URLParam(r, "name"), request.AttemptID, request.OwnerID, request.FenceEpoch, request.Status)
+		record, err := operations.FinishPlatformReleaseAttempt(r.Context(), chi.URLParam(r, "name"), request.AttemptID, request.OwnerID, request.OwnerSession, request.FenceEpoch, request.Status)
 		if err != nil {
 			platformReleaseError(w, r, err)
 			return
