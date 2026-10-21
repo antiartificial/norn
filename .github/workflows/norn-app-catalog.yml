@@ -1,0 +1,52 @@
+name: Norn app catalog
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - v2/infra/fleet-staging/hello-norn-mysql/infraspec.yaml
+      - v2/scripts/publish-work-staging-app-catalog
+      - .github/workflows/norn-app-catalog.yml
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.10
+          cache-dependency-path: v2/api/go.sum
+      - name: Require protected master source
+        env:
+          REF: ${{ github.ref }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          EVENT: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT" == push && "$REF" == refs/heads/master && "$DEFAULT_BRANCH" == master && "$REF_PROTECTED" == true ]]
+      - name: Build reviewed catalog bundle when enabled
+        id: catalog
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/norn-app-catalog"
+          (cd v2/api && go build -buildvcs=false -o "$RUNNER_TEMP/catalog-publisher-validate" ./cmd/catalog-publisher-validate)
+          export NORN_CATALOG_VALIDATOR="$RUNNER_TEMP/catalog-publisher-validate"
+          v2/scripts/publish-work-staging-app-catalog \
+            v2/infra/fleet-staging/hello-norn-mysql/infraspec.yaml \
+            "$RUNNER_TEMP/norn-app-catalog"
+      - name: Upload exact source artifact
+        if: steps.catalog.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.catalog.outputs.artifact_name }}
+          path: ${{ runner.temp }}/norn-app-catalog/catalog.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

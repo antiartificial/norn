@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_path=${1:?usage: publish-work-staging-app-catalog SOURCE OUTPUT_DIR}
+output_dir=${2:?usage: publish-work-staging-app-catalog SOURCE OUTPUT_DIR}
+
+: "${GITHUB_SHA:?GITHUB_SHA is required}"
+: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+: "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
+: "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
+
+[[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "GITHUB_SHA must be a full lowercase commit SHA" >&2; exit 1; }
+[[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "GITHUB_RUN_ID must be positive" >&2; exit 1; }
+[[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || { echo "GITHUB_RUN_ATTEMPT must be positive" >&2; exit 1; }
+
+validation=$(ruby -rpsych -ruri -ripaddr -e '
+  path, expected_image = ARGV
+  doc = Psych.safe_load(File.read(path), permitted_classes: [], permitted_symbols: [], aliases: false)
+  abort "catalog source must be a YAML mapping" unless doc.is_a?(Hash)
+  if doc["deploy"] != true
+    puts "disabled"
+    exit 0
+  end
+  abort "enabled catalog has the wrong app ID" unless doc["name"] == "hello-norn-mysql-managed"
+  abort "enabled catalog has the wrong Nomad namespace" unless doc["nomadNamespace"] == "norn-work-staging"
+  abort "enabled catalog image is not the reviewed immutable digest" unless doc.dig("build", "image") == expected_image
+  endpoints = doc["endpoints"]
+  abort "enabled catalog requires exactly one endpoint" unless endpoints.is_a?(Array) && endpoints.length == 1
+  endpoint = endpoints[0]
+  abort "enabled catalog endpoint has the wrong process or region" unless endpoint.is_a?(Hash) && endpoint["process"] == "web" && endpoint["region"] == "nyc3"
+  expected_ingress = {
+    "publicPaths" => ["/records/", "/version", "/route-proof"],
+    "retryGETPaths" => ["/records/", "/version"],
+    "privateReadinessPath" => "/readyz",
+  }
+  abort "enabled catalog requires the reviewed restricted-ingress policy" unless endpoint["restrictedIngress"] == expected_ingress
+  raw = endpoint["url"]
+  begin
+    uri = URI.parse(raw.to_s)
+  rescue URI::InvalidURIError
+    abort "enabled catalog endpoint is invalid"
+  end
+  host = uri.host.to_s.downcase.sub(/\.$/, "")
+  ip = !(IPAddr.new(host) rescue nil).nil?
+  reserved = ["example.com", "example.net", "example.org"]
+  placeholder = host.empty? || !host.include?(".") || ip || host == "localhost" ||
+    host.end_with?(".invalid", ".example", ".test", ".localhost", ".local") ||
+    reserved.any? { |suffix| host == suffix || host.end_with?("." + suffix) }
+  abort "enabled catalog requires a reviewed non-placeholder HTTPS hostname" unless uri.scheme == "https" && !placeholder
+  puts "enabled"
+' "$source_path" "ghcr.io/antiartificial/hello-norn-mysql@sha256:1f6da72837522c1507e1aa965d6cf31f452fa46ad6791f3b62197b15905e930f")
+
+if [[ "$validation" == disabled ]]; then
+  printf 'publish=false\n' >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+
+[[ "$validation" == enabled ]] || { echo "unexpected catalog validation result" >&2; exit 1; }
+: "${NORN_CATALOG_VALIDATOR:?NORN_CATALOG_VALIDATOR is required for an enabled catalog}"
+"$NORN_CATALOG_VALIDATOR" "$source_path"
+mkdir -p "$output_dir/stage/hello-norn-mysql"
+cp "$source_path" "$output_dir/stage/hello-norn-mysql/infraspec.yaml"
+spec_sha=$(sha256sum "$source_path" | awk '{print $1}')
+
+python3 - "$output_dir/stage/norn-catalog-provenance.json" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$spec_sha" <<'PY'
+import json
+import sys
+
+path, source_sha, run_id, attempt, spec_sha = sys.argv[1:]
+provenance = {
+    "appID": "hello-norn-mysql-managed",
+    "catalogPath": "hello-norn-mysql/infraspec.yaml",
+    "infraSpecSHA256": spec_sha,
+    "publisherRunAttempt": attempt,
+    "publisherRunID": run_id,
+    "publisherWorkflow": ".github/workflows/norn-app-catalog.yml",
+    "repository": "antiartificial/norn",
+    "schemaVersion": "norn.work-staging-app-catalog-provenance/v1",
+    "sourcePath": "v2/infra/fleet-staging/hello-norn-mysql/infraspec.yaml",
+    "sourceRef": "refs/heads/master",
+    "sourceSHA": source_sha,
+}
+with open(path, "w", encoding="utf-8", newline="\n") as stream:
+    json.dump(provenance, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+
+python3 - "$output_dir/stage" "$output_dir/catalog.tar.gz" <<'PY'
+import gzip
+import io
+from pathlib import Path
+import sys
+import tarfile
+
+stage, output = Path(sys.argv[1]), Path(sys.argv[2])
+with output.open("wb") as raw:
+    with gzip.GzipFile(filename="", mode="wb", compresslevel=9, fileobj=raw, mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            directory = tarfile.TarInfo("hello-norn-mysql")
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o750
+            directory.mtime = directory.uid = directory.gid = 0
+            archive.addfile(directory)
+            for name in ("hello-norn-mysql/infraspec.yaml", "norn-catalog-provenance.json"):
+                content = (stage / name).read_bytes()
+                member = tarfile.TarInfo(name)
+                member.size = len(content)
+                member.mode = 0o640
+                member.mtime = member.uid = member.gid = 0
+                archive.addfile(member, io.BytesIO(content))
+PY
+rm -rf "$output_dir/stage"
+
+{
+  printf 'publish=true\n'
+  printf 'artifact_name=work-staging-app-catalog-%s\n' "$GITHUB_SHA"
+  printf 'infra_spec_sha256=%s\n' "$spec_sha"
+  printf 'bundle_sha256=%s\n' "$(sha256sum "$output_dir/catalog.tar.gz" | awk '{print $1}')"
+} >> "$GITHUB_OUTPUT"
