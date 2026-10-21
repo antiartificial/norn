@@ -28,9 +28,11 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@1d3f5802b5554e06ea1593146f00402d00ca9b2b
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@6406c3456deec214f67aa5c5747a751e79c537e5
     with:
       lane: staging
+      private_network: true
+      tailscale_target: ${{ vars.NORN_FLEET_API_TAILSCALE_TARGET }}
       # Separate Norn-owned candidate; the serving direct Nomad job is not a
       # release target and remains available during qualification.
       app_id: hello-norn-mysql-managed
