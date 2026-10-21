@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -36,6 +38,8 @@ func (f *mcpFakeNorn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"spec":{"name":"web"},"nomadStatus":"running","healthy":true}`)
 	case r.URL.Path == "/api/apps/web/deploy":
 		fmt.Fprint(w, `{"sagaId":"saga-1","operationId":"op-1","status":"queued"}`)
+	case r.URL.Path == "/api/v1/apps/web/logs/query":
+		fmt.Fprint(w, `{"app":"web","source":"loki","truncated":false,"entries":[{"time":"2026-10-21T10:00:00.5Z","allocId":"alloc-12345678","task":"web","stream":"stdout","line":"hello","traceId":"4bf92f3577b34da6a3ce929d0e0e4736"}]}`)
 	case r.URL.Path == "/api/apps/web/logs":
 		w.(http.Flusher).Flush()
 		for i := range 5 {
@@ -208,5 +212,39 @@ func TestMCPLogsStopAtDeadline(t *testing.T) {
 	}
 	if lines, _ := out["lines"].([]any); len(lines) != 5 {
 		t.Errorf("lines = %v, want the 5 emitted before the deadline", lines)
+	}
+}
+
+func TestMCPQueryLogsMapsParamsAndIsReadOnly(t *testing.T) {
+	session, fake := connectMCPTest(t, false)
+	if tool := mcpToolNames(t, session)["norn_query_logs"]; tool == nil || !tool.Annotations.ReadOnlyHint {
+		t.Fatalf("norn_query_logs missing or not read-only: %+v", tool)
+	}
+	res, out := callMCPTool(t, session, "norn_query_logs", map[string]any{"app": "web", "since": "15m", "alloc": "alloc-1", "task_group": "web", "task": "web",
+		"stream": "stderr", "contains": "a&b=c", "limit": 99999, "direction": "forward"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", mcpResultText(res))
+	}
+	entries, _ := out["entries"].([]any)
+	if out["source"] != "loki" || len(entries) != 1 || entries[0].(map[string]any)["traceId"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("out = %v", out)
+	}
+	request := fake.requests[len(fake.requests)-1]
+	path, rawQuery, _ := strings.Cut(request, "?")
+	values, _ := url.ParseQuery(rawQuery)
+	if path != "GET /api/v1/apps/web/logs/query" || values.Get("alloc") != "alloc-1" || values.Get("taskGroup") != "web" || values.Get("task") != "web" ||
+		values.Get("stream") != "stderr" || values.Get("contains") != "a&b=c" || values.Get("limit") != "2000" || values.Get("direction") != "forward" {
+		t.Errorf("request = %s", request)
+	}
+	since, err := time.Parse(time.RFC3339Nano, values.Get("since"))
+	if err != nil || time.Since(since) < 14*time.Minute || time.Since(since) > 16*time.Minute {
+		t.Errorf("since = %q", values.Get("since"))
+	}
+	for _, bad := range []map[string]any{
+		{"app": "../x"}, {"app": "web", "alloc": "a/b"}, {"app": "web", "task": "x y"}, {"app": "web", "since": "soon"}, {"app": "web", "direction": "up"},
+	} {
+		if res, _ := callMCPTool(t, session, "norn_query_logs", bad); !res.IsError {
+			t.Errorf("%v accepted", bad)
+		}
 	}
 }
