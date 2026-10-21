@@ -151,6 +151,10 @@ func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string, fixture etcdF
 		t.Fatal(err)
 	}
 	token := strings.TrimSpace(string(tokenBytes))
+	catalogToken, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "catalog-operator", []string{handler.ScopeAPIRead, handler.ScopeCatalogActivate}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runnerToken, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "fleet-runner", []string{handler.ScopeFleetOperate}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +231,7 @@ func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string, fixture etcdF
 	t.Cleanup(func() { _ = command.Process.Signal(os.Interrupt); _ = command.Wait() })
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	waitForSourceHealth(t, base, &output)
-	catalogAdmission := processJSONRequest(t, http.MethodPost, base+"/api/v1/database/catalog/activations", token, "catalog-production-process", map[string]interface{}{"expectedRevision": 0, "catalog": map[string]interface{}{"apiVersion": database.APIVersion, "services": []interface{}{}, "bindings": []interface{}{}, "profiles": []interface{}{}}})
+	catalogAdmission := processJSONRequest(t, http.MethodPost, base+"/api/v1/database/catalog/activations", catalogToken, "catalog-production-process", map[string]interface{}{"expectedRevision": 0, "catalog": map[string]interface{}{"apiVersion": database.APIVersion, "services": []interface{}{}, "bindings": []interface{}{}, "profiles": []interface{}{}}})
 	if catalogAdmission.StatusCode != http.StatusAccepted || bytes.Contains(catalogAdmission.Body, []byte(`"catalog":`)) {
 		t.Fatalf("catalog admission=%d body=%s logs=%s", catalogAdmission.StatusCode, catalogAdmission.Body, output.String())
 	}
