@@ -85,3 +85,17 @@ func TestV3ScaleTargetRequiresCompletedActiveManagedRoute(t *testing.T) {
 		t.Fatal("accepted a route marker pointed at another deployment")
 	}
 }
+
+// The work-staging pilot was submitted directly to Nomad. Its external
+// admission receipt does not create a native deployment route, and the
+// controller must never infer ownership from a matching app name alone.
+func TestDirectPilotIsNotANativeScaleTarget(t *testing.T) {
+	operations, _, _ := deploymentEtcdStore(t)
+	if target, err := operations.ActiveFleetScaleTarget(context.Background(), "hello-norn-mysql", "staging", "nyc3"); err == nil {
+		t.Fatalf("direct Nomad pilot was accepted as Norn-owned: %+v", target)
+	}
+	managedID, err := nomad.ManagedDeploymentJobID("hello-norn-mysql", "nyc3", "replacement-deployment")
+	if err != nil || managedID == "hello-norn-mysql" {
+		t.Fatalf("native replacement did not receive an independent job identity: %q, %v", managedID, err)
+	}
+}

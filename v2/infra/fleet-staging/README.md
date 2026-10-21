@@ -15,6 +15,29 @@ first Fleet-fitness proof may submit this reviewed digest-pinned job directly
 to Nomad. That proves the substrate and workload continuity, **not** Norn's
 declarative deployment or upgrade capability.
 
+## Native Norn scaling handoff
+
+The running direct Nomad job `hello-norn-mysql` cannot be handed to Norn's
+`app.scale` controller by adding its InfraSpec to `NORN_APPS_DIR`. Native scale
+resolves the job from a completed Norn `app.deploy` operation and its active
+Fleet route. The resulting job ID is specific to that deployment revision;
+it is not `hello-norn-mysql`. External deployment admission records the direct
+job's evidence but does not publish a native Fleet route or change its owner.
+
+To prove Norn-operated app scale, deploy an equivalent **separate** pilot
+revision through Norn after the catalog is promoted: replace the inert repo,
+image digest and endpoint, preserve the direct job's runtime behavior in the
+managed renderer, deliver the four runtime variable keys to the revision's
+job-owned variable path, and enable deployment. Keep the existing direct job
+running until the new managed job has healthy allocations and its route is
+verified. Then issue `app.scale` for `web` from 2 to 3 through Norn and check
+the operation receipt, desired count, three healthy allocations on eligible
+app nodes and routed writes/reads; scale back to 2 and repeat. The test must
+use the managed job ID from the active route. A raw `nomad job scale` against
+the direct pilot is useful Fleet substrate evidence, but not Norn controller
+evidence. The direct pilot may be retired after the replacement proves service
+and data continuity; it is not a permanent fixture.
+
 ## Preconditions
 
 - PR #574's separate `app` pool is merged and deployed to the **work** Fleet:
