@@ -20,6 +20,7 @@ type releaseWorkflow struct {
 
 type releaseCallerWorkflow struct {
 	Jobs map[string]struct {
+		If          string            `yaml:"if"`
 		Permissions map[string]string `yaml:"permissions"`
 		With        map[string]string `yaml:"with"`
 	} `yaml:"jobs"`
@@ -158,6 +159,7 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		`tags: ["v*"]`,
 		`- "v2/infra/fleet-pilot/hello-norn-mysql/**"`,
 		`github.ref == 'refs/heads/master' && github.ref_protected`,
+		`vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'`,
 		`startsWith(github.ref, 'refs/tags/v') && github.ref_protected`,
 		`antiartificial/norn/.github/workflows/norn-app-release.yml@1d3f5802b5554e06ea1593146f00402d00ca9b2b`,
 		`app_id: hello-norn-mysql-managed`,
@@ -204,6 +206,9 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	}
 	if got := caller.Jobs["staging"].With["app_id"]; got != "hello-norn-mysql-managed" {
 		t.Fatalf("staging release must target the separate managed candidate, got %q", got)
+	}
+	if got := caller.Jobs["staging"].If; got != "github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected && vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'" {
+		t.Fatalf("staging release activation gate changed: %q", got)
 	}
 	if got := caller.Jobs["production"].With["app_id"]; got != caller.Jobs["staging"].With["app_id"] {
 		t.Fatalf("production qualification must use the staged app ID, got %q", got)

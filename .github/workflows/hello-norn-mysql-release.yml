@@ -13,7 +13,9 @@ permissions: {}
 
 jobs:
   staging:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected
+    # Code-only merges keep the managed candidate inert until the target Fleet
+    # API route, catalog, Variables source, and runtime workers are qualified.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected && vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'
     permissions:
       # GitHub validates every job in the reusable workflow, not only the
       # staging-lane jobs selected by its input. Keep this the exact union of

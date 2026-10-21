@@ -1,6 +1,9 @@
 name: hello-norn-mysql-managed
 nomadNamespace: norn-work-staging
 deploy: false
+# The repository release caller also requires the explicit
+# NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED repository variable. Enable it
+# only after this catalog entry has a reviewed route and protected inputs.
 repo:
   # The serving direct pilot's source is in this repository. Release admission
   # still binds an exact CI source SHA to the image being deployed.
