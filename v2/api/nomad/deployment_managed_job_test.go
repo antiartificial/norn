@@ -20,6 +20,10 @@ func TestManagedDeploymentJobsReadBackAndHealIndependently(t *testing.T) {
 	image := "registry.example.test/demo@sha256:" + strings.Repeat("b", 64)
 	for _, deploymentID := range []string{"deployment-old", "deployment-new"} {
 		request := managedDeploymentCASRequest()
+		if deploymentID == "deployment-new" {
+			request.Namespace = "norn-work-staging"
+			request.Job.Namespace = &request.Namespace
+		}
 		request.DeploymentID = deploymentID
 		request.ImageTag = image
 		var err error
@@ -63,6 +67,20 @@ func TestManagedDeploymentJobsReadBackAndHealIndependently(t *testing.T) {
 	}
 	writes := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/job/") || r.URL.Path == "/v1/jobs" || strings.HasPrefix(r.URL.Path, "/v1/allocation/") {
+			want := "default"
+			for jobID, request := range requests {
+				if strings.Contains(r.URL.Path, jobID) {
+					want = effectiveNomadNamespace(request.Namespace)
+				}
+			}
+			if strings.Contains(r.URL.Path, "allocation-deployment-new") || (r.URL.Path == "/v1/jobs" && r.URL.Query().Get("namespace") == "norn-work-staging") {
+				want = "norn-work-staging"
+			}
+			if got := r.URL.Query().Get("namespace"); got != want {
+				t.Errorf("Nomad %s namespace = %q, want %q", r.URL.Path, got, want)
+			}
+		}
 		if r.Method == http.MethodPut && r.URL.Path == "/v1/jobs" {
 			var body nomadapi.JobRegisterRequest
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Job == nil || body.Job.ID == nil ||

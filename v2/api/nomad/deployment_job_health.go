@@ -43,7 +43,7 @@ func (c *Client) ObserveDeploymentJobHealth(ctx context.Context, request CASDepl
 	if err != nil || identity.State != DeploymentJobFound {
 		return indeterminate()
 	}
-	query := (&nomadapi.QueryOptions{Region: request.Region}).WithContext(ctx)
+	query := (&nomadapi.QueryOptions{Region: request.Region, Namespace: effectiveNomadNamespace(request.Namespace)}).WithContext(ctx)
 	job, _, err := c.api.Jobs().Info(request.EffectiveJobID(), query)
 	if err != nil || !exactDeploymentHealthJob(job, request, identity) {
 		return indeterminate()

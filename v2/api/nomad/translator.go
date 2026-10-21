@@ -41,9 +41,7 @@ func translateForRegionAtWithJobID(spec *model.InfraSpec, imageTag string, env m
 	jobType := "service"
 
 	job := nomadapi.NewServiceJob(jobID, jobID, region.NomadRegion, 50)
-	if spec.NomadNamespace != "" {
-		job.Namespace = strPtr(spec.NomadNamespace)
-	}
+	job.Namespace = strPtr(effectiveNomadNamespace(spec.NomadNamespace))
 	if pool := spec.EffectiveNodePool(); pool != "" {
 		job.NodePool = strPtr(pool)
 	}
@@ -391,6 +389,7 @@ func validatePeriodicTranslation(spec *model.InfraSpec, procName string, proc mo
 func TranslatePeriodicForRegionAt(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64) *nomadapi.Job {
 	jobID := fmt.Sprintf("%s-%s", spec.App, procName)
 	job := nomadapi.NewBatchJob(jobID, jobID, region.NomadRegion, 50)
+	job.Namespace = strPtr(effectiveNomadNamespace(spec.NomadNamespace))
 	if pool := spec.EffectiveNodePool(); pool != "" {
 		job.NodePool = strPtr(pool)
 	}

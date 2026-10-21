@@ -55,6 +55,6 @@ func BuildManagedDeploymentJobEffectInput(deployment *model.Deployment, spec *mo
 		expected[name] = string(encoded)
 	}
 	return DeploymentJobEffectInput{App: deployment.App, JobID: plan.JobID, DeploymentID: deployment.ID,
-		Region: region.Name, NomadRegion: region.NomadRegion, ImageTag: deployment.ImageTag,
+		Region: region.Name, NomadRegion: region.NomadRegion, NomadNamespace: spec.NomadNamespace, ImageTag: deployment.ImageTag,
 		SpecDigest: deployment.SpecDigest, ManagedInputs: &plan, ExpectedDatabaseTargets: expected}, nil
 }

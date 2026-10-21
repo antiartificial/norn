@@ -66,12 +66,12 @@ func (c *Client) StageManagedJobSecretInputs(region string, plan ManagedJobInput
 	if len(values) == 0 {
 		return nil
 	}
-	current, err := c.peekDatabaseVariable(region, plan.JobID, values)
+	current, err := c.peekDatabaseVariable(region, plan.JobID, values, plan.Namespace)
 	if err != nil {
 		return err
 	}
 	if current == nil {
-		return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: plan.VariablePath, Items: maps.Clone(values)}, values)
+		return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: plan.VariablePath, Items: maps.Clone(values)}, values, plan.Namespace)
 	}
 	next := maps.Clone(map[string]string(current.Items))
 	changed := false
@@ -88,7 +88,7 @@ func (c *Client) StageManagedJobSecretInputs(region string, plan ManagedJobInput
 	if !changed {
 		return nil
 	}
-	return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: plan.VariablePath, Items: next, ModifyIndex: current.ModifyIndex}, values)
+	return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: plan.VariablePath, Items: next, ModifyIndex: current.ModifyIndex}, values, plan.Namespace)
 }
 
 func validateManagedJobSecretItems(plan ManagedJobInputRequirements, values map[string]string) error {

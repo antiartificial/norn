@@ -31,7 +31,8 @@ func BuildClaimedFleetDeploymentJobPlan(source ClaimedFleetDeploymentSource, cla
 		source.Route.AcceptanceID != accepted.Intent.ID || source.Route.AcceptanceDigest != accepted.Intent.CanonicalDigest ||
 		source.Route.Region != accepted.Regions[0].Name || source.Route.SpecDigest != accepted.Deployment.SpecDigest ||
 		source.Route.FleetCluster != accepted.FleetAppTarget.Cluster || source.Route.FleetEnvironment != accepted.FleetAppTarget.FleetEnvironment ||
-		source.Route.TargetGeneration != accepted.FleetAppTarget.Generation || source.Route.NomadRegion != accepted.Regions[0].NomadRegion {
+		source.Route.TargetGeneration != accepted.FleetAppTarget.Generation || source.Route.NomadRegion != accepted.Regions[0].NomadRegion ||
+		accepted.FleetAppTarget.NomadNamespace != source.Spec.NomadNamespace {
 		return ClaimedFleetDeploymentJobPlan{}, fmt.Errorf("claimed Fleet deployment job source is incomplete")
 	}
 	region := accepted.Regions[0]

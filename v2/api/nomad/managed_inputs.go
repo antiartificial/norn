@@ -16,6 +16,7 @@ import (
 // revision job's templates read. It contains no connection or secret values.
 type ManagedJobInputRequirements struct {
 	JobID                string   `json:"jobId"`
+	Namespace            string   `json:"namespace,omitempty"`
 	VariablePath         string   `json:"variablePath"`
 	DatabaseRevision     int64    `json:"databaseRevision"`
 	RequiredKeys         []string `json:"requiredKeys"`
@@ -28,7 +29,7 @@ var managedTemplateKeyPattern = regexp.MustCompile(`\.([A-Za-z0-9_]+)\.Value`)
 // templates being submitted. A template cannot read an unlisted key or a
 // different Variable path; staged database keys require an expected target.
 func ValidateManagedJobInputPlan(job *nomadapi.Job, plan ManagedJobInputRequirements) error {
-	if job == nil || job.ID == nil || *job.ID != plan.JobID || plan.VariablePath != DatabaseVariablePath(plan.JobID) {
+	if job == nil || job.ID == nil || *job.ID != plan.JobID || plan.VariablePath != DatabaseVariablePath(plan.JobID) || jobNamespace(job.Namespace) != effectiveNomadNamespace(plan.Namespace) {
 		return fmt.Errorf("managed job input plan has a different job identity")
 	}
 	planned := make(map[string]bool, len(plan.RequiredKeys))
@@ -120,7 +121,7 @@ func (c *Client) CheckManagedJobInputs(ctx context.Context, region string, plan 
 	if len(plan.RequiredKeys) == 0 && len(plan.RuntimeDatabaseNames) == 0 {
 		return nil
 	}
-	variable, _, err := c.api.Variables().Read(plan.VariablePath, (&nomadapi.QueryOptions{Region: region}).WithContext(ctx))
+	variable, _, err := c.api.Variables().Read(plan.VariablePath, (&nomadapi.QueryOptions{Region: region, Namespace: effectiveNomadNamespace(plan.Namespace)}).WithContext(ctx))
 	if err != nil || variable == nil || variable.Path != plan.VariablePath {
 		return fmt.Errorf("managed job inputs are unavailable for %s", plan.JobID)
 	}
@@ -148,7 +149,7 @@ func PlanManagedJobInputs(spec *model.InfraSpec, region model.ResolvedRegion, de
 	if HasRuntimeDatabases(spec) && databaseRevision < 1 {
 		return ManagedJobInputRequirements{}, fmt.Errorf("managed deployment has no staged database revision")
 	}
-	plan := ManagedJobInputRequirements{JobID: jobID, VariablePath: DatabaseVariablePath(jobID), DatabaseRevision: databaseRevision}
+	plan := ManagedJobInputRequirements{JobID: jobID, Namespace: spec.NomadNamespace, VariablePath: DatabaseVariablePath(jobID), DatabaseRevision: databaseRevision}
 	keys := map[string]bool{}
 	for process, definition := range spec.Processes {
 		if definition.Schedule != "" || definition.Function != nil || !spec.ProcessRunsInRegion(definition, region.Name) || definition.NomadVariables == nil {

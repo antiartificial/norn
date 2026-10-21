@@ -13,9 +13,10 @@ import (
 // scale mutation. SpecDigest binds the scheduler target to the exact InfraSpec
 // that produced the active Fleet route.
 type FleetScaleTarget struct {
-	JobID        string
-	DeploymentID string
-	SpecDigest   string
+	JobID          string
+	DeploymentID   string
+	SpecDigest     string
+	NomadNamespace string
 }
 
 // ActiveFleetScaleTarget resolves a managed Nomad job only from the published
@@ -67,5 +68,5 @@ func (s *V3OperationStore) ActiveFleetScaleTarget(ctx context.Context, app, envi
 	if err != nil {
 		return FleetScaleTarget{}, err
 	}
-	return FleetScaleTarget{JobID: jobID, DeploymentID: active.DeploymentID, SpecDigest: intent.SpecDigest}, nil
+	return FleetScaleTarget{JobID: jobID, DeploymentID: active.DeploymentID, SpecDigest: intent.SpecDigest, NomadNamespace: target.NomadNamespace}, nil
 }

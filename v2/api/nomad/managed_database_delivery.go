@@ -18,7 +18,7 @@ func (c *Client) StageManagedJobDatabaseInputs(region string, plan ManagedJobInp
 	if len(plan.RuntimeDatabaseNames) == 0 {
 		return nil
 	}
-	return c.DeliverDatabaseVariable(region, plan.JobID, items, plan.DatabaseRevision)
+	return c.DeliverDatabaseVariable(region, plan.JobID, items, plan.DatabaseRevision, plan.Namespace)
 }
 
 func validateManagedJobDatabaseItems(plan ManagedJobInputRequirements, items, expectedTargets map[string]string) error {

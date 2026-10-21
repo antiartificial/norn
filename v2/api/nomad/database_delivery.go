@@ -266,7 +266,7 @@ func (c *Client) PutDatabaseVariable(region, jobID string, items map[string]stri
 // restaging a revision must carry identical values. Writes are
 // check-and-set against the version compared, so a concurrent writer is a
 // conflict, never an overwrite; an unchanged variable is not rewritten.
-func (c *Client) DeliverDatabaseVariable(region, jobID string, items map[string]string, catalogRevision int64) error {
+func (c *Client) DeliverDatabaseVariable(region, jobID string, items map[string]string, catalogRevision int64, namespace ...string) error {
 	if catalogRevision < 1 {
 		return fmt.Errorf("database delivery for %s has no catalog revision", jobID)
 	}
@@ -277,7 +277,7 @@ func (c *Client) DeliverDatabaseVariable(region, jobID string, items map[string]
 		}
 		staged[stagedKey(key, catalogRevision)] = value
 	}
-	current, err := c.peekDatabaseVariable(region, jobID, items)
+	current, err := c.peekDatabaseVariable(region, jobID, items, namespace...)
 	if err != nil {
 		return err
 	}
@@ -286,7 +286,7 @@ func (c *Client) DeliverDatabaseVariable(region, jobID string, items map[string]
 		initial := maps.Clone(items)
 		maps.Copy(initial, staged)
 		initial[deliveryRevisionItem] = strconv.FormatInt(catalogRevision, 10)
-		return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: path, Items: initial}, items)
+		return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: path, Items: initial}, items, namespace...)
 	}
 	promoted, err := deliveryFence(current, jobID)
 	if err != nil {
@@ -308,7 +308,7 @@ func (c *Client) DeliverDatabaseVariable(region, jobID string, items map[string]
 	if !changed {
 		return nil
 	}
-	return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: path, Items: next, ModifyIndex: current.ModifyIndex}, items)
+	return c.writeDatabaseVariable(region, &nomadapi.Variable{Path: path, Items: next, ModifyIndex: current.ModifyIndex}, items, namespace...)
 }
 
 // PromoteDatabaseVariable cuts the current items over to a staged revision
@@ -440,8 +440,8 @@ func (c *Client) ReadDatabaseRevision(region, jobID string, revision int64) (Dat
 	return out, nil
 }
 
-func (c *Client) peekDatabaseVariable(region, jobID string, items map[string]string) (*nomadapi.Variable, error) {
-	current, _, err := c.api.Variables().Peek(DatabaseVariablePath(jobID), &nomadapi.QueryOptions{Region: region})
+func (c *Client) peekDatabaseVariable(region, jobID string, items map[string]string, namespace ...string) (*nomadapi.Variable, error) {
+	current, _, err := c.api.Variables().Peek(DatabaseVariablePath(jobID), &nomadapi.QueryOptions{Region: region, Namespace: namespaceOption(namespace)})
 	if err != nil {
 		return nil, fmt.Errorf("read database delivery variable for %s: %s", jobID, redactItems(err.Error(), items))
 	}
@@ -449,12 +449,12 @@ func (c *Client) peekDatabaseVariable(region, jobID string, items map[string]str
 }
 
 // writeDatabaseVariable creates (index 0) or check-and-set updates.
-func (c *Client) writeDatabaseVariable(region string, variable *nomadapi.Variable, items map[string]string) error {
+func (c *Client) writeDatabaseVariable(region string, variable *nomadapi.Variable, items map[string]string, namespace ...string) error {
 	jobID := strings.TrimPrefix(variable.Path, "nomad/jobs/")
 	if err := checkDatabaseVariableItemSize(variable.Items); err != nil {
 		return fmt.Errorf("%w for %s", err, jobID)
 	}
-	write := &nomadapi.WriteOptions{Region: region}
+	write := &nomadapi.WriteOptions{Region: region, Namespace: namespaceOption(namespace)}
 	var err error
 	if variable.ModifyIndex == 0 {
 		_, _, err = c.api.Variables().CheckedCreate(variable, write)

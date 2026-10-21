@@ -9,6 +9,7 @@ type DeploymentJobEffectInput struct {
 	DeploymentID            string                       `json:"deploymentId"`
 	Region                  string                       `json:"region"`
 	NomadRegion             string                       `json:"nomadRegion"`
+	NomadNamespace          string                       `json:"nomadNamespace,omitempty"`
 	ImageTag                string                       `json:"imageTag"`
 	SpecDigest              string                       `json:"specDigest"`
 	JobDigest               string                       `json:"jobDigest"`

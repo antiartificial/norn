@@ -29,6 +29,7 @@ type CASDeploymentJobRequest struct {
 	JobID                  string
 	PlacementRegion        string
 	Region                 string
+	Namespace              string
 	ExpectedJobModifyIndex uint64
 	DeploymentID           string
 	SpecDigest             string
@@ -62,7 +63,7 @@ func (r CASDeploymentJobRequest) validJobIdentity() bool {
 func (c *Client) RegisterDeploymentJobCAS(ctx context.Context, request CASDeploymentJobRequest) (string, error) {
 	jobDigest, digestErr := hex.DecodeString(request.JobDigest)
 	if c == nil || c.api == nil || request.Job == nil || request.Job.ID == nil || request.Job.Region == nil ||
-		strings.TrimSpace(request.Region) == "" || *request.Job.Region != request.Region ||
+		strings.TrimSpace(request.Region) == "" || *request.Job.Region != request.Region || jobNamespace(request.Job.Namespace) != effectiveNomadNamespace(request.Namespace) ||
 		strings.TrimSpace(request.App) == "" || !request.validJobIdentity() || *request.Job.ID != request.EffectiveJobID() ||
 		strings.TrimSpace(request.DeploymentID) == "" || strings.TrimSpace(request.SpecDigest) == "" ||
 		strings.TrimSpace(request.OperationID) == "" || strings.TrimSpace(request.ExecutionID) == "" || digestErr != nil || len(jobDigest) != sha256.Size || hex.EncodeToString(jobDigest) != request.JobDigest ||
@@ -85,7 +86,7 @@ func (c *Client) RegisterDeploymentJobCAS(ctx context.Context, request CASDeploy
 		EnforceIndex: true,
 		ModifyIndex:  request.ExpectedJobModifyIndex,
 		Submission:   &nomadapi.JobSubmission{Source: string(source), Format: "json"},
-	}, (&nomadapi.WriteOptions{Region: request.Region}).WithContext(ctx))
+	}, (&nomadapi.WriteOptions{Region: request.Region, Namespace: effectiveNomadNamespace(request.Namespace)}).WithContext(ctx))
 	if err != nil {
 		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
 			return "", ErrDeploymentJobSubmitConflict

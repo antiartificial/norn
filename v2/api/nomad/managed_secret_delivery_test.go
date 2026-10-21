@@ -2,13 +2,39 @@ package nomad
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	nomadapi "github.com/hashicorp/nomad/api"
 )
 
 type managedSecretSource struct {
 	values map[string]string
 	calls  int
+}
+
+func TestManagedSecretDeliveryUsesPlanNamespaceForVariableWriteAndRead(t *testing.T) {
+	fake := &fakeVariables{variables: map[string]*nomadapi.Variable{}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("namespace"); got != "norn-work-staging" {
+			t.Errorf("Variable %s namespace = %q", r.Method, got)
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := ManagedJobInputRequirements{JobID: "pilot-revision", Namespace: "norn-work-staging", VariablePath: DatabaseVariablePath("pilot-revision"), RequiredKeys: []string{"PILOT_TOKEN"}}
+	if err := client.StageManagedJobSecretInputs("global", plan, map[string]string{"PILOT_TOKEN": "private"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CheckManagedJobInputs(t.Context(), "global", plan, nil); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (s *managedSecretSource) EnvMap(string) (map[string]string, error) {

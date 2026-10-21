@@ -210,13 +210,13 @@ func deploymentJobRequestFromReservation(r effect.Reservation) (nomad.CASDeploym
 	if input.JobID != "" {
 		want, err := nomad.ManagedDeploymentJobID(input.App, input.Region, input.DeploymentID)
 		if err != nil || input.JobID != want || input.ExpectedJobModifyIndex != 0 || input.ManagedInputs == nil ||
-			input.ManagedInputs.JobID != want || input.ManagedInputs.VariablePath != nomad.DatabaseVariablePath(want) {
+			input.ManagedInputs.JobID != want || input.ManagedInputs.Namespace != input.NomadNamespace || input.ManagedInputs.VariablePath != nomad.DatabaseVariablePath(want) {
 			return nomad.CASDeploymentJobRequest{}, input, fmt.Errorf("managed deployment job identity is invalid")
 		}
 	} else if input.ManagedInputs != nil || len(input.ExpectedDatabaseTargets) > 0 {
 		return nomad.CASDeploymentJobRequest{}, input, fmt.Errorf("legacy deployment cannot declare managed inputs")
 	}
-	request := nomad.CASDeploymentJobRequest{App: input.App, JobID: input.JobID, Region: input.NomadRegion, ExpectedJobModifyIndex: input.ExpectedJobModifyIndex,
+	request := nomad.CASDeploymentJobRequest{App: input.App, JobID: input.JobID, Region: input.NomadRegion, Namespace: input.NomadNamespace, ExpectedJobModifyIndex: input.ExpectedJobModifyIndex,
 		DeploymentID: input.DeploymentID, SpecDigest: input.SpecDigest, OperationID: r.OperationClaim.OperationID,
 		ExecutionID: r.SupervisorExecutionID, JobDigest: input.JobDigest, ImageTag: input.ImageTag}
 	if input.JobID != "" {

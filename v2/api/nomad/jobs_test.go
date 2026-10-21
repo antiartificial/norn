@@ -13,6 +13,38 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 )
 
+func TestManagedScaleUsesExplicitNamespace(t *testing.T) {
+	var paths []string
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("namespace"); got != "norn-work-staging" {
+			t.Errorf("%s namespace = %q", r.URL.Path, got)
+		}
+		paths = append(paths, r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/scale") && r.Method == http.MethodPut:
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{EvalID: "eval-pilot"})
+		case strings.HasSuffix(r.URL.Path, "/scale"):
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobScaleStatusResponse{JobID: "pilot", TaskGroups: map[string]nomadapi.TaskGroupScaleStatus{}})
+		case strings.HasSuffix(r.URL.Path, "/deployments"):
+			_ = json.NewEncoder(w).Encode([]*nomadapi.Deployment{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	if _, err := client.ScaleJobWithMeta("pilot", "web", "global", 3, nil, "norn-work-staging"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.JobScaleStatusRegion("pilot", "global", "norn-work-staging"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.LatestDeploymentRegion("pilot", "global", "norn-work-staging"); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 3 {
+		t.Fatalf("queried %d Nomad paths", len(paths))
+	}
+}
+
 func TestCronRunHealthDetectsOOMRestartsAndFailedAllocation(t *testing.T) {
 	t.Parallel()
 

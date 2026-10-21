@@ -41,7 +41,7 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 		strings.TrimSpace(request.JobDigest) == "" {
 		return indeterminate()
 	}
-	query := (&nomadapi.QueryOptions{Region: request.Region}).WithContext(ctx)
+	query := (&nomadapi.QueryOptions{Region: request.Region, Namespace: effectiveNomadNamespace(request.Namespace)}).WithContext(ctx)
 	job, _, err := c.api.Jobs().Info(request.EffectiveJobID(), query)
 	if err != nil {
 		if nomadHTTPStatus(err) == http.StatusNotFound {
@@ -64,7 +64,7 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 	if err != nil || digest != request.JobDigest {
 		return indeterminate()
 	}
-	plan, _, err := c.api.Jobs().Plan(&submitted, true, (&nomadapi.WriteOptions{Region: request.Region}).WithContext(ctx))
+	plan, _, err := c.api.Jobs().Plan(&submitted, true, (&nomadapi.WriteOptions{Region: request.Region, Namespace: effectiveNomadNamespace(request.Namespace)}).WithContext(ctx))
 	if err != nil || plan == nil || plan.JobModifyIndex != *job.JobModifyIndex || plan.Diff == nil || plan.Diff.Type != "None" {
 		return indeterminate()
 	}
@@ -77,14 +77,14 @@ func (c *Client) LookupDeploymentJobRevision(ctx context.Context, request CASDep
 }
 
 func matchesDeploymentSubmission(job *nomadapi.Job, request CASDeploymentJobRequest) bool {
-	return job != nil && job.ID != nil && *job.ID == request.EffectiveJobID() && job.Region != nil && *job.Region == request.Region &&
+	return job != nil && job.ID != nil && *job.ID == request.EffectiveJobID() && job.Region != nil && *job.Region == request.Region && jobNamespace(job.Namespace) == effectiveNomadNamespace(request.Namespace) &&
 		job.Meta[DeploymentIDMeta] == request.DeploymentID && job.Meta[SpecDigestMeta] == request.SpecDigest &&
 		job.Meta[DeploymentOperationIDMeta] == request.OperationID && job.Meta[DeploymentExecutionIDMeta] == request.ExecutionID &&
 		job.Meta[DeploymentJobDigestMeta] == request.JobDigest
 }
 
 func matchesDeploymentJobRevision(job *nomadapi.Job, request CASDeploymentJobRequest) bool {
-	return job != nil && job.ID != nil && *job.ID == request.EffectiveJobID() && job.Region != nil && *job.Region == request.Region &&
+	return job != nil && job.ID != nil && *job.ID == request.EffectiveJobID() && job.Region != nil && *job.Region == request.Region && jobNamespace(job.Namespace) == effectiveNomadNamespace(request.Namespace) &&
 		job.JobModifyIndex != nil && *job.JobModifyIndex > request.ExpectedJobModifyIndex && job.Version != nil &&
 		job.Meta[DeploymentIDMeta] == request.DeploymentID && job.Meta[SpecDigestMeta] == request.SpecDigest &&
 		job.Meta[DeploymentOperationIDMeta] == request.OperationID && job.Meta[DeploymentExecutionIDMeta] == request.ExecutionID &&

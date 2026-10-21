@@ -69,13 +69,14 @@ func (e *NomadScaleEffects) available() bool {
 }
 
 type scaleRequest struct {
-	App         string `json:"app"`
-	NomadJobID  string `json:"nomadJobId,omitempty"`
-	SpecDigest  string `json:"specDigest,omitempty"`
-	Group       string `json:"group"`
-	Region      string `json:"region"`
-	NomadRegion string `json:"nomadRegion"`
-	Count       int    `json:"count"`
+	App            string `json:"app"`
+	NomadJobID     string `json:"nomadJobId,omitempty"`
+	SpecDigest     string `json:"specDigest,omitempty"`
+	Group          string `json:"group"`
+	Region         string `json:"region"`
+	NomadRegion    string `json:"nomadRegion"`
+	NomadNamespace string `json:"nomadNamespace,omitempty"`
+	Count          int    `json:"count"`
 }
 
 func (p *Pipeline) ScaleAvailable() bool { return p != nil && p.ScaleEffects.available() }
@@ -174,7 +175,7 @@ func scaleRequestFromOperation(op *model.Operation) (scaleRequest, error) {
 	if op == nil || strings.TrimSpace(op.App) == "" {
 		return scaleRequest{}, fmt.Errorf("scale operation app is required")
 	}
-	request := scaleRequest{App: op.App, NomadJobID: stringFromMap(op.Payload, "nomadJobId"), SpecDigest: stringFromMap(op.Payload, "specDigest"), Group: stringFromMap(op.Payload, "group"), Region: stringFromMap(op.Payload, "region"), NomadRegion: stringFromMap(op.Payload, "nomadRegion")}
+	request := scaleRequest{App: op.App, NomadJobID: stringFromMap(op.Payload, "nomadJobId"), NomadNamespace: stringFromMap(op.Payload, "nomadNamespace"), SpecDigest: stringFromMap(op.Payload, "specDigest"), Group: stringFromMap(op.Payload, "group"), Region: stringFromMap(op.Payload, "region"), NomadRegion: stringFromMap(op.Payload, "nomadRegion")}
 	value, ok := op.Payload["count"]
 	if !ok {
 		return scaleRequest{}, fmt.Errorf("scale operation count is required")
@@ -230,7 +231,7 @@ func (s *nomadScaleSupervisor) Prepare(ctx context.Context, r effect.Reservation
 			return nil
 		}
 	}
-	deployment, err := s.client.LatestDeploymentRegion(scaleNomadJobID(request), request.NomadRegion)
+	deployment, err := s.client.LatestDeploymentRegion(scaleNomadJobID(request), request.NomadRegion, request.NomadNamespace)
 	if err != nil {
 		return err
 	}
@@ -247,7 +248,7 @@ func (s *nomadScaleSupervisor) Launch(ctx context.Context, r effect.Reservation,
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
-	evalID, err := s.client.ScaleJobWithMeta(scaleNomadJobID(request), request.Group, request.NomadRegion, request.Count, map[string]interface{}{"norn.operationId": r.OperationClaim.OperationID, "norn.claimGeneration": strconv.FormatInt(r.OperationClaim.Generation, 10), "norn.executionId": r.SupervisorExecutionID})
+	evalID, err := s.client.ScaleJobWithMeta(scaleNomadJobID(request), request.Group, request.NomadRegion, request.Count, map[string]interface{}{"norn.operationId": r.OperationClaim.OperationID, "norn.claimGeneration": strconv.FormatInt(r.OperationClaim.Generation, 10), "norn.executionId": r.SupervisorExecutionID}, request.NomadNamespace)
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
@@ -271,7 +272,7 @@ func (s *nomadScaleSupervisor) Query(ctx context.Context, r effect.Reservation, 
 	if request.NomadJobID != "" {
 		// Managed Fleet jobs use a per-deployment ID and require placement
 		// evidence before the desired replica ledger can be acknowledged.
-		desired, matched, evalID, placementHealthy, err = s.client.ScalePlacementConverged(request.NomadJobID, request.Group, request.NomadRegion, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID)
+		desired, matched, evalID, placementHealthy, err = s.client.ScalePlacementConverged(request.NomadJobID, request.Group, request.NomadRegion, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID, request.NomadNamespace)
 		if err != nil {
 			return effect.Observation{}, err
 		}

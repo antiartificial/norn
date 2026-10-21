@@ -62,7 +62,7 @@ func (e *etcdScaleRuntime) ExecuteOperationWithAppLock(ctx context.Context, op *
 	}
 	region, _ := op.Payload["region"].(string)
 	target, err := e.resolveTarget(ctx, op.App, e.env, region)
-	if err != nil || target.JobID != op.Payload["nomadJobId"] || target.DeploymentID != op.Payload["deploymentId"] || target.SpecDigest != op.Payload["specDigest"] {
+	if err != nil || target.JobID != op.Payload["nomadJobId"] || target.DeploymentID != op.Payload["deploymentId"] || target.SpecDigest != op.Payload["specDigest"] || target.NomadNamespace != op.Payload["nomadNamespace"] {
 		return nil, fmt.Errorf("claimed scale target differs from the active Fleet route: %v", err)
 	}
 	return e.pipe.ExecuteOperationWithAppLock(ctx, op, claim, lock)

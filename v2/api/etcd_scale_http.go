@@ -135,12 +135,12 @@ func etcdScaleApp(cfg *config.Config, operations *etcdstore.V3OperationStore, id
 			return
 		}
 		target, _, err := operations.CurrentFleetAppTarget(r.Context(), app, cfg.EnvironmentID())
-		if err != nil || target.Region != request.Region || target.NomadRegion != nomadRegion {
+		if err != nil || target.Region != request.Region || target.NomadRegion != nomadRegion || target.NomadNamespace != spec.NomadNamespace {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "scale_target_mismatch", "declared app region differs from the active Fleet target")
 			return
 		}
 		active, err := runtime.resolveTarget(r.Context(), app, cfg.EnvironmentID(), request.Region)
-		if err != nil {
+		if err != nil || active.NomadNamespace != spec.NomadNamespace {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "active_scale_target_unavailable", "a completed active Fleet route is required")
 			return
 		}
@@ -149,12 +149,12 @@ func etcdScaleApp(cfg *config.Config, operations *etcdstore.V3OperationStore, id
 			handler.WriteControlProblem(w, r, http.StatusConflict, "scale_spec_mismatch", "local app intent differs from the accepted active deployment")
 			return
 		}
-		enqueue.Semantics = map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "count": request.Count, "deploymentId": active.DeploymentID, "nomadJobId": active.JobID, "specDigest": specDigest}
+		enqueue.Semantics = map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "count": request.Count, "deploymentId": active.DeploymentID, "nomadJobId": active.JobID, "nomadNamespace": active.NomadNamespace, "specDigest": specDigest}
 		enqueue.Admission.OneActiveMutablePerApp = true
 		now := time.Now().UTC()
 		op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: app, SagaID: uuid.NewString(), Ref: request.Region + "/" + request.Group,
 			Status: model.OperationQueued, Risk: "managed Nomad task-group scale", Source: "etcd-scale", Message: fmt.Sprintf("queued scale for %s/%s process %q to %d", app, request.Region, request.Group, request.Count),
-			StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "requestedRegion": requestedRegion, "nomadRegion": nomadRegion, "count": request.Count, "nomadJobId": active.JobID, "deploymentId": active.DeploymentID, "specDigest": specDigest}}
+			StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": app, "group": request.Group, "region": request.Region, "requestedRegion": requestedRegion, "nomadRegion": nomadRegion, "nomadNamespace": active.NomadNamespace, "count": request.Count, "nomadJobId": active.JobID, "deploymentId": active.DeploymentID, "specDigest": specDigest}}
 		accepted, err := runtime.pipe.QueueOperation(r.Context(), op, enqueue)
 		if err != nil {
 			writeEtcdCanaryAcceptanceError(w, r, err)

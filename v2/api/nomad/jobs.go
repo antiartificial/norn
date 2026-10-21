@@ -507,10 +507,10 @@ func (c *Client) JobAllocations(jobID string) ([]*nomadapi.AllocationListStub, e
 	return c.JobAllocationsRegion(jobID, "")
 }
 
-func (c *Client) JobAllocationsRegion(jobID, region string) ([]*nomadapi.AllocationListStub, error) {
+func (c *Client) JobAllocationsRegion(jobID, region string, namespace ...string) ([]*nomadapi.AllocationListStub, error) {
 	var opts *nomadapi.QueryOptions
-	if region != "" {
-		opts = &nomadapi.QueryOptions{Region: region}
+	if region != "" || len(namespace) != 0 {
+		opts = &nomadapi.QueryOptions{Region: region, Namespace: namespaceOption(namespace)}
 	}
 	allocs, _, err := c.api.Jobs().Allocations(jobID, false, opts)
 	if err != nil {
@@ -666,8 +666,8 @@ func (c *Client) ScaleJob(jobID, group string, count int) error {
 // ScaleJobWithMeta applies a scale request and returns Nomad's evaluation ID.
 // The metadata is persisted in Nomad's scaling event and lets a recovering
 // control-plane operation distinguish its own request from another scaler.
-func (c *Client) ScaleJobWithMeta(jobID, group, region string, count int, meta map[string]interface{}) (string, error) {
-	response, _, err := c.api.Jobs().Scale(jobID, group, &count, "scaled via norn", false, meta, &nomadapi.WriteOptions{Region: region})
+func (c *Client) ScaleJobWithMeta(jobID, group, region string, count int, meta map[string]interface{}, namespace ...string) (string, error) {
+	response, _, err := c.api.Jobs().Scale(jobID, group, &count, "scaled via norn", false, meta, &nomadapi.WriteOptions{Region: region, Namespace: namespaceOption(namespace)})
 	if err != nil {
 		return "", err
 	}
@@ -677,8 +677,8 @@ func (c *Client) ScaleJobWithMeta(jobID, group, region string, count int, meta m
 // ScaleStatus reconciles a scale request against the exact durable operation
 // claim. A matching desired count alone is insufficient: another scaler can
 // produce it, and a failed event must never acknowledge this mutation.
-func (c *Client) ScaleStatus(jobID, group, region, operationID, generation, executionID string, count int, expectedEvalID string) (desired int, matched bool, evalID string, err error) {
-	status, err := c.JobScaleStatusRegion(jobID, region)
+func (c *Client) ScaleStatus(jobID, group, region, operationID, generation, executionID string, count int, expectedEvalID string, namespace ...string) (desired int, matched bool, evalID string, err error) {
+	status, err := c.JobScaleStatusRegion(jobID, region, namespace...)
 	if err != nil {
 		return 0, false, "", err
 	}
@@ -706,19 +706,19 @@ func (c *Client) ScaleStatus(jobID, group, region, operationID, generation, exec
 // ScalePlacementConverged requires the exact scaling event, its completed
 // scheduler evaluation, and healthy placed allocations. A desired count alone
 // is merely accepted intent and cannot complete a managed Fleet scale.
-func (c *Client) ScalePlacementConverged(jobID, group, region, operationID, generation, executionID string, count int, expectedEvalID string) (desired int, matched bool, evalID string, healthy bool, err error) {
-	desired, matched, evalID, err = c.ScaleStatus(jobID, group, region, operationID, generation, executionID, count, expectedEvalID)
+func (c *Client) ScalePlacementConverged(jobID, group, region, operationID, generation, executionID string, count int, expectedEvalID string, namespace ...string) (desired int, matched bool, evalID string, healthy bool, err error) {
+	desired, matched, evalID, err = c.ScaleStatus(jobID, group, region, operationID, generation, executionID, count, expectedEvalID, namespace...)
 	if err != nil || !matched || desired != count || evalID == "" {
 		return desired, matched, evalID, false, err
 	}
-	evaluation, _, err := c.api.Evaluations().Info(evalID, &nomadapi.QueryOptions{Region: region})
+	evaluation, _, err := c.api.Evaluations().Info(evalID, &nomadapi.QueryOptions{Region: region, Namespace: namespaceOption(namespace)})
 	if err != nil {
 		return desired, matched, evalID, false, err
 	}
 	if evaluation == nil || evaluation.ID != evalID || evaluation.JobID != jobID || evaluation.Status != "complete" || evaluation.BlockedEval != "" || evaluation.QuotaLimitReached != "" {
 		return desired, matched, evalID, false, nil
 	}
-	status, err := c.JobScaleStatusRegion(jobID, region)
+	status, err := c.JobScaleStatusRegion(jobID, region, namespace...)
 	if err != nil || status == nil || status.JobID != jobID {
 		return desired, matched, evalID, false, err
 	}
@@ -731,8 +731,8 @@ func (c *Client) ScalePlacementConverged(jobID, group, region, operationID, gene
 
 // JobScaleStatusRegion reads the scheduler's scale projection for all service
 // task groups in one Nomad region without applying a scaling mutation.
-func (c *Client) JobScaleStatusRegion(jobID, region string) (*nomadapi.JobScaleStatusResponse, error) {
-	status, _, err := c.api.Jobs().ScaleStatus(jobID, &nomadapi.QueryOptions{Region: region})
+func (c *Client) JobScaleStatusRegion(jobID, region string, namespace ...string) (*nomadapi.JobScaleStatusResponse, error) {
+	status, _, err := c.api.Jobs().ScaleStatus(jobID, &nomadapi.QueryOptions{Region: region, Namespace: namespaceOption(namespace)})
 	return status, err
 }
 
@@ -1250,10 +1250,10 @@ func (c *Client) LatestDeployment(jobID string) (*DeploymentInfo, error) {
 	return c.LatestDeploymentRegion(jobID, "")
 }
 
-func (c *Client) LatestDeploymentRegion(jobID, region string) (*DeploymentInfo, error) {
+func (c *Client) LatestDeploymentRegion(jobID, region string, namespace ...string) (*DeploymentInfo, error) {
 	var opts *nomadapi.QueryOptions
-	if region != "" {
-		opts = &nomadapi.QueryOptions{Region: region}
+	if region != "" || len(namespace) != 0 {
+		opts = &nomadapi.QueryOptions{Region: region, Namespace: namespaceOption(namespace)}
 	}
 	deploys, _, err := c.api.Jobs().Deployments(jobID, false, opts)
 	if err != nil {
