@@ -252,6 +252,25 @@ func TestOfflineVerifierReadRetainsPostDispatchRecoveryAfterBindingExpiry(t *tes
 	}
 }
 
+func TestOfflineVerifierReadExposesExactPreDispatchCommitment(t *testing.T) {
+	s := verifierReadFixture(t)
+	s.grant = verifierIssuedGrant(s, time.Now().UTC())
+	s.grant.Phase = "delete_committed"
+	s.grant.Commitment = &offline.DeleteCommitmentV2{SchemaVersion: offline.DeleteCommitmentSchemaV2,
+		SHA256: strings.Repeat("a", 64), DeleteRequestSHA256: s.grant.DeleteRequestSHA256, CommittedAt: time.Now().UTC()}
+	if err := s.grant.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/fleet/offline/verifier/plans/" + s.binding.PlanID + "/attempts/" + s.attempt.ID + "?audience=work-staging&authorityEpoch=3"
+	got := verifierReadRequest(s, verifierPrincipal(), path)
+	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"phase":"delete_committed"`) ||
+		!strings.Contains(got.Body.String(), `"commitment":{"schemaVersion":"`+offline.DeleteCommitmentSchemaV2+`"`) ||
+		!strings.Contains(got.Body.String(), `"deleteRequestSHA256":"`+s.grant.DeleteRequestSHA256+`"`) ||
+		strings.Contains(got.Body.String(), `"dispatch":`) || strings.Contains(got.Body.String(), `"authorizesEffect":true`) {
+		t.Fatalf("pre-dispatch verifier read=%d %s", got.Code, got.Body)
+	}
+}
+
 func TestOfflineVerifierTokenScopeRequiresExactSubjectAndSoleScope(t *testing.T) {
 	now := time.Now().UTC()
 	if _, err := handler.NewManagedAccessTokenRecord(offlineVerifierSubject, []string{handler.ScopeFleetOfflineVerify}, time.Hour, now); err != nil {
