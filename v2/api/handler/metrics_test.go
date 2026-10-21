@@ -100,10 +100,28 @@ func TestObservabilityBundleIncludesAlertsAndServiceSpecs(t *testing.T) {
 			t.Fatalf("alert rules missing %q:\n%s", want, bundle.AlertRules)
 		}
 	}
-	for _, name := range []string{"prometheus", "grafana", "cadvisor"} {
+	for _, name := range []string{"prometheus", "grafana", "cadvisor", "loki", "tempo"} {
 		if bundle.ServiceSpecs[name] == "" {
 			t.Fatalf("missing service spec %q: %+v", name, bundle.ServiceSpecs)
 		}
+	}
+	for _, want := range []string{"norn-loki", "norn-tempo", "norn-tempo-web-metrics.service.consul:3200"} {
+		if !strings.Contains(bundle.GrafanaDatasource, want) {
+			t.Fatalf("grafana datasource missing %q:\n%s", want, bundle.GrafanaDatasource)
+		}
+	}
+	for _, name := range []string{"loki", "tempo"} {
+		parsed, err := model.ParseInfraSpec([]byte(bundle.ServiceSpecs[name]))
+		if err != nil || parsed.App != "norn-"+name {
+			t.Fatalf("%s spec does not parse: %v\n%s", name, err, bundle.ServiceSpecs[name])
+		}
+		if result := model.ValidateSpec(parsed); !result.Valid {
+			t.Fatalf("%s spec invalid: %+v", name, result)
+		}
+	}
+	tempo, _ := model.ParseInfraSpec([]byte(bundle.ServiceSpecs["tempo"]))
+	if web := tempo.Processes["web"]; web.Port != 4318 || web.HostPort != 4318 || web.Metrics == nil || web.Metrics.Port != 3200 {
+		t.Fatalf("tempo ports = %+v", web)
 	}
 	if !strings.Contains(bundle.PrometheusConfig, "host.docker.internal:8800") {
 		t.Fatalf("bundle prometheus config should target host from containers:\n%s", bundle.PrometheusConfig)
@@ -125,14 +143,17 @@ func TestObservabilityServicesInstallWritesManagedAppDirs(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
-	if len(receipt.Installed) != 3 {
-		t.Fatalf("installed = %+v, want 3 apps", receipt.Installed)
+	if len(receipt.Installed) != 5 {
+		t.Fatalf("installed = %+v, want 5 apps", receipt.Installed)
 	}
 	for _, path := range []string{
 		"norn-prometheus/infraspec.yaml",
 		"norn-prometheus/prometheus.yml",
 		"norn-grafana/provisioning/datasources/norn-prometheus.yaml",
 		"norn-cadvisor/Dockerfile",
+		"norn-loki/loki.yaml",
+		"norn-tempo/tempo.yaml",
+		"norn-grafana/provisioning/datasources/norn-tempo.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(appsDir, path)); err != nil {
 			t.Fatalf("expected generated file %s: %v", path, err)
