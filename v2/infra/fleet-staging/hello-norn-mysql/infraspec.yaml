@@ -2,22 +2,20 @@ name: hello-norn-mysql-managed
 nomadNamespace: norn-work-staging
 deploy: false
 repo:
-  # Work-staging contract only. A future catalog promotion replaces this inert source with the reviewed
-  # private application repository and exact source branch. The Norn API must
-  # consume the root-owned, read-only catalog after Fleet bootstrap.
-  url: https://example.invalid/norn/work-staging-hello-norn-mysql.git
-  branch: main
-  repoWeb: https://example.invalid/norn/work-staging-hello-norn-mysql
+  # The serving direct pilot's source is in this repository. Release admission
+  # still binds an exact CI source SHA to the image being deployed.
+  url: https://github.com/antiartificial/norn.git
+  branch: master
+  repoWeb: https://github.com/antiartificial/norn
 build:
-  dockerfile: Dockerfile
-  # The catalog promotion replaces only this inert sentinel with the signed
-  # OCI manifest digest produced for the exact source revision. Tags are not
-  # deployable evidence.
-  image: registry.invalid/norn/hello-norn-mysql@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  dockerfile: v2/infra/fleet-pilot/hello-norn-mysql/Dockerfile
+  # Exact digest from the currently serving direct pilot. A later CI release
+  # must still bind its own exact source and artifact before promotion.
+  image: ghcr.io/antiartificial/hello-norn-mysql@sha256:1f6da72837522c1507e1aa965d6cf31f452fa46ad6791f3b62197b15905e930f
   test: go test ./...
 # Separate managed candidate. Its Consul service and router names cannot mix
 # with the live direct-Nomad pilot. Deployment remains disabled pending catalog,
-# exact image, credential and runtime qualification.
+# credential, release binding and runtime qualification.
 env:
   MYSQL_DSN_FILE: "${NOMAD_SECRETS_DIR}/mysql-dsn"
   MYSQL_CA_FILE: "${NOMAD_SECRETS_DIR}/mysql-ca.pem"

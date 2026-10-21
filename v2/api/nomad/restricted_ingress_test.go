@@ -20,6 +20,9 @@ func TestManagedMySQLStagingDocumentKeepsPilotSeparate(t *testing.T) {
 	if spec.Deploy || spec.App != "hello-norn-mysql-managed" {
 		t.Fatalf("unsafe managed pilot identity/deploy state: %s %t", spec.App, spec.Deploy)
 	}
+	if spec.Repo == nil || spec.Repo.URL != "https://github.com/antiartificial/norn.git" || spec.Repo.Branch != "master" || spec.Build == nil || spec.Build.Image != "ghcr.io/antiartificial/hello-norn-mysql@sha256:1f6da72837522c1507e1aa965d6cf31f452fa46ad6791f3b62197b15905e930f" {
+		t.Fatalf("managed pilot source or artifact differs from the reviewed direct-pilot receipt")
+	}
 	if result := model.ValidateSpec(spec); !result.Valid {
 		t.Fatalf("invalid staging spec: %+v", result.Findings)
 	}
