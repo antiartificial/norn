@@ -198,7 +198,9 @@ func (e *laneEnv) scenario(revokeOnly bool) {
 	for _, route := range e.routes {
 		method, pattern, _ := strings.Cut(route, " ")
 		path := laneConcretePath(pattern, e.planID, attempt.ID)
-		if e.public(path) || method == http.MethodOptions {
+		// Pairing start and exchange are deliberately unauthenticated. Their
+		// request bodies are validated before any token scope check.
+		if e.public(path) || method == http.MethodOptions || route == "POST /api/v1/enrollments" || route == "POST /api/v1/enrollments/{id}/exchange" {
 			continue
 		}
 		code, body := e.call(method, path, credential, "matrix-"+uuid.NewString(), map[string]string{})
@@ -216,7 +218,7 @@ func (e *laneEnv) scenario(revokeOnly bool) {
 	for _, route := range e.routes {
 		method, pattern, _ := strings.Cut(route, " ")
 		path := laneConcretePath(pattern, e.planID, attempt.ID)
-		if e.public(path) || method == http.MethodOptions || route == "POST /api/v1/auth/rotate" {
+		if e.public(path) || method == http.MethodOptions || route == "POST /api/v1/auth/rotate" || route == "POST /api/v1/enrollments" || route == "POST /api/v1/enrollments/{id}/exchange" {
 			continue
 		}
 		code, body := e.call(method, path, e.exec, "matrix-"+uuid.NewString(), map[string]string{})
