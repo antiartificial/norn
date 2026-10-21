@@ -16,6 +16,10 @@ type Config struct {
 	// Fleet, auth, health, and durable-operation surfaces. It deliberately has
 	// no workload connector, release pipeline, scheduler watchers, or workers.
 	FleetAuthorityOnly bool
+	// FleetEtcdExecutorEnabled activates the controller-run Fleet executor lane
+	// on the etcd runtime. It defaults off and startup requires the GitHub App
+	// and Fleet reconciler before any executor route is mounted or advertised.
+	FleetEtcdExecutorEnabled bool
 	// Environment is the release lane, deliberately separate from Profile.
 	Environment string
 	// EnvironmentExplicit distinguishes an omitted variable (which defaults to
@@ -307,6 +311,7 @@ func Load() *Config {
 	return &Config{
 		Profile:                               strings.ToLower(envOr("NORN_PROFILE", "development")),
 		FleetAuthorityOnly:                    envBoolOr("NORN_FLEET_AUTHORITY_ONLY", false),
+		FleetEtcdExecutorEnabled:              envBoolOr("NORN_FLEET_ETCD_EXECUTOR_ENABLED", false),
 		Environment:                           environment,
 		EnvironmentExplicit:                   environmentExplicit,
 		Port:                                  envOr("NORN_PORT", "8800"),

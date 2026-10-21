@@ -36,6 +36,8 @@ type etcdExecutorHarness struct {
 	targets map[string]string // cluster -> target ID
 }
 
+func (h *etcdExecutorHarness) ExpectedInitialPhase() string { return "provider_applying" }
+
 func newEtcdExecutorHarness(t *testing.T) *etcdExecutorHarness {
 	t.Helper()
 	// A fresh prefix per call: integrationtest.Etcd names a unique one.
@@ -226,7 +228,7 @@ func (h *etcdExecutorHarness) Heartbeat(attempt *fleet.RunnerAttempt, sequence i
 	return fleettest.ExecResp{Attempt: updated}
 }
 
-var etcdExecutorPhaseOrder = []string{"prechange_verified", "provider_applying", "infrastructure_applied", "inventory_generated", "nodes_configured", "nodes_enrolled", "readiness_verified", "complete"}
+var etcdExecutorPhaseOrder = []string{"provider_applying", "infrastructure_applied", "inventory_generated", "nodes_configured", "nodes_enrolled", "readiness_verified", "old_nodes_drained", "complete"}
 
 func (h *etcdExecutorHarness) CompleteAttempt(attempt *fleet.RunnerAttempt) fleettest.ExecResp {
 	h.t.Helper()

@@ -97,6 +97,7 @@ type GitHubStartResult struct {
 // evidence are seeded straight into the ledger in E0's pinned shapes (E4b and
 // E5 are not required).
 type ExecutorHarness interface {
+	ExpectedInitialPhase() string
 	// RegisterTarget registers a fresh target with the alias cluster:<cluster>
 	// and returns its target ID.
 	RegisterTarget(cluster string) string
@@ -242,7 +243,7 @@ func testExecutorAcquireBindInsertAtomic(t *testing.T, h ExecutorHarness) {
 	}
 	if attempt.RunnerAttemptID != executor.RunnerAttemptID(host.DropletID, host.InvocationID, plan.ID) ||
 		attempt.WorkflowURL != executor.WorkflowURL(host.DropletID, host.InvocationID) ||
-		attempt.Status != "running" || attempt.CurrentPhase != "infrastructure_applied" || attempt.RetryOf != "" {
+		attempt.Status != "running" || attempt.CurrentPhase != h.ExpectedInitialPhase() || attempt.RetryOf != "" {
 		t.Fatalf("unexpected executor attempt: %+v", attempt)
 	}
 	if occupancy, reason := h.Occupancy(target); occupancy != lifecycle.OccupancyActive {

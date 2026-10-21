@@ -626,10 +626,11 @@ func newLaneEtcd(t *testing.T) *laneEtcd {
 	reconciler := newFleetReconciler(operations, func(err error) bool { return err != nil && strings.Contains(err.Error(), "not found") })
 	github := &laneFakeCommitSource{tip: strings.Repeat("a", 40), verified: true}
 	router := chi.NewRouter()
-	// The lane is gated off in production (etcdFleetExecutorLaneEnabled);
+	// The lane is gated off unless the protected runtime flag is enabled;
 	// these tests open it to keep its code exercised.
 	watcher := registerEtcdFleetControllerRoutes(router, cfg, identities, operations, &githubapp.Client{}, github, reconciler, true)
 	registerEtcdFleetCredentialRoutes(router, cfg, identities, true)
+	registerEtcdFleetExecutorEnrollmentRoutes(router, cfg, identities, true)
 	if watcher == nil {
 		t.Fatal("no etcd watcher")
 	}
@@ -1157,18 +1158,17 @@ func TestGeneralRouterRefusesExecutorLanePrincipals(t *testing.T) {
 }
 
 // TestEtcdExecutorLaneGatedOff: the production etcd runtime
-// (etcdFleetExecutorLaneEnabled false) mounts no executor-lane route, runs no
+// (the default-off runtime flag) mounts no executor-lane route, runs no
 // converge watcher, and refuses the executor principal on the shared runner,
 // resource and credential routes, even with a live fleet-executor device.
 func TestEtcdExecutorLaneGatedOff(t *testing.T) {
-	if etcdFleetExecutorLaneEnabled {
-		t.Fatal("the etcd executor lane must stay gated off until the v3 executor phase profile exists")
-	}
 	open := newLaneEtcd(t)
+	open.cfg.FleetEtcdExecutorEnabled = false
 	router := chi.NewRouter()
 	reconciler := newFleetReconciler(open.operations, func(err error) bool { return err != nil && strings.Contains(err.Error(), "not found") })
-	watcher := registerEtcdFleetControllerRoutes(router, open.cfg, open.identities, open.operations, &githubapp.Client{}, open.github, reconciler, etcdFleetExecutorLaneEnabled)
-	registerEtcdFleetCredentialRoutes(router, open.cfg, open.identities, etcdFleetExecutorLaneEnabled)
+	watcher := registerEtcdFleetControllerRoutes(router, open.cfg, open.identities, open.operations, &githubapp.Client{}, open.github, reconciler, open.cfg.FleetEtcdExecutorEnabled)
+	registerEtcdFleetCredentialRoutes(router, open.cfg, open.identities, open.cfg.FleetEtcdExecutorEnabled)
+	registerEtcdFleetExecutorEnrollmentRoutes(router, open.cfg, open.identities, open.cfg.FleetEtcdExecutorEnabled)
 	if watcher != nil {
 		t.Fatal("a converge watcher was built with the etcd executor lane gated off")
 	}

@@ -43,6 +43,16 @@ func TestNextPhaseTerminal(t *testing.T) {
 	}
 }
 
+func TestExecutorInitialPhasePerProfile(t *testing.T) {
+	t.Parallel()
+	if got := ExecutorInitialPhase(PostgresLegacy); got != "infrastructure_applied" {
+		t.Fatalf("legacy executor initial phase = %q", got)
+	}
+	if got := ExecutorInitialPhase(V3); got != "provider_applying" {
+		t.Fatalf("V3 executor initial phase = %q", got)
+	}
+}
+
 func TestRequiresDrainTable(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -55,6 +55,16 @@ func Phases(profile Profile, requiresDrain bool) []string {
 	return canonicalPhases
 }
 
+// ExecutorInitialPhase returns the first effect-bearing phase for a
+// non-destructive controller executor attempt. Planning and destructive
+// classification happen before attempt admission on this lane.
+func ExecutorInitialPhase(profile Profile) string {
+	if profile == PostgresLegacy {
+		return legacyNoDrainPhases[0]
+	}
+	return "provider_applying"
+}
+
 // NextPhase returns the phase after current for profile, or current with
 // terminal=true when current is already the last phase. It returns an error
 // when current is not a member of the profile's phase list.

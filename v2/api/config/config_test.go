@@ -101,6 +101,17 @@ func TestAppCatalogReadOnlyConfig(t *testing.T) {
 	}
 }
 
+func TestFleetEtcdExecutorIsExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_FLEET_ETCD_EXECUTOR_ENABLED", "")
+	if cfg := Load(); cfg.FleetEtcdExecutorEnabled {
+		t.Fatal("etcd Fleet executor enabled by default")
+	}
+	t.Setenv("NORN_FLEET_ETCD_EXECUTOR_ENABLED", "true")
+	if cfg := Load(); !cfg.FleetEtcdExecutorEnabled {
+		t.Fatal("explicit etcd Fleet executor flag was not enabled")
+	}
+}
+
 func TestHashiCorpTLSVerificationEnvironment(t *testing.T) {
 	t.Setenv("NOMAD_SKIP_VERIFY", "true")
 	t.Setenv("CONSUL_HTTP_SSL_VERIFY", "false")

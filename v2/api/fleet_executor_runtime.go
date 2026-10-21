@@ -64,6 +64,8 @@ func withFleetExecutorCapabilities(features []string, endpoints map[string]strin
 	endpoints["fleetCredentialGrants"] = "/api/v1/fleet/plans/{planID}/credential-grants"
 	endpoints["fleetProviderEvidence"] = "/api/v1/fleet/plans/{planID}/provider-evidence"
 	endpoints["fleetExecutorStopAttestations"] = "/api/v1/fleet/executor/stop-attestations"
+	endpoints["enrollments"] = "/api/v1/enrollments"
+	endpoints["devices"] = "/api/v1/devices"
 	return features, endpoints
 }
 
@@ -393,7 +395,7 @@ func etcdFleetLaneAuth(cfg *config.Config, identities store.IdentityStore, requi
 
 // etcdFleetLaneAuthGated is etcdFleetLaneAuth; with laneOpen false the two
 // lane principals are refused on the route whatever their route sets say
-// (etcdFleetExecutorLaneEnabled).
+// (Config.FleetEtcdExecutorEnabled).
 func etcdFleetLaneAuthGated(cfg *config.Config, identities store.IdentityStore, laneOpen bool, requiredScopes ...string) func(http.Handler) http.Handler {
 	scoped := etcdManagedTokenAuth(cfg, identities, requiredScopes...)
 	return func(next http.Handler) http.Handler {
@@ -432,11 +434,8 @@ type etcdFleetExecutorLane struct {
 // attempt, heartbeat, advance, checkpoint and resource-read routes are the
 // existing ones, re-authenticated with etcdFleetLaneAuth.
 //
-// Enrollment and DELETE /devices/{id} are NOT served by the etcd runtime:
-// the enrollment handlers are bound to the PostgreSQL store. An executor
-// device is enrolled and revoked only through the PG authority; until the v3
-// executor phase profile exists (P2/P3 hand-off) the etcd executor lane has no
-// enrolled principal and answers 401/403 to every executor call.
+// Enrollment and device revocation are mounted separately against the etcd
+// identity aggregate when the runtime gate is enabled.
 func registerEtcdFleetExecutorRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore, operations *etcdstore.V3OperationStore, rescanner handler.ConvergeRescanner, repoTokens handler.FleetRepoTokenIssuer) {
 	converge := handler.NewEtcdFleetConvergeRoutes(cfg, operations, rescanner)
 	ops := handler.NewEtcdFleetExecutorOpsRoutes(cfg, operations, identities, repoTokens)
