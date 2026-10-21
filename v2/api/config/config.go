@@ -20,6 +20,9 @@ type Config struct {
 	// on the etcd runtime. It defaults off and startup requires the GitHub App
 	// and Fleet reconciler before any executor route is mounted or advertised.
 	FleetEtcdExecutorEnabled bool
+	// FleetPlatformReleaseIntentEnabled exposes durable, effect-free platform
+	// release intent records. The platform release executor has a separate gate.
+	FleetPlatformReleaseIntentEnabled bool
 	// Environment is the release lane, deliberately separate from Profile.
 	Environment string
 	// EnvironmentExplicit distinguishes an omitted variable (which defaults to
@@ -312,6 +315,7 @@ func Load() *Config {
 		Profile:                               strings.ToLower(envOr("NORN_PROFILE", "development")),
 		FleetAuthorityOnly:                    envBoolOr("NORN_FLEET_AUTHORITY_ONLY", false),
 		FleetEtcdExecutorEnabled:              envBoolOr("NORN_FLEET_ETCD_EXECUTOR_ENABLED", false),
+		FleetPlatformReleaseIntentEnabled:     envBoolOr("NORN_FLEET_PLATFORM_RELEASE_INTENT_ENABLED", false),
 		Environment:                           environment,
 		EnvironmentExplicit:                   environmentExplicit,
 		Port:                                  envOr("NORN_PORT", "8800"),
