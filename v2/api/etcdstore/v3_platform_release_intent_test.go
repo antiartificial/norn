@@ -22,9 +22,9 @@ func validPlatformReleaseIntent() PlatformReleaseIntent {
 		OldSignedManifestSHA256: strings.Repeat("c", 64), NewSignedManifestSHA256: strings.Repeat("d", 64),
 		SignedReleaseTag: "platform-" + strings.Repeat("b", 40),
 		ControlRoster: []PlatformReleaseControl{
-			{Name: "control-01", TailnetIP: "100.1.2.3", PrivateIP: "10.1.2.3"},
-			{Name: "control-02", TailnetIP: "100.1.2.4", PrivateIP: "10.1.2.4"},
-			{Name: "control-03", TailnetIP: "100.1.2.5", PrivateIP: "10.1.2.5"},
+			{Name: "control-01", PrivateIP: "10.43.0.3"},
+			{Name: "control-02", PrivateIP: "10.43.0.4"},
+			{Name: "control-03", PrivateIP: "10.43.0.5"},
 		},
 		StateSHA256: strings.Repeat("e", 64), HostKeysSHA256: strings.Repeat("f", 64),
 	}
@@ -36,12 +36,15 @@ func TestPlatformReleaseIntentRejectsIncompleteBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]func(*PlatformReleaseIntent){
-		"same source":       func(r *PlatformReleaseIntent) { r.NewSourceSHA = r.OldSourceSHA },
-		"old publisher":     func(r *PlatformReleaseIntent) { r.OldPublisherRunID = 0 },
-		"new manifest":      func(r *PlatformReleaseIntent) { r.NewSignedManifestSHA256 = "" },
-		"roster":            func(r *PlatformReleaseIntent) { r.ControlRoster = nil },
-		"duplicate control": func(r *PlatformReleaseIntent) { r.ControlRoster = append(r.ControlRoster, r.ControlRoster[0]) },
-		"state digest":      func(r *PlatformReleaseIntent) { r.StateSHA256 = "" },
+		"same source":          func(r *PlatformReleaseIntent) { r.NewSourceSHA = r.OldSourceSHA },
+		"old publisher":        func(r *PlatformReleaseIntent) { r.OldPublisherRunID = 0 },
+		"new manifest":         func(r *PlatformReleaseIntent) { r.NewSignedManifestSHA256 = "" },
+		"roster":               func(r *PlatformReleaseIntent) { r.ControlRoster = nil },
+		"duplicate control":    func(r *PlatformReleaseIntent) { r.ControlRoster = append(r.ControlRoster, r.ControlRoster[0]) },
+		"duplicate private IP": func(r *PlatformReleaseIntent) { r.ControlRoster[1].PrivateIP = r.ControlRoster[0].PrivateIP },
+		"outside control VPC":  func(r *PlatformReleaseIntent) { r.ControlRoster[0].PrivateIP = "10.55.0.3" },
+		"loopback address":     func(r *PlatformReleaseIntent) { r.ControlRoster[0].PrivateIP = "127.0.0.1" },
+		"state digest":         func(r *PlatformReleaseIntent) { r.StateSHA256 = "" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

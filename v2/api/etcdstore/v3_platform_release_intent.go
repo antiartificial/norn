@@ -83,7 +83,6 @@ type PlatformReleaseRecoveryAuthorization struct {
 
 type PlatformReleaseControl struct {
 	Name      string `json:"name"`
-	TailnetIP string `json:"tailnetIp"`
 	PrivateIP string `json:"privateIp"`
 }
 
@@ -107,15 +106,17 @@ func (r PlatformReleaseIntent) Validate() error {
 	}
 	seen := map[string]bool{}
 	addressSeen := map[string]bool{}
+	controlNetwork := &net.IPNet{IP: net.IPv4(10, 43, 0, 0), Mask: net.CIDRMask(20, 32)}
 	for _, control := range r.ControlRoster {
-		if !platformReleaseNameRe.MatchString(control.Name) || net.ParseIP(control.TailnetIP) == nil || net.ParseIP(control.PrivateIP) == nil || seen[control.Name] {
+		address := net.ParseIP(control.PrivateIP)
+		if !platformReleaseNameRe.MatchString(control.Name) || address == nil || address.To4() == nil || !controlNetwork.Contains(address) || seen[control.Name] {
 			return ErrPlatformReleaseInvalid
 		}
-		if addressSeen[control.TailnetIP] || addressSeen[control.PrivateIP] {
+		if addressSeen[control.PrivateIP] {
 			return ErrPlatformReleaseInvalid
 		}
 		seen[control.Name] = true
-		addressSeen[control.TailnetIP], addressSeen[control.PrivateIP] = true, true
+		addressSeen[control.PrivateIP] = true
 	}
 	for _, name := range []string{"control-01", "control-02", "control-03"} {
 		if !seen[name] {
@@ -133,7 +134,7 @@ func (r PlatformReleaseIntent) Validate() error {
 func PlatformReleaseIntentDigest(r PlatformReleaseIntent) (string, error) {
 	roster := make([]map[string]string, 0, len(r.ControlRoster))
 	for _, control := range r.ControlRoster {
-		roster = append(roster, map[string]string{"name": control.Name, "tailnetIp": control.TailnetIP, "privateIp": control.PrivateIP})
+		roster = append(roster, map[string]string{"name": control.Name, "privateIp": control.PrivateIP})
 	}
 	bindings := map[string]interface{}{
 		"schemaVersion": 1, "name": r.Name, "generation": r.Generation, "environment": r.Environment,

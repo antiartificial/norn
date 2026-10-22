@@ -118,7 +118,7 @@ func platformGenesisStrict(raw []byte, target interface{}) error {
 func platformGenesisRosterDigest(roster []etcdstore.PlatformReleaseControl) (string, error) {
 	items := make([]map[string]string, 0, len(roster))
 	for _, control := range roster {
-		items = append(items, map[string]string{"name": control.Name, "privateIp": control.PrivateIP, "tailnetIp": control.TailnetIP})
+		items = append(items, map[string]string{"name": control.Name, "privateIp": control.PrivateIP})
 	}
 	raw, err := json.Marshal(items)
 	if err != nil {

@@ -95,9 +95,9 @@ func TestVerifyPlatformGenesisImportSignedBindings(t *testing.T) {
 		OldSignedManifestSHA256: strings.Repeat("c", 64), NewSignedManifestSHA256: strings.Repeat("d", 64),
 		SignedReleaseTag: "platform-" + strings.Repeat("b", 40),
 		ControlRoster: []etcdstore.PlatformReleaseControl{
-			{Name: "control-01", TailnetIP: "100.1.2.3", PrivateIP: "10.1.2.3"},
-			{Name: "control-02", TailnetIP: "100.1.2.4", PrivateIP: "10.1.2.4"},
-			{Name: "control-03", TailnetIP: "100.1.2.5", PrivateIP: "10.1.2.5"},
+			{Name: "control-01", PrivateIP: "10.43.0.3"},
+			{Name: "control-02", PrivateIP: "10.43.0.4"},
+			{Name: "control-03", PrivateIP: "10.43.0.5"},
 		}, StateSHA256: strings.Repeat("e", 64), HostKeysSHA256: strings.Repeat("f", 64), Status: "Approved",
 	}
 	digest, err := etcdstore.PlatformReleaseIntentDigest(intent)
