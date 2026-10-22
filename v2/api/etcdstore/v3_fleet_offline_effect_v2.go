@@ -316,6 +316,22 @@ func (s *V3OperationStore) CompleteOfflineAttemptV2(ctx context.Context, planID,
 
 func (s *V3OperationStore) completeOfflineAttemptV2(ctx context.Context, planID, attemptID, grantID string,
 	runner OfflineRunnerProof, observation offline.CompletionObservationV2, now time.Time, readback bool) (offline.Attempt, error) {
+	readCompleted := func(cause error) (offline.Attempt, error) {
+		if !readback {
+			return offline.Attempt{}, cause
+		}
+		response, err := s.kv.Get(ctx, s.offlineAttemptKey(planID))
+		if err != nil || len(response.Kvs) != 1 {
+			return offline.Attempt{}, cause
+		}
+		completed, err := decodeOfflineAttempt(response.Kvs[0].Value, planID)
+		if err != nil || completed.ID != attemptID || completed.PrincipalSubject != runner.Subject ||
+			completed.PrincipalTokenID != runner.TokenID || completed.PrincipalDeviceID != runner.DeviceID ||
+			completed.Status != "succeeded" || completed.Completion == nil || completed.Completion.GrantID != grantID {
+			return offline.Attempt{}, cause
+		}
+		return completed, nil
+	}
 	attemptResponse, err := s.kv.Get(ctx, s.offlineAttemptKey(planID))
 	if err != nil || len(attemptResponse.Kvs) != 1 {
 		if err == nil {
@@ -367,15 +383,15 @@ func (s *V3OperationStore) completeOfflineAttemptV2(ctx context.Context, planID,
 		return offline.Attempt{}, err
 	}
 	if epoch != read.grant.AuthorityEpoch {
-		return offline.Attempt{}, ErrOfflineEffectV2Conflict
+		return readCompleted(ErrOfflineEffectV2Conflict)
 	}
 	if !fence.Held || fence.HolderPlanID != planID || fence.Generation != int64(read.grant.TargetFenceGeneration) ||
 		fence.AuthorityEpoch != read.grant.AuthorityEpoch {
-		return offline.Attempt{}, ErrOfflineEffectV2Conflict
+		return readCompleted(ErrOfflineEffectV2Conflict)
 	}
 	state, _, err := s.loadCurrentEffectV2(ctx, planID, attemptID, grantID, runner, now, false)
 	if err != nil {
-		return offline.Attempt{}, err
+		return readCompleted(err)
 	}
 	completion, err := offline.VerifyCompletionObservationV2(observation, read.grant, now)
 	if err != nil {
