@@ -15,16 +15,75 @@ import (
 )
 
 const (
-	RequestSchema = "norn.fleet-executor-app-delete-effect-request/v1"
-	GrantSchema   = "norn.fleet-executor-app-delete-effect/v1"
+	RequestSchema         = "norn.fleet-executor-app-delete-effect-request/v1"
+	GrantSchema           = "norn.fleet-executor-app-delete-effect/v1"
+	TerminalRequestSchema = "norn.fleet-app-delete-terminal-request/v1"
+	TerminalReceiptSchema = "norn.fleet-app-delete-terminal-receipt/v1"
 )
 
+type TerminalRequest struct {
+	SchemaVersion         string `json:"schemaVersion"`
+	PlanID                string `json:"planId"`
+	AttemptID             string `json:"attemptId"`
+	WriterGeneration      uint64 `json:"writerGeneration"`
+	WriterHolder          string `json:"writerHolder"`
+	Target                string `json:"target"`
+	DropletID             string `json:"dropletId"`
+	ProviderAccount       string `json:"providerAccount"`
+	AuthorizationSHA256   string `json:"authorizationSha256"`
+	WorkloadReceiptSHA256 string `json:"workloadReceiptSha256"`
+	DeleteRequestSHA256   string `json:"deleteRequestSha256"`
+	RefreshDispatchSHA256 string `json:"refreshDispatchSha256"`
+	StateSHA256           string `json:"stateSha256"`
+	ProviderAbsenceSHA256 string `json:"providerAbsenceSha256"`
+	WorkloadSHA256        string `json:"workloadSha256"`
+	PublicPilotSHA256     string `json:"publicPilotSha256"`
+	ObservationSHA256     string `json:"observationSha256"`
+}
+
+func (r TerminalRequest) Permit() Request {
+	return Request{SchemaVersion: RequestSchema, PlanID: r.PlanID, AttemptID: r.AttemptID, WriterGeneration: r.WriterGeneration, WriterHolder: r.WriterHolder, Target: r.Target, DropletID: r.DropletID, ProviderAccount: r.ProviderAccount, AuthorizationSHA256: r.AuthorizationSHA256, WorkloadReceiptSHA256: r.WorkloadReceiptSHA256, DeleteRequestSHA256: r.DeleteRequestSHA256}
+}
+func (r TerminalRequest) Validate() error {
+	if r.SchemaVersion != TerminalRequestSchema || r.Permit().Validate() != nil ||
+		!hex64.MatchString(r.RefreshDispatchSHA256) || !hex64.MatchString(r.StateSHA256) ||
+		!hex64.MatchString(r.ProviderAbsenceSHA256) || !hex64.MatchString(r.WorkloadSHA256) ||
+		!hex64.MatchString(r.PublicPilotSHA256) || !hex64.MatchString(r.ObservationSHA256) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+type TerminalReceipt struct {
+	SchemaVersion            string          `json:"schemaVersion"`
+	TerminalEvidenceRecorded bool            `json:"terminalEvidenceRecorded"`
+	Evidence                 TerminalRequest `json:"evidence"`
+}
+
+func ReceiptFromTerminal(r TerminalRequest) TerminalReceipt {
+	return TerminalReceipt{SchemaVersion: TerminalReceiptSchema, TerminalEvidenceRecorded: true, Evidence: r}
+}
+
+func DecodeTerminalRequest(raw []byte) (TerminalRequest, error) {
+	var request TerminalRequest
+	if len(raw) == 0 || len(raw) > 16*1024 || !json.Valid(raw) || duplicateJSONKey(json.NewDecoder(bytes.NewReader(raw))) {
+		return request, ErrInvalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF || request.Validate() != nil {
+		return TerminalRequest{}, ErrInvalid
+	}
+	return request, nil
+}
+
 var (
-	hex40      = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	hex64      = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	decimal    = regexp.MustCompile(`^[1-9][0-9]*$`)
-	ErrInvalid = errors.New("app delete effect request is invalid")
-	ErrRefused = errors.New("app delete effect authorization refused")
+	hex40       = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	hex64       = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	decimal     = regexp.MustCompile(`^[1-9][0-9]*$`)
+	ErrInvalid  = errors.New("app delete effect request is invalid")
+	ErrRefused  = errors.New("app delete effect authorization refused")
+	ErrNotFound = errors.New("app delete terminal evidence not found")
 )
 
 // Request is the complete tuple presented by the attempt-bound executor.

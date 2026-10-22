@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -23,6 +24,68 @@ import (
 // writer identity, provider identity, or workload digest.
 type AppDeleteEffectStore interface {
 	ConsumeAppDeleteCoPermit(context.Context, appdelete.Request, string) error
+}
+type AppDeleteTerminalStore interface {
+	RecordAppDeleteTerminal(context.Context, appdelete.TerminalRequest, string) (appdelete.TerminalReceipt, error)
+	GetAppDeleteTerminal(context.Context, string) (appdelete.TerminalReceipt, error)
+}
+
+const appDeleteVerifierSubject = "fleet-app-delete-verifier:work-staging"
+
+func appDeleteVerifierPrincipal(r *http.Request) (AccessPrincipal, bool) {
+	p, ok := AccessPrincipalFromRequest(r)
+	return p, ok && p.Source == AccessPrincipalSourceManagedToken && !p.Legacy && p.CI == nil && p.DeviceID == "" &&
+		p.Subject == appDeleteVerifierSubject && p.TokenID != "" && len(p.Scopes) == 1 && p.Scopes[0] == ScopeFleetAppDeleteVerify &&
+		!p.ExpiresAt.IsZero() && time.Now().Before(p.ExpiresAt)
+}
+
+func AppDeleteTerminalHandler(store AppDeleteTerminalStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Pragma", "no-cache")
+		principal, ok := appDeleteVerifierPrincipal(r)
+		if !ok {
+			WriteControlProblem(w, r, http.StatusForbidden, "app_delete_verifier_required", "a dedicated work-staging app delete verifier token is required")
+			return
+		}
+		planID, attemptID := chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID")
+		if store == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "app_delete_terminal_unavailable", "durable terminal evidence is unavailable")
+			return
+		}
+		if r.Method == http.MethodGet {
+			receipt, err := store.GetAppDeleteTerminal(r.Context(), planID)
+			if errors.Is(err, appdelete.ErrNotFound) {
+				WriteControlProblem(w, r, http.StatusNotFound, "app_delete_terminal_not_found", "terminal evidence is not recorded")
+				return
+			}
+			if err != nil || receipt.Evidence.AttemptID != attemptID {
+				WriteControlProblem(w, r, http.StatusConflict, "app_delete_terminal_mismatch", "terminal evidence differs from the route")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(receipt)
+			return
+		}
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16*1024))
+		request, decodeErr := appdelete.DecodeTerminalRequest(raw)
+		if err != nil || decodeErr != nil || request.PlanID != planID || request.AttemptID != attemptID {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_app_delete_terminal_request", "the request must exactly match the route and typed contract")
+			return
+		}
+		receipt, err := store.RecordAppDeleteTerminal(r.Context(), request, principal.Subject)
+		if err != nil {
+			status, code := http.StatusConflict, "app_delete_terminal_refused"
+			if !errors.Is(err, appdelete.ErrRefused) {
+				status, code = http.StatusServiceUnavailable, "app_delete_terminal_uncertain"
+			}
+			WriteControlProblem(w, r, status, code, "app delete terminal evidence was not recorded")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(receipt)
+	}
 }
 
 // AppDeleteEffectHandler is the narrow controller/executor authorization

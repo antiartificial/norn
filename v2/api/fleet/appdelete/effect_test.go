@@ -44,3 +44,27 @@ func TestDecodeRequestRejectsExtensionsAndDuplicateKeys(t *testing.T) {
 		t.Fatal("case-variant field accepted")
 	}
 }
+
+func TestTerminalRequestIsGenericAndStrict(t *testing.T) {
+	for _, target := range []struct{ name, id string }{{"app-04", "4242"}, {"app-03", "610327215"}} {
+		r := TerminalRequest{SchemaVersion: TerminalRequestSchema, PlanID: uuid.NewString(), AttemptID: uuid.NewString(), WriterGeneration: 7, WriterHolder: uuid.NewString(), Target: target.name, DropletID: target.id, ProviderAccount: uuid.NewString(), AuthorizationSHA256: strings.Repeat("a", 64), WorkloadReceiptSHA256: strings.Repeat("b", 64), DeleteRequestSHA256: ExactDeleteRequestSHA256(target.id), RefreshDispatchSHA256: strings.Repeat("c", 64), StateSHA256: strings.Repeat("d", 64), ProviderAbsenceSHA256: strings.Repeat("e", 64), WorkloadSHA256: strings.Repeat("f", 64), PublicPilotSHA256: strings.Repeat("1", 64), ObservationSHA256: strings.Repeat("2", 64)}
+		raw, _ := json.Marshal(r)
+		got, err := DecodeTerminalRequest(raw)
+		if err != nil || got != r {
+			t.Fatalf("%s decode=%+v err=%v", target.name, got, err)
+		}
+		extended := append(append([]byte{}, raw[:len(raw)-1]...), []byte(`,"providerStatus":404}`)...)
+		if _, err := DecodeTerminalRequest(extended); err == nil {
+			t.Fatal("provider assertion accepted")
+		}
+		changed := r
+		changed.Target = "app-03"
+		if target.name == "app-03" {
+			changed.Target = "app-04"
+		}
+		if changed.Validate() != nil { /* structurally valid; durable store binds tuple */
+		} else if changed.Permit() == r.Permit() {
+			t.Fatal("changed target did not change permit tuple")
+		}
+	}
+}

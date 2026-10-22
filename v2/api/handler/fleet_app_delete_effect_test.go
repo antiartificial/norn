@@ -18,13 +18,72 @@ import (
 )
 
 type appDeleteStoreFake struct {
-	err   error
-	calls int
+	err     error
+	calls   int
+	receipt appdelete.TerminalReceipt
 }
 
 func (s *appDeleteStoreFake) ConsumeAppDeleteCoPermit(_ context.Context, _ appdelete.Request, _ string) error {
 	s.calls++
 	return s.err
+}
+func (s *appDeleteStoreFake) RecordAppDeleteTerminal(_ context.Context, r appdelete.TerminalRequest, _ string) (appdelete.TerminalReceipt, error) {
+	s.calls++
+	if s.err != nil {
+		return appdelete.TerminalReceipt{}, s.err
+	}
+	s.receipt = appdelete.ReceiptFromTerminal(r)
+	return s.receipt, nil
+}
+func (s *appDeleteStoreFake) GetAppDeleteTerminal(_ context.Context, _ string) (appdelete.TerminalReceipt, error) {
+	s.calls++
+	if s.err != nil {
+		return appdelete.TerminalReceipt{}, s.err
+	}
+	return s.receipt, nil
+}
+
+func terminalFixture(planID, attemptID, target, droplet string) appdelete.TerminalRequest {
+	return appdelete.TerminalRequest{SchemaVersion: appdelete.TerminalRequestSchema, PlanID: planID, AttemptID: attemptID, WriterGeneration: 9, WriterHolder: uuid.NewString(), Target: target, DropletID: droplet, ProviderAccount: uuid.NewString(), AuthorizationSHA256: strings.Repeat("a", 64), WorkloadReceiptSHA256: strings.Repeat("b", 64), DeleteRequestSHA256: appdelete.ExactDeleteRequestSHA256(droplet), RefreshDispatchSHA256: strings.Repeat("c", 64), StateSHA256: strings.Repeat("d", 64), ProviderAbsenceSHA256: strings.Repeat("e", 64), WorkloadSHA256: strings.Repeat("f", 64), PublicPilotSHA256: strings.Repeat("1", 64), ObservationSHA256: strings.Repeat("2", 64)}
+}
+
+func TestAppDeleteTerminalRequiresVerifierAndSupportsUnknownOutcomeReadback(t *testing.T) {
+	for _, target := range []struct{ name, id string }{{"app-04", "4242"}, {"app-03", "610327215"}} {
+		t.Run(target.name, func(t *testing.T) {
+			planID, attemptID := uuid.NewString(), uuid.NewString()
+			body := terminalFixture(planID, attemptID, target.name, target.id)
+			raw, _ := json.Marshal(body)
+			store := &appDeleteStoreFake{}
+			router := chi.NewRouter()
+			path := "/api/v1/fleet/plans/" + planID + "/attempts/" + attemptID + "/app-delete-terminal"
+			router.Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal", AppDeleteTerminalHandler(store))
+			router.Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal", AppDeleteTerminalHandler(store))
+			verifier := AccessPrincipal{Subject: appDeleteVerifierSubject, TokenID: "v", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeFleetAppDeleteVerify}, ExpiresAt: time.Now().Add(time.Hour)}
+			call := func(method string, p AccessPrincipal) *httptest.ResponseRecorder {
+				req := WithAccessPrincipal(httptest.NewRequest(method, path, bytes.NewReader(raw)), &p)
+				out := httptest.NewRecorder()
+				router.ServeHTTP(out, req)
+				return out
+			}
+			attempt := verifier
+			attempt.Subject = "fleet-attempt:" + attemptID
+			attempt.Scopes = []string{ScopeFleetAttempt}
+			if got := call(http.MethodPost, attempt); got.Code != http.StatusForbidden || store.calls != 0 {
+				t.Fatalf("attempt scope crossed boundary: %d", got.Code)
+			}
+			if got := call(http.MethodPost, verifier); got.Code != http.StatusCreated || store.calls != 1 {
+				t.Fatalf("post=%d %s", got.Code, got.Body.String())
+			}
+			store.err = errors.New("lost response")
+			if got := call(http.MethodPost, verifier); got.Code != http.StatusServiceUnavailable {
+				t.Fatalf("uncertain=%d", got.Code)
+			}
+			store.err = nil
+			if got := call(http.MethodGet, verifier); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"terminalEvidenceRecorded":true`) {
+				t.Fatalf("readback=%d %s", got.Code, got.Body.String())
+			}
+		})
+	}
 }
 
 func TestAppDeleteEffectHandlerRequiresAttemptBindingAndReturnsExactGrant(t *testing.T) {

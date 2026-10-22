@@ -30,6 +30,7 @@
       "fleet:execute",
       "fleet:offline-attempt",
       "fleet:offline-verify",
+      "fleet:app-delete-verify",
       "admin"
     ],
     "stepUp": {

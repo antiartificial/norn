@@ -11,10 +11,17 @@ import (
 // registerEtcdFleetAppDeleteCoPermitRoute exposes only Norn's one-use
 // attempt/fence co-permit. The separate Fleet PostgreSQL verifier and writer
 // reservation are still required before a provider DELETE can run.
-func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Config, identities store.IdentityStore, permits handler.AppDeleteEffectStore, executorLane bool) {
+func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Config, identities store.IdentityStore, permits interface {
+	handler.AppDeleteEffectStore
+	handler.AppDeleteTerminalStore
+}, executorLane bool) {
 	if cfg == nil || !executorLane || !cfg.FleetAppDeleteCoPermitEnabled {
 		return
 	}
 	attemptAuth := etcdFleetLaneAuth(cfg, identities, handler.ScopeFleetAttempt)
 	router.With(attemptAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-effect", handler.AppDeleteEffectHandler(permits))
+	verifierAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetAppDeleteVerify)
+	terminal := "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal"
+	router.With(verifierAuth).Post(terminal, handler.AppDeleteTerminalHandler(permits))
+	router.With(verifierAuth).Get(terminal, handler.AppDeleteTerminalHandler(permits))
 }

@@ -894,6 +894,33 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal:
+    get:
+      operationId: readFleetAppDeleteTerminal
+      description: Default-off uncertainty readback for immutable verifier-owned app-delete terminal evidence. It does not release a fence or complete an attempt.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Exact recorded terminal receipt, content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteTerminalReceipt' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: recordFleetAppDeleteTerminal
+      description: Default-off verifier-only one-use recording of terminal evidence digests for an exact consumed app-03 or app-04 co-permit. It records no provider status and does not release a fence or complete an attempt.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteTerminalRequest' } } }
+      responses:
+        '201': { description: Terminal evidence recorded exactly once, content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteTerminalReceipt' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -2448,6 +2475,36 @@ components:
         authorizationSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         workloadReceiptSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         deleteRequestSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    FleetAppDeleteTerminalRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, attemptId, writerGeneration, writerHolder, target, dropletId, providerAccount, authorizationSha256, workloadReceiptSha256, deleteRequestSha256, refreshDispatchSha256, stateSha256, providerAbsenceSha256, workloadSha256, publicPilotSha256, observationSha256]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-app-delete-terminal-request/v1' }
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        writerGeneration: { type: integer, minimum: 1 }
+        writerHolder: { type: string, format: uuid }
+        target: { type: string, enum: [app-03, app-04] }
+        dropletId: { type: string, pattern: '^[1-9][0-9]*$' }
+        providerAccount: { type: string, format: uuid }
+        authorizationSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workloadReceiptSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        deleteRequestSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        refreshDispatchSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        stateSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        providerAbsenceSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workloadSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        publicPilotSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        observationSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    FleetAppDeleteTerminalReceipt:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, terminalEvidenceRecorded, evidence]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-app-delete-terminal-receipt/v1' }
+        terminalEvidenceRecorded: { type: boolean, const: true }
+        evidence: { $ref: '#/components/schemas/FleetAppDeleteTerminalRequest' }
     FleetConvergeRefusalRequest:
       type: object
       additionalProperties: false
