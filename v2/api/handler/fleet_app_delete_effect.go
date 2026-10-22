@@ -29,6 +29,10 @@ type AppDeleteTerminalStore interface {
 	RecordAppDeleteTerminal(context.Context, appdelete.TerminalRequest, string) (appdelete.TerminalReceipt, error)
 	GetAppDeleteTerminal(context.Context, string) (appdelete.TerminalReceipt, error)
 }
+type AppDeleteFinalizeStore interface {
+	FinalizeAppDelete(context.Context, appdelete.FinalizeRequest, string) (appdelete.FinalizeReceipt, error)
+	GetAppDeleteFinalize(context.Context, string) (appdelete.FinalizeReceipt, error)
+}
 
 const appDeleteVerifierSubject = "fleet-app-delete-verifier:work-staging"
 
@@ -80,6 +84,55 @@ func AppDeleteTerminalHandler(store AppDeleteTerminalStore) http.HandlerFunc {
 				status, code = http.StatusServiceUnavailable, "app_delete_terminal_uncertain"
 			}
 			WriteControlProblem(w, r, status, code, "app delete terminal evidence was not recorded")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(receipt)
+	}
+}
+
+func AppDeleteFinalizeHandler(store AppDeleteFinalizeStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Pragma", "no-cache")
+		principal, ok := appDeleteVerifierPrincipal(r)
+		if !ok {
+			WriteControlProblem(w, r, http.StatusForbidden, "app_delete_verifier_required", "a dedicated work-staging app delete verifier token is required")
+			return
+		}
+		planID, attemptID := chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID")
+		if store == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "app_delete_finalize_unavailable", "durable app delete completion is unavailable")
+			return
+		}
+		if r.Method == http.MethodGet {
+			receipt, err := store.GetAppDeleteFinalize(r.Context(), planID)
+			if errors.Is(err, appdelete.ErrNotFound) {
+				WriteControlProblem(w, r, http.StatusNotFound, "app_delete_finalize_not_found", "completion is not recorded")
+				return
+			}
+			if err != nil || receipt.AttemptID != attemptID {
+				WriteControlProblem(w, r, http.StatusConflict, "app_delete_finalize_mismatch", "completion differs from the route")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(receipt)
+			return
+		}
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16*1024))
+		request, decodeErr := appdelete.DecodeFinalizeRequest(raw)
+		if err != nil || decodeErr != nil || request.PlanID != planID || request.AttemptID != attemptID {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_app_delete_finalize_request", "the request must exactly match the route and typed contract")
+			return
+		}
+		receipt, err := store.FinalizeAppDelete(r.Context(), request, principal.Subject)
+		if err != nil {
+			status, code := http.StatusConflict, "app_delete_finalize_refused"
+			if !errors.Is(err, appdelete.ErrRefused) {
+				status, code = http.StatusServiceUnavailable, "app_delete_finalize_uncertain"
+			}
+			WriteControlProblem(w, r, status, code, "app delete completion was not recorded")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

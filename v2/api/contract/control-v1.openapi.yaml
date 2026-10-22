@@ -921,6 +921,33 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-finalize:
+    get:
+      operationId: readFleetAppDeleteFinalize
+      description: Default-off exact readback of verifier-owned completion and original target fence release.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Exact completion receipt, content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteFinalizeReceipt' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: finalizeFleetAppDelete
+      description: Default-off verifier-only atomic completion of the exact terminal-evidenced attempt and release of its original target fence.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteFinalizeRequest' } } }
+      responses:
+        '201': { description: Attempt and fence closed atomically, content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteFinalizeReceipt' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -2505,6 +2532,28 @@ components:
         schemaVersion: { type: string, const: 'norn.fleet-app-delete-terminal-receipt/v1' }
         terminalEvidenceRecorded: { type: boolean, const: true }
         evidence: { $ref: '#/components/schemas/FleetAppDeleteTerminalRequest' }
+    FleetAppDeleteFinalizeRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, attemptId, terminalReceiptSha256]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-app-delete-finalize-request/v1' }
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        terminalReceiptSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    FleetAppDeleteFinalizeReceipt:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, attemptId, terminalReceiptSha256, targetId, targetFenceGeneration, attemptCompleted, fenceReleased]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-app-delete-finalize-receipt/v1' }
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        terminalReceiptSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        targetId: { type: string, minLength: 1 }
+        targetFenceGeneration: { type: integer, minimum: 1 }
+        attemptCompleted: { type: boolean, const: true }
+        fenceReleased: { type: boolean, const: true }
     FleetConvergeRefusalRequest:
       type: object
       additionalProperties: false

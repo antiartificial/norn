@@ -186,6 +186,125 @@ func TestFleetAppDeleteTerminalBindsConsumedPermitAndIsOneUseEtcd(t *testing.T) 
 	}
 }
 
+func TestFleetAppDeleteFinalizeAtomicallyClosesOriginalTenure(t *testing.T) {
+	h, r := appDeletePermitFixture(t)
+	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := h.s.RecordAppDeleteTerminal(h.ctx(), terminalRequest(r), "fleet-app-delete-verifier:work-staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := appdelete.FinalizeRequest{SchemaVersion: appdelete.FinalizeRequestSchema, PlanID: r.PlanID, AttemptID: r.AttemptID, TerminalReceiptSHA256: appdelete.TerminalReceiptSHA256(terminal)}
+	if _, err := h.s.FinalizeAppDelete(h.ctx(), request, "fleet-attempt:"+r.AttemptID); !errors.Is(err, appdelete.ErrRefused) {
+		t.Fatalf("cross-scope finalize=%v", err)
+	}
+	receipt, err := h.s.FinalizeAppDelete(h.ctx(), request, "fleet-app-delete-verifier:work-staging")
+	if err != nil || !receipt.AttemptCompleted || !receipt.FenceReleased || receipt.TerminalReceiptSHA256 != request.TerminalReceiptSHA256 {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	if _, err := h.s.FinalizeAppDelete(h.ctx(), request, "fleet-app-delete-verifier:work-staging"); !errors.Is(err, appdelete.ErrRefused) {
+		t.Fatalf("replay=%v", err)
+	}
+	read, err := h.s.GetAppDeleteFinalize(h.ctx(), r.PlanID)
+	if err != nil || read != receipt {
+		t.Fatalf("readback=%+v err=%v", read, err)
+	}
+	rows, _ := h.s.kv.Get(h.ctx(), h.s.fleetRunnerAttemptKey(r.PlanID, r.AttemptID))
+	var attempt fleet.RunnerAttempt
+	if len(rows.Kvs) != 1 || json.Unmarshal(rows.Kvs[0].Value, &attempt) != nil || attempt.Status != "succeeded" || attempt.CurrentPhase != "complete" {
+		t.Fatalf("attempt=%+v", attempt)
+	}
+	fences, _ := h.s.kv.Get(h.ctx(), h.s.fleetTargetFenceKey(h.targets["app-delete"]))
+	var fence v3FleetTargetFence
+	if len(fences.Kvs) != 1 || json.Unmarshal(fences.Kvs[0].Value, &fence) != nil || fence.Held || fence.LastReleaseReason != "succeeded" || fence.LastReleasePlanID != r.PlanID {
+		t.Fatalf("fence=%+v", fence)
+	}
+}
+
+func TestFleetAppDeleteFinalizeRefusesDigestAndFenceDrift(t *testing.T) {
+	for _, drift := range []string{"digest", "fence-generation", "epoch"} {
+		t.Run(drift, func(t *testing.T) {
+			h, r := appDeletePermitFixture(t)
+			if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			terminal, err := h.s.RecordAppDeleteTerminal(h.ctx(), terminalRequest(r), "fleet-app-delete-verifier:work-staging")
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := appdelete.FinalizeRequest{SchemaVersion: appdelete.FinalizeRequestSchema, PlanID: r.PlanID, AttemptID: r.AttemptID, TerminalReceiptSHA256: appdelete.TerminalReceiptSHA256(terminal)}
+			switch drift {
+			case "digest":
+				request.TerminalReceiptSHA256 = strings.Repeat("0", 64)
+			case "fence-generation":
+				key := h.s.fleetTargetFenceKey(h.targets["app-delete"])
+				row, _ := h.s.kv.Get(h.ctx(), key)
+				var fence v3FleetTargetFence
+				if err := json.Unmarshal(row.Kvs[0].Value, &fence); err != nil {
+					t.Fatal(err)
+				}
+				fence.Generation++
+				raw, _ := json.Marshal(fence)
+				if _, err := h.s.kv.Put(h.ctx(), key, string(raw)); err != nil {
+					t.Fatal(err)
+				}
+			case "epoch":
+				if _, err := h.s.kv.Put(h.ctx(), h.s.fleetAuthorityEpochKey(), "999"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := h.s.FinalizeAppDelete(h.ctx(), request, "fleet-app-delete-verifier:work-staging"); !errors.Is(err, appdelete.ErrRefused) {
+				t.Fatalf("drift %s: %v", drift, err)
+			}
+			if _, err := h.s.GetAppDeleteFinalize(h.ctx(), r.PlanID); !errors.Is(err, appdelete.ErrNotFound) {
+				t.Fatalf("drift %s recorded completion: %v", drift, err)
+			}
+		})
+	}
+}
+
+func TestFleetAppDeleteFinalizeWithdrawsPriorActiveIngress(t *testing.T) {
+	h, r := appDeletePermitFixture(t)
+	const cluster, environment = "app-delete", "staging/nyc3"
+	old := activeFleetIngress{SchemaVersion: activeFleetIngressSchema, Cluster: cluster, Environment: environment,
+		PlanID: uuid.NewString(), AttemptID: uuid.NewString(), CheckpointID: uuid.NewString(), CheckpointRevision: 7,
+		StateSerial: 42, Digest: strings.Repeat("a", 64)}
+	raw, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := h.s.activeFleetIngressKey(cluster, environment)
+	if _, err := h.s.kv.Put(h.ctx(), key, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.kv.Put(h.ctx(), h.s.activeFleetIngressClusterEpochKey(cluster), old.PlanID+"\x00"+old.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := h.s.RecordAppDeleteTerminal(h.ctx(), terminalRequest(r), "fleet-app-delete-verifier:work-staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := appdelete.FinalizeRequest{SchemaVersion: appdelete.FinalizeRequestSchema, PlanID: r.PlanID, AttemptID: r.AttemptID, TerminalReceiptSHA256: appdelete.TerminalReceiptSHA256(terminal)}
+	if _, err := h.s.FinalizeAppDelete(h.ctx(), request, "fleet-app-delete-verifier:work-staging"); err != nil {
+		t.Fatal(err)
+	}
+	pointer, err := h.s.kv.Get(h.ctx(), key)
+	if err != nil || pointer.Count != 0 {
+		t.Fatalf("stale active pointer remains: count=%d err=%v", pointer.Count, err)
+	}
+	epoch, err := h.s.kv.Get(h.ctx(), h.s.activeFleetIngressClusterEpochKey(cluster))
+	if err != nil || len(epoch.Kvs) != 1 || string(epoch.Kvs[0].Value) != "withdraw:"+r.PlanID+"\x00"+r.AttemptID {
+		t.Fatalf("cluster epoch not withdrawn: %+v err=%v", epoch, err)
+	}
+	if _, err := h.s.CurrentActiveFleetIngressInventory(h.ctx(), cluster, environment, 18082); err == nil {
+		t.Fatal("stale active ingress read succeeded")
+	}
+}
+
 func TestFleetAppDeleteTerminalRefusesCrossScopeAndTupleDriftEtcd(t *testing.T) {
 	h, r := appDeletePermitFixture(t)
 	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {

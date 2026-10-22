@@ -33,7 +33,7 @@ func TestEtcdFleetAppDeleteTerminalRoutesShareDefaultOffGate(t *testing.T) {
 		router := chi.NewRouter()
 		registerEtcdFleetAppDeleteCoPermitRoute(router, &config.Config{FleetAppDeleteCoPermitEnabled: enabled}, nil, nil, true)
 		routes := laneRouteSet(laneWalkRoutes(t, router))
-		for _, route := range []string{"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal", "GET /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal"} {
+		for _, route := range []string{"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal", "GET /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal", "POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-finalize", "GET /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-finalize"} {
 			if routes[route] != enabled {
 				t.Fatalf("%s present=%t", route, routes[route])
 			}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet"
@@ -241,6 +242,125 @@ func (s *V3OperationStore) GetAppDeleteTerminal(ctx context.Context, planID stri
 	}
 	if json.Unmarshal(response.Kvs[0].Value, &receipt) != nil || receipt.SchemaVersion != appdelete.TerminalReceiptSchema || !receipt.TerminalEvidenceRecorded || receipt.Evidence.Validate() != nil || receipt.Evidence.PlanID != planID {
 		return appdelete.TerminalReceipt{}, appdelete.ErrRefused
+	}
+	return receipt, nil
+}
+
+func (s *V3OperationStore) appDeleteFinalizeKey(planID string) string {
+	return s.prefix + "/v3/fleet-app-delete-finalized/" + planID
+}
+
+// FinalizeAppDelete closes the exact terminal-evidenced attempt and its original
+// target fence in one CAS. It never accepts an executor-supplied success claim.
+func (s *V3OperationStore) FinalizeAppDelete(ctx context.Context, r appdelete.FinalizeRequest, principal string) (appdelete.FinalizeReceipt, error) {
+	var zero appdelete.FinalizeReceipt
+	if s == nil || r.Validate() != nil || principal != "fleet-app-delete-verifier:work-staging" {
+		return zero, appdelete.ErrRefused
+	}
+	permitKey, terminalKey, finalizeKey := s.appDeleteCoPermitKey(r.PlanID), s.appDeleteTerminalKey(r.PlanID), s.appDeleteFinalizeKey(r.PlanID)
+	attemptKey, planKey, stateKey := s.fleetRunnerAttemptKey(r.PlanID, r.AttemptID), s.opKey(r.PlanID), s.fleetRunnerPlanStateKey(r.PlanID)
+	first, err := s.kv.Txn(ctx).Then(clientv3.OpGet(permitKey), clientv3.OpGet(terminalKey), clientv3.OpGet(finalizeKey), clientv3.OpGet(attemptKey), clientv3.OpGet(planKey), clientv3.OpGet(stateKey), clientv3.OpGet(s.fleetTargetAbandonedKey(r.PlanID))).Commit()
+	if err != nil {
+		return zero, err
+	}
+	if len(first.Responses) != 7 {
+		return zero, appdelete.ErrRefused
+	}
+	get := func(i int) []*mvccpb.KeyValue { return first.Responses[i].GetResponseRange().Kvs }
+	if len(get(0)) != 1 || len(get(1)) != 1 || len(get(2)) != 0 || len(get(3)) != 1 || len(get(4)) != 1 || len(get(5)) != 1 || len(get(6)) != 0 {
+		return zero, appdelete.ErrRefused
+	}
+	var permit appDeleteConsumedPermit
+	var terminal appdelete.TerminalReceipt
+	var attempt fleet.RunnerAttempt
+	var plan v3Record
+	var state v3FleetRunnerPlanState
+	if json.Unmarshal(get(0)[0].Value, &permit) != nil || json.Unmarshal(get(1)[0].Value, &terminal) != nil || decodeV3Record(get(3)[0].Value, &attempt) != nil || decodeV3Record(get(4)[0].Value, &plan) != nil || decodeV3Record(get(5)[0].Value, &state) != nil || state.Version <= 0 {
+		return zero, appdelete.ErrRefused
+	}
+	if permit.SchemaVersion != appDeleteConsumedPermitSchema || terminal.SchemaVersion != appdelete.TerminalReceiptSchema || !terminal.TerminalEvidenceRecorded || terminal.Evidence.Validate() != nil || terminal.Evidence.Permit() != permit.Request || terminal.Evidence.PlanID != r.PlanID || terminal.Evidence.AttemptID != r.AttemptID || appdelete.TerminalReceiptSHA256(terminal) != r.TerminalReceiptSHA256 || attempt.ID != r.AttemptID || attempt.PlanID != r.PlanID || attempt.Status != "running" || attempt.CurrentPhase != "provider_applying" || permit.TargetID == "" || permit.TargetFenceGeneration <= 0 || permit.AuthorityEpoch <= 0 {
+		return zero, appdelete.ErrRefused
+	}
+	converge, digest, cluster := parseFleetConvergePlanPayload(plan.Operation.Payload)
+	if plan.Operation.Kind != "fleet.capacity-plan" || converge == nil || attempt.CommitSHA != converge.CommitSHA || "sha256:"+attempt.PlanSHA256 != digest {
+		return zero, appdelete.ErrRefused
+	}
+	targetID, empty, _, err := s.ResolveFleetTargetForPlan(ctx, cluster, "")
+	if err != nil || empty || targetID != permit.TargetID {
+		return zero, appdelete.ErrRefused
+	}
+	fenceKey, epochKey := s.fleetTargetFenceKey(targetID), s.fleetAuthorityEpochKey()
+	second, err := s.kv.Txn(ctx).Then(clientv3.OpGet(fenceKey), clientv3.OpGet(epochKey), clientv3.OpGet(s.fleetTargetKey(targetID)), clientv3.OpGet(s.fleetTargetRegistryKey())).Commit()
+	if err != nil {
+		return zero, err
+	}
+	if len(second.Responses) != 4 {
+		return zero, appdelete.ErrRefused
+	}
+	fences, epochs, targets, registry := second.Responses[0].GetResponseRange().Kvs, second.Responses[1].GetResponseRange().Kvs, second.Responses[2].GetResponseRange().Kvs, second.Responses[3].GetResponseRange().Kvs
+	if len(fences) != 1 || len(epochs) != 1 || len(targets) != 1 || len(registry) > 1 {
+		return zero, appdelete.ErrRefused
+	}
+	var fence v3FleetTargetFence
+	epoch, epochErr := strconv.ParseInt(strings.TrimSpace(string(epochs[0].Value)), 10, 64)
+	if decodeV3Record(fences[0].Value, &fence) != nil || epochErr != nil || !fence.Held || fence.HolderPlanID != r.PlanID || fence.HolderNonceSHA256 != executor.HolderNonceSHA256(r.PlanID) || fence.Generation != permit.TargetFenceGeneration || fence.AuthorityEpoch != permit.AuthorityEpoch || epoch != permit.AuthorityEpoch {
+		return zero, appdelete.ErrRefused
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	attempt.Status, attempt.CurrentPhase, attempt.FinishedAt, attempt.UpdatedAt = "succeeded", "complete", &now, now
+	attempt.Revision++
+	fence.Held, fence.HolderPlanID, fence.HolderNonceSHA256 = false, "", ""
+	fence.LastReleasePlanID, fence.LastReleaseReason, fence.LastReleaseAt = r.PlanID, "succeeded", &now
+	fence.Revision++
+	receipt := appdelete.FinalizeReceipt{SchemaVersion: appdelete.FinalizeReceiptSchema, PlanID: r.PlanID, AttemptID: r.AttemptID, TerminalReceiptSHA256: r.TerminalReceiptSHA256, TargetID: targetID, TargetFenceGeneration: permit.TargetFenceGeneration, AttemptCompleted: true, FenceReleased: true}
+	attemptRaw, err := json.Marshal(attempt)
+	if err != nil {
+		return zero, err
+	}
+	fenceRaw, err := json.Marshal(fence)
+	if err != nil {
+		return zero, err
+	}
+	stateRaw, err := json.Marshal(v3FleetRunnerPlanState{Version: state.Version + 1})
+	if err != nil {
+		return zero, err
+	}
+	receiptRaw, err := json.Marshal(receipt)
+	if err != nil {
+		return zero, err
+	}
+	ingressCompares, ingressOps, err := s.activeFleetIngressTransition(ctx, r.PlanID, attempt)
+	if err != nil {
+		return zero, err
+	}
+	registryCompare := clientv3.Compare(clientv3.CreateRevision(s.fleetTargetRegistryKey()), "=", 0)
+	if len(registry) == 1 {
+		registryCompare = clientv3.Compare(clientv3.ModRevision(s.fleetTargetRegistryKey()), "=", registry[0].ModRevision)
+	}
+	compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(permitKey), "=", get(0)[0].ModRevision), clientv3.Compare(clientv3.ModRevision(terminalKey), "=", get(1)[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(finalizeKey), "=", 0), clientv3.Compare(clientv3.ModRevision(attemptKey), "=", get(3)[0].ModRevision), clientv3.Compare(clientv3.ModRevision(planKey), "=", get(4)[0].ModRevision), clientv3.Compare(clientv3.ModRevision(stateKey), "=", get(5)[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(s.fleetTargetAbandonedKey(r.PlanID)), "=", 0), clientv3.Compare(clientv3.ModRevision(fenceKey), "=", fences[0].ModRevision), clientv3.Compare(clientv3.ModRevision(epochKey), "=", epochs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(s.fleetTargetKey(targetID)), "=", targets[0].ModRevision), registryCompare}
+	compares = append(compares, ingressCompares...)
+	puts := append([]clientv3.Op{clientv3.OpPut(attemptKey, string(attemptRaw)), clientv3.OpPut(stateKey, string(stateRaw)), clientv3.OpPut(fenceKey, string(fenceRaw)), clientv3.OpPut(finalizeKey, string(receiptRaw))}, ingressOps...)
+	committed, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
+	if err != nil {
+		return zero, err
+	}
+	if !committed.Succeeded {
+		return zero, appdelete.ErrRefused
+	}
+	return receipt, nil
+}
+
+func (s *V3OperationStore) GetAppDeleteFinalize(ctx context.Context, planID string) (appdelete.FinalizeReceipt, error) {
+	var receipt appdelete.FinalizeReceipt
+	response, err := s.kv.Get(ctx, s.appDeleteFinalizeKey(planID))
+	if err != nil {
+		return receipt, err
+	}
+	if len(response.Kvs) != 1 {
+		return receipt, appdelete.ErrNotFound
+	}
+	if json.Unmarshal(response.Kvs[0].Value, &receipt) != nil || receipt.SchemaVersion != appdelete.FinalizeReceiptSchema || receipt.PlanID != planID || receipt.AttemptID == "" || receipt.TargetID == "" || receipt.TargetFenceGeneration <= 0 || !receipt.AttemptCompleted || !receipt.FenceReleased {
+		return appdelete.FinalizeReceipt{}, appdelete.ErrRefused
 	}
 	return receipt, nil
 }

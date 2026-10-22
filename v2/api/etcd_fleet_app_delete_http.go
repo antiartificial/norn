@@ -14,6 +14,7 @@ import (
 func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Config, identities store.IdentityStore, permits interface {
 	handler.AppDeleteEffectStore
 	handler.AppDeleteTerminalStore
+	handler.AppDeleteFinalizeStore
 }, executorLane bool) {
 	if cfg == nil || !executorLane || !cfg.FleetAppDeleteCoPermitEnabled {
 		return
@@ -24,4 +25,7 @@ func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Conf
 	terminal := "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal"
 	router.With(verifierAuth).Post(terminal, handler.AppDeleteTerminalHandler(permits))
 	router.With(verifierAuth).Get(terminal, handler.AppDeleteTerminalHandler(permits))
+	finalize := "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-finalize"
+	router.With(verifierAuth).Post(finalize, handler.AppDeleteFinalizeHandler(permits))
+	router.With(verifierAuth).Get(finalize, handler.AppDeleteFinalizeHandler(permits))
 }

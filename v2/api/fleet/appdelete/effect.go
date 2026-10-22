@@ -19,7 +19,53 @@ const (
 	GrantSchema           = "norn.fleet-executor-app-delete-effect/v1"
 	TerminalRequestSchema = "norn.fleet-app-delete-terminal-request/v1"
 	TerminalReceiptSchema = "norn.fleet-app-delete-terminal-receipt/v1"
+	FinalizeRequestSchema = "norn.fleet-app-delete-finalize-request/v1"
+	FinalizeReceiptSchema = "norn.fleet-app-delete-finalize-receipt/v1"
 )
+
+type FinalizeRequest struct {
+	SchemaVersion         string `json:"schemaVersion"`
+	PlanID                string `json:"planId"`
+	AttemptID             string `json:"attemptId"`
+	TerminalReceiptSHA256 string `json:"terminalReceiptSha256"`
+}
+
+func (r FinalizeRequest) Validate() error {
+	if r.SchemaVersion != FinalizeRequestSchema || uuid.Validate(r.PlanID) != nil || uuid.Validate(r.AttemptID) != nil || !hex64.MatchString(r.TerminalReceiptSHA256) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func DecodeFinalizeRequest(raw []byte) (FinalizeRequest, error) {
+	var request FinalizeRequest
+	if len(raw) == 0 || len(raw) > 16*1024 || !json.Valid(raw) || duplicateJSONKey(json.NewDecoder(bytes.NewReader(raw))) {
+		return request, ErrInvalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF || request.Validate() != nil {
+		return FinalizeRequest{}, ErrInvalid
+	}
+	return request, nil
+}
+
+type FinalizeReceipt struct {
+	SchemaVersion         string `json:"schemaVersion"`
+	PlanID                string `json:"planId"`
+	AttemptID             string `json:"attemptId"`
+	TerminalReceiptSHA256 string `json:"terminalReceiptSha256"`
+	TargetID              string `json:"targetId"`
+	TargetFenceGeneration int64  `json:"targetFenceGeneration"`
+	AttemptCompleted      bool   `json:"attemptCompleted"`
+	FenceReleased         bool   `json:"fenceReleased"`
+}
+
+func TerminalReceiptSHA256(receipt TerminalReceipt) string {
+	raw, _ := json.Marshal(receipt)
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
 
 type TerminalRequest struct {
 	SchemaVersion         string `json:"schemaVersion"`
