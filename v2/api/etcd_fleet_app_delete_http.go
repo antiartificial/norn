@@ -13,6 +13,7 @@ import (
 // reservation are still required before a provider DELETE can run.
 func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Config, identities store.IdentityStore, permits interface {
 	handler.AppDeleteEffectStore
+	handler.App04DeleteAdmissionStore
 	handler.AppDeleteTerminalStore
 	handler.AppDeleteFinalizeStore
 }, executorLane bool) {
@@ -22,6 +23,8 @@ func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Conf
 	attemptAuth := etcdFleetLaneAuth(cfg, identities, handler.ScopeFleetAttempt)
 	router.With(attemptAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-effect", handler.AppDeleteEffectHandler(permits))
 	verifierAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetAppDeleteVerify)
+	router.With(verifierAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app04-delete-admission", handler.App04DeleteAdmissionHandler(permits))
+	router.With(verifierAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app04-delete-admission", handler.App04DeleteAdmissionHandler(permits))
 	terminal := "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal"
 	router.With(verifierAuth).Post(terminal, handler.AppDeleteTerminalHandler(permits))
 	router.With(verifierAuth).Get(terminal, handler.AppDeleteTerminalHandler(permits))

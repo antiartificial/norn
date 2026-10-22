@@ -25,6 +25,10 @@ import (
 type AppDeleteEffectStore interface {
 	ConsumeAppDeleteCoPermit(context.Context, appdelete.Request, string) error
 }
+type App04DeleteAdmissionStore interface {
+	RecordApp04DeleteAdmission(context.Context, appdelete.App04Admission, string) error
+	GetApp04DeleteAdmission(context.Context, string) (appdelete.App04Admission, error)
+}
 type AppDeleteTerminalStore interface {
 	RecordAppDeleteTerminal(context.Context, appdelete.TerminalRequest, string) (appdelete.TerminalReceipt, error)
 	GetAppDeleteTerminal(context.Context, string) (appdelete.TerminalReceipt, error)
@@ -41,6 +45,54 @@ func appDeleteVerifierPrincipal(r *http.Request) (AccessPrincipal, bool) {
 	return p, ok && p.Source == AccessPrincipalSourceManagedToken && !p.Legacy && p.CI == nil && p.DeviceID == "" &&
 		p.Subject == appDeleteVerifierSubject && p.TokenID != "" && len(p.Scopes) == 1 && p.Scopes[0] == ScopeFleetAppDeleteVerify &&
 		!p.ExpiresAt.IsZero() && time.Now().Before(p.ExpiresAt)
+}
+
+// App04DeleteAdmissionHandler is default off with the app-delete route group.
+// The verifier attests saved provider plan and workload facts; Norn compares
+// its own plan, live attempt and fence before recording the one-use binding.
+func App04DeleteAdmissionHandler(store App04DeleteAdmissionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Pragma", "no-cache")
+		principal, ok := appDeleteVerifierPrincipal(r)
+		if !ok {
+			WriteControlProblem(w, r, http.StatusForbidden, "app_delete_verifier_required", "a dedicated work-staging app delete verifier token is required")
+			return
+		}
+		if store == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "app04_delete_admission_unavailable", "durable app04 admission is unavailable")
+			return
+		}
+		if r.Method == http.MethodGet {
+			admission, err := store.GetApp04DeleteAdmission(r.Context(), chi.URLParam(r, "planID"))
+			if errors.Is(err, appdelete.ErrNotFound) {
+				WriteControlProblem(w, r, http.StatusNotFound, "app04_delete_admission_not_found", "app04 admission is absent")
+				return
+			}
+			if err != nil || admission.AttemptID != chi.URLParam(r, "attemptID") {
+				WriteControlProblem(w, r, http.StatusConflict, "app04_delete_admission_mismatch", "app04 admission differs from route")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(admission)
+			return
+		}
+		var admission appdelete.App04Admission
+		if err := decodeControlJSON(w, r, &admission); err != nil || admission.Validate() != nil ||
+			admission.PlanID != chi.URLParam(r, "planID") || admission.AttemptID != chi.URLParam(r, "attemptID") {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_app04_delete_admission", "exact app04 admission is required")
+			return
+		}
+		if err := store.RecordApp04DeleteAdmission(r.Context(), admission, principal.Subject); err != nil {
+			status, code := http.StatusConflict, "app04_delete_admission_refused"
+			if !errors.Is(err, appdelete.ErrRefused) {
+				status, code = http.StatusServiceUnavailable, "app04_delete_admission_uncertain"
+			}
+			WriteControlProblem(w, r, status, code, "app04 admission was not recorded")
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}
 }
 
 func AppDeleteTerminalHandler(store AppDeleteTerminalStore) http.HandlerFunc {
