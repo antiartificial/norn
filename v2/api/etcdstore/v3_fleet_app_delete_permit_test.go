@@ -47,6 +47,7 @@ func appDeletePermitFixture(t *testing.T) (*etcdExecutorHarness, appdelete.Reque
 
 func TestFleetAppDeleteCoPermitRaceReplayAndStaleEtcd(t *testing.T) {
 	h, r := appDeletePermitFixture(t)
+	recordApp03Admission(t, h, r)
 	principal := "fleet-attempt:" + r.AttemptID
 	var wg sync.WaitGroup
 	results := make([]error, 12)
@@ -179,6 +180,15 @@ func app04AdmissionFixture(t *testing.T, h *etcdExecutorHarness, r appdelete.Req
 	return a
 }
 
+func recordApp03Admission(t *testing.T, h *etcdExecutorHarness, r appdelete.Request) {
+	t.Helper()
+	a := app04AdmissionFixture(t, h, r)
+	a.SchemaVersion = appdelete.App03AdmissionSchema
+	if err := h.s.RecordApp03DeleteAdmission(h.ctx(), a, "fleet-app-delete-verifier:work-staging"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func recordApp04Admission(t *testing.T, h *etcdExecutorHarness, r appdelete.Request) {
 	t.Helper()
 	if err := h.s.RecordApp04DeleteAdmission(h.ctx(), app04AdmissionFixture(t, h, r), "fleet-app-delete-verifier:work-staging"); err != nil {
@@ -217,6 +227,35 @@ func TestFleetApp04AdmissionRefusesWrongAuthorityAndDrift(t *testing.T) {
 	}
 }
 
+func TestFleetApp03DeleteRequiresExactVerifierAdmission(t *testing.T) {
+	h, r := appDeletePermitFixture(t)
+	principal := "fleet-attempt:" + r.AttemptID
+	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, principal); !errors.Is(err, appdelete.ErrRefused) {
+		t.Fatalf("missing admission = %v", err)
+	}
+	a := app04AdmissionFixture(t, h, r)
+	a.SchemaVersion = appdelete.App03AdmissionSchema
+	if err := h.s.RecordApp03DeleteAdmission(h.ctx(), a, "fleet-attempt:"+r.AttemptID); !errors.Is(err, appdelete.ErrRefused) {
+		t.Fatalf("wrong verifier = %v", err)
+	}
+	if err := h.s.RecordApp04DeleteAdmission(h.ctx(), a, "fleet-app-delete-verifier:work-staging"); !errors.Is(err, appdelete.ErrRefused) {
+		t.Fatalf("wrong target route = %v", err)
+	}
+	recordApp03Admission(t, h, r)
+	readback, err := h.s.GetApp03DeleteAdmission(h.ctx(), r.PlanID)
+	if err != nil || readback != a {
+		t.Fatalf("readback=%+v err=%v", readback, err)
+	}
+	changed := r
+	changed.WriterGeneration++
+	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), changed, principal); !errors.Is(err, appdelete.ErrRefused) {
+		t.Fatalf("wrong writer = %v", err)
+	}
+	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, principal); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFleetApp04DeleteRequiresExactVerifierAdmission(t *testing.T) {
 	h, r := appDeletePermitFixture(t)
 	r.Target, r.DropletID = "app-04", "4242"
@@ -250,6 +289,8 @@ func TestFleetAppDeleteTerminalBindsConsumedPermitAndIsOneUseEtcd(t *testing.T) 
 			r.DeleteRequestSHA256 = appdelete.ExactDeleteRequestSHA256(target.id)
 			if target.name == "app-04" {
 				recordApp04Admission(t, h, r)
+			} else {
+				recordApp03Admission(t, h, r)
 			}
 			if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
 				t.Fatal(err)
@@ -282,6 +323,7 @@ func TestFleetAppDeleteTerminalBindsConsumedPermitAndIsOneUseEtcd(t *testing.T) 
 
 func TestFleetAppDeleteFinalizeAtomicallyClosesOriginalTenure(t *testing.T) {
 	h, r := appDeletePermitFixture(t)
+	recordApp03Admission(t, h, r)
 	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
 		t.Fatal(err)
 	}
@@ -320,6 +362,7 @@ func TestFleetAppDeleteFinalizeRefusesDigestAndFenceDrift(t *testing.T) {
 	for _, drift := range []string{"digest", "fence-generation", "epoch"} {
 		t.Run(drift, func(t *testing.T) {
 			h, r := appDeletePermitFixture(t)
+			recordApp03Admission(t, h, r)
 			if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
 				t.Fatal(err)
 			}
@@ -375,6 +418,7 @@ func TestFleetAppDeleteFinalizeWithdrawsPriorActiveIngress(t *testing.T) {
 	if _, err := h.s.kv.Put(h.ctx(), h.s.activeFleetIngressClusterEpochKey(cluster), old.PlanID+"\x00"+old.AttemptID); err != nil {
 		t.Fatal(err)
 	}
+	recordApp03Admission(t, h, r)
 	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
 		t.Fatal(err)
 	}
@@ -401,6 +445,7 @@ func TestFleetAppDeleteFinalizeWithdrawsPriorActiveIngress(t *testing.T) {
 
 func TestFleetAppDeleteTerminalRefusesCrossScopeAndTupleDriftEtcd(t *testing.T) {
 	h, r := appDeletePermitFixture(t)
+	recordApp03Admission(t, h, r)
 	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
 		t.Fatal(err)
 	}
@@ -420,6 +465,7 @@ func TestFleetAppDeleteTerminalRefusesCrossScopeAndTupleDriftEtcd(t *testing.T) 
 
 func TestFleetAppDeleteTerminalAllowsExpiredHeartbeatWithOriginalFenceEtcd(t *testing.T) {
 	h, r := appDeletePermitFixture(t)
+	recordApp03Admission(t, h, r)
 	if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
 		t.Fatal(err)
 	}
@@ -443,6 +489,7 @@ func TestFleetAppDeleteTerminalRefusesChangedOriginalTenureEtcd(t *testing.T) {
 	for _, kind := range []string{"generation", "epoch"} {
 		t.Run(kind, func(t *testing.T) {
 			h, r := appDeletePermitFixture(t)
+			recordApp03Admission(t, h, r)
 			if err := h.s.ConsumeAppDeleteCoPermit(h.ctx(), r, "fleet-attempt:"+r.AttemptID); err != nil {
 				t.Fatal(err)
 			}

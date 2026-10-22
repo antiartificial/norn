@@ -878,6 +878,33 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app03-delete-admission:
+    get:
+      operationId: readFleetApp03DeleteAdmission
+      description: Default-off verifier-only readback of the immutable app03 admission after an uncertain POST. This is an attestation of separately reviewed provider and workload facts, not an independent Norn provider check.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Exact recorded admission, content: { application/json: { schema: { $ref: '#/components/schemas/FleetApp03DeleteAdmission' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: recordFleetApp03DeleteAdmission
+      description: Default-off verifier-only one-use admission for app03 deletion. Norn checks the converge plan, live executor attempt and held target fence; savedPlanSha256, PostgreSQL writer and provider/workload facts are verifier attestations and are not independently checked by Norn. A lost response must be resolved with GET, not another POST.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetApp03DeleteAdmission' } } }
+      responses:
+        '201': { description: Admission recorded exactly once }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app04-delete-admission:
     get:
       operationId: readFleetApp04DeleteAdmission
@@ -924,7 +951,7 @@ paths:
   /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-snapshot:
     get:
       operationId: readFleetAppDeleteSnapshot
-      description: Default-off verifier-only coherent read of Norn capacity plan, executor attempt, target fence, epoch, optional app04 admission and consumed app03 or app04 permit. This is an observation and does not attest PostgreSQL, provider state, or workload placement.
+      description: Default-off verifier-only coherent read of Norn capacity plan, executor attempt, target fence, epoch, optional app03 or app04 admission and consumed app03 or app04 permit. This is an observation and does not attest PostgreSQL, provider state, or workload placement.
       parameters:
         - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
@@ -2533,8 +2560,31 @@ components:
         targetFenceGeneration: { type: integer, format: int64 }
         targetFenceAuthorityEpoch: { type: integer, format: int64 }
         currentAuthorityEpoch: { type: integer, format: int64 }
+        app03Admission: { $ref: '#/components/schemas/FleetApp03DeleteAdmission' }
         app04Admission: { $ref: '#/components/schemas/FleetApp04DeleteAdmission' }
         consumedPermit: { $ref: '#/components/schemas/FleetAppDeleteCoPermitRequest' }
+    FleetApp03DeleteAdmission:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, attemptId, planSha256, sourceCommit, targetId, targetFenceGeneration, authorityEpoch, target, dropletId, providerAccount, savedPlanSha256, writerGeneration, writerHolder, authorizationSha256, workloadReceiptSha256, deleteRequestSha256]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-app03-delete-admission/v1' }
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        sourceCommit: { type: string, pattern: '^[0-9a-f]{40}$' }
+        targetId: { type: string, minLength: 1 }
+        targetFenceGeneration: { type: integer, minimum: 1 }
+        authorityEpoch: { type: integer, minimum: 1 }
+        target: { type: string, const: app-03 }
+        dropletId: { type: string, pattern: '^[1-9][0-9]*$' }
+        providerAccount: { type: string, format: uuid }
+        savedPlanSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: Verifier attestation of reviewed provider plan; Norn does not independently inspect it. }
+        writerGeneration: { type: integer, minimum: 1 }
+        writerHolder: { type: string, format: uuid }
+        authorizationSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workloadReceiptSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: Verifier attestation of drained workload; Norn does not independently inspect it. }
+        deleteRequestSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     FleetApp04DeleteAdmission:
       type: object
       additionalProperties: false

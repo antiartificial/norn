@@ -52,7 +52,7 @@ func (s *V3OperationStore) ConsumeAppDeleteCoPermit(ctx context.Context, r appde
 		clientv3.OpGet(attemptKey), clientv3.OpGet(metaKey),
 		clientv3.OpGet(s.opKey(r.PlanID)), clientv3.OpGet(permitKey),
 		clientv3.OpGet(s.fleetTargetAbandonedKey(r.PlanID)),
-		clientv3.OpGet(s.app04DeleteAdmissionKey(r.PlanID)),
+		clientv3.OpGet(s.appDeleteAdmissionKey(r.Target, r.PlanID)),
 	).Commit()
 	if err != nil {
 		return err
@@ -69,12 +69,10 @@ func (s *V3OperationStore) ConsumeAppDeleteCoPermit(ctx context.Context, r appde
 		return appdelete.ErrRefused
 	}
 	admissionRows := response.Responses[5].GetResponseRange().Kvs
-	var app04Admission appdelete.App04Admission
-	if r.Target == "app-04" {
-		if len(admissionRows) != 1 || json.Unmarshal(admissionRows[0].Value, &app04Admission) != nil ||
-			app04Admission.Validate() != nil || !app04Admission.MatchesRequest(r) {
-			return appdelete.ErrRefused
-		}
+	var admission appdelete.App04Admission
+	if len(admissionRows) != 1 || json.Unmarshal(admissionRows[0].Value, &admission) != nil ||
+		admission.Validate() != nil || !admission.MatchesRequest(r) {
+		return appdelete.ErrRefused
 	}
 	var attempt fleet.RunnerAttempt
 	var meta FleetExecutorAttemptMeta
@@ -130,9 +128,9 @@ func (s *V3OperationStore) ConsumeAppDeleteCoPermit(ctx context.Context, r appde
 		fence.Generation <= 0 || fence.AuthorityEpoch != epoch {
 		return appdelete.ErrRefused
 	}
-	if r.Target == "app-04" && (app04Admission.TargetID != targetID ||
-		app04Admission.TargetFenceGeneration != fence.Generation || app04Admission.AuthorityEpoch != epoch ||
-		app04Admission.SourceCommit != converge.CommitSHA || app04Admission.PlanSHA256 != attempt.PlanSHA256) {
+	if admission.TargetID != targetID ||
+		admission.TargetFenceGeneration != fence.Generation || admission.AuthorityEpoch != epoch ||
+		admission.SourceCommit != converge.CommitSHA || admission.PlanSHA256 != attempt.PlanSHA256 {
 		return appdelete.ErrRefused
 	}
 	// No fake PostgreSQL or workload facts enter this record. The opaque tuple
@@ -161,9 +159,7 @@ func (s *V3OperationStore) ConsumeAppDeleteCoPermit(ctx context.Context, r appde
 	if len(registryRows) > 1 {
 		return appdelete.ErrRefused
 	}
-	if r.Target == "app-04" {
-		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.app04DeleteAdmissionKey(r.PlanID)), "=", admissionRows[0].ModRevision))
-	}
+	compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.appDeleteAdmissionKey(r.Target, r.PlanID)), "=", admissionRows[0].ModRevision))
 	committed, err := s.kv.Txn(ctx).If(compares...).Then(clientv3.OpPut(permitKey, string(raw))).Commit()
 	if err != nil {
 		return err

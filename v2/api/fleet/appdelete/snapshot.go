@@ -24,6 +24,7 @@ type Snapshot struct {
 	TargetFenceGeneration     int64           `json:"targetFenceGeneration"`
 	TargetFenceAuthorityEpoch int64           `json:"targetFenceAuthorityEpoch"`
 	CurrentAuthorityEpoch     int64           `json:"currentAuthorityEpoch"`
+	App03Admission            *App03Admission `json:"app03Admission,omitempty"`
 	App04Admission            *App04Admission `json:"app04Admission,omitempty"`
 	ConsumedPermit            *Request        `json:"consumedPermit,omitempty"`
 }

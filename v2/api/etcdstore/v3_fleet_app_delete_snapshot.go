@@ -43,7 +43,7 @@ func (s *V3OperationStore) GetAppDeleteSnapshot(ctx context.Context, planID, att
 	}
 	keys := []string{planKey, s.fleetRunnerAttemptKey(planID, attemptID), s.fleetExecutorMetaKey(planID, attemptID),
 		s.fleetTargetAliasKey("cluster:" + cluster), s.fleetTargetKey(targetID), s.fleetTargetFenceKey(targetID),
-		s.fleetAuthorityEpochKey(), s.app04DeleteAdmissionKey(planID), s.appDeleteCoPermitKey(planID),
+		s.fleetAuthorityEpochKey(), s.app04DeleteAdmissionKey(planID), s.app03DeleteAdmissionKey(planID), s.appDeleteCoPermitKey(planID),
 		s.fleetTargetAbandonedKey(planID), s.fleetTargetRegistryKey()}
 	ops := make([]clientv3.Op, 0, len(keys))
 	for _, key := range keys {
@@ -63,12 +63,12 @@ func (s *V3OperationStore) GetAppDeleteSnapshot(ctx context.Context, planID, att
 		}
 		return kvs[0].Value
 	}
-	for _, i := range []int{0, 1, 2, 3, 4, 5, 6, 10} {
+	for _, i := range []int{0, 1, 2, 3, 4, 5, 6, 11} {
 		if row(i) == nil {
 			return zero, appdelete.ErrRefused
 		}
 	}
-	if row(9) != nil || string(row(3)) != targetID {
+	if row(10) != nil || string(row(3)) != targetID {
 		return zero, appdelete.ErrRefused
 	}
 	var plan v3Record
@@ -79,7 +79,7 @@ func (s *V3OperationStore) GetAppDeleteSnapshot(ctx context.Context, planID, att
 	var registry v3FleetTargetRegistry
 	if decodeV3Record(row(0), &plan) != nil || decodeV3Record(row(1), &attempt) != nil ||
 		decodeV3Record(row(2), &meta) != nil || decodeV3Record(row(4), &target) != nil || target.TargetID != targetID ||
-		decodeV3Record(row(5), &fence) != nil || decodeV3Record(row(10), &registry) != nil || registry.Generation <= 0 {
+		decodeV3Record(row(5), &fence) != nil || decodeV3Record(row(11), &registry) != nil || registry.Generation <= 0 {
 		return zero, appdelete.ErrRefused
 	}
 	converge, digest, actualCluster := parseFleetConvergePlanPayload(plan.Operation.Payload)
@@ -101,12 +101,19 @@ func (s *V3OperationStore) GetAppDeleteSnapshot(ctx context.Context, planID, att
 		TargetFenceGeneration: fence.Generation, TargetFenceAuthorityEpoch: fence.AuthorityEpoch, CurrentAuthorityEpoch: epoch}
 	if raw := row(7); raw != nil {
 		var admission appdelete.App04Admission
-		if json.Unmarshal(raw, &admission) != nil || admission.Validate() != nil || admission.PlanID != planID || admission.AttemptID != attemptID {
+		if json.Unmarshal(raw, &admission) != nil || admission.Validate() != nil || admission.Target != "app-04" || admission.PlanID != planID || admission.AttemptID != attemptID {
 			return zero, appdelete.ErrRefused
 		}
 		out.App04Admission = &admission
 	}
 	if raw := row(8); raw != nil {
+		var admission appdelete.App03Admission
+		if json.Unmarshal(raw, &admission) != nil || admission.Validate() != nil || admission.Target != "app-03" || admission.PlanID != planID || admission.AttemptID != attemptID {
+			return zero, appdelete.ErrRefused
+		}
+		out.App03Admission = &admission
+	}
+	if raw := row(9); raw != nil {
 		var permit appDeleteConsumedPermit
 		if json.Unmarshal(raw, &permit) != nil || permit.SchemaVersion != appDeleteConsumedPermitSchema || permit.Request.Validate() != nil ||
 			permit.Request.PlanID != planID || permit.Request.AttemptID != attemptID || permit.TargetID != targetID {

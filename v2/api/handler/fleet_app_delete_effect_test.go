@@ -75,6 +75,66 @@ func (s *appDeleteStoreFake) GetApp04DeleteAdmission(_ context.Context, _ string
 	return s.admission, nil
 }
 
+func (s *appDeleteStoreFake) RecordApp03DeleteAdmission(_ context.Context, a appdelete.App03Admission, _ string) error {
+	s.calls++
+	if s.err != nil {
+		return s.err
+	}
+	s.admission = a
+	return nil
+}
+func (s *appDeleteStoreFake) GetApp03DeleteAdmission(_ context.Context, _ string) (appdelete.App03Admission, error) {
+	s.calls++
+	if s.err != nil {
+		return appdelete.App03Admission{}, s.err
+	}
+	return s.admission, nil
+}
+
+func TestApp03AdmissionHandlerVerifierOnlyAndReadback(t *testing.T) {
+	planID, attemptID := uuid.NewString(), uuid.NewString()
+	r := terminalFixture(planID, attemptID, "app-03", "610327215")
+	a := appdelete.App03Admission{SchemaVersion: appdelete.App03AdmissionSchema, PlanID: planID, AttemptID: attemptID,
+		PlanSHA256: strings.Repeat("c", 64), SourceCommit: strings.Repeat("d", 40), TargetID: "work-staging",
+		TargetFenceGeneration: 3, AuthorityEpoch: 1, Target: r.Target, DropletID: r.DropletID,
+		ProviderAccount: r.ProviderAccount, SavedPlanSHA256: strings.Repeat("e", 64),
+		WriterGeneration: r.WriterGeneration, WriterHolder: r.WriterHolder,
+		AuthorizationSHA256: r.AuthorizationSHA256, WorkloadReceiptSHA256: r.WorkloadReceiptSHA256,
+		DeleteRequestSHA256: r.DeleteRequestSHA256}
+	raw, _ := json.Marshal(a)
+	store := &appDeleteStoreFake{}
+	router := chi.NewRouter()
+	route := "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app03-delete-admission"
+	path := "/api/v1/fleet/plans/" + planID + "/attempts/" + attemptID + "/app03-delete-admission"
+	router.Post(route, App03DeleteAdmissionHandler(store))
+	router.Get(route, App03DeleteAdmissionHandler(store))
+	verifier := AccessPrincipal{Subject: appDeleteVerifierSubject, TokenID: "v", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeFleetAppDeleteVerify}, ExpiresAt: time.Now().Add(time.Hour)}
+	call := func(method string, body []byte, p AccessPrincipal) *httptest.ResponseRecorder {
+		req := WithAccessPrincipal(httptest.NewRequest(method, path, bytes.NewReader(body)), &p)
+		out := httptest.NewRecorder()
+		router.ServeHTTP(out, req)
+		return out
+	}
+	wrong := verifier
+	wrong.Subject = "fleet-attempt:" + attemptID
+	wrong.Scopes = []string{ScopeFleetAttempt}
+	if got := call(http.MethodPost, raw, wrong); got.Code != http.StatusForbidden || store.calls != 0 {
+		t.Fatalf("wrong principal=%d", got.Code)
+	}
+	other := a
+	other.Target = "app-04"
+	invalid, _ := json.Marshal(other)
+	if got := call(http.MethodPost, invalid, verifier); got.Code != http.StatusBadRequest || store.calls != 0 {
+		t.Fatalf("wrong target=%d", got.Code)
+	}
+	if got := call(http.MethodPost, raw, verifier); got.Code != http.StatusCreated {
+		t.Fatalf("post=%d %s", got.Code, got.Body.String())
+	}
+	if got := call(http.MethodGet, nil, verifier); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"target":"app-03"`) {
+		t.Fatalf("get=%d %s", got.Code, got.Body.String())
+	}
+}
+
 func TestApp04AdmissionHandlerVerifierOnlyAndReadback(t *testing.T) {
 	planID, attemptID := uuid.NewString(), uuid.NewString()
 	r := terminalFixture(planID, attemptID, "app-04", "4242")

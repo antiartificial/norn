@@ -15,6 +15,17 @@ import (
 )
 
 func (s *V3OperationStore) app04DeleteAdmissionKey(planID string) string {
+	return s.appDeleteAdmissionKey("app-04", planID)
+}
+
+func (s *V3OperationStore) app03DeleteAdmissionKey(planID string) string {
+	return s.appDeleteAdmissionKey("app-03", planID)
+}
+
+func (s *V3OperationStore) appDeleteAdmissionKey(target, planID string) string {
+	if target == "app-03" {
+		return s.prefix + "/v3/fleet-app03-delete-admission/" + planID
+	}
 	return s.prefix + "/v3/fleet-app04-delete-admission/" + planID
 }
 
@@ -24,11 +35,18 @@ func (s *V3OperationStore) app04DeleteAdmissionKey(planID string) string {
 // independently inspect provider state or PG. Norn checks its recorded
 // converge-plan attempt and held fence.
 func (s *V3OperationStore) RecordApp04DeleteAdmission(ctx context.Context, a appdelete.App04Admission, principal string) error {
+	if a.Target != "app-04" || a.SchemaVersion != appdelete.App04AdmissionSchema {
+		return appdelete.ErrRefused
+	}
+	return s.recordAppDeleteAdmission(ctx, a, principal)
+}
+
+func (s *V3OperationStore) recordAppDeleteAdmission(ctx context.Context, a appdelete.App04Admission, principal string) error {
 	if s == nil || a.Validate() != nil || principal != "fleet-app-delete-verifier:work-staging" {
 		return appdelete.ErrRefused
 	}
 	planKey, attemptKey := s.opKey(a.PlanID), s.fleetRunnerAttemptKey(a.PlanID, a.AttemptID)
-	metaKey, admissionKey := s.fleetExecutorMetaKey(a.PlanID, a.AttemptID), s.app04DeleteAdmissionKey(a.PlanID)
+	metaKey, admissionKey := s.fleetExecutorMetaKey(a.PlanID, a.AttemptID), s.appDeleteAdmissionKey(a.Target, a.PlanID)
 	first, err := s.kv.Txn(ctx).Then(clientv3.OpGet(planKey), clientv3.OpGet(attemptKey), clientv3.OpGet(metaKey), clientv3.OpGet(admissionKey)).Commit()
 	if err != nil {
 		return err
@@ -108,8 +126,35 @@ func (s *V3OperationStore) GetApp04DeleteAdmission(ctx context.Context, planID s
 	if response.Count != 1 || len(response.Kvs) != 1 {
 		return a, appdelete.ErrNotFound
 	}
-	if json.Unmarshal(response.Kvs[0].Value, &a) != nil || a.Validate() != nil || a.PlanID != planID {
+	if json.Unmarshal(response.Kvs[0].Value, &a) != nil || a.Validate() != nil || a.PlanID != planID || a.Target != "app-04" {
 		return appdelete.App04Admission{}, appdelete.ErrRefused
+	}
+	return a, nil
+}
+
+// RecordApp03DeleteAdmission applies the same one-use verifier binding to the
+// temporary app03 scale-down target.
+func (s *V3OperationStore) RecordApp03DeleteAdmission(ctx context.Context, a appdelete.App03Admission, principal string) error {
+	if a.Target != "app-03" || a.SchemaVersion != appdelete.App03AdmissionSchema {
+		return appdelete.ErrRefused
+	}
+	return s.recordAppDeleteAdmission(ctx, a, principal)
+}
+
+func (s *V3OperationStore) GetApp03DeleteAdmission(ctx context.Context, planID string) (appdelete.App03Admission, error) {
+	var a appdelete.App03Admission
+	if s == nil {
+		return a, appdelete.ErrRefused
+	}
+	response, err := s.kv.Get(ctx, s.app03DeleteAdmissionKey(planID))
+	if err != nil {
+		return a, err
+	}
+	if response.Count != 1 || len(response.Kvs) != 1 {
+		return a, appdelete.ErrNotFound
+	}
+	if json.Unmarshal(response.Kvs[0].Value, &a) != nil || a.Validate() != nil || a.PlanID != planID || a.Target != "app-03" {
+		return appdelete.App03Admission{}, appdelete.ErrRefused
 	}
 	return a, nil
 }

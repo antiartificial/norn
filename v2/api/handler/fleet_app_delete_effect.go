@@ -29,6 +29,10 @@ type App04DeleteAdmissionStore interface {
 	RecordApp04DeleteAdmission(context.Context, appdelete.App04Admission, string) error
 	GetApp04DeleteAdmission(context.Context, string) (appdelete.App04Admission, error)
 }
+type App03DeleteAdmissionStore interface {
+	RecordApp03DeleteAdmission(context.Context, appdelete.App03Admission, string) error
+	GetApp03DeleteAdmission(context.Context, string) (appdelete.App03Admission, error)
+}
 type AppDeleteTerminalStore interface {
 	RecordAppDeleteTerminal(context.Context, appdelete.TerminalRequest, string) (appdelete.TerminalReceipt, error)
 	GetAppDeleteTerminal(context.Context, string) (appdelete.TerminalReceipt, error)
@@ -109,7 +113,7 @@ func App04DeleteAdmissionHandler(store App04DeleteAdmissionStore) http.HandlerFu
 			return
 		}
 		var admission appdelete.App04Admission
-		if err := decodeControlJSON(w, r, &admission); err != nil || admission.Validate() != nil ||
+		if err := decodeControlJSON(w, r, &admission); err != nil || admission.Validate() != nil || admission.Target != "app-04" ||
 			admission.PlanID != chi.URLParam(r, "planID") || admission.AttemptID != chi.URLParam(r, "attemptID") {
 			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_app04_delete_admission", "exact app04 admission is required")
 			return
@@ -120,6 +124,52 @@ func App04DeleteAdmissionHandler(store App04DeleteAdmissionStore) http.HandlerFu
 				status, code = http.StatusServiceUnavailable, "app04_delete_admission_uncertain"
 			}
 			WriteControlProblem(w, r, status, code, "app04 admission was not recorded")
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}
+}
+
+// App03DeleteAdmissionHandler records the verifier's exact app03 binding.
+func App03DeleteAdmissionHandler(store App03DeleteAdmissionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Pragma", "no-cache")
+		principal, ok := appDeleteVerifierPrincipal(r)
+		if !ok {
+			WriteControlProblem(w, r, http.StatusForbidden, "app_delete_verifier_required", "a dedicated work-staging app delete verifier token is required")
+			return
+		}
+		if store == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "app03_delete_admission_unavailable", "durable app03 admission is unavailable")
+			return
+		}
+		if r.Method == http.MethodGet {
+			admission, err := store.GetApp03DeleteAdmission(r.Context(), chi.URLParam(r, "planID"))
+			if errors.Is(err, appdelete.ErrNotFound) {
+				WriteControlProblem(w, r, http.StatusNotFound, "app03_delete_admission_not_found", "app03 admission is absent")
+				return
+			}
+			if err != nil || admission.AttemptID != chi.URLParam(r, "attemptID") {
+				WriteControlProblem(w, r, http.StatusConflict, "app03_delete_admission_mismatch", "app03 admission differs from route")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(admission)
+			return
+		}
+		var admission appdelete.App03Admission
+		if err := decodeControlJSON(w, r, &admission); err != nil || admission.Validate() != nil ||
+			admission.Target != "app-03" || admission.PlanID != chi.URLParam(r, "planID") || admission.AttemptID != chi.URLParam(r, "attemptID") {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_app03_delete_admission", "exact app03 admission is required")
+			return
+		}
+		if err := store.RecordApp03DeleteAdmission(r.Context(), admission, principal.Subject); err != nil {
+			status, code := http.StatusConflict, "app03_delete_admission_refused"
+			if !errors.Is(err, appdelete.ErrRefused) {
+				status, code = http.StatusServiceUnavailable, "app03_delete_admission_uncertain"
+			}
+			WriteControlProblem(w, r, status, code, "app03 admission was not recorded")
 			return
 		}
 		w.WriteHeader(http.StatusCreated)

@@ -14,6 +14,7 @@ import (
 func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Config, identities store.IdentityStore, permits interface {
 	handler.AppDeleteEffectStore
 	handler.App04DeleteAdmissionStore
+	handler.App03DeleteAdmissionStore
 	handler.AppDeleteTerminalStore
 	handler.AppDeleteFinalizeStore
 	handler.AppDeleteSnapshotStore
@@ -27,6 +28,8 @@ func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Conf
 	router.With(verifierAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-snapshot", handler.AppDeleteSnapshotHandler(permits))
 	router.With(verifierAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app04-delete-admission", handler.App04DeleteAdmissionHandler(permits))
 	router.With(verifierAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app04-delete-admission", handler.App04DeleteAdmissionHandler(permits))
+	router.With(verifierAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app03-delete-admission", handler.App03DeleteAdmissionHandler(permits))
+	router.With(verifierAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app03-delete-admission", handler.App03DeleteAdmissionHandler(permits))
 	terminal := "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal"
 	router.With(verifierAuth).Post(terminal, handler.AppDeleteTerminalHandler(permits))
 	router.With(verifierAuth).Get(terminal, handler.AppDeleteTerminalHandler(permits))
