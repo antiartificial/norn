@@ -103,6 +103,12 @@ func main() {
 		}
 		return
 	}
+	if handled, err := runEtcdAdminTokenIssue(os.Args[1:], cfg, backendCfg); handled {
+		if err != nil {
+			log.Fatalf("etcd admin token issuance: %v", err)
+		}
+		return
+	}
 	if backendCfg.Backend == startup.BackendEtcd && backendCfg.SourceValidation {
 		if err := startup.RequireEtcdSourceValidationStartup(startupCfg); err != nil {
 			log.Fatalf("etcd source validation: %v", err)
