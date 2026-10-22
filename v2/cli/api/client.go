@@ -1751,6 +1751,53 @@ func (c *Client) Exec(appID, process string, argv []string) (*websocket.Conn, er
 	return conn, nil
 }
 
+// LogQuery selects log lines from GET /api/v1/apps/{id}/logs/query. Empty
+// fields use the server defaults.
+type LogQuery struct {
+	Since, Until, Alloc, TaskGroup, Task, Stream, Contains, Direction string
+	Limit                                                             int
+}
+
+// LogEntry is one log line (or a gap record, with Gap set and Line empty).
+type LogEntry struct {
+	Time      time.Time `json:"time"`
+	NodeID    string    `json:"nodeId"`
+	NodeName  string    `json:"nodeName"`
+	JobID     string    `json:"jobId"`
+	AllocID   string    `json:"allocId"`
+	TaskGroup string    `json:"taskGroup"`
+	Task      string    `json:"task"`
+	Stream    string    `json:"stream"`
+	Line      string    `json:"line"`
+	Gap       string    `json:"gap,omitempty"`
+	TraceID   string    `json:"traceId,omitempty"`
+}
+
+// LogQueryResult is the answer to a log query.
+type LogQueryResult struct {
+	App       string     `json:"app"`
+	Source    string     `json:"source"`
+	Entries   []LogEntry `json:"entries"`
+	Truncated bool       `json:"truncated"`
+}
+
+func (c *Client) QueryLogs(appID string, q LogQuery) (*LogQueryResult, error) {
+	values := url.Values{}
+	for name, value := range map[string]string{"since": q.Since, "until": q.Until, "alloc": q.Alloc, "taskGroup": q.TaskGroup, "task": q.Task, "stream": q.Stream, "contains": q.Contains, "direction": q.Direction} {
+		if value != "" {
+			values.Set(name, value)
+		}
+	}
+	if q.Limit > 0 {
+		values.Set("limit", strconv.Itoa(q.Limit))
+	}
+	var result LogQueryResult
+	if err := c.get("/api/v1/apps/"+url.PathEscape(appID)+"/logs/query?"+values.Encode(), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) GetSagaEvents(sagaID string) ([]SagaEvent, error) {
 	var events []SagaEvent
 	if err := c.get("/api/saga/"+sagaID, &events); err != nil {

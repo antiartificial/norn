@@ -182,6 +182,33 @@ Container metrics answer "is this process using resources?" App metrics answer "
 
 For cron and short-lived jobs, prefer Norn-recorded outcomes first: deployment steps, saga events, function execution history, cron history, and Beacon events. Use Pushgateway only when a batch job produces metrics that would disappear before Prometheus can scrape them.
 
+## Log Query and Loki
+
+Norn collects task output into a bounded local spool (`NORN_LOG_SPOOL_DIR`; loss is counted, never hidden). Set `NORN_LOKI_URL` to also ship the spool to Loki and serve queries from it. Loki 3.0 or later is required (structured metadata).
+
+| Variable | Purpose |
+|----------|---------|
+| `NORN_LOKI_URL` | Loki origin, for example `http://loki:3100` (scheme and host only; invalid values stop Norn at startup) |
+| `NORN_LOKI_TENANT` | Optional `X-Scope-OrgID` |
+| `NORN_LOKI_TOKEN` | Optional bearer token |
+| `NORN_LOKI_PUSH_INTERVAL` | Shipping pass interval, default `2s` (failures back off to one minute) |
+
+Shipping runs only when both the spool and `NORN_LOKI_URL` are set. It reads the spool with a durable per-stream cursor that advances only after Loki answers 2xx, so a Loki outage never slows collection and a restart neither duplicates nor skips output the spool still holds. Each line gets its own nanosecond timestamp so repeated identical lines are not deduplicated.
+
+| Kind | Fields |
+|------|--------|
+| Stream labels | `source="norn"`, `app`, `job`, `task_group`, `task`, `stream`, `node` |
+| Structured metadata | `alloc_id`, `node_id`; gap records add `norn_gap="true"` and carry the gap text as the line |
+
+Query with `GET /api/v1/apps/{id}/logs/query` (`api:read`; an app-bound credential reads only its own app). Parameters: `since` and `until` (RFC 3339; default the last hour, at most 7 days), `alloc`, `taskGroup`, `task`, `stream`, `contains` (case-sensitive, at most 256 bytes), `limit` (1-5000, default 500) and `direction` (`backward` newest first, the default, or `forward`). Norn builds the LogQL itself from these validated values; raw LogQL is never accepted. Entries carry the source labels, one `line`, a `gap` for lost output, and a `traceId` when the line contains one. `source` is `loki` when `NORN_LOKI_URL` is set (a Loki failure is a 502, with no fallback to the spool) and `spool` otherwise; with neither configured the endpoint returns 503.
+
+```bash
+norn logs web --since 15m --stream stderr --grep timeout
+norn logs web --alloc 1a2b3c4d --since 2026-10-21T10:00:00Z --forward --limit 200
+```
+
+`norn logs <app>` without these flags still streams live output. The MCP server exposes the same query as the read-only `norn_query_logs` tool.
+
 ## Restart and OOM Tracking
 
 Norn tracks task-level restarts and OOM kills from Nomad allocation state. The allocation watcher inspects `TaskStates` every 60 seconds and emits Beacon events when restarts are detected:

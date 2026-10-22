@@ -139,6 +139,19 @@ type mcpLogsInput struct {
 	WaitSeconds int    `json:"wait_seconds,omitempty" jsonschema:"stop after this many seconds (default 5, max 25)"`
 }
 
+type mcpQueryLogsInput struct {
+	App       string `json:"app" jsonschema:"app name"`
+	Since     string `json:"since,omitempty" jsonschema:"start: a duration like 15m (ago) or an RFC 3339 time (default 1h ago)"`
+	Until     string `json:"until,omitempty" jsonschema:"end: a duration like 5m (ago) or an RFC 3339 time (default now; window at most 7 days)"`
+	Alloc     string `json:"alloc,omitempty" jsonschema:"only this allocation id"`
+	TaskGroup string `json:"task_group,omitempty" jsonschema:"only this task group"`
+	Task      string `json:"task,omitempty" jsonschema:"only this task"`
+	Stream    string `json:"stream,omitempty" jsonschema:"stdout or stderr"`
+	Contains  string `json:"contains,omitempty" jsonschema:"only lines containing this text (case-sensitive, max 256 bytes)"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max lines (default 200, max 2000)"`
+	Direction string `json:"direction,omitempty" jsonschema:"backward (newest first, default) or forward (oldest first)"`
+}
+
 type mcpRefInput struct {
 	App            string `json:"app" jsonschema:"app name"`
 	Ref            string `json:"ref,omitempty" jsonschema:"git ref to use (default HEAD)"`
@@ -293,6 +306,29 @@ func newMCPServer(c *api.Client, allowWrites bool) *mcp.Server {
 			}
 			lines, err := mcpTailLogs(ctx, c, app, mcpLimit(in.MaxLines, 200, 2000), time.Duration(mcpLimit(in.WaitSeconds, 5, 25))*time.Second)
 			return nil, map[string]any{"lines": lines}, err
+		})
+	mcp.AddTool(s, readTool("norn_query_logs", "Query an app's historical log lines by time window, allocation, task group, task, stream and substring. Each entry carries its allocation and a traceId when the line has one; gap entries mark lost output."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in mcpQueryLogsInput) (*mcp.CallToolResult, any, error) {
+			app, err := mcpID("app", in.App)
+			if err != nil {
+				return nil, nil, err
+			}
+			for field, value := range map[string]string{"alloc": in.Alloc, "task_group": in.TaskGroup, "task": in.Task} {
+				if value != "" {
+					if _, err := mcpID(field, value); err != nil {
+						return nil, nil, err
+					}
+				}
+			}
+			if in.Direction != "" && in.Direction != "backward" && in.Direction != "forward" {
+				return nil, nil, fmt.Errorf("direction must be backward or forward")
+			}
+			q, err := buildLogQuery(in.Since, in.Until, in.Alloc, in.TaskGroup, in.Task, in.Stream, in.Contains, mcpLimit(in.Limit, 200, 2000), in.Direction == "forward", time.Now())
+			if err != nil {
+				return nil, nil, err
+			}
+			out, err := c.QueryLogs(app, q)
+			return nil, out, err
 		})
 	mcp.AddTool(s, readTool("norn_cron_history", "Cron process state and recent runs for an app."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in mcpAppInput) (*mcp.CallToolResult, any, error) {

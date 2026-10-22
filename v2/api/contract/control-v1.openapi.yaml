@@ -1861,6 +1861,27 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/logs/query:
+    get:
+      operationId: queryAppLogs
+      description: One log line per entry for the app in a time window (default the last hour, at most 7 days), filtered by allocation, task group, task, stream and case-sensitive substring, newest first unless direction=forward. Read from Loki when NORN_LOKI_URL is set (source loki; Loki errors are 502 and never fall back to the spool), otherwise from the collection spool (source spool). Gap records carry a gap text and an empty line; traceId is extracted from the line when present. Requires api:read; an app-bound credential may read only its own app. 503 when neither Loki nor the spool is configured.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+        - { name: alloc, in: query, schema: { type: string } }
+        - { name: taskGroup, in: query, schema: { type: string } }
+        - { name: task, in: query, schema: { type: string } }
+        - { name: stream, in: query, schema: { type: string, enum: [stdout, stderr] } }
+        - { name: contains, in: query, schema: { type: string, maxLength: 256 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 5000, default: 500 } }
+        - { name: direction, in: query, schema: { type: string, enum: [backward, forward], default: backward } }
+      responses:
+        '200': { description: Log entries, content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/evidence/archive:
     get:
       operationId: getEvidenceArchiveHealth
