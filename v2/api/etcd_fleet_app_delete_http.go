@@ -16,6 +16,7 @@ func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Conf
 	handler.App04DeleteAdmissionStore
 	handler.AppDeleteTerminalStore
 	handler.AppDeleteFinalizeStore
+	handler.AppDeleteSnapshotStore
 }, executorLane bool) {
 	if cfg == nil || !executorLane || !cfg.FleetAppDeleteCoPermitEnabled {
 		return
@@ -23,6 +24,7 @@ func registerEtcdFleetAppDeleteCoPermitRoute(router chi.Router, cfg *config.Conf
 	attemptAuth := etcdFleetLaneAuth(cfg, identities, handler.ScopeFleetAttempt)
 	router.With(attemptAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-effect", handler.AppDeleteEffectHandler(permits))
 	verifierAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetAppDeleteVerify)
+	router.With(verifierAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-snapshot", handler.AppDeleteSnapshotHandler(permits))
 	router.With(verifierAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app04-delete-admission", handler.App04DeleteAdmissionHandler(permits))
 	router.With(verifierAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app04-delete-admission", handler.App04DeleteAdmissionHandler(permits))
 	terminal := "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal"

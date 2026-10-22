@@ -37,6 +37,37 @@ type AppDeleteFinalizeStore interface {
 	FinalizeAppDelete(context.Context, appdelete.FinalizeRequest, string) (appdelete.FinalizeReceipt, error)
 	GetAppDeleteFinalize(context.Context, string) (appdelete.FinalizeReceipt, error)
 }
+type AppDeleteSnapshotStore interface {
+	GetAppDeleteSnapshot(context.Context, string, string) (appdelete.Snapshot, error)
+}
+
+// AppDeleteSnapshotHandler gives the verifier a coherent, read-only view of
+// Norn authority before it forms independent provider and workload evidence.
+func AppDeleteSnapshotHandler(store AppDeleteSnapshotStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Pragma", "no-cache")
+		if _, ok := appDeleteVerifierPrincipal(r); !ok {
+			WriteControlProblem(w, r, http.StatusForbidden, "app_delete_verifier_required", "a dedicated work-staging app delete verifier token is required")
+			return
+		}
+		if store == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "app_delete_snapshot_unavailable", "durable app delete snapshot is unavailable")
+			return
+		}
+		v, err := store.GetAppDeleteSnapshot(r.Context(), chi.URLParam(r, "planID"), chi.URLParam(r, "attemptID"))
+		if errors.Is(err, appdelete.ErrNotFound) {
+			WriteControlProblem(w, r, http.StatusNotFound, "app_delete_snapshot_not_found", "app delete plan or attempt is absent")
+			return
+		}
+		if err != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "app_delete_snapshot_refused", "app delete snapshot could not be established")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(v)
+	}
+}
 
 const appDeleteVerifierSubject = "fleet-app-delete-verifier:work-staging"
 

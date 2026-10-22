@@ -921,6 +921,19 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-snapshot:
+    get:
+      operationId: readFleetAppDeleteSnapshot
+      description: Default-off verifier-only coherent read of Norn capacity plan, executor attempt, target fence, epoch, optional app04 admission and consumed app03 or app04 permit. This is an observation and does not attest PostgreSQL, provider state, or workload placement.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Coherent Norn-owned snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteSnapshot' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-terminal:
     get:
       operationId: readFleetAppDeleteTerminal
@@ -2496,6 +2509,32 @@ components:
         sourceCgroupEmpty: { type: boolean, description: 'The executor unit''s cgroup subtree (the unit cgroup and every descendant) holds no process other than the attesting loop, read before it started any child. systemd reuses the unit cgroup across invocations, and phases can neither leave it nor create sub-cgroups (no Delegate=, no capabilities, never systemd-run).' }
         observedAt: { type: string, format: date-time }
         tofuLock: { $ref: '#/components/schemas/FleetExecutorTofuLock' }
+    FleetAppDeleteSnapshot:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, attemptId, etcdRevision, sourceCommit, planSha256, attemptStatus, attemptPhase, attemptRevision, heartbeatExpiresAt, executorOperationClass, executorRecovery, createdNodeCount, targetId, targetFenceHeld, targetFenceHolderPlanId, targetFenceGeneration, targetFenceAuthorityEpoch, currentAuthorityEpoch]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-app-delete-snapshot/v1' }
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        etcdRevision: { type: integer, format: int64 }
+        sourceCommit: { type: string }
+        planSha256: { type: string }
+        attemptStatus: { type: string }
+        attemptPhase: { type: string }
+        attemptRevision: { type: integer, format: int64 }
+        heartbeatExpiresAt: { type: string, format: date-time }
+        executorOperationClass: { type: string }
+        executorRecovery: { type: boolean }
+        createdNodeCount: { type: integer }
+        targetId: { type: string }
+        targetFenceHeld: { type: boolean }
+        targetFenceHolderPlanId: { type: string }
+        targetFenceGeneration: { type: integer, format: int64 }
+        targetFenceAuthorityEpoch: { type: integer, format: int64 }
+        currentAuthorityEpoch: { type: integer, format: int64 }
+        app04Admission: { $ref: '#/components/schemas/FleetApp04DeleteAdmission' }
+        consumedPermit: { $ref: '#/components/schemas/FleetAppDeleteCoPermitRequest' }
     FleetApp04DeleteAdmission:
       type: object
       additionalProperties: false

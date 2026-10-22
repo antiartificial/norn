@@ -24,6 +24,41 @@ type appDeleteStoreFake struct {
 	admission appdelete.App04Admission
 }
 
+type appDeleteSnapshotFake struct {
+	calls int
+	value appdelete.Snapshot
+}
+
+func (s *appDeleteSnapshotFake) GetAppDeleteSnapshot(_ context.Context, planID, attemptID string) (appdelete.Snapshot, error) {
+	s.calls++
+	if s.value.PlanID != planID || s.value.AttemptID != attemptID {
+		return appdelete.Snapshot{}, appdelete.ErrNotFound
+	}
+	return s.value, nil
+}
+
+func TestAppDeleteSnapshotVerifierOnly(t *testing.T) {
+	planID, attemptID := uuid.NewString(), uuid.NewString()
+	s := &appDeleteSnapshotFake{value: appdelete.Snapshot{SchemaVersion: appdelete.SnapshotSchema, PlanID: planID, AttemptID: attemptID, EtcdRevision: 17}}
+	router := chi.NewRouter()
+	router.Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-snapshot", AppDeleteSnapshotHandler(s))
+	path := "/api/v1/fleet/plans/" + planID + "/attempts/" + attemptID + "/app-delete-snapshot"
+	call := func(p AccessPrincipal) *httptest.ResponseRecorder {
+		req := WithAccessPrincipal(httptest.NewRequest(http.MethodGet, path, nil), &p)
+		out := httptest.NewRecorder()
+		router.ServeHTTP(out, req)
+		return out
+	}
+	bad := AccessPrincipal{Subject: "fleet-attempt:" + attemptID, TokenID: "a", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeFleetAttempt}, ExpiresAt: time.Now().Add(time.Hour)}
+	if got := call(bad); got.Code != http.StatusForbidden || s.calls != 0 {
+		t.Fatalf("attempt token read=%d calls=%d", got.Code, s.calls)
+	}
+	good := AccessPrincipal{Subject: appDeleteVerifierSubject, TokenID: "v", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeFleetAppDeleteVerify}, ExpiresAt: time.Now().Add(time.Hour)}
+	if got := call(good); got.Code != http.StatusOK || s.calls != 1 || !strings.Contains(got.Body.String(), `"etcdRevision":17`) {
+		t.Fatalf("verifier read=%d calls=%d body=%s", got.Code, s.calls, got.Body.String())
+	}
+}
+
 func (s *appDeleteStoreFake) RecordApp04DeleteAdmission(_ context.Context, a appdelete.App04Admission, _ string) error {
 	s.calls++
 	if s.err != nil {
