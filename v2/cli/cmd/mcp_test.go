@@ -47,6 +47,10 @@ func (f *mcpFakeNorn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
+	case r.URL.Path == "/api/v1/apps/web/traces":
+		fmt.Fprint(w, `{"app":"web","traces":[{"traceId":"4bf92f3577b34da6a3ce929d0e0e4736","rootName":"GET /","rootService":"web","start":"2026-10-21T10:00:00Z","durationMs":12.5,"spanCount":2}]}`)
+	case r.URL.Path == "/api/v1/apps/web/traces/4bf92f3577b34da6a3ce929d0e0e4736":
+		fmt.Fprint(w, `{"traceId":"4bf92f3577b34da6a3ce929d0e0e4736","app":"web","omittedSpans":1,"spans":[{"spanId":"00f067aa0ba902b7","parentSpanId":"","name":"GET /","status":"ok"}]}`)
 	default:
 		http.NotFound(w, r)
 	}
@@ -246,5 +250,44 @@ func TestMCPQueryLogsMapsParamsAndIsReadOnly(t *testing.T) {
 		if res, _ := callMCPTool(t, session, "norn_query_logs", bad); !res.IsError {
 			t.Errorf("%v accepted", bad)
 		}
+	}
+}
+
+func TestMCPTraceTools(t *testing.T) {
+	session, fake := connectMCPTest(t, false)
+	tools := mcpToolNames(t, session)
+	for _, name := range []string{"norn_search_traces", "norn_get_trace"} {
+		if tool, ok := tools[name]; !ok || !tool.Annotations.ReadOnlyHint {
+			t.Fatalf("%s missing or not read-only", name)
+		}
+	}
+	res, out := callMCPTool(t, session, "norn_search_traces", map[string]any{"app": "web", "since": "30m", "limit": 500, "min_duration_ms": 50})
+	if res.IsError {
+		t.Fatalf("search error: %s", mcpResultText(res))
+	}
+	if traces, _ := out["traces"].([]any); len(traces) != 1 {
+		t.Fatalf("traces = %v", out)
+	}
+	fake.mu.Lock()
+	search := fake.requests[len(fake.requests)-1]
+	fake.mu.Unlock()
+	if !strings.Contains(search, "limit=100") || !strings.Contains(search, "minDurationMs=50") || !strings.Contains(search, "since=") {
+		t.Errorf("search request = %s", search)
+	}
+	res, out = callMCPTool(t, session, "norn_get_trace", map[string]any{"app": "web", "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"})
+	if res.IsError || out["omittedSpans"] != float64(1) {
+		t.Fatalf("get trace = %v %s", out, mcpResultText(res))
+	}
+	for _, bad := range []map[string]any{
+		{"app": "web", "trace_id": "../etc"},
+		{"app": "web", "trace_id": "4BF92F3577B34DA6A3CE929D0E0E4736"},
+		{"app": "web/../x", "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"},
+	} {
+		if res, _ := callMCPTool(t, session, "norn_get_trace", bad); !res.IsError {
+			t.Errorf("accepted %v", bad)
+		}
+	}
+	if res, _ := callMCPTool(t, session, "norn_search_traces", map[string]any{"app": "web", "since": "bogus"}); !res.IsError {
+		t.Error("accepted invalid since")
 	}
 }

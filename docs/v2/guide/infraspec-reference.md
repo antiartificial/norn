@@ -152,6 +152,7 @@ they explicitly declare another placement.
 | `enabled` | bool | `false` | Register this process as a Prometheus scrape target |
 | `path` | string | `/metrics` | Metrics path |
 | `port` | int | process `port` | Internal metrics port when separate from the main process port |
+| `hostPort` | int | — | Optional fixed host port for a separate metrics `port`; incompatible with multiple allocations in a region |
 
 ## Scaling
 

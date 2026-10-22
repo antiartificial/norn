@@ -83,6 +83,8 @@ func (h *Handler) buildObservabilityBundle() (observabilityBundle, error) {
 				"url":       "http://prometheus.service.consul:9090",
 				"isDefault": true,
 			},
+			{"name": "Norn Loki", "uid": "norn-loki", "type": "loki", "access": "proxy", "url": "http://norn-loki-web.service.consul:3100"},
+			{"name": "Norn Tempo", "uid": "norn-tempo", "type": "tempo", "access": "proxy", "url": "http://norn-tempo-web-metrics.service.consul:3200"},
 		},
 	}
 	datasourceJSON, _ := json.MarshalIndent(datasource, "", "  ")
@@ -99,6 +101,8 @@ func (h *Handler) buildObservabilityBundle() (observabilityBundle, error) {
 			"prometheus": prometheusServiceSpec(),
 			"grafana":    grafanaServiceSpec(),
 			"cadvisor":   cadvisorServiceSpec(),
+			"loki":       lokiServiceSpec(),
+			"tempo":      tempoServiceSpec(),
 		},
 	}, nil
 }
@@ -183,9 +187,29 @@ COPY provisioning /etc/grafana/provisioning
 COPY dashboards /var/lib/grafana/dashboards
 `,
 			"provisioning/datasources/norn-prometheus.yaml": grafanaDatasourceYAML(),
+			"provisioning/datasources/norn-loki.yaml":       grafanaLokiDatasourceYAML(),
+			"provisioning/datasources/norn-tempo.yaml":      grafanaTempoDatasourceYAML(),
 			"provisioning/dashboards/norn.yaml":             grafanaDashboardProviderYAML(),
 			"dashboards/norn-platform.json":                 bundle.GrafanaDashboard,
 			"README.md":                                     observabilityServiceReadme("Grafana", "norn-grafana"),
+		},
+		"norn-loki": {
+			"infraspec.yaml": lokiServiceSpec(),
+			"Dockerfile": `FROM grafana/loki:3.4.2
+ENTRYPOINT []
+COPY loki.yaml /etc/loki/loki.yaml
+`,
+			"loki.yaml": lokiConfigYAML(),
+			"README.md": observabilityServiceReadme("Loki", "norn-loki"),
+		},
+		"norn-tempo": {
+			"infraspec.yaml": tempoServiceSpec(),
+			"Dockerfile": `FROM grafana/tempo:2.7.1
+ENTRYPOINT []
+COPY tempo.yaml /etc/tempo/tempo.yaml
+`,
+			"tempo.yaml": tempoConfigYAML(),
+			"README.md":  observabilityServiceReadme("Tempo", "norn-tempo"),
 		},
 		"norn-cadvisor": {
 			"infraspec.yaml": cadvisorServiceSpec(),
@@ -313,6 +337,150 @@ processes:
     resources:
       cpu: 50
       memory: 128
+`
+}
+
+func lokiServiceSpec() string {
+	return `name: norn-loki
+deploy: true
+build:
+  dockerfile: Dockerfile
+processes:
+  web:
+    port: 3100
+    command: /usr/bin/loki -config.file=/etc/loki/loki.yaml
+    metrics:
+      enabled: true
+      path: /metrics
+    health:
+      path: /ready
+    resources:
+      cpu: 100
+      memory: 512
+`
+}
+
+// tempoServiceSpec exposes Tempo's two ports through the two port slots an
+// infraspec process has. The web port is the OTLP/HTTP receiver (4318) with a
+// fixed hostPort, so apps can use a stable NORN_APP_OTLP_ENDPOINT; it has no
+// health check because the receiver answers no GET with 2xx. The query API
+// (3200, Consul service norn-tempo-web-metrics) is the metrics port, also on
+// a fixed hostPort, whose /metrics check doubles as Tempo's liveness check.
+func tempoServiceSpec() string {
+	return `name: norn-tempo
+deploy: true
+build:
+  dockerfile: Dockerfile
+processes:
+  web:
+    port: 4318
+    hostPort: 4318
+    command: /tempo -config.file=/etc/tempo/tempo.yaml
+    metrics:
+      enabled: true
+      path: /metrics
+      port: 3200
+      hostPort: 3200
+    resources:
+      cpu: 100
+      memory: 512
+`
+}
+
+func lokiConfigYAML() string {
+	return `auth_enabled: false
+server:
+  http_listen_port: 3100
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+schema_config:
+  configs:
+    - from: "2024-04-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+limits_config:
+  retention_period: 720h
+  allow_structured_metadata: true
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+analytics:
+  reporting_enabled: false
+`
+}
+
+func tempoConfigYAML() string {
+	return `server:
+  http_listen_port: 3200
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+compactor:
+  compaction:
+    block_retention: 720h
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+`
+}
+
+func grafanaLokiDatasourceYAML() string {
+	return `apiVersion: 1
+datasources:
+  - name: Norn Loki
+    uid: norn-loki
+    type: loki
+    access: proxy
+    url: http://norn-loki-web.service.consul:3100
+    jsonData:
+      derivedFields:
+        - name: trace_id
+          datasourceUid: norn-tempo
+          matcherRegex: '(?:trace_?[iI]d["=: ]+|traceparent["=: ]+00-)([0-9a-f]{32})'
+          url: '$${__value.raw}'
+          urlDisplayLabel: View trace
+`
+}
+
+func grafanaTempoDatasourceYAML() string {
+	return `apiVersion: 1
+datasources:
+  - name: Norn Tempo
+    uid: norn-tempo
+    type: tempo
+    access: proxy
+    url: http://norn-tempo-web-metrics.service.consul:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: norn-loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: true
+        filterBySpanID: false
+        tags:
+          - key: norn.app
+            value: app
 `
 }
 

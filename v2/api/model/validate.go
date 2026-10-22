@@ -162,6 +162,18 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			if proc.Metrics.Port == 0 && proc.Port == 0 {
 				r.add("error", field+".metrics.port", "metrics requires process port or metrics.port")
 			}
+			if proc.Metrics.HostPort < 0 || proc.Metrics.HostPort > 65535 {
+				r.add("error", field+".metrics.hostPort", "metrics hostPort must be between 1 and 65535")
+			}
+			if proc.Metrics.HostPort > 0 && (proc.Metrics.Port == 0 || proc.Metrics.Port == proc.Port) {
+				r.add("error", field+".metrics.hostPort", "metrics hostPort requires a separate metrics.port")
+			}
+			if proc.Metrics.HostPort > 0 && proc.Metrics.HostPort == proc.HostPort {
+				r.add("error", field+".metrics.hostPort", "metrics hostPort must differ from hostPort")
+			}
+			if proc.Metrics.HostPort > 0 && proc.Scaling != nil && (proc.Scaling.Min > 1 || proc.Scaling.PerRegion > 1) {
+				r.add("error", field+".metrics.hostPort", "fixed hostPort cannot be used with multiple allocations in one region")
+			}
 		}
 
 		validateTuningPolicy(r, field+".tuning", proc.Tuning)

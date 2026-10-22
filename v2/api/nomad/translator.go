@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
@@ -122,7 +123,7 @@ func translateForRegionAtWithJobID(spec *model.InfraSpec, imageTag string, env m
 		configureProcessNetworking(spec, procName, proc, region, task, tg)
 
 		// Nomad variable values are rendered into owner-only files, never task.Env.
-		task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
+		task.Env = withAppTracingEnv(processEnvironment(spec, proc, mergedEnv, proc.Env), spec.App, procName)
 		configureNomadVariableFiles(proc.NomadVariables, jobID, task)
 		addDatabaseTemplates(spec, jobID, databaseRevision, task)
 		applyStartupAdapter(spec, procName, imageTag, task)
@@ -259,7 +260,11 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 		metricsLabel := fmt.Sprintf("%s-metrics", procName)
 		if metricsPort > 0 && metricsPort != proc.Port {
 			ports = append(ports, metricsLabel)
-			net.DynamicPorts = append(net.DynamicPorts, nomadapi.Port{Label: metricsLabel, To: metricsPort})
+			if proc.Metrics.HostPort > 0 {
+				net.ReservedPorts = append(net.ReservedPorts, nomadapi.Port{Label: metricsLabel, Value: proc.Metrics.HostPort, To: metricsPort})
+			} else {
+				net.DynamicPorts = append(net.DynamicPorts, nomadapi.Port{Label: metricsLabel, To: metricsPort})
+			}
 		} else if proc.Port > 0 {
 			metricsLabel = fmt.Sprintf("%s-http", procName)
 		}
@@ -387,7 +392,7 @@ func TranslatePeriodicForRegionAt(spec *model.InfraSpec, procName string, proc m
 		task.Config["command"] = "/bin/sh"
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
-	task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
+	task.Env = withAppTracingEnv(processEnvironment(spec, proc, mergedEnv, proc.Env), spec.App, procName)
 	configureNomadVariableFiles(proc.NomadVariables, jobID, task)
 	addDatabaseTemplates(spec, jobID, databaseRevision, task)
 
@@ -475,7 +480,7 @@ func TranslateBatchAt(spec *model.InfraSpec, procName string, proc model.Process
 		task.Config["command"] = "/bin/sh"
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
-	task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
+	task.Env = withAppTracingEnv(processEnvironment(spec, proc, mergedEnv, proc.Env), spec.App, procName)
 	configureNomadVariableFiles(proc.NomadVariables, jobID, task)
 	addDatabaseTemplates(spec, jobID, databaseRevision, task)
 
@@ -551,6 +556,42 @@ func newDockerTask(name string) *nomadapi.Task {
 
 func boolPtr(b bool) *bool    { return &b }
 func strPtr(s string) *string { return &s }
+
+// appOTLPEndpoint is the OTLP/HTTP endpoint injected into app tasks. Empty
+// disables injection. It is process configuration set once at startup
+// (NORN_APP_OTLP_ENDPOINT) so every translator entry point stays unchanged.
+var appOTLPEndpoint atomic.Pointer[string]
+
+// SetAppOTLPEndpoint configures OTLP environment injection for app tasks.
+func SetAppOTLPEndpoint(endpoint string) {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	appOTLPEndpoint.Store(&endpoint)
+}
+
+// withAppTracingEnv adds OTEL_* defaults to a task environment. It never
+// overrides a key the app, its spec, or its secrets already define. The
+// resource attribute values use Nomad runtime interpolation.
+func withAppTracingEnv(env map[string]string, app, process string) map[string]string {
+	endpoint := appOTLPEndpoint.Load()
+	if endpoint == nil || *endpoint == "" {
+		return env
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	defaults := map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": *endpoint,
+		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+		"OTEL_SERVICE_NAME":           app,
+		"OTEL_RESOURCE_ATTRIBUTES":    "norn.app=" + app + ",norn.process=" + process + ",nomad.alloc_id=${NOMAD_ALLOC_ID},nomad.task_group=${NOMAD_GROUP_NAME}",
+	}
+	for key, value := range defaults {
+		if _, set := env[key]; !set {
+			env[key] = value
+		}
+	}
+	return env
+}
 
 func mergeProcessEnv(base, process map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(process))

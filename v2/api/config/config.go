@@ -170,6 +170,8 @@ type Config struct {
 	ConsulAddr               string // Consul API address
 	HostMetricsPrometheusURL string // Optional trusted Prometheus origin
 	HostMetricsHostname      string // Exact Nomad host label; defaults to OS hostname
+	TempoURL                 string // NORN_TEMPO_URL: optional trusted Tempo query origin for app traces
+	AppOTLPEndpoint          string // NORN_APP_OTLP_ENDPOINT: OTLP/HTTP endpoint injected into app tasks; empty disables
 	IngressURL               string // Regional Traefik origin used by Cloudflared
 	// ExternalIngress disables local cloudflared mutation when DNS/global edge
 	// routing is owned outside this Norn process.
@@ -401,6 +403,8 @@ func Load() *Config {
 		ConsulAddr:               envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
 		HostMetricsPrometheusURL: os.Getenv("NORN_HOST_METRICS_PROMETHEUS_URL"),
 		HostMetricsHostname:      os.Getenv("NORN_HOST_METRICS_HOSTNAME"),
+		TempoURL:                 os.Getenv("NORN_TEMPO_URL"),
+		AppOTLPEndpoint:          os.Getenv("NORN_APP_OTLP_ENDPOINT"),
 		IngressURL:               strings.TrimRight(os.Getenv("NORN_INGRESS_URL"), "/"),
 		ExternalIngress:          envBoolOr("NORN_EXTERNAL_INGRESS", false),
 		NomadTLSSkipVerify:       envBoolOr("NOMAD_SKIP_VERIFY", false),
