@@ -86,14 +86,21 @@ func issueAdminToken(ctx context.Context, secret string, identities store.AuthSt
 	if err := validateAdminTokenOutput(output); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// Prepare the complete bearer in the same private directory. The final
+	// pathname remains absent until an exclusive hard link publishes it.
+	file, err := os.CreateTemp(filepath.Dir(output), ".admin-operator.token-*")
 	if err != nil {
-		return errors.New("admin token output cannot be reserved")
+		return errors.New("admin token temporary output cannot be created")
 	}
+	temporary := file.Name()
+	linked := false
 	defer func() {
 		_ = file.Close()
+		_ = os.Remove(temporary)
 		if err != nil {
-			_ = os.Remove(output)
+			if linked {
+				_ = os.Remove(output)
+			}
 		}
 	}()
 	token, record, err := handler.IssueManagedAccessToken(ctx, secret, identities, adminTokenSubject,
@@ -120,6 +127,10 @@ func issueAdminToken(ctx context.Context, secret string, identities store.AuthSt
 	if err = file.Close(); err != nil {
 		return errors.New("admin token close failed")
 	}
+	if err = os.Link(temporary, output); err != nil {
+		return errors.New("admin token exclusive publication failed")
+	}
+	linked = true
 	directory, openErr := os.Open(filepath.Dir(output))
 	if openErr != nil {
 		return errors.New("admin token directory sync unavailable")
@@ -128,7 +139,17 @@ func issueAdminToken(ctx context.Context, secret string, identities store.AuthSt
 		_ = directory.Close()
 		return errors.New("admin token directory sync failed")
 	}
-	_ = directory.Close()
+	if removeErr := os.Remove(temporary); removeErr != nil {
+		_ = directory.Close()
+		return errors.New("admin token temporary output cleanup failed")
+	}
+	if syncErr := directory.Sync(); syncErr != nil {
+		_ = directory.Close()
+		return errors.New("admin token directory cleanup sync failed")
+	}
+	if closeErr := directory.Close(); closeErr != nil {
+		return errors.New("admin token directory close failed")
+	}
 	published = true
 	return nil
 }

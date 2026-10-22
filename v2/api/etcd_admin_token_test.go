@@ -20,6 +20,7 @@ type adminTokenStore struct {
 	record     *store.AccessToken
 	revoked    string
 	failRecord bool
+	onRecord   func() error
 }
 
 func (s *adminTokenStore) RecordAccessToken(_ context.Context, token *store.AccessToken) error {
@@ -27,6 +28,9 @@ func (s *adminTokenStore) RecordAccessToken(_ context.Context, token *store.Acce
 		return errors.New("registry unavailable")
 	}
 	s.record = token
+	if s.onRecord != nil {
+		return s.onRecord()
+	}
 	return nil
 }
 func (s *adminTokenStore) AccessTokenActive(_ context.Context, jti string) (bool, error) {
@@ -139,5 +143,33 @@ func TestIssueAdminTokenRegistryFailureLeavesNoFile(t *testing.T) {
 	}
 	if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("orphan output err=%v", err)
+	}
+}
+
+func TestIssueAdminTokenFinalPathAbsentUntilCompleteAndExclusive(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "owner")
+	if err := os.Mkdir(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(parent, "admin-operator.token")
+	identities := &adminTokenStore{onRecord: func() error {
+		if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("final output visible before issuance completed: %v", err)
+		}
+		return os.WriteFile(output, []byte("existing owner content"), 0600)
+	}}
+	if err := issueAdminToken(context.Background(), strings.Repeat("k", 40), identities, output); err == nil {
+		t.Fatal("exclusive publication overwrote a competing file")
+	}
+	if identities.record == nil || identities.revoked != identities.record.JTI {
+		t.Fatal("unpublished managed token was not revoked")
+	}
+	raw, err := os.ReadFile(output)
+	if err != nil || string(raw) != "existing owner content" {
+		t.Fatalf("competing output changed: content=%q err=%v", raw, err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "admin-operator.token" {
+		t.Fatalf("temporary bearer remained: entries=%v err=%v", entries, err)
 	}
 }
