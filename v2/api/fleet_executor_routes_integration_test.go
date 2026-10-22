@@ -569,7 +569,9 @@ func TestFleetExecutorRoutesAuthorityOnlyAndEtcd(t *testing.T) {
 		needed[route] = true
 	}
 	for _, route := range executor.AttemptCredentialRoutes {
-		needed[route] = true
+		if route != "POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-effect" {
+			needed[route] = true
+		}
 	}
 	for _, route := range []string{
 		"POST /api/v1/fleet/resources/{name}/execution-mode", "POST /api/v1/fleet/plans/{planID}/converge/approve",

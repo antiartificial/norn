@@ -878,6 +878,22 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-effect:
+    post:
+      operationId: consumeFleetAppDeleteCoPermit
+      description: Default-off etcd executor lane. Consumes Norn's one-use co-permit for a live provider_applying attempt and target fence. Requires the exact managed fleet:attempt credential bound to attemptID. The returned tuple is not independent proof of the PostgreSQL writer, drained workload, reviewed plan, or provider identity. The Fleet verifier and writer reservation must separately authorize the exact DELETE. A refused or uncertain effect must not be retried.
+      parameters:
+        - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteCoPermitRequest' } } }
+      responses:
+        '200': { description: Co-permit consumed exactly once, content: { application/json: { schema: { $ref: '#/components/schemas/FleetAppDeleteCoPermitGrant' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -2399,6 +2415,39 @@ components:
         sourceCgroupEmpty: { type: boolean, description: 'The executor unit''s cgroup subtree (the unit cgroup and every descendant) holds no process other than the attesting loop, read before it started any child. systemd reuses the unit cgroup across invocations, and phases can neither leave it nor create sub-cgroups (no Delegate=, no capabilities, never systemd-run).' }
         observedAt: { type: string, format: date-time }
         tofuLock: { $ref: '#/components/schemas/FleetExecutorTofuLock' }
+    FleetAppDeleteCoPermitRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, attemptId, writerGeneration, writerHolder, target, dropletId, providerAccount, authorizationSha256, workloadReceiptSha256, deleteRequestSha256]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-executor-app-delete-effect-request/v1' }
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        writerGeneration: { type: integer, minimum: 1 }
+        writerHolder: { type: string, format: uuid }
+        target: { type: string, enum: [app-03, app-04] }
+        dropletId: { type: string, pattern: '^[1-9][0-9]*$' }
+        providerAccount: { type: string, format: uuid }
+        authorizationSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workloadReceiptSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        deleteRequestSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: 'Recomputed canonical SHA256 for DELETE /v2/droplets/{dropletId}.' }
+    FleetAppDeleteCoPermitGrant:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, authorizesEffect, planId, attemptId, writerGeneration, writerHolder, target, dropletId, providerAccount, authorizationSha256, workloadReceiptSha256, deleteRequestSha256]
+      properties:
+        schemaVersion: { type: string, const: 'norn.fleet-executor-app-delete-effect/v1' }
+        authorizesEffect: { type: boolean, const: true }
+        planId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        writerGeneration: { type: integer, minimum: 1 }
+        writerHolder: { type: string, format: uuid }
+        target: { type: string, enum: [app-03, app-04] }
+        dropletId: { type: string, pattern: '^[1-9][0-9]*$' }
+        providerAccount: { type: string, format: uuid }
+        authorizationSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workloadReceiptSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        deleteRequestSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     FleetConvergeRefusalRequest:
       type: object
       additionalProperties: false

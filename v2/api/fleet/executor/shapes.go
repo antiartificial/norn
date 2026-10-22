@@ -651,12 +651,14 @@ const AttemptScope = "fleet:attempt"
 // AttemptCredentialRoutes are the only routes the attempt-bound credential
 // may reach (E6 wires the scope matcher), and only for its own attempt; the
 // reconciliation handlers bind the attemptId of the body or query. Every one
-// is also in ExecutorRoutes. Attempt start and cancel, the grant route and
-// /auth/rotate are not here.
+// is also in ExecutorRoutes except the default-off app-delete co-permit,
+// which is reserved to an exact attempt principal. Attempt start and cancel,
+// the grant route and /auth/rotate are not here.
 var AttemptCredentialRoutes = []string{
 	"GET /api/v1/fleet/plans/{planID}/attempts/{attemptID}",
 	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat",
 	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance",
+	"POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-effect",
 	"GET /api/v1/fleet/plans/{planID}/reconciliations",
 	"POST /api/v1/fleet/plans/{planID}/reconciliations",
 }

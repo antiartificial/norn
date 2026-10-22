@@ -443,7 +443,7 @@ func FleetAttemptCredentialMayActOn(p AccessPrincipal, attemptID string) bool {
 	return ok && attemptID != "" && bound == attemptID
 }
 
-var fleetAttemptRouteRe = regexp.MustCompile(`^/api/v1/fleet/plans/[0-9a-fA-F-]{36}/(attempts/([0-9a-fA-F-]{36})(/heartbeat|/advance)?|reconciliations)$`)
+var fleetAttemptRouteRe = regexp.MustCompile(`^/api/v1/fleet/plans/[0-9a-fA-F-]{36}/(attempts/([0-9a-fA-F-]{36})(/heartbeat|/advance|/app-delete-effect)?|reconciliations)$`)
 
 // FleetAttemptCredentialAllowsRoute is the exact route set the attempt-bound
 // credential may reach, for E6's scope matcher: GET the bound attempt, its
@@ -469,6 +469,8 @@ func FleetAttemptCredentialAllowsRoute(p AccessPrincipal, method, path string) b
 	switch match[3] {
 	case "":
 		return method == http.MethodGet
+	case "/app-delete-effect":
+		return method == http.MethodPost
 	default:
 		return method == http.MethodPost
 	}

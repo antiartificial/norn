@@ -185,6 +185,9 @@ func TestAttemptCredentialReachesExactlyItsRoutes(t *testing.T) {
 	for _, route := range executor.ExecutorRoutes {
 		universe[route] = true
 	}
+	for _, route := range executor.AttemptCredentialRoutes {
+		universe[route] = true
+	}
 	want := laneRouteSet(executor.AttemptCredentialRoutes)
 	planID, attemptID := uuid.NewString(), uuid.NewString()
 	principal := laneTestAttemptPrincipal(attemptID)

@@ -226,9 +226,10 @@ func TestExecutorWorkViewAndEnrollmentArePinned(t *testing.T) {
 		t.Error("provider evidence is an admin route, not an executor route")
 	}
 	// The attempt-bound credential reaches a subset of the executor routes,
-	// never start, cancel, grants, attestations or rotation.
+	// plus the separately gated one-use app-delete co-permit; never start,
+	// cancel, grants, attestations or rotation.
 	for _, route := range executor.AttemptCredentialRoutes {
-		if !seen[route] {
+		if !seen[route] && route != "POST /api/v1/fleet/plans/{planID}/attempts/{attemptID}/app-delete-effect" {
 			t.Errorf("attempt credential route %s is not an executor route", route)
 		}
 		if strings.HasSuffix(route, "/cancel") || strings.HasSuffix(route, "/attempts") || strings.Contains(route, "credential-grants") ||

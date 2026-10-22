@@ -20,6 +20,9 @@ type Config struct {
 	// on the etcd runtime. It defaults off and startup requires the GitHub App
 	// and Fleet reconciler before any executor route is mounted or advertised.
 	FleetEtcdExecutorEnabled bool
+	// FleetAppDeleteCoPermitEnabled mounts the one-use Norn co-permit route.
+	// It grants no provider authority and is disabled unless explicitly enabled.
+	FleetAppDeleteCoPermitEnabled bool
 	// FleetPlatformReleaseIntentEnabled exposes durable, effect-free platform
 	// release intent records. The platform release executor has a separate gate.
 	FleetPlatformReleaseIntentEnabled bool
@@ -325,6 +328,7 @@ func Load() *Config {
 		Profile:                                      strings.ToLower(envOr("NORN_PROFILE", "development")),
 		FleetAuthorityOnly:                           envBoolOr("NORN_FLEET_AUTHORITY_ONLY", false),
 		FleetEtcdExecutorEnabled:                     envBoolOr("NORN_FLEET_ETCD_EXECUTOR_ENABLED", false),
+		FleetAppDeleteCoPermitEnabled:                envBoolOr("NORN_FLEET_APP_DELETE_CO_PERMIT_ENABLED", false),
 		FleetPlatformReleaseIntentEnabled:            envBoolOr("NORN_FLEET_PLATFORM_RELEASE_INTENT_ENABLED", false),
 		FleetPlatformRecoveryEnabled:                 envBoolOr("NORN_FLEET_PLATFORM_RECOVERY_ENABLED", false),
 		FleetPlatformGenesisIntentPublicKeyFile:      strings.TrimSpace(os.Getenv("NORN_FLEET_PLATFORM_GENESIS_INTENT_PUBLIC_KEY_FILE")),

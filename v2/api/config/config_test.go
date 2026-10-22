@@ -183,6 +183,17 @@ func TestFleetOfflineEffectV2IsExplicitAndDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestFleetAppDeleteCoPermitIsExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_FLEET_APP_DELETE_CO_PERMIT_ENABLED", "")
+	if Load().FleetAppDeleteCoPermitEnabled {
+		t.Fatal("app delete co-permit enabled by default")
+	}
+	t.Setenv("NORN_FLEET_APP_DELETE_CO_PERMIT_ENABLED", "true")
+	if !Load().FleetAppDeleteCoPermitEnabled {
+		t.Fatal("explicit app delete co-permit gate was ignored")
+	}
+}
+
 func TestFleetOfflineVerifierReadIsExplicitAndDisabledByDefault(t *testing.T) {
 	t.Setenv("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", "")
 	if cfg := Load(); cfg.FleetOfflineVerifierReadEnabled {
