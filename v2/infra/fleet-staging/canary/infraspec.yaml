@@ -1,0 +1,57 @@
+name: norn-fleet-canary
+nomadNamespace: norn-work-staging
+deploy: false
+# Enable only after the immutable image digest, reviewed HTTPS route, app
+# catalog, and Norn runtime are installed. This app has no database or secrets.
+repo:
+  url: https://github.com/antiartificial/norn.git
+  branch: master
+  repoWeb: https://github.com/antiartificial/norn
+build:
+  dockerfile: v2/infra/fleet-staging/canary/Dockerfile
+  test: go test ./...
+placement:
+  nodePool: app
+  distinctHosts: true
+regions:
+  nyc3:
+    nomadRegion: global
+    datacenters: [nyc3]
+primaryRegion: nyc3
+processes:
+  web:
+    port: 8080
+    health:
+      path: /readyz
+      interval: 5s
+      timeout: 3s
+    liveness:
+      path: /healthz
+      interval: 10s
+      timeout: 3s
+      restartLimit: 3
+      restartGrace: 30s
+    rollout:
+      minHealthyTime: 10s
+      healthyDeadline: 3m
+      progressDeadline: 10m
+    shutdownDelay: 5s
+    scaling:
+      min: 2
+      max: 4
+    resources:
+      cpu: 100
+      memory: 64
+    drain:
+      timeout: 20s
+endpoints:
+  - url: https://work-staging-canary.invalid
+    region: nyc3
+    process: web
+    restrictedIngress:
+      publicPaths: [/route-proof, /version]
+      retryGETPaths: [/route-proof, /version]
+      privateReadinessPath: /readyz
+    trafficProbe:
+      path: /route-proof
+      bodySHA256: 75790fc8d9898d5a12787ac491b6f471619cde0efc851be9f26db608b6fbb37c
