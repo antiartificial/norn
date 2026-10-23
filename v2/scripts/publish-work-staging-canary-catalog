@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_path=${1:?usage: publish-work-staging-canary-catalog SOURCE OUTPUT_DIR}
+output_dir=${2:?usage: publish-work-staging-canary-catalog SOURCE OUTPUT_DIR}
+
+: "${GITHUB_SHA:?GITHUB_SHA is required}"
+: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+: "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
+: "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
+[[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+[[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+[[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+
+validation=$(ruby -rpsych -ruri -ripaddr -e '
+  path = ARGV.fetch(0)
+  spec = Psych.safe_load(File.read(path), permitted_classes: [], permitted_symbols: [], aliases: false)
+  abort "canary catalog must be a YAML mapping" unless spec.is_a?(Hash)
+  if spec["deploy"] != true
+    puts "disabled"
+    exit 0
+  end
+  abort "canary app ID differs" unless spec["name"] == "norn-fleet-canary"
+  abort "canary namespace differs" unless spec["nomadNamespace"] == "norn-work-staging"
+  abort "canary source differs" unless spec.dig("repo", "url") == "https://github.com/antiartificial/norn.git"
+  abort "canary image must come from the signed release" unless spec.dig("build", "dockerfile") == "v2/infra/fleet-staging/canary/Dockerfile" && !spec.fetch("build", {}).key?("image")
+  abort "canary must use the app pool" unless spec.dig("placement", "nodePool") == "app" && spec.dig("placement", "distinctHosts") == true
+  web = spec.dig("processes", "web")
+  abort "canary replica bounds differ" unless web.is_a?(Hash) && web.dig("scaling", "min") == 2 && web.dig("scaling", "max") == 4
+  endpoints = spec["endpoints"]
+  abort "canary requires one endpoint" unless endpoints.is_a?(Array) && endpoints.length == 1
+  endpoint = endpoints.fetch(0)
+  abort "canary endpoint differs" unless endpoint["region"] == "nyc3" && endpoint["process"] == "web"
+  ingress = {"publicPaths" => ["/route-proof", "/version"], "retryGETPaths" => ["/route-proof", "/version"], "privateReadinessPath" => "/readyz"}
+  abort "canary ingress policy differs" unless endpoint["restrictedIngress"] == ingress
+  probe = {"path" => "/route-proof", "bodySHA256" => "75790fc8d9898d5a12787ac491b6f471619cde0efc851be9f26db608b6fbb37c"}
+  abort "canary route probe differs" unless endpoint["trafficProbe"] == probe
+  uri = URI.parse(endpoint.fetch("url").to_s)
+  host = uri.host.to_s.downcase.sub(/\.$/, "")
+  reserved = ["example.com", "example.net", "example.org"]
+  placeholder = host.empty? || !host.include?(".") || !(IPAddr.new(host) rescue nil).nil? || host == "localhost" ||
+    host.end_with?(".invalid", ".example", ".test", ".localhost", ".local") ||
+    reserved.any? { |suffix| host == suffix || host.end_with?("." + suffix) }
+  abort "canary needs a reviewed HTTPS host" unless uri.scheme == "https" && uri.path.to_s.empty? && uri.query.nil? && uri.fragment.nil? && !placeholder
+  puts "enabled"
+' "$source_path")
+
+if [[ "$validation" == disabled ]]; then
+  printf 'publish=false\n' >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+[[ "$validation" == enabled ]]
+: "${NORN_CATALOG_VALIDATOR:?NORN_CATALOG_VALIDATOR is required for an enabled catalog}"
+"$NORN_CATALOG_VALIDATOR" "$source_path"
+mkdir -p "$output_dir/stage/canary"
+cp "$source_path" "$output_dir/stage/canary/infraspec.yaml"
+spec_sha=$(sha256sum "$source_path" | awk '{print $1}')
+
+python3 - "$output_dir/stage/norn-catalog-provenance.json" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$spec_sha" <<'PY'
+import json
+import sys
+path, source_sha, run_id, attempt, spec_sha = sys.argv[1:]
+provenance = {
+    "appID": "norn-fleet-canary",
+    "catalogPath": "canary/infraspec.yaml",
+    "infraSpecSHA256": spec_sha,
+    "publisherRunAttempt": attempt,
+    "publisherRunID": run_id,
+    "publisherWorkflow": ".github/workflows/norn-canary-catalog.yml",
+    "repository": "antiartificial/norn",
+    "schemaVersion": "norn.work-staging-app-catalog-provenance/v1",
+    "sourcePath": "v2/infra/fleet-staging/canary/infraspec.yaml",
+    "sourceRef": "refs/heads/master",
+    "sourceSHA": source_sha,
+}
+with open(path, "w", encoding="utf-8", newline="\n") as stream:
+    json.dump(provenance, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+
+python3 - "$output_dir/stage" "$output_dir/catalog.tar.gz" <<'PY'
+import gzip
+import io
+from pathlib import Path
+import sys
+import tarfile
+stage, output = Path(sys.argv[1]), Path(sys.argv[2])
+with output.open("wb") as raw:
+    with gzip.GzipFile(filename="", mode="wb", compresslevel=9, fileobj=raw, mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            directory = tarfile.TarInfo("canary")
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o750
+            directory.mtime = directory.uid = directory.gid = 0
+            archive.addfile(directory)
+            for name in ("canary/infraspec.yaml", "norn-catalog-provenance.json"):
+                content = (stage / name).read_bytes()
+                member = tarfile.TarInfo(name)
+                member.size = len(content)
+                member.mode = 0o640
+                member.mtime = member.uid = member.gid = 0
+                archive.addfile(member, io.BytesIO(content))
+PY
+rm -rf "$output_dir/stage"
+{
+  printf 'publish=true\n'
+  printf 'artifact_name=work-staging-canary-catalog-%s\n' "$GITHUB_SHA"
+  printf 'infra_spec_sha256=%s\n' "$spec_sha"
+  printf 'bundle_sha256=%s\n' "$(sha256sum "$output_dir/catalog.tar.gz" | awk '{print $1}')"
+} >> "$GITHUB_OUTPUT"

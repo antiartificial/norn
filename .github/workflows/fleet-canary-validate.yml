@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - v2/infra/fleet-staging/canary/**
+      - v2/scripts/publish-work-staging-canary-catalog
+      - v2/scripts/test_publish_work_staging_canary_catalog.py
       - .github/workflows/fleet-canary-validate.yml
   push:
     branches: [master]
     paths:
       - v2/infra/fleet-staging/canary/**
+      - v2/scripts/publish-work-staging-canary-catalog
+      - v2/scripts/test_publish_work_staging_canary_catalog.py
       - .github/workflows/fleet-canary-validate.yml
 
 permissions:
@@ -32,3 +36,5 @@ jobs:
         run: cd v2/infra/fleet-staging/canary && go test ./...
       - name: Validate the disabled staging InfraSpec
         run: cd v2/api && go run ./cmd/catalog-publisher-validate ../infra/fleet-staging/canary/infraspec.yaml
+      - name: Prove publisher refuses cross-app and placeholder changes
+        run: python3 v2/scripts/test_publish_work_staging_canary_catalog.py
