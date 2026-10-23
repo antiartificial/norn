@@ -1,0 +1,39 @@
+name: Fleet canary release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - v2/infra/fleet-staging/canary/**
+      - .github/workflows/fleet-canary-release.yml
+
+permissions: {}
+
+jobs:
+  staging:
+    # Source may merge while the runtime is being bootstrapped. A later
+    # reviewed source commit triggers this caller after the owner enables it.
+    if: github.ref_protected && vars.NORN_FLEET_CANARY_STAGING_RELEASE_ENABLED == 'true'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      deployments: write
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@be45f5b5b65eda06eb649f8680d11b0e48dae879
+    with:
+      lane: staging
+      private_network: true
+      tailscale_target: ${{ vars.NORN_FLEET_API_TAILSCALE_TARGET }}
+      app_id: norn-fleet-canary
+      image_repository: ghcr.io/antiartificial/norn-fleet-canary
+      dockerfile: v2/infra/fleet-staging/canary/Dockerfile
+      build_context: v2/infra/fleet-staging/canary
+      build_contract: pilot-go
+      go_image: golang@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466
+      runtime_image: gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+      required_checks: |
+        Fleet canary	15368
