@@ -163,3 +163,22 @@ func TestEndpointScopeUsesBareHostEndpoints(t *testing.T) {
 		t.Fatalf("endpointScope = %q, want private", got)
 	}
 }
+
+func TestEndpointScopeReportsMostExposedEndpoint(t *testing.T) {
+	tests := []struct {
+		name      string
+		endpoints []model.Endpoint
+		want      string
+	}{
+		{name: "local and private", endpoints: []model.Endpoint{{URL: "http://127.0.0.1:7701"}, {URL: "https://mini.tail113139.ts.net:7701"}}, want: "private"},
+		{name: "private and public", endpoints: []model.Endpoint{{URL: "like-trove.norn"}, {URL: "https://atlas.slopistry.com"}}, want: "public"},
+		{name: "public and private", endpoints: []model.Endpoint{{URL: "vigil.slopistry.com"}, {URL: "vigil.norn"}}, want: "public"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := endpointScope(tt.endpoints); got != tt.want {
+				t.Fatalf("endpointScope() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
