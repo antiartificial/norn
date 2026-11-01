@@ -1,8 +1,7 @@
 name: norn-fleet-canary
 nomadNamespace: norn-work-staging
-deploy: false
-# Enable only after the immutable image digest, reviewed HTTPS route, app
-# catalog, and Norn runtime are installed. This app has no database or secrets.
+deploy: true
+# Public paths are limited by restrictedIngress. This app has no database or secrets.
 repo:
   url: https://github.com/antiartificial/norn.git
   branch: master
@@ -45,7 +44,7 @@ processes:
     drain:
       timeout: 20s
 endpoints:
-  - url: https://work-staging-canary.invalid
+  - url: https://norn-fleet-canary.tkmkt-dev.com
     region: nyc3
     process: web
     restrictedIngress:

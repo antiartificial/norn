@@ -37,6 +37,7 @@ validation=$(ruby -rpsych -ruri -ripaddr -e '
   abort "canary route probe differs" unless endpoint["trafficProbe"] == probe
   uri = URI.parse(endpoint.fetch("url").to_s)
   host = uri.host.to_s.downcase.sub(/\.$/, "")
+  abort "canary endpoint is not the reviewed work-staging host" unless endpoint["url"] == "https://norn-fleet-canary.tkmkt-dev.com"
   reserved = ["example.com", "example.net", "example.org"]
   placeholder = host.empty? || !host.include?(".") || !(IPAddr.new(host) rescue nil).nil? || host == "localhost" ||
     host.end_with?(".invalid", ".example", ".test", ".localhost", ".local") ||
