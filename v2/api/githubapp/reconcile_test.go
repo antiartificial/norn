@@ -233,7 +233,7 @@ func TestReconcilePullRequestClassifiesObservedRemoteState(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			got, err := client.ReconcilePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", fleet.NodePool{}, "sha256:source", nil)
+			got, err := client.ReconcilePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", fleet.NodePool{}, "sha256:source", nil, nil)
 			if err != nil || got.Outcome != test.want {
 				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, test.want)
 			}
@@ -249,7 +249,7 @@ func TestReconcilePullRequestRejectsTamperedBranchAndAbsenceRace(t *testing.T) {
 	}
 	const planID = "11111111-1111-4111-8111-111111111111"
 	planDigest := "sha256:" + strings.Repeat("a", 64)
-	receiptPath, expectedBranch, err := planReviewReceipt(planID, planDigest, fleet.Digest(document), "app", "scale", parsed.NodePools["app"], nil)
+	receiptPath, expectedBranch, err := planReviewReceipt(planID, planDigest, fleet.Digest(document), "app", "scale", parsed.NodePools["app"], nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,136 @@ func TestReconcilePullRequestRejectsTamperedBranchAndAbsenceRace(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			got, err := client.ReconcilePullRequest(context.Background(), planID, planDigest, "app", "scale", parsed.NodePools["app"], fleet.Digest(document), nil)
+			got, err := client.ReconcilePullRequest(context.Background(), planID, planDigest, "app", "scale", parsed.NodePools["app"], fleet.Digest(document), nil, nil)
+			if err != nil || got.Outcome != tc.want {
+				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReconcilePullRequestRejectsTamperedV2ProtectedReceipt(t *testing.T) {
+	document := []byte("apiVersion: norn.dev/fleet/v1\nkind: Cluster\nmetadata:\n  repository: acme/norn-fleet\n  environment: production\ncluster:\n  name: production-nyc3\n  provider: digitalocean\n  region: nyc3\nnodePools:\n  control:\n    size: s-4vcpu-8gb\n    min: 3\n    desired: 3\n    max: 3\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n")
+	parsed, report := fleet.ParseAndValidate(document)
+	if parsed == nil || report == nil || !report.Valid {
+		t.Fatal("test fleet document invalid")
+	}
+	const planID = "77777777-7777-4777-8777-777777777777"
+	planDigest := "sha256:" + strings.Repeat("a", 64)
+	plan := &fleet.CapacityPlan{
+		ID: planID, Digest: planDigest, Signature: "hmac-sha256:" + strings.Repeat("b", 64), SourceDigest: fleet.Digest(document),
+		Pool: "control", Action: "reconcile", Proposed: parsed.NodePools["control"],
+		ProtectedApplyPrestate:       &fleet.ProtectedApplyPrestate{ProviderAccountUUID: "account", ProviderTargetID: "target", ProviderTargetState: "present", Spaces: fleet.ProtectedApplyStateSpaces{Bucket: "bucket", Key: "state/key", Lineage: "lineage", Serial: 4, VersionID: "version", RawSHA256: strings.Repeat("c", 64)}},
+		ProtectedApplyTransitionRule: &fleet.ProtectedApplyTransitionRule{ProviderTargetState: "present", StateChange: "write"},
+	}
+	receiptPath, expectedReceipt, err := planReviewReceipt(plan.ID, plan.Digest, plan.SourceDigest, plan.Pool, plan.Action, plan.Proposed, nil, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "Fleet: reconcile control"
+	body := "Norn capacity plan `" + plan.ID + "`\n\nDigest: `" + plan.Digest + "`\n\nDesired topology is already exactly the proposed configuration. This pull request adds the immutable Norn review receipt only; it does not manufacture a topology change. Provider and state credentials remain in the protected runner."
+	for _, tc := range []struct {
+		name, want string
+		tamper     bool
+	}{{name: "exact receipt", want: "remote-success"}, {name: "protected prestate tamper", tamper: true, want: "ambiguous"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tokenResponse(w, r, map[string]string{"contents": "read", "pull_requests": "read"}) {
+					return
+				}
+				switch {
+				case r.URL.Path == "/repos/acme/norn-fleet/pulls":
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{{"number": 42, "html_url": "https://github.com/acme/norn-fleet/pull/42", "state": "open", "title": title, "body": body, "head": map[string]string{"ref": "norn/plan-" + plan.ID, "sha": "0123456789012345678901234567890123456789"}, "base": map[string]string{"ref": "main"}}})
+				case strings.Contains(r.URL.Path, "/contents/"):
+					content := document
+					if r.URL.Query().Get("ref") != "main" {
+						if !strings.Contains(r.URL.Path, receiptPath) {
+							http.NotFound(w, r)
+							return
+						}
+						content = expectedReceipt
+						if tc.tamper {
+							content = bytes.Replace(content, []byte("\"target\""), []byte("\"other-target\""), 1)
+						}
+					}
+					fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"blob","size":%d}`, base64.StdEncoding.EncodeToString(content), len(content))
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/norn-fleet/git/ref/heads/"):
+					fmt.Fprint(w, `{"object":{"sha":"0123456789012345678901234567890123456789"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			got, err := client.ReconcilePullRequest(context.Background(), plan.ID, plan.Digest, plan.Pool, plan.Action, plan.Proposed, plan.SourceDigest, nil, plan)
+			if err != nil || got.Outcome != tc.want {
+				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReconcilePullRequestRequiresV2ReceiptWithTopologyChange(t *testing.T) {
+	document := []byte("apiVersion: norn.dev/fleet/v1\nkind: Cluster\nmetadata:\n  repository: acme/norn-fleet\n  environment: production\ncluster:\n  name: production-nyc3\n  provider: digitalocean\n  region: nyc3\nnodePools:\n  control:\n    size: s-4vcpu-8gb\n    min: 2\n    desired: 2\n    max: 3\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n")
+	parsed, report := fleet.ParseAndValidate(document)
+	if parsed == nil || report == nil || !report.Valid {
+		t.Fatal("test fleet document invalid")
+	}
+	const planID = "99999999-9999-4999-8999-999999999999"
+	proposed := parsed.NodePools["control"]
+	proposed.Desired = 3
+	plan := &fleet.CapacityPlan{
+		ID: planID, Digest: "sha256:" + strings.Repeat("a", 64), Signature: "hmac-sha256:" + strings.Repeat("b", 64), SourceDigest: fleet.Digest(document),
+		Pool: "control", Action: "scale", Proposed: proposed,
+		ProtectedApplyPrestate:       &fleet.ProtectedApplyPrestate{ProviderAccountUUID: "account", ProviderTargetID: "target", ProviderTargetState: "present", Spaces: fleet.ProtectedApplyStateSpaces{Bucket: "bucket", Key: "state/key", Lineage: "lineage", Serial: 4, VersionID: "version", RawSHA256: strings.Repeat("c", 64)}},
+		ProtectedApplyTransitionRule: &fleet.ProtectedApplyTransitionRule{ProviderTargetState: "present", StateChange: "write"},
+	}
+	updatedDocument := *parsed
+	updatedDocument.NodePools = map[string]fleet.NodePool{}
+	for name, pool := range parsed.NodePools {
+		updatedDocument.NodePools[name] = pool
+	}
+	updatedDocument.NodePools[plan.Pool] = plan.Proposed
+	expectedDocument, err := yaml.Marshal(&updatedDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath, expectedReceipt, err := planReviewReceipt(plan.ID, plan.Digest, plan.SourceDigest, plan.Pool, plan.Action, plan.Proposed, nil, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "Fleet: scale control"
+	body := "Norn capacity plan `" + plan.ID + "`\n\nDigest: `" + plan.Digest + "`\n\nThis pull request changes desired infrastructure only. Provider and state credentials remain in the protected runner."
+	for _, tc := range []struct {
+		name, want string
+		tamper     bool
+	}{{name: "exact document and receipt", want: "remote-success"}, {name: "missing protected receipt", tamper: true, want: "ambiguous"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tokenResponse(w, r, map[string]string{"contents": "read", "pull_requests": "read"}) {
+					return
+				}
+				switch {
+				case r.URL.Path == "/repos/acme/norn-fleet/pulls":
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{{"number": 42, "html_url": "https://github.com/acme/norn-fleet/pull/42", "state": "open", "title": title, "body": body, "head": map[string]string{"ref": "norn/plan-" + plan.ID, "sha": "0123456789012345678901234567890123456789"}, "base": map[string]string{"ref": "main"}}})
+				case strings.Contains(r.URL.Path, "/contents/"):
+					content := document
+					if r.URL.Query().Get("ref") != "main" {
+						if strings.Contains(r.URL.Path, receiptPath) {
+							content = expectedReceipt
+							if tc.tamper {
+								content = []byte("tampered")
+							}
+						} else {
+							content = expectedDocument
+						}
+					}
+					fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"blob","size":%d}`, base64.StdEncoding.EncodeToString(content), len(content))
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/norn-fleet/git/ref/heads/"):
+					fmt.Fprint(w, `{"object":{"sha":"0123456789012345678901234567890123456789"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			got, err := client.ReconcilePullRequest(context.Background(), plan.ID, plan.Digest, plan.Pool, plan.Action, plan.Proposed, plan.SourceDigest, nil, plan)
 			if err != nil || got.Outcome != tc.want {
 				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, tc.want)
 			}
@@ -364,7 +493,7 @@ func TestCreatePullRequestClassifiesPrewriteAndExistingBranchFailures(t *testing
 					http.NotFound(w, r)
 				}
 			}))
-			_, err := client.CreatePullRequest(context.Background(), planID, "sha256:x", "app", "scale", proposed, fleet.Digest(tc.main), nil)
+			_, err := client.CreatePullRequest(context.Background(), planID, "sha256:x", "app", "scale", proposed, fleet.Digest(tc.main), nil, nil)
 			if tc.want != nil && !errorsIs(err, tc.want) {
 				t.Fatalf("error=%v", err)
 			}

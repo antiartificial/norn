@@ -27,8 +27,8 @@ import (
 )
 
 type etcdFleetGitHubPullRequester interface {
-	CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool) (*githubapp.PullRequest, error)
-	ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool) (*githubapp.Reconciliation, error)
+	CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool, *fleet.CapacityPlan) (*githubapp.PullRequest, error)
+	ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string, *bool, *fleet.CapacityPlan) (*githubapp.Reconciliation, error)
 }
 
 func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3OperationStore, github etcdFleetGitHubPullRequester) http.HandlerFunc {
@@ -101,7 +101,7 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_terminal", "fleet pull request reservation is terminal")
 			return
 		}
-		observed, reconcileErr := github.ReconcilePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest, reservation.TemporaryRunnerSSH)
+		observed, reconcileErr := github.ReconcilePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest, reservation.TemporaryRunnerSSH, &typed)
 		if reconcileErr != nil || observed == nil || observed.Outcome == "ambiguous" {
 			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub could not authoritatively reconcile the fleet pull request")
 			return
@@ -129,7 +129,7 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub reconciliation did not prove that no pull request was written")
 			return
 		}
-		result, createErr := github.CreatePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest, reservation.TemporaryRunnerSSH)
+		result, createErr := github.CreatePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest, reservation.TemporaryRunnerSSH, &typed)
 		if createErr != nil || !validEtcdFleetGitHubPullRequest(cfg, reservation, result) {
 			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub could not create or recover the fleet pull request")
 			return

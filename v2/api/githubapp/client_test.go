@@ -198,14 +198,14 @@ nodePools:
 		}
 	}))
 	proposed := fleet.NodePool{Size: "s-4vcpu-8gb", Min: 2, Desired: 3, Max: 8, Replacement: fleet.Replacement{Strategy: "blueGreen", RequireCapacityHeadroom: true, RequireReadiness: true}}
-	result, err := client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, fleet.Digest(document), nil)
+	result, err := client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, fleet.Digest(document), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Number != 7 || result.Branch != branch || updatedDesired != 3 {
 		t.Fatalf("result=%#v desired=%d", result, updatedDesired)
 	}
-	_, err = client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64), nil)
+	_, err = client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64), nil, nil)
 	if !errorsIs(err, ErrStalePlan) {
 		t.Fatalf("stale plan error = %v", err)
 	}
@@ -309,21 +309,21 @@ nodePools:
 	}))
 	firstPlanID := "33333333-3333-4333-8333-333333333333"
 	secondPlanID := "44444444-4444-4444-8444-444444444444"
-	first, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil)
+	first, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil); err != nil {
+	if _, err := client.CreatePullRequest(context.Background(), firstPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil, nil); err != nil {
 		t.Fatalf("durable reuse of same no-op plan failed: %v", err)
 	}
-	second, err := client.CreatePullRequest(context.Background(), secondPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil)
+	second, err := client.CreatePullRequest(context.Background(), secondPlanID, planDigest, "app", "scale", proposed, sourceDigest, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Number == second.Number || len(receipts) != 2 || configWrites != 0 {
 		t.Fatalf("receipt PRs=%#v/%#v receipts=%d configWrites=%d", first, second, len(receipts), configWrites)
 	}
-	if _, err := client.CreatePullRequest(context.Background(), "55555555-5555-4555-8555-555555555555", planDigest, "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64), nil); !errorsIs(err, ErrStalePlan) {
+	if _, err := client.CreatePullRequest(context.Background(), "55555555-5555-4555-8555-555555555555", planDigest, "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64), nil, nil); !errorsIs(err, ErrStalePlan) {
 		t.Fatalf("no-op stale source error = %v", err)
 	}
 	if len(receipts) != 2 {
@@ -336,7 +336,7 @@ func TestPlanReviewReceiptBindsExplicitTemporaryRunnerSSH(t *testing.T) {
 	planDigest := "sha256:" + strings.Repeat("a", 64)
 	sourceDigest := "sha256:" + strings.Repeat("b", 64)
 	value := false
-	_, encoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, &value)
+	_, encoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, &value, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestPlanReviewReceiptBindsExplicitTemporaryRunnerSSH(t *testing.T) {
 	if receipt.TemporaryRunnerSSH == nil || *receipt.TemporaryRunnerSSH {
 		t.Fatalf("receipt did not bind explicit false: %s", encoded)
 	}
-	_, defaultEncoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, nil)
+	_, defaultEncoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestPlanReviewReceiptBindsExplicitTemporaryRunnerSSH(t *testing.T) {
 		t.Fatalf("default receipt did not explicitly bind false: %s", defaultEncoded)
 	}
 	value = true
-	_, enabledEncoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, &value)
+	_, enabledEncoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", fleet.NodePool{Desired: 3}, &value, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,6 +371,125 @@ func TestPlanReviewReceiptBindsExplicitTemporaryRunnerSSH(t *testing.T) {
 	}
 	if receipt.TemporaryRunnerSSH == nil || !*receipt.TemporaryRunnerSSH {
 		t.Fatalf("explicit true was not retained: %s", enabledEncoded)
+	}
+}
+
+func TestPlanReviewReceiptV2BindsSignedProtectedCapacityPlan(t *testing.T) {
+	const planID = "77777777-7777-4777-8777-777777777777"
+	planDigest := "sha256:" + strings.Repeat("a", 64)
+	sourceDigest := "sha256:" + strings.Repeat("b", 64)
+	proposed := fleet.NodePool{Desired: 3}
+	prestate := &fleet.ProtectedApplyPrestate{
+		ProviderAccountUUID: "account",
+		ProviderTargetID:    "target",
+		ProviderTargetState: "present",
+		Spaces: fleet.ProtectedApplyStateSpaces{
+			Bucket: "bucket", Key: "state/key", Lineage: "lineage", Serial: 4, VersionID: "version", RawSHA256: strings.Repeat("c", 64),
+		},
+	}
+	rule := &fleet.ProtectedApplyTransitionRule{ProviderTargetState: "present", StateChange: "write"}
+	plan := &fleet.CapacityPlan{
+		ID: planID, Digest: planDigest, Signature: "hmac-sha256:" + strings.Repeat("d", 64), SourceDigest: sourceDigest,
+		Pool: "control", Action: "reconcile", Proposed: proposed, ProtectedApplyPrestate: prestate, ProtectedApplyTransitionRule: rule,
+	}
+	_, encoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", proposed, nil, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt struct {
+		SchemaVersion                string                             `json:"schemaVersion"`
+		PlanDigest                   string                             `json:"planDigest"`
+		PlanSignature                string                             `json:"planSignature"`
+		ProtectedApplyPrestate       fleet.ProtectedApplyPrestate       `json:"protectedApplyPrestate"`
+		ProtectedApplyTransitionRule fleet.ProtectedApplyTransitionRule `json:"protectedApplyTransitionRule"`
+	}
+	if err := json.Unmarshal(encoded, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.SchemaVersion != "norn.fleet-plan-review-receipt/v2" || receipt.PlanDigest != plan.Digest || receipt.PlanSignature != plan.Signature || !reflect.DeepEqual(receipt.ProtectedApplyPrestate, *prestate) || !reflect.DeepEqual(receipt.ProtectedApplyTransitionRule, *rule) {
+		t.Fatalf("receipt does not bind the signed protected capacity plan: %s", encoded)
+	}
+	tampered := *plan
+	tampered.ProtectedApplyPrestate = &fleet.ProtectedApplyPrestate{ProviderAccountUUID: prestate.ProviderAccountUUID, ProviderTargetID: "other-target", ProviderTargetState: prestate.ProviderTargetState, Spaces: prestate.Spaces}
+	_, tamperedEncoded, err := planReviewReceipt(planID, planDigest, sourceDigest, "control", "reconcile", proposed, nil, &tampered)
+	if err != nil || bytes.Equal(encoded, tamperedEncoded) {
+		t.Fatalf("protected field change did not change the receipt: %v", err)
+	}
+}
+
+func TestCreatePullRequestWritesV2ReceiptWithTopologyChange(t *testing.T) {
+	document := []byte("apiVersion: norn.dev/fleet/v1\nkind: Cluster\nmetadata:\n  repository: acme/norn-fleet\n  environment: production\ncluster:\n  name: production-nyc3\n  provider: digitalocean\n  region: nyc3\nnodePools:\n  control:\n    size: s-4vcpu-8gb\n    min: 2\n    desired: 2\n    max: 3\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n")
+	parsed, report := fleet.ParseAndValidate(document)
+	if parsed == nil || report == nil || !report.Valid {
+		t.Fatal("test fleet document invalid")
+	}
+	const planID = "88888888-8888-4888-8888-888888888888"
+	proposed := parsed.NodePools["control"]
+	proposed.Desired = 3
+	plan := &fleet.CapacityPlan{
+		ID: planID, Digest: "sha256:" + strings.Repeat("a", 64), Signature: "hmac-sha256:" + strings.Repeat("b", 64), SourceDigest: fleet.Digest(document),
+		Pool: "control", Action: "scale", Proposed: proposed,
+		ProtectedApplyPrestate:       &fleet.ProtectedApplyPrestate{ProviderAccountUUID: "account", ProviderTargetID: "target", ProviderTargetState: "present", Spaces: fleet.ProtectedApplyStateSpaces{Bucket: "bucket", Key: "state/key", Lineage: "lineage", Serial: 4, VersionID: "version", RawSHA256: strings.Repeat("c", 64)}},
+		ProtectedApplyTransitionRule: &fleet.ProtectedApplyTransitionRule{ProviderTargetState: "present", StateChange: "write"},
+	}
+	var configWrites, receiptWrites int
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(w, r, map[string]string{"contents": "write", "pull_requests": "write"}) {
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/environments/production/nyc3/cluster.yaml"):
+			fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"file-sha","size":%d}`, base64.StdEncoding.EncodeToString(document), len(document))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/ref/heads/main"):
+			fmt.Fprint(w, `{"object":{"sha":"base-sha"}}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/contents/environments/production/nyc3/cluster.yaml"):
+			configWrites++
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			updated, _ := base64.StdEncoding.DecodeString(body["content"])
+			got, gotReport := fleet.ParseAndValidate(updated)
+			if got == nil || gotReport == nil || !gotReport.Valid || got.NodePools["control"].Desired != proposed.Desired {
+				http.Error(w, "changed topology missing", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/contents/.norn/fleet-plan-receipts/"):
+			receiptWrites++
+			if configWrites != 1 {
+				http.Error(w, "receipt preceded topology change", http.StatusBadRequest)
+				return
+			}
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			encoded, _ := base64.StdEncoding.DecodeString(body["content"])
+			var receipt struct {
+				SchemaVersion string `json:"schemaVersion"`
+				PlanDigest    string `json:"planDigest"`
+				PlanSignature string `json:"planSignature"`
+			}
+			if err := json.Unmarshal(encoded, &receipt); err != nil || receipt.SchemaVersion != "norn.fleet-plan-review-receipt/v2" || receipt.PlanDigest != plan.Digest || receipt.PlanSignature != plan.Signature {
+				http.Error(w, "protected receipt missing", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
+			fmt.Fprint(w, `{"number":7,"html_url":"https://github.com/acme/norn-fleet/pull/7","state":"open"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	if _, err := client.CreatePullRequest(context.Background(), plan.ID, plan.Digest, plan.Pool, plan.Action, plan.Proposed, plan.SourceDigest, nil, plan); err != nil {
+		t.Fatal(err)
+	}
+	if configWrites != 1 || receiptWrites != 1 {
+		t.Fatalf("topology writes=%d receipt writes=%d", configWrites, receiptWrites)
 	}
 }
 
