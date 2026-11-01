@@ -31,6 +31,14 @@ The first target was configured and read back at revision 2117 on 2026-11-01.
 The previous release attempt reached the control but was refused before
 artifact verification because that target did not yet exist.
 
+The next attempt reached artifact verification and exposed missing Docker
+Buildx, an inaccessible service HOME, a Cosign version mismatch, and Go 1.27.0
+vulnerability findings. The staging controls now have Buildx and a writable
+HOME; the verifier uses the workflow's Cosign v2.6.5, the canary build is pinned
+to Go 1.27.3, and the API parses verified attestation JSON from stdout. The
+Go 1.27.3 image passed the control's HIGH/CRITICAL Trivy policy before this
+retry. This protected push tests those corrections through the full lane.
+
 A successful release operation proves durable canary admission and deployment;
 this Fleet staging lane does not issue a production promotion qualification.
 Public route health, two distinct healthy replicas, and later 2-to-3-to-2 scale
