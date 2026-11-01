@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Fleet staging canary checkpoint (2026-11-01 23:18 UTC)
+## Fleet staging canary checkpoint (2026-11-01 23:39 UTC)
 
 The first protected Fleet canary release completed in [run 41359827250](https://github.com/antiartificial/norn/actions/runs/41359827250)
 from source `182b719bb8f5b84f8c7272e715f83553a00acb4d`. Norn accepted the
@@ -15,9 +15,21 @@ the signed body digest
 and for `/version` with the released source SHA; TLS validation passed. The
 one-use private runner stopped, consumed its authorization, and unregistered.
 
+Norn then accepted an explicit `web` scale from two to three
+(operation `2ae52865-3834-49bb-9f56-6c7bc9b3f03b`) and back to two
+(operation `4e9b6a39-e8a9-4f5e-a0e2-5825f8e34cc3`). Both operations
+finished `succeeded`. At three, the scale-status API reported three desired,
+running and healthy allocations on distinct ready app nodes `app-01`,
+`app-02` and `app-04`; 20 public `/version` requests reached all three
+allocation IDs with the released source SHA. After downscale, scale-status
+reported two desired, running and healthy allocations, and 12 public requests
+reached both remaining allocation IDs. The public `/route-proof` body still
+matched the signed digest during the three-replica phase.
+
 This is a staging release and live two-host workload proof. It advances the
 fresh-Fleet and direct-deploy slices of M3, M4 and M7; it does not complete
-their full gates. Loaded 2→3→2 scaling, safe drain, leader failover during
+their full gates. The live 2→3→2 **replica** scale cycle is proven, but loaded
+node-count 2→3→2 replacement, safe drain, leader failover during
 route mutation, running upgrade, rollback, whole-node restore, soak, and
 production promotion remain unproved. The ingress publishers currently name
 the elected control03 address `10.43.0.2` for route authority. An API leader
@@ -52,7 +64,7 @@ independently of the immutable runtime source, so neither is runtime provenance.
 
 The work-account staging Fleet remains a separate environment and retains its
 own gates for directly deployed representative workloads and data, placement
-and loaded 2-to-3-to-2 scaling with safe drain, running-version upgrade under
+and loaded node-count 2-to-3-to-2 scaling with safe drain, running-version upgrade under
 traffic, whole-node fault/restore and HA, external admission, soak, and
 operational handoff. Seven historical `fleet.github.apply-dispatch` operations
 dated 2026-10-08 through 2026-10-10 still appear active as queued receipts on
