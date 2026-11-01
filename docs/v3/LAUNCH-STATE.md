@@ -1,5 +1,44 @@
 # Norn v3 launch state
 
+## Current Mini checkpoint (2026-11-01 05:33 UTC)
+
+Pinned-address SSH and authenticated loopback inventory verify that the Mini has
+completed its guarded PostgreSQL v2-to-v3 adoption as an independent
+development Norn. The active API reports exact source
+`3602e7e3d5fe5c0ef333b4041580d48ec15b24c5` and version
+`v3.0.0-rc.1-platform-34-g3602e7e3`; `~/norn/current` resolves to that immutable
+release. The original `com.norn.api` LaunchAgent is running through the managed
+launcher in active/check mode. Health is `ok`, the runtime mutation fence is
+inactive, and Consul, Nomad, PostgreSQL, S3 and SOPS report up. The selected
+recovered-forward generation remains recorded as `candidate-promoted`, with its
+preservation receipt retained. Current inventory found 30 app records, 46
+services and host status `ok`.
+
+This confirms the Mini live-adoption portion of M9 and provides transition
+evidence for M5; M5's copied-environment rehearsal gate remains a separate
+assessment. It does not qualify a repeat without operator
+intervention, a current-`master` v3-to-v3 refresh, production admission, Fleet
+etcd or HA, or full M9 adoption. The completed transition required bounded
+operator intervention to correct the owner-only release-key path, fill one
+exact preservation digest under the promotion lock, and temporarily accommodate
+host-agent startup timing; those facts remain part of the evidence rather than
+an autonomous-repeat claim. The Mini checkout and current `master` may advance
+independently of the immutable runtime source, so neither is runtime provenance.
+
+The work-account staging Fleet remains a separate environment and retains its
+own gates for directly deployed representative workloads and data, placement
+and loaded 2-to-3-to-2 scaling with safe drain, running-version upgrade under
+traffic, whole-node fault/restore and HA, external admission, soak, and
+operational handoff. Seven historical `fleet.github.apply-dispatch` operations
+dated 2026-10-08 through 2026-10-10 still appear active as queued receipts on
+the Mini. They are preserved Fleet dispatch evidence, not proof of live work;
+classify their durable status before any later Mini platform drain or upgrade.
+Production readiness is still blocked. No Mini transition should be replayed or
+made dependent on the separate Fleet work.
+
+This checkpoint supersedes older present-tense Mini transition statements
+below. Preserve those sections as historical evidence.
+
 ## Track boundaries (2026-10-11)
 
 The v3 launch has two separate tracks. **The Mini can be upgraded and run v3
