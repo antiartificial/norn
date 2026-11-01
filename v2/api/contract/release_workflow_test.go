@@ -176,6 +176,15 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	} {
 		if !strings.Contains(workflow, required) { t.Errorf("runner-private contract is missing %q", required) }
 	}
+	var parsed releaseWorkflow
+	if err := yaml.Unmarshal(reusable, &parsed); err != nil { t.Fatal(err) }
+	effect, ok := parsed.Jobs["staging-runner-private"]
+	if !ok { t.Fatal("runner-private effect job is missing") }
+	for _, step := range effect.Steps {
+		if strings.Contains(step.Uses, "docker/") || strings.Contains(step.Uses, "cosign") || strings.Contains(step.Name, "Build and publish") {
+			t.Fatalf("protected effect job contains hosted build tooling: name=%q uses=%q", step.Name, step.Uses)
+		}
+	}
 }
 
 func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
