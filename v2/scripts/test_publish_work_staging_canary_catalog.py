@@ -27,8 +27,7 @@ class CanaryCatalogPublisherTest(unittest.TestCase):
         return result, root, output.read_text() if output.exists() else ""
 
     def enabled_source(self) -> str:
-        return SOURCE.read_text().replace("deploy: false", "deploy: true").replace(
-            "work-staging-canary.invalid", "canary.staging.slopistry.com")
+        return SOURCE.read_text().replace("deploy: false", "deploy: true")
 
     def test_disabled_source_publishes_nothing(self) -> None:
         result, root, output = self.run_publisher(SOURCE.read_text())
@@ -43,6 +42,8 @@ class CanaryCatalogPublisherTest(unittest.TestCase):
         with tarfile.open(root / "catalog.tar.gz", "r:gz") as archive:
             self.assertEqual(archive.getnames(), ["canary", "canary/infraspec.yaml",
                                                    "norn-catalog-provenance.json"])
+            self.assertIn(b"https://norn-fleet-canary.tkmkt-dev.com",
+                          archive.extractfile("canary/infraspec.yaml").read())
             self.assertIn(b'"appID":"norn-fleet-canary"',
                           archive.extractfile("norn-catalog-provenance.json").read())
 
@@ -50,7 +51,7 @@ class CanaryCatalogPublisherTest(unittest.TestCase):
         source = self.enabled_source()
         for changed in (source.replace("name: norn-fleet-canary", "name: other-app"),
                         source.replace("nodePool: app", "nodePool: ingress"),
-                        source.replace("canary.staging.slopistry.com", "canary.invalid"),
+                        source.replace("norn-fleet-canary.tkmkt-dev.com", "other.tkmkt-dev.com"),
                         source.replace("  dockerfile:", "  image: ghcr.io/other/app:latest\n  dockerfile:")):
             with self.subTest(changed=changed[:80]):
                 result, root, output = self.run_publisher(changed)
