@@ -87,6 +87,34 @@ func TestRequiredReleaseChecksBindProtectedDefaultBranchSuite(t *testing.T) {
 	}
 }
 
+func TestStagingCreatesSBOMOutputDirectoryBeforeAction(t *testing.T) {
+	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow releaseWorkflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	steps := workflow.Jobs["staging"].Steps
+	prepared := false
+	for _, step := range steps {
+		switch step.Name {
+		case "Prepare SPDX output directory":
+			if step.Run != "mkdir -p norn-release" {
+				t.Fatalf("unexpected SPDX directory preparation: %q", step.Run)
+			}
+			prepared = true
+		case "Generate an SPDX SBOM for the exact OCI digest":
+			if !prepared || step.With["output-file"] != "norn-release/sbom.spdx.json" {
+				t.Fatal("SBOM action must write inside a previously created output directory")
+			}
+			return
+		}
+	}
+	t.Fatal("staging SBOM action is missing")
+}
+
 func TestReusableReleaseWorkflowSupportsPrivateTailscaleAPIs(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
 	if err != nil {

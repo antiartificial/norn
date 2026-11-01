@@ -483,6 +483,9 @@ jobs:
           set -euo pipefail
           cosign sign --yes -a "norn.git.sha=$SOURCE_SHA" "$ARTIFACT"
 
+      - name: Prepare SPDX output directory
+        run: mkdir -p norn-release
+
       - name: Generate an SPDX SBOM for the exact OCI digest
         uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
         with:
