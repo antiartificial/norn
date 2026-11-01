@@ -52,6 +52,21 @@ func TestAppDeleteVerifierScopeRequiresDedicatedIdentityAlone(t *testing.T) {
 	}
 }
 
+func TestProtectedTerminalVerifierScopeRequiresDedicatedIdentityAlone(t *testing.T) {
+	now := time.Now()
+	if _, err := NewManagedAccessTokenRecord("fleet-protected-terminal-verifier:work-staging", []string{ScopeFleetProtectedTerminalVerify}, time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		subject string
+		scopes  []string
+	}{{"other", []string{ScopeFleetProtectedTerminalVerify}}, {"fleet-protected-terminal-verifier:work-staging", []string{ScopeFleetProtectedTerminalVerify, ScopeAPIRead}}} {
+		if _, err := NewManagedAccessTokenRecord(tc.subject, tc.scopes, time.Hour, now); err == nil {
+			t.Fatalf("accepted subject=%q scopes=%v", tc.subject, tc.scopes)
+		}
+	}
+}
+
 func TestFleetOperateIsARegisteredLeastPrivilegeScope(t *testing.T) {
 	scopes, err := normalizeAccessTokenScopes([]string{ScopeAPIRead, ScopeFleetOperate})
 	if err != nil {

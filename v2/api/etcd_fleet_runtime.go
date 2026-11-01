@@ -320,6 +320,10 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		features = append(features, "fleet-offline-verifier-read-v1")
 		endpoints["fleetOfflineVerifierRead"] = "/api/v1/fleet/offline/verifier/plans/{planID}/attempts/{attemptID}"
 	}
+	if cfg != nil && cfg.FleetProtectedTerminalVerifierReadEnabled && cfg.FleetGitHubRepository == protectedTerminalVerifierRepository && len(githubEnabled) > 0 && githubEnabled[0] {
+		features = append(features, "fleet-protected-terminal-verifier-read-v1")
+		endpoints["fleetProtectedTerminalVerifierRead"] = "/api/v1/fleet/verifier/plans/{planID}/attempts/{attemptID}/terminal-receipt"
+	}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
 		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
 		endpoints["fleetGitHubPullRequest"] = "/api/v1/fleet/plans/{planID}/github/pull-request"
@@ -748,6 +752,7 @@ func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, id
 	if fleetGitHub == nil {
 		return watcher
 	}
+	registerEtcdFleetProtectedTerminalVerifierRoute(router, cfg, identities, operations)
 	fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations, fleetGitHub)
 	// fleet:operate for the GitHub lane. Gated off, the lane principals are
 	// refused by the exact-scope check, as before the executor lane existed.

@@ -89,12 +89,16 @@ type Config struct {
 	// cannot accidentally enable provider deletion.
 	FleetOfflineEffectV2Enabled     bool
 	FleetOfflineVerifierReadEnabled bool
-	FleetOfflineEffectV2VerifierURL string
-	FleetOfflineEffectV2TokenFile   string
-	FleetGitHubAPIBaseURL           string
-	GitToken                        string
-	GitSSHKey                       string
-	APIToken                        string
+	// FleetProtectedTerminalVerifierReadEnabled exposes a read-only, narrowly
+	// scoped terminal-receipt projection for an independent verifier. It is
+	// disabled unless explicitly enabled.
+	FleetProtectedTerminalVerifierReadEnabled bool
+	FleetOfflineEffectV2VerifierURL           string
+	FleetOfflineEffectV2TokenFile             string
+	FleetGitHubAPIBaseURL                     string
+	GitToken                                  string
+	GitSSHKey                                 string
+	APIToken                                  string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
 	RequireExplicitAuth      bool
@@ -396,6 +400,7 @@ func Load() *Config {
 		FleetOfflineEvidenceTokenFile:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_TOKEN_FILE")),
 		FleetOfflineEffectV2Enabled:                  envBoolOr("NORN_FLEET_OFFLINE_EFFECT_V2_ENABLED", false),
 		FleetOfflineVerifierReadEnabled:              envBoolOr("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", false),
+		FleetProtectedTerminalVerifierReadEnabled:    envBoolOr("NORN_FLEET_PROTECTED_TERMINAL_VERIFIER_READ_ENABLED", false),
 		FleetOfflineEffectV2VerifierURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_VERIFIER_URL")), "/"),
 		FleetOfflineEffectV2TokenFile:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_TOKEN_FILE")),
 

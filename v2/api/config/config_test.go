@@ -205,6 +205,17 @@ func TestFleetOfflineVerifierReadIsExplicitAndDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestFleetProtectedTerminalVerifierReadIsExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_FLEET_PROTECTED_TERMINAL_VERIFIER_READ_ENABLED", "")
+	if cfg := Load(); cfg.FleetProtectedTerminalVerifierReadEnabled {
+		t.Fatal("protected terminal verifier read enabled by default")
+	}
+	t.Setenv("NORN_FLEET_PROTECTED_TERMINAL_VERIFIER_READ_ENABLED", "true")
+	if cfg := Load(); !cfg.FleetProtectedTerminalVerifierReadEnabled {
+		t.Fatal("explicit protected terminal verifier read was ignored")
+	}
+}
+
 func TestGitHubActionsReleaseBindingsConfig(t *testing.T) {
 	t.Setenv("NORN_GITHUB_ACTIONS_RELEASE_BINDINGS", "orders-api=acme/orders-api@123@456, billing-api=acme/billing-api@789@456")
 	t.Setenv("NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES", "acme/orders-api@123@456")

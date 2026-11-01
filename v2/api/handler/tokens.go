@@ -67,22 +67,26 @@ const (
 	// ScopeFleetAppDeleteVerify is exclusive to the independent work-staging
 	// verifier that records and reads generic app-delete terminal evidence.
 	ScopeFleetAppDeleteVerify = "fleet:app-delete-verify"
+	// ScopeFleetProtectedTerminalVerify permits only independent inspection of
+	// an exact protected Fleet runner's signed terminal receipt.
+	ScopeFleetProtectedTerminalVerify = "fleet:protected-terminal-verify"
 )
 
 var accessTokenScopes = map[string]struct{}{
 	ScopeAPIRead: {}, ScopeAPIWrite: {}, ScopeEventsRead: {}, ScopeAppsExec: {},
 	ScopePlatformOperate: {}, ScopeCatalogActivate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
-	ScopeFleetOperate:           {},
-	ScopeFleetExternalAdmission: {},
-	ScopeFleetExecute:           {},
-	ScopeFleetOfflineAttempt:    {},
-	ScopeFleetOfflineVerify:     {},
-	ScopeFleetAppDeleteVerify:   {},
-	ScopeReleaseAttest:          {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
+	ScopeFleetOperate:                 {},
+	ScopeFleetExternalAdmission:       {},
+	ScopeFleetExecute:                 {},
+	ScopeFleetOfflineAttempt:          {},
+	ScopeFleetOfflineVerify:           {},
+	ScopeFleetAppDeleteVerify:         {},
+	ScopeFleetProtectedTerminalVerify: {},
+	ScopeReleaseAttest:                {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeCatalogActivate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetOfflineAttempt, ScopeFleetOfflineVerify, ScopeFleetAppDeleteVerify, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeCatalogActivate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetOfflineAttempt, ScopeFleetOfflineVerify, ScopeFleetAppDeleteVerify, ScopeFleetProtectedTerminalVerify, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own
@@ -289,6 +293,9 @@ func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Durat
 	if containsScope(normalized, ScopeFleetAppDeleteVerify) && (len(normalized) != 1 || subject != "fleet-app-delete-verifier:work-staging") {
 		return nil, fmt.Errorf("app delete verifier scope requires its dedicated work-staging identity alone")
 	}
+	if containsScope(normalized, ScopeFleetProtectedTerminalVerify) && (len(normalized) != 1 || subject != "fleet-protected-terminal-verifier:work-staging") {
+		return nil, fmt.Errorf("protected terminal verifier scope requires its dedicated work-staging identity alone")
+	}
 	issuedAt = issuedAt.UTC()
 	return &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl)}, nil
 }
@@ -366,6 +373,10 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if containsScope(scopes, ScopeFleetAppDeleteVerify) && (len(scopes) != 1 || req.Note != "fleet-app-delete-verifier:work-staging") {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", "app delete verifier scope requires its dedicated work-staging identity alone")
+		return
+	}
+	if containsScope(scopes, ScopeFleetProtectedTerminalVerify) && (len(scopes) != 1 || req.Note != "fleet-protected-terminal-verifier:work-staging") {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", "protected terminal verifier scope requires its dedicated work-staging identity alone")
 		return
 	}
 	token, record, err := IssueManagedAccessToken(r.Context(), h.cfg.APIToken, h.db, req.Note, scopes, ttl)
