@@ -847,6 +847,8 @@ jobs:
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
         run: |
           set -euo pipefail
+          # jq variables are intentionally expanded by jq, not the shell.
+          # shellcheck disable=SC2016
           jq -e --arg app "$APP_ID" --arg source "$SOURCE_SHA" --arg artifact "$ARTIFACT" --arg deployment "$DEPLOYMENT_ID" '
             .kind == "app.deploy" and .app == $app and .ref == $source and
             .status == "succeeded" and .payload.artifact == $artifact and
