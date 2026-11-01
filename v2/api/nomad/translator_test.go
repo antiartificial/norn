@@ -74,6 +74,36 @@ func TestStagingMySQLPilotAllowsFourthManagedReplica(t *testing.T) {
 	}
 }
 
+func TestFleetCanaryRendersItsProposedRestrictedRouteWhileDisabled(t *testing.T) {
+	path := filepath.Join("..", "..", "infra", "fleet-staging", "canary", "infraspec.yaml")
+	spec, err := model.LoadInfraSpec(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Deploy {
+		t.Fatal("canary declaration must remain disabled pending DNS and certificate readiness")
+	}
+	if result := model.ValidateSpec(spec); !result.Valid {
+		t.Fatalf("invalid canary spec: %+v", result.Findings)
+	}
+	job := mustTranslateForRegion(t, spec, "example.test/canary@sha256:"+strings.Repeat("a", 64), nil, spec.ResolvedRegions()[0])
+	if len(job.TaskGroups) != 1 || len(job.TaskGroups[0].Services) != 1 {
+		t.Fatalf("canary job shape: %+v", job.TaskGroups)
+	}
+	tags := strings.Join(job.TaskGroups[0].Services[0].Tags, "\n")
+	for _, want := range []string{
+		"Host(`norn-fleet-canary.tkmkt-dev.com`)",
+		"Path(`/route-proof`)",
+		"Path(`/version`)",
+		"entrypoints=websecure",
+		"private-readyz.entrypoints=private-readiness",
+	} {
+		if !strings.Contains(tags, want) {
+			t.Fatalf("canary route tags missing %q: %s", want, tags)
+		}
+	}
+}
+
 func testIntPointer(value int) *int { return &value }
 
 func mustTranslate(t *testing.T, spec *model.InfraSpec, image string, env map[string]string) *nomadapi.Job {

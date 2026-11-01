@@ -45,7 +45,7 @@ processes:
     drain:
       timeout: 20s
 endpoints:
-  - url: https://work-staging-canary.invalid
+  - url: https://norn-fleet-canary.tkmkt-dev.com
     region: nyc3
     process: web
     restrictedIngress:

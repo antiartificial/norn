@@ -31,6 +31,7 @@ validation=$(ruby -rpsych -ruri -ripaddr -e '
   abort "canary requires one endpoint" unless endpoints.is_a?(Array) && endpoints.length == 1
   endpoint = endpoints.fetch(0)
   abort "canary endpoint differs" unless endpoint["region"] == "nyc3" && endpoint["process"] == "web"
+  abort "canary HTTPS route differs" unless endpoint["url"] == "https://norn-fleet-canary.tkmkt-dev.com"
   ingress = {"publicPaths" => ["/route-proof", "/version"], "retryGETPaths" => ["/route-proof", "/version"], "privateReadinessPath" => "/readyz"}
   abort "canary ingress policy differs" unless endpoint["restrictedIngress"] == ingress
   probe = {"path" => "/route-proof", "bodySHA256" => "75790fc8d9898d5a12787ac491b6f471619cde0efc851be9f26db608b6fbb37c"}
