@@ -148,6 +148,21 @@ func TestReusableReleaseWorkflowSupportsPrivateTailscaleAPIs(t *testing.T) {
 	}
 }
 
+func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
+	reusable, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
+	if err != nil { t.Fatal(err) }
+	workflow := string(reusable)
+	for _, required := range []string{
+		`runs-on: ${{ inputs.runner_private && 'norn-work-staging-fleet-effect' || 'ubuntu-24.04' }}`,
+		`runner_private NORN_API_URL must be https://localhost:18443`,
+		`/etc/norn-fleet-executor-api-route/ca.pem`,
+		`runner_private CA digest differs from the reviewed value`,
+		`runner_private control API lacks release capabilities`,
+	} {
+		if !strings.Contains(workflow, required) { t.Errorf("runner-private contract is missing %q", required) }
+	}
+}
+
 func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/hello-norn-mysql-release.yml")
 	if err != nil {
