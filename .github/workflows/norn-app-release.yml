@@ -847,12 +847,10 @@ jobs:
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
         run: |
           set -euo pipefail
-          # jq variables are intentionally expanded by jq, not the shell.
-          # shellcheck disable=SC2016
-          jq -e --arg app "$APP_ID" --arg source "$SOURCE_SHA" --arg artifact "$ARTIFACT" --arg deployment "$DEPLOYMENT_ID" '
-            .kind == "app.deploy" and .app == $app and .ref == $source and
-            .status == "succeeded" and .payload.artifact == $artifact and
-            .payload.deploymentId == $deployment
+          jq -e '
+            .kind == "app.deploy" and .app == env.APP_ID and .ref == env.SOURCE_SHA and
+            .status == "succeeded" and .payload.artifact == env.ARTIFACT and
+            .payload.deploymentId == env.DEPLOYMENT_ID
           ' .norn-release/fleet-operation.json >/dev/null || { echo "Fleet operation proof differs from accepted release" >&2; exit 1; }
           {
             echo '### Norn Fleet staging release'
