@@ -165,7 +165,10 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	workflow := string(reusable)
 	for _, required := range []string{
-		`runs-on: ${{ inputs.runner_private && 'norn-work-staging-fleet-effect' || 'ubuntu-24.04' }}`,
+		`staging-runner-private:`,
+		`runs-on: norn-work-staging-fleet-effect`,
+		`Download same-run release evidence`,
+		`same-run candidate binding is invalid`,
 		`runner_private NORN_API_URL must be https://localhost:18443`,
 		`/etc/norn-fleet-executor-api-route/ca.pem`,
 		`runner_private CA digest differs from the reviewed value`,
