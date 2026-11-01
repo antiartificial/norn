@@ -85,11 +85,25 @@ func (p *Pipeline) runArtifactCommand(ctx context.Context, command string, args 
 	if command == "" {
 		command = "cosign"
 	}
-	output, err := exec.CommandContext(ctx, command, args...).CombinedOutput()
-	if len(output) > 4<<20 {
+	cmd := exec.CommandContext(ctx, command, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if stdout.Len() > 4<<20 {
 		return nil, fmt.Errorf("keyless verifier output is too large")
 	}
-	return output, err
+	if err != nil {
+		message := boundedPolicyOutput(stderr.Bytes(), 4096)
+		if message == "" {
+			message = boundedPolicyOutput(stdout.Bytes(), 4096)
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("%s", message)
+	}
+	return stdout.Bytes(), nil
 }
 
 func keylessImageDigest(image string) (string, bool) {
