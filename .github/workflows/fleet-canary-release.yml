@@ -23,11 +23,10 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@640edf378b765b906335dbf76f6b5dc6ad4c4077
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@2027adf79956fb82628c65f6c8f5b489bee60a5d
     with:
       lane: staging
-      private_network: true
-      tailscale_target: ${{ vars.NORN_FLEET_API_TAILSCALE_TARGET }}
+      runner_private: true
       app_id: norn-fleet-canary
       image_repository: ghcr.io/antiartificial/norn-fleet-canary
       dockerfile: v2/infra/fleet-staging/canary/Dockerfile

@@ -149,6 +149,18 @@ func TestReusableReleaseWorkflowSupportsPrivateTailscaleAPIs(t *testing.T) {
 }
 
 func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
+	raw, err := os.ReadFile("../../../.github/workflows/fleet-canary-release.yml")
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(string(raw), `antiartificial/norn/.github/workflows/norn-app-release.yml@2027adf79956fb82628c65f6c8f5b489bee60a5d`) {
+		t.Fatal("canary caller does not pin the reviewed runner-private reusable workflow")
+	}
+	var caller releaseCallerWorkflow
+	if err := yaml.Unmarshal(raw, &caller); err != nil { t.Fatal(err) }
+	job := caller.Jobs["staging"]
+	if job.With["runner_private"] != "true" { t.Fatalf("runner_private = %q", job.With["runner_private"]) }
+	if _, ok := job.With["private_network"]; ok { t.Fatal("canary runner route must not join Tailscale") }
+	if _, ok := job.With["tailscale_target"]; ok { t.Fatal("canary runner route must not accept a Tailscale target") }
+
 	reusable, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
 	if err != nil { t.Fatal(err) }
 	workflow := string(reusable)
