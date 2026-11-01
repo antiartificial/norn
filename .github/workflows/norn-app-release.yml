@@ -242,6 +242,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUIRED_CHECKS: ${{ inputs.required_checks }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           source_sha="$GITHUB_SHA"
@@ -284,7 +285,23 @@ jobs:
             for check in "${required_checks[@]}"; do
               IFS=$'\t' read -r check_name check_app_id <<<"$check"
               matches="$(jq --arg name "$check_name" --arg appId "$check_app_id" "$check_filter" <<<"$checks")"
-              count="$(jq 'length' <<<"$matches")"
+              count=0
+              selected_status=''
+              selected_conclusion=''
+              while IFS=$'\t' read -r check_id suite_id; do
+                [[ "$check_id" =~ ^[0-9]+$ && "$suite_id" =~ ^[0-9]+$ ]] || {
+                  echo "required check has an invalid GitHub check suite identity" >&2
+                  exit 1
+                }
+                suite="$(gh api "repos/$GITHUB_REPOSITORY/check-suites/$suite_id")"
+                if jq -e --arg branch "$DEFAULT_BRANCH" --arg sha "$source_sha" --argjson appId "$check_app_id" --argjson suiteId "$suite_id" \
+                  ".id == \$suiteId and .head_branch == \$branch and .head_sha == \$sha and .app.id == \$appId" \
+                  >/dev/null <<<"$suite"; then
+                  count=$((count + 1))
+                  selected_status="$(jq -er ".[] | select(.id == $check_id) | .status" <<<"$matches")"
+                  selected_conclusion="$(jq -r ".[] | select(.id == $check_id) | .conclusion // \"\"" <<<"$matches")"
+                fi
+              done < <(jq -r '.[] | [.id, .check_suite.id] | @tsv' <<<"$matches")
               if [[ "$count" == 0 ]]; then
                 waiting=true
                 continue
@@ -293,8 +310,8 @@ jobs:
                 echo "required check '$check_name@$check_app_id' is ambiguous or missing for $source_sha (matches: $count)" >&2
                 exit 1
               }
-              status="$(jq -er '.[0].status' <<<"$matches")"
-              conclusion="$(jq -r '.[0].conclusion // ""' <<<"$matches")"
+              status="$selected_status"
+              conclusion="$selected_conclusion"
               if [[ "$status" != completed ]]; then
                 waiting=true
                 continue

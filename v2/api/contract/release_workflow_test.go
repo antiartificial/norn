@@ -58,6 +58,35 @@ func TestReusableReleaseWorkflowKeepsPrivateEvidenceServerSelectedAndOffArgv(t *
 	}
 }
 
+func TestRequiredReleaseChecksBindProtectedDefaultBranchSuite(t *testing.T) {
+	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow releaseWorkflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	job, ok := workflow.Jobs["required-checks"]
+	if !ok {
+		t.Fatal("required-checks job is missing")
+	}
+	var gate string
+	for _, step := range job.Steps {
+		if step.Name == "Require exact successful checks for the staging commit" {
+			gate = step.Run
+		}
+	}
+	for _, required := range []string{
+		`check-suites/$suite_id`, `.head_branch == \$branch`, `.head_sha == \$sha`,
+		`.app.id == \$appId`, `.id == \$suiteId`, `[[ "$count" == 1 ]]`,
+	} {
+		if !strings.Contains(gate, required) {
+			t.Errorf("required-check gate is missing %q", required)
+		}
+	}
+}
+
 func TestReusableReleaseWorkflowSupportsPrivateTailscaleAPIs(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
 	if err != nil {
