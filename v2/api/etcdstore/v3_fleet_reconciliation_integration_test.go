@@ -3,6 +3,7 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -75,6 +77,58 @@ func TestV3FleetReconciliationAcceptanceReplayAndPhaseEvidenceEtcd(t *testing.T)
 	provider := fleetReconciliationAcceptance(t, adapter, plan, *advanced, "provider", "provider_applying")
 	if _, err := adapter.Accept(context.Background(), provider); err != nil {
 		t.Fatalf("phase transition evidence rejected: %v", err)
+	}
+}
+
+func TestV3FleetRunnerTerminalReceiptUsesFinalPredecessorEvidenceEtcd(t *testing.T) {
+	adapter, _, _ := fleetRunnerEtcdStore(t)
+	ctx := context.Background()
+	plan := fleetRunnerPlan(t, adapter, "scale")
+	nonce := bindFleetRunnerDispatch(t, adapter, plan)
+	accepted, err := adapter.Accept(ctx, fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "terminal", "7", "apply", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := *accepted.FleetRunnerAttempt
+	phases := lifecycle.Phases(lifecycle.V3, true)
+	// Keep more than the public list limit in history. Terminal proof uses the
+	// private exact scan shared with Advance, never the capped presentation API.
+	for index := 0; index < 101; index++ {
+		if _, err := adapter.Accept(ctx, fleetReconciliationAcceptance(t, adapter, plan, attempt, fmt.Sprintf("terminal-noise-%d", index), phases[0])); err != nil {
+			t.Fatalf("accept noise reconciliation %d: %v", index, err)
+		}
+	}
+	var terminalEvidenceID string
+	for index, phase := range phases[:len(phases)-1] {
+		evidence, evidenceErr := adapter.Accept(ctx, fleetReconciliationAcceptance(t, adapter, plan, attempt, "terminal-"+phase, phase))
+		if evidenceErr != nil {
+			t.Fatalf("accept %s: %v", phase, evidenceErr)
+		}
+		if index == len(phases)-2 {
+			if _, missingErr := adapter.GetFleetRunnerTerminalReceipt(ctx, plan.ID, attempt.ID); !errors.Is(missingErr, etcdstore.ErrNotFound) {
+				t.Fatalf("receipt before complete err=%v", missingErr)
+			}
+		}
+		next := phases[index+1]
+		updated, updateErr := adapter.UpdateFleetRunnerAttempt(ctx, plan.ID, attempt.ID, attempt.Revision, "advance", next)
+		if updateErr != nil {
+			t.Fatalf("advance %s: %v", phase, updateErr)
+		}
+		attempt = *updated
+		if next == "complete" && evidence.Operation.ID == "" {
+			t.Fatal("terminal predecessor receipt missing")
+		}
+		if next == "complete" {
+			terminalEvidenceID = evidence.Operation.ID
+		}
+	}
+	first, err := adapter.GetFleetRunnerTerminalReceipt(ctx, plan.ID, attempt.ID)
+	if err != nil || first.Reconciliation.Operation.ID != terminalEvidenceID || first.Reconciliation.Operation.Payload["phase"] != phases[len(phases)-2] || first.Reconciliation.Operation.Payload["attemptId"] != attempt.ID {
+		t.Fatalf("first terminal receipt=%+v err=%v", first, err)
+	}
+	second, err := adapter.GetFleetRunnerTerminalReceipt(ctx, plan.ID, attempt.ID)
+	if err != nil || first.Reconciliation.Operation.ID != second.Reconciliation.Operation.ID || first.Reconciliation.Intent.CanonicalDigest != second.Reconciliation.Intent.CanonicalDigest {
+		t.Fatalf("terminal receipt replay changed first=%+v second=%+v err=%v", first, second, err)
 	}
 }
 

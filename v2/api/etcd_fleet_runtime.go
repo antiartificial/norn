@@ -763,6 +763,7 @@ func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, id
 	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.List)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.Create)
 	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}", fleetRunner.Get)
+	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/terminal-receipt", fleetRunner.TerminalReceipt)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/validate-fence", fleetRunner.ValidateFenceBinding)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", fleetRunner.Heartbeat)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", fleetRunner.Advance)

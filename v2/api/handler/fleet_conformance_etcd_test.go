@@ -53,6 +53,7 @@ var etcdFleetRunnerRoutes = [][3]string{
 	{"Get", "/api/v1/fleet/plans/{planID}/attempts", "List"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts", "Create"},
 	{"Get", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}", "Get"},
+	{"Get", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/terminal-receipt", "TerminalReceipt"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/validate-fence", "ValidateFenceBinding"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", "Heartbeat"},
 	{"Post", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", "Advance"},
@@ -146,7 +147,7 @@ func newEtcdLifecycleHarness(t *testing.T, client *clientv3.Client, prefix strin
 	// etcd_fleet_runtime.go (package main) mounts these behind
 	// etcdManagedTokenAuth; the harness injects the principal it would attach.
 	handlers := map[string]http.HandlerFunc{
-		"List": fleetHandler.List, "Create": fleetHandler.Create, "Get": fleetHandler.Get, "Heartbeat": fleetHandler.Heartbeat,
+		"List": fleetHandler.List, "Create": fleetHandler.Create, "Get": fleetHandler.Get, "TerminalReceipt": fleetHandler.TerminalReceipt, "Heartbeat": fleetHandler.Heartbeat,
 		"Advance": fleetHandler.Advance, "Cancel": fleetHandler.Cancel, "ListReconciliations": fleetHandler.ListReconciliations, "Reconcile": fleetHandler.Reconcile,
 	}
 	router := chi.NewRouter()

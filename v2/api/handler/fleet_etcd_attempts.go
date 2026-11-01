@@ -362,6 +362,27 @@ func (h *EtcdFleetRunnerHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// TerminalReceipt exposes only Norn's stored signed reconciliation receipt
+// that authorized the final advance into complete. It accepts no body and is
+// limited to the exact protected GitHub Actions attempt named by the route.
+func (h *EtcdFleetRunnerHandler) TerminalReceipt(w http.ResponseWriter, r *http.Request) {
+	item, ok := h.ownAttemptAs(w, r, false, false)
+	if !ok {
+		return
+	}
+	receipt, err := h.operations.GetFleetRunnerTerminalReceipt(r.Context(), item.PlanID, item.ID)
+	if errors.Is(err, etcdstore.ErrNotFound) {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_terminal_unproven", "the exact protected attempt has no terminal reconciliation receipt")
+		return
+	}
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_runner_terminal_unavailable", "terminal reconciliation receipt could not be verified")
+		return
+	}
+	preventSensitiveResponseCaching(w)
+	writeJSON(w, receipt)
+}
+
 func (h *EtcdFleetRunnerHandler) ValidateFenceBinding(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.workload(w, r); !ok {
 		return
