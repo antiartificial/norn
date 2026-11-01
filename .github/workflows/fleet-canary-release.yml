@@ -23,7 +23,7 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@2027adf79956fb82628c65f6c8f5b489bee60a5d
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@e13d15242672250ab2e39b7b067b818c8abfb4b3
     with:
       lane: staging
       runner_private: true

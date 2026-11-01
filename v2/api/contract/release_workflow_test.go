@@ -151,7 +151,7 @@ func TestReusableReleaseWorkflowSupportsPrivateTailscaleAPIs(t *testing.T) {
 func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/fleet-canary-release.yml")
 	if err != nil { t.Fatal(err) }
-	if !strings.Contains(string(raw), `antiartificial/norn/.github/workflows/norn-app-release.yml@2027adf79956fb82628c65f6c8f5b489bee60a5d`) {
+	if !strings.Contains(string(raw), `antiartificial/norn/.github/workflows/norn-app-release.yml@e13d15242672250ab2e39b7b067b818c8abfb4b3`) {
 		t.Fatal("canary caller does not pin the reviewed runner-private reusable workflow")
 	}
 	var caller releaseCallerWorkflow
