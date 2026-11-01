@@ -19,7 +19,7 @@ import (
 
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
-	"norn/v2/api/fleet/lifecycle"
+	"norn/v2/api/fleet"
 	"norn/v2/api/handler"
 	"norn/v2/api/store"
 )
@@ -86,18 +86,17 @@ func etcdProtectedTerminalVerifierRead(state protectedTerminalReceiptStore, repo
 			return
 		}
 		attempt, accepted := receipt.Attempt, receipt.Reconciliation
+		terminal := receipt.ProtectedApplyTerminalIntent
 		reconciliation, reconciliationErr := store.FleetReconciliationRequestFromOperation(accepted.Operation)
-		phases := lifecycle.Phases(lifecycle.V3, true)
-		predecessor := ""
-		if len(phases) >= 2 && phases[len(phases)-1] == "complete" {
-			predecessor = phases[len(phases)-2]
-		}
+		predecessor := "postchange_verified"
 		if attempt.PlanID != planID || attempt.ID != attemptID || attempt.Status != "succeeded" || attempt.CurrentPhase != "complete" || attempt.FinishedAt == nil ||
 			attempt.CommitSHA != sourceCommit || attempt.PlanSHA256 != planSHA256 ||
 			!protectedTerminalRunMatches(attempt.RunnerAttemptID, attempt.WorkflowURL, repository, runID, runAttempt) || accepted.Operation.ID == "" ||
 			accepted.Operation.Kind != "fleet.reconciliation" || accepted.Operation.Ref != planID || accepted.AcceptanceIntentID == "" ||
 			accepted.Intent.ID != accepted.AcceptanceIntentID || accepted.Intent.OperationID != accepted.Operation.ID || accepted.Intent.AcceptedAt.IsZero() ||
-			accepted.Intent.CanonicalDigest == "" || reconciliationErr != nil || predecessor == "" ||
+			accepted.Intent.CanonicalDigest == "" || terminal == nil || !terminal.Valid() ||
+			terminal.PlanID != attempt.PlanID || terminal.AttemptID != attempt.ID || terminal.SourceCommit != attempt.CommitSHA || terminal.PlanSHA256 != attempt.PlanSHA256 ||
+			reconciliationErr != nil || reconciliation.ProtectedApplyTerminalDigest != terminal.CanonicalDigest ||
 			reconciliation.Status != "succeeded" || reconciliation.Phase != predecessor || reconciliation.AttemptID != attempt.ID ||
 			reconciliation.CommitSHA != attempt.CommitSHA || reconciliation.PlanSHA256 != attempt.PlanSHA256 {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "protected_terminal_selector_mismatch", "stored terminal receipt does not match the exact protected runner selectors")
@@ -118,35 +117,43 @@ func etcdProtectedTerminalVerifierRead(state protectedTerminalReceiptStore, repo
 			CurrentPhase           string     `json:"currentPhase"`
 			FinishedAt             *time.Time `json:"finishedAt"`
 			TerminalReconciliation struct {
-				OperationID        string    `json:"operationId"`
-				OperationKind      string    `json:"operationKind"`
-				OperationRef       string    `json:"operationRef"`
-				AcceptanceIntentID string    `json:"acceptanceIntentId"`
-				AcceptedAt         time.Time `json:"acceptedAt"`
-				CanonicalDigest    string    `json:"canonicalDigest"`
-				Phase              string    `json:"phase"`
-				Status             string    `json:"status"`
-				AttemptID          string    `json:"attemptId"`
-				CommitSHA          string    `json:"commitSha"`
-				PlanSHA256         string    `json:"planSha256"`
+				OperationID                  string                                `json:"operationId"`
+				OperationKind                string                                `json:"operationKind"`
+				OperationRef                 string                                `json:"operationRef"`
+				AcceptanceIntentID           string                                `json:"acceptanceIntentId"`
+				AcceptedAt                   time.Time                             `json:"acceptedAt"`
+				CanonicalDigest              string                                `json:"canonicalDigest"`
+				Phase                        string                                `json:"phase"`
+				Status                       string                                `json:"status"`
+				AttemptID                    string                                `json:"attemptId"`
+				CommitSHA                    string                                `json:"commitSha"`
+				PlanSHA256                   string                                `json:"planSha256"`
+				ApprovedPrestate             fleet.ProtectedApplyPrestate          `json:"approvedPrestate"`
+				ApprovedTransitionRule       fleet.ProtectedApplyTransitionRule    `json:"approvedTransitionRule"`
+				ObservedPoststate            fleet.ObservedProtectedApplyPoststate `json:"observedPoststate"`
+				ProtectedApplyTerminalDigest string                                `json:"protectedApplyTerminalDigest"`
 			} `json:"terminalReconciliation"`
 		}{
 			SchemaVersion: "norn.fleet-protected-terminal-verifier-snapshot/v1", Verification: "norn-server-verified", ObservedAt: time.Now().UTC(), PlanID: attempt.PlanID, AttemptID: attempt.ID,
 			GitHubRunID: runID, GitHubRunAttempt: runAttempt, SourceCommit: attempt.CommitSHA, PlanSHA256: attempt.PlanSHA256,
 			Status: attempt.Status, CurrentPhase: attempt.CurrentPhase, FinishedAt: attempt.FinishedAt,
 			TerminalReconciliation: struct {
-				OperationID        string    `json:"operationId"`
-				OperationKind      string    `json:"operationKind"`
-				OperationRef       string    `json:"operationRef"`
-				AcceptanceIntentID string    `json:"acceptanceIntentId"`
-				AcceptedAt         time.Time `json:"acceptedAt"`
-				CanonicalDigest    string    `json:"canonicalDigest"`
-				Phase              string    `json:"phase"`
-				Status             string    `json:"status"`
-				AttemptID          string    `json:"attemptId"`
-				CommitSHA          string    `json:"commitSha"`
-				PlanSHA256         string    `json:"planSha256"`
-			}{accepted.Operation.ID, accepted.Operation.Kind, accepted.Operation.Ref, accepted.AcceptanceIntentID, accepted.Intent.AcceptedAt, accepted.Intent.CanonicalDigest, reconciliation.Phase, reconciliation.Status, reconciliation.AttemptID, reconciliation.CommitSHA, reconciliation.PlanSHA256},
+				OperationID                  string                                `json:"operationId"`
+				OperationKind                string                                `json:"operationKind"`
+				OperationRef                 string                                `json:"operationRef"`
+				AcceptanceIntentID           string                                `json:"acceptanceIntentId"`
+				AcceptedAt                   time.Time                             `json:"acceptedAt"`
+				CanonicalDigest              string                                `json:"canonicalDigest"`
+				Phase                        string                                `json:"phase"`
+				Status                       string                                `json:"status"`
+				AttemptID                    string                                `json:"attemptId"`
+				CommitSHA                    string                                `json:"commitSha"`
+				PlanSHA256                   string                                `json:"planSha256"`
+				ApprovedPrestate             fleet.ProtectedApplyPrestate          `json:"approvedPrestate"`
+				ApprovedTransitionRule       fleet.ProtectedApplyTransitionRule    `json:"approvedTransitionRule"`
+				ObservedPoststate            fleet.ObservedProtectedApplyPoststate `json:"observedPoststate"`
+				ProtectedApplyTerminalDigest string                                `json:"protectedApplyTerminalDigest"`
+			}{accepted.Operation.ID, accepted.Operation.Kind, accepted.Operation.Ref, accepted.AcceptanceIntentID, accepted.Intent.AcceptedAt, accepted.Intent.CanonicalDigest, reconciliation.Phase, reconciliation.Status, reconciliation.AttemptID, reconciliation.CommitSHA, reconciliation.PlanSHA256, terminal.ApprovedPrestate, terminal.ApprovedTransitionRule, terminal.ObservedPoststate, terminal.CanonicalDigest},
 		})
 	}
 }

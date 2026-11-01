@@ -16,7 +16,6 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
-	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
@@ -39,13 +38,19 @@ func protectedTerminalFixture() *protectedTerminalReceiptStoreFake {
 	intentID := uuid.NewString()
 	acceptedAt := time.Now().UTC().Add(-time.Minute)
 	finishedAt := acceptedAt
-	phase := lifecycle.Phases(lifecycle.V3, true)
-	predecessor := phase[len(phase)-2]
 	commitSHA, planSHA256 := strings.Repeat("a", 40), strings.Repeat("b", 64)
-	reconciliation := fleet.ReconciliationRequest{SchemaVersion: fleet.ReconciliationSchemaVersion, Phase: predecessor, Status: "succeeded", AttemptID: attemptID, CommitSHA: commitSHA, PlanSHA256: planSHA256, EvidenceDigest: "sha256:" + strings.Repeat("e", 64)}
+	prestate := &fleet.ProtectedApplyPrestate{ProviderAccountUUID: "account", ProviderTargetID: "target", ProviderTargetState: "present", Spaces: fleet.ProtectedApplyStateSpaces{Bucket: "bucket", Key: "state/key", Lineage: "lineage", Serial: 1, VersionID: "version", RawSHA256: strings.Repeat("d", 64)}}
+	rule := &fleet.ProtectedApplyTransitionRule{ProviderTargetState: "present", StateChange: "write"}
+	observed := &fleet.ObservedProtectedApplyPoststate{ProviderAccountUUID: "account", ProviderTargetID: "target", ProviderTargetState: "present", Spaces: fleet.ProtectedApplyStateSpaces{Bucket: "bucket", Key: "state/key", Lineage: "lineage", Serial: 2, VersionID: "version-2", RawSHA256: strings.Repeat("f", 64)}}
+	terminal, err := fleet.BuildProtectedApplyTerminalIntent(prestate, rule, observed, planID, attemptID, commitSHA, planSHA256)
+	if err != nil {
+		panic(err)
+	}
+	reconciliation := fleet.ReconciliationRequest{SchemaVersion: fleet.ReconciliationSchemaVersion, Phase: "postchange_verified", Status: "succeeded", AttemptID: attemptID, CommitSHA: commitSHA, PlanSHA256: planSHA256, EvidenceDigest: "sha256:" + strings.Repeat("e", 64), ObservedProtectedApplyPoststate: observed, ProtectedApplyTerminalDigest: terminal.CanonicalDigest}
 	return &protectedTerminalReceiptStoreFake{receipt: etcdstore.FleetRunnerTerminalReceipt{
-		Attempt:        fleet.RunnerAttempt{ID: attemptID, PlanID: planID, RunnerAttemptID: "github-actions:antiartificial/norn-fleet:7:1", WorkflowURL: "https://github.com/antiartificial/norn-fleet/actions/runs/7", CommitSHA: commitSHA, PlanSHA256: planSHA256, Status: "succeeded", CurrentPhase: "complete", FinishedAt: &finishedAt},
-		Reconciliation: store.AcceptedOperation{Operation: model.Operation{ID: operationID, Kind: "fleet.reconciliation", Ref: planID, Payload: map[string]interface{}{"schemaVersion": reconciliation.SchemaVersion, "phase": reconciliation.Phase, "status": reconciliation.Status, "attemptId": reconciliation.AttemptID, "commitSha": reconciliation.CommitSHA, "planSha256": reconciliation.PlanSHA256, "evidenceDigest": reconciliation.EvidenceDigest}}, AcceptanceIntentID: intentID, Intent: store.SignedAcceptanceIntent{ID: intentID, OperationID: operationID, AcceptedAt: acceptedAt, CanonicalDigest: "sha256:" + strings.Repeat("c", 64)}},
+		Attempt:                      fleet.RunnerAttempt{ID: attemptID, PlanID: planID, RunnerAttemptID: "github-actions:antiartificial/norn-fleet:7:1", WorkflowURL: "https://github.com/antiartificial/norn-fleet/actions/runs/7", CommitSHA: commitSHA, PlanSHA256: planSHA256, Status: "succeeded", CurrentPhase: "complete", FinishedAt: &finishedAt},
+		Reconciliation:               store.AcceptedOperation{Operation: model.Operation{ID: operationID, Kind: "fleet.reconciliation", Ref: planID, Payload: map[string]interface{}{"schemaVersion": reconciliation.SchemaVersion, "phase": reconciliation.Phase, "status": reconciliation.Status, "attemptId": reconciliation.AttemptID, "commitSha": reconciliation.CommitSHA, "planSha256": reconciliation.PlanSHA256, "evidenceDigest": reconciliation.EvidenceDigest, "observedProtectedApplyPoststate": reconciliation.ObservedProtectedApplyPoststate, "protectedApplyTerminalDigest": reconciliation.ProtectedApplyTerminalDigest}}, AcceptanceIntentID: intentID, Intent: store.SignedAcceptanceIntent{ID: intentID, OperationID: operationID, AcceptedAt: acceptedAt, CanonicalDigest: "sha256:" + strings.Repeat("c", 64)}},
+		ProtectedApplyTerminalIntent: &terminal,
 	}}
 }
 
@@ -67,6 +72,15 @@ func protectedTerminalPath(s *protectedTerminalReceiptStoreFake) string {
 	return "/api/v1/fleet/verifier/plans/" + a.PlanID + "/attempts/" + a.ID + "/terminal-receipt?runId=7&runAttempt=1&sourceCommit=" + a.CommitSHA + "&planSha256=" + a.PlanSHA256
 }
 
+func protectedTerminalRebind(t *testing.T, intent *fleet.ProtectedApplyTerminalIntent) {
+	t.Helper()
+	rebuilt, err := fleet.BuildProtectedApplyTerminalIntent(&intent.ApprovedPrestate, &intent.ApprovedTransitionRule, &intent.ObservedPoststate, intent.PlanID, intent.AttemptID, intent.SourceCommit, intent.PlanSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*intent = rebuilt
+}
+
 func TestProtectedTerminalVerifierReadIsExactNoStoreAndReceiptOnly(t *testing.T) {
 	s := protectedTerminalFixture()
 	// GetFleetRunnerTerminalReceipt already performs the private uncapped scan:
@@ -84,19 +98,23 @@ func TestProtectedTerminalVerifierReadIsExactNoStoreAndReceiptOnly(t *testing.T)
 		PlanSHA256             string `json:"planSha256"`
 		Verification           string `json:"verification"`
 		TerminalReconciliation struct {
-			OperationID string `json:"operationId"`
-			Phase       string `json:"phase"`
-			Status      string `json:"status"`
-			AttemptID   string `json:"attemptId"`
-			CommitSHA   string `json:"commitSha"`
-			PlanSHA256  string `json:"planSha256"`
+			OperationID                  string                                `json:"operationId"`
+			Phase                        string                                `json:"phase"`
+			Status                       string                                `json:"status"`
+			AttemptID                    string                                `json:"attemptId"`
+			CommitSHA                    string                                `json:"commitSha"`
+			PlanSHA256                   string                                `json:"planSha256"`
+			ApprovedPrestate             fleet.ProtectedApplyPrestate          `json:"approvedPrestate"`
+			ApprovedTransitionRule       fleet.ProtectedApplyTransitionRule    `json:"approvedTransitionRule"`
+			ObservedPoststate            fleet.ObservedProtectedApplyPoststate `json:"observedPoststate"`
+			ProtectedApplyTerminalDigest string                                `json:"protectedApplyTerminalDigest"`
 		} `json:"terminalReconciliation"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
 	a := s.receipt.Attempt
-	if result.Verification != "norn-server-verified" || result.PlanID != a.PlanID || result.AttemptID != a.ID || result.GitHubRunID != "7" || result.GitHubRunAttempt != "1" || result.SourceCommit != a.CommitSHA || result.PlanSHA256 != a.PlanSHA256 || result.TerminalReconciliation.OperationID != s.receipt.Reconciliation.Operation.ID || result.TerminalReconciliation.Status != "succeeded" || result.TerminalReconciliation.AttemptID != a.ID || result.TerminalReconciliation.CommitSHA != a.CommitSHA || result.TerminalReconciliation.PlanSHA256 != a.PlanSHA256 || strings.Contains(response.Body.String(), "signature") || strings.Contains(response.Body.String(), a.RunnerAttemptID) {
+	if result.Verification != "norn-server-verified" || result.PlanID != a.PlanID || result.AttemptID != a.ID || result.GitHubRunID != "7" || result.GitHubRunAttempt != "1" || result.SourceCommit != a.CommitSHA || result.PlanSHA256 != a.PlanSHA256 || result.TerminalReconciliation.OperationID != s.receipt.Reconciliation.Operation.ID || result.TerminalReconciliation.Status != "succeeded" || result.TerminalReconciliation.AttemptID != a.ID || result.TerminalReconciliation.CommitSHA != a.CommitSHA || result.TerminalReconciliation.PlanSHA256 != a.PlanSHA256 || !result.TerminalReconciliation.ApprovedPrestate.Valid() || !result.TerminalReconciliation.ApprovedTransitionRule.Valid() || !result.TerminalReconciliation.ObservedPoststate.Valid() || result.TerminalReconciliation.ProtectedApplyTerminalDigest != s.receipt.ProtectedApplyTerminalIntent.CanonicalDigest || strings.Contains(response.Body.String(), "signature") || strings.Contains(response.Body.String(), a.RunnerAttemptID) {
 		t.Fatalf("unexpected verifier projection: %s", response.Body)
 	}
 }
@@ -190,6 +208,28 @@ func TestProtectedTerminalVerifierReadRejectsEveryProjectedReconciliationBinding
 		},
 		"plan": func(r *etcdstore.FleetRunnerTerminalReceipt) {
 			r.Reconciliation.Operation.Payload["planSha256"] = strings.Repeat("d", 64)
+		},
+		"terminal plan": func(r *etcdstore.FleetRunnerTerminalReceipt) {
+			r.ProtectedApplyTerminalIntent.PlanID = uuid.NewString()
+			protectedTerminalRebind(t, r.ProtectedApplyTerminalIntent)
+		},
+		"terminal attempt": func(r *etcdstore.FleetRunnerTerminalReceipt) {
+			r.ProtectedApplyTerminalIntent.AttemptID = uuid.NewString()
+			protectedTerminalRebind(t, r.ProtectedApplyTerminalIntent)
+		},
+		"terminal commit": func(r *etcdstore.FleetRunnerTerminalReceipt) {
+			r.ProtectedApplyTerminalIntent.SourceCommit = strings.Repeat("c", 40)
+			protectedTerminalRebind(t, r.ProtectedApplyTerminalIntent)
+		},
+		"terminal plan sha": func(r *etcdstore.FleetRunnerTerminalReceipt) {
+			r.ProtectedApplyTerminalIntent.PlanSHA256 = strings.Repeat("d", 64)
+			protectedTerminalRebind(t, r.ProtectedApplyTerminalIntent)
+		},
+		"terminal transition rule": func(r *etcdstore.FleetRunnerTerminalReceipt) {
+			r.ProtectedApplyTerminalIntent.ApprovedTransitionRule.StateChange = "no-op"
+		},
+		"terminal digest": func(r *etcdstore.FleetRunnerTerminalReceipt) {
+			r.Reconciliation.Operation.Payload["protectedApplyTerminalDigest"] = "sha256:" + strings.Repeat("0", 64)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -600,8 +600,9 @@ func (s *V3OperationStore) signedFleetReconciliationEvidence(ctx context.Context
 // protected apply. Reconciliation is the signed receipt that authorized the
 // final advance into complete; callers receive that stored receipt verbatim.
 type FleetRunnerTerminalReceipt struct {
-	Attempt        fleet.RunnerAttempt     `json:"attempt"`
-	Reconciliation store.AcceptedOperation `json:"reconciliation"`
+	Attempt                      fleet.RunnerAttempt                 `json:"attempt"`
+	Reconciliation               store.AcceptedOperation             `json:"reconciliation"`
+	ProtectedApplyTerminalIntent *fleet.ProtectedApplyTerminalIntent `json:"protectedApplyTerminalIntent,omitempty"`
 }
 
 // GetFleetRunnerTerminalReceipt fails closed unless the exact V3 attempt is
@@ -616,11 +617,19 @@ func (s *V3OperationStore) GetFleetRunnerTerminalReceipt(ctx context.Context, pl
 	if attempt.Status != "succeeded" || attempt.CurrentPhase != "complete" {
 		return zero, ErrNotFound
 	}
-	phases := lifecycle.Phases(lifecycle.V3, true)
-	if len(phases) < 2 || phases[len(phases)-1] != "complete" {
-		return zero, fmt.Errorf("fleet terminal phase configuration is invalid")
+	plan, err := s.GetOperation(ctx, planID)
+	if err != nil || plan == nil || plan.Kind != "fleet.capacity-plan" {
+		return zero, fmt.Errorf("fleet terminal plan is unavailable")
 	}
-	predecessor := phases[len(phases)-2]
+	encoded, err := json.Marshal(plan.Payload)
+	if err != nil {
+		return zero, err
+	}
+	var typedPlan fleet.CapacityPlan
+	if json.Unmarshal(encoded, &typedPlan) != nil || typedPlan.ProtectedApplyPrestate == nil || typedPlan.ProtectedApplyTransitionRule == nil {
+		return zero, ErrNotFound
+	}
+	predecessor := "postchange_verified"
 	proof := *attempt
 	proof.CurrentPhase = predecessor
 	accepted, err := s.signedFleetReconciliationEvidence(ctx, planID, proof)
@@ -630,7 +639,12 @@ func (s *V3OperationStore) GetFleetRunnerTerminalReceipt(ctx context.Context, pl
 	if accepted == nil {
 		return zero, ErrNotFound
 	}
-	return FleetRunnerTerminalReceipt{Attempt: *attempt, Reconciliation: *accepted}, nil
+	request, err := store.FleetReconciliationRequestFromOperation(accepted.Operation)
+	intent, err := fleet.BuildProtectedApplyTerminalIntent(typedPlan.ProtectedApplyPrestate, typedPlan.ProtectedApplyTransitionRule, request.ObservedProtectedApplyPoststate, planID, attemptID, attempt.CommitSHA, attempt.PlanSHA256)
+	if err != nil || request.Phase != predecessor || request.Status != "succeeded" || request.ProtectedApplyTerminalDigest != intent.CanonicalDigest {
+		return zero, ErrNotFound
+	}
+	return FleetRunnerTerminalReceipt{Attempt: *attempt, Reconciliation: *accepted, ProtectedApplyTerminalIntent: &intent}, nil
 }
 
 func (s *V3OperationStore) verifyFleetRunnerAttemptReplay(ctx context.Context, accepted store.AcceptedOperation) (*fleet.RunnerAttempt, error) {
