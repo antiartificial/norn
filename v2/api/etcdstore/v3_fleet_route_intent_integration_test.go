@@ -558,7 +558,11 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 			t.Fatalf("partial publication stored a traffic proof: entries=%d err=%v", len(stored.Kvs), err)
 		}
 		if successor {
-			if err := adapter.DeferClaimedOperationWithAppLock(ctx, claim, lock, "partial ingress publication", time.Now(), nil); err != nil {
+			if err := adapter.DeferClaimedOperationWithAppLock(ctx, claim, lock, "partial ingress publication", time.Now(), map[string]interface{}{
+				"externalEffectRecoveryPending": true,
+				"effectRecoveryReason":          "ingress node publication requires reconciliation",
+				"effectResource":                "app/demo/route/west",
+			}); err != nil {
 				t.Fatalf("defer partial publication: %v", err)
 			}
 			lock.Release()
@@ -603,6 +607,9 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 			completed, err := adapter.publishProveCompleteClaimedInitialFleetRoute(ctx, nextClaim, nextLock, spec, healthToken, 18082, publishForSuccessor, observeTraffic)
 			if err != nil || completed == nil || completed.Proof == nil || completed.Proof.ClaimGeneration != nextClaim.Generation() {
 				t.Fatalf("successor route completion=%+v err=%v", completed, err)
+			}
+			if terminal, err := adapter.GetOperation(ctx, accepted.Operation.ID); err != nil || terminal.Status != model.OperationSucceeded || terminal.Metadata["externalEffectRecoveryPending"] != nil || terminal.Metadata["effectRecoveryReason"] != nil || terminal.Metadata["effectResource"] != nil {
+				t.Fatalf("reconciled route retained recovery hold: operation=%+v err=%v", terminal, err)
 			}
 			if active, err := client.Get(ctx, activeKey); err != nil || len(active.Kvs) != 1 {
 				t.Fatalf("successor did not activate proved route: entries=%d err=%v", len(active.Kvs), err)

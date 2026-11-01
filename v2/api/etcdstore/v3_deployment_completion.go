@@ -143,6 +143,14 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 	for key, value := range metadata {
 		op.Metadata[key] = value
 	}
+	if status == model.OperationSucceeded && len(routeSource) == 1 {
+		// The same transaction below fences the fresh route proof and healthy
+		// effect. A prior uncertain publication may therefore release its
+		// recovery hold only when this positive-traffic completion commits.
+		delete(op.Metadata, "externalEffectRecoveryPending")
+		delete(op.Metadata, "effectRecoveryReason")
+		delete(op.Metadata, "effectResource")
+	}
 	if status == model.OperationSucceeded && (op.Metadata["manualRecoveryRequired"] == true || op.Metadata["externalEffectRecoveryPending"] == true) {
 		return fmt.Errorf("successful deployment cannot retain unresolved recovery")
 	}
