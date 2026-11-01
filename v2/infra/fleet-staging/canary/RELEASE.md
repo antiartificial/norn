@@ -8,6 +8,9 @@ variable is `false` has no runtime effect.
 This revision retries that release with the protected default-branch check
 suite binding. It changes no canary workload behavior.
 
+The next protected push retries after the staging workflow creates the SPDX
+output directory before SBOM generation. The canary workload remains unchanged.
+
 Before enabling and merging, operators must verify all of the following:
 
 - the protected app runtime advertises Fleet GitHub OIDC exchange, staging
