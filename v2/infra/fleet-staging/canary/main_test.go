@@ -24,6 +24,9 @@ func TestCanaryReportsPlacementAndStableProbe(t *testing.T) {
 	if err := json.Unmarshal(version.Body.Bytes(), &got); err != nil || got != id {
 		t.Fatalf("version identity: %+v, %v", got, err)
 	}
+	if version.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("version response may be cached: %v", version.Header())
+	}
 	for _, path := range []string{"/healthz", "/readyz"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
