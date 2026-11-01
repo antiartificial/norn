@@ -15,6 +15,7 @@ jobs:
     # reviewed source commit triggers this caller after the owner enables it.
     # The staging OIDC audience and public keyless trust policy are pinned on
     # the Fleet controls before this protected push reaches the private runner.
+    # The Fleet canary validation check must cover this same source commit.
     if: github.ref_protected && vars.NORN_FLEET_CANARY_STAGING_RELEASE_ENABLED == 'true'
     permissions:
       actions: read
