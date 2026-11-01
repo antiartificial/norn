@@ -772,7 +772,7 @@ jobs:
           health="$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/health")"
           jq -e '.status == "ok" and .backend == "etcd"' <<<"$health" >/dev/null || { echo "runner_private route did not reach the etcd control API" >&2; exit 1; }
           capabilities="$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/v1/capabilities")"
-          jq -e '(.features | index("github-actions-oidc-exchange-v1")) != null and (.features | index("release-provenance-v1")) != null and .endpoints.releasePreflight == "/api/v1/apps/{id}/releases/preflight" and .endpoints.releaseDeployments == "/api/v1/apps/{id}/releases/deployments"' <<<"$capabilities" >/dev/null || { echo "runner_private control API lacks release capabilities" >&2; exit 1; }
+          jq -e '(.features | index("fleet-github-oidc-exchange")) != null and (.features | index("staging-fleet-release-admission-v1")) != null and .endpoints.fleetOIDCExchange == "/api/v1/auth/github-actions/exchange" and .endpoints.appReleaseDeployment == "/api/v1/apps/{id}/releases/deployments" and .endpoints.operation == "/api/v1/operations/{id}"' <<<"$capabilities" >/dev/null || { echo "runner_private control API lacks Fleet staging release capabilities" >&2; exit 1; }
 
       - name: Confirm server-owned attestation policy
         id: trust
@@ -785,57 +785,6 @@ jobs:
           mode="$(curl --fail-with-body --silent --show-error -X POST "$NORN_API_URL/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' --data '{"scope":"release:attest","app":"'"$APP_ID"'","environment":"staging","intent":"attest"}' | jq -er '.attestationMode')"
           [[ "$mode" == github-public ]] || { echo "runner_private build trust mode differs from server policy" >&2; exit 1; }
           printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT"
-
-      - name: Queue and wait for staging preflight
-        env:
-          SOURCE_SHA: ${{ needs.staging.outputs.source_sha }}
-          ARTIFACT: ${{ needs.staging.outputs.artifact }}
-          NORN_API_URL: ${{ vars.NORN_API_URL }}
-          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
-        run: |
-          set -euo pipefail
-          umask 077
-          mkdir -p .norn-release
-          api="${NORN_API_URL%/}"
-          exchange_token() {
-            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
-            response="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:stage","app":"'"$APP_ID"'","environment":"staging","intent":"stage"}')"
-            jq -er '.token' <<<"$response"
-          }
-          NORN_API_TOKEN="$(exchange_token)"
-          echo "::add-mask::$NORN_API_TOKEN"
-          token_issued=$SECONDS
-          jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile candidate .norn-release/candidate.json '{sourceSha: $sourceSha, artifact: $artifact, candidate: $candidate[0]}' > .norn-release/preflight-request.json
-          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
-            -X POST "$api/api/v1/apps/$APP_ID/releases/preflight" \
-            -H "Authorization: Bearer $NORN_API_TOKEN" \
-            -H 'Content-Type: application/json' \
-            -H "Idempotency-Key: norn-staging-preflight-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --data-binary @.norn-release/preflight-request.json > .norn-release/preflight.json
-          operation_id="$(jq -er '.id' .norn-release/preflight.json)"
-          deadline=$((SECONDS + 3600))
-          while :; do
-            if (( SECONDS - token_issued >= 600 )); then
-              NORN_API_TOKEN="$(exchange_token)"
-              echo "::add-mask::$NORN_API_TOKEN"
-              token_issued=$SECONDS
-            fi
-            operation="$(curl --fail-with-body --silent --show-error \
-              -H "Authorization: Bearer $NORN_API_TOKEN" \
-              "$api/api/v1/operations/$operation_id")"
-            status="$(jq -er '.status' <<<"$operation")"
-            case "$status" in
-              succeeded) break ;;
-              failed|canceled)
-                jq -r '.lastError // .message // "operation did not succeed"' <<<"$operation" >&2
-                exit 1
-                ;;
-              queued|running) ;;
-              *) echo "unexpected preflight status: $status" >&2; exit 1 ;;
-            esac
-            (( SECONDS < deadline )) || { echo "timed out waiting for staging preflight" >&2; exit 1; }
-            sleep 10
-          done
 
       - name: Queue and wait for staging deployment
         id: deploy
@@ -888,75 +837,30 @@ jobs:
             (( SECONDS < deadline )) || { echo "timed out waiting for staging deployment" >&2; exit 1; }
             sleep 10
           done
+          printf '%s\n' "$operation" > .norn-release/fleet-operation.json
           printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
 
-      - name: Create the portable staging qualification
+      - name: Record Fleet staging acceptance proof
         env:
           SOURCE_SHA: ${{ needs.staging.outputs.source_sha }}
           ARTIFACT: ${{ needs.staging.outputs.artifact }}
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
-          NORN_API_URL: ${{ vars.NORN_API_URL }}
-          ATTESTATION_MODE: ${{ steps.trust.outputs.mode }}
-          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
         run: |
           set -euo pipefail
-          umask 077
-          api="${NORN_API_URL%/}"
-          oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
-          NORN_API_TOKEN="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:qualify","app":"'"$APP_ID"'","environment":"staging","intent":"qualify"}' | jq -er '.token')"
-          echo "::add-mask::$NORN_API_TOKEN"
-          request="$(jq -nc --arg deploymentId "$DEPLOYMENT_ID" '{deploymentId: $deploymentId}')"
-          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
-            -X POST "$api/api/v1/apps/$APP_ID/qualifications" \
-            -H "Authorization: Bearer $NORN_API_TOKEN" \
-            -H 'Content-Type: application/json' \
-            -H "Idempotency-Key: norn-staging-qualification-$APP_ID-$DEPLOYMENT_ID" \
-            --data "$request" > .norn-release/qualification.json
-          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --arg attestationMode "$ATTESTATION_MODE" '
-            .schemaVersion == "norn.release-qualification/v2" and
-            .app == $app and .environment == "staging" and
-            .sourceSha == $sourceSha and .artifact == $artifact and
-            (.deploymentId | type == "string" and length > 0) and
-            (.keyId | type == "string" and length > 0) and
-            (.signature | type == "string" and length > 0) and
-            (.candidate.provider == "github-actions") and
-            (.candidate.attestation.mode == $attestationMode) and
-            (.candidate.attestation.subjectDigest == ($artifact | split("@") | .[1])) and
-            (.candidate.attestation.materialSha == $sourceSha) and
-            (.dsse.payloadType == "application/vnd.norn.release-qualification.v2+json") and
-            (.dsse.payload | type == "string" and length > 0) and
-            (.dsse.signatures | type == "array" and length == 1 and (.[0].keyid | startswith("ed25519:")) and (.[0].sig | type == "string" and length > 0))
-          ' .norn-release/qualification.json >/dev/null
-
-      - name: Prepare the portable staging qualification
-        run: |
-          set -euo pipefail
-          mkdir -p norn-release
-          cp .norn-release/qualification.json norn-release/qualification.json
-
-      - name: Export the signed staging qualification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: norn-qualification-${{ inputs.app_id }}-${{ needs.staging.outputs.source_sha }}
-          path: norn-release/qualification.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Write staging release summary
-        env:
-          SOURCE_SHA: ${{ needs.staging.outputs.source_sha }}
-          ARTIFACT: ${{ needs.staging.outputs.artifact }}
-          ATTESTATION_MODE: ${{ steps.trust.outputs.mode }}
-        run: |
+          jq -e --arg app "$APP_ID" --arg source "$SOURCE_SHA" --arg artifact "$ARTIFACT" --arg deployment "$DEPLOYMENT_ID" '
+            .kind == "app.deploy" and .app == $app and .ref == $source and
+            .status == "succeeded" and .payload.artifact == $artifact and
+            .payload.deploymentId == $deployment
+          ' .norn-release/fleet-operation.json >/dev/null || { echo "Fleet operation proof differs from accepted release" >&2; exit 1; }
           {
-            echo '### Norn staging release'
+            echo '### Norn Fleet staging release'
             echo
             echo "- App: \`$APP_ID\`"
             echo "- Source: \`$SOURCE_SHA\`"
             echo "- Artifact: \`$ARTIFACT\`"
-            echo "- Attestation mode: \`$ATTESTATION_MODE\`"
-            echo '- The staging qualification carries the exact provenance and SBOM trust result used for production promotion.'
-            echo '- A protected tag pointing at this commit can promote the exported signed qualification until it expires.'
+            echo "- Deployment: \`$DEPLOYMENT_ID\`"
+            echo '- Fleet accepted the attested artifact and reported a succeeded deployment operation.'
+            echo '- This Fleet staging lane does not issue a production promotion qualification.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   production:

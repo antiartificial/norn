@@ -13,6 +13,7 @@ type releaseWorkflow struct {
 		Steps []struct {
 			Name string            `yaml:"name"`
 			Uses string            `yaml:"uses"`
+			Run  string            `yaml:"run"`
 			With map[string]string `yaml:"with"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
@@ -172,7 +173,7 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 		`runner_private NORN_API_URL must be https://localhost:18443`,
 		`/etc/norn-fleet-executor-api-route/ca.pem`,
 		`runner_private CA digest differs from the reviewed value`,
-		`runner_private control API lacks release capabilities`,
+		`runner_private control API lacks Fleet staging release capabilities`,
 	} {
 		if !strings.Contains(workflow, required) { t.Errorf("runner-private contract is missing %q", required) }
 	}
@@ -180,10 +181,19 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	if err := yaml.Unmarshal(reusable, &parsed); err != nil { t.Fatal(err) }
 	effect, ok := parsed.Jobs["staging-runner-private"]
 	if !ok { t.Fatal("runner-private effect job is missing") }
+	var releaseScript string
 	for _, step := range effect.Steps {
 		if strings.Contains(step.Uses, "docker/") || strings.Contains(step.Uses, "cosign") || strings.Contains(step.Name, "Build and publish") {
 			t.Fatalf("protected effect job contains hosted build tooling: name=%q uses=%q", step.Name, step.Uses)
 		}
+		releaseScript += step.Run
+	}
+	for _, required := range []string{`"fleet-github-oidc-exchange"`, `"staging-fleet-release-admission-v1"`,
+		`appReleaseDeployment`, `/api/v1/apps/$APP_ID/releases/deployments`, `Fleet operation proof differs from accepted release`} {
+		if !strings.Contains(releaseScript, required) { t.Errorf("Fleet release effect is missing %q", required) }
+	}
+	for _, unsupported := range []string{`/api/v1/apps/$APP_ID/releases/preflight`, `/api/v1/apps/$APP_ID/qualifications`} {
+		if strings.Contains(releaseScript, unsupported) { t.Errorf("Fleet release effect calls unsupported route %q", unsupported) }
 	}
 }
 
