@@ -177,6 +177,9 @@ func TestProtectedTerminalVerifierReadRejectsInconsistentStoredTerminalReceipt(t
 		"missing finished": func(r *etcdstore.FleetRunnerTerminalReceipt) { r.Attempt.FinishedAt = nil },
 		"wrong status":     func(r *etcdstore.FleetRunnerTerminalReceipt) { r.Attempt.Status = "running" },
 		"wrong phase":      func(r *etcdstore.FleetRunnerTerminalReceipt) { r.Attempt.CurrentPhase = "readiness_verified" },
+		"missing terminal intent": func(r *etcdstore.FleetRunnerTerminalReceipt) {
+			r.ProtectedApplyTerminalIntent = nil
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := protectedTerminalFixture()

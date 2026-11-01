@@ -626,10 +626,18 @@ func (s *V3OperationStore) GetFleetRunnerTerminalReceipt(ctx context.Context, pl
 		return zero, err
 	}
 	var typedPlan fleet.CapacityPlan
-	if json.Unmarshal(encoded, &typedPlan) != nil || typedPlan.ProtectedApplyPrestate == nil || typedPlan.ProtectedApplyTransitionRule == nil {
+	if json.Unmarshal(encoded, &typedPlan) != nil {
 		return zero, ErrNotFound
 	}
-	predecessor := "postchange_verified"
+	hasProtectedPrestate, err := fleetTerminalPlanHasProtectedPrestate(typedPlan)
+	if err != nil {
+		return zero, ErrNotFound
+	}
+	phases := lifecycle.PhasesWithProtectedPoststate(lifecycle.V3, fleetPlanRequiresDrain(plan.Payload), hasProtectedPrestate)
+	if len(phases) < 2 {
+		return zero, ErrNotFound
+	}
+	predecessor := phases[len(phases)-2]
 	proof := *attempt
 	proof.CurrentPhase = predecessor
 	accepted, err := s.signedFleetReconciliationEvidence(ctx, planID, proof)
@@ -640,11 +648,26 @@ func (s *V3OperationStore) GetFleetRunnerTerminalReceipt(ctx context.Context, pl
 		return zero, ErrNotFound
 	}
 	request, err := store.FleetReconciliationRequestFromOperation(accepted.Operation)
-	intent, err := fleet.BuildProtectedApplyTerminalIntent(typedPlan.ProtectedApplyPrestate, typedPlan.ProtectedApplyTransitionRule, request.ObservedProtectedApplyPoststate, planID, attemptID, attempt.CommitSHA, attempt.PlanSHA256)
-	if err != nil || request.Phase != predecessor || request.Status != "succeeded" || request.ProtectedApplyTerminalDigest != intent.CanonicalDigest {
+	if err != nil || request.Phase != predecessor || request.Status != "succeeded" {
 		return zero, ErrNotFound
 	}
-	return FleetRunnerTerminalReceipt{Attempt: *attempt, Reconciliation: *accepted, ProtectedApplyTerminalIntent: &intent}, nil
+	receipt := FleetRunnerTerminalReceipt{Attempt: *attempt, Reconciliation: *accepted}
+	if !hasProtectedPrestate {
+		return receipt, nil
+	}
+	intent, err := fleet.BuildProtectedApplyTerminalIntent(typedPlan.ProtectedApplyPrestate, typedPlan.ProtectedApplyTransitionRule, request.ObservedProtectedApplyPoststate, planID, attemptID, attempt.CommitSHA, attempt.PlanSHA256)
+	if err != nil || request.ProtectedApplyTerminalDigest != intent.CanonicalDigest {
+		return zero, ErrNotFound
+	}
+	receipt.ProtectedApplyTerminalIntent = &intent
+	return receipt, nil
+}
+
+func fleetTerminalPlanHasProtectedPrestate(plan fleet.CapacityPlan) (bool, error) {
+	if (plan.ProtectedApplyPrestate == nil) != (plan.ProtectedApplyTransitionRule == nil) {
+		return false, fmt.Errorf("protected apply prestate and transition rule must be paired")
+	}
+	return plan.ProtectedApplyPrestate != nil, nil
 }
 
 func (s *V3OperationStore) verifyFleetRunnerAttemptReplay(ctx context.Context, accepted store.AcceptedOperation) (*fleet.RunnerAttempt, error) {

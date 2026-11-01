@@ -123,7 +123,7 @@ func TestV3FleetRunnerTerminalReceiptUsesFinalPredecessorEvidenceEtcd(t *testing
 		}
 	}
 	first, err := adapter.GetFleetRunnerTerminalReceipt(ctx, plan.ID, attempt.ID)
-	if err != nil || first.Reconciliation.Operation.ID != terminalEvidenceID || first.Reconciliation.Operation.Payload["phase"] != phases[len(phases)-2] || first.Reconciliation.Operation.Payload["attemptId"] != attempt.ID {
+	if err != nil || first.Reconciliation.Operation.ID != terminalEvidenceID || first.Reconciliation.Operation.Payload["phase"] != phases[len(phases)-2] || first.Reconciliation.Operation.Payload["attemptId"] != attempt.ID || first.ProtectedApplyTerminalIntent != nil {
 		t.Fatalf("first terminal receipt=%+v err=%v", first, err)
 	}
 	second, err := adapter.GetFleetRunnerTerminalReceipt(ctx, plan.ID, attempt.ID)
