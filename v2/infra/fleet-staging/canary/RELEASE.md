@@ -5,6 +5,9 @@ Fleet canary lane. The release remains gated by
 `NORN_FLEET_CANARY_STAGING_RELEASE_ENABLED`; merging this note while that
 variable is `false` has no runtime effect.
 
+This revision retries that release with the protected default-branch check
+suite binding. It changes no canary workload behavior.
+
 Before enabling and merging, operators must verify all of the following:
 
 - the protected app runtime advertises Fleet GitHub OIDC exchange, staging
