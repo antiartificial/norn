@@ -13,6 +13,8 @@ jobs:
   staging:
     # Source may merge while the runtime is being bootstrapped. A later
     # reviewed source commit triggers this caller after the owner enables it.
+    # The staging OIDC audience and public keyless trust policy are pinned on
+    # the Fleet controls before this protected push reaches the private runner.
     if: github.ref_protected && vars.NORN_FLEET_CANARY_STAGING_RELEASE_ENABLED == 'true'
     permissions:
       actions: read
