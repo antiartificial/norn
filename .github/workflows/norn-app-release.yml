@@ -855,10 +855,10 @@ jobs:
           {
             echo '### Norn Fleet staging release'
             echo
-            printf '%s: `%s`\n' '- App' "$APP_ID"
-            printf '%s: `%s`\n' '- Source' "$SOURCE_SHA"
-            printf '%s: `%s`\n' '- Artifact' "$ARTIFACT"
-            printf '%s: `%s`\n' '- Deployment' "$DEPLOYMENT_ID"
+            printf "%s: \`%s\`\n" '- App' "$APP_ID"
+            printf "%s: \`%s\`\n" '- Source' "$SOURCE_SHA"
+            printf "%s: \`%s\`\n" '- Artifact' "$ARTIFACT"
+            printf "%s: \`%s\`\n" '- Deployment' "$DEPLOYMENT_ID"
             echo '- Fleet accepted the attested artifact and reported a succeeded deployment operation.'
             echo '- This Fleet staging lane does not issue a production promotion qualification.'
           } >> "$GITHUB_STEP_SUMMARY"
