@@ -1,5 +1,30 @@
 # Norn v3 launch state
 
+## Fleet staging canary checkpoint (2026-11-01 23:18 UTC)
+
+The first protected Fleet canary release completed in [run 41359827250](https://github.com/antiartificial/norn/actions/runs/41359827250)
+from source `182b719bb8f5b84f8c7272e715f83553a00acb4d`. Norn accepted the
+signed, attested, content-addressed image
+`ghcr.io/antiartificial/norn-fleet-canary@sha256:1321f05a19f2e3af0bd3bd2df4b6c2c0878d0d38d0866a3d98f7f9f15b321f63`.
+Deployment `1584a4b1-03c8-43be-86ef-b00b943431a4` and operation
+`ff94b712-d5d6-4933-9b19-2a228db98c9f` finished successfully. Nomad
+reported two healthy, running `web` allocations on distinct ready app-pool
+nodes `app-01` and `app-02`. Public HTTPS returned 200 for `/route-proof` with
+the signed body digest
+`75790fc8d9898d5a12787ac491b6f471619cde0efc851be9f26db608b6fbb37c`
+and for `/version` with the released source SHA; TLS validation passed. The
+one-use private runner stopped, consumed its authorization, and unregistered.
+
+This is a staging release and live two-host workload proof. It advances the
+fresh-Fleet and direct-deploy slices of M3, M4 and M7; it does not complete
+their full gates. Loaded 2→3→2 scaling, safe drain, leader failover during
+route mutation, running upgrade, rollback, whole-node restore, soak, and
+production promotion remain unproved. The ingress publishers currently name
+the elected control03 address `10.43.0.2` for route authority. An API leader
+change requires authority reconciliation before another route publication;
+the current successful route remains served. The Mini transition described
+below is independent of this Fleet checkpoint.
+
 ## Current Mini checkpoint (2026-11-01 05:33 UTC)
 
 Pinned-address SSH and authenticated loopback inventory verify that the Mini has
