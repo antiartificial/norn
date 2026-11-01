@@ -730,7 +730,7 @@ jobs:
   staging-runner-private:
     if: inputs.lane == 'staging' && inputs.runner_private
     needs: [validate, required-checks, staging]
-    runs-on: norn-work-staging-fleet-effect
+    runs-on: [self-hosted, Linux, X64, norn-fleet-protected, norn-work-staging-fleet-effect]
     environment: staging
     permissions:
       actions: read
