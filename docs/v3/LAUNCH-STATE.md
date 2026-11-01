@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Fleet staging canary checkpoint (2026-11-01 23:39 UTC)
+## Fleet staging canary checkpoint (2026-11-01 23:49 UTC)
 
 The first protected Fleet canary release completed in [run 41359827250](https://github.com/antiartificial/norn/actions/runs/41359827250)
 from source `182b719bb8f5b84f8c7272e715f83553a00acb4d`. Norn accepted the
@@ -26,10 +26,24 @@ reported two desired, running and healthy allocations, and 12 public requests
 reached both remaining allocation IDs. The public `/route-proof` body still
 matched the signed digest during the three-replica phase.
 
+A bounded app-node drain exercise then moved the live `web` allocation off
+`app-01` to `app-03`, and a second drain moved the `app-02` allocation to
+`app-04`. Each drain was disabled afterward; all four app nodes returned to
+ready with no drain strategy. During the second transition, 180 consecutive
+public HTTPS `/version` requests succeeded through `curl` certificate
+validation and returned the released source SHA. Requests reached the old
+`app-02` allocation and both replacement allocations. Final Norn scale-status
+reported desired, placed, running and healthy counts of two. The public
+`/route-proof` body still matched the signed digest. This proves scheduler
+replacement and sampled public continuity during sequential drains; it does
+not prove node retirement, fault recovery, a sustained load budget or Norn's
+Fleet generation executor.
+
 This is a staging release and live two-host workload proof. It advances the
 fresh-Fleet and direct-deploy slices of M3, M4 and M7; it does not complete
-their full gates. The live 2→3→2 **replica** scale cycle is proven, but loaded
-node-count 2→3→2 replacement, safe drain, leader failover during
+their full gates. The live 2→3→2 **replica** scale cycle and bounded app-node
+drain are proven, but loaded node-count 2→3→2 replacement, worker drain,
+leader failover during
 route mutation, running upgrade, rollback, whole-node restore, soak, and
 production promotion remain unproved. The ingress publishers currently name
 the elected control03 address `10.43.0.2` for route authority. An API leader
