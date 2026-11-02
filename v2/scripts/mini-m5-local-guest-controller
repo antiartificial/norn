@@ -21,6 +21,7 @@ PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
 IPSW_SIZE = 19772231540
 IPSW_SHA256 = "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95"
+OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
 VM_PREFIX = "norn-m5-"
 SCHEMA = "norn.m5-local-guest-reservation/v1"
 
@@ -186,12 +187,15 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw):
     rows = [row for row in tart_inventory(tart) if row["Name"] == intent["guestName"]]
     if len(rows) != 1 or rows[0].get("Source") != "local" or rows[0].get("OS") != "darwin":
         raise RuntimeError("created guest identity requires protected reconciliation")
+    config = subprocess.run((str(tart), "get", intent["guestName"], "--format", "json"),
+                            check=True, capture_output=True, timeout=15).stdout
+    config_sha = hashlib.sha256(config).hexdigest()
     receipt = root / (intent["guestName"] + ".created.json")
     fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         json.dump({"schema": "norn.m5-local-guest-created-unqualified/v1", "runId": intent["runId"],
                    "guestName": intent["guestName"], "templateSHA256": digest(template),
-                   "inventory": rows[0]}, stream, sort_keys=True)
+                   "tartConfigSHA256": config_sha, "inventory": rows[0]}, stream, sort_keys=True)
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
@@ -233,6 +237,7 @@ def main():
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--journal-root")
     args = parser.parse_args()
+    checked_file(args.public_key, OWNER_PUBLIC_KEY_SHA256)
     subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
                     "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
                    check=True, capture_output=True, timeout=10)

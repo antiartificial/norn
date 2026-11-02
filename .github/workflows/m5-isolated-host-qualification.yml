@@ -2,15 +2,6 @@ name: M5 isolated host qualification
 
 on:
   workflow_dispatch:
-    inputs:
-      guest_name:
-        description: Exact disposable Tart guest identity
-        required: true
-        type: string
-      create_marker_sha256:
-        description: SHA-256 of durable guest create marker
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -40,7 +31,7 @@ jobs:
           import hashlib, os, stat
           expected = {
               os.environ['WINDOW']: 'b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1',
-              os.environ['CHECKER']: 'bc789d2cda9ee1855a3ac5d3302e99a0022ea4eab29bd0a6bba01f1d0a3f49d6',
+              os.environ['CHECKER']: 'd4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd',
           }
           for parent in ('/', '/Library', '/Library/PrivilegedHelperTools'):
               info = os.lstat(parent)
@@ -86,26 +77,18 @@ jobs:
           retention-days: 30
       - name: Emit unsigned qualification candidate for owner review
         env:
-          GUEST_NAME: ${{ inputs.guest_name }}
-          CREATE_MARKER_SHA256: ${{ inputs.create_marker_sha256 }}
+          HARDENING_INTENT: ${{ vars.M5_LOCAL_GUEST_HARDENING_INTENT }}
+          HARDENING_SIGNATURE: ${{ vars.M5_LOCAL_GUEST_HARDENING_SIGNATURE }}
+          PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          ATTESTATION="$RUNNER_TEMP/m5-host-attestation.json" OUTPUT="$RUNNER_TEMP/m5-guest-qualification-candidate.json" python3 - <<'PY'
-          import hashlib, json, os, re
-          guest = os.environ['GUEST_NAME']
-          marker = os.environ['CREATE_MARKER_SHA256']
-          assert re.fullmatch(r'norn-m5-[0-9]{1,20}', guest)
-          assert re.fullmatch(r'[0-9a-f]{64}', marker)
-          with open(os.environ['ATTESTATION'], 'rb') as source:
-              digest = hashlib.sha256(source.read()).hexdigest()
-          receipt = {'schema': 'norn.m5-local-guest-qualified/v1', 'guestName': guest,
-                     'createMarkerSHA256': marker, 'qualificationRunId': os.environ['GITHUB_RUN_ID'],
-                     'sourceSHA': os.environ['GITHUB_SHA'], 'attestationSHA256': digest,
-                     'runner': os.environ['RUNNER_NAME']}
-          with open(os.environ['OUTPUT'], 'x', encoding='utf-8') as target:
-              json.dump(receipt, target, sort_keys=True, separators=(',', ':'))
-              target.write('\n')
-          PY
+          for key in HARDENING_INTENT HARDENING_SIGNATURE PUBLIC_KEY; do
+            [[ -n "${!key}" ]]
+          done
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-guest-identity-candidate" \
+            --hardening-intent "$HARDENING_INTENT" --hardening-signature "$HARDENING_SIGNATURE" \
+            --public-key "$PUBLIC_KEY" --attestation "$RUNNER_TEMP/m5-host-attestation.json" \
+            --output "$RUNNER_TEMP/m5-guest-qualification-candidate.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: m5-guest-qualification-candidate-${{ github.run_id }}

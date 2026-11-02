@@ -15,6 +15,13 @@ The owner-only local staging copy and acquisition evidence are under
 `/private/tmp/norn-m5-ipsw-cache`; the redundant range parts were removed
 after verification.
 
+The dedicated M5 Ed25519 owner public key is pinned in every local guest
+signature verifier at SHA-256
+`ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb`.
+The private key is held outside the runner under the owner's 0700 work-staging
+directory. The workflow variable containing the public-key path cannot select
+a different trust anchor.
+
 `mini-m5-packer-template` verifies that exact file and derives an M5-only
 template. It pins the Tart plugin to 1.21.0, uses an already verified local
 IPSW, binds a run-specific guest name and random bootstrap password, starts
@@ -35,11 +42,14 @@ An ambiguous create outcome is held for reconciliation; a second create is
 rejected. The guest is **created-unqualified** even when Packer succeeds.
 
 `m5-local-guest-retire.yml` requires a different signed intent and protected
-run. Its intent binds the exact guest name and create-marker SHA. It stops and
-deletes that guest only, then reads Tart inventory to prove absence. A failed
-or ambiguous create can be retired without a qualification receipt. A failed
-retire leaves a durable marker and requires a protected reconciliation decision
-before another delete attempt.
+run. Its intent binds the exact guest name, create-marker SHA, created receipt
+when present, and the live Tart configuration hash. It stops and deletes only a
+guest whose configuration still matches, then reads Tart inventory to prove
+absence. A failed or ambiguous create can be retired before runner registration.
+A registered guest runner blocks this path until a separate protected
+revocation controller proves that runner absent. A failed retire leaves a
+durable marker and requires a protected reconciliation decision before another
+delete attempt.
 
 The guest qualification workflow runs on `norn-m5-isolated-01`, separate from
 the supervisor. It emits an unsigned candidate containing the guest name,
@@ -47,6 +57,9 @@ create-marker SHA, source SHA, and hash of the isolation attestation. The owner
 must review the runner-to-Tart-guest link and sign this candidate. The copied
 state restore workflow verifies the signature and exact hashes before any
 retained backup or release inputs are opened.
+The candidate inherits the guest name and marker from the signed hardening
+intent and requires the guest's own Ed25519 SSH host public key to match that
+intent. Caller-supplied guest names cannot qualify another machine.
 
 Before guest hardening, `m5-local-guest-hardening-admission.yml` verifies a
 second signed intent against the create marker and receipt, Tart configuration,

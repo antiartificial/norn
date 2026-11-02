@@ -9,6 +9,9 @@ import re
 import subprocess
 
 
+OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
+
+
 def digest(path):
     h = hashlib.sha256()
     with open(path, "rb") as source:
@@ -19,7 +22,7 @@ def digest(path):
 
 def verify(receipt, attestation, guest, marker_sha, source_sha):
     expected = {"schema", "guestName", "createMarkerSHA256", "qualificationRunId", "sourceSHA",
-                "attestationSHA256", "runner"}
+                "attestationSHA256", "runner", "sshHostKeySHA256", "tartConfigSHA256"}
     if set(receipt) != expected or receipt["schema"] != "norn.m5-local-guest-qualified/v1":
         raise ValueError("unexpected qualification receipt")
     if (not re.fullmatch(r"norn-m5-[0-9]{1,20}", guest) or
@@ -28,6 +31,8 @@ def verify(receipt, attestation, guest, marker_sha, source_sha):
         raise ValueError("invalid guest/source binding")
     if (receipt["guestName"] != guest or receipt["createMarkerSHA256"] != marker_sha or
             receipt["sourceSHA"] != source_sha or receipt["runner"] != "norn-m5-isolated-01" or
+            not re.fullmatch(r"[0-9a-f]{64}", receipt["sshHostKeySHA256"]) or
+            not re.fullmatch(r"[0-9a-f]{64}", receipt["tartConfigSHA256"]) or
             not re.fullmatch(r"[0-9]{1,20}", receipt["qualificationRunId"])):
         raise ValueError("qualification does not match protected guest and source")
     if (attestation.get("schema") != "norn.m5-isolated-runner-attestation/v1" or
@@ -35,6 +40,7 @@ def verify(receipt, attestation, guest, marker_sha, source_sha):
             attestation.get("hostOutbound") != "loopback-only" or
             attestation.get("credentialSurfacesAbsentOrUnreadable") is not True or
             attestation.get("preexistingNetworkSockets") != 0 or
+            attestation.get("sshHostKeySHA256") != receipt["sshHostKeySHA256"] or
             not re.fullmatch(r"gui/[0-9]+", attestation.get("guiDomain", ""))):
         raise ValueError("guest isolation proof is incomplete")
     return {"schema": "norn.m5-local-guest-qualified-gate/v1", "guestName": guest,
@@ -48,6 +54,8 @@ def main():
                  "create-marker-sha256", "source-sha"):
         parser.add_argument("--" + name, required=True)
     args = parser.parse_args()
+    if digest(args.public_key) != OWNER_PUBLIC_KEY_SHA256:
+        raise ValueError("unreviewed owner public key")
     subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
                     "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.receipt),
                    check=True, capture_output=True, timeout=10)

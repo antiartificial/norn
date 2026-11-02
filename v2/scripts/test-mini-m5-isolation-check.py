@@ -45,6 +45,7 @@ block drop out quick all
               mock.patch.object(checker, 'command', side_effect=command),
               mock.patch.object(checker.pwd, 'getpwnam', side_effect=lambda name: users[name]),
               mock.patch.object(checker.os.path, 'lexists', return_value=False),
+              mock.patch.object(checker, 'guest_host_key_sha', return_value='a' * 64),
               mock.patch.object(checker.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='')),
               mock.patch('builtins.print') as output):
             checker.main()

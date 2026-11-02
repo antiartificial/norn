@@ -14,6 +14,7 @@ import subprocess
 
 VM_PREFIX = "norn-m5-"
 TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
+OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
 
 
 def digest(path):
@@ -35,13 +36,18 @@ def inventory(tart):
 
 
 def verify(intent, marker, journal, tart):
-    expected = {"schema", "runId", "sourceSHA", "guestName", "createMarkerSHA256", "retireBy"}
+    expected = {"schema", "runId", "sourceSHA", "guestName", "createMarkerSHA256",
+                "createdReceiptSHA256", "tartConfigSHA256", "runnerState", "retireBy"}
     if set(intent) != expected or intent["schema"] != "norn.m5-local-guest-retire-intent/v1":
         raise ValueError("unexpected retire intent")
     if (not re.fullmatch(r"[0-9]{1,20}", intent["runId"]) or
             not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]) or
             not re.fullmatch(r"norn-m5-[0-9]{1,20}", intent["guestName"]) or
-            not re.fullmatch(r"[0-9a-f]{64}", intent["createMarkerSHA256"])):
+            not re.fullmatch(r"[0-9a-f]{64}", intent["createMarkerSHA256"]) or
+            not re.fullmatch(r"[0-9a-f]{64}", intent["tartConfigSHA256"]) or
+            (intent["createdReceiptSHA256"] is not None and
+             not re.fullmatch(r"[0-9a-f]{64}", intent["createdReceiptSHA256"])) or
+            intent["runnerState"] != "never-registered"):
         raise ValueError("invalid retire identity")
     expiry = datetime.fromisoformat(intent["retireBy"].replace("Z", "+00:00"))
     if expiry.tzinfo != timezone.utc or expiry <= datetime.now(timezone.utc):
@@ -54,6 +60,16 @@ def verify(intent, marker, journal, tart):
         raise ValueError("retire requires exact protected supervisor run")
     if digest(marker) != intent["createMarkerSHA256"]:
         raise ValueError("create marker mismatch")
+    created = journal.with_name(intent["guestName"] + ".created.json")
+    if created.exists():
+        if intent["createdReceiptSHA256"] is None or digest(created) != intent["createdReceiptSHA256"]:
+            raise ValueError("created guest receipt mismatch")
+        receipt = json.loads(created.read_bytes())
+        if (receipt.get("guestName") != intent["guestName"] or
+                receipt.get("tartConfigSHA256") != intent["tartConfigSHA256"]):
+            raise ValueError("created guest configuration mismatch")
+    elif intent["createdReceiptSHA256"] is not None:
+        raise ValueError("created guest receipt is missing")
     recorded = json.loads(journal.read_bytes())
     if (recorded.get("schema") != "norn.m5-local-guest-reservation/v1" or
             recorded.get("intent", {}).get("guestName") != intent["guestName"]):
@@ -73,9 +89,16 @@ def retire(intent, root, tart):
     marker = root / (name + ".create-started")
     journal = root / (name + ".json")
     verify(intent, marker, journal, tart)
+    if (root / (name + ".runner-registered")).exists():
+        raise ValueError("guest runner requires protected revocation before retire")
     rows = [row for row in inventory(tart) if row["Name"] == name]
     if len(rows) > 1:
         raise ValueError("duplicate guest identity")
+    if rows:
+        config = subprocess.run((str(tart), "get", name, "--format", "json"),
+                                check=True, capture_output=True, timeout=15).stdout
+        if hashlib.sha256(config).hexdigest() != intent["tartConfigSHA256"]:
+            raise ValueError("live Tart guest differs from signed identity")
     effect = root / (name + ".retire-started")
     fd = os.open(effect, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -112,6 +135,8 @@ def main():
     for name in ("intent", "signature", "public-key", "journal-root", "tart"):
         parser.add_argument("--" + name, required=True)
     args = parser.parse_args()
+    if digest(args.public_key) != OWNER_PUBLIC_KEY_SHA256:
+        raise ValueError("unreviewed owner public key")
     subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
                     "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
                    check=True, capture_output=True, timeout=10)

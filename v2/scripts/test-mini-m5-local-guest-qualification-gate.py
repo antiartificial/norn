@@ -19,11 +19,13 @@ class QualificationGateTests(unittest.TestCase):
         attestation = {"schema": "norn.m5-isolated-runner-attestation/v1",
                        "runner": "norn-m5-isolated-01", "hostOutbound": "loopback-only",
                        "credentialSurfacesAbsentOrUnreadable": True,
-                       "preexistingNetworkSockets": 0, "guiDomain": "gui/501"}
+                       "preexistingNetworkSockets": 0, "guiDomain": "gui/501",
+                       "sshHostKeySHA256": "d" * 64}
         receipt = {"schema": "norn.m5-local-guest-qualified/v1", "guestName": guest,
                    "createMarkerSHA256": marker, "qualificationRunId": "67890",
                    "sourceSHA": source, "attestationSHA256": "c" * 64,
-                   "runner": "norn-m5-isolated-01"}
+                   "runner": "norn-m5-isolated-01", "sshHostKeySHA256": "d" * 64,
+                   "tartConfigSHA256": "e" * 64}
         self.assertEqual(gate.verify(receipt, attestation, guest, marker, source)["guestName"], guest)
         with self.assertRaisesRegex(ValueError, "does not match"):
             gate.verify(receipt, attestation, "norn-m5-99999", marker, source)
