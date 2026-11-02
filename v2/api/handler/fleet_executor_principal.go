@@ -10,9 +10,11 @@ import (
 const (
 	// FleetExecutorPlatform is the only device platform that may hold
 	// fleet:execute.
-	FleetExecutorPlatform           = "fleet-executor"
-	FleetOfflineRunnerPlatform      = "fleet-offline-runner"
-	fleetOfflineDeviceSubjectPrefix = "fleet-offline-device:"
+	FleetExecutorPlatform                = "fleet-executor"
+	FleetOfflineRunnerPlatform           = "fleet-offline-runner"
+	FleetPlatformOperatorPlatform        = "fleet-platform-operator"
+	FleetDeploymentRecoverySubjectPrefix = "fleet-deployment-recovery:"
+	fleetOfflineDeviceSubjectPrefix      = "fleet-offline-device:"
 	// fleetExecutorTokenTTL is the executor token lifetime (D8). Rotation keeps it.
 	fleetExecutorTokenTTL = 7 * 24 * time.Hour
 )
@@ -21,10 +23,26 @@ func isFleetExecutorPlatform(platform string) bool {
 	return strings.EqualFold(strings.TrimSpace(platform), FleetExecutorPlatform)
 }
 
+func isPlatformOperatorPlatform(platform string) bool {
+	return strings.EqualFold(strings.TrimSpace(platform), FleetPlatformOperatorPlatform)
+}
+
 // deviceEnrollmentScopesForPlatform adds the fleet:execute rule to
 // deviceEnrollmentScopes: the scope is valid only alone and only for the
 // fleet-executor platform. Every other request is unchanged.
 func (h *Handler) deviceEnrollmentScopesForPlatform(platform string, requested []string) ([]string, error) {
+	if h != nil && h.platformOperatorEnrollOnly {
+		if !isPlatformOperatorPlatform(platform) || len(requested) != 1 || strings.TrimSpace(requested[0]) != ScopeFleetDeploymentRecover {
+			return nil, fmt.Errorf("platform operator enrollment permits only %s on %s", ScopeFleetDeploymentRecover, FleetPlatformOperatorPlatform)
+		}
+		return []string{ScopeFleetDeploymentRecover}, nil
+	}
+	if isPlatformOperatorPlatform(platform) {
+		return nil, fmt.Errorf("%s requires dedicated operator enrollment", FleetPlatformOperatorPlatform)
+	}
+	if containsScope(requested, ScopeFleetDeploymentRecover) {
+		return nil, fmt.Errorf("%s requires dedicated operator enrollment", ScopeFleetDeploymentRecover)
+	}
 	if h != nil && h.executorEnrollOnly && (!isFleetExecutorPlatform(platform) || len(requested) != 1 || strings.TrimSpace(requested[0]) != ScopeFleetExecute) {
 		return nil, fmt.Errorf("executor enrollment permits only %s on %s", ScopeFleetExecute, FleetExecutorPlatform)
 	}

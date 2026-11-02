@@ -58,6 +58,9 @@ const (
 	// ScopeFleetExecute is the Fleet executor lane. It is grantable only alone
 	// and only to a fleet-executor device (see fleet_executor_principal.go).
 	ScopeFleetExecute = "fleet:execute"
+	// ScopeFleetDeploymentRecover authorizes only the held deployment recovery
+	// endpoint and is issued only to a dedicated enrolled operator device.
+	ScopeFleetDeploymentRecover = "fleet:deployment-recover"
 	// ScopeFleetOfflineAttempt admits only a queued offline contraction attempt.
 	// It is exclusive to a live fleet-offline-runner device and grants no effect.
 	ScopeFleetOfflineAttempt = "fleet:offline-attempt"
@@ -78,6 +81,7 @@ var accessTokenScopes = map[string]struct{}{
 	ScopeFleetOperate:                 {},
 	ScopeFleetExternalAdmission:       {},
 	ScopeFleetExecute:                 {},
+	ScopeFleetDeploymentRecover:       {},
 	ScopeFleetOfflineAttempt:          {},
 	ScopeFleetOfflineVerify:           {},
 	ScopeFleetAppDeleteVerify:         {},
@@ -86,7 +90,7 @@ var accessTokenScopes = map[string]struct{}{
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeCatalogActivate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetOfflineAttempt, ScopeFleetOfflineVerify, ScopeFleetAppDeleteVerify, ScopeFleetProtectedTerminalVerify, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeCatalogActivate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetDeploymentRecover, ScopeFleetOfflineAttempt, ScopeFleetOfflineVerify, ScopeFleetAppDeleteVerify, ScopeFleetProtectedTerminalVerify, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own
@@ -284,7 +288,7 @@ func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Durat
 	if err != nil {
 		return nil, err
 	}
-	if containsScope(normalized, ScopeFleetExecute) || containsScope(normalized, ScopeFleetOfflineAttempt) {
+	if containsScope(normalized, ScopeFleetExecute) || containsScope(normalized, ScopeFleetDeploymentRecover) || containsScope(normalized, ScopeFleetOfflineAttempt) {
 		return nil, fmt.Errorf("Fleet runner scopes are grantable only to dedicated devices")
 	}
 	if containsScope(normalized, ScopeFleetOfflineVerify) && (len(normalized) != 1 || subject != "fleet-offline-verifier:work-staging") {
@@ -363,7 +367,7 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
-	if containsScope(scopes, ScopeFleetExecute) || containsScope(scopes, ScopeFleetOfflineAttempt) {
+	if containsScope(scopes, ScopeFleetExecute) || containsScope(scopes, ScopeFleetDeploymentRecover) || containsScope(scopes, ScopeFleetOfflineAttempt) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", "Fleet runner scopes are grantable only to dedicated devices")
 		return
 	}

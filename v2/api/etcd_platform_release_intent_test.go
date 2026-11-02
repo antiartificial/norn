@@ -25,9 +25,13 @@ func (platformReleaseAuthIdentity) AccessTokenActive(context.Context, string) (b
 func (platformReleaseAuthIdentity) TouchAccessDevice(context.Context, string) error { return nil }
 
 func platformReleaseTestToken(t *testing.T, secret string, scopes []string, deviceID string, ci bool) string {
+	return platformReleaseTestTokenSubject(t, secret, "norn-exec", scopes, deviceID, ci)
+}
+
+func platformReleaseTestTokenSubject(t *testing.T, secret, subject string, scopes []string, deviceID string, ci bool) string {
 	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	claims := map[string]interface{}{"sub": "norn-exec", "iss": "norn", "aud": "norn-control", "use": "access", "managed": true, "iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Hour).Unix(), "jti": "test-token", "did": deviceID, "scp": scopes}
+	claims := map[string]interface{}{"sub": subject, "iss": "norn", "aud": "norn-control", "use": "access", "managed": true, "iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Hour).Unix(), "jti": "test-token", "did": deviceID, "scp": scopes}
 	if ci {
 		claims["ci"] = map[string]interface{}{"repository": "test/repo"}
 	}
@@ -124,12 +128,14 @@ func TestEtcdPlatformReleaseIntentRoutesDefaultOff(t *testing.T) {
 	}
 }
 
-func TestEtcdPlatformReleaseIntentCapabilityDefaultOff(t *testing.T){
-	for _,enabled:=range []bool{false,true}{
-		capabilities:=etcdFleetCapabilities(&config.Config{FleetPlatformReleaseIntentEnabled:enabled},false)
-		endpoints:=capabilities["endpoints"].(map[string]string)
-		_,present:=endpoints["fleetPlatformReleases"]
-		if present!=enabled{t.Fatalf("enabled=%v endpoint=%v",enabled,present)}
+func TestEtcdPlatformReleaseIntentCapabilityDefaultOff(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		capabilities := etcdFleetCapabilities(&config.Config{FleetPlatformReleaseIntentEnabled: enabled}, false)
+		endpoints := capabilities["endpoints"].(map[string]string)
+		_, present := endpoints["fleetPlatformReleases"]
+		if present != enabled {
+			t.Fatalf("enabled=%v endpoint=%v", enabled, present)
+		}
 	}
 }
 

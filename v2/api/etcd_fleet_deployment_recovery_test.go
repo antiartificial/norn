@@ -39,23 +39,31 @@ func TestFleetDeploymentRecoveryRouteAuthorization(t *testing.T) {
 		scopes                []string
 		device                string
 		ci                    bool
+		subject               string
 		deployment, operation string
 		status, calls         int
 	}{
-		{"ci", []string{handler.ScopePlatformOperate}, "device", true, fixture.deployment, fixture.operation, http.StatusForbidden, 0},
-		{"unenrolled", []string{handler.ScopePlatformOperate}, "", false, fixture.deployment, fixture.operation, http.StatusForbidden, 0},
-		{"wrong scope", []string{handler.ScopeAPIWrite}, "device", false, fixture.deployment, fixture.operation, http.StatusForbidden, 0},
-		{"malformed operation", []string{handler.ScopePlatformOperate}, "device", false, fixture.deployment, "bad", http.StatusBadRequest, 0},
-		{"malformed deployment", []string{handler.ScopePlatformOperate}, "device", false, "bad", fixture.operation, http.StatusBadRequest, 0},
-		{"wrong deployment", []string{handler.ScopePlatformOperate}, "device", false, uuid.NewString(), fixture.operation, http.StatusConflict, 1},
-		{"wrong operation", []string{handler.ScopePlatformOperate}, "device", false, fixture.deployment, uuid.NewString(), http.StatusConflict, 1},
-		{"enrolled operator", []string{handler.ScopePlatformOperate}, "device", false, fixture.deployment, fixture.operation, http.StatusAccepted, 1},
+		{"ci", []string{handler.ScopeFleetDeploymentRecover}, "device", true, "", fixture.deployment, fixture.operation, http.StatusForbidden, 0},
+		{"unenrolled", []string{handler.ScopeFleetDeploymentRecover}, "", false, "", fixture.deployment, fixture.operation, http.StatusForbidden, 0},
+		{"broad platform scope", []string{handler.ScopePlatformOperate}, "device", false, "", fixture.deployment, fixture.operation, http.StatusForbidden, 0},
+		{"combined scope", []string{handler.ScopeFleetDeploymentRecover, handler.ScopeAPIWrite}, "device", false, "", fixture.deployment, fixture.operation, http.StatusForbidden, 0},
+		{"wrong scope", []string{handler.ScopeAPIWrite}, "device", false, "", fixture.deployment, fixture.operation, http.StatusForbidden, 0},
+		{"wrong subject", []string{handler.ScopeFleetDeploymentRecover}, "device", false, handler.FleetDeploymentRecoverySubjectPrefix + uuid.NewString(), fixture.deployment, fixture.operation, http.StatusForbidden, 0},
+		{"malformed operation", []string{handler.ScopeFleetDeploymentRecover}, "device", false, "", fixture.deployment, "bad", http.StatusForbidden, 0},
+		{"malformed deployment", []string{handler.ScopeFleetDeploymentRecover}, "device", false, "", "bad", fixture.operation, http.StatusBadRequest, 0},
+		{"wrong deployment", []string{handler.ScopeFleetDeploymentRecover}, "device", false, "", uuid.NewString(), fixture.operation, http.StatusConflict, 1},
+		{"wrong operation", []string{handler.ScopeFleetDeploymentRecover}, "device", false, "", fixture.deployment, uuid.NewString(), http.StatusForbidden, 0},
+		{"enrolled operator", []string{handler.ScopeFleetDeploymentRecover}, "device", false, "", fixture.deployment, fixture.operation, http.StatusAccepted, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := fixture.calls
 			request := httptest.NewRequest(http.MethodPost, path(tc.deployment, tc.operation), nil)
-			request.Header.Set("Authorization", "Bearer "+platformReleaseTestToken(t, cfg.APIToken, tc.scopes, tc.device, tc.ci))
+			subject := tc.subject
+			if subject == "" {
+				subject = handler.FleetDeploymentRecoverySubjectPrefix + fixture.operation
+			}
+			request.Header.Set("Authorization", "Bearer "+platformReleaseTestTokenSubject(t, cfg.APIToken, subject, tc.scopes, tc.device, tc.ci))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 			if response.Code != tc.status || fixture.calls-before != tc.calls {
