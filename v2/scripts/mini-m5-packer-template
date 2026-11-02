@@ -93,7 +93,7 @@ def transform(raw):
     inline = [
       "trap 'rm -f /Users/admin/.norn-m5-bootstrap/password; rmdir /Users/admin/.norn-m5-bootstrap 2>/dev/null || true; rm -f /tmp/norn-m5-guest-prepare /tmp/norn-m5-firewall-window /tmp/norn-m5-isolation-check /tmp/norn-m5-guest-hardening' EXIT",
       "chmod 600 /Users/admin/.norn-m5-bootstrap/password",
-      "sudo -S /usr/bin/python3 /tmp/norn-m5-guest-prepare --window-helper /tmp/norn-m5-firewall-window --isolation-checker /tmp/norn-m5-isolation-check < /Users/admin/.norn-m5-bootstrap/password",
+      "sudo -S /usr/bin/python3 /tmp/norn-m5-guest-prepare --window-helper /tmp/norn-m5-firewall-window --isolation-checker /tmp/norn-m5-isolation-check --hardening-helper /tmp/norn-m5-guest-hardening < /Users/admin/.norn-m5-bootstrap/password",
       "sudo -S /usr/bin/python3 /tmp/norn-m5-guest-hardening start < /Users/admin/.norn-m5-bootstrap/password",
     ]
   }

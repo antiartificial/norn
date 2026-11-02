@@ -14,6 +14,7 @@ import tempfile
 
 WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
 CHECKER_SHA256 = "d4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd"
+HARDENING_SHA256 = "803bee1e101054c4f3b40f7c84e501a59916da9d95529bfa665d7b4751904729"
 ANCHOR_LINE = 'anchor "com.norn.m5.historical"\n'
 APPLE_FILTER_ANCHOR = '\nanchor "com.apple/*"\n'
 
@@ -101,6 +102,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window-helper", required=True)
     parser.add_argument("--isolation-checker", required=True)
+    parser.add_argument("--hardening-helper", required=True)
     args = parser.parse_args()
     guest_only()
     state = Path("/var/db/norn-m5-window")
@@ -109,6 +111,7 @@ def main():
     helper_root = Path("/Library/PrivilegedHelperTools")
     install_helper(args.window_helper, helper_root / "norn-mini-m5-firewall-window", WINDOW_SHA256)
     install_helper(args.isolation_checker, helper_root / "norn-mini-m5-isolation-check", CHECKER_SHA256)
+    install_helper(args.hardening_helper, helper_root / "norn-mini-m5-guest-hardening", HARDENING_SHA256)
     prepare_pf()
     command("/bin/launchctl", "disable", "system/com.apple.screensharing")
     disabled = command("/bin/launchctl", "print-disabled", "system")

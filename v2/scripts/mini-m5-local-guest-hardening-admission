@@ -34,7 +34,7 @@ def protected(intent):
         raise ValueError("hardening requires exact protected supervisor run")
 
 
-def verify(intent, root, tart, runner_key):
+def verify(intent, root, tart, runner_key, prelaunch=False):
     fields = {"schema", "runId", "sourceSHA", "guestName", "createMarkerSHA256",
               "createdReceiptSHA256", "tartConfigSHA256", "sshHostKeySHA256",
               "runnerPublicKeySHA256", "retireBy"}
@@ -77,6 +77,12 @@ def verify(intent, root, tart, runner_key):
                             capture_output=True, timeout=15).stdout
     if hashlib.sha256(config).hexdigest() != intent["tartConfigSHA256"]:
         raise ValueError("Tart guest configuration changed")
+    if prelaunch:
+        return {"schema": "norn.m5-local-guest-hardening-prelaunch/v1", "runId": intent["runId"],
+                "sourceSHA": intent["sourceSHA"], "guestName": name,
+                "createMarkerSHA256": intent["createMarkerSHA256"],
+                "createdReceiptSHA256": intent["createdReceiptSHA256"],
+                "sshHostKeySHA256": intent["sshHostKeySHA256"]}
     ip = subprocess.run((str(tart), "ip", name, "--wait", "0", "--resolver", "dhcp"),
                         check=True, capture_output=True, text=True, timeout=15).stdout.strip()
     address = ipaddress.ip_address(ip)
@@ -95,13 +101,15 @@ def verify(intent, root, tart, runner_key):
             "sourceSHA": intent["sourceSHA"], "guestName": name,
             "createMarkerSHA256": intent["createMarkerSHA256"],
             "createdReceiptSHA256": intent["createdReceiptSHA256"],
-            "sshHostKeySHA256": intent["sshHostKeySHA256"], "guestIP": ip}
+            "sshHostKeySHA256": intent["sshHostKeySHA256"], "guestIP": ip,
+            "sshHostKey": host_key.decode()}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("intent", "signature", "public-key", "journal-root", "tart", "runner-public-key"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--prelaunch", action="store_true")
     args = parser.parse_args()
     if digest(args.public_key) != OWNER_PUBLIC_KEY_SHA256:
         raise ValueError("unreviewed owner public key")
@@ -109,7 +117,7 @@ def main():
                     "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
                    check=True, capture_output=True, timeout=10)
     intent = json.loads(Path(args.intent).read_bytes())
-    result = verify(intent, args.journal_root, args.tart, args.runner_public_key)
+    result = verify(intent, args.journal_root, args.tart, args.runner_public_key, args.prelaunch)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 
 
