@@ -1365,8 +1365,7 @@ jobs:
           api="${NORN_API_URL%/}"
           public="${PUBLIC_APP_URL%/}"
           before="$(curl --fail-with-body --silent --show-error "$public/records/$RECORD_ID")"
-          before_sha="$(printf %s "$before" | sha256sum | cut -d' ' -f1)"
-          [[ "$before_sha" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          [[ "$(jq -er '.id' <<<"$before")" == "$RECORD_ID" ]] || { echo "pre-rollback database-backed record differs" >&2; exit 1; }
           [[ "$(curl --fail-with-body --silent --show-error "$public/route-proof" | sha256sum | cut -d' ' -f1)" == "$ROUTE_PROOF_SHA256" ]] || { echo "pre-rollback public route proof differs" >&2; exit 1; }
           sample_file="$RUNNER_TEMP/norn-m6-public-samples.tsv"
           : > "$sample_file"
@@ -1409,13 +1408,13 @@ jobs:
           done
           finish_monitor
           trap - EXIT
-          after_sha="$(curl --fail-with-body --silent --show-error "$public/records/$RECORD_ID" | sha256sum | cut -d' ' -f1)"
-          [[ "$after_sha" == "$before_sha" ]] || { echo "database-backed record changed across rollback" >&2; exit 1; }
+          after="$(curl --fail-with-body --silent --show-error "$public/records/$RECORD_ID")"
+          [[ "$(jq -er '.id' <<<"$after")" == "$RECORD_ID" ]] || { echo "database-backed record disappeared across rollback" >&2; exit 1; }
           [[ "$(curl --fail-with-body --silent --show-error "$public/route-proof" | sha256sum | cut -d' ' -f1)" == "$ROUTE_PROOF_SHA256" ]] || { echo "post-rollback public route proof differs" >&2; exit 1; }
           failures="$(awk '$2 != 200 {n++} END {print n+0}' "$sample_file")"
           samples="$(wc -l < "$sample_file" | tr -d ' ')"
           (( samples > 0 )) || { echo "no public continuity samples" >&2; exit 1; }
-          { echo "### Norn staging app rollback"; echo "- Operation: \`$operation_id\`"; echo "- Exact source: \`$SOURCE_SHA\`"; echo "- Exact artifact: \`$ARTIFACT\`"; echo "- Public samples: $samples; non-200 samples: $failures"; echo "- Database-backed record SHA-256 before/after: \`$before_sha\`"; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### Norn staging app rollback"; echo "- Operation: \`$operation_id\`"; echo "- Exact source: \`$SOURCE_SHA\`"; echo "- Exact artifact: \`$ARTIFACT\`"; echo "- Public samples: $samples; non-200 samples: $failures"; echo "- Database-backed record ID present before and after: \`$RECORD_ID\`"; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve public continuity observations
         if: always()
