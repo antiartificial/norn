@@ -90,7 +90,7 @@ def main():
     for name in ("intent", "signature", "public-key", "quote", "inventory", "run-id", "source-sha"):
         parser.add_argument("--" + name, required=True)
     args = parser.parse_args()
-    subprocess.run(("/usr/bin/openssl", "pkeyutl", "-verify", "-pubin", "-inkey", args.public_key,
+    subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin", "-inkey", args.public_key,
                     "-sigfile", args.signature, "-rawin", "-in", args.intent),
                    check=True, capture_output=True, timeout=10)
     result = verify(read_object(args.intent), read_object(args.quote), read_object(args.inventory),
