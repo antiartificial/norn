@@ -28,10 +28,13 @@ IPSW, binds a run-specific guest name and random bootstrap password, starts
 the guest with Softnet, and omits upstream broad sudo, auto-login, and
 Gatekeeper changes. Its bounded provisioner checks for `VirtualMac*` on
 macOS 26.6.2, installs pinned PF helpers inside the guest, places the M5
-anchor first in guest PF root rules, and disables Screen Sharing. The derived
-template still creates only a temporary bootstrap account. A later protected
-controller must harden that account and prove network, GUI, and root-helper
-state before admitting retained inputs or registering the M5 GitHub runner.
+anchor first in guest PF root rules, and disables Screen Sharing. It creates
+separate standard runner and rehearsal accounts through `sysadminctl` using
+private PTY password prompts, then enables a one-boot rehearsal GUI login.
+The derived template still has a temporary bootstrap account. A later
+protected controller must boot the guest, disable auto-login, prove the GUI
+domain and PF state, lock the bootstrap account, and bind/register the
+one-use runner before admitting retained inputs.
 
 ## Controller sequence
 

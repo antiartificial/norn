@@ -20,6 +20,7 @@ PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5a
 PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
 GUEST_PREPARE_SHA256 = "e04f9fa9fa0d6b70da6e56ca6206494140b6a2a68e969f14eaac1f6cd6237670"
+GUEST_HARDENING_SHA256 = "803bee1e101054c4f3b40f7c84e501a59916da9d95529bfa665d7b4751904729"
 WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
 CHECKER_SHA256 = "d4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd"
 IPSW_SIZE = 19772231540
@@ -94,6 +95,7 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
         raise ValueError("Softnet must be root installed with setuid")
     checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
     checked_file(Path(__file__).with_name("mini-m5-guest-prepare"), GUEST_PREPARE_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-guest-hardening"), GUEST_HARDENING_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-firewall-window"), WINDOW_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-isolation-check"), CHECKER_SHA256)
     rows = tart_inventory(tart)
@@ -162,6 +164,7 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw):
            "PKR_VAR_m5_guest_name": intent["guestName"],
            "PKR_VAR_m5_bootstrap_password": "validation-only",
            "PKR_VAR_m5_guest_prepare_path": str(Path(__file__).with_name("mini-m5-guest-prepare")),
+           "PKR_VAR_m5_guest_hardening_path": str(Path(__file__).with_name("mini-m5-guest-hardening")),
            "PKR_VAR_m5_window_helper_path": str(Path(__file__).with_name("mini-m5-firewall-window")),
            "PKR_VAR_m5_checker_helper_path": str(Path(__file__).with_name("mini-m5-isolation-check"))}
     subprocess.run((str(packer), "validate", str(template)), env=env, check=True,
