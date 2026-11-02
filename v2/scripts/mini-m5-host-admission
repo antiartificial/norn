@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Verify a signed, one-use M5 Mac host admission without provider effects."""
+
+import argparse
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+import json
+from pathlib import Path
+import re
+import subprocess
+
+
+HEX40 = re.compile(r"[0-9a-f]{40}\Z")
+RUN_ID = re.compile(r"[0-9]{1,20}\Z")
+
+
+def read_object(path):
+    value = json.loads(Path(path).read_bytes())
+    if not isinstance(value, dict):
+        raise ValueError("input must be a JSON object")
+    return value
+
+
+def exact(value, fields, schema):
+    if set(value) != set(fields) | {"schema"} or value["schema"] != schema:
+        raise ValueError("unexpected admission schema or fields")
+
+
+def timestamp(value):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError("timestamp must be UTC")
+    return datetime.fromisoformat(value[:-1] + "+00:00")
+
+
+def money(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,4})?", value):
+        raise ValueError("money must be a fixed decimal string")
+    try:
+        result = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError("invalid money value") from exc
+    return result
+
+
+def verify(intent, quote, inventory, run_id, source_sha, now):
+    exact(intent, ("runId", "sourceSHA", "provider", "account", "region", "hostType",
+                   "imageId", "runTag", "sshHostKeySHA256", "costCapUSD", "retireBy"),
+          "norn.m5-dedicated-host-intent/v1")
+    exact(quote, ("provider", "account", "region", "hostType", "imageId", "currency",
+                  "hourlyUSD", "minimumHours", "fixedUSD", "observedAt"),
+          "norn.m5-dedicated-host-quote/v1")
+    exact(inventory, ("provider", "account", "region", "runTag", "resources", "observedAt"),
+          "norn.m5-dedicated-host-inventory/v1")
+    if not RUN_ID.fullmatch(run_id) or not HEX40.fullmatch(source_sha):
+        raise ValueError("invalid run or source identity")
+    if intent["runId"] != run_id or intent["sourceSHA"] != source_sha:
+        raise ValueError("intent does not bind the protected run and source")
+    if not all(isinstance(intent[key], str) and intent[key] for key in
+               ("provider", "account", "region", "hostType", "imageId", "runTag")):
+        raise ValueError("missing provider identity")
+    if not re.fullmatch(r"[0-9a-f]{64}", intent["sshHostKeySHA256"]):
+        raise ValueError("missing pinned SSH host key")
+    for item in (quote, inventory):
+        for key in ("provider", "account", "region"):
+            if item[key] != intent[key]:
+                raise ValueError("provider scope mismatch")
+    for key in ("hostType", "imageId"):
+        if quote[key] != intent[key]:
+            raise ValueError("quoted host mismatch")
+    if inventory["runTag"] != intent["runTag"] or inventory["resources"] != []:
+        raise ValueError("run tag is already present or inventory is ambiguous")
+    if quote["currency"] != "USD" or type(quote["minimumHours"]) is not int or quote["minimumHours"] < 1:
+        raise ValueError("invalid quote units")
+    price = money(quote["hourlyUSD"]) * quote["minimumHours"] + money(quote["fixedUSD"])
+    if price > money(intent["costCapUSD"]):
+        raise ValueError("quoted minimum exceeds the signed cap")
+    if timestamp(intent["retireBy"]) <= now:
+        raise ValueError("intent has expired")
+    for observed in (quote["observedAt"], inventory["observedAt"]):
+        age = (now - timestamp(observed)).total_seconds()
+        if age < 0 or age > 300:
+            raise ValueError("quote or inventory is stale")
+    return {"schema": "norn.m5-dedicated-host-admission/v1", "runId": run_id,
+            "sourceSHA": source_sha, "runTag": intent["runTag"],
+            "minimumCostUSD": str(price), "retireBy": intent["retireBy"]}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("intent", "signature", "public-key", "quote", "inventory", "run-id", "source-sha"):
+        parser.add_argument("--" + name, required=True)
+    args = parser.parse_args()
+    subprocess.run(("/usr/bin/openssl", "pkeyutl", "-verify", "-pubin", "-inkey", args.public_key,
+                    "-sigfile", args.signature, "-rawin", "-in", args.intent),
+                   check=True, capture_output=True, timeout=10)
+    result = verify(read_object(args.intent), read_object(args.quote), read_object(args.inventory),
+                    args.run_id, args.source_sha, datetime.now(timezone.utc))
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()

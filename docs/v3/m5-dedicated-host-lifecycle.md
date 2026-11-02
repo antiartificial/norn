@@ -10,12 +10,20 @@ adapter bound to one account and region.
 
 Before a provider create, require an owner-signed intent containing the exact
 Norn protected `master` commit, GitHub run ID, provider account, region, host
-type, macOS image ID, provider resource tag, public SSH host key fingerprint,
+type, macOS image ID, provider resource tag, owner-generated SSH host key fingerprint,
 maximum quoted cost, and `retireBy` time. The intent must bind a fresh
 provider inventory showing no resource with the run tag. The controller must
 verify the quote against the provider's current account/region price response,
 including minimum allocation and storage/network charges. Reject an expired
 intent, a quote above its cap, or a missing/ambiguous price response.
+
+The `v2/scripts/mini-m5-host-admission` helper verifies the owner's signature
+over the intent bytes and checks exact run/source/provider scope, a fresh empty
+inventory, a fresh quote, minimum billable cost, and expiration. The quote
+and inventory must come from the selected provider's authenticated adapter;
+the helper cannot establish their provenance on its own. It performs no
+provider or journal mutation. No create lane may call it with a hand-written
+quote or inventory.
 
 Use an exclusive, fsynced journal entry before the first provider request. A
 lost provider response leaves the journal held; recovery looks up the exact
