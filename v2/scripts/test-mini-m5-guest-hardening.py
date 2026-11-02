@@ -28,6 +28,7 @@ class GuestHardeningTests(unittest.TestCase):
                     patch.object(hardening, 'FINISHED', root / 'account-handoff-finished.json'), \
                     patch.object(hardening, 'guest_only'), \
                     patch.object(hardening, 'account_absent'), \
+                    patch.object(hardening, 'install_sudoers'), \
                     patch.object(hardening, 'private_prompt') as prompt, \
                     patch.object(hardening, 'autologin_status', return_value='Automatic login for norn-m5-rehearsal is enabled'), \
                     patch.object(hardening.pwd, 'getpwnam', side_effect=lambda name: users[name]):

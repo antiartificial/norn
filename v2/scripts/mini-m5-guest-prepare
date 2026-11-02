@@ -9,12 +9,21 @@ import platform
 import re
 import stat
 import subprocess
+import tarfile
 import tempfile
 
 
 WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
 CHECKER_SHA256 = "d4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd"
 HARDENING_SHA256 = "cbfc2a9549f858f4c187597133a32b11cfe273f4067430d7e1942859356129ff"
+HISTORICAL_TOOLS = {
+    "mini-historical-copied-state-controller": "ce964c93854fae92daac6970a623c0bc1df202e99e1205658e31c42afe301361",
+    "mini-historical-shadow-evidence": "a0e0bf9815c8fc3a562555b686e0d56b2a82853ff09cf63e63a6711e698c9489",
+    "mini-signed-shadow-launchagent-rehearsal": "ecfebca5c57ae13de0e856b8ce6247d3a2f95569cb04289874cb9ccd287bd22c",
+    "platform-release-artifact": "709d3a9a97891dc5fc2e0c7198f7d0406fa50cf9f43cb4ffb3825021c158a0b6",
+    "platform-release-manifest": "e31fec53e51feb37c7616b78fb78677addd6477e31f7adc22b195c5ff8fda961",
+    "mini-private-copy-rehearsal": "2717ddb121145c801d77d2ed4cb301ca0d8ad11f48320ee443a0eb6952042a1c",
+}
 ANCHOR_LINE = 'anchor "com.norn.m5.historical"\n'
 APPLE_FILTER_ANCHOR = '\nanchor "com.apple/*"\n'
 
@@ -51,6 +60,38 @@ def install_helper(source, target, expected):
     info = target.lstat()
     if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or digest(target) != expected:
         raise ValueError("installed guest helper readback differs")
+
+
+def install_historical_bundle(source, target=None):
+    source = Path(source)
+    info = source.lstat()
+    if not source.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+        raise ValueError("historical bundle is unsafe")
+    target = Path(target) if target is not None else Path("/Library/PrivilegedHelperTools/norn-m5-historical")
+    if target.exists() or target.is_symlink():
+        raise ValueError("historical tool bundle already installed")
+    with tarfile.open(source, "r:") as archive:
+        members = archive.getmembers()
+        if {member.name for member in members} != set(HISTORICAL_TOOLS) or len(members) != len(HISTORICAL_TOOLS):
+            raise ValueError("historical tool bundle members differ")
+        for member in members:
+            if not member.isfile() or member.size > 256 * 1024 or member.mode != 0o755:
+                raise ValueError("historical tool bundle entry is unsafe")
+            stream = archive.extractfile(member)
+            if stream is None or hashlib.sha256(stream.read()).hexdigest() != HISTORICAL_TOOLS[member.name]:
+                raise ValueError("historical tool bundle digest differs")
+        target.mkdir(mode=0o755)
+        for member in members:
+            stream = archive.extractfile(member)
+            path = target / member.name
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o755)
+            with os.fdopen(fd, "wb") as output:
+                output.write(stream.read())
+                output.flush()
+                os.fsync(output.fileno())
+            os.chown(path, 0, 0)
+            if digest(path) != HISTORICAL_TOOLS[member.name]:
+                raise ValueError("installed historical tool differs")
 
 
 def pf_with_anchor(original):
@@ -103,6 +144,7 @@ def main():
     parser.add_argument("--window-helper", required=True)
     parser.add_argument("--isolation-checker", required=True)
     parser.add_argument("--hardening-helper", required=True)
+    parser.add_argument("--historical-bundle", required=True)
     args = parser.parse_args()
     guest_only()
     state = Path("/var/db/norn-m5-window")
@@ -112,6 +154,7 @@ def main():
     install_helper(args.window_helper, helper_root / "norn-mini-m5-firewall-window", WINDOW_SHA256)
     install_helper(args.isolation_checker, helper_root / "norn-mini-m5-isolation-check", CHECKER_SHA256)
     install_helper(args.hardening_helper, helper_root / "norn-mini-m5-guest-hardening", HARDENING_SHA256)
+    install_historical_bundle(args.historical_bundle)
     prepare_pf()
     command("/bin/launchctl", "disable", "system/com.apple.screensharing")
     disabled = command("/bin/launchctl", "print-disabled", "system")

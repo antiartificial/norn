@@ -23,6 +23,14 @@ PASSWORD = ROOT / "rehearsal-login-password"
 FINISHED = ROOT / "account-handoff-finished.json"
 REHEARSAL = "norn-m5-rehearsal"
 RUNNER = "norn-m5-runner"
+SUDOERS = Path("/private/etc/sudoers.d/norn-m5-disposable")
+SUDOERS_TEXT = """Defaults:norn-m5-runner env_keep += \"RUNNER_NAME GITHUB_RUN_ID NORN_M5_HISTORICAL_ISOLATED NORN_M5_SOURCE_SHA NORN_M5_TARGET_SHA NORN_M5_ISOLATION_CHECK NORN_M5_HISTORICAL_RECEIPT_DIR NORN_REHEARSAL_POSTGRES_BIN\"
+norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-firewall-window *
+norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check norn-m5-isolated-01
+norn-m5-runner ALL=(norn-m5-rehearsal) NOPASSWD: /bin/launchctl print gui/*
+norn-m5-runner ALL=(norn-m5-rehearsal) NOPASSWD: /Library/PrivilegedHelperTools/norn-m5-historical/mini-historical-copied-state-controller *
+norn-m5-rehearsal ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check norn-m5-isolated-01
+"""
 
 
 def command(*args, timeout=30):
@@ -104,6 +112,21 @@ def account_absent(name):
     raise ValueError("M5 guest account already exists; reconcile before retry")
 
 
+def install_sudoers():
+    if SUDOERS.exists() or SUDOERS.is_symlink():
+        raise ValueError("M5 sudo delegation already exists")
+    fd = os.open(SUDOERS, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(SUDOERS_TEXT)
+        stream.flush()
+        os.fsync(stream.fileno())
+    command("/usr/sbin/visudo", "-cf", str(SUDOERS))
+    grants = command("/usr/bin/sudo", "-l", "-U", RUNNER)
+    if ("norn-mini-m5-firewall-window" not in grants or
+            "norn-m5-historical/mini-historical-copied-state-controller" not in grants):
+        raise ValueError("M5 sudo delegation is not effective")
+
+
 def remove_new_account_keychains(uid, home=None):
     home = Path(home) if home is not None else Path("/Users") / REHEARSAL
     info = home.lstat()
@@ -160,6 +183,7 @@ def start():
         user = pwd.getpwnam(name)
         if user.pw_uid == 0 or user.pw_dir != "/Users/" + name:
             raise ValueError("guest account identity readback failed")
+    install_sudoers()
     private_prompt(("/usr/sbin/sysadminctl", "-autologin", "set", "-userName", REHEARSAL,
                     "-password", "-"), rehearsal_password)
     status = autologin_status()

@@ -54,7 +54,7 @@ jobs:
           trap cleanup EXIT
           sudo -n "$window" enable "$GITHUB_RUN_ID"
           window_enabled=true
-          sudo -n -u norn-m5-rehearsal -- sudo -n "$checker" "$RUNNER_NAME" | tee "$RUNNER_TEMP/m5-host-attestation.json" >/dev/null
+          sudo -n "$checker" "$RUNNER_NAME" | tee "$RUNNER_TEMP/m5-host-attestation.json" >/dev/null
           ATTESTATION="$RUNNER_TEMP/m5-host-attestation.json" EXPECTED_GUI="gui/$rehearsal_uid" python3 - <<'PY'
           import json, os
           from pathlib import Path

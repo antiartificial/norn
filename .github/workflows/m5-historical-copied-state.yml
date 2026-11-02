@@ -97,13 +97,7 @@ jobs:
           sudo -n -u norn-m5-rehearsal -- /bin/launchctl print "gui/$rehearsal_uid" >/dev/null
           sudo -n "$window" enable "$GITHUB_RUN_ID"
           window_enabled=true
-          sudo -n -u norn-m5-rehearsal -- /usr/bin/env -i \
-            HOME=/Users/norn-m5-rehearsal USER=norn-m5-rehearsal LOGNAME=norn-m5-rehearsal \
-            PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin \
-            RUNNER_NAME="$RUNNER_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
-            NORN_M5_HISTORICAL_ISOLATED=1 NORN_M5_SOURCE_SHA="$NORN_M5_SOURCE_SHA" \
-            NORN_M5_TARGET_SHA="$NORN_M5_TARGET_SHA" NORN_M5_ISOLATION_CHECK="$NORN_M5_ISOLATION_CHECK" \
-            NORN_M5_HISTORICAL_RECEIPT_DIR="$NORN_M5_HISTORICAL_RECEIPT_DIR" \
-            NORN_REHEARSAL_POSTGRES_BIN="$NORN_REHEARSAL_POSTGRES_BIN" \
-            "$GITHUB_WORKSPACE/v2/scripts/mini-historical-copied-state-controller" "$PROOF" "$DUMP" "$OLD_RECEIPT" \
+          sudo -H -n -u norn-m5-rehearsal -- \
+            /Library/PrivilegedHelperTools/norn-m5-historical/mini-historical-copied-state-controller \
+            "$PROOF" "$DUMP" "$OLD_RECEIPT" \
             "$SOURCE_RELEASE_ROOT/$NORN_M5_SOURCE_SHA" "$TARGET_RELEASE_ROOT/$NORN_M5_TARGET_SHA" "$PUBLIC_KEY"

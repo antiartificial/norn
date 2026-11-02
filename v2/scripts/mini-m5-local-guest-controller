@@ -19,10 +19,19 @@ TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
 PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5aa"
 PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
-GUEST_PREPARE_SHA256 = "a35431ff323fd58d84a5119d4c459a73697b175eb878fd4f6f09b75541eb4d56"
-GUEST_HARDENING_SHA256 = "cbfc2a9549f858f4c187597133a32b11cfe273f4067430d7e1942859356129ff"
+GUEST_PREPARE_SHA256 = "bceb8950c6832e9a8c67376e482cc6c677d1f629c8f228bb49890355fb6dca5f"
+GUEST_HARDENING_SHA256 = "0f8eca8e896f379e11d07d953e7b8ff6527a40d3ae3a78bb0ad5528ee33dfe07"
+HISTORICAL_BUNDLE_BUILDER_SHA256 = "c556139a6cab43483fc374730550574346ba59bea98a3f55b893343242cecd41"
 WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
 CHECKER_SHA256 = "d4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd"
+HISTORICAL_TOOLS = {
+    "mini-historical-copied-state-controller": "ce964c93854fae92daac6970a623c0bc1df202e99e1205658e31c42afe301361",
+    "mini-historical-shadow-evidence": "a0e0bf9815c8fc3a562555b686e0d56b2a82853ff09cf63e63a6711e698c9489",
+    "mini-signed-shadow-launchagent-rehearsal": "ecfebca5c57ae13de0e856b8ce6247d3a2f95569cb04289874cb9ccd287bd22c",
+    "platform-release-artifact": "709d3a9a97891dc5fc2e0c7198f7d0406fa50cf9f43cb4ffb3825021c158a0b6",
+    "platform-release-manifest": "e31fec53e51feb37c7616b78fb78677addd6477e31f7adc22b195c5ff8fda961",
+    "mini-private-copy-rehearsal": "2717ddb121145c801d77d2ed4cb301ca0d8ad11f48320ee443a0eb6952042a1c",
+}
 IPSW_SIZE = 19772231540
 IPSW_SHA256 = "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95"
 OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
@@ -103,6 +112,9 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_ke
     checked_file(Path(__file__).with_name("mini-m5-guest-hardening"), GUEST_HARDENING_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-firewall-window"), WINDOW_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-isolation-check"), CHECKER_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-historical-bundle"), HISTORICAL_BUNDLE_BUILDER_SHA256)
+    for name, expected in HISTORICAL_TOOLS.items():
+        checked_file(Path(__file__).with_name(name), expected)
     rows = tart_inventory(tart)
     if any(row["Name"] == intent["guestName"] for row in rows):
         raise ValueError("run guest already exists")
@@ -165,12 +177,17 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, 
     subprocess.run((str(Path(__file__).with_name("mini-m5-packer-template")),
                     "--output", str(template)), check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    bundle = root / (intent["guestName"] + ".historical-bundle.tar")
+    subprocess.run((str(Path(__file__).with_name("mini-m5-historical-bundle")),
+                    "--source-root", str(Path(__file__).parent), "--output", str(bundle)),
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
     env = {**plugin_env, "PKR_VAR_m5_ipsw_path": str(ipsw),
            "PKR_VAR_m5_guest_name": intent["guestName"],
            "PKR_VAR_m5_bootstrap_password": "validation-only",
            "PKR_VAR_m5_guest_prepare_path": str(Path(__file__).with_name("mini-m5-guest-prepare")),
            "PKR_VAR_m5_guest_hardening_path": str(Path(__file__).with_name("mini-m5-guest-hardening")),
            "PKR_VAR_m5_supervisor_ssh_public_key_path": str(supervisor_key),
+           "PKR_VAR_m5_historical_bundle_path": str(bundle),
            "PKR_VAR_m5_window_helper_path": str(Path(__file__).with_name("mini-m5-firewall-window")),
            "PKR_VAR_m5_checker_helper_path": str(Path(__file__).with_name("mini-m5-isolation-check"))}
     subprocess.run((str(packer), "validate", str(template)), env=env, check=True,
