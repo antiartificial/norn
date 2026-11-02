@@ -219,6 +219,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	registerEtcdFleetCredentialRoutes(router, cfg, identities, executorLaneEnabled)
 	registerEtcdFleetExecutorEnrollmentRoutes(router, cfg, identities, executorLaneEnabled)
+	registerEtcdPlatformOperatorEnrollmentRoutes(router, cfg, identities)
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			handler.WriteControlProblem(w, r, http.StatusNotImplemented, "backend_route_unsupported", "route is not implemented by the etcd normal Fleet capability set")
@@ -826,4 +827,21 @@ func registerEtcdFleetExecutorEnrollmentRoutes(router chi.Router, cfg *config.Co
 	router.Post("/api/v1/enrollments/{id}/exchange", enrollment.ExchangeDeviceEnrollment)
 	router.With(admin).Get("/api/v1/devices", enrollment.ListDevices)
 	router.With(admin).Delete("/api/v1/devices/{id}", enrollment.RevokeDevice)
+}
+
+// A separate pairing lane is present only with the established platform
+// release intent gate. It grants no Fleet executor scope.
+func registerEtcdPlatformOperatorEnrollmentRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore) {
+	if !cfg.FleetPlatformReleaseIntentEnabled {
+		return
+	}
+	enrollment := handler.NewEtcdPlatformOperatorEnrollmentHandler(cfg, identities)
+	admin := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
+	root := "/api/v1/fleet/platform-operator"
+	router.Post(root+"/enrollments", enrollment.StartDeviceEnrollment)
+	router.With(admin).Get(root+"/enrollments", enrollment.ListDeviceEnrollments)
+	router.With(admin).Post(root+"/enrollments/approve", enrollment.ApproveDeviceEnrollment)
+	router.Post(root+"/enrollments/{id}/exchange", enrollment.ExchangeDeviceEnrollment)
+	router.With(admin).Get(root+"/devices", enrollment.ListDevices)
+	router.With(admin).Delete(root+"/devices/{id}", enrollment.RevokeDevice)
 }
