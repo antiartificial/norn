@@ -55,6 +55,27 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RUNNER_NAME" == norn-m5-isolated-01 ]]
+          window=/Library/PrivilegedHelperTools/norn-mini-m5-firewall-window
+          WINDOW="$window" python3 - <<'PY'
+          import hashlib, os, stat
+          path = os.environ['WINDOW']
+          for parent in ('/', '/Library', '/Library/PrivilegedHelperTools'):
+              info = os.lstat(parent)
+              assert info.st_uid == 0 and stat.S_ISDIR(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o022
+          info = os.lstat(path)
+          assert info.st_uid == 0 and stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o022
+          with open(path, 'rb') as source:
+              assert hashlib.sha256(source.read()).hexdigest() == 'd4d2fe7e5e5a75e3a5bd34b775ba64623791fb06e1ddd38c02e1dfd6b0642c7a'
+          PY
+          window_enabled=false
+          cleanup() {
+            if [[ "$window_enabled" == true ]]; then
+              sudo -n "$window" disable "$GITHUB_RUN_ID"
+            fi
+          }
+          trap cleanup EXIT
+          sudo -n "$window" enable "$GITHUB_RUN_ID"
+          window_enabled=true
           sudo -n -u norn-m5-rehearsal -- /usr/bin/env -i \
             HOME=/Users/norn-m5-rehearsal USER=norn-m5-rehearsal LOGNAME=norn-m5-rehearsal \
             PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin \

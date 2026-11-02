@@ -39,12 +39,10 @@ def main():
         raise SystemExit("M5 anchor is not the first effective firewall rule")
     rules = command("/sbin/pfctl", "-a", ANCHOR, "-sr")
     effective = [line.strip() for line in rules.splitlines() if line.strip() and not line.lstrip().startswith('#')]
-    uid = str(rehearsal.pw_uid)
-    user = f'(?:{uid}|{REHEARSAL_USER})'
-    if len(effective) != 2 or not re.fullmatch(r'pass out quick on lo0 from any to any user ' + user + r'(?: keep state)?', effective[0]):
+    if len(effective) != 2 or effective[0] not in ('pass out quick on lo0 all', 'pass out quick on lo0 from any to any'):
         raise SystemExit("M5 loopback-only pass is not the first anchor rule")
-    if not re.fullmatch(r'block drop out quick from any to any user ' + user, effective[1]):
-        raise SystemExit("M5 rehearsal user does not have final outbound deny-all")
+    if effective[1] not in ('block drop out quick all', 'block drop out quick from any to any'):
+        raise SystemExit("M5 host-wide outbound deny-all is absent")
     credential_paths = [
         rehearsal.pw_dir + "/.ssh", rehearsal.pw_dir + "/.aws", rehearsal.pw_dir + "/.config",
         rehearsal.pw_dir + "/.docker", rehearsal.pw_dir + "/.netrc",
@@ -78,7 +76,7 @@ def main():
         "rehearsalUID": rehearsal.pw_uid,
         "pfAnchor": ANCHOR,
         "pfEnabled": True,
-        "rehearsalOutbound": "loopback-only",
+        "hostOutbound": "loopback-only",
         "credentialSurfacesAbsentOrUnreadable": True,
         "preexistingNetworkSockets": 0,
         "pfRulesSHA256": hashlib.sha256(rules.encode()).hexdigest(),

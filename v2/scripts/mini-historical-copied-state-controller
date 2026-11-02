@@ -32,7 +32,7 @@ if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mo
     raise SystemExit('isolation checker must be root-owned and immutable to the runner')
 with open(path, 'rb') as source:
     digest = hashlib.sha256(source.read()).hexdigest()
-if digest != '77a927506e5582f02f9b62c0cff8f203eab272225e0c22bb87a3ece607e9ab8f':
+if digest != '298a427e129b54a4fa90e3945c94e907c64c16757c4a1309c5dd5e60fb08700c':
     raise SystemExit('isolation checker differs from reviewed source')
 PY
 [[ ${RUNNER_NAME:-} == norn-m5-isolated-01 ]] || { echo 'dedicated runner identity is required' >&2; exit 2; }
@@ -44,7 +44,7 @@ assert value["schema"] == "norn.m5-isolated-runner-attestation/v1"
 assert value["runner"] == "norn-m5-isolated-01" and value["pfEnabled"] is True
 assert value["pfAnchor"] == "com.norn.m5.historical"
 assert value["runnerUser"] == "norn-m5-runner" and value["rehearsalUser"] == "norn-m5-rehearsal"
-assert value["rehearsalOutbound"] == "loopback-only"
+assert value["hostOutbound"] == "loopback-only"
 assert value["credentialSurfacesAbsentOrUnreadable"] is True
 assert value["preexistingNetworkSockets"] == 0
 for name in ("pfRulesSHA256", "rootRulesSHA256", "routeTableSHA256"):
