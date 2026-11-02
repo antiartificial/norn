@@ -65,7 +65,7 @@ jobs:
           info = os.lstat(path)
           assert info.st_uid == 0 and stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o022
           with open(path, 'rb') as source:
-              assert hashlib.sha256(source.read()).hexdigest() == 'd4d2fe7e5e5a75e3a5bd34b775ba64623791fb06e1ddd38c02e1dfd6b0642c7a'
+              assert hashlib.sha256(source.read()).hexdigest() == 'b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1'
           PY
           window_enabled=false
           cleanup() {
@@ -74,6 +74,9 @@ jobs:
             fi
           }
           trap cleanup EXIT
+          sudo -n "$window" admit "$GITHUB_RUN_ID"
+          rehearsal_uid=$(id -u norn-m5-rehearsal)
+          sudo -n -u norn-m5-rehearsal -- /bin/launchctl print "gui/$rehearsal_uid" >/dev/null
           sudo -n "$window" enable "$GITHUB_RUN_ID"
           window_enabled=true
           sudo -n -u norn-m5-rehearsal -- /usr/bin/env -i \
