@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Install one pinned GitHub runner inside the disposable M5 guest."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import plistlib
+import pwd
+import re
+import stat
+import subprocess
+import sys
+
+
+ARCHIVE_SHA256 = "df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2"
+ARCHIVE_SIZE = 128562863
+RUNNER = "norn-m5-runner"
+RUNNER_NAME = "norn-m5-isolated-01"
+INSTALL = Path("/Users/norn-m5-runner/actions-runner")
+PLIST = Path("/Library/LaunchDaemons/com.norn.m5.runner.plist")
+STATE = Path("/var/db/norn-m5-window/runner-install-started.json")
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def guest_only():
+    if os.geteuid() != 0 or platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise ValueError("runner install requires guest root on macOS ARM64")
+    model = subprocess.run(("/usr/sbin/sysctl", "-n", "hw.model"), check=True,
+                           capture_output=True, text=True, timeout=5).stdout.strip()
+    version = subprocess.run(("/usr/bin/sw_vers", "-productVersion"), check=True,
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    if not re.fullmatch(r"VirtualMac[0-9]+,[0-9]+", model) or version != "26.6.2":
+        raise ValueError("runner install requires pinned disposable guest")
+    if not Path("/var/db/norn-m5-window/account-handoff-finished.json").is_file():
+        raise ValueError("guest GUI handoff is unfinished")
+
+
+def run_as_runner(command, user, token=None, timeout=120):
+    def drop():
+        os.initgroups(RUNNER, user.pw_gid)
+        os.setgid(user.pw_gid)
+        os.setuid(user.pw_uid)
+
+    env = {"HOME": user.pw_dir, "USER": RUNNER, "LOGNAME": RUNNER,
+           "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+    result = subprocess.run(command, input=token, text=True, capture_output=True,
+                            env=env, preexec_fn=drop, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError("guest runner command failed; protected reconciliation required")
+
+
+def install(archive, registration_token):
+    guest_only()
+    user = pwd.getpwnam(RUNNER)
+    if user.pw_uid == 0 or user.pw_dir != "/Users/" + RUNNER:
+        raise ValueError("guest runner account differs")
+    archive = Path(archive)
+    info = archive.lstat()
+    if (not archive.is_absolute() or not stat.S_ISREG(info.st_mode) or
+            info.st_size != ARCHIVE_SIZE or digest(archive) != ARCHIVE_SHA256):
+        raise ValueError("unreviewed runner archive")
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{20,256}", registration_token):
+        raise ValueError("registration token malformed")
+    if STATE.exists() or INSTALL.exists() or PLIST.exists():
+        raise ValueError("guest runner installation already attempted")
+    fd = os.open(STATE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"schema": "norn.m5-guest-runner-install-started/v1",
+                   "runnerName": RUNNER_NAME, "archiveSHA256": ARCHIVE_SHA256}, stream)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    INSTALL.mkdir(mode=0o700)
+    os.chown(INSTALL, user.pw_uid, user.pw_gid)
+    run_as_runner(("/usr/bin/tar", "-xzf", str(archive), "-C", str(INSTALL)), user, timeout=180)
+    config = INSTALL / "config.sh"
+    info = config.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != user.pw_uid:
+        raise ValueError("runner config script is unsafe")
+    run_as_runner((str(config), "--unattended", "--url", "https://github.com/antiartificial/norn",
+                   "--token", registration_token, "--name", RUNNER_NAME,
+                   "--labels", "norn-m5-isolated", "--work", "_work", "--disableupdate"),
+                  user, timeout=180)
+    data = plistlib.dumps({"Label": "com.norn.m5.runner", "ProgramArguments": [
+        str(INSTALL / "run.sh")], "WorkingDirectory": str(INSTALL), "UserName": RUNNER,
+        "RunAtLoad": True, "KeepAlive": False,
+        "StandardOutPath": "/dev/null", "StandardErrorPath": "/dev/null"})
+    fd = os.open(PLIST, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as target:
+        target.write(data)
+        target.flush()
+        os.fsync(target.fileno())
+    subprocess.run(("/bin/launchctl", "bootstrap", "system", str(PLIST)),
+                   check=True, capture_output=True, timeout=30)
+    print(json.dumps({"schema": "norn.m5-guest-runner-install-pending-inventory/v1",
+                      "runnerName": RUNNER_NAME, "runnerUID": user.pw_uid,
+                      "archiveSHA256": ARCHIVE_SHA256}, sort_keys=True))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", required=True)
+    args = parser.parse_args()
+    token = sys.stdin.readline().strip()
+    install(args.archive, token)
+
+
+if __name__ == "__main__":
+    main()
