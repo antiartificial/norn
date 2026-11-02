@@ -1,6 +1,7 @@
 import importlib.machinery
 import importlib.util
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 import unittest
 
@@ -19,7 +20,7 @@ class AdmissionTests(unittest.TestCase):
         self.intent = {"schema": "norn.m5-dedicated-host-intent/v1", "runId": "12345",
                        "sourceSHA": "a" * 40, **common, "hostType": "mac2.metal",
                        "imageId": "ami-example", "runTag": "norn:m5:12345",
-                       "sshHostKeySHA256": "b" * 64, "costCapUSD": "40.00",
+                       "sshHostKeySHA256": "b" * 64, "costCapUSD": "60.00",
                        "retireBy": "2026-11-04T12:00:00Z"}
         self.quote = {"schema": "norn.m5-dedicated-host-quote/v1", **common,
                       "hostType": "mac2.metal", "imageId": "ami-example", "currency": "USD",
@@ -34,7 +35,7 @@ class AdmissionTests(unittest.TestCase):
                                 "12345", "a" * 40, self.now)
 
     def test_exact_admission(self):
-        self.assertEqual(self.check()["minimumCostUSD"], "26.00")
+        self.assertEqual(Decimal(self.check()["maximumCostUSD"]), Decimal("50.00"))
 
     def test_scope_or_resource_mismatch(self):
         self.inventory["resources"] = [{"id": "existing"}]
@@ -46,10 +47,10 @@ class AdmissionTests(unittest.TestCase):
             self.check()
 
     def test_cost_staleness_and_expiration(self):
-        self.intent["costCapUSD"] = "25.99"
+        self.intent["costCapUSD"] = "49.99"
         with self.assertRaises(ValueError):
             self.check()
-        self.intent["costCapUSD"] = "40.00"
+        self.intent["costCapUSD"] = "60.00"
         self.inventory["observedAt"] = "2026-11-02T11:54:59Z"
         with self.assertRaises(ValueError):
             self.check()

@@ -71,18 +71,21 @@ def verify(intent, quote, inventory, run_id, source_sha, now):
         raise ValueError("run tag is already present or inventory is ambiguous")
     if quote["currency"] != "USD" or type(quote["minimumHours"]) is not int or quote["minimumHours"] < 1:
         raise ValueError("invalid quote units")
-    price = money(quote["hourlyUSD"]) * quote["minimumHours"] + money(quote["fixedUSD"])
-    if price > money(intent["costCapUSD"]):
-        raise ValueError("quoted minimum exceeds the signed cap")
-    if timestamp(intent["retireBy"]) <= now:
+    retire_by = timestamp(intent["retireBy"])
+    if retire_by <= now:
         raise ValueError("intent has expired")
+    run_hours = Decimal(str((retire_by - now).total_seconds())) / Decimal(3600)
+    billable_hours = max(Decimal(quote["minimumHours"]), run_hours)
+    price = money(quote["hourlyUSD"]) * billable_hours + money(quote["fixedUSD"])
+    if price > money(intent["costCapUSD"]):
+        raise ValueError("quoted maximum exceeds the signed cap")
     for observed in (quote["observedAt"], inventory["observedAt"]):
         age = (now - timestamp(observed)).total_seconds()
         if age < 0 or age > 300:
             raise ValueError("quote or inventory is stale")
     return {"schema": "norn.m5-dedicated-host-admission/v1", "runId": run_id,
             "sourceSHA": source_sha, "runTag": intent["runTag"],
-            "minimumCostUSD": str(price), "retireBy": intent["retireBy"]}
+            "maximumCostUSD": str(price), "retireBy": intent["retireBy"]}
 
 
 def main():

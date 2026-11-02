@@ -19,7 +19,8 @@ intent, a quote above its cap, or a missing/ambiguous price response.
 
 The `v2/scripts/mini-m5-host-admission` helper verifies the owner's signature
 over the intent bytes and checks exact run/source/provider scope, a fresh empty
-inventory, a fresh quote, minimum billable cost, and expiration. The quote
+inventory, a fresh quote, the maximum cost through `retireBy` including the
+provider's minimum allocation, and expiration. The quote
 and inventory must come from the selected provider's authenticated adapter;
 the helper cannot establish their provenance on its own. It uses Homebrew
 OpenSSL 3 for Ed25519 verification; the host bootstrap must pin that binary.
