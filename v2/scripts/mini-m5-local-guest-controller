@@ -15,6 +15,9 @@ import subprocess
 
 
 TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
+PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5aa"
+PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
+SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
 IPSW_SIZE = 19772231540
 VM_PREFIX = "norn-m5-"
 SCHEMA = "norn.m5-local-guest-reservation/v1"
@@ -49,7 +52,7 @@ def tart_inventory(tart):
     return value
 
 
-def preflight(intent, tart, ipsw, volume):
+def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
     required = {"schema", "runId", "sourceSHA", "guestName", "ipswSHA256", "tartSHA256",
                 "cpuCount", "memoryGiB", "diskGiB", "retireBy"}
     if set(intent) != required or intent["schema"] != "norn.m5-local-guest-intent/v1":
@@ -77,6 +80,9 @@ def preflight(intent, tart, ipsw, volume):
     if shutil.disk_usage(volume).free < 80 * 1024**3:
         raise ValueError("insufficient host disk headroom")
     checked_file(tart, TART_SHA256)
+    checked_file(packer, PACKER_SHA256)
+    checked_file(plugin, PLUGIN_SHA256)
+    checked_file(softnet, SOFTNET_SHA256)
     checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
     rows = tart_inventory(tart)
     if any(row["Name"] == intent["guestName"] for row in rows):
@@ -113,7 +119,8 @@ def reserve(journal_root, intent, evidence):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "reserve"))
-    for name in ("intent", "signature", "public-key", "tart", "ipsw", "volume"):
+    for name in ("intent", "signature", "public-key", "tart", "packer", "plugin",
+                 "softnet", "ipsw", "volume"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--journal-root")
     args = parser.parse_args()
@@ -121,7 +128,8 @@ def main():
                     "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
                    check=True, capture_output=True, timeout=10)
     intent = json.loads(Path(args.intent).read_bytes())
-    evidence = preflight(intent, args.tart, args.ipsw, args.volume)
+    evidence = preflight(intent, args.tart, args.packer, args.plugin, args.softnet,
+                         args.ipsw, args.volume)
     evidence["intentSHA256"] = digest(args.intent)
     evidence["signatureSHA256"] = digest(args.signature)
     evidence["publicKeySHA256"] = digest(args.public_key)
