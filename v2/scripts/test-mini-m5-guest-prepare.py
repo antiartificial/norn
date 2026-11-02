@@ -24,6 +24,9 @@ class GuestPrepareTests(unittest.TestCase):
         self.assertEqual(result.count('anchor "com.norn.m5.historical"'), 1)
         with self.assertRaisesRegex(ValueError, "already present"):
             prepare.pf_with_anchor(result)
+        with self.assertRaisesRegex(ValueError, "precedes"):
+            prepare.pf_with_anchor(original.replace('\nanchor "com.apple/*"\n',
+                                                    '\npass out all\nanchor "com.apple/*"\n'))
 
     def test_requires_virtual_mac_and_exact_os(self):
         with patch.object(prepare.os, "geteuid", return_value=0), \

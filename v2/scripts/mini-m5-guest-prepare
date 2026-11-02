@@ -57,6 +57,12 @@ def pf_with_anchor(original):
         raise ValueError("M5 PF anchor already present; reconcile before retry")
     if original.count(APPLE_FILTER_ANCHOR) != 1:
         raise ValueError("unexpected guest PF root filter layout")
+    prefix = original.split(APPLE_FILTER_ANCHOR, 1)[0]
+    for line in prefix.splitlines():
+        rule = line.strip()
+        if rule and not rule.startswith("#") and not rule.startswith((
+                "scrub-anchor ", "nat-anchor ", "rdr-anchor ", "dummynet-anchor ")):
+            raise ValueError("unreviewed PF rule precedes the M5 filter anchor")
     return original.replace(APPLE_FILTER_ANCHOR, '\n' + ANCHOR_LINE + 'anchor "com.apple/*"\n')
 
 

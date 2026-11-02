@@ -22,6 +22,8 @@ class TemplateTests(unittest.TestCase):
         self.assertIn('source      = var.m5_window_helper_path', result)
         self.assertIn('source      = var.m5_checker_helper_path', result)
         self.assertIn('sudo -S /usr/bin/python3 /tmp/norn-m5-guest-prepare', result)
+        self.assertIn('content     = var.m5_bootstrap_password', result)
+        self.assertNotIn("printf '%s", result)
         self.assertNotIn('admin ALL=(ALL)', result)
         self.assertNotIn('github.com/hashicorp/ansible', result)
         self.assertNotIn('spctl --global-disable', result)

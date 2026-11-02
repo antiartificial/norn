@@ -69,9 +69,17 @@ def transform(raw):
     destination = "/tmp/norn-m5-isolation-check"
   }
   provisioner "shell" {
+    inline = ["mkdir -m 700 /Users/admin/.norn-m5-bootstrap"]
+  }
+  provisioner "file" {
+    content     = var.m5_bootstrap_password
+    destination = "/Users/admin/.norn-m5-bootstrap/password"
+  }
+  provisioner "shell" {
     inline = [
-      "printf '%s\\n' '${var.m5_bootstrap_password}' | sudo -S /usr/bin/python3 /tmp/norn-m5-guest-prepare --window-helper /tmp/norn-m5-firewall-window --isolation-checker /tmp/norn-m5-isolation-check",
-      "rm -f /tmp/norn-m5-guest-prepare /tmp/norn-m5-firewall-window /tmp/norn-m5-isolation-check",
+      "trap 'rm -f /Users/admin/.norn-m5-bootstrap/password; rmdir /Users/admin/.norn-m5-bootstrap 2>/dev/null || true; rm -f /tmp/norn-m5-guest-prepare /tmp/norn-m5-firewall-window /tmp/norn-m5-isolation-check' EXIT",
+      "chmod 600 /Users/admin/.norn-m5-bootstrap/password",
+      "sudo -S /usr/bin/python3 /tmp/norn-m5-guest-prepare --window-helper /tmp/norn-m5-firewall-window --isolation-checker /tmp/norn-m5-isolation-check < /Users/admin/.norn-m5-bootstrap/password",
     ]
   }
 }
