@@ -160,3 +160,71 @@ func TestHeldFleetDeploymentRecoveryAdmissionAndHealthEtcd(t *testing.T) {
 		t.Fatalf("failed recovery region: %+v %v", stored, err)
 	}
 }
+
+func TestHeldFleetRecoveryHealthSurvivesClaimRenewalDuringObservation(t *testing.T) {
+	s, _, _ := deploymentEtcdStore(t)
+	ctx := context.Background()
+	request := deploymentAdmissionRequest(t, s.authority)
+	request.Deployment.SpecDigest = "pinned-spec-digest"
+	request.Deployment.ImageTag = "registry.example.test/demo@sha256:" + strings.Repeat("a", 64)
+	var err error
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := s.acceptDeploymentAggregate(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, original, err := s.ClaimNextOperation(ctx, "original", time.Minute, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, ok, err := s.AcquireAppOperationLock(ctx, "demo")
+	if err != nil || !ok {
+		t.Fatalf("app lock: %v", err)
+	}
+	defer lock.Release()
+	effects, err := NewV3DeploymentEffectReservations(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered store.OperationClaim
+	reservation, nomadClient := recoveryNomadFixtureWithHook(t, accepted, original, s.authority, func() {
+		if err := s.RenewOperationClaim(ctx, recovered, time.Minute); err != nil {
+			t.Errorf("claim renewal: %v", err)
+		}
+	})
+	reserved, err := effects.Reserve(ctx, reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := reserved.Record.Token
+	if _, err := effects.MarkSubmitAttempt(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: "nomad-job:global:demo:7"}
+	if err := effects.MarkLaunched(ctx, token, identity); err != nil {
+		t.Fatal(err)
+	}
+	verification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: reservation.InputDigest, ResultDigest: "healthy", ResultReference: identity.RuntimeInstanceID, SupervisorExecutionID: identity.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "nomad-job-health", EvidenceReference: identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	result := *accepted.Deployment
+	result.Status = model.StatusFailed
+	regions := []model.DeploymentRegion{{DeploymentID: result.ID, Region: "west", NomadRegion: "global", Status: model.StatusFailed, DesiredWeight: 100}}
+	if err := s.finishClaimedDeployment(ctx, original, lock, result, regions, model.OperationFailed, "held", map[string]interface{}{"manualRecoveryRequired": true, "externalEffectRecoveryPending": true, "effectId": token.EffectID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RequeueHeldFleetDeploymentByID(ctx, original.OperationID(), result.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, recovered, err = s.ClaimNextOperation(ctx, "recovery", time.Minute, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordClaimedFleetRecoveryHealth(ctx, recovered, lock, nomadClient); err != nil {
+		t.Fatalf("valid health observation lost during live claim renewal: %v", err)
+	}
+}

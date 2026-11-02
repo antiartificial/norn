@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	nomadapi "github.com/hashicorp/nomad/api"
@@ -14,6 +15,10 @@ import (
 )
 
 func recoveryNomadFixture(t *testing.T, accepted store.AcceptedOperation, claim store.OperationClaim, authority string) (effect.Reservation, *nomad.Client) {
+	return recoveryNomadFixtureWithHook(t, accepted, claim, authority, nil)
+}
+
+func recoveryNomadFixtureWithHook(t *testing.T, accepted store.AcceptedOperation, claim store.OperationClaim, authority string, onObserve func()) (effect.Reservation, *nomad.Client) {
 	t.Helper()
 	r := deploymentEffectReservation(t, accepted, claim, authority)
 	var input nomad.DeploymentJobEffectInput
@@ -62,7 +67,11 @@ func recoveryNomadFixture(t *testing.T, accepted store.AcceptedOperation, claim 
 	current.Version, current.JobModifyIndex = &version, &index
 	stub := &nomadapi.AllocationListStub{ID: "alloc-1", JobID: input.App, JobVersion: version, TaskGroup: groupName, ClientStatus: nomadapi.AllocClientStatusRunning, DesiredStatus: nomadapi.AllocDesiredStatusRun, DeploymentStatus: &nomadapi.AllocDeploymentStatus{Healthy: &healthy}}
 	allocation := &nomadapi.Allocation{ID: stub.ID, JobID: input.App, TaskGroup: groupName, Job: &current, ClientStatus: stub.ClientStatus, DesiredStatus: stub.DesiredStatus, TaskStates: map[string]*nomadapi.TaskState{groupName: {State: "running"}}}
+	var observeOnce sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if onObserve != nil {
+			observeOnce.Do(onObserve)
+		}
 		if req.URL.Path != "/v1/job/"+input.App+"/plan" && req.Method != http.MethodGet {
 			t.Errorf("unexpected Nomad mutation %s %s", req.Method, req.URL.Path)
 			http.Error(w, "mutation rejected", http.StatusMethodNotAllowed)

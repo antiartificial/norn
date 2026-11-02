@@ -3,7 +3,9 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"time"
 
@@ -153,18 +155,31 @@ func (s *V3OperationStore) fleetRecoveryHealthKey(operationID string, generation
 
 // RecordClaimedFleetRecoveryHealth commits a claim-bound observation only
 // after the worker's read-only verifier returns successfully.
-func (s *V3OperationStore) RecordClaimedFleetRecoveryHealth(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, remote *nomad.Client) (effect.Token, error) {
+func (s *V3OperationStore) RecordClaimedFleetRecoveryHealth(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, remote *nomad.Client) (token effect.Token, resultErr error) {
+	stage := "claim-preflight"
+	defer func() {
+		if resultErr != nil {
+			class := "verification-or-store"
+			if errors.Is(resultErr, store.ErrOperationOwnershipLost) {
+				class = "ownership-lost"
+			}
+			log.Printf("fleet recovery health rejected operation=%s generation=%d stage=%s class=%s", claim.OperationID(), claim.Generation(), stage, class)
+		}
+	}()
 	if lock == nil || lock.Fence() == "" || lock.Context().Err() != nil || remote == nil {
 		return effect.Token{}, store.ErrOperationOwnershipLost
 	}
-	rec, rev, err := s.load(ctx, claim.OperationID())
+	stage = "operation-load"
+	rec, _, err := s.load(ctx, claim.OperationID())
 	if err != nil {
 		return effect.Token{}, err
 	}
+	stage = "predecessor-effect"
 	record, err := s.ClaimedFleetDeploymentRecovery(ctx, claim)
 	if err != nil || record == nil {
 		return effect.Token{}, fmt.Errorf("recovery record unavailable: %v", err)
 	}
+	stage = "effect-reload"
 	effects, err := NewV3DeploymentEffectReservations(s)
 	if err != nil {
 		return effect.Token{}, err
@@ -173,26 +188,59 @@ func (s *V3OperationStore) RecordClaimedFleetRecoveryHealth(ctx context.Context,
 	if err != nil {
 		return effect.Token{}, err
 	}
+	stage = "owner-preflight"
 	owner, err := s.kv.Get(ctx, s.ownerKey(claim.OperationID()))
 	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 || string(owner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) {
 		return effect.Token{}, store.ErrOperationOwnershipLost
 	}
+	stage = "nomad-health"
 	if err := nomad.VerifyCompletedDeploymentJobHealth(ctx, remote, *record); err != nil {
 		return effect.Token{}, err
 	}
+	stage = "proof-commit"
 	proofKey := s.fleetRecoveryHealthKey(claim.OperationID(), claim.Generation())
 	encoded, err := json.Marshal(record.Token)
 	if err != nil {
 		return effect.Token{}, err
 	}
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", rev), clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision), clientv3.Compare(clientv3.Value(s.appLockKey(rec.Operation.App)), "=", lock.Fence()), clientv3.Compare(clientv3.ModRevision(key), "=", effectRev), clientv3.Compare(clientv3.CreateRevision(proofKey), "=", 0)).Then(clientv3.OpPut(proofKey, string(encoded))).Commit()
-	if err != nil {
-		return effect.Token{}, err
+	// Lease renewal updates the operation revision while the Nomad observation
+	// is in flight. Recheck the same claim and use its fresh revision for the
+	// proof CAS; an unrelated operation change still fails the claim checks.
+	for attempt := 0; attempt < 3; attempt++ {
+		if lock.Context().Err() != nil {
+			return effect.Token{}, store.ErrOperationOwnershipLost
+		}
+		current, rev, err := s.load(ctx, claim.OperationID())
+		if err != nil {
+			return effect.Token{}, err
+		}
+		if current.Operation.Status != model.OperationRunning || current.Operation.LockedBy != claim.OwnerID() || current.Generation != claim.Generation() {
+			return effect.Token{}, store.ErrOperationOwnershipLost
+		}
+		unchanged := current.Operation
+		unchanged.LockedUntil = rec.Operation.LockedUntil
+		unchanged.UpdatedAt = rec.Operation.UpdatedAt
+		if !reflect.DeepEqual(unchanged, rec.Operation) {
+			return effect.Token{}, store.ErrOperationOwnershipLost
+		}
+		marker, err := json.Marshal(current.Operation.Metadata[fleetDeploymentRecoveryEffect])
+		var marked effect.Token
+		if err != nil || json.Unmarshal(marker, &marked) != nil || marked != record.Token || current.Operation.Metadata["manualRecoveryRequired"] != true || current.Operation.Metadata["externalEffectRecoveryPending"] != true {
+			return effect.Token{}, store.ErrOperationOwnershipLost
+		}
+		owner, err := s.kv.Get(ctx, s.ownerKey(claim.OperationID()))
+		if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 || string(owner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) {
+			return effect.Token{}, store.ErrOperationOwnershipLost
+		}
+		txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", rev), clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision), clientv3.Compare(clientv3.Value(s.appLockKey(rec.Operation.App)), "=", lock.Fence()), clientv3.Compare(clientv3.ModRevision(key), "=", effectRev), clientv3.Compare(clientv3.CreateRevision(proofKey), "=", 0)).Then(clientv3.OpPut(proofKey, string(encoded))).Commit()
+		if err != nil {
+			return effect.Token{}, err
+		}
+		if txn.Succeeded {
+			return record.Token, nil
+		}
 	}
-	if !txn.Succeeded {
-		return effect.Token{}, store.ErrOperationOwnershipLost
-	}
-	return record.Token, nil
+	return effect.Token{}, store.ErrOperationOwnershipLost
 }
 
 func (s *V3OperationStore) requireFleetRecoveryHealth(ctx context.Context, claim store.OperationClaim, token effect.Token) (clientv3.Cmp, error) {
