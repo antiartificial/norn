@@ -1,0 +1,58 @@
+name: M5 historical copied-state restore
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact signed v2 source release SHA
+        required: true
+        type: string
+      target_sha:
+        description: Exact signed v3 target release SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m5-historical-copied-state
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    if: github.ref == 'refs/heads/master' && github.ref_protected
+    environment: m5-mini-release-rehearsal
+    runs-on: [self-hosted, macOS, ARM64, norn-m5-isolated]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require exact protected source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$GITHUB_REF" == refs/heads/master ]]
+      - name: Run isolated historical restore controller
+        env:
+          NORN_M5_HISTORICAL_ISOLATED: '1'
+          NORN_M5_SOURCE_SHA: ${{ inputs.source_sha }}
+          NORN_M5_TARGET_SHA: ${{ inputs.target_sha }}
+          NORN_M5_ISOLATION_CHECK: ${{ vars.M5_ISOLATION_CHECK }}
+          NORN_M5_HISTORICAL_RECEIPT_DIR: ${{ vars.M5_HISTORICAL_RECEIPT_DIR }}
+          NORN_REHEARSAL_POSTGRES_BIN: ${{ vars.M5_POSTGRES_BIN }}
+          PROOF: ${{ vars.M5_BACKUP_PROOF }}
+          DUMP: ${{ vars.M5_BACKUP_ARTIFACT }}
+          OLD_RECEIPT: ${{ vars.M5_SHADOW_RECEIPT }}
+          SOURCE_RELEASE_ROOT: ${{ vars.M5_SOURCE_RELEASE_ROOT }}
+          TARGET_RELEASE_ROOT: ${{ vars.M5_TARGET_RELEASE_ROOT }}
+          PUBLIC_KEY: ${{ vars.M5_PINNED_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          v2/scripts/mini-historical-copied-state-controller "$PROOF" "$DUMP" "$OLD_RECEIPT" \
+            "$SOURCE_RELEASE_ROOT/$NORN_M5_SOURCE_SHA" "$TARGET_RELEASE_ROOT/$NORN_M5_TARGET_SHA" "$PUBLIC_KEY"

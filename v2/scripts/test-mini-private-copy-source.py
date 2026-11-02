@@ -2,6 +2,7 @@
 """Check Mini source URL fidelity before any read-only dump is opened."""
 
 import json
+import hashlib
 import os
 import signal
 from pathlib import Path
@@ -175,6 +176,46 @@ class MiniPrivateCopySourceTest(unittest.TestCase):
         result = self.run_source(urllib.parse.urlencode({"host": str(self.root)}))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("expected at least one original public table, found none", result.stderr)
+
+    def test_historical_copy_requires_isolation_and_no_live_credentials(self):
+        artifact = self.root / "historical.dump"
+        proof = self.root / "historical-proof.json"
+        receipt = self.root / "historical-shadow.json"
+        artifact.write_bytes(b"old-copy")
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        proof.write_text(json.dumps({
+            "schema": "norn.legacy-control-backup/v1",
+            "sourceReleaseSHA": SHA,
+            "databaseIdentity": "hmac-sha256:" + "f" * 64,
+            "backupSHA256": digest,
+            "backupBytes": 8,
+            "createdAt": "2025-01-01T00:00:00Z",
+        }))
+        receipt.write_text(json.dumps({
+            "schema": "norn.m5-signed-shadow-launchagent-rehearsal/v2",
+            "candidateSHA": SHA,
+            "backupSHA256": digest,
+            "backupBytes": 8,
+            "completedAt": "2025-01-01T00:01:00Z",
+            "exitCode": 0,
+            "privateRestoreClaim": "passed",
+            "runtimeClaim": "passed",
+        }))
+        for path in (artifact, proof, receipt):
+            path.chmod(0o600)
+        base = {
+            "NORN_REHEARSAL_SOURCE_DATABASE_URL": "",
+            "NORN_REHEARSAL_BACKUP_ARTIFACT": str(artifact),
+            "NORN_REHEARSAL_BACKUP_PROOF": str(proof),
+            "NORN_REHEARSAL_LEGACY_RELEASE_SHA": SHA,
+            "NORN_M5_HISTORICAL_SHADOW_RECEIPT": str(receipt),
+        }
+        for extra in ({}, {"NORN_M5_HISTORICAL_ISOLATED": "1", "NORN_DATABASE_URL": "postgres://live"}):
+            with self.subTest(extra=extra):
+                result = self.run_source("", {**base, **extra})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("historical restore requires isolated mode", result.stderr)
+                self.assertFalse(self.capture.exists())
 
     def test_migration_metadata_is_validated_separately_from_preserved_data(self):
         for name in ("initdb", "pg_ctl", "createdb", "pg_restore"):

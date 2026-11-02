@@ -179,18 +179,34 @@ PY
 read -r catalog_version minimum_reader minimum_writer <<<"$contract_values"
 
 if [[ -n $backup_artifact ]]; then
-  verify_backup="$(dirname "$0")/mini-verify-protected-backup"
-  [[ -x $verify_backup ]] || { printf 'missing protected backup verifier\n' >&2; exit 2; }
-  backup_identity=$(
-    "$verify_backup" "$backup_proof" "$backup_artifact" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA"
-  )
+  historical_receipt=${NORN_M5_HISTORICAL_SHADOW_RECEIPT:-}
+  if [[ -n $historical_receipt ]]; then
+    [[ ${NORN_M5_HISTORICAL_ISOLATED:-} == 1 && -z ${NORN_DATABASE_URL:-} && -z ${NORN_AUDIT_SIGNING_KEY:-} ]] || {
+      printf 'historical restore requires isolated mode without live database credentials\n' >&2; exit 2;
+    }
+    verify_backup="$(dirname "$0")/mini-historical-shadow-evidence"
+    [[ -x $verify_backup ]] || { printf 'missing historical evidence verifier\n' >&2; exit 2; }
+    verify_historical() {
+      "$verify_backup" --proof "$backup_proof" --artifact "$1" \
+        --shadow-receipt "$historical_receipt" \
+        --source-sha "$NORN_REHEARSAL_LEGACY_RELEASE_SHA" \
+        --candidate-sha "$expected_sha" | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value["backupSHA256"], value["backupBytes"])'
+    }
+    backup_identity=$(verify_historical "$backup_artifact")
+  else
+    verify_backup="$(dirname "$0")/mini-verify-protected-backup"
+    [[ -x $verify_backup ]] || { printf 'missing protected backup verifier\n' >&2; exit 2; }
+    backup_identity=$("$verify_backup" "$backup_proof" "$backup_artifact" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA")
+  fi
   # Preserve the exact verified bytes in private storage, then independently
   # validate the copy before pg_restore. The source artifact is never modified.
   cp -- "$backup_artifact" "$dump_file"
   chmod 600 "$dump_file"
-  copy_identity=$(
-    "$verify_backup" "$backup_proof" "$dump_file" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA"
-  )
+  if [[ -n $historical_receipt ]]; then
+    copy_identity=$(verify_historical "$dump_file")
+  else
+    copy_identity=$("$verify_backup" "$backup_proof" "$dump_file" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA")
+  fi
   [[ $copy_identity == "$backup_identity" ]] || {
     printf 'protected backup changed while copying\n' >&2
     exit 1
@@ -468,7 +484,11 @@ if [[ $check_live_state == true ]]; then
   printf 'live_base_jobs_and_cloudflared_config=unchanged\n'
 fi
 if [[ -n $backup_artifact ]]; then
-  final_identity=$("$verify_backup" "$backup_proof" "$backup_artifact" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA")
+  if [[ -n $historical_receipt ]]; then
+    final_identity=$(verify_historical "$backup_artifact")
+  else
+    final_identity=$("$verify_backup" "$backup_proof" "$backup_artifact" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA")
+  fi
   [[ $final_identity == "$backup_identity" ]] || {
     printf 'protected backup changed during rehearsal\n' >&2
     exit 1
