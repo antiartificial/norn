@@ -77,7 +77,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 			} else if errors.Is(resultErr, store.ErrOperationOwnershipLost) {
 				class = "ownership-lost"
 			}
-			log.Printf("fleet recovery stopped operation=%s generation=%d stage=%s class=%s", claim.OperationID(), claim.Generation(), stage, class)
+			log.Printf("fleet recovery failed operation=%s generation=%d stage=%s class=%s", claim.OperationID(), claim.Generation(), stage, class)
 			if stopErr := e.Store.StopClaimedFleetDeploymentRecovery(ctx, claim, lock); stopErr != nil {
 				resultErr = fmt.Errorf("recovery could not retain held failure: %w (original: %v)", stopErr, resultErr)
 				return
