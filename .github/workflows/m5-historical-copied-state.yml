@@ -38,6 +38,24 @@ jobs:
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           [[ "$GITHUB_REF" == refs/heads/master ]]
+      - name: Require signed disposable guest qualification
+        env:
+          GUEST_NAME: ${{ vars.M5_LOCAL_GUEST_NAME }}
+          CREATE_MARKER_SHA256: ${{ vars.M5_LOCAL_CREATE_MARKER_SHA256 }}
+          QUALIFICATION_RECEIPT: ${{ vars.M5_LOCAL_QUALIFICATION_RECEIPT }}
+          QUALIFICATION_SIGNATURE: ${{ vars.M5_LOCAL_QUALIFICATION_SIGNATURE }}
+          QUALIFICATION_ATTESTATION: ${{ vars.M5_LOCAL_QUALIFICATION_ATTESTATION }}
+          PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          for key in GUEST_NAME CREATE_MARKER_SHA256 QUALIFICATION_RECEIPT QUALIFICATION_SIGNATURE QUALIFICATION_ATTESTATION PUBLIC_KEY; do
+            [[ -n "${!key}" ]]
+          done
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-local-guest-qualification-gate" \
+            --receipt "$QUALIFICATION_RECEIPT" --signature "$QUALIFICATION_SIGNATURE" \
+            --public-key "$PUBLIC_KEY" --attestation "$QUALIFICATION_ATTESTATION" \
+            --guest-name "$GUEST_NAME" --create-marker-sha256 "$CREATE_MARKER_SHA256" \
+            --source-sha "$GITHUB_SHA"
       - name: Run isolated historical restore controller
         env:
           NORN_M5_HISTORICAL_ISOLATED: '1'

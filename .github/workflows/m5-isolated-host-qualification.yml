@@ -2,6 +2,15 @@ name: M5 isolated host qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      guest_name:
+        description: Exact disposable Tart guest identity
+        required: true
+        type: string
+      create_marker_sha256:
+        description: SHA-256 of durable guest create marker
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -73,5 +82,33 @@ jobs:
         with:
           name: m5-isolated-host-attestation-${{ github.run_id }}
           path: ${{ runner.temp }}/m5-host-attestation.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Emit unsigned qualification candidate for owner review
+        env:
+          GUEST_NAME: ${{ inputs.guest_name }}
+          CREATE_MARKER_SHA256: ${{ inputs.create_marker_sha256 }}
+        run: |
+          set -euo pipefail
+          ATTESTATION="$RUNNER_TEMP/m5-host-attestation.json" OUTPUT="$RUNNER_TEMP/m5-guest-qualification-candidate.json" python3 - <<'PY'
+          import hashlib, json, os, re
+          guest = os.environ['GUEST_NAME']
+          marker = os.environ['CREATE_MARKER_SHA256']
+          assert re.fullmatch(r'norn-m5-[0-9]{1,20}', guest)
+          assert re.fullmatch(r'[0-9a-f]{64}', marker)
+          with open(os.environ['ATTESTATION'], 'rb') as source:
+              digest = hashlib.sha256(source.read()).hexdigest()
+          receipt = {'schema': 'norn.m5-local-guest-qualified/v1', 'guestName': guest,
+                     'createMarkerSHA256': marker, 'qualificationRunId': os.environ['GITHUB_RUN_ID'],
+                     'sourceSHA': os.environ['GITHUB_SHA'], 'attestationSHA256': digest,
+                     'runner': os.environ['RUNNER_NAME']}
+          with open(os.environ['OUTPUT'], 'x', encoding='utf-8') as target:
+              json.dump(receipt, target, sort_keys=True, separators=(',', ':'))
+              target.write('\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m5-guest-qualification-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/m5-guest-qualification-candidate.json
           if-no-files-found: error
           retention-days: 30
