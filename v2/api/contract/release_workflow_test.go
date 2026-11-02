@@ -208,19 +208,31 @@ func TestReusableReleaseWorkflowSupportsPrivateTailscaleAPIs(t *testing.T) {
 
 func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/fleet-canary-release.yml")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(raw), `antiartificial/norn/.github/workflows/norn-app-release.yml@9a3abfe9dd026b269750f72407f056a78367343e`) {
 		t.Fatal("canary caller does not pin the reviewed runner-private reusable workflow")
 	}
 	var caller releaseCallerWorkflow
-	if err := yaml.Unmarshal(raw, &caller); err != nil { t.Fatal(err) }
+	if err := yaml.Unmarshal(raw, &caller); err != nil {
+		t.Fatal(err)
+	}
 	job := caller.Jobs["staging"]
-	if job.With["runner_private"] != "true" { t.Fatalf("runner_private = %q", job.With["runner_private"]) }
-	if _, ok := job.With["private_network"]; ok { t.Fatal("canary runner route must not join Tailscale") }
-	if _, ok := job.With["tailscale_target"]; ok { t.Fatal("canary runner route must not accept a Tailscale target") }
+	if job.With["runner_private"] != "true" {
+		t.Fatalf("runner_private = %q", job.With["runner_private"])
+	}
+	if _, ok := job.With["private_network"]; ok {
+		t.Fatal("canary runner route must not join Tailscale")
+	}
+	if _, ok := job.With["tailscale_target"]; ok {
+		t.Fatal("canary runner route must not accept a Tailscale target")
+	}
 
 	reusable, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	workflow := string(reusable)
 	for _, required := range []string{
 		`staging-runner-private:`,
@@ -232,12 +244,18 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 		`runner_private CA digest differs from the reviewed value`,
 		`runner_private control API lacks Fleet staging release capabilities`,
 	} {
-		if !strings.Contains(workflow, required) { t.Errorf("runner-private contract is missing %q", required) }
+		if !strings.Contains(workflow, required) {
+			t.Errorf("runner-private contract is missing %q", required)
+		}
 	}
 	var parsed releaseWorkflow
-	if err := yaml.Unmarshal(reusable, &parsed); err != nil { t.Fatal(err) }
+	if err := yaml.Unmarshal(reusable, &parsed); err != nil {
+		t.Fatal(err)
+	}
 	effect, ok := parsed.Jobs["staging-runner-private"]
-	if !ok { t.Fatal("runner-private effect job is missing") }
+	if !ok {
+		t.Fatal("runner-private effect job is missing")
+	}
 	var releaseScript string
 	for _, step := range effect.Steps {
 		if strings.Contains(step.Uses, "docker/") || strings.Contains(step.Uses, "cosign") || strings.Contains(step.Name, "Build and publish") {
@@ -247,10 +265,14 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	}
 	for _, required := range []string{`"fleet-github-oidc-exchange"`, `"staging-fleet-release-admission-v1"`,
 		`appReleaseDeployment`, `/api/v1/apps/$APP_ID/releases/deployments`, `Fleet operation proof differs from accepted release`} {
-		if !strings.Contains(releaseScript, required) { t.Errorf("Fleet release effect is missing %q", required) }
+		if !strings.Contains(releaseScript, required) {
+			t.Errorf("Fleet release effect is missing %q", required)
+		}
 	}
 	for _, unsupported := range []string{`/api/v1/apps/$APP_ID/releases/preflight`, `/api/v1/apps/$APP_ID/qualifications`} {
-		if strings.Contains(releaseScript, unsupported) { t.Errorf("Fleet release effect calls unsupported route %q", unsupported) }
+		if strings.Contains(releaseScript, unsupported) {
+			t.Errorf("Fleet release effect calls unsupported route %q", unsupported)
+		}
 	}
 }
 
@@ -267,7 +289,7 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		`github.ref == 'refs/heads/master' && github.ref_protected`,
 		`vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'`,
 		`startsWith(github.ref, 'refs/tags/v') && github.ref_protected`,
-		`antiartificial/norn/.github/workflows/norn-app-release.yml@6406c3456deec214f67aa5c5747a751e79c537e5`,
+		`antiartificial/norn/.github/workflows/norn-app-release.yml@31db2de8dafe14d234ac9e2f29c8480245dae7b4`,
 		`app_id: hello-norn-mysql-managed`,
 		`image_repository: ghcr.io/antiartificial/hello-norn-mysql`,
 		`build_contract: pilot-go`,
@@ -313,11 +335,11 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	if got := caller.Jobs["staging"].With["app_id"]; got != "hello-norn-mysql-managed" {
 		t.Fatalf("staging release must target the separate managed candidate, got %q", got)
 	}
-	if got := caller.Jobs["staging"].With["private_network"]; got != "true" {
-		t.Fatalf("staging release must join the private API route, got %q", got)
+	if got := caller.Jobs["staging"].With["runner_private"]; got != "true" {
+		t.Fatalf("staging release must use the protected Fleet effect runner, got %q", got)
 	}
-	if got := caller.Jobs["staging"].With["tailscale_target"]; got != "${{ vars.NORN_FLEET_API_TAILSCALE_TARGET }}" {
-		t.Fatalf("staging release must bind the exact configured Fleet API hostname, got %q", got)
+	if caller.Jobs["staging"].With["private_network"] != "" || caller.Jobs["staging"].With["tailscale_target"] != "" {
+		t.Fatal("staging release must not use the retired Tailscale API route")
 	}
 	if got := caller.Jobs["staging"].If; got != "github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected && vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'" {
 		t.Fatalf("staging release activation gate changed: %q", got)
