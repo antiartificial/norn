@@ -62,7 +62,7 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 	if err != nil {
 		return nil, nil, fmt.Errorf("deployment-bound ingress intent is unavailable: %w", err)
 	}
-	if intent.OperationID != claim.OperationID() || intent.DeploymentID != accepted.Deployment.ID || intent.AcceptanceID != accepted.Intent.ID || intent.AcceptanceDigest != accepted.Intent.CanonicalDigest || intent.SpecDigest != accepted.Deployment.SpecDigest || intent.Generation != 1 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
+	if intent.OperationID != claim.OperationID() || intent.DeploymentID != accepted.Deployment.ID || intent.AcceptanceID != accepted.Intent.ID || intent.AcceptanceDigest != accepted.Intent.CanonicalDigest || intent.SpecDigest != accepted.Deployment.SpecDigest || intent.Generation == 0 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
 		return nil, nil, fmt.Errorf("deployment-bound ingress intent differs from acceptance")
 	}
 	proofKey := s.initialFleetTrafficProofKey(intent.ID, claim.Generation())
@@ -146,7 +146,7 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 		clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", loaded.revision),
 		clientv3.Compare(clientv3.ModRevision(effectKey), "=", effectRevision),
 		clientv3.Compare(clientv3.ModRevision(attemptKey), "=", attempt.Kvs[0].ModRevision),
-		clientv3.Compare(clientv3.CreateRevision(activeKey), "=", 0),
+		priorActiveCompare(activeKey, intent),
 	}
 	compares = append(compares, inventoryCompares...)
 	return compares, []clientv3.Op{clientv3.OpPut(activeKey, string(active))}, nil

@@ -143,7 +143,7 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 		clientv3.Compare(clientv3.ModRevision(intentKey), "=", storedIntent.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservation.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(s.initialFleetRouteIDKey(intent.ID)), "=", idIndex.Kvs[0].ModRevision),
-		clientv3.Compare(clientv3.CreateRevision(s.fleetActiveRouteKey(intent.App, intent.ControlEnvironment, intent.Region)), "=", 0),
+		priorActiveCompare(s.fleetActiveRouteKey(intent.App, intent.ControlEnvironment, intent.Region), intent),
 		clientv3.Compare(clientv3.ModRevision(s.fleetAppTargetKey(intent.App, intent.ControlEnvironment)), "=", targetRevision),
 		clientv3.Compare(clientv3.ModRevision(s.operationAcceptanceIndexKey(claim.OperationID())), "=", index.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", accepted.revision),
