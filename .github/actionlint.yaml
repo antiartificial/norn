@@ -3,3 +3,4 @@ self-hosted-runner:
     - norn-fleet-protected
     - norn-work-staging-fleet-effect
     - norn-m5-isolated
+    - norn-m5-supervisor
