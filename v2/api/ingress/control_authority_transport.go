@@ -5,13 +5,58 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
+	"time"
 )
+
+var errRouteAuthorityInactive = errors.New("route authority is inactive")
+
+// NewRemoteRoutePublicationAuthorities tries the three pinned controls. Only
+// an unavailable control or an authenticated inactive-authority response may
+// advance to another origin; TLS, identity, and malformed responses fail closed.
+func NewRemoteRoutePublicationAuthorities(origins []string, controlURI string, caPEM, certPEM, keyPEM []byte) (RoutePublicationAuthority, error) {
+	if len(origins) != 3 {
+		return nil, fmt.Errorf("exactly three control authority origins are required")
+	}
+	resolvers := make([]RoutePublicationAuthority, 0, len(origins))
+	seen := make(map[string]bool, len(origins))
+	for _, origin := range origins {
+		if seen[origin] {
+			return nil, fmt.Errorf("control authority origin is repeated")
+		}
+		seen[origin] = true
+		resolve, err := NewRemoteRoutePublicationAuthority(origin, controlURI, caPEM, certPEM, keyPEM)
+		if err != nil {
+			return nil, err
+		}
+		resolvers = append(resolvers, resolve)
+	}
+	return func(ctx context.Context, intentID, nodeID string) (*AuthorizedRoutePublication, error) {
+		for _, resolve := range resolvers {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			decision, err := resolve(attemptCtx, intentID, nodeID)
+			cancel()
+			if err == nil {
+				return decision, nil
+			}
+			if !errors.Is(err, errRouteAuthorityInactive) && !errors.Is(err, context.DeadlineExceeded) &&
+				!errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.EHOSTUNREACH) && !errors.Is(err, syscall.ENETUNREACH) {
+				return nil, err
+			}
+		}
+		return nil, fmt.Errorf("no pinned control authority accepted the route")
+	}, nil
+}
 
 type routeAuthorityRequest struct {
 	IntentID string `json:"intentId"`
@@ -119,6 +164,9 @@ func NewRemoteRoutePublicationAuthority(origin, controlURI string, caPEM, certPE
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK {
+			if response.StatusCode == http.StatusConflict {
+				return nil, errRouteAuthorityInactive
+			}
 			return nil, fmt.Errorf("route authority refused publication: %d", response.StatusCode)
 		}
 		const maxAuthorityResponseBytes = 2*maxPublishedRouteBytes + 4096

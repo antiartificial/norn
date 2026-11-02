@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,12 +27,13 @@ func main() {
 	clientCAFile := flag.String("client-ca", "", "control publisher client CA certificate")
 	clientURI := flag.String("client-uri", "", "pinned control publisher client URI SAN")
 	authority := flag.String("authority", "", "private HTTPS control authority origin")
+	authorityOrigins := flag.String("authority-origins", "", "three pinned private HTTPS control authority origins, comma separated")
 	authorityCAFile := flag.String("authority-ca", "", "control authority server CA certificate")
 	authorityURI := flag.String("authority-uri", "", "pinned control authority server URI SAN")
 	authorityCertFile := flag.String("authority-cert", "", "node authority client TLS certificate")
 	authorityKeyFile := flag.String("authority-key", "", "node authority client TLS private key")
 	flag.Parse()
-	if *listen == "" || *nodeID == "" || *certFile == "" || *keyFile == "" || *clientCAFile == "" || *clientURI == "" || *authority == "" || *authorityCAFile == "" || *authorityURI == "" || *authorityCertFile == "" || *authorityKeyFile == "" {
+	if *listen == "" || *nodeID == "" || *certFile == "" || *keyFile == "" || *clientCAFile == "" || *clientURI == "" || (*authority == "" && *authorityOrigins == "") || (*authority != "" && *authorityOrigins != "") || *authorityCAFile == "" || *authorityURI == "" || *authorityCertFile == "" || *authorityKeyFile == "" {
 		log.Fatal("private publisher and separate mutual TLS identities are required")
 	}
 	host, _, err := net.SplitHostPort(*listen)
@@ -51,7 +53,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	resolve, err := ingress.NewRemoteRoutePublicationAuthority(*authority, *authorityURI, authorityCA, authorityCert, authorityKey)
+	var resolve ingress.RoutePublicationAuthority
+	if *authorityOrigins != "" {
+		resolve, err = ingress.NewRemoteRoutePublicationAuthorities(strings.Split(*authorityOrigins, ","), *authorityURI, authorityCA, authorityCert, authorityKey)
+	} else {
+		resolve, err = ingress.NewRemoteRoutePublicationAuthority(*authority, *authorityURI, authorityCA, authorityCert, authorityKey)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
