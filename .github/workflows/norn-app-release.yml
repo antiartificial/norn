@@ -1350,7 +1350,7 @@ jobs:
       - name: Bind one-use runner and private control route
         run: |
           set -euo pipefail
-          [[ "$EXPECTED_RUNNER_NAME" == "norn-m6-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" && "$RUNNER_NAME" == "$EXPECTED_RUNNER_NAME" ]] || { echo "one-use runner name differs from dispatch" >&2; exit 1; }
+          [[ "$EXPECTED_RUNNER_NAME" == "norn-work-staging-work$GITHUB_RUN_ID-runner" && "$RUNNER_NAME" == "$EXPECTED_RUNNER_NAME" ]] || { echo "one-use runner name differs from dispatch" >&2; exit 1; }
           [[ "$NORN_API_URL" == https://localhost:18443 ]] || { echo "private control origin differs" >&2; exit 1; }
           [[ -f "$CURL_CA_BUNDLE" && ! -L "$CURL_CA_BUNDLE" ]] || { echo "private control CA is missing" >&2; exit 1; }
           [[ "$(sha256sum "$CURL_CA_BUNDLE" | cut -d' ' -f1)" == '${{ vars.NORN_FLEET_RUNNER_API_CA_SHA256 }}' ]] || { echo "private control CA differs" >&2; exit 1; }
