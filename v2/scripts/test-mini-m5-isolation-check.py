@@ -17,8 +17,8 @@ loader.exec_module(checker)
 
 
 class IsolationCheckTest(TestCase):
-    rules = """pass out quick on lo0 from any to any user 510
-block drop out quick from any to any user 510
+    rules = """pass out quick on lo0 all
+block drop out quick all
 """
 
     def run_checker(self, rules=None, root_rules='anchor "com.norn.m5.historical" all\n'):
@@ -46,7 +46,7 @@ block drop out quick from any to any user 510
 
     def test_attests_attached_deny_rules(self):
         result = self.run_checker()
-        self.assertEqual(result['rehearsalOutbound'], 'loopback-only')
+        self.assertEqual(result['hostOutbound'], 'loopback-only')
         self.assertTrue(result['pfEnabled'])
 
     def test_rejects_earlier_public_pass(self):
@@ -55,7 +55,7 @@ block drop out quick from any to any user 510
 
     def test_rejects_ipv4_only_block(self):
         with self.assertRaisesRegex(SystemExit, 'deny-all'):
-            self.run_checker(rules=self.rules.replace('block drop out quick from any', 'block drop out quick inet from any'))
+            self.run_checker(rules=self.rules.replace('block drop out quick all', 'block drop out quick inet all'))
 
     def test_rejects_unattached_anchor(self):
         with self.assertRaisesRegex(SystemExit, 'not the first'):
