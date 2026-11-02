@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Register one M5 guest runner through a signed protected supervisor run."""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import time
+import urllib.parse
+import urllib.request
+
+
+OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
+TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
+RUNNER_ARCHIVE_SHA256 = "df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2"
+RUNNER_ARCHIVE_SIZE = 128562863
+GUEST_INSTALLER_SHA256 = "2df22a595d05f91c0b93f19daa5acb2244552bde16f33c7bd5b559e919439264"
+RUNNER_NAME = "norn-m5-isolated-01"
+API = "https://api.github.com/repos/antiartificial/norn/actions/runners"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise ValueError("GitHub API redirect refused")
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def durable(path, value):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as target:
+        json.dump(value, target, sort_keys=True, separators=(",", ":"))
+        target.write("\n")
+        target.flush()
+        os.fsync(target.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def github(token, method, url):
+    request = urllib.request.Request(url, method=method, headers={
+        "Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "norn-m5-protected-register"})
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
+        if response.status not in (200, 201):
+            raise ValueError("GitHub runner API status is unexpected")
+        return json.loads(response.read(1024 * 1024))
+
+
+def inventory(token):
+    result = github(token, "GET", API + "?" + urllib.parse.urlencode({
+        "name": RUNNER_NAME, "per_page": 100}))
+    rows = result.get("runners")
+    if not isinstance(rows, list) or result.get("total_count") != len(rows):
+        raise ValueError("runner inventory is incomplete")
+    return [row for row in rows if row.get("name") == RUNNER_NAME]
+
+
+def checked_file(path, expected, size=None, exact_mode=None):
+    path = Path(path)
+    info = path.lstat()
+    if (not path.is_absolute() or not stat.S_ISREG(info.st_mode) or
+            info.st_uid != os.geteuid() or info.st_mode & 0o022 or
+            (exact_mode is not None and stat.S_IMODE(info.st_mode) != exact_mode) or
+            (size is not None and info.st_size != size) or digest(path) != expected):
+        raise ValueError("unreviewed runner registration input")
+    return path
+
+
+def verify(intent, args):
+    fields = {"schema", "runId", "sourceSHA", "guestName", "createMarkerSHA256",
+              "hardenedReceiptSHA256", "tartConfigSHA256", "sshHostKeySHA256",
+              "supervisorSSHPublicKeySHA256", "runnerArchiveSHA256", "expiresAt"}
+    if set(intent) != fields or intent["schema"] != "norn.m5-local-guest-runner-register-intent/v1":
+        raise ValueError("unexpected runner registration intent")
+    if (not re.fullmatch(r"[0-9]{1,20}", intent["runId"]) or
+            not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]) or
+            not re.fullmatch(r"norn-m5-[0-9]{1,20}", intent["guestName"]) or
+            any(not re.fullmatch(r"[0-9a-f]{64}", intent[key]) for key in fields if key.endswith("SHA256")) or
+            intent["runnerArchiveSHA256"] != RUNNER_ARCHIVE_SHA256):
+        raise ValueError("runner registration identity invalid")
+    expiry = datetime.fromisoformat(intent["expiresAt"].replace("Z", "+00:00"))
+    if expiry.tzinfo != timezone.utc or expiry <= datetime.now(timezone.utc):
+        raise ValueError("runner registration intent expired")
+    expected = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/master",
+                "GITHUB_REF_PROTECTED": "true", "RUNNER_NAME": "norn-m5-supervisor-01",
+                "GITHUB_RUN_ID": intent["runId"], "GITHUB_SHA": intent["sourceSHA"],
+                "NORN_M5_PROTECTED_CONTROLLER": "1"}
+    if any(os.environ.get(key) != value for key, value in expected.items()):
+        raise ValueError("runner registration requires exact protected supervisor")
+    root = Path(args.journal_root)
+    info = root.lstat()
+    if not root.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("runner journal root is unsafe")
+    name = intent["guestName"]
+    if digest(root / (name + ".create-started")) != intent["createMarkerSHA256"]:
+        raise ValueError("guest create marker differs")
+    hardened = root / (name + ".hardened.json")
+    if digest(hardened) != intent["hardenedReceiptSHA256"]:
+        raise ValueError("guest hardening receipt differs")
+    receipt = json.loads(hardened.read_bytes())
+    if (receipt.get("schema") != "norn.m5-local-guest-hardened/v1" or
+            receipt.get("createMarkerSHA256") != intent["createMarkerSHA256"] or
+            receipt.get("admission", {}).get("guestName") != name or
+            receipt.get("admission", {}).get("sshHostKeySHA256") != intent["sshHostKeySHA256"]):
+        raise ValueError("guest hardening identity differs")
+    checked_file(args.tart, TART_SHA256)
+    config = subprocess.run((args.tart, "get", name, "--format", "json"),
+                            check=True, capture_output=True, timeout=15).stdout
+    if hashlib.sha256(config).hexdigest() != intent["tartConfigSHA256"]:
+        raise ValueError("live Tart guest config differs")
+    checked_file(args.runner_archive, RUNNER_ARCHIVE_SHA256, RUNNER_ARCHIVE_SIZE)
+    checked_file(Path(__file__).with_name("mini-m5-guest-runner-setup"), GUEST_INSTALLER_SHA256)
+    public = checked_file(args.supervisor_ssh_public_key, intent["supervisorSSHPublicKeySHA256"])
+    private = Path(args.supervisor_ssh_private_key)
+    info = private.lstat()
+    if not private.is_absolute() or info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("supervisor SSH private key is unsafe")
+    derived = subprocess.run(("/usr/bin/ssh-keygen", "-y", "-f", str(private)),
+                             check=True, capture_output=True, text=True, timeout=10).stdout.split()
+    if derived[:2] != public.read_text().split()[:2]:
+        raise ValueError("supervisor SSH keypair differs")
+    if (root / (name + ".runner-registered")).exists():
+        raise ValueError("guest runner already registered")
+    return root
+
+
+def register(intent, args, token):
+    root = verify(intent, args)
+    if inventory(token):
+        raise ValueError("runner name already exists in GitHub")
+    name = intent["guestName"]
+    ip = subprocess.run((args.tart, "ip", name, "--wait", "0", "--resolver", "dhcp"),
+                        check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+    address = ipaddress.ip_address(ip)
+    if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local:
+        raise ValueError("guest IP is outside private VM network")
+    scan = subprocess.run(("/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519", ip),
+                          check=True, capture_output=True, text=True, timeout=15).stdout
+    lines = [line.split() for line in scan.splitlines() if line and not line.startswith("#")]
+    if len(lines) != 1 or len(lines[0]) != 3 or lines[0][1] != "ssh-ed25519":
+        raise ValueError("ambiguous guest SSH host key")
+    host_key = (lines[0][1] + " " + lines[0][2] + "\n").encode()
+    if hashlib.sha256(host_key).hexdigest() != intent["sshHostKeySHA256"]:
+        raise ValueError("guest SSH host key changed")
+    known_hosts = root / (name + ".register-known-hosts")
+    fd = os.open(known_hosts, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as target:
+        target.write(ip.encode() + b" " + host_key)
+    durable(root / (name + ".runner-register-started"), {"schema": "norn.m5-local-guest-runner-register-started/v1",
+        "intent": intent, "guestIP": ip})
+    options = ("-i", args.supervisor_ssh_private_key, "-o", "IdentitiesOnly=yes",
+               "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+               "-o", "UserKnownHostsFile=" + str(known_hosts), "-o", "ConnectTimeout=10")
+    for local, remote in ((args.runner_archive, "/tmp/norn-m5-runner.tgz"),
+                          (str(Path(__file__).with_name("mini-m5-guest-runner-setup")),
+                           "/tmp/norn-m5-runner-setup")):
+        subprocess.run(("/usr/bin/scp", *options, local, "admin@" + ip + ":" + remote),
+                       check=True, capture_output=True, timeout=300)
+    response = github(token, "POST", API + "/registration-token")
+    registration_token = response.get("token")
+    if not isinstance(registration_token, str) or len(registration_token) < 20:
+        raise ValueError("GitHub registration token absent")
+    bootstrap = root / (name + ".bootstrap-secret")
+    info = bootstrap.lstat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("guest bootstrap credential is unsafe")
+    ssh = ("/usr/bin/ssh", "-T", *options, "admin@" + ip,
+           "/usr/bin/sudo -k -S -p '' /usr/bin/python3 /tmp/norn-m5-runner-setup --archive /tmp/norn-m5-runner.tgz")
+    result = subprocess.run(ssh, input=bootstrap.read_text() + registration_token + "\n",
+                            text=True, capture_output=True, timeout=360)
+    if result.returncode != 0:
+        raise RuntimeError("guest runner install failed; protected reconciliation required")
+    installed = json.loads(result.stdout)
+    if (installed.get("schema") != "norn.m5-guest-runner-install-pending-inventory/v1" or
+            installed.get("runnerName") != RUNNER_NAME or
+            installed.get("archiveSHA256") != RUNNER_ARCHIVE_SHA256):
+        raise ValueError("guest runner install receipt invalid")
+    rows = []
+    for _ in range(24):
+        rows = inventory(token)
+        if len(rows) == 1 and rows[0].get("status") == "online":
+            break
+        time.sleep(5)
+    if len(rows) != 1 or type(rows[0].get("id")) is not int or rows[0].get("status") != "online":
+        raise RuntimeError("registered runner identity requires protected reconciliation")
+    marker = root / (name + ".runner-registered")
+    durable(marker, {"schema": "norn.m5-local-guest-runner-registered/v1",
+                     "guestName": name, "runnerId": rows[0]["id"], "runnerName": RUNNER_NAME})
+    return marker
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("intent", "signature", "public-key", "journal-root", "tart",
+                 "runner-archive", "supervisor-ssh-public-key", "supervisor-ssh-private-key"):
+        parser.add_argument("--" + name, required=True)
+    args = parser.parse_args()
+    checked_file(args.public_key, OWNER_PUBLIC_KEY_SHA256)
+    subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
+                    "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
+                   check=True, capture_output=True, timeout=10)
+    token = os.environ.get("M5_GITHUB_ADMIN_TOKEN", "")
+    if not token:
+        raise ValueError("protected repository Administration token is absent")
+    intent = json.loads(Path(args.intent).read_bytes())
+    print(json.dumps({"registeredMarker": str(register(intent, args, token))}, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
