@@ -1,0 +1,77 @@
+name: M5 local guest create
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m5-local-guest-supervisor
+  cancel-in-progress: false
+
+jobs:
+  create:
+    if: github.ref == 'refs/heads/master' && github.ref_protected
+    environment: m5-mini-release-rehearsal
+    runs-on: [self-hosted, macOS, ARM64, norn-m5-supervisor]
+    timeout-minutes: 150
+    env:
+      INTENT: ${{ vars.M5_LOCAL_GUEST_INTENT }}
+      SIGNATURE: ${{ vars.M5_LOCAL_GUEST_SIGNATURE }}
+      PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_PUBLIC_KEY }}
+      TART: ${{ vars.M5_LOCAL_TART }}
+      PACKER: ${{ vars.M5_LOCAL_PACKER }}
+      PLUGIN: ${{ vars.M5_LOCAL_TART_PACKER_PLUGIN }}
+      SOFTNET: ${{ vars.M5_LOCAL_SOFTNET }}
+      IPSW: ${{ vars.M5_LOCAL_IPSW }}
+      VOLUME: ${{ vars.M5_LOCAL_VOLUME }}
+      JOURNAL_ROOT: ${{ vars.M5_LOCAL_GUEST_JOURNAL_ROOT }}
+      SUPERVISOR_SSH_PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_RUNNER_PUBLIC_KEY }}
+      INTENT_VERIFIER: ${{ vars.M5_LOCAL_INTENT_VERIFIER }}
+      NORN_M5_PROTECTED_CONTROLLER: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require exact protected supervisor
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_NAME" == norn-m5-supervisor-01 ]]
+          [[ "$GITHUB_REF" == refs/heads/master && "$GITHUB_REF_PROTECTED" == true ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          for key in INTENT SIGNATURE PUBLIC_KEY TART PACKER PLUGIN SOFTNET IPSW VOLUME JOURNAL_ROOT SUPERVISOR_SSH_PUBLIC_KEY INTENT_VERIFIER; do
+            [[ -n "${!key}" ]]
+          done
+      - name: Reserve exact guest before effects
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-local-guest-controller" reserve \
+            --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
+            --tart "$TART" --packer "$PACKER" --plugin "$PLUGIN" \
+            --softnet "$SOFTNET" --ipsw "$IPSW" --volume "$VOLUME" \
+            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" --intent-verifier "$INTENT_VERIFIER"
+      - name: Create one unqualified guest
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-local-guest-controller" create \
+            --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
+            --tart "$TART" --packer "$PACKER" --plugin "$PLUGIN" \
+            --softnet "$SOFTNET" --ipsw "$IPSW" --volume "$VOLUME" \
+            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" --intent-verifier "$INTENT_VERIFIER"
+      - name: Reconcile exact guest outcome
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-local-guest-controller" reconcile \
+            --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
+            --tart "$TART" --packer "$PACKER" --plugin "$PLUGIN" \
+            --softnet "$SOFTNET" --ipsw "$IPSW" --volume "$VOLUME" \
+            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" --intent-verifier "$INTENT_VERIFIER" | tee "$RUNNER_TEMP/m5-guest-reconcile.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: m5-local-guest-reconcile-${{ github.run_id }}
+          path: ${{ runner.temp }}/m5-guest-reconcile.json
+          if-no-files-found: ignore
+          retention-days: 30

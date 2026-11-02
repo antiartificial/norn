@@ -9,17 +9,30 @@ import pwd
 import re
 import subprocess
 import sys
+import stat
 
 
 ANCHOR = "com.norn.m5.historical"
 RUNNER = "norn-m5-isolated-01"
 REHEARSAL_USER = "norn-m5-rehearsal"
 RUNNER_USER = "norn-m5-runner"
+SSH_HOST_KEY = "/etc/ssh/ssh_host_ed25519_key.pub"
+BOOTSTRAP_CLEANUP = "/var/db/norn-m5-window/bootstrap-cleanup-finished.json"
 
 
 def command(*args):
     result = subprocess.run(args, check=True, capture_output=True, text=True, timeout=10)
     return result.stdout
+
+
+def guest_host_key_sha():
+    info = os.lstat(SSH_HOST_KEY)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+        raise SystemExit("guest SSH host key is unsafe")
+    fields = open(SSH_HOST_KEY, encoding="ascii").read().split()
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        raise SystemExit("guest SSH host key is not Ed25519")
+    return hashlib.sha256((fields[0] + " " + fields[1] + "\n").encode()).hexdigest()
 
 
 def main():
@@ -29,6 +42,30 @@ def main():
         raise SystemExit("M5 runner identity is unexpected")
     rehearsal = pwd.getpwnam(REHEARSAL_USER)
     runner = pwd.getpwnam(RUNNER_USER)
+    cleanup_info = os.lstat(BOOTSTRAP_CLEANUP)
+    if (cleanup_info.st_uid != 0 or not stat.S_ISREG(cleanup_info.st_mode) or
+            stat.S_IMODE(cleanup_info.st_mode) != 0o600):
+        raise SystemExit("M5 bootstrap cleanup receipt is unsafe")
+    cleanup = json.load(open(BOOTSTRAP_CLEANUP, encoding="utf-8"))
+    if (cleanup.get("schema") != "norn.m5-guest-bootstrap-cleanup-finished/v1" or
+            cleanup.get("runnerName") != RUNNER or cleanup.get("adminAccountAbsent") is not True or
+            cleanup.get("adminHomeAbsent") is not True or cleanup.get("remoteLogin") != "off" or
+            cleanup.get("sshListenerAbsent") is not True):
+        raise SystemExit("M5 bootstrap cleanup is incomplete")
+    try:
+        pwd.getpwnam("admin")
+    except KeyError:
+        pass
+    else:
+        raise SystemExit("M5 bootstrap admin account remains")
+    if os.path.lexists("/Users/admin"):
+        raise SystemExit("M5 bootstrap admin home remains")
+    if "off" not in command("/usr/sbin/systemsetup", "-getremotelogin").lower():
+        raise SystemExit("M5 guest Remote Login remains enabled")
+    ssh_listener = subprocess.run(("/usr/sbin/lsof", "-nP", "-iTCP:22", "-sTCP:LISTEN"),
+                                  capture_output=True, text=True, timeout=10)
+    if ssh_listener.returncode not in (0, 1) or ssh_listener.stdout.strip():
+        raise SystemExit("M5 guest SSH listener remains")
     if rehearsal.pw_uid == runner.pw_uid or rehearsal.pw_dir != "/Users/norn-m5-rehearsal":
         raise SystemExit("M5 rehearsal identity is not separate from the runner")
     command("/bin/launchctl", "print", f"gui/{rehearsal.pw_uid}")
@@ -84,6 +121,7 @@ def main():
         "pfRulesSHA256": hashlib.sha256(rules.encode()).hexdigest(),
         "rootRulesSHA256": hashlib.sha256(root_rules.encode()).hexdigest(),
         "routeTableSHA256": hashlib.sha256(routes.encode()).hexdigest(),
+        "sshHostKeySHA256": guest_host_key_sha(),
     }, sort_keys=True))
 
 

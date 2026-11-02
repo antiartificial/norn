@@ -1,0 +1,54 @@
+name: M5 local guest retire
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m5-local-guest-supervisor
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    if: github.ref == 'refs/heads/master' && github.ref_protected
+    environment: m5-mini-release-rehearsal
+    runs-on: [self-hosted, macOS, ARM64, norn-m5-supervisor]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require exact protected supervisor
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_NAME" == norn-m5-supervisor-01 ]]
+          [[ "$GITHUB_REF" == refs/heads/master && "$GITHUB_REF_PROTECTED" == true ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        if: vars.M5_GITHUB_APP_ID != ''
+        id: app-token
+        with:
+          app-id: ${{ vars.M5_GITHUB_APP_ID }}
+          private-key: ${{ secrets.M5_GITHUB_APP_PRIVATE_KEY }}
+          owner: antiartificial
+          repositories: norn
+          permission-administration: read
+      - name: Retire exact signed guest and verify absence
+        env:
+          INTENT: ${{ vars.M5_LOCAL_GUEST_RETIRE_INTENT }}
+          SIGNATURE: ${{ vars.M5_LOCAL_GUEST_RETIRE_SIGNATURE }}
+          PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_PUBLIC_KEY }}
+          JOURNAL_ROOT: ${{ vars.M5_LOCAL_GUEST_JOURNAL_ROOT }}
+          TART: ${{ vars.M5_LOCAL_TART }}
+          NORN_M5_PROTECTED_CONTROLLER: '1'
+          M5_GITHUB_ADMIN_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for key in INTENT SIGNATURE PUBLIC_KEY JOURNAL_ROOT TART; do
+            [[ -n "${!key}" ]]
+          done
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-local-guest-retire" \
+            --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
+            --journal-root "$JOURNAL_ROOT" --tart "$TART"

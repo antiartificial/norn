@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Prepare PF and pinned root helpers inside one disposable macOS guest."""
+
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import platform
+import re
+import stat
+import subprocess
+import tarfile
+import tempfile
+
+
+WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
+CHECKER_SHA256 = "8caa3fa047ed4627a08b52f23c48906867782e6dad24df0f6c216611f2da76e0"
+HARDENING_SHA256 = "d8dedc1c5c9028a0ab77937eb2e09103c07517badfa7442ad26d4fc60d65762e"
+BOOTSTRAP_CLEANUP_SHA256 = "3ee16b6e4606b195f9b8439fc3190d58f77efa38668bbda9f39392c288e54db8"
+INTENT_VERIFIER_SHA256 = "aaa6ceea2a7c5b091ce33467ad13ece3b096bb4fcb3aa50dabb11b3e650cf1a5"
+HISTORICAL_TOOLS = {
+    "mini-historical-copied-state-controller": "c88987d344b826743b05b5761a10f297ecb60ea4092fb7929a728a20ca95b371",
+    "mini-historical-shadow-evidence": "a0e0bf9815c8fc3a562555b686e0d56b2a82853ff09cf63e63a6711e698c9489",
+    "mini-signed-shadow-launchagent-rehearsal": "ecfebca5c57ae13de0e856b8ce6247d3a2f95569cb04289874cb9ccd287bd22c",
+    "platform-release-artifact": "709d3a9a97891dc5fc2e0c7198f7d0406fa50cf9f43cb4ffb3825021c158a0b6",
+    "platform-release-manifest": "e31fec53e51feb37c7616b78fb78677addd6477e31f7adc22b195c5ff8fda961",
+    "mini-private-copy-rehearsal": "2717ddb121145c801d77d2ed4cb301ca0d8ad11f48320ee443a0eb6952042a1c",
+}
+ANCHOR_LINE = 'anchor "com.norn.m5.historical"\n'
+APPLE_FILTER_ANCHOR = '\nanchor "com.apple/*"\n'
+
+
+def command(*args, timeout=20):
+    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=timeout).stdout
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def guest_only():
+    if os.geteuid() != 0 or platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise ValueError("guest preparation requires root on macOS ARM64")
+    model = command("/usr/sbin/sysctl", "-n", "hw.model").strip()
+    version = command("/usr/bin/sw_vers", "-productVersion").strip()
+    if not re.fullmatch(r"VirtualMac[0-9]+,[0-9]+", model) or version != "26.6.2":
+        raise ValueError("guest preparation requires the pinned disposable macOS VM")
+
+
+def install_helper(source, target, expected):
+    source = Path(source)
+    info = source.lstat()
+    if not source.is_absolute() or not stat.S_ISREG(info.st_mode) or digest(source) != expected:
+        raise ValueError("unreviewed guest helper")
+    if target.exists() or target.is_symlink():
+        raise ValueError("guest helper already exists; reconcile before retry")
+    command("/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "755", str(source), str(target))
+    info = target.lstat()
+    if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or digest(target) != expected:
+        raise ValueError("installed guest helper readback differs")
+
+
+def install_historical_bundle(source, target=None):
+    source = Path(source)
+    info = source.lstat()
+    if not source.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+        raise ValueError("historical bundle is unsafe")
+    target = Path(target) if target is not None else Path("/Library/PrivilegedHelperTools/norn-m5-historical")
+    if target.exists() or target.is_symlink():
+        raise ValueError("historical tool bundle already installed")
+    with tarfile.open(source, "r:") as archive:
+        members = archive.getmembers()
+        if {member.name for member in members} != set(HISTORICAL_TOOLS) or len(members) != len(HISTORICAL_TOOLS):
+            raise ValueError("historical tool bundle members differ")
+        for member in members:
+            if not member.isfile() or member.size > 256 * 1024 or member.mode != 0o755:
+                raise ValueError("historical tool bundle entry is unsafe")
+            stream = archive.extractfile(member)
+            if stream is None or hashlib.sha256(stream.read()).hexdigest() != HISTORICAL_TOOLS[member.name]:
+                raise ValueError("historical tool bundle digest differs")
+        target.mkdir(mode=0o755)
+        for member in members:
+            stream = archive.extractfile(member)
+            path = target / member.name
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o755)
+            with os.fdopen(fd, "wb") as output:
+                output.write(stream.read())
+                output.flush()
+                os.fsync(output.fileno())
+            os.chown(path, 0, 0)
+            if digest(path) != HISTORICAL_TOOLS[member.name]:
+                raise ValueError("installed historical tool differs")
+
+
+def pf_with_anchor(original):
+    if ANCHOR_LINE in original:
+        raise ValueError("M5 PF anchor already present; reconcile before retry")
+    if original.count(APPLE_FILTER_ANCHOR) != 1:
+        raise ValueError("unexpected guest PF root filter layout")
+    prefix = original.split(APPLE_FILTER_ANCHOR, 1)[0]
+    for line in prefix.splitlines():
+        rule = line.strip()
+        if rule and not rule.startswith("#") and not rule.startswith((
+                "scrub-anchor ", "nat-anchor ", "rdr-anchor ", "dummynet-anchor ")):
+            raise ValueError("unreviewed PF rule precedes the M5 filter anchor")
+    return original.replace(APPLE_FILTER_ANCHOR, '\n' + ANCHOR_LINE + 'anchor "com.apple/*"\n')
+
+
+def prepare_pf():
+    config = Path("/etc/pf.conf")
+    original = config.read_text()
+    proposed_text = pf_with_anchor(original)
+    backup = Path("/var/db/norn-m5-window/pf.conf.before-m5")
+    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as target:
+        target.write(original)
+        target.flush()
+        os.fsync(target.fileno())
+    with tempfile.NamedTemporaryFile("w", dir="/etc", prefix="pf.conf.m5-", delete=False) as stream:
+        proposed = Path(stream.name)
+        stream.write(proposed_text)
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        os.chmod(proposed, 0o644)
+        command("/sbin/pfctl", "-nf", str(proposed))
+        os.replace(proposed, config)
+    finally:
+        proposed.unlink(missing_ok=True)
+    command("/sbin/pfctl", "-f", str(config))
+    info = command("/sbin/pfctl", "-s", "info")
+    if not re.search(r"^Status:\s+Enabled\b", info, re.M):
+        command("/sbin/pfctl", "-e")
+    rules = command("/sbin/pfctl", "-sr")
+    effective = [line.strip() for line in rules.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    if not effective or not re.fullmatch(r'anchor "?com\.norn\.m5\.historical"?(?: all)?', effective[0]):
+        raise ValueError("M5 PF anchor is not first effective rule")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--window-helper", required=True)
+    parser.add_argument("--isolation-checker", required=True)
+    parser.add_argument("--hardening-helper", required=True)
+    parser.add_argument("--historical-bundle", required=True)
+    parser.add_argument("--bootstrap-cleanup", required=True)
+    parser.add_argument("--intent-verifier", required=True)
+    args = parser.parse_args()
+    guest_only()
+    state = Path("/var/db/norn-m5-window")
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    helper_root = Path("/Library/PrivilegedHelperTools")
+    install_helper(args.window_helper, helper_root / "norn-mini-m5-firewall-window", WINDOW_SHA256)
+    install_helper(args.isolation_checker, helper_root / "norn-mini-m5-isolation-check", CHECKER_SHA256)
+    install_helper(args.hardening_helper, helper_root / "norn-mini-m5-guest-hardening", HARDENING_SHA256)
+    install_helper(args.bootstrap_cleanup, helper_root / "norn-mini-m5-bootstrap-cleanup",
+                   BOOTSTRAP_CLEANUP_SHA256)
+    install_helper(args.intent_verifier, helper_root / "norn-mini-m5-intent-verify",
+                   INTENT_VERIFIER_SHA256)
+    install_historical_bundle(args.historical_bundle)
+    prepare_pf()
+    command("/bin/launchctl", "disable", "system/com.apple.screensharing")
+    disabled = command("/bin/launchctl", "print-disabled", "system")
+    if not re.search(r'"com\.apple\.screensharing"\s*=>\s*disabled', disabled):
+        raise ValueError("Screen Sharing is not disabled")
+    listener = subprocess.run(("/usr/sbin/lsof", "-nP", "-iTCP:5900", "-sTCP:LISTEN"),
+                              capture_output=True, text=True, timeout=10)
+    if listener.returncode not in (0, 1) or listener.stdout.strip():
+        raise ValueError("Screen Sharing still listens on port 5900")
+    print("guest PF/helpers prepared; account and GUI qualification still required")
+
+
+if __name__ == "__main__":
+    main()
