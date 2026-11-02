@@ -21,20 +21,43 @@ def pf(*args):
                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
+def boot_id():
+    value = subprocess.run(("/usr/sbin/sysctl", "-n", "kern.boottime"), check=True,
+                           capture_output=True, text=True, timeout=5).stdout
+    match = re.search(r"\bsec\s*=\s*([0-9]+)", value)
+    if not match:
+        raise SystemExit("kernel boot identity is unavailable")
+    return match.group(1)
+
+
+def admit():
+    if CLAIM.exists():
+        raise SystemExit("prior M5 firewall claim requires protected boot reconciliation")
+    rules = subprocess.run(("/sbin/pfctl", "-a", ANCHOR, "-sr"), check=True,
+                           capture_output=True, text=True, timeout=10).stdout
+    if rules.strip():
+        raise SystemExit("M5 firewall anchor is not empty before admission")
+
+
 def main():
-    if os.geteuid() != 0 or len(sys.argv) != 3 or sys.argv[1] not in ("enable", "disable"):
-        raise SystemExit("root-only usage: mini-m5-firewall-window enable|disable <run-id>")
+    if os.geteuid() != 0 or len(sys.argv) != 3 or sys.argv[1] not in ("admit", "enable", "disable"):
+        raise SystemExit("root-only usage: mini-m5-firewall-window admit|enable|disable <run-id>")
     action, run_id = sys.argv[1:]
     if not re.fullmatch(r"[0-9]{1,20}", run_id):
         raise SystemExit("invalid protected run id")
     info = STATE_DIR.stat()
     if info.st_uid != 0 or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
         raise SystemExit("firewall state directory is unsafe")
-    if action == "enable":
+    if action == "admit":
+        admit()
+    elif action == "enable":
+        admit()
+        current_boot = boot_id()
         fd = os.open(CLAIM, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as output:
-                json.dump({"schema": "norn.m5-firewall-window/v1", "runId": run_id}, output)
+                json.dump({"schema": "norn.m5-firewall-window/v2", "runId": run_id,
+                           "bootId": current_boot}, output)
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())
@@ -62,7 +85,8 @@ def main():
             if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
                 raise SystemExit("firewall claim is unsafe")
             claim = json.load(source)
-        if claim != {"schema": "norn.m5-firewall-window/v1", "runId": run_id}:
+        if claim != {"schema": "norn.m5-firewall-window/v2", "runId": run_id,
+                     "bootId": boot_id()}:
             raise SystemExit("firewall claim does not match this run")
         pf("-a", ANCHOR, "-F", "rules")
         CLAIM.unlink()

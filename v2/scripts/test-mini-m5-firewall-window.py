@@ -39,6 +39,8 @@ class FirewallWindowTest(TestCase):
             mock.patch.object(window, 'CLAIM', state / 'claim.json'),
             mock.patch.object(window.os, 'geteuid', return_value=0),
             mock.patch.object(window, 'pf'),
+            mock.patch.object(window, 'boot_id', return_value='123'),
+            mock.patch.object(window.subprocess, 'run', return_value=SimpleNamespace(stdout='')),
         )
         for patcher in patchers:
             patcher.start()
@@ -55,7 +57,7 @@ class FirewallWindowTest(TestCase):
             mock.call('-a', window.ANCHOR, '-f', str(window.STATE_DIR / 'rules-41387901422')),
             mock.call('-F', 'states'),
         ])
-        with self.assertRaises(FileExistsError):
+        with self.assertRaisesRegex(SystemExit, 'protected boot reconciliation'):
             self.run_action('enable')
         with self.assertRaisesRegex(SystemExit, 'does not match'):
             self.run_action('disable', '41387901423')
@@ -67,6 +69,15 @@ class FirewallWindowTest(TestCase):
         with self.assertRaisesRegex(SystemExit, 'invalid protected run id'):
             self.run_action('enable', 'bad')
         self.assertFalse(window.CLAIM.exists())
+
+    def test_boot_claim_blocks_new_admission_and_cross_boot_disable(self):
+        self.run_action('enable')
+        with self.assertRaisesRegex(SystemExit, 'protected boot reconciliation'):
+            self.run_action('admit')
+        with mock.patch.object(window, 'boot_id', return_value='456'):
+            with self.assertRaisesRegex(SystemExit, 'does not match'):
+                self.run_action('disable')
+        self.assertTrue(window.CLAIM.exists())
 
 
 if __name__ == '__main__':

@@ -31,6 +31,7 @@ def main():
     runner = pwd.getpwnam(RUNNER_USER)
     if rehearsal.pw_uid == runner.pw_uid or rehearsal.pw_dir != "/Users/norn-m5-rehearsal":
         raise SystemExit("M5 rehearsal identity is not separate from the runner")
+    command("/bin/launchctl", "print", f"gui/{rehearsal.pw_uid}")
     if not re.search(r"^Status:\s+Enabled\b", command("/sbin/pfctl", "-s", "info"), re.M):
         raise SystemExit("packet filter is disabled")
     root_rules = command("/sbin/pfctl", "-sr")
@@ -74,6 +75,7 @@ def main():
         "runnerUser": RUNNER_USER,
         "rehearsalUser": REHEARSAL_USER,
         "rehearsalUID": rehearsal.pw_uid,
+        "guiDomain": f"gui/{rehearsal.pw_uid}",
         "pfAnchor": ANCHOR,
         "pfEnabled": True,
         "hostOutbound": "loopback-only",
