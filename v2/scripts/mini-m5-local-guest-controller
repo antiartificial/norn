@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -31,10 +32,11 @@ def digest(path):
     return h.hexdigest()
 
 
-def checked_file(path, expected_digest, expected_size=None):
+def checked_file(path, expected_digest, expected_size=None, required_owner=None):
     path = Path(path)
     info = path.lstat()
-    if not path.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+    owner = os.geteuid() if required_owner is None else required_owner
+    if not path.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022:
         raise ValueError("tool or IPSW path is not an owner-controlled regular file")
     if expected_size is not None and info.st_size != expected_size:
         raise ValueError("IPSW size differs from official response")
@@ -82,7 +84,9 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
     checked_file(tart, TART_SHA256)
     checked_file(packer, PACKER_SHA256)
     checked_file(plugin, PLUGIN_SHA256)
-    checked_file(softnet, SOFTNET_SHA256)
+    checked_file(softnet, SOFTNET_SHA256, required_owner=0)
+    if not Path(softnet).stat().st_mode & stat.S_ISUID:
+        raise ValueError("Softnet must be root installed with setuid")
     checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
     rows = tart_inventory(tart)
     if any(row["Name"] == intent["guestName"] for row in rows):
@@ -116,9 +120,113 @@ def reserve(journal_root, intent, evidence):
     return path
 
 
+def protected_run(intent):
+    expected = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/master",
+                "GITHUB_REF_PROTECTED": "true", "RUNNER_NAME": "norn-m5-supervisor-01",
+                "GITHUB_RUN_ID": intent["runId"], "GITHUB_SHA": intent["sourceSHA"],
+                "NORN_M5_PROTECTED_CONTROLLER": "1"}
+    if any(os.environ.get(key) != value for key, value in expected.items()):
+        raise ValueError("guest create requires the exact protected supervisor run")
+
+
+def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw):
+    protected_run(intent)
+    root = Path(journal_root)
+    path = root / (intent["guestName"] + ".json")
+    record = json.loads(path.read_bytes())
+    if (record.get("schema") != SCHEMA or record.get("state") != "create-reserved" or
+            record.get("intent") != intent or record.get("preflight") != evidence):
+        raise ValueError("reservation does not match exact fresh admission")
+    plugin_home = root / (intent["guestName"] + ".packer-plugins")
+    plugin_home.mkdir(mode=0o700)
+    plugin_env = {"PACKER_PLUGIN_PATH": str(plugin_home),
+                  "HOME": str(root), "TMPDIR": str(root), "USER": os.environ.get("USER", ""),
+                  "LANG": "en_US.UTF-8",
+                  "PATH": str(Path(tart).parent) + ":" + str(Path(softnet).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"}
+    subprocess.run((str(packer), "plugins", "install", "-path", str(plugin),
+                    "github.com/cirruslabs/tart"), env=plugin_env,
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    template = root / (intent["guestName"] + ".pkr.hcl")
+    subprocess.run((str(Path(__file__).with_name("mini-m5-packer-template")),
+                    "--output", str(template)), check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    env = {**plugin_env, "PKR_VAR_m5_ipsw_path": str(ipsw),
+           "PKR_VAR_m5_guest_name": intent["guestName"],
+           "PKR_VAR_m5_bootstrap_password": "validation-only"}
+    subprocess.run((str(packer), "validate", str(template)), env=env, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    # The marker is the durable effect boundary. No retry is allowed after it.
+    marker = root / (intent["guestName"] + ".create-started")
+    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps({"runId": intent["runId"], "guestName": intent["guestName"],
+                                 "templateSHA256": digest(template)}, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    bootstrap = secrets.token_urlsafe(36)
+    credential = root / (intent["guestName"] + ".bootstrap-secret")
+    fd = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(bootstrap + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    env["PKR_VAR_m5_bootstrap_password"] = bootstrap
+    env["TART_NO_AUTO_PRUNE"] = ""
+    try:
+        subprocess.run((str(packer), "build", str(template)), env=env, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=7200)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("guest create outcome requires protected reconciliation") from exc
+    rows = [row for row in tart_inventory(tart) if row["Name"] == intent["guestName"]]
+    if len(rows) != 1 or rows[0].get("Source") != "local" or rows[0].get("OS") != "darwin":
+        raise RuntimeError("created guest identity requires protected reconciliation")
+    receipt = root / (intent["guestName"] + ".created.json")
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"schema": "norn.m5-local-guest-created-unqualified/v1", "runId": intent["runId"],
+                   "guestName": intent["guestName"], "templateSHA256": digest(template),
+                   "inventory": rows[0]}, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return receipt
+
+
+def reconcile(journal_root, intent, tart):
+    protected_run(intent)
+    root = Path(journal_root)
+    info = root.lstat()
+    if not root.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("journal root must be owner-only")
+    name = intent["guestName"]
+    record = json.loads((root / (name + ".json")).read_bytes())
+    if record.get("schema") != SCHEMA or record.get("intent") != intent:
+        raise ValueError("journal differs from signed intent")
+    marker = root / (name + ".create-started")
+    if not marker.is_file():
+        return {"schema": "norn.m5-local-guest-reconciliation/v1", "state": "reserved-no-effect",
+                "runId": intent["runId"], "guestName": name}
+    rows = [row for row in tart_inventory(tart) if row["Name"] == name]
+    if len(rows) > 1:
+        raise ValueError("duplicate guest inventory")
+    state = "created-unqualified" if len(rows) == 1 else "create-outcome-ambiguous"
+    return {"schema": "norn.m5-local-guest-reconciliation/v1", "state": state,
+            "runId": intent["runId"], "guestName": name, "inventory": rows}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("preflight", "reserve"))
+    parser.add_argument("mode", choices=("preflight", "reserve", "create", "reconcile"))
     for name in ("intent", "signature", "public-key", "tart", "packer", "plugin",
                  "softnet", "ipsw", "volume"):
         parser.add_argument("--" + name, required=True)
@@ -128,15 +236,27 @@ def main():
                     "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
                    check=True, capture_output=True, timeout=10)
     intent = json.loads(Path(args.intent).read_bytes())
+    if args.mode == "reconcile":
+        if not args.journal_root:
+            parser.error("reconcile requires --journal-root")
+        checked_file(args.tart, TART_SHA256)
+        print(json.dumps(reconcile(args.journal_root, intent, args.tart), sort_keys=True,
+                         separators=(",", ":")))
+        return
     evidence = preflight(intent, args.tart, args.packer, args.plugin, args.softnet,
                          args.ipsw, args.volume)
     evidence["intentSHA256"] = digest(args.intent)
     evidence["signatureSHA256"] = digest(args.signature)
     evidence["publicKeySHA256"] = digest(args.public_key)
-    if args.mode == "reserve":
+    if args.mode in ("reserve", "create"):
         if not args.journal_root:
-            parser.error("reserve requires --journal-root")
-        evidence["journal"] = str(reserve(args.journal_root, intent, evidence))
+            parser.error("reservation and create require --journal-root")
+        if args.mode == "reserve":
+            evidence["journal"] = str(reserve(args.journal_root, intent, evidence))
+        else:
+            evidence["createdUnqualifiedReceipt"] = str(create(
+                args.journal_root, intent, evidence, args.tart, args.packer, args.plugin,
+                args.softnet, args.ipsw))
     print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
 
 

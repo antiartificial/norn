@@ -15,6 +15,22 @@ loader.exec_module(controller)
 
 
 class ReservationTests(unittest.TestCase):
+    def test_create_requires_exact_protected_runner_context(self):
+        with patch.dict(controller.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "exact protected supervisor"):
+                controller.protected_run({"runId": "12345", "sourceSHA": "a" * 40})
+
+    def test_reconcile_reports_reserved_without_guest_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            intent = {"guestName": "norn-m5-12345", "runId": "12345", "sourceSHA": "a" * 40}
+            controller.reserve(root, intent, {})
+            with patch.object(controller, "protected_run"), patch.object(controller, "tart_inventory") as inventory:
+                result = controller.reconcile(root, intent, "/bin/false")
+            self.assertEqual(result["state"], "reserved-no-effect")
+            inventory.assert_not_called()
+
     def test_one_use_owner_only_journal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
