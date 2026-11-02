@@ -43,7 +43,7 @@ jobs:
           NORN_M5_HISTORICAL_ISOLATED: '1'
           NORN_M5_SOURCE_SHA: ${{ inputs.source_sha }}
           NORN_M5_TARGET_SHA: ${{ inputs.target_sha }}
-          NORN_M5_ISOLATION_CHECK: ${{ vars.M5_ISOLATION_CHECK }}
+          NORN_M5_ISOLATION_CHECK: /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check
           NORN_M5_HISTORICAL_RECEIPT_DIR: ${{ vars.M5_HISTORICAL_RECEIPT_DIR }}
           NORN_REHEARSAL_POSTGRES_BIN: ${{ vars.M5_POSTGRES_BIN }}
           PROOF: ${{ vars.M5_BACKUP_PROOF }}
