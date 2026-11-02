@@ -2,6 +2,8 @@ module norn/v2/api
 
 go 1.26.10
 
+godebug multipathtcp=0
+
 require (
 	filippo.io/age v1.3.2
 	github.com/go-chi/chi/v5 v5.3.0
