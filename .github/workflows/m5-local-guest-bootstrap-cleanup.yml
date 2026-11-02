@@ -36,7 +36,7 @@ jobs:
           info = os.lstat(path)
           assert info.st_uid == 0 and stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o022
           with open(path, 'rb') as source:
-              assert hashlib.sha256(source.read()).hexdigest() == '9a2fb3025bdf67c735de355460d551cdc4f45f9274c6363c15efb9407df707d8'
+              assert hashlib.sha256(source.read()).hexdigest() == '44427347c24f21d590f2adf636e407fb17feca1047c5b915b280b356a2377ed3'
           PY
       - name: Remove bootstrap SSH and admin account inside guest
         env:

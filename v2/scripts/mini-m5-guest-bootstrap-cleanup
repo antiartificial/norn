@@ -39,6 +39,46 @@ def durable(path, value):
         os.fsync(stream.fileno())
 
 
+def retire_home(home, recorded):
+    info = home.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_dev != recorded["homeDevice"] or
+            info.st_ino != recorded["homeInode"] or info.st_uid != recorded["homeUID"]):
+        raise ValueError("guest bootstrap home changed")
+    root = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    count = [0]
+
+    def remove_children(fd, depth):
+        if depth > 32:
+            raise ValueError("guest bootstrap home exceeds depth limit")
+        for name in os.listdir(fd):
+            count[0] += 1
+            if count[0] > 100000:
+                raise ValueError("guest bootstrap home exceeds entry limit")
+            item = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if item.st_dev != info.st_dev:
+                raise ValueError("guest bootstrap home crosses a filesystem")
+            if stat.S_ISDIR(item.st_mode):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    opened = os.fstat(child)
+                    if opened.st_dev != item.st_dev or opened.st_ino != item.st_ino:
+                        raise ValueError("guest bootstrap home entry moved")
+                    remove_children(child, depth + 1)
+                finally:
+                    os.close(child)
+                os.rmdir(name, dir_fd=fd)
+            else:
+                os.unlink(name, dir_fd=fd)
+
+    try:
+        if os.fstat(root).st_ino != info.st_ino:
+            raise ValueError("guest bootstrap home moved")
+        remove_children(root, 0)
+    finally:
+        os.close(root)
+    os.rmdir(home)
+
+
 def guest_guard(run_id):
     if (os.geteuid() != 0 or platform.system() != "Darwin" or platform.machine() != "arm64" or
             not re.fullmatch(r"[0-9]{1,20}", run_id) or
@@ -132,6 +172,7 @@ def cleanup(run_id, intent_sha):
             raise ValueError("guest bootstrap SSH authorization is unsafe")
         durable(STARTED, {"schema": "norn.m5-guest-bootstrap-cleanup-started/v1", "runId": run_id,
                           "runnerName": RUNNER, "intentSHA256": intent_sha,
+                          "homeDevice": info.st_dev, "homeInode": info.st_ino, "homeUID": info.st_uid,
                           "authorizedKeySHA256": hashlib.sha256(authorized.read_bytes()).hexdigest()})
     if authorized.exists() or authorized.is_symlink():
         info = authorized.lstat()
@@ -160,7 +201,7 @@ def cleanup(run_id, intent_sha):
     else:
         raise ValueError("bootstrap admin account remains")
     if home.exists() or home.is_symlink():
-        raise ValueError("bootstrap admin home remains")
+        retire_home(home, json.loads(STARTED.read_bytes()))
     receipt = {"schema": "norn.m5-guest-bootstrap-cleanup-finished/v1", "runId": run_id,
                "runnerName": RUNNER, "adminAccountAbsent": True, "adminHomeAbsent": True,
                "remoteLogin": "off", "sshListenerAbsent": True}
