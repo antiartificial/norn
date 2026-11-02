@@ -26,10 +26,12 @@ a different trust anchor.
 template. It pins the Tart plugin to 1.21.0, uses an already verified local
 IPSW, binds a run-specific guest name and random bootstrap password, starts
 the guest with Softnet, and omits upstream broad sudo, auto-login, and
-Gatekeeper changes. The derived template still creates only a temporary
-bootstrap account. The protected guest controller must harden that account
-and prove network, GUI, and root-helper state before admitting retained inputs
-or registering the M5 GitHub runner.
+Gatekeeper changes. Its bounded provisioner checks for `VirtualMac*` on
+macOS 26.6.2, installs pinned PF helpers inside the guest, places the M5
+anchor first in guest PF root rules, and disables Screen Sharing. The derived
+template still creates only a temporary bootstrap account. A later protected
+controller must harden that account and prove network, GUI, and root-helper
+state before admitting retained inputs or registering the M5 GitHub runner.
 
 ## Controller sequence
 

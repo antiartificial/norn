@@ -19,6 +19,9 @@ TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
 PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5aa"
 PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
+GUEST_PREPARE_SHA256 = "4397cad89354678a2cce06da137bbda225e085cfe75fde7e3f23184c1e1c2512"
+WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
+CHECKER_SHA256 = "d4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd"
 IPSW_SIZE = 19772231540
 IPSW_SHA256 = "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95"
 OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
@@ -90,6 +93,9 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
     if not Path(softnet).stat().st_mode & stat.S_ISUID:
         raise ValueError("Softnet must be root installed with setuid")
     checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
+    checked_file(Path(__file__).with_name("mini-m5-guest-prepare"), GUEST_PREPARE_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-firewall-window"), WINDOW_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-isolation-check"), CHECKER_SHA256)
     rows = tart_inventory(tart)
     if any(row["Name"] == intent["guestName"] for row in rows):
         raise ValueError("run guest already exists")
@@ -154,7 +160,10 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
     env = {**plugin_env, "PKR_VAR_m5_ipsw_path": str(ipsw),
            "PKR_VAR_m5_guest_name": intent["guestName"],
-           "PKR_VAR_m5_bootstrap_password": "validation-only"}
+           "PKR_VAR_m5_bootstrap_password": "validation-only",
+           "PKR_VAR_m5_guest_prepare_path": str(Path(__file__).with_name("mini-m5-guest-prepare")),
+           "PKR_VAR_m5_window_helper_path": str(Path(__file__).with_name("mini-m5-firewall-window")),
+           "PKR_VAR_m5_checker_helper_path": str(Path(__file__).with_name("mini-m5-isolation-check"))}
     subprocess.run((str(packer), "validate", str(template)), env=env, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     # The marker is the durable effect boundary. No retry is allowed after it.
