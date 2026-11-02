@@ -73,3 +73,40 @@ Host with a 24-hour minimum allocation, account quota, AMI, subnet, and an
 account/region quote. MacStadium requires account inventory and a portal/API
 quote. These values must be supplied and verified before an executable create
 lane is enabled.
+
+## Local macOS guest candidate
+
+The current Apple Silicon workstation can supervise a disposable macOS guest
+without changing its own PF rules. Read-only inventory on 2026-11-02 showed
+32 GiB RAM, about 130 GiB free disk, and UTM installed, but UTM's CLI has no
+create command and the only UTM guest is HaikuOS. No macOS guest, local IPSW,
+or Norn M5 runner exists. The local path therefore needs its own protected
+guest provisioner; the active host cannot serve as the rehearsal runner.
+
+Use Tart and its Packer plugin as the candidate controller adapter. Pin the
+Tart/Packer/plugin binaries and the official Apple IPSW URL and content hash;
+the current matching IPSW is
+`https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw`.
+Its HEAD response reported 19,772,231,540 bytes. Reserve a 50 GiB guest disk,
+8 GiB RAM, four CPUs, and a host free-space floor before creation. The
+controller must run from an exact signed protected invocation, create a
+one-use journal before `tart create`/Packer, and reconcile the exact guest name
+and disk path after any uncertain result. It must not let Tart prune unrelated
+VMs or caches. No host directory is mounted into the guest.
+
+The published Cirrus Packer recipe automates Setup Assistant from this IPSW,
+but its default `admin/admin`, broad sudo, and disabled Gatekeeper are only a
+bootstrap state. Before transferring historical inputs or registering a
+GitHub runner, the controller must replace the bootstrap identity, install
+the restricted accounts/sudoers/root helpers, and prove the exact guest GUI
+domain. Start the guest with Tart Softnet and attest that the guest cannot
+reach host Mini/Xenon/Fleet addresses or private production routes while it
+can reach GitHub for runner registration. Keep the PF deny window wholly
+inside the guest. Qualification and restore must run on the guest runner;
+revoke that runner, stop/delete only the journaled guest, and prove both guest
+and runner absent at retirement. Do not use the workstation's existing
+external-Mac finalizer runner for M5 effects.
+
+This is a candidate, not a passing host qualification. The controller and its
+one-use journal, pinned binaries/IPSW digest, and guest network/readback proof
+must be implemented before the first guest effect.
