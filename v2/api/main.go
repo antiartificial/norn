@@ -996,9 +996,8 @@ func main() {
 func pairingOnlyHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		root := "/api/v1/fleet/platform-operator/enrollments"
-		allowed := (r.Method == http.MethodPost && (r.URL.Path == root || r.URL.Path == root+"/approve" ||
-			(strings.HasPrefix(r.URL.Path, root+"/") && strings.HasSuffix(r.URL.Path, "/exchange")))) ||
-			(r.Method == http.MethodGet && r.URL.Path == root)
+		allowed := r.Method == http.MethodPost && (r.URL.Path == root || r.URL.Path == root+"/approve" ||
+			(strings.HasPrefix(r.URL.Path, root+"/") && strings.HasSuffix(r.URL.Path, "/exchange")))
 		if !allowed {
 			http.NotFound(w, r)
 			return

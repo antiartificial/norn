@@ -16,7 +16,7 @@ func TestPairingLoopbackListenerOnlyForwardsPairingRoutes(t *testing.T) {
 		want         int
 	}{
 		{http.MethodPost, "/api/v1/fleet/platform-operator/enrollments", http.StatusAccepted},
-		{http.MethodGet, "/api/v1/fleet/platform-operator/enrollments", http.StatusAccepted},
+		{http.MethodGet, "/api/v1/fleet/platform-operator/enrollments", http.StatusNotFound},
 		{http.MethodPost, "/api/v1/fleet/platform-operator/enrollments/approve", http.StatusAccepted},
 		{http.MethodPost, "/api/v1/fleet/platform-operator/enrollments/abc/exchange", http.StatusAccepted},
 		{http.MethodPost, "/api/v1/auth/revoke", http.StatusNotFound},
