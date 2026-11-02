@@ -107,6 +107,14 @@ revoke that runner, stop/delete only the journaled guest, and prove both guest
 and runner absent at retirement. Do not use the workstation's existing
 external-Mac finalizer runner for M5 effects.
 
-This is a candidate, not a passing host qualification. The controller and its
-one-use journal, pinned binaries/IPSW digest, and guest network/readback proof
-must be implemented before the first guest effect.
+The `mini-m5-local-guest-controller` source now verifies a signed exact local
+intent, pinned Tart executable and fully downloaded IPSW, host capacity, and
+the absence of the exact run VM in Tart's machine-readable inventory. Its
+`reserve` mode creates an owner-only, exclusive, fsynced one-use journal and
+retains intent/signature/key digests. It has no create, qualify, or destroy
+mode yet. The journal is intentionally not a license to run `tart` or Packer
+manually.
+
+This is a candidate, not a passing host qualification. Packer's automated
+Setup Assistant route needs a reviewed template, pinned Packer/plugin/Softnet
+binaries, and a guest hardening/readback controller before the first VM effect.

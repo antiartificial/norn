@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Protected local M5 guest preflight and one-use create reservation."""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import stat
+import subprocess
+
+
+TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
+IPSW_SIZE = 19772231540
+VM_PREFIX = "norn-m5-"
+SCHEMA = "norn.m5-local-guest-reservation/v1"
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def checked_file(path, expected_digest, expected_size=None):
+    path = Path(path)
+    info = path.lstat()
+    if not path.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise ValueError("tool or IPSW path is not an owner-controlled regular file")
+    if expected_size is not None and info.st_size != expected_size:
+        raise ValueError("IPSW size differs from official response")
+    if digest(path) != expected_digest:
+        raise ValueError("tool or IPSW digest mismatch")
+
+
+def tart_inventory(tart):
+    result = subprocess.run((str(tart), "list", "--source", "local", "--format", "json"),
+                            check=True, capture_output=True, text=True, timeout=15)
+    value = json.loads(result.stdout)
+    if not isinstance(value, list) or any(not isinstance(row, dict) or not isinstance(row.get("Name"), str)
+                                          for row in value):
+        raise ValueError("Tart inventory is ambiguous")
+    return value
+
+
+def preflight(intent, tart, ipsw, volume):
+    required = {"schema", "runId", "sourceSHA", "guestName", "ipswSHA256", "tartSHA256",
+                "cpuCount", "memoryGiB", "diskGiB", "retireBy"}
+    if set(intent) != required or intent["schema"] != "norn.m5-local-guest-intent/v1":
+        raise ValueError("unexpected local guest intent")
+    run_id = intent["runId"]
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9]{1,20}", run_id):
+        raise ValueError("invalid run ID")
+    if intent["guestName"] != VM_PREFIX + run_id or not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]):
+        raise ValueError("intent is not run/source bound")
+    if intent["tartSHA256"] != TART_SHA256 or not re.fullmatch(r"[0-9a-f]{64}", intent["ipswSHA256"]):
+        raise ValueError("unreviewed tool or IPSW")
+    if (type(intent["cpuCount"]) is not int or intent["cpuCount"] != 4 or
+            type(intent["memoryGiB"]) is not int or intent["memoryGiB"] != 8 or
+            type(intent["diskGiB"]) is not int or intent["diskGiB"] != 50):
+        raise ValueError("unreviewed guest capacity")
+    expiry = datetime.fromisoformat(intent["retireBy"].replace("Z", "+00:00"))
+    if expiry.tzinfo != timezone.utc or expiry <= datetime.now(timezone.utc):
+        raise ValueError("guest intent expired")
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise ValueError("local supervisor must be macOS ARM64")
+    memory = int(subprocess.run(("/usr/sbin/sysctl", "-n", "hw.memsize"), check=True,
+                                capture_output=True, text=True, timeout=5).stdout)
+    if memory < 24 * 1024**3:
+        raise ValueError("insufficient host memory")
+    if shutil.disk_usage(volume).free < 80 * 1024**3:
+        raise ValueError("insufficient host disk headroom")
+    checked_file(tart, TART_SHA256)
+    checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
+    rows = tart_inventory(tart)
+    if any(row["Name"] == intent["guestName"] for row in rows):
+        raise ValueError("run guest already exists")
+    return {"schema": "norn.m5-local-guest-preflight/v1", "runId": run_id,
+            "guestName": intent["guestName"], "tartInventorySHA256": hashlib.sha256(
+                json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "ipswSHA256": intent["ipswSHA256"], "sourceSHA": intent["sourceSHA"]}
+
+
+def reserve(journal_root, intent, evidence):
+    root = Path(journal_root)
+    info = root.lstat()
+    if not root.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("journal root must be owner-only")
+    if not isinstance(intent.get("guestName"), str) or not re.fullmatch(r"norn-m5-[0-9]{1,20}", intent["guestName"]):
+        raise ValueError("invalid reserved guest identity")
+    path = root / (intent["guestName"] + ".json")
+    record = {"schema": SCHEMA, "state": "create-reserved", "intent": intent, "preflight": evidence}
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(record, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=("preflight", "reserve"))
+    for name in ("intent", "signature", "public-key", "tart", "ipsw", "volume"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--journal-root")
+    args = parser.parse_args()
+    subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
+                    "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
+                   check=True, capture_output=True, timeout=10)
+    intent = json.loads(Path(args.intent).read_bytes())
+    evidence = preflight(intent, args.tart, args.ipsw, args.volume)
+    evidence["intentSHA256"] = digest(args.intent)
+    evidence["signatureSHA256"] = digest(args.signature)
+    evidence["publicKeySHA256"] = digest(args.public_key)
+    if args.mode == "reserve":
+        if not args.journal_root:
+            parser.error("reserve requires --journal-root")
+        evidence["journal"] = str(reserve(args.journal_root, intent, evidence))
+    print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()
