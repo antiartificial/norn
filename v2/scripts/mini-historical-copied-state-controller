@@ -9,17 +9,45 @@ proof=$1 dump=$2 old_receipt=$3 source_release=$4 target_release=$5 public_key=$
 [[ -z ${NORN_DATABASE_URL:-} && -z ${NORN_AUDIT_SIGNING_KEY:-} && -z ${NORN_API_TOKEN:-} && -z ${DIGITALOCEAN_TOKEN:-} ]] || {
   echo 'production credentials are forbidden in historical rehearsal' >&2; exit 2;
 }
-[[ ${NORN_M5_ISOLATION_CHECK:-} == /* && -x ${NORN_M5_ISOLATION_CHECK:-} && ! -L ${NORN_M5_ISOLATION_CHECK:-} ]] || {
+python3 - <<'PY'
+import os, re
+for name, value in os.environ.items():
+    if value and re.search(r'(?:TOKEN|PASSWORD|PRIVATE_KEY|SECRET|CREDENTIAL|DATABASE_URL|SSH_AUTH_SOCK)$', name):
+        raise SystemExit('credential-bearing environment variable is forbidden: ' + name)
+PY
+[[ ${NORN_M5_ISOLATION_CHECK:-} == /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check && \
+   -x ${NORN_M5_ISOLATION_CHECK:-} && ! -L ${NORN_M5_ISOLATION_CHECK:-} ]] || {
   echo 'host isolation checker is unavailable' >&2; exit 2;
 }
 ISOLATION_CHECK="$NORN_M5_ISOLATION_CHECK" python3 - <<'PY'
-import os, stat
+import hashlib, os, stat
 path = os.environ['ISOLATION_CHECK']
+for parent in ('/', '/Library', '/Library/PrivilegedHelperTools'):
+    parent_info = os.lstat(parent)
+    if parent_info.st_uid != 0 or not stat.S_ISDIR(parent_info.st_mode) or stat.S_IMODE(parent_info.st_mode) & 0o022:
+        raise SystemExit('isolation checker parent is mutable by the runner')
 info = os.stat(path, follow_symlinks=False)
 if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o022:
     raise SystemExit('isolation checker must be root-owned and immutable to the runner')
+with open(path, 'rb') as source:
+    digest = hashlib.sha256(source.read()).hexdigest()
+if digest != '5a7d3c4871601a83fffefdfa4034c56903555879ba8cabf4c4d1f7cb30ee6c6c':
+    raise SystemExit('isolation checker differs from reviewed source')
 PY
-"$NORN_M5_ISOLATION_CHECK"
+[[ ${RUNNER_NAME:-} == norn-m5-isolated-01 ]] || { echo 'dedicated runner identity is required' >&2; exit 2; }
+check_isolation() {
+  sudo -n "$NORN_M5_ISOLATION_CHECK" "$RUNNER_NAME" | python3 -c '
+import json,sys
+value=json.load(sys.stdin)
+assert value["schema"] == "norn.m5-isolated-runner-attestation/v1"
+assert value["runner"] == "norn-m5-isolated-01" and value["pfEnabled"] is True
+assert value["pfAnchor"] == "com.norn.m5.historical"
+assert value["deniedNetworks"] == ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fd00::/8"]
+for name in ("pfRulesSHA256", "rootRulesSHA256", "routeTableSHA256"):
+    assert len(value[name]) == 64
+print(json.dumps(value, sort_keys=True))'
+}
+isolation_before=$(check_isolation)
 source_sha=${NORN_M5_SOURCE_SHA:-}
 target_sha=${NORN_M5_TARGET_SHA:-}
 [[ $source_sha =~ ^[0-9a-f]{40}$ && $target_sha =~ ^[0-9a-f]{40}$ ]] || exit 2
@@ -28,6 +56,31 @@ target_sha=${NORN_M5_TARGET_SHA:-}
   echo 'historical rehearsal is pinned to the recorded v2-to-v3 transition' >&2; exit 2;
 }
 [[ $(basename "$source_release") == "$source_sha" && $(basename "$target_release") == "$target_sha" ]] || exit 2
+EXPECTED_PROOF_SHA256=6d24389b1aab4bf8278ea42654af5af13ba50eaccab917459093148813b2518c
+EXPECTED_DUMP_SHA256=10d29a777903de941fcd86254fe82473d221d3f7571f4eb0fde5855be1baeeb3
+EXPECTED_OLD_RECEIPT_SHA256=ec18f14d0edd0215cff94480ecc40f5de14f59cb5719361bf0637dd78f3ca2ae
+EXPECTED_RELEASE_KEY_SHA256=05144c7584b005c95e95d05d5e5bff06676f456f37dbd99bf6b09849c6c2855c
+PROOF="$proof" DUMP="$dump" OLD_RECEIPT="$old_receipt" PUBLIC_KEY="$public_key" \
+EXPECTED_PROOF_SHA256="$EXPECTED_PROOF_SHA256" EXPECTED_DUMP_SHA256="$EXPECTED_DUMP_SHA256" \
+EXPECTED_OLD_RECEIPT_SHA256="$EXPECTED_OLD_RECEIPT_SHA256" \
+EXPECTED_RELEASE_KEY_SHA256="$EXPECTED_RELEASE_KEY_SHA256" python3 - <<'PY'
+import hashlib, os, stat
+for label in ('PROOF', 'DUMP', 'OLD_RECEIPT', 'PUBLIC_KEY'):
+    path = os.environ[label]
+    if not os.path.isabs(path):
+        raise SystemExit(f'{label} must be absolute')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
+            raise SystemExit(f'{label} is not an owner-controlled regular file')
+        hasher = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            hasher.update(chunk)
+        digest = hasher.hexdigest()
+    if digest != os.environ['EXPECTED_' + ('RELEASE_KEY' if label == 'PUBLIC_KEY' else label) + '_SHA256']:
+        raise SystemExit(f'{label} differs from the reviewed historical input')
+PY
 for release in "$source_release" "$target_release"; do
   [[ $release == /* && -d $release && ! -L $release ]] || exit 2
   [[ $($script_dir/platform-release-manifest verify --release "$release" --expected-sha "$(basename "$release")") == signed ]] || exit 1
@@ -47,7 +100,8 @@ export NORN_M5_SIGNED_SHADOW_REHEARSAL=1
 export NORN_M5_SHADOW_RECEIPT="$receipt"
 "$script_dir/mini-signed-shadow-launchagent-rehearsal" run \
   --candidate-release "$target_release" --public-key "$public_key"
-"$NORN_M5_ISOLATION_CHECK"
+isolation_after=$(check_isolation)
+[[ $isolation_after == "$isolation_before" ]] || { echo 'runner isolation changed during rehearsal' >&2; exit 1; }
 "$script_dir/mini-historical-shadow-evidence" --proof "$proof" --artifact "$dump" \
   --shadow-receipt "$receipt" --source-sha "$source_sha" --candidate-sha "$target_sha" >/dev/null
 printf 'M5 historical private restore receipt: %s\n' "$receipt"

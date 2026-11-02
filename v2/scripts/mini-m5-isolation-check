@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Root-installed, read-only M5 runner isolation attestation."""
+
+import hashlib
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+
+
+DENIED = (
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "fd00::/8",
+)
+ANCHOR = "com.norn.m5.historical"
+RUNNER = "norn-m5-isolated-01"
+
+
+def command(*args):
+    result = subprocess.run(args, check=True, capture_output=True, text=True, timeout=10)
+    return result.stdout
+
+
+def main():
+    if os.geteuid() != 0 or sys.platform != "darwin" or platform.machine() != "arm64":
+        raise SystemExit("M5 checker requires root on isolated macOS ARM64")
+    if len(sys.argv) != 2 or sys.argv[1] != RUNNER:
+        raise SystemExit("M5 runner identity is unexpected")
+    if not re.search(r"^Status:\s+Enabled\b", command("/sbin/pfctl", "-s", "info"), re.M):
+        raise SystemExit("packet filter is disabled")
+    root_rules = command("/sbin/pfctl", "-sr")
+    if not re.search(r'^anchor "?com\.norn\.m5\.historical"?(?:\s|$)', root_rules, re.M):
+        raise SystemExit("M5 deny anchor is not attached to the root firewall")
+    rules = command("/sbin/pfctl", "-a", ANCHOR, "-sr")
+    for network in DENIED:
+        family = "inet6" if ":" in network else "inet"
+        if not re.search(r"^block drop out quick " + family + r"(?: .*)? to " + re.escape(network) + r"(?:\s|$)", rules, re.M):
+            raise SystemExit("missing M5 private-network deny rule: " + network)
+    routes = command("/usr/sbin/netstat", "-rn", "-f", "inet")
+    if re.search(r"^\s*(?:10(?:\.0){0,3}|100\.64(?:\.0){0,2}|172\.16(?:\.0){0,2})\S*\s+\S+\s+.*\b(?:utun|tailscale)", routes, re.M):
+        raise SystemExit("private overlay route is active")
+    print(json.dumps({
+        "schema": "norn.m5-isolated-runner-attestation/v1",
+        "runner": RUNNER,
+        "pfAnchor": ANCHOR,
+        "pfEnabled": True,
+        "deniedNetworks": list(DENIED),
+        "pfRulesSHA256": hashlib.sha256(rules.encode()).hexdigest(),
+        "rootRulesSHA256": hashlib.sha256(root_rules.encode()).hexdigest(),
+        "routeTableSHA256": hashlib.sha256(routes.encode()).hexdigest(),
+    }, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
