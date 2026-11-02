@@ -7,6 +7,11 @@ advertise {
   serf = "100.89.46.50"
 }
 
+# Keep the unauthenticated development HTTP API and UI on this host.
+addresses {
+  http = "127.0.0.1"
+}
+
 server {
   enabled          = true
   bootstrap_expect = 1
