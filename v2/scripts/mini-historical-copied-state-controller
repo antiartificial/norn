@@ -32,7 +32,7 @@ if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mo
     raise SystemExit('isolation checker must be root-owned and immutable to the runner')
 with open(path, 'rb') as source:
     digest = hashlib.sha256(source.read()).hexdigest()
-if digest != 'd4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd':
+if digest != '8caa3fa047ed4627a08b52f23c48906867782e6dad24df0f6c216611f2da76e0':
     raise SystemExit('isolation checker differs from reviewed source')
 PY
 [[ ${RUNNER_NAME:-} == norn-m5-isolated-01 ]] || { echo 'dedicated runner identity is required' >&2; exit 2; }

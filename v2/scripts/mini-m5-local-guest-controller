@@ -19,13 +19,15 @@ TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
 PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5aa"
 PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
-GUEST_PREPARE_SHA256 = "bceb8950c6832e9a8c67376e482cc6c677d1f629c8f228bb49890355fb6dca5f"
-GUEST_HARDENING_SHA256 = "0f8eca8e896f379e11d07d953e7b8ff6527a40d3ae3a78bb0ad5528ee33dfe07"
-HISTORICAL_BUNDLE_BUILDER_SHA256 = "c556139a6cab43483fc374730550574346ba59bea98a3f55b893343242cecd41"
+GUEST_PREPARE_SHA256 = "716bec8a474b9fb7bed15163e81c4c7f1ebe64f8688442c01db8d28153c74709"
+GUEST_HARDENING_SHA256 = "d8dedc1c5c9028a0ab77937eb2e09103c07517badfa7442ad26d4fc60d65762e"
+HISTORICAL_BUNDLE_BUILDER_SHA256 = "b3147fd7116abf98c54cfa7d3db1e622323d11977355d343743c9bdbfd43c4b4"
 WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
-CHECKER_SHA256 = "d4f82cb215683a8c7c6c40b5a82df98df5a5683cb20aa466e663da41c541a0fd"
+CHECKER_SHA256 = "8caa3fa047ed4627a08b52f23c48906867782e6dad24df0f6c216611f2da76e0"
+BOOTSTRAP_CLEANUP_SHA256 = "9a2fb3025bdf67c735de355460d551cdc4f45f9274c6363c15efb9407df707d8"
+INTENT_VERIFIER_SHA256 = "aaa6ceea2a7c5b091ce33467ad13ece3b096bb4fcb3aa50dabb11b3e650cf1a5"
 HISTORICAL_TOOLS = {
-    "mini-historical-copied-state-controller": "ce964c93854fae92daac6970a623c0bc1df202e99e1205658e31c42afe301361",
+    "mini-historical-copied-state-controller": "c88987d344b826743b05b5761a10f297ecb60ea4092fb7929a728a20ca95b371",
     "mini-historical-shadow-evidence": "a0e0bf9815c8fc3a562555b686e0d56b2a82853ff09cf63e63a6711e698c9489",
     "mini-signed-shadow-launchagent-rehearsal": "ecfebca5c57ae13de0e856b8ce6247d3a2f95569cb04289874cb9ccd287bd22c",
     "platform-release-artifact": "709d3a9a97891dc5fc2e0c7198f7d0406fa50cf9f43cb4ffb3825021c158a0b6",
@@ -69,7 +71,7 @@ def tart_inventory(tart):
     return value
 
 
-def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_key):
+def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_key, intent_verifier):
     required = {"schema", "runId", "sourceSHA", "guestName", "ipswSHA256", "tartSHA256",
                 "cpuCount", "memoryGiB", "diskGiB", "supervisorSSHPublicKeySHA256", "retireBy"}
     if set(intent) != required or intent["schema"] != "norn.m5-local-guest-intent/v1":
@@ -106,12 +108,14 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_ke
         raise ValueError("Softnet must be root installed with setuid")
     checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
     checked_file(supervisor_key, intent["supervisorSSHPublicKeySHA256"])
+    checked_file(intent_verifier, INTENT_VERIFIER_SHA256)
     if not Path(supervisor_key).read_text().startswith("ssh-ed25519 "):
         raise ValueError("supervisor guest SSH key must be ed25519")
     checked_file(Path(__file__).with_name("mini-m5-guest-prepare"), GUEST_PREPARE_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-guest-hardening"), GUEST_HARDENING_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-firewall-window"), WINDOW_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-isolation-check"), CHECKER_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-guest-bootstrap-cleanup"), BOOTSTRAP_CLEANUP_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-historical-bundle"), HISTORICAL_BUNDLE_BUILDER_SHA256)
     for name, expected in HISTORICAL_TOOLS.items():
         checked_file(Path(__file__).with_name(name), expected)
@@ -156,7 +160,7 @@ def protected_run(intent):
         raise ValueError("guest create requires the exact protected supervisor run")
 
 
-def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, supervisor_key):
+def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, supervisor_key, intent_verifier):
     protected_run(intent)
     root = Path(journal_root)
     path = root / (intent["guestName"] + ".json")
@@ -188,6 +192,8 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, 
            "PKR_VAR_m5_guest_hardening_path": str(Path(__file__).with_name("mini-m5-guest-hardening")),
            "PKR_VAR_m5_supervisor_ssh_public_key_path": str(supervisor_key),
            "PKR_VAR_m5_historical_bundle_path": str(bundle),
+           "PKR_VAR_m5_bootstrap_cleanup_path": str(Path(__file__).with_name("mini-m5-guest-bootstrap-cleanup")),
+           "PKR_VAR_m5_intent_verifier_path": str(intent_verifier),
            "PKR_VAR_m5_window_helper_path": str(Path(__file__).with_name("mini-m5-firewall-window")),
            "PKR_VAR_m5_checker_helper_path": str(Path(__file__).with_name("mini-m5-isolation-check"))}
     subprocess.run((str(packer), "validate", str(template)), env=env, check=True,
@@ -268,7 +274,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "reserve", "create", "reconcile"))
     for name in ("intent", "signature", "public-key", "tart", "packer", "plugin",
-                 "softnet", "ipsw", "volume", "supervisor-ssh-public-key"):
+                 "softnet", "ipsw", "volume", "supervisor-ssh-public-key", "intent-verifier"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--journal-root")
     args = parser.parse_args()
@@ -285,7 +291,7 @@ def main():
                          separators=(",", ":")))
         return
     evidence = preflight(intent, args.tart, args.packer, args.plugin, args.softnet,
-                         args.ipsw, args.volume, args.supervisor_ssh_public_key)
+                         args.ipsw, args.volume, args.supervisor_ssh_public_key, args.intent_verifier)
     evidence["intentSHA256"] = digest(args.intent)
     evidence["signatureSHA256"] = digest(args.signature)
     evidence["publicKeySHA256"] = digest(args.public_key)
@@ -297,7 +303,7 @@ def main():
         else:
             evidence["createdUnqualifiedReceipt"] = str(create(
                 args.journal_root, intent, evidence, args.tart, args.packer, args.plugin,
-                args.softnet, args.ipsw, args.supervisor_ssh_public_key))
+                args.softnet, args.ipsw, args.supervisor_ssh_public_key, args.intent_verifier))
     print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
 
 

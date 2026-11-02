@@ -28,6 +28,7 @@ jobs:
       VOLUME: ${{ vars.M5_LOCAL_VOLUME }}
       JOURNAL_ROOT: ${{ vars.M5_LOCAL_GUEST_JOURNAL_ROOT }}
       SUPERVISOR_SSH_PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_RUNNER_PUBLIC_KEY }}
+      INTENT_VERIFIER: ${{ vars.M5_LOCAL_INTENT_VERIFIER }}
       NORN_M5_PROTECTED_CONTROLLER: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
@@ -39,7 +40,7 @@ jobs:
           [[ "$RUNNER_NAME" == norn-m5-supervisor-01 ]]
           [[ "$GITHUB_REF" == refs/heads/master && "$GITHUB_REF_PROTECTED" == true ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
-          for key in INTENT SIGNATURE PUBLIC_KEY TART PACKER PLUGIN SOFTNET IPSW VOLUME JOURNAL_ROOT SUPERVISOR_SSH_PUBLIC_KEY; do
+          for key in INTENT SIGNATURE PUBLIC_KEY TART PACKER PLUGIN SOFTNET IPSW VOLUME JOURNAL_ROOT SUPERVISOR_SSH_PUBLIC_KEY INTENT_VERIFIER; do
             [[ -n "${!key}" ]]
           done
       - name: Reserve exact guest before effects
@@ -49,7 +50,7 @@ jobs:
             --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
             --tart "$TART" --packer "$PACKER" --plugin "$PLUGIN" \
             --softnet "$SOFTNET" --ipsw "$IPSW" --volume "$VOLUME" \
-            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY"
+            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" --intent-verifier "$INTENT_VERIFIER"
       - name: Create one unqualified guest
         run: |
           set -euo pipefail
@@ -57,7 +58,7 @@ jobs:
             --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
             --tart "$TART" --packer "$PACKER" --plugin "$PLUGIN" \
             --softnet "$SOFTNET" --ipsw "$IPSW" --volume "$VOLUME" \
-            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY"
+            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" --intent-verifier "$INTENT_VERIFIER"
       - name: Reconcile exact guest outcome
         if: always()
         run: |
@@ -66,7 +67,7 @@ jobs:
             --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
             --tart "$TART" --packer "$PACKER" --plugin "$PLUGIN" \
             --softnet "$SOFTNET" --ipsw "$IPSW" --volume "$VOLUME" \
-            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" | tee "$RUNNER_TEMP/m5-guest-reconcile.json"
+            --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" --intent-verifier "$INTENT_VERIFIER" | tee "$RUNNER_TEMP/m5-guest-reconcile.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

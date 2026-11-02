@@ -17,6 +17,7 @@ RUNNER = "norn-m5-isolated-01"
 REHEARSAL_USER = "norn-m5-rehearsal"
 RUNNER_USER = "norn-m5-runner"
 SSH_HOST_KEY = "/etc/ssh/ssh_host_ed25519_key.pub"
+BOOTSTRAP_CLEANUP = "/var/db/norn-m5-window/bootstrap-cleanup-finished.json"
 
 
 def command(*args):
@@ -41,6 +42,30 @@ def main():
         raise SystemExit("M5 runner identity is unexpected")
     rehearsal = pwd.getpwnam(REHEARSAL_USER)
     runner = pwd.getpwnam(RUNNER_USER)
+    cleanup_info = os.lstat(BOOTSTRAP_CLEANUP)
+    if (cleanup_info.st_uid != 0 or not stat.S_ISREG(cleanup_info.st_mode) or
+            stat.S_IMODE(cleanup_info.st_mode) != 0o600):
+        raise SystemExit("M5 bootstrap cleanup receipt is unsafe")
+    cleanup = json.load(open(BOOTSTRAP_CLEANUP, encoding="utf-8"))
+    if (cleanup.get("schema") != "norn.m5-guest-bootstrap-cleanup-finished/v1" or
+            cleanup.get("runnerName") != RUNNER or cleanup.get("adminAccountAbsent") is not True or
+            cleanup.get("adminHomeAbsent") is not True or cleanup.get("remoteLogin") != "off" or
+            cleanup.get("sshListenerAbsent") is not True):
+        raise SystemExit("M5 bootstrap cleanup is incomplete")
+    try:
+        pwd.getpwnam("admin")
+    except KeyError:
+        pass
+    else:
+        raise SystemExit("M5 bootstrap admin account remains")
+    if os.path.lexists("/Users/admin"):
+        raise SystemExit("M5 bootstrap admin home remains")
+    if "off" not in command("/usr/sbin/systemsetup", "-getremotelogin").lower():
+        raise SystemExit("M5 guest Remote Login remains enabled")
+    ssh_listener = subprocess.run(("/usr/sbin/lsof", "-nP", "-iTCP:22", "-sTCP:LISTEN"),
+                                  capture_output=True, text=True, timeout=10)
+    if ssh_listener.returncode not in (0, 1) or ssh_listener.stdout.strip():
+        raise SystemExit("M5 guest SSH listener remains")
     if rehearsal.pw_uid == runner.pw_uid or rehearsal.pw_dir != "/Users/norn-m5-rehearsal":
         raise SystemExit("M5 rehearsal identity is not separate from the runner")
     command("/bin/launchctl", "print", f"gui/{rehearsal.pw_uid}")

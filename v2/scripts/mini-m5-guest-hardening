@@ -27,6 +27,7 @@ SUDOERS = Path("/private/etc/sudoers.d/norn-m5-disposable")
 SUDOERS_TEXT = """Defaults:norn-m5-runner env_keep += \"RUNNER_NAME GITHUB_RUN_ID NORN_M5_HISTORICAL_ISOLATED NORN_M5_SOURCE_SHA NORN_M5_TARGET_SHA NORN_M5_ISOLATION_CHECK NORN_M5_HISTORICAL_RECEIPT_DIR NORN_REHEARSAL_POSTGRES_BIN\"
 norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-firewall-window *
 norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check norn-m5-isolated-01
+norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-bootstrap-cleanup norn-m5-isolated-01 *
 norn-m5-runner ALL=(norn-m5-rehearsal) NOPASSWD: /bin/launchctl print gui/*
 norn-m5-runner ALL=(norn-m5-rehearsal) NOPASSWD: /Library/PrivilegedHelperTools/norn-m5-historical/mini-historical-copied-state-controller *
 norn-m5-rehearsal ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check norn-m5-isolated-01

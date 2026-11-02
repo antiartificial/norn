@@ -9,7 +9,7 @@ import tarfile
 
 
 TOOLS = {
-    "mini-historical-copied-state-controller": "ce964c93854fae92daac6970a623c0bc1df202e99e1205658e31c42afe301361",
+    "mini-historical-copied-state-controller": "c88987d344b826743b05b5761a10f297ecb60ea4092fb7929a728a20ca95b371",
     "mini-historical-shadow-evidence": "a0e0bf9815c8fc3a562555b686e0d56b2a82853ff09cf63e63a6711e698c9489",
     "mini-signed-shadow-launchagent-rehearsal": "ecfebca5c57ae13de0e856b8ce6247d3a2f95569cb04289874cb9ccd287bd22c",
     "platform-release-artifact": "709d3a9a97891dc5fc2e0c7198f7d0406fa50cf9f43cb4ffb3825021c158a0b6",
