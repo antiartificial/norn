@@ -38,7 +38,7 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: ./.github/workflows/norn-app-release.yml
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@a1ee3199e8a4b327bee5bea55ba7b2c15964e35f
     with:
       lane: staging-rollback
       app_id: hello-norn-mysql-managed
