@@ -233,6 +233,20 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return fmt.Errorf("etcd Fleet runtime listen: %w", err)
 	}
 	defer listener.Close()
+	var pairingListener net.Listener
+	var pairingServer *http.Server
+	if cfg.PairingLoopbackListener {
+		bind := net.ParseIP(strings.TrimSpace(cfg.BindAddr))
+		if bind == nil || !bind.IsPrivate() {
+			return fmt.Errorf("pairing loopback listener requires a distinct private NORN_BIND_ADDR")
+		}
+		pairingListener, err = net.Listen("tcp4", net.JoinHostPort("127.0.0.1", cfg.Port))
+		if err != nil {
+			return fmt.Errorf("etcd Fleet pairing loopback listen: %w", err)
+		}
+		defer pairingListener.Close()
+		pairingServer = &http.Server{Handler: pairingOnlyHandler(router), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(quit)
@@ -275,7 +289,15 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}()
 		log.Print("etcd Fleet converge watcher enabled (records converge plans for controller-mode resources)")
 	}
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
+	if pairingServer != nil {
+		go func() {
+			log.Printf("norn etcd Fleet pairing listener on 127.0.0.1:%s", cfg.Port)
+			if e := pairingServer.Serve(pairingListener); e != nil && e != http.ErrServerClosed {
+				errCh <- e
+			}
+		}()
+	}
 	go func() {
 		log.Printf("norn %s etcd Fleet runtime listening on %s", Version, srv.Addr)
 		if e := srv.Serve(listener); e != nil && e != http.ErrServerClosed {
@@ -284,11 +306,21 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}()
 	select {
 	case e := <-errCh:
+		stopWorker()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if pairingServer != nil {
+			_ = pairingServer.Shutdown(ctx)
+		}
+		_ = srv.Shutdown(ctx)
 		return e
 	case <-quit:
 		stopWorker()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if pairingServer != nil {
+			_ = pairingServer.Shutdown(ctx)
+		}
 		return srv.Shutdown(ctx)
 	}
 }

@@ -40,12 +40,13 @@ type Config struct {
 	Environment string
 	// EnvironmentExplicit distinguishes an omitted variable (which defaults to
 	// development) from an intentional release-lane configuration.
-	EnvironmentExplicit bool
-	Port                string
-	BindAddr            string
-	DatabaseURL         string
-	UIDir               string
-	AppsDir             string
+	EnvironmentExplicit     bool
+	Port                    string
+	BindAddr                string
+	PairingLoopbackListener bool
+	DatabaseURL             string
+	UIDir                   string
+	AppsDir                 string
 	// AppCatalogReadOnly prevents API mutations of the checked-out app catalog.
 	// It is explicit because a root-owned catalog must not rely on permission
 	// errors to define the control-plane contract.
@@ -343,6 +344,7 @@ func Load() *Config {
 		EnvironmentExplicit:                          environmentExplicit,
 		Port:                                         envOr("NORN_PORT", "8800"),
 		BindAddr:                                     envOr("NORN_BIND_ADDR", "127.0.0.1"),
+		PairingLoopbackListener:                      envBoolOr("NORN_PAIRING_LOOPBACK_LISTENER", false),
 		DatabaseURL:                                  envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
 		UIDir:                                        uiDir(),
 		AppsDir:                                      envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
