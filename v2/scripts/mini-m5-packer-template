@@ -34,6 +34,7 @@ def transform(raw):
                         'variable "m5_window_helper_path" { type = string }\n'
                         'variable "m5_checker_helper_path" { type = string }\n\n'
                         'variable "m5_guest_hardening_path" { type = string }\n\n'
+                        'variable "m5_supervisor_ssh_public_key_path" { type = string }\n\n'
                         'source "tart-cli" "tart" {')
     text = replace_once(text,
                         'from_ipsw    = "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw"',
@@ -73,8 +74,16 @@ def transform(raw):
     source      = var.m5_guest_hardening_path
     destination = "/tmp/norn-m5-guest-hardening"
   }
+  provisioner "file" {
+    source      = var.m5_supervisor_ssh_public_key_path
+    destination = "/tmp/norn-m5-supervisor.pub"
+  }
   provisioner "shell" {
-    inline = ["mkdir -m 700 /Users/admin/.norn-m5-bootstrap"]
+    inline = [
+      "mkdir -m 700 /Users/admin/.norn-m5-bootstrap /Users/admin/.ssh",
+      "install -m 600 /tmp/norn-m5-supervisor.pub /Users/admin/.ssh/authorized_keys",
+      "rm -f /tmp/norn-m5-supervisor.pub",
+    ]
   }
   provisioner "file" {
     content     = var.m5_bootstrap_password

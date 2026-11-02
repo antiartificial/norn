@@ -60,9 +60,9 @@ def tart_inventory(tart):
     return value
 
 
-def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
+def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_key):
     required = {"schema", "runId", "sourceSHA", "guestName", "ipswSHA256", "tartSHA256",
-                "cpuCount", "memoryGiB", "diskGiB", "retireBy"}
+                "cpuCount", "memoryGiB", "diskGiB", "supervisorSSHPublicKeySHA256", "retireBy"}
     if set(intent) != required or intent["schema"] != "norn.m5-local-guest-intent/v1":
         raise ValueError("unexpected local guest intent")
     run_id = intent["runId"]
@@ -72,6 +72,8 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
         raise ValueError("intent is not run/source bound")
     if intent["tartSHA256"] != TART_SHA256 or intent["ipswSHA256"] != IPSW_SHA256:
         raise ValueError("unreviewed tool or IPSW")
+    if not re.fullmatch(r"[0-9a-f]{64}", intent["supervisorSSHPublicKeySHA256"]):
+        raise ValueError("invalid supervisor guest SSH public key digest")
     if (type(intent["cpuCount"]) is not int or intent["cpuCount"] != 4 or
             type(intent["memoryGiB"]) is not int or intent["memoryGiB"] != 8 or
             type(intent["diskGiB"]) is not int or intent["diskGiB"] != 50):
@@ -94,6 +96,9 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
     if not Path(softnet).stat().st_mode & stat.S_ISUID:
         raise ValueError("Softnet must be root installed with setuid")
     checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
+    checked_file(supervisor_key, intent["supervisorSSHPublicKeySHA256"])
+    if not Path(supervisor_key).read_text().startswith("ssh-ed25519 "):
+        raise ValueError("supervisor guest SSH key must be ed25519")
     checked_file(Path(__file__).with_name("mini-m5-guest-prepare"), GUEST_PREPARE_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-guest-hardening"), GUEST_HARDENING_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-firewall-window"), WINDOW_SHA256)
@@ -139,7 +144,7 @@ def protected_run(intent):
         raise ValueError("guest create requires the exact protected supervisor run")
 
 
-def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw):
+def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, supervisor_key):
     protected_run(intent)
     root = Path(journal_root)
     path = root / (intent["guestName"] + ".json")
@@ -165,6 +170,7 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw):
            "PKR_VAR_m5_bootstrap_password": "validation-only",
            "PKR_VAR_m5_guest_prepare_path": str(Path(__file__).with_name("mini-m5-guest-prepare")),
            "PKR_VAR_m5_guest_hardening_path": str(Path(__file__).with_name("mini-m5-guest-hardening")),
+           "PKR_VAR_m5_supervisor_ssh_public_key_path": str(supervisor_key),
            "PKR_VAR_m5_window_helper_path": str(Path(__file__).with_name("mini-m5-firewall-window")),
            "PKR_VAR_m5_checker_helper_path": str(Path(__file__).with_name("mini-m5-isolation-check"))}
     subprocess.run((str(packer), "validate", str(template)), env=env, check=True,
@@ -245,7 +251,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "reserve", "create", "reconcile"))
     for name in ("intent", "signature", "public-key", "tart", "packer", "plugin",
-                 "softnet", "ipsw", "volume"):
+                 "softnet", "ipsw", "volume", "supervisor-ssh-public-key"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--journal-root")
     args = parser.parse_args()
@@ -262,7 +268,7 @@ def main():
                          separators=(",", ":")))
         return
     evidence = preflight(intent, args.tart, args.packer, args.plugin, args.softnet,
-                         args.ipsw, args.volume)
+                         args.ipsw, args.volume, args.supervisor_ssh_public_key)
     evidence["intentSHA256"] = digest(args.intent)
     evidence["signatureSHA256"] = digest(args.signature)
     evidence["publicKeySHA256"] = digest(args.public_key)
@@ -274,7 +280,7 @@ def main():
         else:
             evidence["createdUnqualifiedReceipt"] = str(create(
                 args.journal_root, intent, evidence, args.tart, args.packer, args.plugin,
-                args.softnet, args.ipsw))
+                args.softnet, args.ipsw, args.supervisor_ssh_public_key))
     print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
 
 
