@@ -264,6 +264,12 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 	if current, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err != nil || current.ID != first.ID {
 		t.Fatalf("publishable route intent=%+v err=%v", current, err)
 	}
+	if err := adapter.RenewOperationClaim(ctx, claim, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err != nil || current.ID != first.ID {
+		t.Fatalf("renewed claim lost its reserved route intent=%+v err=%v", current, err)
+	}
 	effects, err := NewV3DeploymentEffectReservations(adapter)
 	if err != nil {
 		t.Fatal(err)

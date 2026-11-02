@@ -304,7 +304,7 @@ func (s *V3OperationStore) StopClaimedFleetDeploymentRecovery(ctx context.Contex
 		return store.ErrOperationOwnershipLost
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	rec.Operation.Status, rec.Operation.Message, rec.Operation.LockedBy, rec.Operation.LockedUntil, rec.Operation.FinishedAt = model.OperationFailed, "Fleet deployment recovery stopped: fresh Nomad health was not verified", "", nil, &now
+	rec.Operation.Status, rec.Operation.Message, rec.Operation.LockedBy, rec.Operation.LockedUntil, rec.Operation.FinishedAt = model.OperationFailed, "Fleet deployment recovery stopped before completion; manual review is required", "", nil, &now
 	delete(rec.Operation.Metadata, fleetDeploymentRecoveryEffect)
 	encoded, err := json.Marshal(rec)
 	if err != nil {
