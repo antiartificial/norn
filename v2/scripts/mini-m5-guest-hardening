@@ -109,7 +109,12 @@ def remove_new_account_keychains(uid, home=None):
     info = home.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
         raise ValueError("rehearsal home is unsafe")
-    keychains = home / "Library/Keychains"
+    library = home / "Library"
+    library_info = library.lstat()
+    if (not stat.S_ISDIR(library_info.st_mode) or library_info.st_uid != uid or
+            library_info.st_dev != info.st_dev):
+        raise ValueError("rehearsal Library directory is unsafe")
+    keychains = library / "Keychains"
     if not keychains.exists() and not keychains.is_symlink():
         return
     root = keychains.lstat()

@@ -91,6 +91,18 @@ class GuestHardeningTests(unittest.TestCase):
                 hardening.remove_new_account_keychains(hardening.os.getuid(), home)
             self.assertTrue(keychains.exists())
 
+    def test_finish_rejects_linked_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            external = Path(directory) / "external"
+            home.mkdir()
+            (external / "Keychains").mkdir(parents=True)
+            (external / "Keychains/login.keychain-db").write_bytes(b"leave intact")
+            (home / "Library").symlink_to(external)
+            with self.assertRaisesRegex(ValueError, "Library directory is unsafe"):
+                hardening.remove_new_account_keychains(hardening.os.getuid(), home)
+            self.assertTrue((external / "Keychains/login.keychain-db").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
