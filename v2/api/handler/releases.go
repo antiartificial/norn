@@ -174,8 +174,8 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.cfg == nil || h.cfg.EnvironmentID() != "production" {
-		WriteControlProblem(w, r, http.StatusConflict, "rollback_environment_invalid", "release rollback is production-only")
+	if h.cfg == nil || (h.cfg.EnvironmentID() != "production" && h.cfg.EnvironmentID() != "staging") {
+		WriteControlProblem(w, r, http.StatusConflict, "rollback_environment_invalid", "release rollback requires a staging or production control plane")
 		return
 	}
 	if h.db == nil || h.pipeline == nil {
@@ -201,35 +201,51 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target, err := h.db.GetDeployment(r.Context(), request.DeploymentID)
-	if err != nil || target.App != appID || target.Environment != "production" || target.Status != model.StatusDeployed || target.CommitSHA != request.SourceSHA || target.ImageTag != request.Artifact {
-		WriteControlProblem(w, r, http.StatusNotFound, "rollback_target_missing", "exact previously admitted successful production deployment was not found")
+	if err != nil || target.App != appID || target.Environment != h.cfg.EnvironmentID() || target.Status != model.StatusDeployed || target.CommitSHA != request.SourceSHA || target.ImageTag != request.Artifact {
+		WriteControlProblem(w, r, http.StatusNotFound, "rollback_target_missing", "exact previously admitted successful deployment was not found")
 		return
 	}
-	promotion, err := h.db.GetPromotionOperationByDeploymentID(r.Context(), target.ID)
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target has no durable production promotion evidence")
-		return
+	var candidate model.ReleaseCandidate
+	var promotionID string
+	if h.cfg.EnvironmentID() == "staging" {
+		candidate, err = h.releaseCandidateForDeployment(r, target.ID)
+		if err != nil || !validReleaseCandidateForTrust(candidate, target.CommitSHA, target.ImageTag, h.cfg.ReleaseAttestationTrustMode) {
+			WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "staging target has no verified durable release candidate")
+			return
+		}
+		if err := validateReleaseSpecBinding(spec, candidate, target.ImageTag, h.pipeline.RegistryURL); err != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "staging target no longer matches the app source and artifact binding: "+err.Error())
+			return
+		}
+	} else {
+		promotion, err := h.db.GetPromotionOperationByDeploymentID(r.Context(), target.ID)
+		if err != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target has no durable production promotion evidence")
+			return
+		}
+		rawQualification, ok := promotion.Metadata["promotionQualification"]
+		if !ok {
+			WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target qualification is missing")
+			return
+		}
+		encodedQualification, _ := json.Marshal(rawQualification)
+		var qualification model.ReleaseQualification
+		if json.Unmarshal(encodedQualification, &qualification) != nil || verifyReleaseQualificationSignature(h.cfg.TrustedQualificationSigningKeys, qualification) != nil || qualification.SourceSHA != target.CommitSHA || qualification.Artifact != target.ImageTag {
+			WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target qualification is invalid")
+			return
+		}
+		if err := validateReleaseSpecBinding(spec, qualification.Candidate, target.ImageTag, h.pipeline.RegistryURL); err != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target no longer matches the app source and artifact binding: "+err.Error())
+			return
+		}
+		candidate = qualification.Candidate
+		promotionID = promotion.ID
 	}
-	rawQualification, ok := promotion.Metadata["promotionQualification"]
-	if !ok {
-		WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target qualification is missing")
-		return
-	}
-	encodedQualification, _ := json.Marshal(rawQualification)
-	var qualification model.ReleaseQualification
-	if json.Unmarshal(encodedQualification, &qualification) != nil || verifyReleaseQualificationSignature(h.cfg.TrustedQualificationSigningKeys, qualification) != nil || qualification.SourceSHA != target.CommitSHA || qualification.Artifact != target.ImageTag {
-		WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target qualification is invalid")
-		return
-	}
-	if err := validateReleaseSpecBinding(spec, qualification.Candidate, target.ImageTag, h.pipeline.RegistryURL); err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target no longer matches the app source and artifact binding: "+err.Error())
-		return
-	}
-	if err := h.pipeline.VerifyReleaseArtifact(r.Context(), spec, target.CommitSHA, target.ImageTag, qualification.Candidate); err != nil {
+	if err := h.pipeline.VerifyReleaseArtifact(r.Context(), spec, target.CommitSHA, target.ImageTag, candidate); err != nil {
 		WriteControlProblem(w, r, http.StatusForbidden, "rollback_target_unadmitted", "rollback target no longer satisfies production artifact admission: "+err.Error())
 		return
 	}
-	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"action": "release-rollback", "app": appID, "request": request, "targetDeploymentId": target.ID, "promotionOperationId": promotion.ID})
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"action": "release-rollback", "app": appID, "request": request, "targetDeploymentId": target.ID, "promotionOperationId": promotionID})
 	if !ok {
 		return
 	}
@@ -243,7 +259,7 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, replayed.Operation)
 		return
 	}
-	current, err := h.db.LatestSuccessfulDeployment(r.Context(), appID, "production")
+	current, err := h.db.LatestSuccessfulDeployment(r.Context(), appID, h.cfg.EnvironmentID())
 	if err != nil || current == nil || current.ID == target.ID {
 		WriteControlProblem(w, r, http.StatusConflict, "rollback_current_deployment_missing", "rollback target must differ from the current deployment")
 		return
