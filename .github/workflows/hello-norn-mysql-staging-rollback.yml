@@ -30,8 +30,14 @@ jobs:
   rollback:
     if: github.repository == 'antiartificial/norn' && github.ref == 'refs/heads/master' && github.ref_protected && github.run_attempt == 1 && github.actor == 'antiartificial' && github.triggering_actor == 'antiartificial' && vars.NORN_MANAGED_MYSQL_STAGING_ROLLBACK_ENABLED == 'true'
     permissions:
+      actions: read
+      checks: read
       contents: read
+      deployments: write
+      packages: write
       id-token: write
+      attestations: write
+      artifact-metadata: write
     uses: ./.github/workflows/norn-app-release.yml
     with:
       lane: staging-rollback
