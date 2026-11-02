@@ -20,6 +20,18 @@ Freeze these pins before the first soak interval. A later source or binary
 change starts a new qualification candidate; attach prior evidence only if an
 owner records why the changed component cannot affect that lane.
 
+The existing work-staging Fleet can supply the three-member topology and
+directly deployed canary fixture after fresh protected readback. Its previous
+reconciliation receipt is a starting-state proof, not the beginning of the
+72-hour interval. Start the clock only when a protected controller records an
+immutable candidate binding and first valid telemetry sample. The controller
+must sample all three etcd members and the public workload throughout the
+interval, preserve gaps and alarms as failures, and publish a terminal receipt
+with raw sample hashes and elapsed time. The 10× burst needs a separately
+bounded load profile and measured baseline; nominal request counts do not
+establish a tenfold rate. A workflow that merely sleeps for 72 hours cannot
+qualify this gate.
+
 ## Required evidence
 
 | Gate | Protected evidence and pass condition | Status |
