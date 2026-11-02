@@ -6,6 +6,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 [[ $# -eq 6 ]] || { echo 'usage: controller <proof> <dump> <old-shadow-receipt> <source-release> <target-release> <pinned-key>' >&2; exit 2; }
 proof=$1 dump=$2 old_receipt=$3 source_release=$4 target_release=$5 public_key=$6
 [[ ${NORN_M5_HISTORICAL_ISOLATED:-} == 1 ]] || { echo 'isolated historical mode is required' >&2; exit 2; }
+[[ $(id -un) == norn-m5-rehearsal ]] || { echo 'dedicated rehearsal account is required' >&2; exit 2; }
 [[ -z ${NORN_DATABASE_URL:-} && -z ${NORN_AUDIT_SIGNING_KEY:-} && -z ${NORN_API_TOKEN:-} && -z ${DIGITALOCEAN_TOKEN:-} ]] || {
   echo 'production credentials are forbidden in historical rehearsal' >&2; exit 2;
 }
@@ -31,7 +32,7 @@ if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mo
     raise SystemExit('isolation checker must be root-owned and immutable to the runner')
 with open(path, 'rb') as source:
     digest = hashlib.sha256(source.read()).hexdigest()
-if digest != '5a7d3c4871601a83fffefdfa4034c56903555879ba8cabf4c4d1f7cb30ee6c6c':
+if digest != '77a927506e5582f02f9b62c0cff8f203eab272225e0c22bb87a3ece607e9ab8f':
     raise SystemExit('isolation checker differs from reviewed source')
 PY
 [[ ${RUNNER_NAME:-} == norn-m5-isolated-01 ]] || { echo 'dedicated runner identity is required' >&2; exit 2; }
@@ -42,7 +43,10 @@ value=json.load(sys.stdin)
 assert value["schema"] == "norn.m5-isolated-runner-attestation/v1"
 assert value["runner"] == "norn-m5-isolated-01" and value["pfEnabled"] is True
 assert value["pfAnchor"] == "com.norn.m5.historical"
-assert value["deniedNetworks"] == ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fd00::/8"]
+assert value["runnerUser"] == "norn-m5-runner" and value["rehearsalUser"] == "norn-m5-rehearsal"
+assert value["rehearsalOutbound"] == "loopback-only"
+assert value["credentialSurfacesAbsentOrUnreadable"] is True
+assert value["preexistingNetworkSockets"] == 0
 for name in ("pfRulesSHA256", "rootRulesSHA256", "routeTableSHA256"):
     assert len(value[name]) == 64
 print(json.dumps(value, sort_keys=True))'
