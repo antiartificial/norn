@@ -156,6 +156,13 @@ def finish():
         raise ValueError("rehearsal session is not a graphical login")
     if uid == pwd.getpwnam(RUNNER).pw_uid:
         raise ValueError("runner and rehearsal accounts share a UID")
+    keychains = Path("/Users") / REHEARSAL / "Library/Keychains"
+    if keychains.exists():
+        info = keychains.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or
+                list(keychains.iterdir())):
+            raise ValueError("rehearsal keychain surface needs protected reconciliation")
+        keychains.rmdir()
     PASSWORD.unlink()
     receipt = {"schema": "norn.m5-guest-account-handoff-finished/v1", "rehearsalUID": uid,
                "runnerUID": pwd.getpwnam(RUNNER).pw_uid, "guiDomain": f"gui/{uid}",
