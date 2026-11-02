@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,10 @@ import (
 	"net/url"
 	"strings"
 )
+
+// ErrRoutePropagationPending identifies an older local file revision that may
+// become the requested generation after the publisher's atomic write.
+var ErrRoutePropagationPending = errors.New("ingress route propagation is pending")
 
 // ObservePublishedRenderedRoute requires each named node's local publication
 // generation and Traefik's effective route to agree. Reading the file on
@@ -38,6 +43,9 @@ func ObservePublishedRenderedRoute(ctx context.Context, client *http.Client, nod
 			return nil, fmt.Errorf("ingress node %s file readback: %w", node.ID, err)
 		}
 		if before != (PublishedRouteRevision{Generation: generation, RouteSHA256: desired.SHA256, Present: true}) {
+			if before.Generation < generation {
+				return nil, ErrRoutePropagationPending
+			}
 			return nil, fmt.Errorf("ingress node %s published route differs from desired generation", node.ID)
 		}
 		if _, err := ObserveRenderedRoute(ctx, client, []IngressNode{node}, desired); err != nil {
