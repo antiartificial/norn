@@ -1,9 +1,9 @@
 name: hello-norn-mysql-managed
 nomadNamespace: norn-work-staging
-deploy: false
+deploy: true
 # The repository release caller also requires the explicit
-# NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED repository variable. Enable it
-# only after this catalog entry has a reviewed route and protected inputs.
+# NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED repository variable remains off
+# until this catalog is promoted, DNS/TLS and Nomad Variables are verified.
 repo:
   # The serving direct pilot's source is in this repository. Release admission
   # still binds an exact CI source SHA to the image being deployed.
@@ -17,8 +17,8 @@ build:
   image: ghcr.io/antiartificial/hello-norn-mysql@sha256:1f6da72837522c1507e1aa965d6cf31f452fa46ad6791f3b62197b15905e930f
   test: go test ./...
 # Separate managed candidate. Its Consul service and router names cannot mix
-# with the live direct-Nomad pilot. Deployment remains disabled pending catalog,
-# credential, release binding and runtime qualification.
+# with the live direct-Nomad pilot. The catalog is publishable but remains
+# inactive on Fleet until the protected exact-bundle promotion completes.
 env:
   MYSQL_DSN_FILE: "${NOMAD_SECRETS_DIR}/mysql-dsn"
   MYSQL_CA_FILE: "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
@@ -82,9 +82,7 @@ processes:
         - key: PILOT_WRITE_TOKEN
           destination: pilot-write-token
 endpoints:
-  # Catalog promotion replaces this non-routable placeholder with the reviewed
-  # Access-protected staging origin before deployment can be enabled.
-  - url: https://work-staging-hello-norn-mysql.invalid
+  - url: https://norn-fleet-mysql.tkmkt-dev.com
     region: nyc3
     process: web
     restrictedIngress:
