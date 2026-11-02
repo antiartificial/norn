@@ -53,7 +53,9 @@ def run_as_runner(command, user, token=None, timeout=120):
 
     env = {"HOME": user.pw_dir, "USER": RUNNER, "LOGNAME": RUNNER,
            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
-    result = subprocess.run(command, input=token, text=True, capture_output=True,
+    if token is not None:
+        env["ACTIONS_RUNNER_INPUT_TOKEN"] = token
+    result = subprocess.run(command, text=True, capture_output=True,
                             env=env, preexec_fn=drop, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError("guest runner command failed; protected reconciliation required")
@@ -88,10 +90,10 @@ def install(archive, registration_token):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != user.pw_uid:
         raise ValueError("runner config script is unsafe")
     run_as_runner((str(config), "--unattended", "--url", "https://github.com/antiartificial/norn",
-                   "--token", registration_token, "--name", RUNNER_NAME,
+                   "--name", RUNNER_NAME,
                    "--labels", "norn-m5-isolated", "--no-default-labels",
                    "--work", "_work", "--disableupdate"),
-                  user, timeout=180)
+                  user, token=registration_token, timeout=180)
     data = plistlib.dumps({"Label": "com.norn.m5.runner", "ProgramArguments": [
         str(INSTALL / "run.sh")], "WorkingDirectory": str(INSTALL), "UserName": RUNNER,
         "RunAtLoad": True, "KeepAlive": False,
