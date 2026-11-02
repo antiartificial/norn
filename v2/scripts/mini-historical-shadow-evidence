@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Read only: bind a retained Mini backup to its completed private shadow run.
+
+This is historical evidence inspection, never an upgrade or freshness admission.
+"""
+
+import argparse
+import datetime as dt
+import hashlib
+import hmac
+import json
+import os
+import re
+import stat
+
+
+def reject(message):
+    raise SystemExit(message)
+
+
+def read_private(path, label):
+    if not os.path.isabs(path):
+        reject(f"{label} needs an absolute path")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size == 0):
+            reject(f"{label} needs an owner-owned regular mode-0600 file")
+        return stream.read()
+
+
+def object_from(data, label):
+    def unique(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                reject(f"{label} has duplicate fields")
+            obj[key] = value
+        return obj
+    try:
+        result = json.loads(data, object_pairs_hook=unique)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        reject(f"{label} is not JSON")
+    if type(result) is not dict:
+        reject(f"{label} needs an object")
+    return result
+
+
+def timestamp(value, label):
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        reject(f"{label} timestamp is invalid")
+    if parsed.tzinfo is None:
+        reject(f"{label} timestamp needs a timezone")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def inspect(proof_path, artifact_path, receipt_path, source_sha, candidate_sha):
+    for value in (source_sha, candidate_sha):
+        if not re.fullmatch(r"[0-9a-f]{40}", value):
+            reject("source and candidate need full lowercase SHAs")
+    proof = object_from(read_private(proof_path, "proof"), "proof")
+    if set(proof) != {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "backupBytes", "createdAt"}:
+        reject("proof fields are not exact")
+    if proof["schema"] != "norn.legacy-control-backup/v1" or proof["sourceReleaseSHA"] != source_sha:
+        reject("proof source is unexpected")
+    digest = proof["backupSHA256"]
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        reject("proof digest is invalid")
+    artifact = read_private(artifact_path, "artifact")
+    if type(proof["backupBytes"]) is not int or len(artifact) != proof["backupBytes"]:
+        reject("artifact byte count differs from proof")
+    if not hmac.compare_digest(hashlib.sha256(artifact).hexdigest(), digest):
+        reject("artifact digest differs from proof")
+    receipt = object_from(read_private(receipt_path, "shadow receipt"), "shadow receipt")
+    if receipt.get("schema") != "norn.m5-signed-shadow-launchagent-rehearsal/v2":
+        reject("shadow receipt schema is unsupported")
+    if (receipt.get("candidateSHA") != candidate_sha or receipt.get("backupSHA256") != digest
+            or type(receipt.get("backupBytes")) is not int or receipt["backupBytes"] != len(artifact)):
+        reject("shadow receipt is not bound to candidate and backup")
+    if (receipt.get("exitCode") != 0 or receipt.get("privateRestoreClaim") != "passed"
+            or receipt.get("runtimeClaim") != "passed"):
+        reject("shadow restore or runtime did not pass")
+    if timestamp(receipt.get("completedAt"), "receipt") < timestamp(proof["createdAt"], "proof"):
+        reject("shadow receipt predates backup")
+    return {
+        "status": "historical-shadow-evidence-only",
+        "sourceSHA": source_sha,
+        "candidateSHA": candidate_sha,
+        "backupSHA256": digest,
+        "backupBytes": len(artifact),
+        "createdAt": proof["createdAt"],
+        "shadowCompletedAt": receipt["completedAt"],
+        "privateRestoreClaim": "passed",
+        "runtimeClaim": "passed",
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--proof", required=True)
+    parser.add_argument("--artifact", required=True)
+    parser.add_argument("--shadow-receipt", required=True)
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--candidate-sha", required=True)
+    args = parser.parse_args()
+    result = inspect(args.proof, args.artifact, args.shadow_receipt, args.source_sha, args.candidate_sha)
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
