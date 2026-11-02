@@ -16,11 +16,9 @@ import (
 	"time"
 )
 
-var errRouteAuthorityInactive = errors.New("route authority is inactive")
-
 // NewRemoteRoutePublicationAuthorities tries the three pinned controls. Only
-// an unavailable control or an authenticated inactive-authority response may
-// advance to another origin; TLS, identity, and malformed responses fail closed.
+// an unreachable control or a timeout may advance to another origin. An HTTP
+// response, including 409, is an authority decision and fails closed.
 func NewRemoteRoutePublicationAuthorities(origins []string, controlURI string, caPEM, certPEM, keyPEM []byte) (RoutePublicationAuthority, error) {
 	if len(origins) != 3 {
 		return nil, fmt.Errorf("exactly three control authority origins are required")
@@ -49,7 +47,7 @@ func NewRemoteRoutePublicationAuthorities(origins []string, controlURI string, c
 			if err == nil {
 				return decision, nil
 			}
-			if !errors.Is(err, errRouteAuthorityInactive) && !errors.Is(err, context.DeadlineExceeded) &&
+			if !errors.Is(err, context.DeadlineExceeded) &&
 				!errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.EHOSTUNREACH) && !errors.Is(err, syscall.ENETUNREACH) {
 				return nil, err
 			}
@@ -164,9 +162,6 @@ func NewRemoteRoutePublicationAuthority(origin, controlURI string, caPEM, certPE
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			if response.StatusCode == http.StatusConflict {
-				return nil, errRouteAuthorityInactive
-			}
 			return nil, fmt.Errorf("route authority refused publication: %d", response.StatusCode)
 		}
 		const maxAuthorityResponseBytes = 2*maxPublishedRouteBytes + 4096

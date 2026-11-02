@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -118,8 +117,6 @@ func TestRemoteRouteAuthorityFollowsActiveControlWithoutTrustFallback(t *testing
 	}
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(caPEM)
-	var active atomic.Int32
-	active.Store(2)
 	var calls [3]atomic.Int32
 	servers := make([]*httptest.Server, 3)
 	origins := make([]string, 3)
@@ -127,9 +124,6 @@ func TestRemoteRouteAuthorityFollowsActiveControlWithoutTrustFallback(t *testing
 		i := i
 		handler, err := NewControlRouteAuthorityHandler(map[string]string{nodeURI: "ingress-01"}, func(_ context.Context, intentID, nodeID string) (*AuthorizedRoutePublication, error) {
 			calls[i].Add(1)
-			if active.Load() != int32(i+1) {
-				return nil, fmt.Errorf("inactive control")
-			}
 			return &AuthorizedRoutePublication{IntentID: intentID, NodeID: nodeID, Generation: 2}, nil
 		})
 		if err != nil {
@@ -145,14 +139,17 @@ func TestRemoteRouteAuthorityFollowsActiveControlWithoutTrustFallback(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, selected := range []int32{2, 3} {
-		active.Store(selected)
+	servers[0].Close() // The first pinned control is inactive.
+	for _, selected := range []int{2, 3} {
+		if selected == 3 {
+			servers[1].Close() // The active control moved to the third origin.
+		}
 		decision, err := resolve(context.Background(), "pinned-intent", "ingress-01")
 		if err != nil || decision == nil || decision.IntentID != "pinned-intent" || decision.NodeID != "ingress-01" || decision.Generation != 2 {
 			t.Fatalf("active control %d decision=%+v err=%v", selected, decision, err)
 		}
 	}
-	if calls[0].Load() != 2 || calls[1].Load() != 2 || calls[2].Load() != 1 {
+	if calls[0].Load() != 0 || calls[1].Load() != 1 || calls[2].Load() != 1 {
 		t.Fatalf("unexpected control attempts: %d, %d, %d", calls[0].Load(), calls[1].Load(), calls[2].Load())
 	}
 	if _, err := NewRemoteRoutePublicationAuthorities(origins[:2], controlURI, caPEM, clientPEM, clientKey); err == nil {
@@ -161,32 +158,27 @@ func TestRemoteRouteAuthorityFollowsActiveControlWithoutTrustFallback(t *testing
 	if _, err := NewRemoteRoutePublicationAuthorities([]string{origins[0], origins[0], origins[2]}, controlURI, caPEM, clientPEM, clientKey); err == nil {
 		t.Fatal("repeated control origin was accepted")
 	}
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	conflict := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusConflict) }))
+	conflict.TLS = &tls.Config{Certificates: []tls.Certificate{serverIdentity}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots, MinVersion: tls.VersionTLS12}
+	conflict.StartTLS()
+	defer conflict.Close()
+	strict, err := NewRemoteRoutePublicationAuthorities([]string{conflict.URL, origins[1], origins[2]}, controlURI, caPEM, clientPEM, clientKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	closedOrigin := "https://" + closed.Addr().String()
-	if err := closed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	active.Store(2)
-	connectFallback, err := NewRemoteRoutePublicationAuthorities([]string{closedOrigin, origins[1], origins[2]}, controlURI, caPEM, clientPEM, clientKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decision, err := connectFallback(context.Background(), "pinned-intent", "ingress-01"); err != nil || decision == nil || decision.NodeID != "ingress-01" {
-		t.Fatalf("connection-refused control did not fall through to active control: decision=%+v err=%v", decision, err)
+	before := calls[2].Load()
+	if _, err := strict(context.Background(), "pinned-intent", "ingress-01"); err == nil || calls[2].Load() != before {
+		t.Fatal("authority conflict fell through to another control")
 	}
 	denied := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
 	denied.TLS = &tls.Config{Certificates: []tls.Certificate{serverIdentity}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots, MinVersion: tls.VersionTLS12}
 	denied.StartTLS()
 	defer denied.Close()
-	strict, err := NewRemoteRoutePublicationAuthorities([]string{denied.URL, origins[1], origins[2]}, controlURI, caPEM, clientPEM, clientKey)
+	strict, err = NewRemoteRoutePublicationAuthorities([]string{denied.URL, origins[1], origins[2]}, controlURI, caPEM, clientPEM, clientKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := calls[1].Load()
-	if _, err := strict(context.Background(), "pinned-intent", "ingress-01"); err == nil || calls[1].Load() != before {
+	if _, err := strict(context.Background(), "pinned-intent", "ingress-01"); err == nil || calls[2].Load() != before {
 		t.Fatal("unauthorized response fell through to another control")
 	}
 	malformed := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -200,7 +192,7 @@ func TestRemoteRouteAuthorityFollowsActiveControlWithoutTrustFallback(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := strict(context.Background(), "pinned-intent", "ingress-01"); err == nil || calls[1].Load() != before {
+	if _, err := strict(context.Background(), "pinned-intent", "ingress-01"); err == nil || calls[2].Load() != before {
 		t.Fatal("mismatched authority response fell through to another control")
 	}
 }
