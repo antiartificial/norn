@@ -89,7 +89,8 @@ def install(archive, registration_token):
         raise ValueError("runner config script is unsafe")
     run_as_runner((str(config), "--unattended", "--url", "https://github.com/antiartificial/norn",
                    "--token", registration_token, "--name", RUNNER_NAME,
-                   "--labels", "norn-m5-isolated", "--work", "_work", "--disableupdate"),
+                   "--labels", "norn-m5-isolated", "--no-default-labels",
+                   "--work", "_work", "--disableupdate"),
                   user, timeout=180)
     data = plistlib.dumps({"Label": "com.norn.m5.runner", "ProgramArguments": [
         str(INSTALL / "run.sh")], "WorkingDirectory": str(INSTALL), "UserName": RUNNER,

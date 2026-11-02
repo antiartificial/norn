@@ -104,6 +104,36 @@ def account_absent(name):
     raise ValueError("M5 guest account already exists; reconcile before retry")
 
 
+def remove_new_account_keychains(uid, home=None):
+    home = Path(home) if home is not None else Path("/Users") / REHEARSAL
+    info = home.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
+        raise ValueError("rehearsal home is unsafe")
+    keychains = home / "Library/Keychains"
+    if not keychains.exists() and not keychains.is_symlink():
+        return
+    root = keychains.lstat()
+    if not stat.S_ISDIR(root.st_mode) or root.st_uid != uid or root.st_dev != info.st_dev:
+        raise ValueError("rehearsal keychain root is unsafe")
+    entries = list(keychains.rglob("*"))
+    if len(entries) > 100:
+        raise ValueError("rehearsal keychain surface is unexpectedly large")
+    for path in entries:
+        item = path.lstat()
+        if (item.st_uid != uid or item.st_dev != root.st_dev or
+                not (stat.S_ISREG(item.st_mode) or stat.S_ISDIR(item.st_mode)) or
+                (stat.S_ISREG(item.st_mode) and (item.st_nlink != 1 or item.st_size > 5 * 1024 * 1024))):
+            raise ValueError("rehearsal keychain entry is unsafe")
+    for path in sorted(entries, key=lambda item: len(item.parts), reverse=True):
+        if path.is_dir():
+            path.rmdir()
+        else:
+            path.unlink()
+    keychains.rmdir()
+    if os.path.lexists(keychains):
+        raise ValueError("rehearsal keychain surface remains")
+
+
 def start():
     guest_only()
     if STARTED.exists() or FINISHED.exists():
@@ -156,17 +186,12 @@ def finish():
         raise ValueError("rehearsal session is not a graphical login")
     if uid == pwd.getpwnam(RUNNER).pw_uid:
         raise ValueError("runner and rehearsal accounts share a UID")
-    keychains = Path("/Users") / REHEARSAL / "Library/Keychains"
-    if keychains.exists():
-        info = keychains.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or
-                list(keychains.iterdir())):
-            raise ValueError("rehearsal keychain surface needs protected reconciliation")
-        keychains.rmdir()
+    remove_new_account_keychains(uid)
     PASSWORD.unlink()
     receipt = {"schema": "norn.m5-guest-account-handoff-finished/v1", "rehearsalUID": uid,
                "runnerUID": pwd.getpwnam(RUNNER).pw_uid, "guiDomain": f"gui/{uid}",
-               "guiManager": manager, "automaticLogin": "off", "kcpasswordAbsent": True}
+               "guiManager": manager, "automaticLogin": "off", "kcpasswordAbsent": True,
+               "rehearsalKeychainsAbsent": True}
     durable(FINISHED, json.dumps(receipt, sort_keys=True) + "\n")
     print(json.dumps(receipt, sort_keys=True))
 

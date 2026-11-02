@@ -63,6 +63,7 @@ class GuestHardeningTests(unittest.TestCase):
                     patch.object(hardening, "guest_only"), \
                     patch.object(hardening, "command", side_effect=command), \
                     patch.object(hardening, "autologin_status", return_value="Automatic login is disabled"), \
+                    patch.object(hardening, "remove_new_account_keychains"), \
                     patch.object(hardening.pwd, "getpwnam", side_effect=lambda name: users[name]), \
                     patch.object(hardening.subprocess, "run", return_value=SimpleNamespace(returncode=1)), \
                     patch.object(Path, "exists", autospec=True, side_effect=lambda self: False if str(self) == "/etc/kcpassword" else self.is_file()):
@@ -70,6 +71,25 @@ class GuestHardeningTests(unittest.TestCase):
             receipt = json.loads((root / "account-handoff-finished.json").read_text())
             self.assertEqual(receipt["guiManager"], "Aqua")
             self.assertFalse((root / "rehearsal-login-password").exists())
+
+    def test_finish_removes_only_new_accounts_keychain_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            keychains = home / "Library/Keychains"
+            keychains.mkdir(parents=True)
+            (keychains / "login.keychain-db").write_bytes(b"new disposable login keychain")
+            hardening.remove_new_account_keychains(hardening.os.getuid(), home)
+            self.assertFalse(keychains.exists())
+
+    def test_finish_rejects_linked_keychain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            keychains = home / "Library/Keychains"
+            keychains.mkdir(parents=True)
+            (keychains / "linked").symlink_to("/etc/passwd")
+            with self.assertRaisesRegex(ValueError, "unsafe"):
+                hardening.remove_new_account_keychains(hardening.os.getuid(), home)
+            self.assertTrue(keychains.exists())
 
 
 if __name__ == "__main__":
