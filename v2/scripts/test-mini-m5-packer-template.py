@@ -19,6 +19,7 @@ class TemplateTests(unittest.TestCase):
         self.assertIn('version = "= 1.21.0"', result)
         self.assertIn('${var.m5_bootstrap_password}', result)
         self.assertNotIn('admin ALL=(ALL)', result)
+        self.assertNotIn('github.com/hashicorp/ansible', result)
         self.assertNotIn('spctl --global-disable', result)
         self.assertNotIn('autoLoginUser', result)
 

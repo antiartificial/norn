@@ -23,6 +23,9 @@ def transform(raw):
     text = raw.decode("utf-8")
     text = replace_once(text, 'version = ">= 1.16.0"', 'version = "= 1.21.0"')
     text = replace_once(text,
+                        '    ansible = {\n      version = "~> 1"\n      source  = "github.com/hashicorp/ansible"\n    }\n',
+                        '')
+    text = replace_once(text,
                         'source "tart-cli" "tart" {',
                         'variable "m5_ipsw_path" { type = string }\n'
                         'variable "m5_guest_name" { type = string }\n'
