@@ -10,11 +10,18 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import urllib.parse
+import urllib.request
 
 
 VM_PREFIX = "norn-m5-"
 TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
 OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise ValueError("GitHub API redirect refused")
 
 
 def digest(path):
@@ -37,7 +44,7 @@ def inventory(tart):
 
 def verify(intent, marker, journal, tart):
     expected = {"schema", "runId", "sourceSHA", "guestName", "createMarkerSHA256",
-                "createdReceiptSHA256", "tartConfigSHA256", "runnerState", "retireBy"}
+                "createdReceiptSHA256", "tartConfigSHA256", "runnerState", "runnerRevokedReceiptSHA256", "retireBy"}
     if set(intent) != expected or intent["schema"] != "norn.m5-local-guest-retire-intent/v1":
         raise ValueError("unexpected retire intent")
     if (not re.fullmatch(r"[0-9]{1,20}", intent["runId"]) or
@@ -47,7 +54,9 @@ def verify(intent, marker, journal, tart):
             not re.fullmatch(r"[0-9a-f]{64}", intent["tartConfigSHA256"]) or
             (intent["createdReceiptSHA256"] is not None and
              not re.fullmatch(r"[0-9a-f]{64}", intent["createdReceiptSHA256"])) or
-            intent["runnerState"] != "never-registered"):
+            intent["runnerState"] not in ("never-registered", "revoked") or
+            (intent["runnerState"] == "never-registered" and intent["runnerRevokedReceiptSHA256"] is not None) or
+            (intent["runnerState"] == "revoked" and not re.fullmatch(r"[0-9a-f]{64}", intent["runnerRevokedReceiptSHA256"] or ""))):
         raise ValueError("invalid retire identity")
     expiry = datetime.fromisoformat(intent["retireBy"].replace("Z", "+00:00"))
     if expiry.tzinfo != timezone.utc or expiry <= datetime.now(timezone.utc):
@@ -80,6 +89,21 @@ def verify(intent, marker, journal, tart):
         raise ValueError("unreviewed Tart binary")
 
 
+def runner_absent(token, runner_name):
+    url = "https://api.github.com/repos/antiartificial/norn/actions/runners?" + urllib.parse.urlencode({"name": runner_name, "per_page": 100})
+    request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10",
+        "User-Agent": "norn-m5-protected-retire"})
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
+        if response.status != 200:
+            raise ValueError("runner inventory failed")
+        result = json.loads(response.read(1024 * 1024))
+    rows = result.get("runners")
+    if not isinstance(rows, list) or result.get("total_count") != len(rows):
+        raise ValueError("runner inventory is incomplete")
+    return not any(row.get("name") == runner_name for row in rows)
+
+
 def retire(intent, root, tart):
     root = Path(root)
     info = root.lstat()
@@ -89,8 +113,26 @@ def retire(intent, root, tart):
     marker = root / (name + ".create-started")
     journal = root / (name + ".json")
     verify(intent, marker, journal, tart)
-    if (root / (name + ".runner-registered")).exists():
-        raise ValueError("guest runner requires protected revocation before retire")
+    registered = root / (name + ".runner-registered")
+    if intent["runnerState"] == "never-registered":
+        if registered.exists():
+            raise ValueError("guest runner requires protected revocation before retire")
+    else:
+        marker = json.loads(registered.read_bytes())
+        receipt_path = root / (name + ".runner-revoked.json")
+        if digest(receipt_path) != intent["runnerRevokedReceiptSHA256"]:
+            raise ValueError("runner revocation receipt mismatch")
+        receipt = json.loads(receipt_path.read_bytes())
+        if (marker.get("schema") != "norn.m5-local-guest-runner-registered/v1" or
+                marker.get("guestName") != name or
+                receipt.get("schema") != "norn.m5-local-guest-runner-revoked/v1" or
+                receipt.get("guestName") != name or receipt.get("runnerId") != marker.get("runnerId") or
+                receipt.get("runnerName") != marker.get("runnerName") or
+                receipt.get("createMarkerSHA256") != intent["createMarkerSHA256"]):
+            raise ValueError("runner revocation identity mismatch")
+        token = os.environ.get("M5_GITHUB_ADMIN_TOKEN", "")
+        if not token or not runner_absent(token, marker["runnerName"]):
+            raise ValueError("runner has not been proven absent")
     rows = [row for row in inventory(tart) if row["Name"] == name]
     if len(rows) > 1:
         raise ValueError("duplicate guest identity")
