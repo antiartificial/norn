@@ -4,6 +4,8 @@
 
 The first protected staging canary release remains live on public HTTPS. A second protected release from source `be5ca5d969ccf3509e62ce04a833516bb5c204db` built and attested image `ghcr.io/antiartificial/norn-fleet-canary@sha256:33265daecc36215776c2029b7e0cd16463570e559c28678d3a94e249bd43ba52`, but [run 41364735627](https://github.com/antiartificial/norn/actions/runs/41364735627) failed during deployment completion. Its new Nomad job has two healthy allocations on app-03 and app-04. The previous job also has two healthy allocations, and the public `/version` route still serves the first release source `182b719bb8f5b84f8c7272e715f83553a00acb4d`. The deployment operation `6d96db37-a54e-4231-b1b8-e3e616beb3ab` is failed with manual recovery required; its durable Nomad effect says completed. The one-use runner was disabled and unregistered.
 
+The proposed [held Fleet deployment recovery procedure](fleet-held-deployment-recovery.md) describes the checks and operator endpoint; it requires the reviewed recovery code to be deployed first.
+
 The immediate release blocker is the route handoff for a second generation: the current initial route path rejects an already active route after creating the healthy replacement job. A fenced N+1 handoff and recovery of this failed operation are being implemented and tested. Keep both jobs for evidence and availability until a verified route switch and separate old-job retirement. Do not count the second release as deployed. The earlier replica scale and app-node drain proofs remain valid; running upgrade, rollback, loaded node-count contraction, HA fault/restore, soak, and production promotion remain open. No reliable production release date is established.
 
 ## Fleet staging canary checkpoint (2026-11-01 23:49 UTC)

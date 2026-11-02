@@ -148,6 +148,15 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 		clientv3.Compare(clientv3.ModRevision(attemptKey), "=", attempt.Kvs[0].ModRevision),
 		priorActiveCompare(activeKey, intent),
 	}
+	if current, _, err := s.load(ctx, claim.OperationID()); err != nil {
+		return nil, nil, err
+	} else if current.Operation.Metadata[fleetDeploymentRecoveryEffect] != nil {
+		healthCompare, err := s.requireFleetRecoveryHealth(ctx, claim, proof.HealthEffect)
+		if err != nil {
+			return nil, nil, err
+		}
+		compares = append(compares, healthCompare)
+	}
 	compares = append(compares, inventoryCompares...)
 	return compares, []clientv3.Op{clientv3.OpPut(activeKey, string(active))}, nil
 }

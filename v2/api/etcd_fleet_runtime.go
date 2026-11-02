@@ -201,6 +201,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	registerEtcdPlatformReleaseIntentRoutes(router, cfg, identities, operations)
 	registerEtcdPlatformGenesisImportRoutes(router, cfg, identities, operations)
 	registerEtcdPlatformReleaseRecoveryRoutes(router, cfg, identities, operations)
+	registerEtcdFleetDeploymentRecoveryRoutes(router, cfg, identities, operations)
 	offlineOwnerKey, offlineReservationVerifier, err := newOfflineReservationRuntime(cfg)
 	if err != nil {
 		return fmt.Errorf("configure offline Fleet reservation: %w", err)

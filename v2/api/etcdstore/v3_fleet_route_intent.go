@@ -144,6 +144,11 @@ func (s *V3OperationStore) requireHealthyDeploymentEffect(ctx context.Context, c
 	if err != nil {
 		return err
 	}
+	if current.Operation.Metadata[fleetDeploymentRecoveryEffect] != nil {
+		if _, err := s.requireFleetRecoveryHealth(ctx, claim, token); err != nil {
+			return err
+		}
+	}
 	if _, err := effects.validateDeploymentEffectReservation(ctx, record.Reservation, current.Operation); err != nil {
 		return fmt.Errorf("deployment health effect lost signed acceptance: %w", err)
 	}

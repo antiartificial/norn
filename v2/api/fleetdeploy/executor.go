@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"norn/v2/api/database"
+	"norn/v2/api/effect"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/ingress"
 	"norn/v2/api/model"
@@ -59,10 +60,30 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperation(context.Context, *mode
 }
 
 func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context.Context, op *model.Operation, claim store.OperationClaim,
-	lock store.AppOperationLock) (*pipeline.OperationResult, error) {
-	if e == nil || e.Store == nil || e.Nomad == nil || op == nil || op.Kind != "app.deploy" || op.ID != claim.OperationID() ||
-		lock == nil || lock.Fence() == "" || lock.Context().Err() != nil || e.Route.Listen == nil || e.Authority == "" || e.AppsDir == "" {
+	lock store.AppOperationLock) (result *pipeline.OperationResult, resultErr error) {
+	if e == nil || e.Store == nil || op == nil || op.Kind != "app.deploy" || op.ID != claim.OperationID() ||
+		lock == nil || lock.Fence() == "" || lock.Context().Err() != nil {
 		return nil, fmt.Errorf("claimed Fleet deployment executor is unavailable")
+	}
+	if op.Metadata["fleetDeploymentRecoveryEffect"] != nil {
+		defer func() {
+			if resultErr == nil {
+				return
+			}
+			if stopErr := e.Store.StopClaimedFleetDeploymentRecovery(ctx, claim, lock); stopErr != nil {
+				resultErr = fmt.Errorf("recovery could not retain held failure: %w (original: %v)", stopErr, resultErr)
+				return
+			}
+			result = pipeline.FencedFailedOperationResult(claim, "Fleet deployment recovery stopped; manual review is required")
+			resultErr = nil
+		}()
+	}
+	if e.Nomad == nil || e.Route.Listen == nil || e.Authority == "" || e.AppsDir == "" {
+		return nil, fmt.Errorf("claimed Fleet deployment executor is unavailable")
+	}
+	recovery, err := e.Store.ClaimedFleetDeploymentRecovery(ctx, claim)
+	if err != nil {
+		return nil, err
 	}
 	source, err := worker.LoadClaimedFleetDeploymentSource(ctx, e.Store, *op, e.AppsDir)
 	if err != nil {
@@ -91,26 +112,6 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if err := ingress.ProbePublisherNodesWithTLS(ctx, e.Route.PublisherCAPEM, e.Route.PublisherCertPEM, e.Route.PublisherKeyPEM, inventory.Nodes, e.Route.PublisherPort); err != nil {
 		return nil, fmt.Errorf("claimed Fleet publisher preflight failed: %w", err)
 	}
-	if len(source.Managed.RuntimeTargets) > 0 {
-		if e.DatabaseProfile == "" || source.Managed.ProfileID != e.DatabaseProfile || e.JobSecrets == nil {
-			return nil, fmt.Errorf("claimed Fleet database profile differs from this worker")
-		}
-		secretEnv, err := e.JobSecrets.EnvMap(source.Spec.App)
-		if err != nil {
-			return nil, fmt.Errorf("claimed Fleet app secrets are unavailable")
-		}
-		if conflicts := source.Spec.DatabaseEnvConflicts(secretEnv); len(conflicts) > 0 {
-			return nil, fmt.Errorf("claimed Fleet database env conflicts with app secrets: %s", strings.Join(conflicts, ", "))
-		}
-	}
-	databaseItems, err := worker.ResolveClaimedFleetRuntimeDatabaseItems(ctx, source, e.Store, e.DatabaseSecrets)
-	if err != nil {
-		return nil, err
-	}
-	plan, err := worker.PrepareClaimedFleetDeploymentJob(ctx, source, claim, e.Authority, e.Nomad, databaseItems, e.JobSecrets)
-	if err != nil {
-		return nil, err
-	}
 	listener, err := e.Route.Listen()
 	if err != nil {
 		return nil, err
@@ -122,13 +123,41 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if _, err := ingress.PrivateControlRouteAuthorityTLS(listener, e.Route.AuthorityCertPEM, e.Route.AuthorityKeyPEM, e.Route.NodeCAPEM); err != nil {
 		return nil, err
 	}
-	effects, err := etcdstore.NewV3DeploymentEffectReservations(e.Store)
-	if err != nil {
-		return nil, err
-	}
-	healthEffect, err := worker.AdvanceClaimedFleetDeploymentJob(ctx, effects, e.Nomad, plan)
-	if err != nil {
-		return nil, err
+	var healthEffect effect.Token
+	if recovery != nil {
+		healthEffect, err = e.Store.RecordClaimedFleetRecoveryHealth(ctx, claim, lock, e.Nomad)
+		if err != nil {
+			return nil, fmt.Errorf("fresh Nomad health was not verified: %w", err)
+		}
+	} else {
+		if len(source.Managed.RuntimeTargets) > 0 {
+			if e.DatabaseProfile == "" || source.Managed.ProfileID != e.DatabaseProfile || e.JobSecrets == nil {
+				return nil, fmt.Errorf("claimed Fleet database profile differs from this worker")
+			}
+			secretEnv, err := e.JobSecrets.EnvMap(source.Spec.App)
+			if err != nil {
+				return nil, fmt.Errorf("claimed Fleet app secrets are unavailable")
+			}
+			if conflicts := source.Spec.DatabaseEnvConflicts(secretEnv); len(conflicts) > 0 {
+				return nil, fmt.Errorf("claimed Fleet database env conflicts with app secrets: %s", strings.Join(conflicts, ", "))
+			}
+		}
+		databaseItems, err := worker.ResolveClaimedFleetRuntimeDatabaseItems(ctx, source, e.Store, e.DatabaseSecrets)
+		if err != nil {
+			return nil, err
+		}
+		plan, err := worker.PrepareClaimedFleetDeploymentJob(ctx, source, claim, e.Authority, e.Nomad, databaseItems, e.JobSecrets)
+		if err != nil {
+			return nil, err
+		}
+		effects, err := etcdstore.NewV3DeploymentEffectReservations(e.Store)
+		if err != nil {
+			return nil, err
+		}
+		healthEffect, err = worker.AdvanceClaimedFleetDeploymentJob(ctx, effects, e.Nomad, plan)
+		if err != nil {
+			return nil, err
+		}
 	}
 	serveCtx, stopServing := context.WithCancel(ctx)
 	defer stopServing()

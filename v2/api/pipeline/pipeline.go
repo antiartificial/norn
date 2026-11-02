@@ -230,6 +230,11 @@ func FencedCompletedOperationResult(claim store.OperationClaim, message string, 
 		Metadata: metadata, finished: true, appLockFenced: true}
 }
 
+// FencedFailedOperationResult reports an already committed held failure.
+func FencedFailedOperationResult(claim store.OperationClaim, message string) *OperationResult {
+	return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: message, finished: true, appLockFenced: true}
+}
+
 func deferredResult(claim store.OperationClaim, err error) *OperationResult {
 	return &OperationResult{Claim: claim, deferred: err}
 }

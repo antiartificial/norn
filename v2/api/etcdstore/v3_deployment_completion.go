@@ -101,6 +101,7 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 		return store.ErrOperationOwnershipLost
 	}
 	op := record.Operation
+	recovering := op.Metadata[fleetDeploymentRecoveryEffect] != nil
 	if value, _ := op.Payload["deploymentId"].(string); value == "" || value != result.ID || result.App != op.App || result.SagaID != op.SagaID {
 		return fmt.Errorf("deployment result does not match claimed operation")
 	}
@@ -147,9 +148,16 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 		// The same transaction below fences the fresh route proof and healthy
 		// effect. A prior uncertain publication may therefore release its
 		// recovery hold only when this positive-traffic completion commits.
+		if op.Metadata[fleetDeploymentRecoveryEffect] != nil {
+			delete(op.Metadata, "manualRecoveryRequired")
+			delete(op.Metadata, fleetDeploymentRecoveryEffect)
+		}
 		delete(op.Metadata, "externalEffectRecoveryPending")
 		delete(op.Metadata, "effectRecoveryReason")
 		delete(op.Metadata, "effectResource")
+	}
+	if status == model.OperationFailed && recovering {
+		delete(op.Metadata, fleetDeploymentRecoveryEffect)
 	}
 	if status == model.OperationSucceeded && (op.Metadata["manualRecoveryRequired"] == true || op.Metadata["externalEffectRecoveryPending"] == true) {
 		return fmt.Errorf("successful deployment cannot retain unresolved recovery")
@@ -220,7 +228,21 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 			return err
 		}
 		key := s.deploymentRegionResultKey(result.ID, region.Region)
-		comparisons = append(comparisons, clientv3.Compare(clientv3.CreateRevision(key), "=", 0))
+		prior, err := s.kv.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		if len(prior.Kvs) == 0 {
+			comparisons = append(comparisons, clientv3.Compare(clientv3.CreateRevision(key), "=", 0))
+		} else if recovering && ((status == model.OperationSucceeded && len(routeSource) == 1) || status == model.OperationFailed) {
+			var old v3DeploymentRegionResult
+			if decodeV3Record(prior.Kvs[0].Value, &old) != nil || old.Result.DeploymentID != result.ID || old.Result.Region != expected.Name || old.Result.NomadRegion != expected.NomadRegion || old.Result.DesiredWeight != expected.TrafficWeight || old.Result.ActiveWeight != 0 {
+				return fmt.Errorf("held deployment region result differs")
+			}
+			comparisons = append(comparisons, clientv3.Compare(clientv3.ModRevision(key), "=", prior.Kvs[0].ModRevision))
+		} else {
+			return fmt.Errorf("deployment region result already exists")
+		}
 		ops = append(ops, clientv3.OpPut(key, string(encoded)))
 	}
 	if positiveTraffic {
