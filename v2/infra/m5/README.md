@@ -48,6 +48,12 @@ must review the runner-to-Tart-guest link and sign this candidate. The copied
 state restore workflow verifies the signature and exact hashes before any
 retained backup or release inputs are opened.
 
+Before guest hardening, `m5-local-guest-hardening-admission.yml` verifies a
+second signed intent against the create marker and receipt, Tart configuration,
+the observed Ed25519 SSH host key, and a one-use guest runner public key. It is
+read-only. The owner must bind the observed host key and Tart configuration to
+the created guest before signing; SSH discovery alone is not authentication.
+
 ## Remaining guest hardening
 
 No workflow may run the historical restore from the temporary Packer bootstrap
