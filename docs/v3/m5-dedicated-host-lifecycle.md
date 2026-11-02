@@ -118,3 +118,13 @@ manually.
 This is a candidate, not a passing host qualification. Packer's automated
 Setup Assistant route needs a reviewed template, pinned Packer/plugin/Softnet
 binaries, and a guest hardening/readback controller before the first VM effect.
+
+The downloaded archives match their publisher SHA-256 values: Tart 2.41.1
+`e680a734…`, Softnet 0.25.0 `5a2e8ef7…`, Packer 1.16.2 Darwin arm64
+`3d7e4df8…`, and Tart Packer plugin 1.21.0 Darwin arm64 `4a34ca87…`.
+The extracted Tart executable is `6d3a4554…`, which the read-only controller
+pins. `mini-m5-packer-template` derives an M5 bootstrap from the exact Cirrus
+template at commit `d6a3774b…` and SHA-256 `2beef2f4…`. It uses a random
+bootstrap password, local verified IPSW, and Softnet; it removes the upstream
+passwordless sudo, auto-login, and Gatekeeper disabling. The bootstrap guest
+still requires hardened account/GUI/SSH readback before retained inputs.
