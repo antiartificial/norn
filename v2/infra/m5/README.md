@@ -5,6 +5,16 @@
 The upstream project is MIT licensed. The copied file's SHA-256 is
 `2beef2f46e600e6f36ac1dc272077bb5154c1ae2ceea3cbacf1ea3462faa652c`.
 
+The pinned Apple IPSW is
+`https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw`.
+The official response length and verified local size are `19772231540` bytes.
+Eight exact HTTP 206 ranges were assembled, then the full file was hashed
+independently. Both hashes were
+`885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95`.
+The owner-only local staging copy and acquisition evidence are under
+`/private/tmp/norn-m5-ipsw-cache`; the redundant range parts were removed
+after verification.
+
 `mini-m5-packer-template` verifies that exact file and derives an M5-only
 template. It pins the Tart plugin to 1.21.0, uses an already verified local
 IPSW, binds a run-specific guest name and random bootstrap password, starts

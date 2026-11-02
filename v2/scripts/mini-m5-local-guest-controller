@@ -20,6 +20,7 @@ PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5a
 PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
 IPSW_SIZE = 19772231540
+IPSW_SHA256 = "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95"
 VM_PREFIX = "norn-m5-"
 SCHEMA = "norn.m5-local-guest-reservation/v1"
 
@@ -64,7 +65,7 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume):
         raise ValueError("invalid run ID")
     if intent["guestName"] != VM_PREFIX + run_id or not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]):
         raise ValueError("intent is not run/source bound")
-    if intent["tartSHA256"] != TART_SHA256 or not re.fullmatch(r"[0-9a-f]{64}", intent["ipswSHA256"]):
+    if intent["tartSHA256"] != TART_SHA256 or intent["ipswSHA256"] != IPSW_SHA256:
         raise ValueError("unreviewed tool or IPSW")
     if (type(intent["cpuCount"]) is not int or intent["cpuCount"] != 4 or
             type(intent["memoryGiB"]) is not int or intent["memoryGiB"] != 8 or
