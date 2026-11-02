@@ -61,6 +61,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperation(context.Context, *mode
 
 func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context.Context, op *model.Operation, claim store.OperationClaim,
 	lock store.AppOperationLock) (result *pipeline.OperationResult, resultErr error) {
+	stage := "preflight"
 	if e == nil || e.Store == nil || op == nil || op.Kind != "app.deploy" || op.ID != claim.OperationID() ||
 		lock == nil || lock.Fence() == "" || lock.Context().Err() != nil {
 		return nil, fmt.Errorf("claimed Fleet deployment executor is unavailable")
@@ -70,6 +71,13 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 			if resultErr == nil {
 				return
 			}
+			class := "execution"
+			if effect.IsDeferred(resultErr) {
+				class = "pending-effect"
+			} else if errors.Is(resultErr, store.ErrOperationOwnershipLost) {
+				class = "ownership-lost"
+			}
+			log.Printf("fleet recovery stopped operation=%s generation=%d stage=%s class=%s", claim.OperationID(), claim.Generation(), stage, class)
 			if stopErr := e.Store.StopClaimedFleetDeploymentRecovery(ctx, claim, lock); stopErr != nil {
 				resultErr = fmt.Errorf("recovery could not retain held failure: %w (original: %v)", stopErr, resultErr)
 				return
@@ -85,6 +93,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if err != nil {
 		return nil, err
 	}
+	stage = "source"
 	source, err := worker.LoadClaimedFleetDeploymentSource(ctx, e.Store, *op, e.AppsDir)
 	if err != nil {
 		return nil, err
@@ -102,6 +111,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	// A completed Fleet inventory and matching private node identities must
 	// exist before staging inputs or submitting an external Nomad job. Route
 	// intent independently rechecks the active inventory after job health.
+	stage = "ingress-preflight"
 	inventory, err := e.Store.CurrentActiveFleetIngressInventory(ctx, source.Route.FleetCluster, source.Route.FleetEnvironment, e.Route.ObserverPort)
 	if err != nil {
 		return nil, fmt.Errorf("claimed Fleet ingress inventory is unavailable: %w", err)
@@ -123,6 +133,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 	if _, err := ingress.PrivateControlRouteAuthorityTLS(listener, e.Route.AuthorityCertPEM, e.Route.AuthorityKeyPEM, e.Route.NodeCAPEM); err != nil {
 		return nil, err
 	}
+	stage = "health-proof"
 	var healthEffect effect.Token
 	if recovery != nil {
 		healthEffect, err = e.Store.RecordClaimedFleetRecoveryHealth(ctx, claim, lock, e.Nomad)
@@ -159,6 +170,7 @@ func (e *ClaimedFleetDeploymentExecutor) ExecuteOperationWithAppLock(ctx context
 			return nil, err
 		}
 	}
+	stage = "route-publication"
 	serveCtx, stopServing := context.WithCancel(ctx)
 	defer stopServing()
 	served := make(chan error, 1)

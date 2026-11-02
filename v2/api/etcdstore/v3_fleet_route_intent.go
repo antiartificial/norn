@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 
 	"github.com/google/uuid"
@@ -269,9 +270,6 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 			// app lock to change. Recheck all local authority in one etcd snapshot
 			// before returning an intent as currently publishable.
 			comparisons := []clientv3.Cmp{
-				clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", operationRevision),
-				clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision),
-				clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
 				clientv3.Compare(clientv3.Value(s.appLockKey(spec.App)), "=", lock.Fence()),
 				clientv3.Compare(clientv3.ModRevision(s.fleetAppTargetKey(target.App, target.ControlEnvironment)), "=", targetRevision),
 				clientv3.Compare(clientv3.ModRevision(s.operationAcceptanceIndexKey(claim.OperationID())), "=", index.Kvs[0].ModRevision),
@@ -282,11 +280,38 @@ func (s *V3OperationStore) initialFleetRouteIntent(ctx context.Context, claim st
 				priorActiveCompare(activeRouteKey, intent),
 			}
 			comparisons = append(comparisons, inventoryCompares...)
-			stillCurrent, err := s.kv.Txn(ctx).If(comparisons...).Then(clientv3.OpGet(s.ownerKey(claim.OperationID()))).Commit()
-			if err != nil || !stillCurrent.Succeeded || len(stillCurrent.Responses) != 1 || len(stillCurrent.Responses[0].GetResponseRange().Kvs) != 1 || stillCurrent.Responses[0].GetResponseRange().Kvs[0].Lease == 0 {
-				return nil, store.ErrOperationOwnershipLost
+			for attempt := 0; attempt < 3; attempt++ {
+				if lock.Context().Err() != nil {
+					return nil, store.ErrOperationOwnershipLost
+				}
+				current, revision, err := s.load(ctx, claim.OperationID())
+				if err != nil || current.Generation != claim.Generation() || current.Operation.Status != model.OperationRunning || current.Operation.LockedBy != claim.OwnerID() {
+					return nil, store.ErrOperationOwnershipLost
+				}
+				unchanged := current.Operation
+				unchanged.LockedUntil = record.Operation.LockedUntil
+				unchanged.UpdatedAt = record.Operation.UpdatedAt
+				if !reflect.DeepEqual(unchanged, record.Operation) {
+					return nil, store.ErrOperationOwnershipLost
+				}
+				currentOwner, err := s.kv.Get(ctx, s.ownerKey(claim.OperationID()))
+				if err != nil || len(currentOwner.Kvs) != 1 || currentOwner.Kvs[0].Lease == 0 || string(currentOwner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) {
+					return nil, store.ErrOperationOwnershipLost
+				}
+				fenced := append([]clientv3.Cmp{
+					clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", revision),
+					clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", currentOwner.Kvs[0].ModRevision),
+					clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
+				}, comparisons...)
+				stillCurrent, err := s.kv.Txn(ctx).If(fenced...).Then(clientv3.OpGet(s.ownerKey(claim.OperationID()))).Commit()
+				if err != nil {
+					return nil, err
+				}
+				if stillCurrent.Succeeded && len(stillCurrent.Responses) == 1 && len(stillCurrent.Responses[0].GetResponseRange().Kvs) == 1 && stillCurrent.Responses[0].GetResponseRange().Kvs[0].Lease != 0 {
+					return intent, nil
+				}
 			}
-			return intent, nil
+			return nil, store.ErrOperationOwnershipLost
 		}
 	}
 	if requireExisting {
