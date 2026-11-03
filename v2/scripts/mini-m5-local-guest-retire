@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Retire one M5 local guest under a separately signed protected run."""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import urllib.parse
+import urllib.request
+
+
+VM_PREFIX = "norn-m5-"
+TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
+OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise ValueError("GitHub API redirect refused")
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def inventory(tart):
+    result = subprocess.run((str(tart), "list", "--source", "local", "--format", "json"),
+                            check=True, capture_output=True, text=True, timeout=15)
+    rows = json.loads(result.stdout)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get("Name"), str)
+                                          for row in rows):
+        raise ValueError("ambiguous Tart inventory")
+    return rows
+
+
+def verify(intent, marker, journal, tart):
+    expected = {"schema", "runId", "sourceSHA", "guestName", "createMarkerSHA256",
+                "createdReceiptSHA256", "tartConfigSHA256", "runnerState", "runnerRevokedReceiptSHA256", "retireBy"}
+    if set(intent) != expected or intent["schema"] != "norn.m5-local-guest-retire-intent/v1":
+        raise ValueError("unexpected retire intent")
+    if (not re.fullmatch(r"[0-9]{1,20}", intent["runId"]) or
+            not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]) or
+            not re.fullmatch(r"norn-m5-[0-9]{1,20}", intent["guestName"]) or
+            not re.fullmatch(r"[0-9a-f]{64}", intent["createMarkerSHA256"]) or
+            not re.fullmatch(r"[0-9a-f]{64}", intent["tartConfigSHA256"]) or
+            (intent["createdReceiptSHA256"] is not None and
+             not re.fullmatch(r"[0-9a-f]{64}", intent["createdReceiptSHA256"])) or
+            intent["runnerState"] not in ("never-registered", "revoked") or
+            (intent["runnerState"] == "never-registered" and intent["runnerRevokedReceiptSHA256"] is not None) or
+            (intent["runnerState"] == "revoked" and not re.fullmatch(r"[0-9a-f]{64}", intent["runnerRevokedReceiptSHA256"] or ""))):
+        raise ValueError("invalid retire identity")
+    expiry = datetime.fromisoformat(intent["retireBy"].replace("Z", "+00:00"))
+    if expiry.tzinfo != timezone.utc or expiry <= datetime.now(timezone.utc):
+        raise ValueError("retire intent expired")
+    required = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/master",
+                "GITHUB_REF_PROTECTED": "true", "RUNNER_NAME": "norn-m5-supervisor-01",
+                "GITHUB_RUN_ID": intent["runId"], "GITHUB_SHA": intent["sourceSHA"],
+                "NORN_M5_PROTECTED_CONTROLLER": "1"}
+    if any(os.environ.get(key) != value for key, value in required.items()):
+        raise ValueError("retire requires exact protected supervisor run")
+    if digest(marker) != intent["createMarkerSHA256"]:
+        raise ValueError("create marker mismatch")
+    created = journal.with_name(intent["guestName"] + ".created.json")
+    if created.exists():
+        if intent["createdReceiptSHA256"] is None or digest(created) != intent["createdReceiptSHA256"]:
+            raise ValueError("created guest receipt mismatch")
+        receipt = json.loads(created.read_bytes())
+        if (receipt.get("guestName") != intent["guestName"] or
+                receipt.get("tartConfigSHA256") != intent["tartConfigSHA256"]):
+            raise ValueError("created guest configuration mismatch")
+    elif intent["createdReceiptSHA256"] is not None:
+        raise ValueError("created guest receipt is missing")
+    recorded = json.loads(journal.read_bytes())
+    if (recorded.get("schema") != "norn.m5-local-guest-reservation/v1" or
+            recorded.get("intent", {}).get("guestName") != intent["guestName"]):
+        raise ValueError("journal guest identity mismatch")
+    info = Path(tart).lstat()
+    if (not Path(tart).is_absolute() or not stat.S_ISREG(info.st_mode) or
+            info.st_uid != os.geteuid() or info.st_mode & 0o022 or digest(tart) != TART_SHA256):
+        raise ValueError("unreviewed Tart binary")
+
+
+def runner_absent(token, runner_name):
+    url = "https://api.github.com/repos/antiartificial/norn/actions/runners?" + urllib.parse.urlencode({"name": runner_name, "per_page": 100})
+    request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10",
+        "User-Agent": "norn-m5-protected-retire"})
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
+        if response.status != 200:
+            raise ValueError("runner inventory failed")
+        result = json.loads(response.read(1024 * 1024))
+    rows = result.get("runners")
+    if not isinstance(rows, list) or result.get("total_count") != len(rows):
+        raise ValueError("runner inventory is incomplete")
+    return not any(row.get("name") == runner_name for row in rows)
+
+
+def retire(intent, root, tart):
+    root = Path(root)
+    info = root.lstat()
+    if not root.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("journal root must be owner-only")
+    name = intent["guestName"]
+    marker = root / (name + ".create-started")
+    journal = root / (name + ".json")
+    verify(intent, marker, journal, tart)
+    registered = root / (name + ".runner-registered")
+    if intent["runnerState"] == "never-registered":
+        if registered.exists():
+            raise ValueError("guest runner requires protected revocation before retire")
+    else:
+        marker = json.loads(registered.read_bytes())
+        receipt_path = root / (name + ".runner-revoked.json")
+        if digest(receipt_path) != intent["runnerRevokedReceiptSHA256"]:
+            raise ValueError("runner revocation receipt mismatch")
+        receipt = json.loads(receipt_path.read_bytes())
+        if (marker.get("schema") != "norn.m5-local-guest-runner-registered/v1" or
+                marker.get("guestName") != name or
+                receipt.get("schema") != "norn.m5-local-guest-runner-revoked/v1" or
+                receipt.get("guestName") != name or receipt.get("runnerId") != marker.get("runnerId") or
+                receipt.get("runnerName") != marker.get("runnerName") or
+                receipt.get("createMarkerSHA256") != intent["createMarkerSHA256"]):
+            raise ValueError("runner revocation identity mismatch")
+        token = os.environ.get("M5_GITHUB_ADMIN_TOKEN", "")
+        if not token or not runner_absent(token, marker["runnerName"]):
+            raise ValueError("runner has not been proven absent")
+    rows = [row for row in inventory(tart) if row["Name"] == name]
+    if len(rows) > 1:
+        raise ValueError("duplicate guest identity")
+    if rows:
+        config = subprocess.run((str(tart), "get", name, "--format", "json"),
+                                check=True, capture_output=True, timeout=15).stdout
+        if hashlib.sha256(config).hexdigest() != intent["tartConfigSHA256"]:
+            raise ValueError("live Tart guest differs from signed identity")
+    effect = root / (name + ".retire-started")
+    fd = os.open(effect, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"schema": "norn.m5-local-guest-retire-started/v1", "intent": intent,
+                   "before": rows}, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    if rows:
+        if rows[0].get("Running"):
+            subprocess.run((str(tart), "stop", name), check=True, timeout=120)
+        subprocess.run((str(tart), "delete", name), check=True, timeout=120)
+    if any(row["Name"] == name for row in inventory(tart)):
+        raise RuntimeError("guest still present after retire")
+    receipt = root / (name + ".retired.json")
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"schema": "norn.m5-local-guest-retired/v1", "runId": intent["runId"],
+                   "guestName": name, "createMarkerSHA256": intent["createMarkerSHA256"],
+                   "before": rows, "after": []}, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return receipt
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("intent", "signature", "public-key", "journal-root", "tart"):
+        parser.add_argument("--" + name, required=True)
+    args = parser.parse_args()
+    if digest(args.public_key) != OWNER_PUBLIC_KEY_SHA256:
+        raise ValueError("unreviewed owner public key")
+    subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
+                    "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
+                   check=True, capture_output=True, timeout=10)
+    intent = json.loads(Path(args.intent).read_bytes())
+    print(json.dumps({"retiredReceipt": str(retire(intent, args.journal_root, args.tart))},
+                     sort_keys=True, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()

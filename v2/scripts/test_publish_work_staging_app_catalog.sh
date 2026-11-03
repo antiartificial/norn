@@ -15,7 +15,8 @@ run_publisher() {
 }
 
 disabled="$temporary/disabled.yaml"
-sed 's/deploy: true/deploy: false/' \
+sed -e 's/deploy: true/deploy: false/' \
+  -e 's#https://norn-fleet-mysql.tkmkt-dev.com#https://work-staging-hello-norn-mysql.invalid#' \
   "$(dirname "$0")/../infra/fleet-staging/hello-norn-mysql/infraspec.yaml" > "$disabled"
 run_publisher "$disabled" "$temporary/disabled-output" "$temporary/disabled.github-output"
 grep -qx 'publish=false' "$temporary/disabled.github-output"
@@ -23,7 +24,7 @@ test ! -e "$temporary/disabled-output/catalog.tar.gz"
 
 enabled="$temporary/enabled.yaml"
 sed -e 's/deploy: false/deploy: true/' \
-  -e 's#https://work-staging-hello-norn-mysql.invalid#https://reviewed.staging.acme.dev#' \
+  -e 's#https://work-staging-hello-norn-mysql.invalid#https://norn-fleet-mysql.tkmkt-dev.com#' \
   "$disabled" > "$enabled"
 run_publisher "$enabled" "$temporary/first" "$temporary/first.github-output"
 run_publisher "$enabled" "$temporary/second" "$temporary/second.github-output"
@@ -61,7 +62,7 @@ done
 unsafe_ingress="$temporary/unsafe-ingress.yaml"
 sed -e 's/deploy: false/deploy: true/' \
   -e 's/restrictedIngress:/restrictedIngres:/' \
-  -e 's#https://work-staging-hello-norn-mysql.invalid#https://reviewed.staging.acme.dev#' \
+  -e 's#https://work-staging-hello-norn-mysql.invalid#https://norn-fleet-mysql.tkmkt-dev.com#' \
   "$disabled" > "$unsafe_ingress"
 if run_publisher "$unsafe_ingress" "$temporary/unsafe-output" "$temporary/unsafe.github-output"; then
   echo "misspelled restricted ingress was accepted" >&2
@@ -71,7 +72,7 @@ fi
 wrong_namespace="$temporary/wrong-namespace.yaml"
 sed -e 's/deploy: false/deploy: true/' \
   -e 's/norn-work-staging/other/' \
-  -e 's#https://work-staging-hello-norn-mysql.invalid#https://reviewed.staging.acme.dev#' \
+  -e 's#https://work-staging-hello-norn-mysql.invalid#https://norn-fleet-mysql.tkmkt-dev.com#' \
   "$disabled" > "$wrong_namespace"
 if run_publisher "$wrong_namespace" "$temporary/wrong-output" "$temporary/wrong.github-output"; then
   echo "wrong namespace was accepted" >&2

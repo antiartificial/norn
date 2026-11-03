@@ -92,6 +92,26 @@ on:
         required: false
         default: ''
         type: string
+      rollback_environment:
+        description: Exact control-plane environment for rollback.
+        required: false
+        default: production
+        type: string
+      proof_record_id:
+        description: Existing database-backed record ID to read before and after staging rollback.
+        required: false
+        default: ''
+        type: string
+      expected_runner_name:
+        description: Exact one-use runner name registered for this rollback dispatch.
+        required: false
+        default: ''
+        type: string
+      expected_route_proof_sha256:
+        description: Reviewed body hash for the app route proof before and after rollback.
+        required: false
+        default: ''
+        type: string
 
 defaults:
   run:
@@ -122,6 +142,9 @@ jobs:
           ROLLBACK_DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
           ROLLBACK_ARTIFACT: ${{ inputs.rollback_artifact }}
           ROLLBACK_CONFIRMATION: ${{ inputs.rollback_confirmation }}
+          ROLLBACK_ENVIRONMENT: ${{ inputs.rollback_environment }}
+          PROOF_RECORD_ID: ${{ inputs.proof_record_id }}
+          EXPECTED_ROUTE_PROOF_SHA256: ${{ inputs.expected_route_proof_sha256 }}
           BUILD_CONTRACT: ${{ inputs.build_contract }}
           GO_IMAGE: ${{ inputs.go_image }}
           RUNTIME_IMAGE: ${{ inputs.runtime_image }}
@@ -154,7 +177,7 @@ jobs:
             *) echo "unsupported or missing GitHub repository visibility: $CALLER_REPOSITORY_VISIBILITY" >&2; exit 1 ;;
           esac
           if [[ "$RUNNER_PRIVATE" == "true" ]]; then
-            [[ "$LANE" == staging ]] || { echo "runner_private is valid only for staging" >&2; exit 1; }
+            [[ "$LANE" == staging || "$LANE" == staging-rollback ]] || { echo "runner_private is valid only for staging and staging rollback" >&2; exit 1; }
             [[ "$PRIVATE_NETWORK" == false && -z "$TAILSCALE_TARGET" ]] || {
               echo "runner_private cannot join the Tailscale release route" >&2; exit 1
             }
@@ -208,6 +231,7 @@ jobs:
               }
               ;;
             rollback)
+              [[ "$ROLLBACK_ENVIRONMENT" == production ]] || { echo "production rollback requires the production environment" >&2; exit 1; }
               [[ "$CALLER_EVENT_NAME" == "workflow_dispatch" ]] || { echo "rollback requires workflow_dispatch" >&2; exit 1; }
               [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "rollback requires a protected ref" >&2; exit 1; }
               [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
@@ -224,6 +248,13 @@ jobs:
                 exit 1
               }
               [[ "$ROLLBACK_CONFIRMATION" == ROLLBACK ]] || { echo "rollback_confirmation must be ROLLBACK" >&2; exit 1; }
+              ;;
+            staging-rollback)
+              [[ "$CALLER_EVENT_NAME" == workflow_dispatch && "$CALLER_REF_PROTECTED" == true && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || { echo "staging rollback requires protected default-branch dispatch" >&2; exit 1; }
+              [[ "$ROLLBACK_ENVIRONMENT" == staging && '${{ inputs.runner_private }}' == true ]] || { echo "staging rollback requires the private one-use runner" >&2; exit 1; }
+              [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$ROLLBACK_DEPLOYMENT_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ && "$ROLLBACK_ARTIFACT" =~ ^.+@sha256:[0-9a-f]{64}$ && "$ROLLBACK_CONFIRMATION" == ROLLBACK ]] || { echo "staging rollback requires exact admitted release identity" >&2; exit 1; }
+              [[ "$PROOF_RECORD_ID" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo "staging rollback requires an existing database record ID" >&2; exit 1; }
+              [[ "$EXPECTED_ROUTE_PROOF_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "staging rollback requires the reviewed route-proof body hash" >&2; exit 1; }
               ;;
             *) echo "lane must be staging, production, requalify, or rollback" >&2; exit 1 ;;
           esac
@@ -1291,3 +1322,113 @@ jobs:
             echo "- Norn operation: \`${{ steps.queue.outputs.operation_id }}\`"
             echo '- No checkout, build, tag, signing, or substitution ran.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  staging-rollback-runner-private:
+    if: inputs.lane == 'staging-rollback'
+    needs: validate
+    runs-on: [self-hosted, Linux, X64, norn-fleet-protected, norn-work-staging-fleet-effect]
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: norn-release-${{ inputs.app_id }}-staging-effect
+      cancel-in-progress: false
+    env:
+      APP_ID: ${{ inputs.app_id }}
+      SOURCE_SHA: ${{ inputs.rollback_source_sha }}
+      DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
+      ARTIFACT: ${{ inputs.rollback_artifact }}
+      RECORD_ID: ${{ inputs.proof_record_id }}
+      ROUTE_PROOF_SHA256: ${{ inputs.expected_route_proof_sha256 }}
+      EXPECTED_RUNNER_NAME: ${{ inputs.expected_runner_name }}
+      NORN_API_URL: ${{ vars.NORN_API_URL }}
+      NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+      PUBLIC_APP_URL: ${{ vars.NORN_MANAGED_MYSQL_PUBLIC_URL }}
+      CURL_CA_BUNDLE: /etc/norn-fleet-executor-api-route/ca.pem
+    steps:
+      - name: Bind one-use runner and private control route
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_RUNNER_NAME" == "norn-work-staging-work$GITHUB_RUN_ID-runner" && "$RUNNER_NAME" == "$EXPECTED_RUNNER_NAME" ]] || { echo "one-use runner name differs from dispatch" >&2; exit 1; }
+          [[ "$NORN_API_URL" == https://localhost:18443 ]] || { echo "private control origin differs" >&2; exit 1; }
+          [[ -f "$CURL_CA_BUNDLE" && ! -L "$CURL_CA_BUNDLE" ]] || { echo "private control CA is missing" >&2; exit 1; }
+          [[ "$(sha256sum "$CURL_CA_BUNDLE" | cut -d' ' -f1)" == '${{ vars.NORN_FLEET_RUNNER_API_CA_SHA256 }}' ]] || { echo "private control CA differs" >&2; exit 1; }
+          [[ "$PUBLIC_APP_URL" == https://* && "$PUBLIC_APP_URL" != *'@'* && "$PUBLIC_APP_URL" != *'?'* && "$PUBLIC_APP_URL" != *'#'* ]] || { echo "public app origin is invalid" >&2; exit 1; }
+          jq -e '.status == "ok" and .backend == "etcd"' <<<"$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/health")" >/dev/null
+          jq -e '(.features | index("fleet-github-oidc-exchange")) != null and .endpoints.operation == "/api/v1/operations/{id}"' <<<"$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/v1/capabilities")" >/dev/null
+
+      - name: Roll back admitted staging deployment and measure continuity
+        run: |
+          set -euo pipefail
+          umask 077
+          api="${NORN_API_URL%/}"
+          public="${PUBLIC_APP_URL%/}"
+          before="$(curl --fail-with-body --silent --show-error "$public/records/$RECORD_ID")"
+          [[ "$(jq -er '.id' <<<"$before")" == "$RECORD_ID" && -n "$(jq -er '.createdAt' <<<"$before")" ]] || { echo "pre-rollback database-backed record differs" >&2; exit 1; }
+          record_hash="$(jq -cS '{id,createdAt}' <<<"$before" | sha256sum | cut -d' ' -f1)"
+          [[ "$(curl --fail-with-body --silent --show-error "$public/route-proof" | sha256sum | cut -d' ' -f1)" == "$ROUTE_PROOF_SHA256" ]] || { echo "pre-rollback public route proof differs" >&2; exit 1; }
+          sample_file="$RUNNER_TEMP/norn-m6-public-samples.tsv"
+          : > "$sample_file"
+          stop_file="$(mktemp)"
+          rm "$stop_file"
+          ( while [[ ! -e "$stop_file" ]]; do
+              now="$(date -u +%FT%TZ)"
+              code="$(curl --silent --show-error --max-time 5 -o /dev/null -w '%{http_code}' "$public/version" 2>/dev/null || printf 000)"
+              record_sample="$(curl --fail-with-body --silent --show-error --max-time 5 "$public/records/$RECORD_ID" 2>/dev/null || true)"
+              record_status=unavailable
+              if [[ -n "$record_sample" ]]; then
+                sampled_hash="$(jq -cS '{id,createdAt}' <<<"$record_sample" 2>/dev/null | sha256sum | cut -d' ' -f1 || true)"
+                if [[ "$sampled_hash" == "$record_hash" ]]; then record_status=ok; else record_status=changed; fi
+              fi
+              printf '%s %s %s\n' "$now" "$code" "$record_status" >> "$sample_file"
+              sleep 2
+            done ) &
+          monitor=$!
+          finish_monitor() { touch "$stop_file"; wait "$monitor" || true; }
+          trap finish_monitor EXIT
+          exchange_token() {
+            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+            curl --fail-with-body --silent --show-error --noproxy '*' -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' --data '{"scope":"release:rollback","app":"'"$APP_ID"'","environment":"staging","intent":"rollback"}' | jq -er '.token'
+          }
+          token="$(exchange_token)"
+          echo "::add-mask::$token"
+          token_issued=$SECONDS
+          request="$(jq -nc --arg deploymentId "$DEPLOYMENT_ID" --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" '{deploymentId:$deploymentId,sourceSha:$sourceSha,artifact:$artifact,confirm:true}')"
+          operation_id="$(curl --fail-with-body --silent --show-error --noproxy '*' -X POST "$api/api/v1/apps/$APP_ID/releases/rollbacks" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -H "Idempotency-Key: norn-m6-staging-rollback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --data "$request" | jq -er '.id')"
+          deadline=$((SECONDS + 3600))
+          while :; do
+            if (( SECONDS - token_issued >= 600 )); then
+              token="$(exchange_token)"
+              echo "::add-mask::$token"
+              token_issued=$SECONDS
+            fi
+            status="$(curl --fail-with-body --silent --show-error --noproxy '*' -H "Authorization: Bearer $token" "$api/api/v1/operations/$operation_id" | jq -er '.status')"
+            case "$status" in
+              succeeded) break ;;
+              failed|canceled) echo "Norn rollback operation $operation_id ended $status" >&2; exit 1 ;;
+              queued|running) ;;
+              *) echo "unexpected rollback operation status" >&2; exit 1 ;;
+            esac
+            (( SECONDS < deadline )) || { echo "rollback observation timed out; inspect durable operation $operation_id" >&2; exit 1; }
+            sleep 5
+          done
+          finish_monitor
+          trap - EXIT
+          after="$(curl --fail-with-body --silent --show-error "$public/records/$RECORD_ID")"
+          [[ "$(jq -er '.id' <<<"$after")" == "$RECORD_ID" && "$(jq -cS '{id,createdAt}' <<<"$after" | sha256sum | cut -d' ' -f1)" == "$record_hash" ]] || { echo "database-backed record content changed across rollback" >&2; exit 1; }
+          [[ "$(curl --fail-with-body --silent --show-error "$public/route-proof" | sha256sum | cut -d' ' -f1)" == "$ROUTE_PROOF_SHA256" ]] || { echo "post-rollback public route proof differs" >&2; exit 1; }
+          failures="$(awk '$2 != 200 {n++} END {print n+0}' "$sample_file")"
+          record_failures="$(awk '$3 != "ok" {n++} END {print n+0}' "$sample_file")"
+          samples="$(wc -l < "$sample_file" | tr -d ' ')"
+          (( samples > 0 )) || { echo "no public continuity samples" >&2; exit 1; }
+          { echo "### Norn staging app rollback"; echo "- Operation: \`$operation_id\`"; echo "- Exact source: \`$SOURCE_SHA\`"; echo "- Exact artifact: \`$ARTIFACT\`"; echo "- Public samples: $samples; non-200 samples: $failures; record unavailable/changed samples: $record_failures"; echo "- Database-backed immutable record ID and creation timestamp hash preserved: \`$record_hash\`"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve public continuity observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: norn-m6-public-continuity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/norn-m6-public-samples.tsv
+          if-no-files-found: ignore
+          retention-days: 7

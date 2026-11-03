@@ -1,0 +1,54 @@
+name: Hello Norn MySQL staging rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact previously admitted staging source SHA
+        required: true
+        type: string
+      deployment_id:
+        description: Exact previously successful staging deployment UUID
+        required: true
+        type: string
+      artifact:
+        description: Exact previously admitted digest-pinned OCI artifact
+        required: true
+        type: string
+      proof_record_id:
+        description: Existing database-backed record ID
+        required: true
+        type: string
+      route_proof_sha256:
+        description: Reviewed public route-proof body SHA-256
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  rollback:
+    if: github.repository == 'antiartificial/norn' && github.ref == 'refs/heads/master' && github.ref_protected && github.run_attempt == 1 && github.actor == 'antiartificial' && github.triggering_actor == 'antiartificial' && vars.NORN_MANAGED_MYSQL_STAGING_ROLLBACK_ENABLED == 'true'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      deployments: write
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@a1ee3199e8a4b327bee5bea55ba7b2c15964e35f
+    with:
+      lane: staging-rollback
+      app_id: hello-norn-mysql-managed
+      image_repository: ghcr.io/antiartificial/hello-norn-mysql
+      runner_private: true
+      rollback_environment: staging
+      rollback_source_sha: ${{ inputs.source_sha }}
+      rollback_deployment_id: ${{ inputs.deployment_id }}
+      rollback_artifact: ${{ inputs.artifact }}
+      rollback_confirmation: ROLLBACK
+      proof_record_id: ${{ inputs.proof_record_id }}
+      expected_route_proof_sha256: ${{ inputs.route_proof_sha256 }}
+      expected_runner_name: norn-work-staging-work${{ github.run_id }}-runner

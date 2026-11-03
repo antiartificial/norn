@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Root-installed, read-only M5 runner isolation attestation."""
+
+import hashlib
+import json
+import os
+import platform
+import pwd
+import re
+import subprocess
+import sys
+import stat
+
+
+ANCHOR = "com.norn.m5.historical"
+RUNNER = "norn-m5-isolated-01"
+REHEARSAL_USER = "norn-m5-rehearsal"
+RUNNER_USER = "norn-m5-runner"
+SSH_HOST_KEY = "/etc/ssh/ssh_host_ed25519_key.pub"
+BOOTSTRAP_CLEANUP = "/var/db/norn-m5-window/bootstrap-cleanup-finished.json"
+
+
+def command(*args):
+    result = subprocess.run(args, check=True, capture_output=True, text=True, timeout=10)
+    return result.stdout
+
+
+def guest_host_key_sha():
+    info = os.lstat(SSH_HOST_KEY)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+        raise SystemExit("guest SSH host key is unsafe")
+    fields = open(SSH_HOST_KEY, encoding="ascii").read().split()
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        raise SystemExit("guest SSH host key is not Ed25519")
+    return hashlib.sha256((fields[0] + " " + fields[1] + "\n").encode()).hexdigest()
+
+
+def main():
+    if os.geteuid() != 0 or sys.platform != "darwin" or platform.machine() != "arm64":
+        raise SystemExit("M5 checker requires root on isolated macOS ARM64")
+    if len(sys.argv) != 2 or sys.argv[1] != RUNNER:
+        raise SystemExit("M5 runner identity is unexpected")
+    rehearsal = pwd.getpwnam(REHEARSAL_USER)
+    runner = pwd.getpwnam(RUNNER_USER)
+    cleanup_info = os.lstat(BOOTSTRAP_CLEANUP)
+    if (cleanup_info.st_uid != 0 or not stat.S_ISREG(cleanup_info.st_mode) or
+            stat.S_IMODE(cleanup_info.st_mode) != 0o600):
+        raise SystemExit("M5 bootstrap cleanup receipt is unsafe")
+    cleanup = json.load(open(BOOTSTRAP_CLEANUP, encoding="utf-8"))
+    if (cleanup.get("schema") != "norn.m5-guest-bootstrap-cleanup-finished/v1" or
+            cleanup.get("runnerName") != RUNNER or cleanup.get("adminAccountAbsent") is not True or
+            cleanup.get("adminHomeAbsent") is not True or cleanup.get("remoteLogin") != "off" or
+            cleanup.get("sshListenerAbsent") is not True):
+        raise SystemExit("M5 bootstrap cleanup is incomplete")
+    try:
+        pwd.getpwnam("admin")
+    except KeyError:
+        pass
+    else:
+        raise SystemExit("M5 bootstrap admin account remains")
+    if os.path.lexists("/Users/admin"):
+        raise SystemExit("M5 bootstrap admin home remains")
+    if "off" not in command("/usr/sbin/systemsetup", "-getremotelogin").lower():
+        raise SystemExit("M5 guest Remote Login remains enabled")
+    ssh_listener = subprocess.run(("/usr/sbin/lsof", "-nP", "-iTCP:22", "-sTCP:LISTEN"),
+                                  capture_output=True, text=True, timeout=10)
+    if ssh_listener.returncode not in (0, 1) or ssh_listener.stdout.strip():
+        raise SystemExit("M5 guest SSH listener remains")
+    if rehearsal.pw_uid == runner.pw_uid or rehearsal.pw_dir != "/Users/norn-m5-rehearsal":
+        raise SystemExit("M5 rehearsal identity is not separate from the runner")
+    command("/bin/launchctl", "print", f"gui/{rehearsal.pw_uid}")
+    if not re.search(r"^Status:\s+Enabled\b", command("/sbin/pfctl", "-s", "info"), re.M):
+        raise SystemExit("packet filter is disabled")
+    root_rules = command("/sbin/pfctl", "-sr")
+    effective_root = [line.strip() for line in root_rules.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+    if not effective_root or not re.fullmatch(r'anchor "?com\.norn\.m5\.historical"?(?: all)?', effective_root[0]):
+        raise SystemExit("M5 anchor is not the first effective firewall rule")
+    rules = command("/sbin/pfctl", "-a", ANCHOR, "-sr")
+    effective = [line.strip() for line in rules.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+    if len(effective) != 2 or effective[0] not in ('pass out quick on lo0 all', 'pass out quick on lo0 from any to any'):
+        raise SystemExit("M5 loopback-only pass is not the first anchor rule")
+    if effective[1] not in ('block drop out quick all', 'block drop out quick from any to any'):
+        raise SystemExit("M5 host-wide outbound deny-all is absent")
+    credential_paths = [
+        rehearsal.pw_dir + "/.ssh", rehearsal.pw_dir + "/.aws", rehearsal.pw_dir + "/.config",
+        rehearsal.pw_dir + "/.docker", rehearsal.pw_dir + "/.netrc",
+        rehearsal.pw_dir + "/.git-credentials", rehearsal.pw_dir + "/Library/Keychains",
+        runner.pw_dir + "/.ssh", runner.pw_dir + "/.aws", runner.pw_dir + "/.config",
+        runner.pw_dir + "/Library/Keychains", "/Users/arti/.config/norn",
+        "/Users/arti/Library/Keychains", "/Users/0xadb/.config/norn",
+        "/Users/0xadb/Library/Keychains", "/etc/norn", "/var/lib/norn",
+    ]
+    for path in credential_paths[:7]:
+        if os.path.lexists(path):
+            raise SystemExit("credential surface exists in rehearsal home: " + path)
+    for path in credential_paths[7:]:
+        readable = subprocess.run(("/usr/bin/sudo", "-n", "-u", REHEARSAL_USER, "/bin/test", "-r", path), timeout=5)
+        if readable.returncode == 0:
+            raise SystemExit("rehearsal user can read credential surface: " + path)
+    socket_result = subprocess.run(("/usr/sbin/lsof", "-nP", "-a", "-u", REHEARSAL_USER, "-i"),
+                                   capture_output=True, text=True, timeout=10)
+    if socket_result.returncode not in (0, 1):
+        raise SystemExit("could not inspect rehearsal user sockets")
+    sockets = socket_result.stdout
+    for line in sockets.splitlines()[1:]:
+        if "TCP" in line or "UDP" in line:
+            raise SystemExit("rehearsal user already owns a network socket")
+    routes = command("/usr/sbin/netstat", "-rn", "-f", "inet")
+    print(json.dumps({
+        "schema": "norn.m5-isolated-runner-attestation/v1",
+        "runner": RUNNER,
+        "runnerUser": RUNNER_USER,
+        "rehearsalUser": REHEARSAL_USER,
+        "rehearsalUID": rehearsal.pw_uid,
+        "guiDomain": f"gui/{rehearsal.pw_uid}",
+        "pfAnchor": ANCHOR,
+        "pfEnabled": True,
+        "hostOutbound": "loopback-only",
+        "credentialSurfacesAbsentOrUnreadable": True,
+        "preexistingNetworkSockets": 0,
+        "pfRulesSHA256": hashlib.sha256(rules.encode()).hexdigest(),
+        "rootRulesSHA256": hashlib.sha256(root_rules.encode()).hexdigest(),
+        "routeTableSHA256": hashlib.sha256(routes.encode()).hexdigest(),
+        "sshHostKeySHA256": guest_host_key_sha(),
+    }, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

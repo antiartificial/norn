@@ -5,7 +5,9 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/effect"
+	"norn/v2/api/ingress"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -51,7 +54,17 @@ func (s *V3OperationStore) RecordClaimedInitialFleetTrafficProof(ctx context.Con
 	})
 }
 
-func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, healthEffect effect.Token, observerPort int, observe func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error)) (*InitialFleetTrafficProof, error) {
+func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, spec *model.InfraSpec, healthEffect effect.Token, observerPort int, observe func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error)) (result *InitialFleetTrafficProof, resultErr error) {
+	stage := "current-intent"
+	defer func() {
+		if resultErr != nil {
+			class := "verification-or-store"
+			if errors.Is(resultErr, store.ErrOperationOwnershipLost) {
+				class = "ownership-lost"
+			}
+			log.Printf("fleet traffic proof rejected operation=%s generation=%d stage=%s class=%s", claim.OperationID(), claim.Generation(), stage, class)
+		}
+	}()
 	if s == nil || observe == nil || lock == nil || spec == nil {
 		return nil, fmt.Errorf("claimed traffic proof is unavailable")
 	}
@@ -59,17 +72,23 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 	if err != nil {
 		return nil, err
 	}
+	stage = "health-binding"
 	if err := s.requireHealthyDeploymentEffect(ctx, claim, intent, healthEffect); err != nil {
 		return nil, err
 	}
-	observation, err := observe(ctx, intent)
-	if err != nil || !trafficObservationMatchesIntent(intent, observation) {
-		return nil, fmt.Errorf("traffic observation differs from claimed route: %v", err)
+	stage = "traffic-observation"
+	observationCtx, cancelObservation := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelObservation()
+	observation, err := observeFleetTrafficUntilReady(observationCtx, intent, observe, 500*time.Millisecond)
+	if err != nil {
+		return nil, err
 	}
+	stage = "post-observation-intent"
 	current, err := s.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, observerPort)
 	if err != nil || current == nil || current.ID != intent.ID || !sameFleetIngressInventory(&intent.Inventory, &current.Inventory) {
 		return nil, fmt.Errorf("claimed route changed during traffic probes")
 	}
+	stage = "post-observation-health"
 	if err := s.requireHealthyDeploymentEffect(ctx, claim, intent, healthEffect); err != nil {
 		return nil, err
 	}
@@ -80,12 +99,9 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 	if err != nil {
 		return nil, err
 	}
-	operation, operationRevision, err := s.load(ctx, claim.OperationID())
+	stage = "proof-fences"
+	operation, _, err := s.load(ctx, claim.OperationID())
 	if err != nil || operation.Operation.Status != model.OperationRunning || operation.Operation.LockedBy != claim.OwnerID() || operation.Generation != claim.Generation() {
-		return nil, store.ErrOperationOwnershipLost
-	}
-	owner, err := s.kv.Get(ctx, s.ownerKey(claim.OperationID()))
-	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 || string(owner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) {
 		return nil, store.ErrOperationOwnershipLost
 	}
 	intentKey := s.initialFleetRouteKey(intent.App, intent.ControlEnvironment, intent.Region, intent.DeploymentID)
@@ -136,9 +152,6 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 		return nil, err
 	}
 	comparisons := []clientv3.Cmp{
-		clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", operationRevision),
-		clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision),
-		clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
 		clientv3.Compare(clientv3.Value(s.appLockKey(intent.App)), "=", lock.Fence()),
 		clientv3.Compare(clientv3.ModRevision(intentKey), "=", storedIntent.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservation.Kvs[0].ModRevision),
@@ -152,31 +165,85 @@ func (s *V3OperationStore) recordClaimedInitialFleetTrafficProof(ctx context.Con
 	}
 	comparisons = append(comparisons, inventoryCompares...)
 	proofKey := s.initialFleetTrafficProofKey(intent.ID, claim.Generation())
-	createCompares := append(append([]clientv3.Cmp(nil), comparisons...), clientv3.Compare(clientv3.CreateRevision(proofKey), "=", 0))
-	txn, err := s.kv.Txn(ctx).If(createCompares...).Then(clientv3.OpPut(proofKey, string(encoded))).Commit()
-	if err != nil {
-		return nil, err
+	stage = "proof-commit"
+	for retry := 0; retry < 3; retry++ {
+		if lock.Context().Err() != nil {
+			return nil, store.ErrOperationOwnershipLost
+		}
+		currentOperation, operationRevision, err := s.load(ctx, claim.OperationID())
+		if err != nil || currentOperation.Generation != claim.Generation() || currentOperation.Operation.Status != model.OperationRunning || currentOperation.Operation.LockedBy != claim.OwnerID() {
+			return nil, store.ErrOperationOwnershipLost
+		}
+		unchanged := currentOperation.Operation
+		unchanged.LockedUntil = operation.Operation.LockedUntil
+		unchanged.UpdatedAt = operation.Operation.UpdatedAt
+		if !reflect.DeepEqual(unchanged, operation.Operation) {
+			return nil, store.ErrOperationOwnershipLost
+		}
+		currentOwner, err := s.kv.Get(ctx, s.ownerKey(claim.OperationID()))
+		if err != nil || len(currentOwner.Kvs) != 1 || currentOwner.Kvs[0].Lease == 0 || string(currentOwner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) {
+			return nil, store.ErrOperationOwnershipLost
+		}
+		fenced := append([]clientv3.Cmp{
+			clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", operationRevision),
+			clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", currentOwner.Kvs[0].ModRevision),
+			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
+		}, comparisons...)
+		createCompares := append(append([]clientv3.Cmp(nil), fenced...), clientv3.Compare(clientv3.CreateRevision(proofKey), "=", 0))
+		txn, err := s.kv.Txn(ctx).If(createCompares...).Then(clientv3.OpPut(proofKey, string(encoded))).Commit()
+		if err != nil {
+			return nil, err
+		}
+		if txn.Succeeded {
+			return proof, nil
+		}
+		prior, err := s.kv.Get(ctx, proofKey)
+		if err != nil {
+			return nil, err
+		}
+		if len(prior.Kvs) == 0 {
+			continue
+		}
+		var existing InitialFleetTrafficProof
+		if decodeV3Record(prior.Kvs[0].Value, &existing) != nil || existing.SchemaVersion != initialFleetTrafficProofSchema ||
+			existing.IntentID != proof.IntentID || existing.OperationID != proof.OperationID || existing.ClaimGeneration != proof.ClaimGeneration || existing.DeploymentID != proof.DeploymentID ||
+			existing.AcceptanceDigest != proof.AcceptanceDigest || existing.SpecDigest != proof.SpecDigest || existing.HealthEffect != proof.HealthEffect ||
+			!reflect.DeepEqual(existing.Observation, proof.Observation) || existing.ObservedAt.IsZero() {
+			return nil, fmt.Errorf("existing traffic proof conflicts with current observation")
+		}
+		replayCompares := append(append([]clientv3.Cmp(nil), fenced...), clientv3.Compare(clientv3.ModRevision(proofKey), "=", prior.Kvs[0].ModRevision))
+		replay, err := s.kv.Txn(ctx).If(replayCompares...).Then(clientv3.OpGet(s.ownerKey(claim.OperationID()))).Commit()
+		if err != nil {
+			return nil, err
+		}
+		if replay.Succeeded && len(replay.Responses) == 1 && len(replay.Responses[0].GetResponseRange().Kvs) == 1 && replay.Responses[0].GetResponseRange().Kvs[0].Lease != 0 {
+			return &existing, nil
+		}
 	}
-	if txn.Succeeded {
-		return proof, nil
+	return nil, store.ErrOperationOwnershipLost
+}
+
+func observeFleetTrafficUntilReady(ctx context.Context, intent *InitialFleetRouteIntent, observe func(context.Context, *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error), interval time.Duration) (*FleetIngressTrafficObservation, error) {
+	if ctx == nil || intent == nil || observe == nil || interval <= 0 {
+		return nil, fmt.Errorf("traffic observation is unavailable")
 	}
-	prior, err := s.kv.Get(ctx, proofKey)
-	if err != nil || len(prior.Kvs) != 1 {
-		return nil, store.ErrOperationOwnershipLost
+	for {
+		observation, err := observe(ctx, intent)
+		if err == nil {
+			if !trafficObservationMatchesIntent(intent, observation) {
+				return nil, fmt.Errorf("traffic observation differs from claimed route")
+			}
+			return observation, nil
+		}
+		if !errors.Is(err, ingress.ErrRoutePropagationPending) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("traffic observation did not become ready: %w", ctx.Err())
+		case <-time.After(interval):
+		}
 	}
-	var existing InitialFleetTrafficProof
-	if decodeV3Record(prior.Kvs[0].Value, &existing) != nil || existing.SchemaVersion != initialFleetTrafficProofSchema ||
-		existing.IntentID != proof.IntentID || existing.OperationID != proof.OperationID || existing.ClaimGeneration != proof.ClaimGeneration || existing.DeploymentID != proof.DeploymentID ||
-		existing.AcceptanceDigest != proof.AcceptanceDigest || existing.SpecDigest != proof.SpecDigest || existing.HealthEffect != proof.HealthEffect ||
-		!reflect.DeepEqual(existing.Observation, proof.Observation) || existing.ObservedAt.IsZero() {
-		return nil, fmt.Errorf("existing traffic proof conflicts with current observation")
-	}
-	replayCompares := append(append([]clientv3.Cmp(nil), comparisons...), clientv3.Compare(clientv3.ModRevision(proofKey), "=", prior.Kvs[0].ModRevision))
-	replay, err := s.kv.Txn(ctx).If(replayCompares...).Then(clientv3.OpGet(s.ownerKey(claim.OperationID()))).Commit()
-	if err != nil || !replay.Succeeded || len(replay.Responses) != 1 || len(replay.Responses[0].GetResponseRange().Kvs) != 1 || replay.Responses[0].GetResponseRange().Kvs[0].Lease == 0 {
-		return nil, store.ErrOperationOwnershipLost
-	}
-	return &existing, nil
 }
 
 func trafficObservationMatchesIntent(intent *InitialFleetRouteIntent, observed *FleetIngressTrafficObservation) bool {

@@ -58,8 +58,8 @@ func TestStagingMySQLPilotAllowsFourthManagedReplica(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Deploy {
-		t.Fatal("staging declaration must remain inert until catalog promotion")
+	if !spec.Deploy {
+		t.Fatal("managed staging declaration must be publishable for protected catalog promotion")
 	}
 	if result := model.ValidateSpec(spec); !result.Valid {
 		t.Fatalf("invalid staging spec: %+v", result.Findings)

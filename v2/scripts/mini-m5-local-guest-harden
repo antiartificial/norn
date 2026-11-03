@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Launch the signed M5 guest and finish its one-boot GUI handoff."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import stat
+import subprocess
+
+
+ADMISSION = Path(__file__).with_name("mini-m5-local-guest-hardening-admission")
+GUEST_HARDENING = "/Library/PrivilegedHelperTools/norn-mini-m5-guest-hardening"
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def durable(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def admission(args, prelaunch=False):
+    command = [str(ADMISSION), "--intent", args.intent, "--signature", args.signature,
+               "--public-key", args.public_key, "--journal-root", args.journal_root,
+               "--tart", args.tart, "--runner-public-key", args.supervisor_ssh_public_key]
+    if prelaunch:
+        command.append("--prelaunch")
+    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
+    return json.loads(result.stdout)
+
+
+def harden(args):
+    before = admission(args, prelaunch=True)
+    root = Path(args.journal_root)
+    name = before["guestName"]
+    key = Path(args.supervisor_ssh_private_key)
+    info = key.lstat()
+    if (not key.is_absolute() or not stat.S_ISREG(info.st_mode) or
+            info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600):
+        raise ValueError("supervisor guest SSH private key is unsafe")
+    derived = subprocess.run(("/usr/bin/ssh-keygen", "-y", "-f", str(key)),
+                             check=True, capture_output=True, text=True, timeout=10).stdout.split()
+    public = Path(args.supervisor_ssh_public_key).read_text().split()
+    if derived[:2] != public[:2] or len(derived) < 2 or derived[0] != "ssh-ed25519":
+        raise ValueError("supervisor guest SSH keypair differs")
+    bootstrap = root / (name + ".bootstrap-secret")
+    info = bootstrap.lstat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("guest bootstrap secret is unsafe")
+    password = bootstrap.read_text()
+    if not password.endswith("\n") or len(password) < 30:
+        raise ValueError("guest bootstrap secret is invalid")
+    if not re.fullmatch(r"norn-m5-[0-9]{1,20}", name):
+        raise ValueError("invalid guest name")
+    label = "com.norn.m5." + before["runId"]
+    launch_plist = root / (name + ".launchd.plist")
+    durable(launch_plist, plistlib.dumps({"Label": label, "ProgramArguments": [
+        args.tart, "run", "--no-graphics", "--no-clipboard", "--no-usb-accessories",
+        "--net-softnet", name], "RunAtLoad": True, "KeepAlive": False,
+        "StandardOutPath": "/dev/null", "StandardErrorPath": "/dev/null"}))
+    durable(root / (name + ".hardening-started"), json.dumps({
+        "schema": "norn.m5-local-guest-hardening-started/v1", "prelaunch": before,
+        "launchdLabel": label, "launchPlistSHA256": digest(launch_plist)},
+        sort_keys=True, separators=(",", ":")).encode() + b"\n")
+    subprocess.run(("/bin/launchctl", "bootstrap", "user/" + str(os.geteuid()),
+                    str(launch_plist)), check=True, capture_output=True, timeout=30)
+    subprocess.run((args.tart, "ip", name, "--wait", "300", "--resolver", "dhcp"),
+                   check=True, capture_output=True, timeout=315)
+    # Admission checks the exact Tart config, private VM address and signed SSH
+    # host key before any guest command is issued.
+    after = admission(args)
+    known_hosts = root / (name + ".known_hosts")
+    host_key = after["sshHostKey"].split()
+    if len(host_key) != 2 or host_key[0] != "ssh-ed25519":
+        raise ValueError("invalid admitted guest SSH host key")
+    durable(known_hosts, (after["guestIP"] + " " + after["sshHostKey"]).encode())
+    ssh = ("/usr/bin/ssh", "-T", "-i", str(key), "-o", "IdentitiesOnly=yes",
+           "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+           "-o", "UserKnownHostsFile=" + str(known_hosts), "-o", "ConnectTimeout=10",
+           "admin@" + after["guestIP"], "/usr/bin/sudo -S -p '' " + GUEST_HARDENING + " finish")
+    result = subprocess.run(ssh, input=password, text=True, capture_output=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError("guest GUI hardening failed; protected reconciliation required")
+    guest_receipt = json.loads(result.stdout)
+    if (guest_receipt.get("schema") != "norn.m5-guest-account-handoff-finished/v1" or
+            guest_receipt.get("guiManager") != "Aqua" or
+            guest_receipt.get("automaticLogin") != "off"):
+        raise ValueError("guest GUI hardening receipt invalid")
+    receipt = root / (name + ".hardened.json")
+    durable(receipt, json.dumps({"schema": "norn.m5-local-guest-hardened/v1",
+        "admission": after, "guestReceipt": guest_receipt,
+        "createMarkerSHA256": before["createMarkerSHA256"],
+        "sshKeySHA256": digest(args.supervisor_ssh_public_key)},
+        sort_keys=True, separators=(",", ":")).encode() + b"\n")
+    return receipt
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("intent", "signature", "public-key", "journal-root", "tart",
+                 "supervisor-ssh-public-key", "supervisor-ssh-private-key"):
+        parser.add_argument("--" + name, required=True)
+    args = parser.parse_args()
+    print(json.dumps({"hardenedReceipt": str(harden(args))}, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

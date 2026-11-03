@@ -174,7 +174,10 @@ func verifyRawData(body []byte, desired RenderedRoute, document routeDocument) e
 		routerKey := name + "@file"
 		desiredRouterKeys[routerKey] = true
 		router, ok := observed.Routers[routerKey]
-		if !ok || router.Status != "enabled" || router.Rule != wantRouter.Rule || (router.Service != desired.ServiceName && router.Service != serviceKey) || len(router.EntryPoints) != len(wantRouter.EntryPoints) || len(router.EntryPoints) != 1 || router.EntryPoints[0] != wantRouter.EntryPoints[0] || (wantRouter.Priority > 0 && router.Priority != wantRouter.Priority) {
+		if !ok {
+			return ErrRoutePropagationPending
+		}
+		if router.Status != "enabled" || router.Rule != wantRouter.Rule || (router.Service != desired.ServiceName && router.Service != serviceKey) || len(router.EntryPoints) != len(wantRouter.EntryPoints) || len(router.EntryPoints) != 1 || router.EntryPoints[0] != wantRouter.EntryPoints[0] || (wantRouter.Priority > 0 && router.Priority != wantRouter.Priority) {
 			return fmt.Errorf("effective managed router %s differs from desired route", name)
 		}
 		if (wantRouter.TLS != nil) != (len(router.TLS) != 0 && string(router.TLS) != "null") {
@@ -195,7 +198,10 @@ func verifyRawData(body []byte, desired RenderedRoute, document routeDocument) e
 		}
 	}
 	service, ok := observed.Services[serviceKey]
-	if !ok || service.Status != "enabled" || service.Weighted == nil || len(service.Weighted.Services) != len(wantService.Weighted.Services) {
+	if !ok {
+		return ErrRoutePropagationPending
+	}
+	if service.Status != "enabled" || service.Weighted == nil || len(service.Weighted.Services) != len(wantService.Weighted.Services) {
 		return fmt.Errorf("effective weighted service differs from desired route")
 	}
 	wanted := map[string]int{}

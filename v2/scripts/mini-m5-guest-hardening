@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""One-boot GUI account handoff inside a disposable M5 macOS guest."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import pty
+import pwd
+import re
+import secrets
+import select
+import stat
+import subprocess
+import time
+
+
+ROOT = Path("/var/db/norn-m5-window")
+STARTED = ROOT / "account-handoff-started.json"
+PASSWORD = ROOT / "rehearsal-login-password"
+FINISHED = ROOT / "account-handoff-finished.json"
+REHEARSAL = "norn-m5-rehearsal"
+RUNNER = "norn-m5-runner"
+SUDOERS = Path("/private/etc/sudoers.d/norn-m5-disposable")
+SUDOERS_TEXT = """Defaults:norn-m5-runner env_keep += \"RUNNER_NAME GITHUB_RUN_ID NORN_M5_HISTORICAL_ISOLATED NORN_M5_SOURCE_SHA NORN_M5_TARGET_SHA NORN_M5_ISOLATION_CHECK NORN_M5_HISTORICAL_RECEIPT_DIR NORN_REHEARSAL_POSTGRES_BIN\"
+norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-firewall-window *
+norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check norn-m5-isolated-01
+norn-m5-runner ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-bootstrap-cleanup norn-m5-isolated-01 *
+norn-m5-runner ALL=(norn-m5-rehearsal) NOPASSWD: /bin/launchctl print gui/*
+norn-m5-runner ALL=(norn-m5-rehearsal) NOPASSWD: /Library/PrivilegedHelperTools/norn-m5-historical/mini-historical-copied-state-controller *
+norn-m5-rehearsal ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/norn-mini-m5-isolation-check norn-m5-isolated-01
+"""
+
+
+def command(*args, timeout=30):
+    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=timeout).stdout
+
+
+def autologin_status():
+    result = subprocess.run(("/usr/sbin/sysadminctl", "-autologin", "status"),
+                            check=True, capture_output=True, text=True, timeout=10)
+    return result.stdout + result.stderr
+
+
+def guest_only():
+    if os.geteuid() != 0 or platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise ValueError("M5 guest hardening requires root on macOS ARM64")
+    if not re.fullmatch(r"VirtualMac[0-9]+,[0-9]+", command("/usr/sbin/sysctl", "-n", "hw.model").strip()):
+        raise ValueError("M5 guest hardening requires a VirtualMac")
+    if command("/usr/bin/sw_vers", "-productVersion").strip() != "26.6.2":
+        raise ValueError("M5 guest hardening requires macOS 26.6.2")
+    info = ROOT.lstat()
+    if info.st_uid != 0 or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("M5 guest state root is unsafe")
+
+
+def durable(path, content):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as target:
+        target.write(content)
+        target.flush()
+        os.fsync(target.fileno())
+    directory = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def private_prompt(args, password):
+    """Answer only sysadminctl's password prompt through a private PTY."""
+    master, slave = pty.openpty()
+    process = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    os.close(slave)
+    deadline = time.monotonic() + 90
+    buffer = b""
+    sent = 0
+    try:
+        while process.poll() is None:
+            if time.monotonic() > deadline:
+                process.kill()
+                raise TimeoutError("sysadminctl password prompt timed out")
+            ready, _, _ = select.select([master], [], [], 1)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buffer = (buffer + chunk)[-512:]
+            if re.search(rb"(?:password|passphrase)[^\r\n:]*:\s*$", buffer, re.I):
+                if sent >= 2:
+                    raise ValueError("unexpected extra password prompt")
+                os.write(master, (password + "\n").encode())
+                buffer = b""
+                sent += 1
+        status = process.wait(timeout=5)
+        if status != 0 or sent == 0:
+            raise RuntimeError("sysadminctl password command failed")
+    finally:
+        os.close(master)
+
+
+def account_absent(name):
+    try:
+        pwd.getpwnam(name)
+    except KeyError:
+        return
+    raise ValueError("M5 guest account already exists; reconcile before retry")
+
+
+def install_sudoers():
+    if SUDOERS.exists() or SUDOERS.is_symlink():
+        raise ValueError("M5 sudo delegation already exists")
+    fd = os.open(SUDOERS, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(SUDOERS_TEXT)
+        stream.flush()
+        os.fsync(stream.fileno())
+    command("/usr/sbin/visudo", "-cf", str(SUDOERS))
+    grants = command("/usr/bin/sudo", "-l", "-U", RUNNER)
+    if ("norn-mini-m5-firewall-window" not in grants or
+            "norn-m5-historical/mini-historical-copied-state-controller" not in grants):
+        raise ValueError("M5 sudo delegation is not effective")
+
+
+def remove_new_account_keychains(uid, home=None):
+    home = Path(home) if home is not None else Path("/Users") / REHEARSAL
+    info = home.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
+        raise ValueError("rehearsal home is unsafe")
+    library = home / "Library"
+    library_info = library.lstat()
+    if (not stat.S_ISDIR(library_info.st_mode) or library_info.st_uid != uid or
+            library_info.st_dev != info.st_dev):
+        raise ValueError("rehearsal Library directory is unsafe")
+    keychains = library / "Keychains"
+    if not keychains.exists() and not keychains.is_symlink():
+        return
+    root = keychains.lstat()
+    if not stat.S_ISDIR(root.st_mode) or root.st_uid != uid or root.st_dev != info.st_dev:
+        raise ValueError("rehearsal keychain root is unsafe")
+    entries = list(keychains.rglob("*"))
+    if len(entries) > 100:
+        raise ValueError("rehearsal keychain surface is unexpectedly large")
+    for path in entries:
+        item = path.lstat()
+        if (item.st_uid != uid or item.st_dev != root.st_dev or
+                not (stat.S_ISREG(item.st_mode) or stat.S_ISDIR(item.st_mode)) or
+                (stat.S_ISREG(item.st_mode) and (item.st_nlink != 1 or item.st_size > 5 * 1024 * 1024))):
+            raise ValueError("rehearsal keychain entry is unsafe")
+    for path in sorted(entries, key=lambda item: len(item.parts), reverse=True):
+        if path.is_dir():
+            path.rmdir()
+        else:
+            path.unlink()
+    keychains.rmdir()
+    if os.path.lexists(keychains):
+        raise ValueError("rehearsal keychain surface remains")
+
+
+def start():
+    guest_only()
+    if STARTED.exists() or FINISHED.exists():
+        raise ValueError("M5 account handoff already attempted")
+    account_absent(REHEARSAL)
+    account_absent(RUNNER)
+    durable(STARTED, json.dumps({"schema": "norn.m5-guest-account-handoff-started/v1",
+                                 "rehearsal": REHEARSAL, "runner": RUNNER}, sort_keys=True) + "\n")
+    rehearsal_password = secrets.token_urlsafe(36)
+    runner_password = secrets.token_urlsafe(36)
+    durable(PASSWORD, rehearsal_password + "\n")
+    private_prompt(("/usr/sbin/sysadminctl", "-addUser", REHEARSAL, "-fullName",
+                    "Norn M5 Rehearsal", "-home", "/Users/" + REHEARSAL,
+                    "-shell", "/bin/zsh", "-password", "-"), rehearsal_password)
+    private_prompt(("/usr/sbin/sysadminctl", "-addUser", RUNNER, "-fullName",
+                    "Norn M5 Runner", "-home", "/Users/" + RUNNER,
+                    "-shell", "/bin/zsh", "-password", "-"), runner_password)
+    for name in (REHEARSAL, RUNNER):
+        user = pwd.getpwnam(name)
+        if user.pw_uid == 0 or user.pw_dir != "/Users/" + name:
+            raise ValueError("guest account identity readback failed")
+    install_sudoers()
+    private_prompt(("/usr/sbin/sysadminctl", "-autologin", "set", "-userName", REHEARSAL,
+                    "-password", "-"), rehearsal_password)
+    status = autologin_status()
+    if REHEARSAL not in status:
+        raise ValueError("one-boot rehearsal auto-login was not set")
+    print(json.dumps({"schema": "norn.m5-guest-account-handoff-pending-reboot/v1",
+                      "rehearsalUID": pwd.getpwnam(REHEARSAL).pw_uid,
+                      "runnerUID": pwd.getpwnam(RUNNER).pw_uid}, sort_keys=True))
+
+
+def finish():
+    guest_only()
+    if not STARTED.is_file() or not PASSWORD.is_file() or FINISHED.exists():
+        raise ValueError("account handoff is not pending a one-boot finish")
+    command("/usr/sbin/sysadminctl", "-autologin", "off")
+    status = autologin_status().lower()
+    if REHEARSAL in status or not ("disabled" in status or "off" in status):
+        raise ValueError("automatic login remains enabled")
+    if Path("/etc/kcpassword").exists():
+        raise ValueError("automatic-login password file remains")
+    preference = subprocess.run(("/usr/bin/defaults", "read", "/Library/Preferences/com.apple.loginwindow",
+                                 "autoLoginUser"), capture_output=True, text=True, timeout=10)
+    if preference.returncode == 0:
+        raise ValueError("loginwindow still names an automatic-login user")
+    uid = pwd.getpwnam(REHEARSAL).pw_uid
+    command("/bin/launchctl", "print", f"gui/{uid}")
+    manager = command("/bin/launchctl", "asuser", str(uid), "/bin/launchctl", "managername").strip()
+    if manager != "Aqua":
+        raise ValueError("rehearsal session is not a graphical login")
+    if uid == pwd.getpwnam(RUNNER).pw_uid:
+        raise ValueError("runner and rehearsal accounts share a UID")
+    remove_new_account_keychains(uid)
+    PASSWORD.unlink()
+    receipt = {"schema": "norn.m5-guest-account-handoff-finished/v1", "rehearsalUID": uid,
+               "runnerUID": pwd.getpwnam(RUNNER).pw_uid, "guiDomain": f"gui/{uid}",
+               "guiManager": manager, "automaticLogin": "off", "kcpasswordAbsent": True,
+               "rehearsalKeychainsAbsent": True}
+    durable(FINISHED, json.dumps(receipt, sort_keys=True) + "\n")
+    print(json.dumps(receipt, sort_keys=True))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=("start", "finish"))
+    args = parser.parse_args()
+    if args.mode == "start":
+        start()
+    else:
+        finish()
+
+
+if __name__ == "__main__":
+    main()
