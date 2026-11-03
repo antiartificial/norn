@@ -220,9 +220,17 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, 
         os.fsync(stream.fileno())
     env["PKR_VAR_m5_bootstrap_password"] = bootstrap
     env["TART_NO_AUTO_PRUNE"] = ""
+    env["PACKER_LOG"] = "1"
+    log_path = root / (intent["guestName"] + ".packer-output.log")
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        subprocess.run((str(packer), "build", str(template)), env=env, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=7200)
+        with os.fdopen(fd, "wb") as output:
+            try:
+                subprocess.run((str(packer), "build", str(template)), env=env, check=True,
+                               stdout=output, stderr=subprocess.STDOUT, timeout=7200)
+            finally:
+                output.flush()
+                os.fsync(output.fileno())
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError("guest create outcome requires protected reconciliation") from exc
     rows = [row for row in tart_inventory(tart) if row["Name"] == intent["guestName"]]
