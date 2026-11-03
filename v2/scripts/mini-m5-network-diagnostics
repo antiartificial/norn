@@ -36,7 +36,8 @@ def main():
             if separator and key.strip() in {"destination", "gateway", "interface", "flags", "mtu"}:
                 route_fields[key.strip()] = value.strip()
 
-    interfaces = run(("/sbin/ifconfig", "-l"))
+    interface_output = run(("/sbin/ifconfig", "-l"))
+    interfaces = interface_output.split() if interface_output else None
     local_network_config = run(("/usr/bin/defaults", "read", "com.apple.network.local-network"))
     permission_log = run(("/usr/bin/log", "show", "--last", "15m", "--style", "compact",
                           "--predicate", 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS[c] "local network"'), 10)
@@ -45,7 +46,9 @@ def main():
         "schema": "norn.m5-host-network-diagnostics/v1",
         "guestIP": str(address),
         "route": route_fields or None,
-        "interfaceNames": interfaces.split() if interfaces else None,
+        "interfaceCount": len(interfaces) if interfaces is not None else None,
+        "tartNetworkInterfacesPresent": any(name.startswith("bridge") or name.startswith("vmnet")
+                                             for name in interfaces or []),
         "localNetworkPolicyConfigured": local_network_config is not None,
         "localNetworkTCCDenialObserved": denial_observed,
     }
