@@ -1,8 +1,13 @@
 name: Hello Norn MySQL staging rollback
+run-name: hello-norn-mysql-staging-rollback-${{ inputs.controller_intent_sha256 }}
 
 on:
   workflow_dispatch:
     inputs:
+      controller_intent_sha256:
+        description: Owner-signed intent hash binding this exact rollback dispatch.
+        required: true
+        type: string
       source_sha:
         description: Exact previously admitted staging source SHA
         required: true
@@ -38,7 +43,7 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@a1ee3199e8a4b327bee5bea55ba7b2c15964e35f
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@6bd8304153686ab70bf9c7874b62b1a6a4f06bf6
     with:
       lane: staging-rollback
       app_id: hello-norn-mysql-managed
@@ -52,3 +57,4 @@ jobs:
       proof_record_id: ${{ inputs.proof_record_id }}
       expected_route_proof_sha256: ${{ inputs.route_proof_sha256 }}
       expected_runner_name: norn-work-staging-work${{ github.run_id }}-runner
+      controller_intent_sha256: ${{ inputs.controller_intent_sha256 }}
