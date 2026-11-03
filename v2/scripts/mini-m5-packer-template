@@ -49,6 +49,11 @@ def transform(raw):
     text = replace_once(text,
                         'Managed via Tart<tab>admin<tab>admin<tab>admin<tab>',
                         'Managed via Tart<tab>admin<tab>${var.m5_bootstrap_password}<tab>${var.m5_bootstrap_password}<tab>')
+    # OCR observed the Language page, but blind selection left it there. Require
+    # the exact visible English choice before attempting the country page.
+    text = replace_once(text,
+                        '"<wait30s>italiano<esc>english<enter>",',
+                        '"<wait30s><click \'English\'><enter>",')
     text = replace_once(text,
                         '    # Disable Gatekeeper (1/2)\n',
                         '    # M5 retains Gatekeeper.\n')
