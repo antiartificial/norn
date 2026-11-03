@@ -47,7 +47,7 @@ func NewRemoteRoutePublicationAuthorities(origins []string, controlURI string, c
 			if err == nil {
 				return decision, nil
 			}
-			if !errors.Is(err, context.DeadlineExceeded) &&
+			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, io.EOF) &&
 				!errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.EHOSTUNREACH) && !errors.Is(err, syscall.ENETUNREACH) {
 				return nil, err
 			}
