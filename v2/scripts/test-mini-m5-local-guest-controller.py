@@ -1,7 +1,9 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,6 +17,23 @@ loader.exec_module(controller)
 
 
 class ReservationTests(unittest.TestCase):
+    def test_tart_finds_pinned_softnet_command_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            softnet = root / "norn-m5-softnet"
+            softnet.write_text("#!/bin/sh\nexit 0\n")
+            softnet.chmod(0o4755)
+            with patch.object(controller, "checked_file"):
+                command_dir = controller.softnet_command_directory(root, "norn-m5-12345", softnet)
+            command = command_dir / "softnet"
+            self.assertEqual(command_dir.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(shutil.which("softnet", path=str(command_dir)), str(command))
+            self.assertTrue(os.path.samefile(command, softnet))
+            with patch.object(controller, "checked_file"):
+                with self.assertRaises(FileExistsError):
+                    controller.softnet_command_directory(root, "norn-m5-12345", softnet)
+
     def test_create_requires_exact_protected_runner_context(self):
         with patch.dict(controller.os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "exact protected supervisor"):

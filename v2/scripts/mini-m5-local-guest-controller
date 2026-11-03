@@ -160,6 +160,22 @@ def protected_run(intent):
         raise ValueError("guest create requires the exact protected supervisor run")
 
 
+def softnet_command_directory(root, guest_name, softnet):
+    checked_file(softnet, SOFTNET_SHA256, required_owner=0)
+    if not Path(softnet).stat().st_mode & stat.S_ISUID:
+        raise ValueError("Softnet must be root installed with setuid")
+    directory = root / (guest_name + ".softnet-bin")
+    directory.mkdir(mode=0o700)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("guest Softnet command directory is unsafe")
+    command = directory / "softnet"
+    command.symlink_to(softnet)
+    if command.resolve(strict=True) != Path(softnet).resolve(strict=True) or shutil.which("softnet", path=str(directory)) != str(command):
+        raise ValueError("Tart Softnet command does not resolve to the pinned installer")
+    return directory
+
+
 def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, supervisor_key, intent_verifier):
     protected_run(intent)
     root = Path(journal_root)
@@ -170,10 +186,11 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, 
         raise ValueError("reservation does not match exact fresh admission")
     plugin_home = root / (intent["guestName"] + ".packer-plugins")
     plugin_home.mkdir(mode=0o700)
+    softnet_dir = softnet_command_directory(root, intent["guestName"], softnet)
     plugin_env = {"PACKER_PLUGIN_PATH": str(plugin_home),
                   "HOME": str(root), "TMPDIR": str(root), "USER": os.environ.get("USER", ""),
                   "LANG": "en_US.UTF-8",
-                  "PATH": str(Path(tart).parent) + ":" + str(Path(softnet).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"}
+                  "PATH": str(softnet_dir) + ":" + str(Path(tart).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"}
     subprocess.run((str(packer), "plugins", "install", "-path", str(plugin),
                     "github.com/cirruslabs/tart"), env=plugin_env,
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
