@@ -43,6 +43,11 @@ jobs:
           for key in INTENT SIGNATURE PUBLIC_KEY TART PACKER PLUGIN SOFTNET IPSW VOLUME JOURNAL_ROOT SUPERVISOR_SSH_PUBLIC_KEY INTENT_VERIFIER; do
             [[ -n "${!key}" ]]
           done
+      - name: Capture host network baseline
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-network-diagnostics" \
+            | tee "$RUNNER_TEMP/m5-host-network-before.json"
       - name: Reserve exact guest before effects
         run: |
           set -euo pipefail
@@ -68,10 +73,25 @@ jobs:
             --tart "$TART" --packer "$PACKER" --plugin "$PLUGIN" \
             --softnet "$SOFTNET" --ipsw "$IPSW" --volume "$VOLUME" \
             --journal-root "$JOURNAL_ROOT" --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" --intent-verifier "$INTENT_VERIFIER" | tee "$RUNNER_TEMP/m5-guest-reconcile.json"
+      - name: Capture host network outcome
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-network-diagnostics" \
+            | tee "$RUNNER_TEMP/m5-host-network-after.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: m5-local-guest-reconcile-${{ github.run_id }}
           path: ${{ runner.temp }}/m5-guest-reconcile.json
+          if-no-files-found: ignore
+          retention-days: 30
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: m5-host-network-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/m5-host-network-before.json
+            ${{ runner.temp }}/m5-host-network-after.json
           if-no-files-found: ignore
           retention-days: 30
