@@ -286,8 +286,20 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		`branches: [master]`,
 		`tags: ["v*"]`,
 		`- "v2/infra/fleet-pilot/hello-norn-mysql/**"`,
-		`github.ref == 'refs/heads/master' && github.ref_protected`,
+		`workflow_dispatch:`,
+		`source_sha:`,
+		`m8_completion_receipt_sha256:`,
+		`owner_acknowledgement:`,
+		`github.ref == 'refs/heads/master'`,
+		`github.ref_protected`,
 		`vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'`,
+		`github.event_name == 'workflow_dispatch'`,
+		`github.run_attempt == 1`,
+		`github.actor == 'antiartificial'`,
+		`github.triggering_actor == 'antiartificial'`,
+		`inputs.source_sha == github.sha`,
+		`inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256`,
+		`format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)`,
 		`startsWith(github.ref, 'refs/tags/v') && github.ref_protected`,
 		`antiartificial/norn/.github/workflows/norn-app-release.yml@31db2de8dafe14d234ac9e2f29c8480245dae7b4`,
 		`app_id: hello-norn-mysql-managed`,
@@ -341,7 +353,26 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	if caller.Jobs["staging"].With["private_network"] != "" || caller.Jobs["staging"].With["tailscale_target"] != "" {
 		t.Fatal("staging release must not use the retired Tailscale API route")
 	}
-	if got := caller.Jobs["staging"].If; got != "github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected && vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'" {
+	wantStagingIf := strings.Join(strings.Fields(`
+		github.repository == 'antiartificial/norn' &&
+		github.ref == 'refs/heads/master' &&
+		github.ref_protected &&
+		vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true' &&
+		(
+		  github.event_name == 'push' ||
+		  (
+		    github.event_name == 'workflow_dispatch' &&
+		    github.run_attempt == 1 &&
+		    github.actor == 'antiartificial' &&
+		    github.triggering_actor == 'antiartificial' &&
+		    inputs.source_sha == github.sha &&
+		    inputs.m8_completion_receipt_sha256 != '' &&
+		    inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
+		    inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)
+		  )
+		)
+	`), " ")
+	if got := strings.Join(strings.Fields(caller.Jobs["staging"].If), " "); got != wantStagingIf {
 		t.Fatalf("staging release activation gate changed: %q", got)
 	}
 	if got := caller.Jobs["production"].With["app_id"]; got != caller.Jobs["staging"].With["app_id"] {

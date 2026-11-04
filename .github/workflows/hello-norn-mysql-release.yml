@@ -4,10 +4,24 @@ on:
   push:
     branches: [master]
     tags: ["v*"]
-    # GitHub evaluates paths only for branch pushes, so merging this caller
-    # itself cannot stage a release. Tag pushes remain the production lane.
+    # GitHub evaluates paths only for branch pushes. Tag pushes remain the
+    # production lane; staging can also be explicitly dispatched after M8.
     paths:
       - "v2/infra/fleet-pilot/hello-norn-mysql/**"
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact current protected master commit to release
+        required: true
+        type: string
+      m8_completion_receipt_sha256:
+        description: Verified terminal M8 completion receipt SHA-256
+        required: true
+        type: string
+      owner_acknowledgement:
+        description: Type release-hello-norn-mysql-staging-<source_sha>-<m8_receipt_sha256>
+        required: true
+        type: string
 
 permissions: {}
 
@@ -15,7 +29,24 @@ jobs:
   staging:
     # Code-only merges keep the managed candidate inert until the target Fleet
     # API route, catalog, Variables source, and runtime workers are qualified.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected && vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'
+    if: >-
+      github.repository == 'antiartificial/norn' &&
+      github.ref == 'refs/heads/master' &&
+      github.ref_protected &&
+      vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true' &&
+      (
+        github.event_name == 'push' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.run_attempt == 1 &&
+          github.actor == 'antiartificial' &&
+          github.triggering_actor == 'antiartificial' &&
+          inputs.source_sha == github.sha &&
+          inputs.m8_completion_receipt_sha256 != '' &&
+          inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
+          inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)
+        )
+      )
     permissions:
       # GitHub validates every job in the reusable workflow, not only the
       # staging-lane jobs selected by its input. Keep this the exact union of
