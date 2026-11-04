@@ -1,6 +1,6 @@
 # Observability
 
-Norn keeps observability local by default. The control plane exposes Prometheus-compatible metrics, app specs can declare scrapeable process metrics, and a local Prometheus/Grafana pair can run with bounded 30-day retention.
+Norn exposes Prometheus-compatible metrics and OpenTelemetry traces/logs. A local Prometheus/Grafana pair remains available for development; production Fleet telemetry should be collected by a node-local Grafana Alloy agent and forwarded to the shared Grafana Cloud stack. Norn owns instrumentation and signal semantics; the collector owns secure scraping, environment labels, buffering, and export.
 
 ## Local Retention
 
@@ -82,7 +82,43 @@ The repo includes a starter config at `v2/dev/prometheus.yml`. Refresh generated
 curl -fsS http://127.0.0.1:8800/api/observability/prometheus.yml > v2/dev/norn-prometheus.generated.yml
 ```
 
-Keep `remote_write` empty for local-only operation. Add a remote backend later only for a curated low-cardinality subset if you want offsite alerting.
+Keep `remote_write` empty for local-only development. Fleet Alloy is the production export path so the monitoring backend remains available when Norn or a cluster is unhealthy.
+
+## Grafana Cloud and OpenTelemetry
+
+On Fleet nodes, configure Norn to send traces to the local Alloy OTLP/HTTP
+receiver. Keep the Grafana Cloud write credential on Alloy, not in Norn's
+environment or generated scrape configuration. The generic OTLP endpoint is a
+base URL: Norn appends `/v1/traces` and `/v1/logs`. Signal-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` values are used as complete endpoints.
+The etcd Fleet runtime exposes `/metrics` only when its dedicated
+`NORN_METRICS_TOKEN_FILE` is configured. That mode-0600 bearer is accepted on
+`/metrics` alone and does not grant the broader `api:read` scope.
+
+Set bounded resource attributes on the Norn service, for example:
+
+```text
+OTEL_SERVICE_NAME=norn-api
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=staging,service.namespace=norn.infrastructure,norn.cluster=tk-staging-nyc3
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+NORN_OTEL_ENABLED=true
+NORN_OTEL_LOGS=false
+```
+
+Use `deployment.environment.name=staging` or `production` consistently. Add
+equivalent labels to Prometheus scrape targets in Alloy; OpenTelemetry resource
+attributes do not automatically label independently scraped Prometheus series.
+Do not export raw access logs until request-URI query values are redacted.
+Exclude request IDs, user IDs, allocation IDs that rotate, URLs, object keys,
+and secret values from metric labels.
+
+Alloy should scrape Norn and the local Nomad, Consul, etcd, and host endpoints
+over loopback or the private network using dedicated read-only credentials and
+the existing TLS material. Alert on missing/down targets as well as unhealthy
+cluster signals so target filtering cannot hide failures. Keep the Alloy WAL
+bounded; it is not a substitute for
+Norn's signed mutation and recovery evidence.
 
 ## Observability Bundle
 
@@ -283,7 +319,7 @@ Prometheus local TSDB, 30d/8GB
 Grafana local dashboards
 ```
 
-External support can be added later with:
+For local Prometheus, external support can be added with:
 
 ```yaml
 remote_write:

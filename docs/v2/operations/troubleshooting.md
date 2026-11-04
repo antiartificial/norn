@@ -22,13 +22,14 @@ Norn can export OTLP traces and logs to an OpenTelemetry Collector, Grafana Allo
 
 ```bash
 export NORN_OTEL_ENABLED=true
-export NORN_OTEL_LOGS=true
+export NORN_OTEL_LOGS=false
 export NORN_LOG_FORMAT=json
 export OTEL_SERVICE_NAME=norn-api
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=staging,service.namespace=norn.infrastructure,norn.cluster=tk-staging-nyc3
 ```
 
-The API wraps HTTP traffic with OpenTelemetry spans. `NORN_LOG_FORMAT=json` keeps stdout logs easy to collect with a Collector `filelog` receiver even when OTLP logs are disabled.
+The API wraps HTTP traffic with OpenTelemetry spans. The generic OTLP HTTP endpoint is a base URL; Norn appends `/v1/traces` and `/v1/logs`. Signal-specific `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` values are complete endpoints. Set `NORN_OTEL_LOGS=true` only after the selected log pipeline redacts request query values. `NORN_LOG_FORMAT=json` keeps stdout logs easy to collect with a Collector `filelog` receiver.
 
 Use Norn's platform ops rollup to verify what the API sees at runtime:
 
