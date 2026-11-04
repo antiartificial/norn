@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"norn/v2/api/model"
+	"norn/v2/api/observe"
 	"norn/v2/api/store"
 )
 
@@ -90,6 +91,7 @@ func (h *Handler) PlatformOps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) {
+	otelConfig := observe.ConfigFromEnv("norn-api")
 	out := platformOpsSummary{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		NetworkMode: h.cfg.NetworkMode,
@@ -109,10 +111,10 @@ func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) 
 			ByStatus: map[string]int{},
 		},
 		Observability: platformObserveSummary{
-			Enabled:         truthyEnv("NORN_OTEL_ENABLED"),
-			LogsEnabled:     envDefaultTrue("NORN_OTEL_LOGS"),
+			Enabled:         otelConfig.Enabled,
+			LogsEnabled:     otelConfig.LogsEnabled,
 			LogFormat:       envDefault("NORN_LOG_FORMAT", "text"),
-			ServiceName:     os.Getenv("OTEL_SERVICE_NAME"),
+			ServiceName:     otelConfig.ServiceName,
 			OTLPEndpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 			BundleAvailable: true,
 			Retention:       "30d or 8GB",
@@ -277,14 +279,6 @@ func statusBucket(status int) string {
 func truthyEnv(key string) bool {
 	value := os.Getenv(key)
 	return value == "1" || value == "true" || value == "TRUE" || value == "yes"
-}
-
-func envDefaultTrue(key string) bool {
-	value := os.Getenv(key)
-	if value == "" {
-		return true
-	}
-	return truthyEnv(key)
 }
 
 func envDefault(key, fallback string) string {

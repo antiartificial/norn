@@ -101,6 +101,17 @@ type Handler struct {
 	executorStartVerifier FleetExecutorStartVerifier
 }
 
+// NewMetricsHandler builds the metrics handler for the etcd Fleet runtime,
+// which does not construct the PostgreSQL API Handler. It can still use the
+// configured read-only Nomad and Consul clients for live workload state.
+func NewMetricsHandler(cfg *config.Config, n *nomad.Client, c *consul.Client) http.Handler {
+	h := &Handler{cfg: cfg, nomad: n, consul: c}
+	if n != nil && c != nil {
+		h.workloads = connector.NewNomadConsul(n, c)
+	}
+	return http.HandlerFunc(h.Metrics)
+}
+
 // ConfigurePrivateReleaseSigner installs the staging-only signer after startup
 // configuration has selected norn-signed-private. Production receives only the
 // corresponding public-key verifier through Pipeline.

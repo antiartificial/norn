@@ -112,6 +112,11 @@ on:
         required: false
         default: ''
         type: string
+      controller_intent_sha256:
+        description: Owner-signed controller intent hash authorizing this rollback dispatch.
+        required: false
+        default: ''
+        type: string
 
 defaults:
   run:
@@ -1324,9 +1329,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   staging-rollback-runner-private:
+    name: norn-staging-rollback-effect
     if: inputs.lane == 'staging-rollback'
     needs: validate
-    runs-on: [self-hosted, Linux, X64, norn-fleet-protected, norn-work-staging-fleet-effect]
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - norn-fleet-protected
+      - norn-work-staging-fleet-effect
+      - norn-work-staging-norn-rollback
+      - norn-work-management-run-${{ github.run_id }}
     environment: staging
     permissions:
       id-token: write

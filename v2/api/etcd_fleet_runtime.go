@@ -30,6 +30,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"norn/v2/api/config"
+	"norn/v2/api/consul"
 	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
@@ -38,10 +39,13 @@ import (
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/startup"
 	"norn/v2/api/store"
 	"norn/v2/api/worker"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -56,6 +60,20 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if !cfg.RequireExplicitAuth || len(cfg.APIToken) < 32 || len(cfg.AuditSigningKey) < 32 || strings.TrimSpace(cfg.ControlAuthority) == "" {
 		return fmt.Errorf("etcd Fleet runtime requires explicit auth, a 32-byte API token and audit key, and control authority")
 	}
+	otelCtx, otelCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownOTEL, otelErr := observe.Setup(otelCtx, observe.ConfigFromEnv("norn-api"))
+	otelCancel()
+	if otelErr != nil {
+		log.Printf("WARNING: otel setup: %v", otelErr)
+	}
+	observe.ConfigureLogging("norn-api")
+	defer func() {
+		if shutdownOTEL != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdownOTEL(shutdownCtx)
+		}
+	}()
 	signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...)
 	if err != nil {
 		return fmt.Errorf("acceptance signer: %w", err)
@@ -80,6 +98,13 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return fmt.Errorf("private invocation startup preflight: %w", err)
 	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
+	var metricsToken string
+	if tokenPath := strings.TrimSpace(os.Getenv("NORN_METRICS_TOKEN_FILE")); tokenPath != "" {
+		metricsToken, err = handler.ReadMetricsToken(tokenPath)
+		if err != nil {
+			return fmt.Errorf("load Norn metrics credential: %w", err)
+		}
+	}
 	githubConfig := fleetGitHubConfig(cfg)
 	var fleetGitHub *githubapp.Client
 	if githubapp.Configured(githubConfig) {
@@ -168,6 +193,28 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	// reconciliation checkpoints. Inventory and general operation reads still
 	// require api:read.
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
+	if metricsToken != "" {
+		var metricsNomad *nomad.Client
+		if cfg.NomadAddr != "" {
+			metricsNomad, err = nomad.NewClient(cfg.NomadAddr)
+			if err != nil {
+				log.Printf("WARNING: metrics Nomad client unavailable: %v", err)
+				metricsNomad = nil
+			}
+		}
+		var metricsConsul *consul.Client
+		if cfg.ConsulAddr != "" {
+			metricsConsul, err = consul.NewClient(cfg.ConsulAddr)
+			if err != nil {
+				log.Printf("WARNING: metrics Consul client unavailable: %v", err)
+				metricsConsul = nil
+			}
+		}
+		metricsHandler := handler.NewMetricsHandler(cfg, metricsNomad, metricsConsul)
+		router.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			handler.MetricsTokenAuth(metricsToken, metricsHandler).ServeHTTP(w, r)
+		})
+	}
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
 	platformOperate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
 	catalogActivate := etcdManagedTokenAuth(cfg, identities, handler.ScopeCatalogActivate)
@@ -227,7 +274,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}
 		http.NotFound(w, r)
 	})
-	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: router, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(router, "norn.api"), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("etcd Fleet runtime listen: %w", err)
@@ -245,7 +292,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 			return fmt.Errorf("etcd Fleet pairing loopback listen: %w", err)
 		}
 		defer pairingListener.Close()
-		pairingServer = &http.Server{Handler: pairingOnlyHandler(router), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+		pairingServer = &http.Server{Handler: otelhttp.NewHandler(pairingOnlyHandler(router), "norn.pairing"), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
 	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -337,6 +384,10 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
 	features := []string{"etcd-normal-router-v1", "fleet-authority-only-v1", "fleet-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "fleet-app-target-configuration", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation", "fleet-target-fence-v1", "fleet-resource-v1", "fleet-offline-attempt-admission-v1", "fleet-offline-effect-grant-inert-v1", "fleet-offline-device-enrollment-v1"}
 	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetAppTarget": "/api/v1/apps/{id}/fleet-target", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange", "fleetTargets": "/api/v1/fleet/targets", "fleetResources": "/api/v1/fleet/resources", "fleetOfflineAttempt": "/api/v1/fleet/offline/plans/{planID}/attempt", "fleetOfflineEffectGrants": "/api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants", "fleetOfflineEnrollments": "/api/v1/fleet/offline/enrollments", "fleetOfflineEnrollmentApproval": "/api/v1/fleet/offline/enrollments/approve", "fleetOfflineEnrollmentExchange": "/api/v1/fleet/offline/enrollments/{id}/exchange", "fleetOfflineDevice": "/api/v1/fleet/offline/devices/{id}"}
+	if strings.TrimSpace(os.Getenv("NORN_METRICS_TOKEN_FILE")) != "" {
+		features = append(features, "prometheus-metrics-v1")
+		endpoints["metrics"] = "/metrics"
+	}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if cfg != nil && cfg.FleetPlatformReleaseIntentEnabled {
 		features = append(features, "fleet-platform-release-intent-v1")
