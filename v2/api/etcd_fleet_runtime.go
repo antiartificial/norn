@@ -211,7 +211,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 			}
 		}
 		metricsHandler := handler.NewMetricsHandler(cfg, metricsNomad, metricsConsul)
-		router.Get("/metrics", handler.MetricsTokenAuth(metricsToken, metricsHandler))
+		router.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			handler.MetricsTokenAuth(metricsToken, metricsHandler).ServeHTTP(w, r)
+		})
 	}
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
 	platformOperate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
