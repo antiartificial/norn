@@ -18,6 +18,7 @@ import (
 
 	"norn/v2/api/effect"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/savedplaneffect"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -30,6 +31,7 @@ type V3OperationStore struct {
 	lease             clientv3.Lease
 	prefix, authority string
 	signer            store.AcceptanceSigner
+	projectionSigner  *savedplaneffect.ProjectionSigner
 	policy            store.AcceptancePolicy
 }
 

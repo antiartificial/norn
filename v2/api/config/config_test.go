@@ -194,6 +194,17 @@ func TestFleetAppDeleteCoPermitIsExplicitAndDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestFleetSavedPlanEffectIsExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_FLEET_SAVED_PLAN_EFFECT_ENABLED", "")
+	if Load().FleetSavedPlanEffectEnabled {
+		t.Fatal("saved plan effect enabled by default")
+	}
+	t.Setenv("NORN_FLEET_SAVED_PLAN_EFFECT_ENABLED", "true")
+	if !Load().FleetSavedPlanEffectEnabled {
+		t.Fatal("explicit saved plan effect gate was ignored")
+	}
+}
+
 func TestFleetOfflineVerifierReadIsExplicitAndDisabledByDefault(t *testing.T) {
 	t.Setenv("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", "")
 	if cfg := Load(); cfg.FleetOfflineVerifierReadEnabled {

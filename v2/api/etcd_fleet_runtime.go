@@ -35,6 +35,7 @@ import (
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/controller"
+	"norn/v2/api/fleet/savedplaneffect"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
@@ -182,6 +183,18 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if executorLaneEnabled && reconciler == nil {
 		return fmt.Errorf("NORN_FLEET_ETCD_EXECUTOR_ENABLED requires %s=true", fleetReconcilerEnv)
 	}
+	if cfg.FleetSavedPlanEffectEnabled {
+		if !executorLaneEnabled {
+			return fmt.Errorf("NORN_FLEET_SAVED_PLAN_EFFECT_ENABLED requires NORN_FLEET_ETCD_EXECUTOR_ENABLED=true")
+		}
+		projectionSigner, signerErr := savedplaneffect.LoadProjectionSigner(cfg.FleetSavedPlanProjectionPrivateKeyFile, cfg.FleetSavedPlanProjectionPublicKeySHA256, cfg.FleetSavedPlanProjectionSignerUID)
+		if signerErr != nil {
+			return fmt.Errorf("configure service-owned pinned saved-plan projection signer: %w", signerErr)
+		}
+		if signerErr = operations.SetSavedPlanEffectProjectionSigner(projectionSigner); signerErr != nil {
+			return fmt.Errorf("configure saved-plan projection signer: %w", signerErr)
+		}
+	}
 	router.Get("/api/health", sourceValidationHealthHandler(client, backend.EtcdPrefix))
 	router.Get("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
@@ -259,6 +272,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	registerEtcdFleetOfflineRoutes(router, cfg, identities, operations, offlineOwnerKey, offlineReservationVerifier, offlineEffectSource)
 	registerEtcdFleetAppDeleteCoPermitRoute(router, cfg, identities, operations, executorLaneEnabled)
+	registerEtcdFleetSavedPlanEffectRoutes(router, cfg, identities, operations, executorLaneEnabled)
 	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))

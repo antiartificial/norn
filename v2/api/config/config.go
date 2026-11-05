@@ -23,6 +23,16 @@ type Config struct {
 	// FleetAppDeleteCoPermitEnabled mounts the one-use Norn co-permit route.
 	// It grants no provider authority and is disabled unless explicitly enabled.
 	FleetAppDeleteCoPermitEnabled bool
+	// FleetSavedPlanEffectEnabled mounts the default-off, attempt-bound
+	// saved-OpenTofu-plan contraction adapter. It is not the raw DELETE lane.
+	FleetSavedPlanEffectEnabled bool
+	// FleetSavedPlanProjection* is a separate service-owned Ed25519 signing key
+	// for the non-authorizing Fleet inbox projection. It must never reuse the
+	// audit HMAC or an Actions/provider credential; the configured service UID
+	// must own the key and the running Norn process.
+	FleetSavedPlanProjectionPrivateKeyFile  string
+	FleetSavedPlanProjectionPublicKeySHA256 string
+	FleetSavedPlanProjectionSignerUID       int
 	// FleetPlatformReleaseIntentEnabled exposes durable, effect-free platform
 	// release intent records. The platform release executor has a separate gate.
 	FleetPlatformReleaseIntentEnabled bool
@@ -334,6 +344,10 @@ func Load() *Config {
 		FleetAuthorityOnly:                           envBoolOr("NORN_FLEET_AUTHORITY_ONLY", false),
 		FleetEtcdExecutorEnabled:                     envBoolOr("NORN_FLEET_ETCD_EXECUTOR_ENABLED", false),
 		FleetAppDeleteCoPermitEnabled:                envBoolOr("NORN_FLEET_APP_DELETE_CO_PERMIT_ENABLED", false),
+		FleetSavedPlanEffectEnabled:                  envBoolOr("NORN_FLEET_SAVED_PLAN_EFFECT_ENABLED", false),
+		FleetSavedPlanProjectionPrivateKeyFile:       strings.TrimSpace(os.Getenv("NORN_FLEET_SAVED_PLAN_PROJECTION_PRIVATE_KEY_FILE")),
+		FleetSavedPlanProjectionPublicKeySHA256:      strings.ToLower(strings.TrimSpace(os.Getenv("NORN_FLEET_SAVED_PLAN_PROJECTION_PUBLIC_KEY_SHA256"))),
+		FleetSavedPlanProjectionSignerUID:            envIntOr("NORN_FLEET_SAVED_PLAN_PROJECTION_SIGNER_UID", -1),
 		FleetPlatformReleaseIntentEnabled:            envBoolOr("NORN_FLEET_PLATFORM_RELEASE_INTENT_ENABLED", false),
 		FleetPlatformRecoveryEnabled:                 envBoolOr("NORN_FLEET_PLATFORM_RECOVERY_ENABLED", false),
 		FleetPlatformGenesisIntentPublicKeyFile:      strings.TrimSpace(os.Getenv("NORN_FLEET_PLATFORM_GENESIS_INTENT_PUBLIC_KEY_FILE")),

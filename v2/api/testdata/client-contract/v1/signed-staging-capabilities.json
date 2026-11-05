@@ -32,6 +32,7 @@
       "fleet:offline-attempt",
       "fleet:offline-verify",
       "fleet:app-delete-verify",
+      "fleet:saved-plan-effect-verify",
       "fleet:protected-terminal-verify",
       "admin"
     ],
