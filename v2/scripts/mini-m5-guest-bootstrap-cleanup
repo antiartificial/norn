@@ -22,7 +22,7 @@ ADMIN = "admin"
 RUNNER = "norn-m5-isolated-01"
 OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
 INTENT_VERIFIER = "/Library/PrivilegedHelperTools/norn-mini-m5-intent-verify"
-INTENT_VERIFIER_SHA256 = "aaa6ceea2a7c5b091ce33467ad13ece3b096bb4fcb3aa50dabb11b3e650cf1a5"
+INTENT_VERIFIER_SHA256 = "2bc04575ed02e5240780cbe1f2e09e7cd695cf2197a1cbc6ba3d0c4594c46b8c"
 
 
 def command(*args, timeout=30, input=None):
