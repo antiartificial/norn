@@ -22,6 +22,12 @@ The private key is held outside the runner under the owner's 0700 work-staging
 directory. The workflow variable containing the public-key path cannot select
 a different trust anchor.
 
+Build the M5 intent-verifier executable from `v2/infra/m5/intent-verify.go`
+with `v2/scripts/build-m5-intent-verifier.sh <output-path>`. The script uses
+Go 1.26.10, disables cgo, trims source paths, clears the linker build ID, and
+checks the executable against the SHA-256 pinned by the controller and guest
+helpers before it installs the file.
+
 `mini-m5-packer-template` verifies that exact file and derives an M5-only
 template. It pins the Tart plugin to 1.21.0, uses an already verified local
 IPSW, binds a run-specific guest name and random bootstrap password, starts
