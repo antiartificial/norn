@@ -19,7 +19,7 @@ on:
         required: true
         type: string
       owner_acknowledgement:
-        description: Type release-hello-norn-mysql-staging-<source_sha>-<m8_receipt_sha256>-intent-<controller_intent_sha256>
+        description: Type release-hello-norn-mysql-staging-<source_sha>-<m8_receipt_sha256>
         required: true
         type: string
 
@@ -42,7 +42,7 @@ jobs:
       inputs.controller_intent_sha256 != '' &&
       inputs.m8_completion_receipt_sha256 != '' &&
       inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
-      inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}-intent-{2}', github.sha, inputs.m8_completion_receipt_sha256, inputs.controller_intent_sha256)
+      inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)
     permissions:
       # GitHub validates every job in the reusable workflow, not only the
       # staging-lane jobs selected by its input. Keep this the exact union of

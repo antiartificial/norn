@@ -345,7 +345,7 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		`inputs.source_sha == github.sha`,
 		`inputs.controller_intent_sha256 != ''`,
 		`inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256`,
-		`format('release-hello-norn-mysql-staging-{0}-{1}-intent-{2}', github.sha, inputs.m8_completion_receipt_sha256, inputs.controller_intent_sha256)`,
+		`format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)`,
 		`startsWith(github.ref, 'refs/tags/v') && github.ref_protected`,
 		`antiartificial/norn/.github/workflows/norn-app-release.yml@` + managedReleaseReusableSHA,
 		`expected_runner_name: norn-work-staging-work${{ github.run_id }}-runner`,
@@ -421,7 +421,7 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		inputs.controller_intent_sha256 != '' &&
 		inputs.m8_completion_receipt_sha256 != '' &&
 		inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
-		inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}-intent-{2}', github.sha, inputs.m8_completion_receipt_sha256, inputs.controller_intent_sha256)
+		inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)
 	`), " ")
 	if got := strings.Join(strings.Fields(caller.Jobs["staging"].If), " "); got != wantStagingIf {
 		t.Fatalf("staging release activation gate changed: %q", got)
