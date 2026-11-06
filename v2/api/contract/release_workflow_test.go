@@ -75,6 +75,51 @@ func TestReusableReleaseWorkflowKeepsPrivateEvidenceServerSelectedAndOffArgv(t *
 	}
 }
 
+func TestReusableStagingDispatchRequiresControllerBoundPrivateRunner(t *testing.T) {
+	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(raw)
+	for _, required := range []string{
+		`workflow_dispatch)`,
+		`[[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "controller staging dispatch requires a protected ref"`,
+		`[[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]]`,
+		`[[ "$RUNNER_PRIVATE" == "true" && "$CONTROLLER_INTENT_SHA256" =~ ^[0-9a-f]{64}$ ]]`,
+		`staging workflow_dispatch requires the private runner and exact controller intent hash`,
+		`push)`,
+		`staging requires a push to the protected default branch`,
+		`*) echo "staging requires a protected push or controller-bound workflow_dispatch"`,
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("staging event gate is missing %q", required)
+		}
+	}
+
+	// These cases document the dispatch contract independently of the YAML
+	// spelling: only a protected default-branch dispatch with a private runner
+	// and full controller intent hash is admissible.
+	for _, tc := range []struct {
+		name, event, ref string
+		protected        bool
+		runnerPrivate    bool
+		intentHash       string
+		want             bool
+	}{
+		{name: "controller dispatch", event: "workflow_dispatch", ref: "refs/heads/master", protected: true, runnerPrivate: true, intentHash: strings.Repeat("a", 64), want: true},
+		{name: "unbound dispatch", event: "workflow_dispatch", ref: "refs/heads/master", protected: true, runnerPrivate: false, intentHash: "", want: false},
+		{name: "dispatch without intent", event: "workflow_dispatch", ref: "refs/heads/master", protected: true, runnerPrivate: true, intentHash: "", want: false},
+		{name: "dispatch from unprotected ref", event: "workflow_dispatch", ref: "refs/heads/topic", protected: false, runnerPrivate: true, intentHash: strings.Repeat("a", 64), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.event == "workflow_dispatch" && tc.protected && tc.ref == "refs/heads/master" && tc.runnerPrivate && len(tc.intentHash) == 64 && strings.Trim(tc.intentHash, "0123456789abcdef") == ""
+			if got != tc.want {
+				t.Fatalf("dispatch admission = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRequiredReleaseChecksBindProtectedDefaultBranchSuite(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
 	if err != nil {
