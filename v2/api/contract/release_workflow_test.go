@@ -8,9 +8,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const managedReleaseReusableSHA = "1e70024ffec0781edbc3bfe54e12320b46b3e654"
+
 type releaseWorkflow struct {
 	Jobs map[string]struct {
-		Steps []struct {
+		RunsOn any `yaml:"runs-on"`
+		Steps  []struct {
 			Name string            `yaml:"name"`
 			Uses string            `yaml:"uses"`
 			Run  string            `yaml:"run"`
@@ -20,6 +23,17 @@ type releaseWorkflow struct {
 }
 
 type releaseCallerWorkflow struct {
+	On struct {
+		Push struct {
+			Branches []string `yaml:"branches"`
+			Tags     []string `yaml:"tags"`
+		} `yaml:"push"`
+		WorkflowDispatch struct {
+			Inputs map[string]struct {
+				Required bool `yaml:"required"`
+			} `yaml:"inputs"`
+		} `yaml:"workflow_dispatch"`
+	} `yaml:"on"`
 	Jobs map[string]struct {
 		If          string            `yaml:"if"`
 		Permissions map[string]string `yaml:"permissions"`
@@ -45,6 +59,9 @@ func TestReusableReleaseWorkflowKeepsPrivateEvidenceServerSelectedAndOffArgv(t *
 		`Idempotency-Key: norn-private-attestation-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT`,
 		`Idempotency-Key: norn-staging-preflight-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT`,
 		`Idempotency-Key: norn-staging-deploy-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT`,
+		`CONTROLLER_INTENT_SHA256: ${{ inputs.controller_intent_sha256 }}`,
+		`runner_private requires the exact signed controller intent hash`,
+		`runner_private expected name must bind the exact workflow run`,
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("release workflow is missing %q", required)
@@ -236,7 +253,6 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	workflow := string(reusable)
 	for _, required := range []string{
 		`staging-runner-private:`,
-		`runs-on: [self-hosted, Linux, X64, norn-fleet-protected, norn-work-staging-fleet-effect]`,
 		`Download same-run release evidence`,
 		`same-run candidate binding is invalid`,
 		`runner_private NORN_API_URL must be https://localhost:18443`,
@@ -276,6 +292,35 @@ func TestFleetCanaryUsesPinnedRunnerPrivateRoute(t *testing.T) {
 	}
 }
 
+func TestCurrentPrivateStagingEffectUsesRunScopedControllerRunner(t *testing.T) {
+	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow releaseWorkflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	effect, ok := workflow.Jobs["staging-runner-private"]
+	if !ok {
+		t.Fatal("runner-private staging effect job is missing")
+	}
+	want := []string{"self-hosted", "Linux", "X64", "norn-fleet-protected",
+		"norn-work-staging-fleet-effect", "norn-work-management-run-${{ github.run_id }}"}
+	runsOn, ok := effect.RunsOn.([]any)
+	if !ok || len(runsOn) != len(want) {
+		t.Fatalf("runner-private labels = %v, want %v", effect.RunsOn, want)
+	}
+	for index, label := range want {
+		if got, ok := runsOn[index].(string); !ok || got != label {
+			t.Fatalf("runner-private labels = %v, want %v", effect.RunsOn, want)
+		}
+	}
+	if !strings.Contains(string(raw), "Bind one-use runner and controller intent") {
+		t.Fatal("run-scoped runner must verify the controller intent and exact runner name before effects")
+	}
+}
+
 func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/hello-norn-mysql-release.yml")
 	if err != nil {
@@ -283,13 +328,13 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	}
 	workflow := string(raw)
 	for _, required := range []string{
-		`branches: [master]`,
 		`tags: ["v*"]`,
-		`- "v2/infra/fleet-pilot/hello-norn-mysql/**"`,
 		`workflow_dispatch:`,
 		`source_sha:`,
 		`m8_completion_receipt_sha256:`,
+		`controller_intent_sha256:`,
 		`owner_acknowledgement:`,
+		`run-name: hello-norn-mysql-release-${{ github.event.inputs.controller_intent_sha256 || github.sha }}`,
 		`github.ref == 'refs/heads/master'`,
 		`github.ref_protected`,
 		`vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true'`,
@@ -298,10 +343,13 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		`github.actor == 'antiartificial'`,
 		`github.triggering_actor == 'antiartificial'`,
 		`inputs.source_sha == github.sha`,
+		`inputs.controller_intent_sha256 != ''`,
 		`inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256`,
-		`format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)`,
+		`format('release-hello-norn-mysql-staging-{0}-{1}-intent-{2}', github.sha, inputs.m8_completion_receipt_sha256, inputs.controller_intent_sha256)`,
 		`startsWith(github.ref, 'refs/tags/v') && github.ref_protected`,
-		`antiartificial/norn/.github/workflows/norn-app-release.yml@31db2de8dafe14d234ac9e2f29c8480245dae7b4`,
+		`antiartificial/norn/.github/workflows/norn-app-release.yml@` + managedReleaseReusableSHA,
+		`expected_runner_name: norn-work-staging-work${{ github.run_id }}-runner`,
+		`controller_intent_sha256: ${{ inputs.controller_intent_sha256 }}`,
 		`app_id: hello-norn-mysql-managed`,
 		`image_repository: ghcr.io/antiartificial/hello-norn-mysql`,
 		`build_contract: pilot-go`,
@@ -320,6 +368,13 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	var caller releaseCallerWorkflow
 	if err := yaml.Unmarshal(raw, &caller); err != nil {
 		t.Fatalf("parse release caller workflow: %v", err)
+	}
+	if len(caller.On.Push.Tags) != 1 || caller.On.Push.Tags[0] != "v*" || len(caller.On.Push.Branches) != 0 {
+		t.Fatalf("release push triggers must be production tags only, got %#v", caller.On.Push)
+	}
+	dispatchIntent, ok := caller.On.WorkflowDispatch.Inputs["controller_intent_sha256"]
+	if !ok || !dispatchIntent.Required {
+		t.Fatal("workflow_dispatch must require the signed controller intent hash")
 	}
 	// GitHub validates the permissions of every job in a reusable workflow,
 	// even when the lane input makes some of them ineligible to run. These are
@@ -358,19 +413,15 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		github.ref == 'refs/heads/master' &&
 		github.ref_protected &&
 		vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true' &&
-		(
-		  github.event_name == 'push' ||
-		  (
-		    github.event_name == 'workflow_dispatch' &&
-		    github.run_attempt == 1 &&
-		    github.actor == 'antiartificial' &&
-		    github.triggering_actor == 'antiartificial' &&
-		    inputs.source_sha == github.sha &&
-		    inputs.m8_completion_receipt_sha256 != '' &&
-		    inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
-		    inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)
-		  )
-		)
+		github.event_name == 'workflow_dispatch' &&
+		github.run_attempt == 1 &&
+		github.actor == 'antiartificial' &&
+		github.triggering_actor == 'antiartificial' &&
+		inputs.source_sha == github.sha &&
+		inputs.controller_intent_sha256 != '' &&
+		inputs.m8_completion_receipt_sha256 != '' &&
+		inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
+		inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}-intent-{2}', github.sha, inputs.m8_completion_receipt_sha256, inputs.controller_intent_sha256)
 	`), " ")
 	if got := strings.Join(strings.Fields(caller.Jobs["staging"].If), " "); got != wantStagingIf {
 		t.Fatalf("staging release activation gate changed: %q", got)
