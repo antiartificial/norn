@@ -151,3 +151,37 @@ func TestApplyConfigValidationFailurePreservesPreviousFile(t *testing.T) {
 		t.Fatalf("live config=%q err=%v", after, err)
 	}
 }
+
+func TestIngressEditPreservesRestrictedRouteAndFallback(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yml")
+	before := []byte(`tunnel: example
+ingress:
+  - hostname: norn-webhooks.example.com
+    path: ^/api/webhooks/(github|gitea)$
+    service: http://127.0.0.1:8800
+  - hostname: norn-webhooks.example.com
+    service: http_status:404
+  - service: http_status:404
+`)
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous := configPath
+	SetConfigPath(path)
+	t.Cleanup(func() { configPath = previous })
+	cfg, err := ReadConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !AddIngress(cfg, "other.example.com", "http://127.0.0.1:9000") {
+		t.Fatal("expected an ingress edit")
+	}
+	after, err := marshalConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), "path: ^/api/webhooks/(github|gitea)$") || strings.Count(string(after), "hostname: norn-webhooks.example.com") != 2 || !strings.Contains(string(after), "service: http_status:404") {
+		t.Fatalf("restricted route or fallback was lost: %s", after)
+	}
+}
