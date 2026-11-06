@@ -1,13 +1,9 @@
 name: Hello Norn MySQL release
+run-name: hello-norn-mysql-release-${{ github.event.inputs.controller_intent_sha256 || github.sha }}
 
 on:
   push:
-    branches: [master]
     tags: ["v*"]
-    # GitHub evaluates paths only for branch pushes. Tag pushes remain the
-    # production lane; staging can also be explicitly dispatched after M8.
-    paths:
-      - "v2/infra/fleet-pilot/hello-norn-mysql/**"
   workflow_dispatch:
     inputs:
       source_sha:
@@ -16,6 +12,10 @@ on:
         type: string
       m8_completion_receipt_sha256:
         description: Verified terminal M8 completion receipt SHA-256
+        required: true
+        type: string
+      controller_intent_sha256:
+        description: Exact signed Fleet controller intent hash for this one-use staging release
         required: true
         type: string
       owner_acknowledgement:
@@ -27,26 +27,22 @@ permissions: {}
 
 jobs:
   staging:
-    # Code-only merges keep the managed candidate inert until the target Fleet
-    # API route, catalog, Variables source, and runtime workers are qualified.
+    # Staging releases run only from a controller-signed dispatch after all
+    # runtime and M8 qualification gates are satisfied; code pushes stay inert.
     if: >-
       github.repository == 'antiartificial/norn' &&
       github.ref == 'refs/heads/master' &&
       github.ref_protected &&
       vars.NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED == 'true' &&
-      (
-        github.event_name == 'push' ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.run_attempt == 1 &&
-          github.actor == 'antiartificial' &&
-          github.triggering_actor == 'antiartificial' &&
-          inputs.source_sha == github.sha &&
-          inputs.m8_completion_receipt_sha256 != '' &&
-          inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
-          inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)
-        )
-      )
+      github.event_name == 'workflow_dispatch' &&
+      github.run_attempt == 1 &&
+      github.actor == 'antiartificial' &&
+      github.triggering_actor == 'antiartificial' &&
+      inputs.source_sha == github.sha &&
+      inputs.controller_intent_sha256 != '' &&
+      inputs.m8_completion_receipt_sha256 != '' &&
+      inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256 &&
+      inputs.owner_acknowledgement == format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)
     permissions:
       # GitHub validates every job in the reusable workflow, not only the
       # staging-lane jobs selected by its input. Keep this the exact union of
@@ -59,10 +55,12 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@31db2de8dafe14d234ac9e2f29c8480245dae7b4
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@2434b74110547ad0d3f9e611525aedfce32fa838
     with:
       lane: staging
       runner_private: true
+      controller_intent_sha256: ${{ inputs.controller_intent_sha256 }}
+      expected_runner_name: norn-work-staging-work${{ github.run_id }}-runner
       # Separate Norn-owned candidate; the serving direct Nomad job is not a
       # release target and remains available during qualification.
       app_id: hello-norn-mysql-managed
