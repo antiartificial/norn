@@ -20,6 +20,8 @@ PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5a
 PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
 GUEST_PREPARE_SHA256 = "5115fef70b8fb866b6e5e756fda085374ee568c383abba0835cde2ed32b91278"
+TOOLCHAIN_SETUP_SHA256 = "e4bdbd96d8288381b1fba848552f665d58503f632e6ece0dc09708376cd7c79a"
+TOOLCHAIN_RECEIPT_VERSION = "26.6.0.0.1781586589"
 GUEST_HARDENING_SHA256 = "d8dedc1c5c9028a0ab77937eb2e09103c07517badfa7442ad26d4fc60d65762e"
 HISTORICAL_BUNDLE_BUILDER_SHA256 = "b3147fd7116abf98c54cfa7d3db1e622323d11977355d343743c9bdbfd43c4b4"
 WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
@@ -112,6 +114,7 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_ke
     if not Path(supervisor_key).read_text().startswith("ssh-ed25519 "):
         raise ValueError("supervisor guest SSH key must be ed25519")
     checked_file(Path(__file__).with_name("mini-m5-guest-prepare"), GUEST_PREPARE_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-command-line-tools-install"), TOOLCHAIN_SETUP_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-guest-hardening"), GUEST_HARDENING_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-firewall-window"), WINDOW_SHA256)
     checked_file(Path(__file__).with_name("mini-m5-isolation-check"), CHECKER_SHA256)
@@ -125,7 +128,9 @@ def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_ke
     return {"schema": "norn.m5-local-guest-preflight/v1", "runId": run_id,
             "guestName": intent["guestName"], "tartInventorySHA256": hashlib.sha256(
                 json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-            "ipswSHA256": intent["ipswSHA256"], "sourceSHA": intent["sourceSHA"]}
+            "ipswSHA256": intent["ipswSHA256"], "sourceSHA": intent["sourceSHA"],
+            "toolchainSetupSHA256": TOOLCHAIN_SETUP_SHA256,
+            "toolchainReceiptVersion": TOOLCHAIN_RECEIPT_VERSION}
 
 
 def reserve(journal_root, intent, evidence):
@@ -206,6 +211,7 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, 
            "PKR_VAR_m5_guest_name": intent["guestName"],
            "PKR_VAR_m5_bootstrap_password": "validation-only",
            "PKR_VAR_m5_guest_prepare_path": str(Path(__file__).with_name("mini-m5-guest-prepare")),
+           "PKR_VAR_m5_toolchain_helper_path": str(Path(__file__).with_name("mini-m5-command-line-tools-install")),
            "PKR_VAR_m5_guest_hardening_path": str(Path(__file__).with_name("mini-m5-guest-hardening")),
            "PKR_VAR_m5_supervisor_ssh_public_key_path": str(supervisor_key),
            "PKR_VAR_m5_historical_bundle_path": str(bundle),

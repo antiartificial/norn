@@ -1,0 +1,145 @@
+#!/bin/bash
+set -euo pipefail
+
+EXPECTED_OS_VERSION="26.6.2"
+EXPECTED_RECEIPT_VERSION="26.6.0.0.1781586589"
+EXPECTED_DEVELOPER_DIR="/Library/Developer/CommandLineTools"
+SOFTWARE_UPDATE_LABEL="Command Line Tools for Xcode 26.6-26.6"
+RECEIPT_ID="com.apple.pkg.CLTools_Executables"
+INSTALL_MARKER="/private/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
+
+stage() {
+  printf 'm5_toolchain stage=%s result=%s\n' "$1" "$2"
+}
+
+fail() {
+  stage "$1" fail
+  exit 1
+}
+
+if [[ "$(/usr/bin/id -u)" != 0 ]]; then
+  fail privilege
+fi
+if [[ "$(/usr/bin/uname -m)" != arm64 || "$(/usr/sbin/sysctl -n hw.model)" != VirtualMac* ]]; then
+  fail guest_identity
+fi
+if [[ "$(/usr/bin/sw_vers -productVersion)" != "$EXPECTED_OS_VERSION" ]]; then
+  fail guest_os
+fi
+
+workdir=$(/usr/bin/mktemp -d /private/tmp/norn-m5-clt.XXXXXX)
+marker_created=0
+marker_identity=""
+install_pid=""
+
+cleanup() {
+  if [[ -n "$install_pid" ]] && /bin/kill -0 "$install_pid" 2>/dev/null; then
+    /bin/kill -TERM "$install_pid" 2>/dev/null || true
+    /bin/sleep 2
+    /bin/kill -KILL "$install_pid" 2>/dev/null || true
+    wait "$install_pid" 2>/dev/null || true
+  fi
+  if [[ "$marker_created" == 1 && -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]]; then
+    current_identity=$(/usr/bin/stat -f '%d:%i' "$INSTALL_MARKER" 2>/dev/null || true)
+    if [[ -n "$current_identity" && "$current_identity" == "$marker_identity" ]]; then
+      /bin/rm "$INSTALL_MARKER"
+    fi
+  fi
+  case "$workdir" in
+    /private/tmp/norn-m5-clt.*) /bin/rm -rf "$workdir" ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+bounded() {
+  limit_seconds=$1
+  shift
+  "$@" </dev/null >"$workdir/output" 2>&1 &
+  install_pid=$!
+  started_at=$(/bin/date +%s)
+  while /bin/kill -0 "$install_pid" 2>/dev/null; do
+    now=$(/bin/date +%s)
+    if (( now - started_at >= limit_seconds )); then
+      /bin/kill -TERM "$install_pid" 2>/dev/null || true
+      /bin/sleep 2
+      /bin/kill -KILL "$install_pid" 2>/dev/null || true
+      wait "$install_pid" 2>/dev/null || true
+      install_pid=""
+      return 124
+    fi
+    /bin/sleep 2
+  done
+  if wait "$install_pid"; then
+    install_pid=""
+    return 0
+  else
+    result=$?
+    install_pid=""
+    return "$result"
+  fi
+}
+
+receipt_version() {
+  /usr/sbin/pkgutil --pkg-info="$RECEIPT_ID" 2>/dev/null |
+    /usr/bin/awk -F': ' '$1 == "version" { print $2; found++ } END { if (found != 1) exit 1 }'
+}
+
+verify_tools() {
+  selected_dir=$(/usr/bin/xcode-select --print-path 2>/dev/null || true)
+  [[ "$selected_dir" == "$EXPECTED_DEVELOPER_DIR" ]] || return 1
+  [[ -x /usr/bin/python3 && -x /usr/bin/git ]] || return 1
+  python_version=$(/usr/bin/python3 --version 2>&1) || return 1
+  git_version=$(/usr/bin/git --version 2>&1) || return 1
+  /usr/bin/python3 -c 'import argparse,base64,hashlib,json,plistlib,ssl,subprocess,tarfile,urllib.request' >/dev/null 2>&1 || return 1
+  printf 'm5_toolchain stage=verified result=pass receipt=%s python=%s git=%s developer_dir=%s\n' \
+    "$EXPECTED_RECEIPT_VERSION" "$python_version" "$git_version" "$selected_dir"
+}
+
+existing_receipt=$(receipt_version 2>/dev/null || true)
+if [[ -n "$existing_receipt" ]]; then
+  if [[ "$existing_receipt" != "$EXPECTED_RECEIPT_VERSION" || ! -d "$EXPECTED_DEVELOPER_DIR" ]]; then
+    fail existing_toolchain_mismatch
+  fi
+  /usr/bin/xcode-select --switch "$EXPECTED_DEVELOPER_DIR" >/dev/null 2>&1 || fail developer_directory
+  verify_tools || fail tool_probe
+  exit 0
+fi
+if [[ -e "$EXPECTED_DEVELOPER_DIR" || -L "$EXPECTED_DEVELOPER_DIR" ]]; then
+  fail unreceipted_toolchain
+fi
+if [[ -e "$INSTALL_MARKER" || -L "$INSTALL_MARKER" ]]; then
+  fail install_marker_preexisting
+fi
+
+set -o noclobber
+: > "$INSTALL_MARKER" || fail install_marker_create
+set +o noclobber
+marker_created=1
+marker_identity=$(/usr/bin/stat -f '%d:%i' "$INSTALL_MARKER")
+[[ -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]] || fail install_marker_readback
+
+if ! bounded 180 /usr/sbin/softwareupdate --list; then
+  fail software_update_discovery
+fi
+software_update_listing=$(cat "$workdir/output")
+label_count=$(printf '%s\n' "$software_update_listing" | /usr/bin/awk -v expected="$SOFTWARE_UPDATE_LABEL" '
+  /Label: / { sub(/^.*Label: /, ""); if ($0 == expected) count++ }
+  END { print count + 0 }
+')
+[[ "$label_count" == 1 ]] || fail pinned_product_unavailable
+restart_action_count=$(printf '%s\n' "$software_update_listing" | /usr/bin/awk -v expected="$SOFTWARE_UPDATE_LABEL" '
+  /Label: / { label=$0; sub(/^.*Label: /, ""); in_target=($0 == expected); next }
+  in_target && tolower($0) ~ /(action: *restart|restartaction: *required)/ { count++ }
+  END { print count + 0 }
+')
+[[ "$restart_action_count" == 0 ]] || fail restart_required
+stage install start
+if ! bounded 1200 /usr/sbin/softwareupdate --install "$SOFTWARE_UPDATE_LABEL" --agree-to-license; then
+  fail software_update_install
+fi
+
+installed_receipt=$(receipt_version 2>/dev/null || true)
+[[ "$installed_receipt" == "$EXPECTED_RECEIPT_VERSION" ]] || fail receipt_version
+[[ -d "$EXPECTED_DEVELOPER_DIR" && ! -L "$EXPECTED_DEVELOPER_DIR" ]] || fail developer_directory
+/usr/bin/xcode-select --switch "$EXPECTED_DEVELOPER_DIR" >/dev/null 2>&1 || fail developer_directory
+verify_tools || fail tool_probe
