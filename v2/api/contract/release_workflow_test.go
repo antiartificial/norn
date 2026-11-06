@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const managedReleaseReusableSHA = "2434b74110547ad0d3f9e611525aedfce32fa838"
+const managedReleaseReusableSHA = "864cd7783027af6e8b1b69e894e29b3f0f019c12"
 
 type releaseWorkflow struct {
 	Jobs map[string]struct {
