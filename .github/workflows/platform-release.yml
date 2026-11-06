@@ -269,19 +269,24 @@ jobs:
         with:
           pattern: platform-*-*
           path: release-bundles
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: immutability-token
+        with:
+          app-id: ${{ vars.NORN_RELEASE_IMMUTABILITY_APP_ID }}
+          private-key: ${{ secrets.NORN_RELEASE_IMMUTABILITY_APP_PRIVATE_KEY }}
+          owner: antiartificial
+          repositories: norn
+          permission-administration: read
       - name: Require GitHub release immutability
         env:
-          GH_TOKEN: ${{ github.token }}
-          # Fine-grained token: repository Administration (read) only. The
-          # normal Actions job token cannot read this repository setting.
-          NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN: ${{ secrets.NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN }}
+          GH_TOKEN: ${{ steps.immutability-token.outputs.token }}
         run: |
           set -euo pipefail
-          immutability_token="${NORN_RELEASE_IMMUTABILITY_CHECK_TOKEN:-$GH_TOKEN}"
-          [[ "$(GH_TOKEN="$immutability_token" gh api \
+          [[ -n "$GH_TOKEN" ]] || { echo "The scoped immutability-check App token is not configured." >&2; exit 1; }
+          [[ "$(gh api \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled 2>/dev/null || true)" == "true" ]] || {
-            echo "GitHub immutable releases must be enabled; configure the protected admin-read check token." >&2
+            echo "GitHub immutable releases must be enabled and readable by the protected admin-read App token." >&2
             exit 1
           }
       - name: Sign, verify, and publish without overwriting
