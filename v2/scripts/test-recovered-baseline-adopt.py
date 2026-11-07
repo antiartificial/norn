@@ -261,7 +261,10 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         allowed_wrapper = self.run_script("env-exec", str(candidate_wrapper), *helper_args)
         self.assertNotIn("recovered baseline rejects env-exec child mode", allowed_wrapper.stderr)
         self.assertNotIn("invalid arguments", allowed_wrapper.stderr)
-        self.assertIn("recovered-forward generation resolver is unavailable", allowed_wrapper.stderr)
+        # The real wrapper checks live API identity/health before resolving the
+        # active generation. This fixture has no API listener, so fail closed at
+        # that earlier pre-dispatch gate rather than reaching resolver lookup.
+        self.assertIn("Mini API read failed at /api/version", allowed_wrapper.stderr)
         self.assertEqual(self.env["NORN_PLATFORM_SCRIPT_BIN"], str(self.managed_script))
         wrong_sha = self.run_script("env-exec", str(candidate_wrapper), "f" * 40, *helper_args[1:])
         self.assertNotEqual(wrong_sha.returncode, 0)
