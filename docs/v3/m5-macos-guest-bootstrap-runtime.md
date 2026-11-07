@@ -36,3 +36,32 @@ failed attempt to its marker, prove the exact guest absent, and retain the
 retirement receipt before issuing a fresh run-bound signed intent. Packer logs
 can contain bootstrap credentials and must not be copied into chat or routine
 diagnostics; report the specific sanitized failure classification instead.
+
+## Reuse a successfully created guest after Norn test failures
+
+Once protected create has produced a created receipt and exact Tart readback,
+a later Norn deployment or qualification failure should not delete the Tart
+guest. Preserve its OS image and signed creation evidence, remove the failed
+Norn installation through a protected guest cleanup action, prove that the
+installation and its services are absent, then issue a fresh signed install
+intent for the same guest identity. Retire the guest only when OS bootstrap,
+guest identity, or integrity checks fail, or protected cleanup cannot prove a
+safe reset.
+
+The existing `m5-local-guest-runner-revoke` action only deregisters the
+GitHub runner API identity. It does not uninstall runner files or services
+inside macOS, remove the Norn payload, or clear guest-side installation state.
+That action alone is not proof that the guest is clean or ready for another
+attempt. Until a protected in-guest cleanup and retry workflow is available,
+preserve the Tart VM after a Norn-level failure and stop for protected
+reconciliation; do not silently retire and recreate it.
+
+## Restore storage headroom observation
+
+During protected create run `42328381249`, the 80 GiB preflight passed when
+the host had 104 GiB free. While the 50 GiB guest was still being restored,
+Tart reported 27 GiB used and the host reported 77 GiB free. This is not a
+create failure, but it shows that 80 GiB is only an entry threshold, not a
+post-create reserve. Record the completed run's peak guest and host usage
+before setting the next minimum; future admission should reserve measured
+restore growth plus the agreed post-create free-space floor.
