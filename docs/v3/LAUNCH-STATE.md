@@ -38,7 +38,7 @@ changes, production admission, or the separate DigitalOcean Fleet gates. The
 older dated Mini sections below are historical snapshots and do not describe
 the current runtime.
 
-## Fresh Mini inventory (2026-11-07 21:15 UTC)
+## Fresh Mini inventory (2026-11-07 21:38 UTC)
 
 Authenticated read-only inventory reconfirmed source
 `bba290db041e9f497c7161543c679d9d348b742d`
