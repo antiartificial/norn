@@ -37,6 +37,17 @@ retirement receipt before issuing a fresh run-bound signed intent. Packer logs
 can contain bootstrap credentials and must not be copied into chat or routine
 diagnostics; report the specific sanitized failure classification instead.
 
+Run `42328381249` failed after about 22 minutes while waiting for guest SSH.
+The host diagnostics recorded a DHCP address and unchanged host network
+observations, with no observed TCC denial; they do not establish the cause of
+the SSH timeout. Protected reconciliation returned
+`create-outcome-ambiguous` with an empty Tart inventory. Treat this as an
+unretired failed attempt until the protected retirement workflow records its
+absence receipt; do not issue another create intent or reuse the attempt's
+guest name before then. Keep the full Packer log in the owner-only journal and
+carry only the sanitized `guest-ssh-readiness-timeout` classification into
+routine status and the executor's failure record.
+
 ## Reuse a successfully created guest after Norn test failures
 
 Once protected create has produced a created receipt and exact Tart readback,
