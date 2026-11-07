@@ -38,7 +38,7 @@ changes, production admission, or the separate DigitalOcean Fleet gates. The
 older dated Mini sections below are historical snapshots and do not describe
 the current runtime.
 
-## Fresh Mini inventory (2026-11-07 21:07 UTC)
+## Fresh Mini inventory (2026-11-07 21:15 UTC)
 
 Authenticated read-only inventory reconfirmed source
 `bba290db041e9f497c7161543c679d9d348b742d`
@@ -89,22 +89,29 @@ The later protected DO staging Genesis readback
 ([run 42398114376](https://github.com/antiartificial/norn-fleet/actions/runs/42398114376))
 stopped in its local runner preflight before contacting the management host:
 `ansible-inventory` was absent from `PATH`. It did not change Fleet state. The
-follow-up fix in Fleet PR [#937](https://github.com/antiartificial/norn-fleet/pull/937)
-adds the pinned runner Ansible virtualenv to `GITHUB_PATH` and passed contract
-validation ([run 42399790472](https://github.com/antiartificial/norn-fleet/actions/runs/42399790472)),
-but the repository owner closed that PR without merging it; protected `main`
-remains at `22f0d58`. A new readback also needs fresh one-use runner
-authorization and a valid owner-signed controller intent. Do not treat either
-the failed run or the unmerged fix as Genesis readback evidence.
+did not change Fleet state. Replacement Fleet PR
+[#938](https://github.com/antiartificial/norn-fleet/pull/938) added the pinned
+Ansible virtualenv to `GITHUB_PATH` and was squash-merged at 21:10 UTC as
+`6f9b46886950f3109abe4c26eecead91f823965d` after its protected checks passed.
 
-Replacement Norn Fleet PR [#938](https://github.com/antiartificial/norn-fleet/pull/938)
-is open at `9402e83d34503bcaad9de7d7035dcf3d9f65d97d` against that `main` and
-contains only the pinned Ansible path fix. Its protected validation run
-[42413105058](https://github.com/antiartificial/norn-fleet/actions/runs/42413105058)
-passed at 21:04 UTC. PR #938 remains open and unmerged. No Fleet readback has
-been redispatched. The prior owner-signed intent expired at 18:03:26 UTC and
-its run is terminal; a fresh intent and one-use authorization will be needed
-after the workflow fix is reviewed and merged.
+A fresh owner-signed read-only intent and one-use runner authorization then
+dispatched protected run
+[#42415121479](https://github.com/antiartificial/norn-fleet/actions/runs/42415121479).
+Its runner preflight, checkout, input verification, and private management
+transport all passed; the runner was retired afterward. The readback failed
+when its final verifier ran Git as root against the protected bare source repo
+owned by `norn-exec`. Git rejected that ownership as dubious. Both the pinned
+capability commit `86ad17b6407bcbcd028f534f17a9db2253c5de6c` and signed target
+commit `9e2e33ad9d2fd0d815e5c19157e1925d6a7e5a05` are present in the repository
+when checked as `norn-exec`, and an invocation-scoped `safe.directory` check
+finds both without changing global Git trust. The Genesis readback therefore
+remains unpassed; no platform state was changed.
+
+Fleet PR [#939](https://github.com/antiartificial/norn-fleet/pull/939) applies
+that exact-path Git ownership fix to the shared verifier used by both Genesis
+rollout and readback. It is awaiting protected checks. After it merges, repeat
+the readback with a fresh signed intent and one-use runner authorization; the
+failed intent and run are terminal and must not be reused.
 
 ## Mini in-place upgrade checkpoint (historical observation, 2026-11-07)
 
