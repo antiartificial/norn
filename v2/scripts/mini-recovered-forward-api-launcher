@@ -10,7 +10,7 @@ import stat
 
 def release_public_key(home: Path) -> str:
     config = home / ".config/norn/release.env"
-    info = config.stat(follow_symlinks=False)
+    info = os.lstat(config)
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
         raise SystemExit("signed release configuration must be owner-only")
     values = {}
