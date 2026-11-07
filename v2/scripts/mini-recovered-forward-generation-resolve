@@ -32,7 +32,9 @@ MANIFEST_FIELDS = {
     "predecessorState", "predecessorTransitionID", "predecessorSourceSHA", "predecessorCandidateSHA",
     "predecessorJournalPath", "predecessorJournalSHA256", "predecessorEvidencePath",
     "predecessorEvidenceSHA256", "predecessorReceiptPath", "predecessorReceiptSHA256",
+    "predecessorGenerationID",
 }
+LEGACY_MANIFEST_FIELDS = MANIFEST_FIELDS - {"predecessorGenerationID"}
 GENERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 TRANSITION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -213,7 +215,9 @@ def resolve(root: Path, key: bytes, pointer_path: Path | None = None,
     manifest_raw = owner_document(expected_manifest, "active generation manifest")
     if not hmac.compare_digest(hashlib.sha256(manifest_raw).hexdigest(), manifest_digest):
         fail("active generation manifest digest does not match the pointer")
-    manifest = signed_document(manifest_raw, MANIFEST_SCHEMA, MANIFEST_FIELDS, key, "active generation manifest")
+    manifest_shape = strict_json(manifest_raw, "active generation manifest")
+    manifest_fields = MANIFEST_FIELDS if "predecessorGenerationID" in manifest_shape else LEGACY_MANIFEST_FIELDS
+    manifest = signed_document(manifest_raw, MANIFEST_SCHEMA, manifest_fields, key, "active generation manifest")
     utc_timestamp(manifest.get("createdAt"), "active generation manifest creation")
     expected = {
         "generationID": generation_id,
@@ -258,8 +262,6 @@ def resolve(root: Path, key: bytes, pointer_path: Path | None = None,
 
     predecessor = {
         "predecessorState": "candidate-promoted",
-        "predecessorJournalPath": str(root / "transition.json"),
-        "predecessorReceiptPath": str(root / "preservation-receipt.json"),
     }
     for field, expected_value in predecessor.items():
         if manifest.get(field) != expected_value:
@@ -290,13 +292,42 @@ def resolve(root: Path, key: bytes, pointer_path: Path | None = None,
     predecessor_candidate = manifest.get("predecessorCandidateSHA")
     if not isinstance(predecessor_candidate, str) or not HEX40.fullmatch(predecessor_candidate):
         fail("active generation predecessor candidate identity is invalid")
-    fixed_evidence = root / "transition.json.source-evidence.json"
-    retargeted_evidence = root / f"retarget-{predecessor_candidate}" / "source-evidence.json"
     evidence_path = Path(manifest["predecessorEvidencePath"])
-    if evidence_path not in (fixed_evidence, retargeted_evidence):
-        fail("active generation predecessor evidence path is not a supported canonical path")
-    if evidence_path == retargeted_evidence:
-        owner_directory(evidence_path.parent, "active generation predecessor evidence directory")
+    predecessor_generation_id = manifest.get("predecessorGenerationID")
+    if predecessor_generation_id is None:
+        fixed_evidence = root / "transition.json.source-evidence.json"
+        retargeted_evidence = root / f"retarget-{predecessor_candidate}" / "source-evidence.json"
+        if (Path(manifest["predecessorJournalPath"]) != root / "transition.json"
+                or Path(manifest["predecessorReceiptPath"]) != root / "preservation-receipt.json"):
+            fail("active generation legacy predecessor paths are not canonical")
+        if evidence_path not in (fixed_evidence, retargeted_evidence):
+            fail("active generation predecessor evidence path is not a supported canonical path")
+        if evidence_path == retargeted_evidence:
+            owner_directory(evidence_path.parent, "active generation predecessor evidence directory")
+    else:
+        if not isinstance(predecessor_generation_id, str) or not GENERATION_ID.fullmatch(predecessor_generation_id):
+            fail("active generation predecessor generation ID is invalid")
+        predecessor_dir = root / "generations" / predecessor_generation_id
+        owner_directory(predecessor_dir, "completed predecessor generation directory")
+        if (Path(manifest["predecessorJournalPath"]) != predecessor_dir / "transition.json"
+                or evidence_path != predecessor_dir / "transition.json.source-evidence.json"
+                or Path(manifest["predecessorReceiptPath"]) != predecessor_dir / "preservation-receipt.json"):
+            fail("active generation completed predecessor paths are not canonical")
+        predecessor_journal = strict_json(owner_document(Path(manifest["predecessorJournalPath"]),
+                                                         "completed predecessor journal"),
+                                          "completed predecessor journal")
+        if (predecessor_journal.get("state") != "candidate-promoted"
+                or predecessor_journal.get("candidateReleaseSHA") != source_sha):
+            fail("active generation predecessor is not the exact completed source")
+        archived_matches = []
+        for archive in root.glob(f"active-generation.previous-{predecessor_generation_id}-*.json"):
+            archive_value = resolve(root, key, archive)
+            if (archive_value.get("generationID") == predecessor_generation_id
+                    and archive_value.get("candidateSHA") == source_sha
+                    and archive_value.get("transitionID") == manifest.get("predecessorTransitionID")):
+                archived_matches.append(archive_value)
+        if len(archived_matches) != 1:
+            fail("completed predecessor generation has no unique retained signed pointer")
 
     new_files = {
         "sourceEvidencePath": str(generation / "transition.json.source-evidence.json"),

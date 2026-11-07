@@ -1,5 +1,69 @@
 # Norn v3 launch state
 
+## Post-M8 protected evidence (2026-11-07)
+
+The protected work-staging release-state readback
+([run 42345172234](https://github.com/antiartificial/norn-fleet/actions/runs/42345172234))
+passed at 06:03 UTC and verified the retained signed state on all three control
+nodes. A read-only application catalog readback
+([run 42341905690](https://github.com/antiartificial/norn-fleet/actions/runs/42341905690))
+passed at 05:27 UTC: all three controls selected the same immutable catalog and
+Norn remained active. This proves readback only; no promotion or rollback
+evidence is established by that run.
+
+Grafana observability credentials passed protected lifecycle checks, but the
+two latest signed rollout attempts failed on `control-01` while confirming
+etcd health after service changes. The newest
+[rollout run 42348418095](https://github.com/antiartificial/norn-fleet/actions/runs/42348418095)
+stopped after 20 retries; its secret-safe diagnostic returned
+`unclassified-etcdctl-error` (exit 1). The exact etcd failure is therefore
+unknown; do not retry or continue the serial rollout until a protected,
+secret-safe diagnosis identifies the cause and fresh cluster-health evidence
+is available. The catalog readback above does not prove observability ingest.
+
+## Mini in-place upgrade checkpoint (2026-11-07)
+
+This newer live read supersedes older present-tense Mini upgrade statements
+below. From the management workstation, SSH to `mini` succeeded. The Mini API
+reported HTTP 200 and source
+`3602e7e3d5fe5c0ef333b4041580d48ec15b24c5` (`v3.0.0-rc.1-platform-34`),
+schema migration 49, minimum reader 5, and minimum writer 32. The LaunchAgent
+was running in active/check mode. Candidate
+`03934cc2e9fdbd9b57cf09270f8c7884aada552f` is installed locally but is not
+current; it requires schema 51 and raises the writer floor to 33. The attempted
+upgrade stopped before migration or promotion because the ordinary restart
+lane cannot prove every database writer, including `norn-host-agent`, is
+stopped or compatible. The Mini was not upgraded.
+
+The API listed seven old queued `fleet.github.apply-dispatch` receipts. They
+remain preserved and need durable classification before a later Mini drain;
+do not infer that they are live work or discard them based on age. The signed
+recovered-forward generation for the current Mini source was finalized. The
+local generation controller now supports a successor whose exact source is
+the completed generation's promoted candidate, and its generation-preparation
+regression suite passes. This fix is source-only; it has not yet been included
+in a signed release. Candidate `03934…` still needs fresh candidate-specific
+backup/shadow evidence and a writer-fenced migration path. See the dated
+[Mini observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md) and
+[online-upgrade capability proposal](online-upgrade-lessons-2026-11-07.md).
+
+The immediate Mini work is to build a controller-managed, forward-only staged
+upgrade: exact-candidate backup/shadow evidence; writer compatibility
+registration and fencing; additive migration; candidate handoff; and measured
+postflight. Preserve current release `3602…` until that path can establish
+each phase safely. This is a Mini database/platform upgrade; it does not
+require a full macOS IPSW restore. This checkpoint does not refresh Fleet or
+other milestone evidence.
+
+The separate protected Tart guest-create run
+[`42297051412`](https://github.com/antiartificial/norn/actions/runs/42297051412)
+failed during Packer guest build. Reconciliation found an empty guest inventory
+but marked the create outcome ambiguous; this does not prove final absence of
+that exact guest. Earlier retirement run `42295531572` predates the create and
+only covers a prior attempt. The user chose the independent live Mini for
+upgrade observation, so do not make another full IPSW restore a prerequisite
+unless OS installation itself becomes an explicit qualification target.
+
 ## Fleet running-upgrade checkpoint (2026-11-02 00:10 UTC)
 
 The first protected staging canary release remains live on public HTTPS. A second protected release from source `be5ca5d969ccf3509e62ce04a833516bb5c204db` built and attested image `ghcr.io/antiartificial/norn-fleet-canary@sha256:33265daecc36215776c2029b7e0cd16463570e559c28678d3a94e249bd43ba52`, but [run 41364735627](https://github.com/antiartificial/norn/actions/runs/41364735627) failed during deployment completion. Its new Nomad job has two healthy allocations on app-03 and app-04. The previous job also has two healthy allocations, and the public `/version` route still serves the first release source `182b719bb8f5b84f8c7272e715f83553a00acb4d`. The deployment operation `6d96db37-a54e-4231-b1b8-e3e616beb3ab` is failed with manual recovery required; its durable Nomad effect says completed. The one-use runner was disabled and unregistered.
@@ -659,35 +723,37 @@ running Fleet qualification.
 | M2 profiles and retention | 50% | Mini uses development/PostgreSQL; separate-node restore, provider retention and legacy binding review remain. |
 | M3 etcd Fleet | 45% | Local three-member rehearsals and live five-node provider creation exist; no bootstrapped etcd membership, quorum, fault/restore, alarm, rotation or soak proof. |
 | M4 capacity and ingress | 40% | Local admission and two-ingress fixtures exist; no live route, placement, loaded 2→3→2 or drain proof. |
-| M5 Mini upgrade rehearsal | 55% | Earlier backup/shadow rehearsals passed, but they do not bind the current `798c…` release. Current release is `26147c…`; its old failed ledger is for `e730…` and records `matchesBefore=false`. The separate-identity adoption correction is local only; fresh exact-candidate backup/shadow, protected release, writer fencing, migration, promotion, and postflight remain. |
-| M6 running upgrades and app DB | 25% | Journals and local transfer fixtures exist; protected running upgrade and app DB cutover/interruption proof remain. |
+| M5 isolated Mac rehearsal | 55% | Controller-managed host preparation and signed preflight evidence exist; the exact latest guest-create attempt ended ambiguous, and a complete isolated guest rehearsal is not proven. The user-selected Mini upgrade is a separate M6 path. |
+| M6 online upgrades and app DB | 25% | Mini is healthy on signed source `3602…`, schema 49/writer floor 32. Candidate `03934…` requires schema 51/writer floor 33; upgrade correctly stopped before mutation. A durable independent executor, compatible migration path, enforced writer fencing, handoff and interruption evidence remain. |
 | M7 mobility | 30% | Isolated Mini fixture web/worker/tick and private restore comparison passed. No Fleet target or complete move exists. |
-| M8 release qualification | 40% | Exact-SHA signed prerelease published and verified; live Mini promotion, Fleet provider-backed fitness, soak/fault results, and owner sign-off remain. |
+| M8 release qualification | Complete for soak only | Protected current-main audit completed the 72h35m soak with 4,254 hash-chained samples and zero alarms, gaps or invalid observations. Other release gates, promotion evidence and owner sign-off remain open. |
 | M9 adoption | 10% | Mini API runs v3 code; Fleet and controlled application adoption are absent. |
 
 ## Next actions
 
-1. Merge and publish the separate-identity recovered-forward correction. On
-   Mini, create the v2 adoption receipt while preserving the old v1 receipt,
-   then take a fresh backup and signed shadow restore for the exact release.
-   Run the interruption-tested transition, verify API and host-agent writer
-   fencing/quiescence, migrate forward, and prove health, schema, preserved
-   workloads, and host assurance. Mini does not wait for or require Fleet/etcd.
-2. Supply fresh staging-only DigitalOcean/state secrets and the protected
-   runner inputs listed by `scripts/setup doctor --environment staging`. The
-   retired pilot's credentials and approvals are not reusable.
-3. Complete and independently qualify the restartable, run-scoped retirement
-   path before authorizing a new billable Fleet pilot. Require automatic Fleet,
-   management and backend cleanup with preserved receipts and a final-zero
-   observation within a new approved budget and time envelope.
-4. Independently, when the local Mini release work is complete, prove live
-   Fleet state: three etcd members/quorum, Consul/Nomad enrollment,
-   two ingresses and trusted public TLS, a staging workload with write/read,
-   fault and restore, and loaded 2→3→2 scaling and drain. Complete the separate
-   protected retirement proof for the pilot.
-5. Close `pilot261004b` billing and audit with the final itemized invoice. Keep
-   the emergency cleanup classified as technical cleanup; it did not produce
-   a protected final-zero receipt.
+1. Prioritize online upgrade. Implement a signed plan/status operation delegated
+   to an OS-supervised executor with a durable journal outside the API, host
+   agent and control database it may replace. Start with read-only planning and
+   actionable blockers; do not enable live execution until handoff and restart
+   reconciliation are sound.
+2. Add complete writer identity and enforceable admission/epoch fencing, then
+   move from implicit `auto` migrations to controller-owned migration. Keep
+   migration 51's writer floor 33; build a signed compatible bridge from schema
+   49 to 51 rather than weakening the invariant.
+3. Add migration compatibility lint and bounded expand/backfill/contract
+   semantics. Stage the candidate passively, implement owner/traffic handoff
+   and phase-aware recovery, and measure API outage, write pause and job delay.
+4. Qualify the Mini forward upgrade through the controller after exact-target
+   backup/shadow evidence, current writer inventory, generation-chain continuity
+   and preflight pass. Preserve `3602…` until then. Full Tart IPSW restore is
+   not a prerequisite for this database/platform path; resolve the ambiguous
+   exact guest-create outcome before any Tart retry or cleanup.
+5. Continue post-M8 work independently: obtain fresh protected Fleet state and
+   review host-key, inventory, catalog, artifact and continuity evidence before
+   M6 catalog/readback/promotion/rollback; finish Grafana Cloud observability
+   and its separate 1–2 hour telemetry qualification; then complete M5's
+   isolated Mac rehearsal through protected executor workflows and one-use
+   runners. Refresh M0–M4/M7/M9 evidence before claiming full v3 readiness.
 
 ## Evidence locations
 

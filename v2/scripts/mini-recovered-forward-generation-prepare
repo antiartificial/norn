@@ -320,6 +320,53 @@ def completed_predecessor(root: Path, releases: Path, key: bytes,
         "predecessorEvidenceSHA256": evidence_digest,
         "predecessorReceiptPath": str(receipt_path),
         "predecessorReceiptSHA256": hashlib.sha256(receipt_raw).hexdigest(),
+        "predecessorGenerationID": None,
+    }
+
+
+def completed_generation_predecessor(selected: dict[str, Any], current_link: Path, releases: Path,
+                                     key: bytes) -> dict[str, Any]:
+    """Accept only an active generation whose exact candidate is now serving."""
+    journal_path = Path(str(selected.get("journalPath", "")))
+    receipt_path = Path(str(selected.get("preservationReceiptPath", "")))
+    journal_raw = private_bytes(journal_path, "active recovered-forward journal")
+    journal = strict_json(journal_raw, "active recovered-forward journal")
+    if (journal.get("schema") != JOURNAL_SCHEMA or journal.get("state") != "candidate-promoted"
+            or journal.get("candidateReleaseSHA") != selected.get("candidateSHA")):
+        fail("active generation is not the exact completed candidate-promoted transition")
+    receipt_raw = private_bytes(receipt_path, "active recovered-forward preservation receipt")
+    gate_env = os.environ.copy()
+    gate_env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
+    gate_env["NORN_AUDIT_SIGNING_KEY"] = key.decode("utf-8")
+    gate = subprocess.run(
+        [str(COMPLETED_GATE), str(journal_path), str(current_link),
+         str(releases), str(receipt_path)],
+        env=gate_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    if gate.returncode:
+        fail("active completed-generation gate failed: " + gate.stderr.strip())
+    fields = gate.stdout.rstrip("\n").split("\t")
+    if (len(fields) != 9 or fields[:3] != [journal.get("transitionID"), journal.get("sourceSHA"),
+                                               journal.get("candidateReleaseSHA")]
+            or fields[3] != journal.get("sourceEvidencePath")
+            or fields[4] != journal.get("sourceEvidenceSHA256")
+            or fields[8] != hashlib.sha256(receipt_raw).hexdigest()):
+        fail("active completed-generation gate returned changed evidence")
+    generation_id = selected.get("generationID")
+    if not isinstance(generation_id, str) or not GENERATION_ID.fullmatch(generation_id):
+        fail("active completed generation ID is invalid")
+    return {
+        "predecessorState": "candidate-promoted",
+        "predecessorTransitionID": journal["transitionID"],
+        "predecessorSourceSHA": journal["sourceSHA"],
+        "predecessorCandidateSHA": journal["candidateReleaseSHA"],
+        "predecessorJournalPath": str(journal_path),
+        "predecessorJournalSHA256": hashlib.sha256(journal_raw).hexdigest(),
+        "predecessorEvidencePath": journal["sourceEvidencePath"],
+        "predecessorEvidenceSHA256": journal["sourceEvidenceSHA256"],
+        "predecessorReceiptPath": str(receipt_path),
+        "predecessorReceiptSHA256": hashlib.sha256(receipt_raw).hexdigest(),
+        "predecessorGenerationID": generation_id,
     }
 
 
@@ -354,8 +401,6 @@ def prepared_successor(root: Path, selected: dict[str, Any], pointer_raw: bytes,
     """
     if selected.get("selection") != "generation":
         fail("active generation pointer is incompatible with this exact preparation")
-    if selected.get("sourceSHA") != source_sha:
-        fail("prepared generation successor requires the same exact source SHA")
     if selected.get("candidateSHA") == candidate_sha:
         fail("active generation pointer is incompatible with this exact preparation")
     if selected.get("transitionID") == transition_id:
@@ -363,11 +408,20 @@ def prepared_successor(root: Path, selected: dict[str, Any], pointer_raw: bytes,
     journal_path = Path(str(selected.get("journalPath", "")))
     journal_raw = private_bytes(journal_path, "active prepared generation journal")
     journal = strict_json(journal_raw, "active prepared generation journal")
-    if journal.get("state") != "prepared":
-        fail("only an active prepared generation can be superseded")
+    state = journal.get("state")
+    if state == "candidate-promoted":
+        if selected.get("candidateSHA") != source_sha or journal.get("candidateReleaseSHA") != source_sha:
+            fail("completed generation successor requires its exact promoted candidate as source")
+    elif state == "prepared":
+        if selected.get("sourceSHA") != source_sha:
+            fail("prepared generation successor requires the same exact source SHA")
+    else:
+        fail("only an active prepared generation or an exactly completed generation can be superseded")
     receipt_path = Path(str(selected.get("preservationReceiptPath", "")))
-    if receipt_path.exists() or receipt_path.is_symlink():
+    if state == "prepared" and (receipt_path.exists() or receipt_path.is_symlink()):
         fail("prepared generation has a preservation receipt and cannot be superseded")
+    if state == "candidate-promoted" and not receipt_path.is_file():
+        fail("completed generation is missing its preservation receipt")
     pointer_digest = hashlib.sha256(pointer_raw).hexdigest()
     generation_id = selected.get("generationID")
     if not isinstance(generation_id, str) or not GENERATION_ID.fullmatch(generation_id):
@@ -410,8 +464,8 @@ def verify_pointer_archives(root: Path, key: bytes, active_generation_id: str) -
         journal = strict_json(private_bytes(Path(archived["journalPath"]),
                                              "archived prepared generation journal"),
                               "archived prepared generation journal")
-        if journal.get("state") != "prepared":
-            fail("archived generation is not an exact prepared predecessor")
+        if journal.get("state") not in {"prepared", "candidate-promoted"}:
+            fail("archived generation is not a prepared or completed predecessor")
         generation_ids.add(generation_id)
     return generation_ids
 
@@ -510,7 +564,30 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     releases = args.releases_root.resolve(strict=True)
     release_identity(releases, args.source_sha, "new source")
     release_identity(releases, args.candidate_sha, "new candidate")
-    predecessor = completed_predecessor(root, releases, key, historical_key)
+    pointer_path = root / "active-generation.json"
+    selected = RESOLVER.resolve(root, key) if pointer_path.exists() or pointer_path.is_symlink() else None
+    if (selected is not None and selected.get("selection") == "generation"
+            and selected.get("transitionID") == args.transition_id
+            and selected.get("sourceSHA") == args.source_sha
+            and selected.get("candidateSHA") == args.candidate_sha):
+        manifest = strict_json(private_bytes(Path(selected["generationManifestPath"]),
+                                             "active generation manifest"),
+                               "active generation manifest")
+        predecessor_fields = (
+            "predecessorState", "predecessorTransitionID", "predecessorSourceSHA",
+            "predecessorCandidateSHA", "predecessorJournalPath", "predecessorJournalSHA256",
+            "predecessorEvidencePath", "predecessorEvidenceSHA256", "predecessorReceiptPath",
+            "predecessorReceiptSHA256",
+        )
+        if not all(field in manifest for field in predecessor_fields):
+            fail("active exact generation is missing its signed predecessor binding")
+        predecessor = {field: manifest[field] for field in predecessor_fields}
+        predecessor["predecessorGenerationID"] = manifest.get("predecessorGenerationID")
+    elif (selected is not None and selected.get("selection") == "generation"
+            and selected.get("candidateSHA") == args.source_sha):
+        predecessor = completed_generation_predecessor(selected, args.current_link, releases, key)
+    else:
+        predecessor = completed_predecessor(root, releases, key, historical_key)
 
     inputs = {
         "transition.json.source-evidence.json": private_bytes(args.source_evidence, "new source evidence"),
@@ -572,7 +649,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "backupArtifactBytes": artifact_bytes,
         "shadowReceiptPath": str(generation / "shadow-receipt.json"),
         "shadowReceiptSHA256": input_digests["shadow-receipt.json"],
-        **predecessor,
+        **{name: value for name, value in predecessor.items()
+           if name != "predecessorGenerationID" or value is not None},
     }
     manifest_raw = sign(manifest_value, key)
     expected_files["generation.json"] = manifest_raw
