@@ -18,6 +18,11 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).with_name("mini-recovered-forward-generation-prepare")
+SCRIPT_LOADER = importlib.machinery.SourceFileLoader("norn_generation_prepare", str(SCRIPT))
+SCRIPT_SPEC = importlib.util.spec_from_loader(SCRIPT_LOADER.name, SCRIPT_LOADER)
+assert SCRIPT_SPEC and SCRIPT_SPEC.loader
+GENERATION_PREPARE = importlib.util.module_from_spec(SCRIPT_SPEC)
+SCRIPT_LOADER.exec_module(GENERATION_PREPARE)
 EVIDENCE_FIXTURE = Path(__file__).with_name("test-mini-recovered-forward-evidence.py")
 LOADER = importlib.machinery.SourceFileLoader("norn_evidence_fixture", str(EVIDENCE_FIXTURE))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
@@ -623,6 +628,85 @@ class GenerationPrepareTest(unittest.TestCase):
         self.assertIn("signature does not verify", tampered.stderr)
         self.assertEqual(json.loads((self.root / "generations" / first_result["generationID"] /
                                      "transition.json").read_text())["state"], "prepared")
+
+
+class SignedReleaseCatchupTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name).resolve()
+        self.repo = self.base / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Fixture"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "fixture@example.invalid"], check=True)
+        (self.repo / "source.txt").write_text("first\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "source.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "first"], check=True)
+        self.predecessor = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        (self.repo / "source.txt").write_text("second\n")
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "second"], check=True)
+        self.source = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        self.releases = self.base / "releases"
+        self.releases.mkdir()
+        self.current = self.base / "current"
+        self.verifier = self.base / "verify-release"
+        self.verifier.write_text(
+            "#!/bin/sh\nset -eu\n[ -f \"$1/release.signature.json\" ]\n"
+            "[ \"$(sed -n 's/^NORN_RELEASE_SHA=//p' \"$1/release.env\")\" = \"$(basename \"$1\")\" ]\n"
+        )
+        self.verifier.chmod(0o700)
+        for sha in (self.predecessor, self.source):
+            release = self.releases / sha
+            release.mkdir()
+            (release / "release.env").write_text(f"NORN_RELEASE_SHA={sha}\n")
+            (release / "release.json").write_text("{}\n")
+            (release / "release.signature.json").write_text("fixture-signature\n")
+        self.current.symlink_to(self.releases / self.source)
+
+    def test_signed_descendant_records_catchup_binding(self):
+        previous = os.environ.copy()
+        try:
+            os.environ["NORN_PLATFORM_REPO"] = str(self.repo)
+            os.environ["NORN_RELEASE_VERIFY_HOOK"] = str(self.verifier)
+            binding = GENERATION_PREPARE.verify_release_ancestry(
+                self.predecessor, self.source, self.releases, self.current,
+            )
+        finally:
+            os.environ.clear()
+            os.environ.update(previous)
+        self.assertEqual(binding["predecessorCandidateSHA"], self.predecessor)
+        self.assertEqual(binding["currentSourceSHA"], self.source)
+        self.assertIs(binding["gitAncestryVerified"], True)
+        self.assertEqual(len(binding["predecessorReleaseSignatureSHA256"]), 64)
+        self.assertEqual(len(binding["currentReleaseSignatureSHA256"]), 64)
+
+    def test_unrelated_signed_release_is_rejected(self):
+        branch = self.base / "unrelated"
+        branch.mkdir()
+        subprocess.run(["git", "init", "-q", str(branch)], check=True)
+        subprocess.run(["git", "-C", str(branch), "config", "user.name", "Fixture"], check=True)
+        subprocess.run(["git", "-C", str(branch), "config", "user.email", "fixture@example.invalid"], check=True)
+        (branch / "source.txt").write_text("unrelated\n")
+        subprocess.run(["git", "-C", str(branch), "add", "source.txt"], check=True)
+        subprocess.run(["git", "-C", str(branch), "commit", "-qm", "unrelated"], check=True)
+        unrelated = subprocess.check_output(["git", "-C", str(branch), "rev-parse", "HEAD"], text=True).strip()
+        release = self.releases / unrelated
+        release.mkdir()
+        (release / "release.env").write_text(f"NORN_RELEASE_SHA={unrelated}\n")
+        (release / "release.json").write_text("{}\n")
+        (release / "release.signature.json").write_text("fixture-signature\n")
+        previous = os.environ.copy()
+        try:
+            os.environ["NORN_PLATFORM_REPO"] = str(self.repo)
+            os.environ["NORN_RELEASE_VERIFY_HOOK"] = str(self.verifier)
+            with self.assertRaisesRegex(ValueError, "not a Git descendant"):
+                GENERATION_PREPARE.verify_release_ancestry(
+                    unrelated, self.source, self.releases, self.current,
+                )
+        finally:
+            os.environ.clear()
+            os.environ.update(previous)
 
 
 if __name__ == "__main__":

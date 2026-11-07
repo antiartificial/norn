@@ -41,14 +41,16 @@ read-only. Seven queued `fleet.github.apply-dispatch` receipts remain
 preserved.
 
 Ordinary upgrade correctly refused the writer-floor change because it cannot
-prove all writers are stopped. The recovered-forward wrapper then exposed a
-missing successor-generation branch: it could prepare successors from a
-legacy-fixed journal but not from the active, completed generation whose
-candidate is the exact current source. A local fix now requires that exact
-source/candidate binding and has passed 13 wrapper tests and 20
-generation-preparer tests. It is not yet merged or released, and no migration
-or candidate promotion has occurred. The Mini remains healthy on
-`3602e7e…`. See the dated [Mini observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md)
+prove all writers are stopped. The recovery suite exposed two generation
+continuity cases: a prepared predecessor must remain supersedable without a
+receipt, and an already promoted generation may need a signed-descendant
+catch-up when the running source advanced later. The local fix retains old
+signed journals and receipts, binds catch-up to both externally verified
+release signatures and Git ancestry, and rejects unrelated or unverified
+sources. Focused tests now pass: 15 transition, 22 generation preparation, and
+13 resolver tests. The change is not merged or released, and no migration or
+candidate promotion has occurred. The Mini remains healthy on `3602e7e…`. See
+the dated [Mini observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md)
 and [online-upgrade capability proposal](online-upgrade-lessons-2026-11-07.md).
 
 ## Fleet running-upgrade checkpoint (2026-11-02 00:10 UTC)
@@ -145,6 +147,30 @@ the Mini. They are preserved Fleet dispatch evidence, not proof of live work;
 classify their durable status before any later Mini platform drain or upgrade.
 Production readiness is still blocked. No Mini transition should be replayed or
 made dependent on the separate Fleet work.
+
+## Operating lanes and API retirement boundary (2026-11-07)
+
+The release has distinct execution lanes: (1) Direct Mini for an individually
+controlled node, (2) Fleet bootstrap for a new Fleet with the default two
+application node pools, (3) Fleet upgrade for an existing Fleet with workloads,
+and (4) capacity changes as a separate, workload-aware operation. Direct Mini
+does not require fleet signing authority, but still uses a verified signed
+release, protected backup and shadow evidence, controller-mediated fencing,
+health checks, and a recoverable journal. Fleet bootstrap is not the Fleet
+running-upgrade gate; online rollout should preserve availability where proven,
+with a controlled offline window as an explicit fallback.
+
+This branch does not support the V3 API exclusively yet. Keep the V2 API
+compatibility path and its behavior tests until Mini has completed V3 adoption,
+the running system has passed post-upgrade verification, and the supported
+rollback/read-compatibility window has closed. Then remove only V2 API paths
+that have no supported callers and tests that assert only retired behavior;
+retain migration, recovery, and compatibility tests for any state that still
+must be read or safely recovered. The current Mini generation catch-up changes
+are local and unmerged. They preserve the older signed journal/receipts while
+binding a completed generation to the exact current source through external
+signature verification and Git ancestry; they do not authorize migration or
+candidate promotion by themselves.
 
 This checkpoint supersedes older present-tense Mini transition statements
 below. Preserve those sections as historical evidence.

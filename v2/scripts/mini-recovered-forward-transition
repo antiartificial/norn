@@ -221,6 +221,65 @@ def digest(value: Any) -> str:
     return sha256(canonical(value))
 
 
+def verify_signed_release_ancestry(home: Path, predecessor_sha: str, source_sha: str) -> None:
+    """Require both endpoints to be signed releases on one exact Git lineage."""
+    if not HEX40.fullmatch(predecessor_sha) or not HEX40.fullmatch(source_sha) or predecessor_sha == source_sha:
+        fail("release catch-up identities must be distinct full commit SHAs")
+    releases = home / "norn/releases"
+    current_link = home / "norn/current"
+    if (not current_link.is_symlink()
+            or os.path.realpath(current_link) != os.path.realpath(releases / source_sha)):
+        fail("release catch-up requires current to select the exact signed source release")
+    config_path = home / ".config/norn/release.env"
+    try:
+        config_raw = secure_read(config_path, "signed release configuration")
+    except (OSError, ValueError):
+        fail("release catch-up requires owner-only signed release configuration")
+    config: dict[str, str] = {}
+    for line in config_raw.decode("utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            fail("signed release configuration has an invalid line")
+        name, value = line.split("=", 1)
+        if name in config:
+            fail("signed release configuration repeats a key")
+        config[name] = value
+    verifier = config.get("NORN_RELEASE_VERIFY_HOOK", "")
+    supplied_verifier = os.environ.get("NORN_RELEASE_VERIFY_HOOK", verifier)
+    if (not verifier or supplied_verifier != verifier or not Path(verifier).is_absolute()
+            or not Path(verifier).is_file() or not os.access(verifier, os.X_OK)):
+        fail("release catch-up requires the configured external release verifier")
+    for sha, label in ((predecessor_sha, "predecessor"), (source_sha, "current source")):
+        release = releases / sha
+        try:
+            info = release.lstat()
+            env_path = release / "release.env"
+            env_info = env_path.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                    or not stat.S_ISREG(env_info.st_mode) or stat.S_ISLNK(env_info.st_mode)):
+                fail(f"{label} signed release path is unsafe")
+            raw = env_path.read_bytes()
+        except (OSError, ValueError):
+            fail(f"{label} signed release identity is unavailable")
+        values = dict(line.strip().split("=", 1) for line in raw.decode("utf-8").splitlines() if "=" in line)
+        if values.get("NORN_RELEASE_SHA") != sha:
+            fail(f"{label} signed release identity does not match its exact SHA")
+        verified = subprocess.run([verifier, str(release), str(release / "release.json")],
+                                  env=os.environ.copy(), stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True, check=False)
+        if verified.returncode:
+            fail(f"{label} release signature verification failed")
+    repository = os.environ.get("NORN_PLATFORM_REPO", "")
+    if not repository or not Path(repository).is_absolute() or not (Path(repository) / ".git").exists():
+        fail("release catch-up requires the configured Norn Git repository")
+    ancestor = subprocess.run(["git", "-C", repository, "merge-base", "--is-ancestor",
+                               predecessor_sha, source_sha],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if ancestor.returncode != 0:
+        fail("current signed source is not a Git descendant of its retained adoption source")
+
+
 def adoption_evidence(home: Path, key: bytes, source_sha: str) -> tuple[dict[str, Any], dict[str, bytes], bytes]:
     receipt_path = home / ".config/norn/.norn-recovered-baseline-adoption-v2.json"
     receipt_raw = secure_read(receipt_path, "recovered-baseline adoption receipt")
@@ -228,8 +287,11 @@ def adoption_evidence(home: Path, key: bytes, source_sha: str) -> tuple[dict[str
         "schema", "sourceSHA", "incidentCandidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256",
         "legacyFence", "ledger", "reconciliation", "preservationProven", "signature",
     })
-    if adoption.get("sourceSHA") != source_sha or adoption.get("preservationProven") is not False:
-        fail("adoption receipt does not bind the exact current source and unproven preservation state")
+    adoption_source = adoption.get("sourceSHA")
+    if not isinstance(adoption_source, str) or adoption.get("preservationProven") is not False:
+        fail("adoption receipt does not bind an exact source and unproven preservation state")
+    if adoption_source != source_sha:
+        verify_signed_release_ancestry(home, adoption_source, source_sha)
     if not HEX40.fullmatch(str(adoption.get("adopterSHA", ""))) or not HEX64.fullmatch(str(adoption.get("incidentBindingSHA256", ""))) or not HEX64.fullmatch(str(adoption.get("preservationUnprovenReasonSHA256", ""))):
         fail("adoption receipt adopter or incident digest bindings are malformed")
     referenced: dict[str, bytes] = {}
@@ -569,16 +631,23 @@ def requires_fresh_inputs(journal_present: bool, journal: dict[str, Any] | None)
     return not journal_present or (journal is not None and journal.get("state") == "prepared")
 
 
-def is_completed_successor(selection: dict[str, Any], journal: dict[str, Any], source_sha: str) -> bool:
-    """Start a fresh generation only from the exact completed candidate now serving."""
-    return (
-        selection.get("selection") in {"legacy-fixed", "generation"}
-        and journal.get("state") == "candidate-promoted"
-        and journal.get("candidateReleaseSHA") == source_sha
-        and journal.get("sourceSHA") != source_sha
-        and (selection.get("selection") == "legacy-fixed"
-             or selection.get("candidateSHA") == source_sha)
-    )
+def is_completed_successor(selection: dict[str, Any], journal: dict[str, Any], source_sha: str,
+                           home: Path) -> bool:
+    """Start a new generation from the exact promoted release or a signed descendant."""
+    if (selection.get("selection") not in {"legacy-fixed", "generation"}
+            or journal.get("state") != "candidate-promoted"
+            or journal.get("sourceSHA") == source_sha):
+        return False
+    predecessor = journal.get("candidateReleaseSHA")
+    if not isinstance(predecessor, str):
+        return False
+    if selection.get("selection") == "generation" and selection.get("candidateSHA") != predecessor:
+        return False
+    if selection.get("selection") == "legacy-fixed" and predecessor != source_sha:
+        return False
+    if predecessor != source_sha:
+        verify_signed_release_ancestry(home, predecessor, source_sha)
+    return True
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -605,6 +674,13 @@ def run(argv: list[str] | None = None) -> int:
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
     if len(token) < 32 or len(key) < 32:
         fail("Mini API token and audit signing key must be available through the protected environment")
+    live_version = fetch_json(api, "/api/version", token)
+    live_health = fetch_json(api, "/api/health", token)
+    if type(live_version) is not dict or live_version.get("sourceSha") != args.source_sha:
+        fail("current Mini API does not serve the exact requested signed source release")
+    if (type(live_health) is not dict or live_health.get("status") != "ok"
+            or live_health.get("runtimeMutationFence") != "inactive"):
+        fail("current Mini API is not healthy with its runtime mutation fence inactive")
     if not transition_dir.exists():
         transition_dir.mkdir(mode=0o700, parents=True)
     info = transition_dir.lstat()
@@ -643,7 +719,7 @@ def run(argv: list[str] | None = None) -> int:
         if (type(journal_probe) is not dict or journal_probe.get("schema") != TRANSITION_SCHEMA
                 or journal_probe.get("state") not in TRANSITION_PHASES):
             fail("existing journal has an unknown schema or phase")
-        if is_completed_successor(selection, journal_probe, args.source_sha):
+        if is_completed_successor(selection, journal_probe, args.source_sha, home):
             if journal_probe.get("transitionID") == args.transition_id:
                 fail("a new recovered-forward generation requires a fresh transition ID")
             generation_inputs = transition_dir / (

@@ -77,21 +77,67 @@ class RecoveredForwardWrapperTests(unittest.TestCase):
         mutation = source.index('invoke_platform(platform_script, "recovered-forward-controller"')
         self.assertLess(verification, mutation)
 
-    def test_completed_generation_can_start_successor_only_from_its_promoted_candidate(self):
+    def test_completed_generation_can_start_exact_successor_or_verified_catchup(self):
         journal = {"state": "candidate-promoted", "sourceSHA": self.source,
                    "candidateReleaseSHA": self.candidate}
         self.assertTrue(WRAPPER.is_completed_successor(
-            {"selection": "generation", "candidateSHA": self.candidate}, journal, self.candidate))
+            {"selection": "generation", "candidateSHA": self.candidate}, journal, self.candidate, self.root))
         self.assertTrue(WRAPPER.is_completed_successor(
-            {"selection": "legacy-fixed"}, journal, self.candidate))
+            {"selection": "legacy-fixed"}, journal, self.candidate, self.root))
         self.assertFalse(WRAPPER.is_completed_successor(
-            {"selection": "generation", "candidateSHA": "d" * 40}, journal, self.candidate))
-        self.assertFalse(WRAPPER.is_completed_successor(
-            {"selection": "generation", "candidateSHA": self.candidate},
-            {**journal, "state": "candidate-postflight-failed"}, self.candidate))
+            {"selection": "generation", "candidateSHA": "d" * 40}, journal, self.candidate, self.root))
         self.assertFalse(WRAPPER.is_completed_successor(
             {"selection": "generation", "candidateSHA": self.candidate},
-            {**journal, "candidateReleaseSHA": "d" * 40}, self.candidate))
+            {**journal, "state": "candidate-postflight-failed"}, self.candidate, self.root))
+        self.assertFalse(WRAPPER.is_completed_successor(
+            {"selection": "generation", "candidateSHA": self.candidate},
+            {**journal, "candidateReleaseSHA": "d" * 40}, self.candidate, self.root))
+
+    def test_completed_generation_catchup_requires_exact_selected_candidate_and_lineage(self):
+        later_source = "f" * 40
+        journal = {"state": "candidate-promoted", "sourceSHA": self.source,
+                   "candidateReleaseSHA": self.candidate}
+        selection = {"selection": "generation", "candidateSHA": self.candidate}
+        with patch.object(WRAPPER, "verify_signed_release_ancestry") as verify:
+            self.assertTrue(WRAPPER.is_completed_successor(selection, journal, later_source, self.root))
+            verify.assert_called_once_with(self.root, self.candidate, later_source)
+        self.assertFalse(WRAPPER.is_completed_successor(
+            {"selection": "generation", "candidateSHA": "d" * 40}, journal, later_source, self.root))
+
+    def test_release_catchup_reads_owner_only_config_and_allows_immutable_release_modes(self):
+        releases = self.root / "norn" / "releases"
+        releases.mkdir(parents=True)
+        predecessor = "b" * 40
+        current = "f" * 40
+        repository = self.root / "repo"
+        repository.mkdir()
+        (repository / ".git").mkdir()
+        verifier = self.root / "verify-release"
+        verifier.write_text("#!/bin/sh\nexit 0\n")
+        verifier.chmod(0o700)
+        config = self.root / ".config/norn/release.env"
+        config.parent.mkdir(parents=True)
+        config.write_text(f"NORN_RELEASE_VERIFY_HOOK={verifier}\n")
+        config.chmod(0o600)
+        for sha in (predecessor, current):
+            release = releases / sha
+            release.mkdir()
+            (release / "release.env").write_text(f"NORN_RELEASE_SHA={sha}\n")
+            (release / "release.env").chmod(0o444)
+            (release / "release.json").write_text("{}\n")
+        def successful_run(argv, **kwargs):
+            result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            if argv[0] == "git":
+                result.returncode = 0
+            return result
+        (self.root / "norn/current").symlink_to(releases / current)
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ["NORN_PLATFORM_REPO"] = str(repository)
+            with patch.object(WRAPPER.subprocess, "run", side_effect=successful_run) as run:
+                WRAPPER.verify_signed_release_ancestry(self.root, predecessor, current)
+                self.assertEqual(run.call_count, 3)
+                self.assertEqual(run.call_args_list[-1].args[0][:5],
+                                 ["git", "-C", str(repository), "merge-base", "--is-ancestor"])
 
     def test_receipt_rejects_duplicate_fields_and_wrong_hmac(self):
         raw = WRAPPER.signed_document({"schema": WRAPPER.RECEIPT_SCHEMA, "x": 1}, self.key)
