@@ -435,6 +435,47 @@ recovered_forward_require_current_candidate
         self.assertLess(tail.index('legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent-restart"'),
                         tail.index("restart_fenced_host_agent"))
 
+    def test_host_agent_restart_waits_for_wrapped_child_to_start(self):
+        platform = SCRIPT.with_name("platform-upgrade").read_text()
+        restart = platform.split("restart_fenced_host_agent() {\n", 1)[1].split("\n}\n", 1)[0]
+        candidate = self.directory / "release"
+        (candidate / "bin").mkdir(parents=True)
+        agent = candidate / "bin/norn-host-agent"
+        agent.write_text("candidate host agent")
+        agent.chmod(0o755)
+        managed = self.directory / "managed-host-agent"
+        managed.write_bytes(agent.read_bytes())
+        managed.chmod(0o755)
+        current = self.directory / "current"
+        current.symlink_to(candidate)
+        script = f'''set -euo pipefail
+current_link={str(current)!r}
+host_agent_bin={str(managed)!r}
+host_agent_label=com.norn.host-agent
+host_agent_plist={str(self.directory / "host-agent.plist")!r}
+platform_script_bin={str(self.directory / "platform-upgrade")!r}
+host_agent_direct_exec=false
+pgrep_state={str(self.directory / "pgrep-state")!r}
+require_cmd() {{ :; }}
+fail() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+log() {{ :; }}
+legacy_baseline_is_fence_binary() {{ return 0; }}
+atomic_install_file() {{ cp "$1" "$2"; }}
+legacy_baseline_bootstrap_launchd_service() {{ :; }}
+launchctl() {{ case "$1" in print) printf 'pid = 123\\n';; kickstart) :;; esac; }}
+kill() {{ return 0; }}
+pgrep() {{ printf 'x\\n' >> "$pgrep_state"; if [[ "$(wc -l < "$pgrep_state")" -ge 3 ]]; then printf '456\\n'; fi; }}
+ps() {{ printf '%s\\n' {str(managed)!r}; }}
+sleep() {{ :; }}
+restart_fenced_host_agent() {{
+{restart}
+}}
+restart_fenced_host_agent
+[[ "$(wc -l < "$pgrep_state")" -ge 3 ]]
+'''
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_candidate_host_binary_is_allowed_only_after_restart_intent(self):
         journal = self.directory / "transition.json"
         args = Namespace(action="run", journal=journal, authorization=None)
