@@ -2,6 +2,7 @@
 """Prepare PF and pinned root helpers inside one disposable macOS guest."""
 
 import argparse
+import grp
 import hashlib
 import os
 from pathlib import Path
@@ -58,10 +59,30 @@ def install_helper(source, target, expected):
         raise ValueError("unreviewed guest helper")
     if target.exists() or target.is_symlink():
         raise ValueError("guest helper already exists; reconcile before retry")
-    command("/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "755", str(source), str(target))
+    result = subprocess.run(("/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "755",
+                             str(source), str(target)), capture_output=True, text=True, timeout=20)
+    if result.returncode:
+        detail = "".join(ch for ch in " ".join(result.stderr.split()) if ch.isprintable())[:500]
+        raise ValueError("guest helper install failed (exit {}): {}".format(
+            result.returncode, detail or "no diagnostic"))
     info = target.lstat()
     if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or digest(target) != expected:
         raise ValueError("installed guest helper readback differs")
+
+
+def ensure_helper_root(path):
+    path = Path(path)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        path.mkdir(mode=0o755)
+        os.chown(path, 0, grp.getgrnam("wheel").gr_gid)
+        os.chmod(path, 0o755)
+        info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or
+            info.st_gid != grp.getgrnam("wheel").gr_gid or
+            stat.S_IMODE(info.st_mode) != 0o755):
+        raise ValueError("privileged helper directory is not a root-owned wheel directory with mode 755")
 
 
 def install_historical_bundle(source, target=None):
@@ -155,6 +176,7 @@ def main():
     state.mkdir(mode=0o700)
     os.chmod(state, 0o700)
     helper_root = Path("/Library/PrivilegedHelperTools")
+    ensure_helper_root(helper_root)
     install_helper(args.window_helper, helper_root / "norn-mini-m5-firewall-window", WINDOW_SHA256)
     install_helper(args.isolation_checker, helper_root / "norn-mini-m5-isolation-check", CHECKER_SHA256)
     install_helper(args.hardening_helper, helper_root / "norn-mini-m5-guest-hardening", HARDENING_SHA256)
