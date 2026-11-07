@@ -2188,12 +2188,27 @@ for pid, ppid in sorted(matches):
 PY
 }
 
+# PID alone is not a process identity: launchd may exit the wrapped child and
+# the kernel can reuse that PID before the operator's next observation. Include
+# the process start time and full command so a reused PID is never signalled or
+# mistaken for the original child during fencing.
+legacy_baseline_child_identity_matches() {
+  local pid="$1" expected="$2" observed
+  [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected" ]] || return 1
+  observed="$(ps -o lstart= -o command= -p "$pid" 2>/dev/null | sed -n '1p')"
+  [[ -n "$observed" && "$observed" == "$expected" ]]
+}
+
 legacy_baseline_quiesce_launchd_service() {
   local label="$1" plist="$2" managed_path="$3" launch_program="$4" service_name="$5" signal="$6"
-  local launch_state pid="" child_pid="" child_command=""
+  local launch_state pid="" pid_identity="" child_pid="" child_command="" child_identity="" child_alive wrapper_alive
   if launch_state="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)"; then
     legacy_baseline_validate_launchd_binding "$plist" "$label" "$managed_path" "$launch_program" "$service_name"
     pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      pid_identity="$(ps -o lstart= -o command= -p "$pid" 2>/dev/null | sed -n '1p')"
+      [[ -n "$pid_identity" ]] || fail "$service_name launchd process identity could not be captured"
+    fi
     if [[ "$label" == "$host_agent_label" && "$pid" =~ ^[1-9][0-9]*$ ]]; then
       require_cmd pgrep
       require_cmd ps
@@ -2201,24 +2216,42 @@ legacy_baseline_quiesce_launchd_service() {
       if [[ -n "$child_pid" ]]; then
         [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || fail "$service_name launchd wrapper has ambiguous children"
         child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+        child_identity="$(ps -o lstart= -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+        [[ -n "$child_identity" ]] || fail "$service_name child process identity could not be captured"
         [[ "$child_command" == *"$managed_path"* ]] || fail "$service_name launchd child does not execute the managed host-agent path"
       fi
     fi
     launchctl bootout "gui/$(id -u)/$label" || fail "could not boot out the fenced $service_name launchd job"
-    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1; then
-      /bin/kill -"$signal" "$pid" 2>/dev/null || ! kill -0 "$pid" >/dev/null 2>&1 || fail "could not terminate the booted-out $service_name PID"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$pid" "$pid_identity"; then
+      /bin/kill -"$signal" "$pid" 2>/dev/null || ! legacy_baseline_child_identity_matches "$pid" "$pid_identity" || fail "could not terminate the booted-out $service_name PID"
     fi
-    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1; then
-      [[ "$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')" == "$child_command" ]] || fail "$service_name child identity changed after launchd bootout"
-      /bin/kill -TERM "$child_pid" 2>/dev/null || ! kill -0 "$child_pid" >/dev/null 2>&1 || fail "could not terminate the booted-out $service_name child"
+    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$child_pid" "$child_identity"; then
+      /bin/kill -TERM "$child_pid" 2>/dev/null || ! legacy_baseline_child_identity_matches "$child_pid" "$child_identity" || fail "could not terminate the booted-out $service_name child"
     fi
     for _ in $(seq 1 30); do
-      if { [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; } \
-          && { [[ -z "$child_pid" ]] || ! kill -0 "$child_pid" >/dev/null 2>&1; }; then break; fi
+      child_alive=false
+      if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1 \
+          && legacy_baseline_child_identity_matches "$child_pid" "$child_identity"; then
+        child_alive=true
+      fi
+      wrapper_alive=false
+      if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1 \
+          && legacy_baseline_child_identity_matches "$pid" "$pid_identity"; then
+        wrapper_alive=true
+      fi
+      if [[ "$wrapper_alive" == false && "$child_alive" == false ]]; then break; fi
       sleep 1
     done
-    [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" >/dev/null 2>&1 || fail "booted-out $service_name PID remained running"
-    [[ -z "$child_pid" ]] || ! kill -0 "$child_pid" >/dev/null 2>&1 || fail "booted-out $service_name child remained running"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$pid" "$pid_identity"; then
+      fail "booted-out $service_name PID remained running"
+    fi
+    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$child_pid" "$child_identity"; then
+      fail "booted-out $service_name child remained running"
+    fi
   fi
   launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && fail "$service_name launchd job remained loaded after bootout"
   legacy_baseline_is_fence_binary "$managed_path" || fail "$service_name launchd job is unloaded without the exact durable fence"
