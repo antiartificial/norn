@@ -286,7 +286,7 @@ recovered_expected_current_sha=""
 recovered_accept_preservation_unproven=false
 recovered_reason_file=""
 case "$mode" in
-  upgrade|rebuild|rollback|recovered-forward|recovered-forward-finalize|preflight)
+  upgrade|rebuild|rollback|recovered-forward|recovered-forward-finalize|preflight|mini-protected-backup|mini-signed-shadow)
     if [[ -d "$recovered_base_root" && ! -L "$recovered_base_root" ]]; then
       resolve_recovered_generation "$recovered_base_root"
     elif [[ "$mode" == recovered-forward || "$mode" == recovered-forward-finalize ]]; then

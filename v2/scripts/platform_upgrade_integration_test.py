@@ -72,6 +72,14 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(phase, resume)
 
+    def test_mini_evidence_modes_select_the_active_recovered_forward_generation(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        selection = source.split('case "$mode" in\n  upgrade|', 1)[1].split("\nesac", 1)[0]
+        modes = selection.splitlines()[0]
+        self.assertIn("mini-protected-backup", modes)
+        self.assertIn("mini-signed-shadow", modes)
+        self.assertIn('resolve_recovered_generation "$recovered_base_root"', selection)
+
     def test_recovery_validation_keeps_the_requested_upgrade_target_scoped(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         completed = source.split("recovered_forward_completed_candidate_validate() {", 1)[1].split("\n}", 1)[0]
