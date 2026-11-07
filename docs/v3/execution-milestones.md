@@ -38,7 +38,7 @@ Mini prerequisite. The Mini upgrade can advance independently of Fleet
 provisioning. Fleet's etcd snapshots, restore, quorum and fault gates remain
 required before claiming that staging exercise complete.
 
-Mini is the independent v3 development environment. The work-account Fleet is a separately deployed staging Norn; a future production Fleet is another distinct environment. Deploy applications directly to Fleet. Mini-to-Fleet application promotion or data migration is not an initial release gate. If cross-environment mobility is offered later, qualify explicit identity, data and provenance mappings without cloning Mini's control database or sharing its authority.
+Mini is an independent single-node v3 development installation, not a Fleet member or dependency. The DigitalOcean Fleet is a separately deployed staging testbed intended to resemble production with lower resource use; a future production Fleet is another distinct environment. Deploy applications directly to the staging Fleet. Mini-to-Fleet application promotion or data migration is not an initial release gate. If cross-environment mobility is offered later, qualify explicit identity, data and provenance mappings without cloning Mini's control database or sharing its authority.
 
 ## Milestone order
 
