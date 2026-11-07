@@ -2267,13 +2267,18 @@ restart_fenced_host_agent() {
   legacy_baseline_bootstrap_launchd_service "$host_agent_label" "$host_agent_plist" "$host_agent_bin" "$platform_script_bin" "candidate host-agent"
   launchctl kickstart -k "gui/$(id -u)/$host_agent_label" || fail "candidate API is healthy but norn-host-agent did not restart"
   local launch_state agent_pid child_pid child_command stable_pid stable_child_pid stable_child_command
-  if ! launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
-    fail "candidate API is healthy but cannot inspect restarted norn-host-agent"
-  fi
-  agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-  [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || fail "candidate API is healthy but restarted norn-host-agent has no PID"
-  kill -0 "$agent_pid" >/dev/null 2>&1 || fail "candidate API is healthy but restarted norn-host-agent is not running"
-  child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+  child_pid=""
+  for _ in $(seq 1 30); do
+    if ! launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
+      fail "candidate API is healthy but cannot inspect restarted norn-host-agent"
+    fi
+    agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || fail "candidate API is healthy but restarted norn-host-agent has no PID"
+    kill -0 "$agent_pid" >/dev/null 2>&1 || fail "candidate API is healthy but restarted norn-host-agent is not running"
+    child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+    [[ -n "$child_pid" || "$host_agent_direct_exec" == "true" ]] && break
+    sleep 0.5
+  done
   if [[ -z "$child_pid" ]]; then
     [[ "$host_agent_direct_exec" == "true" ]] || fail "candidate API is healthy but norn-host-agent wrapper has no child"
   else
