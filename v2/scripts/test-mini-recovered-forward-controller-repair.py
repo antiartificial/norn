@@ -66,6 +66,12 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_maintenance_plist_can_resume_candidate_activation(self):
+        allowed = REPAIR.ACTION_PHASES["plist-stage"]
+        self.assertIn("candidate-activation-started", allowed)
+        self.assertIn("candidate-postflight-failed", allowed)
+        self.assertNotIn("schema-migrated", allowed)
+
     def test_signed_launcher_uses_imported_read_only_mode(self):
         home = self.directory
         original = home / "bin/norn-api-sops-launcher"
