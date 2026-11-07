@@ -569,6 +569,18 @@ def requires_fresh_inputs(journal_present: bool, journal: dict[str, Any] | None)
     return not journal_present or (journal is not None and journal.get("state") == "prepared")
 
 
+def is_completed_successor(selection: dict[str, Any], journal: dict[str, Any], source_sha: str) -> bool:
+    """Start a fresh generation only from the exact completed candidate now serving."""
+    return (
+        selection.get("selection") in {"legacy-fixed", "generation"}
+        and journal.get("state") == "candidate-promoted"
+        and journal.get("candidateReleaseSHA") == source_sha
+        and journal.get("sourceSHA") != source_sha
+        and (selection.get("selection") == "legacy-fixed"
+             or selection.get("candidateSHA") == source_sha)
+    )
+
+
 def run(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
     # Keep the retained key out of the process environment by default. It is
@@ -631,9 +643,7 @@ def run(argv: list[str] | None = None) -> int:
         if (type(journal_probe) is not dict or journal_probe.get("schema") != TRANSITION_SCHEMA
                 or journal_probe.get("state") not in TRANSITION_PHASES):
             fail("existing journal has an unknown schema or phase")
-        if (selection.get("selection") == "legacy-fixed"
-                and journal_probe.get("state") == "candidate-promoted"
-                and journal_probe.get("sourceSHA") != args.source_sha):
+        if is_completed_successor(selection, journal_probe, args.source_sha):
             if journal_probe.get("transitionID") == args.transition_id:
                 fail("a new recovered-forward generation requires a fresh transition ID")
             generation_inputs = transition_dir / (
