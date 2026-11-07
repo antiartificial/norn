@@ -19,7 +19,7 @@ TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
 PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5aa"
 PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
 SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
-GUEST_PREPARE_SHA256 = "4d876587504c646739d7edcdff6eed7d564f8e672fe588803d36fc65a0f104bd"
+GUEST_PREPARE_SHA256 = "02f373683a355728f5ac70be44f7125c1c4c466aeb36baacaf5bc201d097e58a"
 TOOLCHAIN_SETUP_SHA256 = "e4bdbd96d8288381b1fba848552f665d58503f632e6ece0dc09708376cd7c79a"
 TOOLCHAIN_RECEIPT_VERSION = "26.6.0.0.1781586589"
 GUEST_HARDENING_SHA256 = "d8dedc1c5c9028a0ab77937eb2e09103c07517badfa7442ad26d4fc60d65762e"
@@ -243,14 +243,21 @@ def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, 
         os.fsync(stream.fileno())
     env["PKR_VAR_m5_bootstrap_password"] = bootstrap
     env["TART_NO_AUTO_PRUNE"] = ""
-    env["PACKER_LOG"] = "1"
     log_path = root / (intent["guestName"] + ".packer-output.log")
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         with os.fdopen(fd, "wb") as output:
             try:
                 subprocess.run((str(packer), "build", str(template)), env=env, check=True,
-                               stdout=output, stderr=subprocess.STDOUT, timeout=7200)
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=7200)
+                output.write(b"Packer build completed; verbose output was suppressed.\n")
+            except subprocess.CalledProcessError as exc:
+                output.write(("Packer build failed with exit code {}; verbose output was suppressed.\n"
+                              .format(exc.returncode)).encode("ascii"))
+                raise
+            except subprocess.TimeoutExpired:
+                output.write(b"Packer build timed out; verbose output was suppressed.\n")
+                raise
             finally:
                 output.flush()
                 os.fsync(output.fileno())

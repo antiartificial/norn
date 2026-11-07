@@ -37,6 +37,39 @@ retirement receipt before issuing a fresh run-bound signed intent. Packer logs
 can contain bootstrap credentials and must not be copied into chat or routine
 diagnostics; report the specific sanitized failure classification instead.
 
+## Create failure record: Screen Sharing remained active
+
+Protected create run `42335187705` passed the 600-second guest SSH readiness
+window, transferred its pinned helpers, and reached the shell provisioners. It
+then failed because TCP port 5900 was still listening. The guest helper had
+disabled `system/com.apple.screensharing` and confirmed the disabled setting,
+but `launchctl disable` did not stop the service already loaded in the current
+guest boot. Packer cleanup left no Tart inventory entry; protected
+reconciliation classified the create outcome as ambiguous, so the attempt
+must be closed by the protected retirement workflow before another create.
+Protected retirement run `42337856240` completed successfully and wrote a
+receipt proving the exact guest was absent from Tart both before and after
+retirement. The credential-bearing Packer log and its one-use bootstrap secret
+were removed after recording the sanitized failure classification.
+
+Future bootstrap disables the service and explicitly boots out the loaded
+service before checking TCP/5900. An already-absent service is acceptable;
+other `launchctl bootout` errors fail closed. The helper digest is checked by
+protected preflight and must stay synchronized with the pinned digest in the
+local guest controller. Keep the port check: changing service state alone
+does not prove the listener is gone.
+
+The same run exposed an unsafe diagnostic pattern: Packer debug output was
+persisted to an owner-only log while `PACKER_LOG=1` was enabled. The debug
+stream included generated VNC credentials and typed bootstrap-password
+characters. Owner-only permissions do not make those values safe to retain.
+The controller now suppresses Packer stdout and stderr and records only a
+credential-free completion, exit-code, or timeout summary. Do not enable
+verbose Packer logging in a persistent file or upload raw Packer output as an
+artifact. If deeper diagnostics are required, add a reviewed redaction layer
+and prove it against VNC credentials and typed password events before enabling
+capture.
+
 Run `42328381249` failed after about 22 minutes with a guest SSH readiness
 timeout. The Packer recipe currently allows 180 seconds for SSH readiness.
 The host diagnostic's `guestIP` field is the default target address, not a
@@ -48,9 +81,10 @@ Protected Fleet network verification run `42333798695` separately confirmed,
 after host restart, that both Ethernet and Wi-Fi allowlists still contain
 exactly `192.168.80.0/24`. That preference readback does not prove end-to-end
 guest SSH connectivity, and the available failure evidence does not establish
-why SSH never became ready. Keep the full Packer log in the owner-only journal;
-carry only the sanitized `guest-ssh-readiness-timeout` classification into
-routine status and the executor's failure record. Protected reconciliation
+why SSH never became ready. Preserve live guest-address and TCP/22 evidence
+before cleanup, but do not persist raw verbose Packer logs. Carry only the
+sanitized `guest-ssh-readiness-timeout` classification into routine status and
+the executor's failure record. Protected reconciliation
 returned `create-outcome-ambiguous` with an empty Tart inventory. The protected
 retirement run `42332291776` then wrote an absence receipt with empty inventory
 before and after. A fresh Tart readback also showed the inventory empty. Do not

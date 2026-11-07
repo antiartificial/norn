@@ -168,6 +168,19 @@ def prepare_pf():
         raise ValueError("M5 PF anchor is not first effective rule")
 
 
+def stop_screen_sharing():
+    service = "system/com.apple.screensharing"
+    command("/bin/launchctl", "disable", service)
+    # `disable` prevents future launches but does not stop an already-loaded
+    # service. Boot it out before checking the guest's listening sockets.
+    stopped = subprocess.run(("/bin/launchctl", "bootout", service),
+                             capture_output=True, text=True, timeout=20)
+    if stopped.returncode:
+        detail = " ".join(stopped.stderr.split())
+        if "Could not find service" not in detail:
+            raise ValueError("Screen Sharing service could not be stopped")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window-helper", required=True)
@@ -192,7 +205,7 @@ def main():
                    INTENT_VERIFIER_SHA256)
     install_historical_bundle(args.historical_bundle)
     prepare_pf()
-    command("/bin/launchctl", "disable", "system/com.apple.screensharing")
+    stop_screen_sharing()
     disabled = command("/bin/launchctl", "print-disabled", "system")
     if not re.search(r'"com\.apple\.screensharing"\s*=>\s*disabled', disabled):
         raise ValueError("Screen Sharing is not disabled")
