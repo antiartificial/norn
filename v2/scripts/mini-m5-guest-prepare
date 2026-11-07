@@ -29,6 +29,8 @@ HISTORICAL_TOOLS = {
 }
 ANCHOR_LINE = 'anchor "com.norn.m5.historical"\n'
 APPLE_FILTER_ANCHOR = '\nanchor "com.apple/*"\n'
+PF_TRANSLATION_ANCHORS = (
+    "scrub-anchor ", "nat-anchor ", "rdr-anchor ", "dummynet-anchor ")
 
 
 def command(*args, timeout=20):
@@ -125,8 +127,7 @@ def pf_with_anchor(original):
     prefix = original.split(APPLE_FILTER_ANCHOR, 1)[0]
     for line in prefix.splitlines():
         rule = line.strip()
-        if rule and not rule.startswith("#") and not rule.startswith((
-                "scrub-anchor ", "nat-anchor ", "rdr-anchor ", "dummynet-anchor ")):
+        if rule and not rule.startswith("#") and not rule.startswith(PF_TRANSLATION_ANCHORS):
             raise ValueError("unreviewed PF rule precedes the M5 filter anchor")
     return original.replace(APPLE_FILTER_ANCHOR, '\n' + ANCHOR_LINE + 'anchor "com.apple/*"\n')
 
@@ -157,7 +158,12 @@ def prepare_pf():
     if not re.search(r"^Status:\s+Enabled\b", info, re.M):
         command("/sbin/pfctl", "-e")
     rules = command("/sbin/pfctl", "-sr")
-    effective = [line.strip() for line in rules.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    effective = [
+        line.strip() for line in rules.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not line.strip().startswith(PF_TRANSLATION_ANCHORS)
+    ]
     if not effective or not re.fullmatch(r'anchor "?com\.norn\.m5\.historical"?(?: all)?', effective[0]):
         raise ValueError("M5 PF anchor is not first effective rule")
 
