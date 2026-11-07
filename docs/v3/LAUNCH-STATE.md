@@ -105,7 +105,7 @@ capability commit `86ad17b6407bcbcd028f534f17a9db2253c5de6c` and signed target
 commit `9e2e33ad9d2fd0d815e5c19157e1925d6a7e5a05` are present in the repository
 when checked as `norn-exec`, and an invocation-scoped `safe.directory` check
 finds both without changing global Git trust. The Genesis readback therefore
-remains unpassed; no platform state was changed.
+remains unpassed; the Genesis journal and Fleet state were unchanged.
 
 Fleet PR [#939](https://github.com/antiartificial/norn-fleet/pull/939) applies
 that exact-path Git ownership fix to the shared verifier used by both Genesis
