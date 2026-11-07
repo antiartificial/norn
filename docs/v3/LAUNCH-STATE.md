@@ -261,9 +261,13 @@ The Mini's adoption and post-upgrade verification are now complete. A source
 review found no `/api/v2` route namespace: the production router exposes the
 current `/api/v1` contract and older unversioned `/api` handlers. The `v2/api`
 Go import path is the repository's package layout, not evidence of an HTTP API
-version. Tests mentioning “legacy”, “V2”, or “Postgres” therefore cannot be
-removed by name alone; many protect durable state recovery, signed Fleet
-protocol revisions, or Postgres conformance. Before retiring any old
+version. A specific Fleet offline-effect subprotocol is still explicitly
+versioned in the route `/api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants/v2`;
+its tests protect one-use evidence and recovery behavior. It needs a caller and
+protocol migration review before removal as part of V3-only support. Tests
+mentioning “legacy”, “V2”, or “Postgres” therefore cannot be removed by name
+alone; many protect durable state recovery, signed Fleet protocol revisions,
+or Postgres conformance. Before retiring any old
 unversioned handler, trace supported callers and replace its behavioral
 coverage at the current contract boundary. Keep migration/recovery and
 rollback-read compatibility coverage until the corresponding stored state is
