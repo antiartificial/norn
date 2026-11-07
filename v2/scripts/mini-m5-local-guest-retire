@@ -51,9 +51,10 @@ def verify(intent, marker, journal, tart):
             not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]) or
             not re.fullmatch(r"norn-m5-[0-9]{1,20}", intent["guestName"]) or
             not re.fullmatch(r"[0-9a-f]{64}", intent["createMarkerSHA256"]) or
-            not re.fullmatch(r"[0-9a-f]{64}", intent["tartConfigSHA256"]) or
+            (intent["createdReceiptSHA256"] is None and intent["tartConfigSHA256"] is not None) or
             (intent["createdReceiptSHA256"] is not None and
-             not re.fullmatch(r"[0-9a-f]{64}", intent["createdReceiptSHA256"])) or
+             (not re.fullmatch(r"[0-9a-f]{64}", intent["createdReceiptSHA256"]) or
+              not re.fullmatch(r"[0-9a-f]{64}", intent["tartConfigSHA256"] or ""))) or
             intent["runnerState"] not in ("never-registered", "revoked") or
             (intent["runnerState"] == "never-registered" and intent["runnerRevokedReceiptSHA256"] is not None) or
             (intent["runnerState"] == "revoked" and not re.fullmatch(r"[0-9a-f]{64}", intent["runnerRevokedReceiptSHA256"] or ""))):
@@ -137,6 +138,8 @@ def retire(intent, root, tart):
     if len(rows) > 1:
         raise ValueError("duplicate guest identity")
     if rows:
+        if intent["createdReceiptSHA256"] is None:
+            raise ValueError("live guest cannot be retired without a created receipt")
         config = subprocess.run((str(tart), "get", name, "--format", "json"),
                                 check=True, capture_output=True, timeout=15).stdout
         if hashlib.sha256(config).hexdigest() != intent["tartConfigSHA256"]:
