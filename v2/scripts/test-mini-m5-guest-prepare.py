@@ -13,6 +13,29 @@ loader.exec_module(prepare)
 
 
 class GuestPrepareTests(unittest.TestCase):
+    def test_stops_loaded_screen_sharing_service(self):
+        with patch.object(prepare, "command") as command, \
+                patch.object(prepare.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            prepare.stop_screen_sharing()
+            command.assert_any_call("/bin/launchctl", "disable", "system/com.apple.screensharing")
+            run.assert_called_once_with(("/bin/launchctl", "bootout", "system/com.apple.screensharing"),
+                                        capture_output=True, text=True, timeout=20)
+
+    def test_absent_screen_sharing_service_is_already_stopped(self):
+        with patch.object(prepare, "command") as command, \
+                patch.object(prepare.subprocess, "run") as run:
+            run.return_value.returncode = 113
+            run.return_value.stderr = "Could not find service"
+            prepare.stop_screen_sharing()
+
+    def test_unexpected_screen_sharing_bootout_error_fails_closed(self):
+        with patch.object(prepare, "command"), patch.object(prepare.subprocess, "run") as run:
+            run.return_value.returncode = 5
+            run.return_value.stderr = "permission denied"
+            with self.assertRaisesRegex(ValueError, "could not be stopped"):
+                prepare.stop_screen_sharing()
+
     def test_inserts_filter_anchor_after_translation(self):
         original = ('scrub-anchor "com.apple/*"\n'
                     'nat-anchor "com.apple/*"\n'
