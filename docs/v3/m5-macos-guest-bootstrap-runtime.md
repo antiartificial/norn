@@ -37,16 +37,25 @@ retirement receipt before issuing a fresh run-bound signed intent. Packer logs
 can contain bootstrap credentials and must not be copied into chat or routine
 diagnostics; report the specific sanitized failure classification instead.
 
-Run `42328381249` failed after about 22 minutes while waiting for guest SSH.
-The host diagnostics recorded a DHCP address and unchanged host network
-observations, with no observed TCC denial; they do not establish the cause of
-the SSH timeout. Protected reconciliation returned
-`create-outcome-ambiguous` with an empty Tart inventory. Treat this as an
-unretired failed attempt until the protected retirement workflow records its
-absence receipt; do not issue another create intent or reuse the attempt's
-guest name before then. Keep the full Packer log in the owner-only journal and
+Run `42328381249` failed after about 22 minutes with a guest SSH readiness
+timeout. The Packer recipe currently allows 180 seconds for SSH readiness.
+The host diagnostic's `guestIP` field is the default target address, not a
+readback of a Tart DHCP lease, and the outcome snapshot runs after Packer
+cleanup. Its route and TCC fields therefore do not establish whether the guest
+had an address or whether TCP/22 was reachable during the failure.
+
+Protected Fleet network verification run `42333798695` separately confirmed,
+after host restart, that both Ethernet and Wi-Fi allowlists still contain
+exactly `192.168.80.0/24`. That preference readback does not prove end-to-end
+guest SSH connectivity, and the available failure evidence does not establish
+why SSH never became ready. Keep the full Packer log in the owner-only journal;
 carry only the sanitized `guest-ssh-readiness-timeout` classification into
-routine status and the executor's failure record.
+routine status and the executor's failure record. Protected reconciliation
+returned `create-outcome-ambiguous` with an empty Tart inventory. The protected
+retirement run `42332291776` then wrote an absence receipt with empty inventory
+before and after. A fresh Tart readback also showed the inventory empty. Do not
+issue another create intent for this attempt; the next rehearsal must preserve
+live guest address and TCP/22 evidence before cleanup if SSH readiness fails.
 
 ## Reuse a successfully created guest after Norn test failures
 
