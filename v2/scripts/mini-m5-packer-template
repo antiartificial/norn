@@ -45,6 +45,9 @@ def transform(raw):
                         'from_ipsw    = var.m5_ipsw_path')
     text = replace_once(text, 'vm_name      = "tahoe-vanilla"', 'vm_name      = var.m5_guest_name')
     text = replace_once(text, 'ssh_password = "admin"', 'ssh_password = var.m5_bootstrap_password')
+    # Tahoe's first-boot UI must enable Remote Login before the SSH
+    # communicator can connect. Allow up to ten minutes for that transition.
+    text = replace_once(text, 'ssh_timeout  = "180s"', 'ssh_timeout  = "600s"')
     text = replace_once(text, 'ssh_username = "admin"',
                         'ssh_username = "admin"\n  run_extra_args = ["--net-softnet"]')
     text = replace_once(text,
