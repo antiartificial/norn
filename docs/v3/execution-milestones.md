@@ -12,16 +12,15 @@ The initial v3 release supports two independent deployment paths:
 1. Existing single-machine Mini: v2/PostgreSQL → v3/PostgreSQL, preserving running workloads and application data.
 2. Empty DigitalOcean HA Fleet: fresh v3 with three etcd members on the control nodes and independent application databases.
 
-The existing Mini can run v3 as a single-node development control plane on its
-existing PostgreSQL database. It does not need a Fleet, etcd, or management
-nodes to operate. Fleet integration is optional and independent of upgrading
-or running Norn on Mini. In the current implementation, Mini reads a local
-`NORN_FLEET_CONFIG` document and uses its protected GitHub App/workflow bridge
-for Fleet operations; the Mini does not require a direct connection to a
-Fleet-node API.
+The existing Mini runs as an independent single-node development control plane
+on its existing PostgreSQL database. It is not a Fleet member and does not
+connect to a Fleet. It does not need Fleet, etcd, or management nodes to
+operate. The DigitalOcean staging Fleet is a separate testbed; its validation
+is independent of upgrading or running Norn on Mini.
 
-The persistent work-account DigitalOcean Fleet is a separate staging Norn for
-fresh bootstrap, quorum, workload communication, scaling and recovery. Its
+The DigitalOcean staging Fleet is a separate testbed intended to resemble
+production with lower resource use. It is a separate Norn deployment for fresh
+bootstrap, quorum, workload communication, scaling and recovery. Its
 etcd and management-node requirements apply to that Fleet deployment, not to
 the Mini.
 These paths share release qualification but are not prerequisites for one
@@ -156,7 +155,7 @@ Release evidence includes exact Norn/Fleet/NornUI/runner and upstream versions, 
 
 Adoption has two independent paths: upgrade Mini on PG for development, and deploy a separate staging Fleet on etcd with applications deployed directly to it. A future production Fleet has its own reviewed rollout and qualification. Prioritize staging Fleet fitness while retaining M8 qualification and a reviewed protected plan before provider changes. A failed Fleet launch must not force a Mini rollback; a successful Mini upgrade must not be mistaken for HA qualification.
 
-The immediate objective is to qualify the persistent work-account staging Fleet:
+The immediate Fleet objective is to qualify the DigitalOcean staging testbed:
 prove provider-backed bootstrap, control-plane recovery, ingress, directly
 deployed workloads, scaling and running upgrades against M0–M9 exit criteria.
 The earlier bounded [Fleet fitness pilot](fleet-fitness-pilot-matrix-2026-09-29.md)

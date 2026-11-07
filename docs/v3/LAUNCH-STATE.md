@@ -229,12 +229,12 @@ interruption-tested recovered-forward transition that proves all writers are
 quiesced before migration and only moves forward. Fleet deployment, Fleet
 management nodes, and Fleet etcd are not prerequisites for this Mini update.
 
-Architecture boundary: Mini is the single-node development platform and uses
-its existing unmanaged PostgreSQL service. It does not host or require Fleet
-management nodes or an etcd quorum. The disposable DigitalOcean cluster is a
-separate staging Fleet; once running, Mini may connect to it through the Fleet
-API for development and control-plane workflows. Mini v3 qualification can
-proceed independently of that staging Fleet.
+Historical architecture note: Mini is the independent single-node development
+platform and uses its existing unmanaged PostgreSQL service. It does not host
+or require Fleet management nodes or an etcd quorum. Earlier proposals
+considered connecting Mini to Fleet; that is not the current environment
+relationship. The DigitalOcean Fleet is a separate staging testbed, and Mini's
+v3 qualification proceeds independently of it.
 
 At 2026-10-11 19:42 UTC, protected signed release
 `798c82847c04156d99a9876c0bb0d6d4b76f901b` was published and independently
@@ -266,8 +266,8 @@ owner sign-offs. Recheck external state before any new mutation.
 The Mini is being upgraded as its own single-node Norn instance. It uses its
 existing unmanaged PostgreSQL and does not need Fleet nodes, Fleet management
 nodes, or Fleet etcd. Fleet availability is not an upgrade prerequisite.
-Once a Fleet is running, Mini may connect to it through the Fleet API; that
-connection is a separate integration step, not a runtime dependency for Mini.
+Mini does not connect to or belong to a Fleet. Fleet validation is performed
+against the separate DigitalOcean staging testbed.
 
 Norn PR [#144](https://github.com/antiartificial/norn/pull/144) merged as
 `85fb2830ac18a711b2e3e20de45c1adcbbd4935d`; the protected signed prerelease
