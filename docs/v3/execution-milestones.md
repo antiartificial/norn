@@ -13,10 +13,11 @@ The initial v3 release supports two independent deployment paths:
 2. Empty DigitalOcean HA Fleet: fresh v3 with three etcd members on the control nodes and independent application databases.
 
 The existing Mini runs as an independent single-node development control plane
-on its existing PostgreSQL database. It is not a Fleet member and does not
-connect to a Fleet. It does not need Fleet, etcd, or management nodes to
-operate. The DigitalOcean staging Fleet is a separate testbed; its validation
-is independent of upgrading or running Norn on Mini.
+on its existing PostgreSQL database. It is not a member of the DigitalOcean
+Fleet and its upgrade does not depend on that testbed. The Mini control API may
+hold a configuration document for the separate DO staging target; that does
+not make the Mini part of its node topology. The DO Fleet's validation is
+independent of upgrading or running Norn on Mini.
 
 The DigitalOcean staging Fleet is a separate testbed intended to resemble
 production with lower resource use. It is a separate Norn deployment for fresh
@@ -37,7 +38,17 @@ Mini prerequisite. The Mini upgrade can advance independently of Fleet
 provisioning. Fleet's etcd snapshots, restore, quorum and fault gates remain
 required before claiming that staging exercise complete.
 
-Mini is an independent single-node v3 development installation, not a Fleet member or dependency. The DigitalOcean Fleet is a separately deployed staging testbed intended to resemble production with lower resource use; a future production Fleet is another distinct environment. Deploy applications directly to the staging Fleet. Mini-to-Fleet application promotion or data migration is not an initial release gate. If cross-environment mobility is offered later, qualify explicit identity, data and provenance mappings without cloning Mini's control database or sharing its authority.
+Mini is an independent single-node v3 development installation, not a Fleet
+member. Its direct upgrade does not depend on the DO staging Fleet. The Mini
+API may separately hold a configuration document for that target; this does
+not make Mini a node in its topology. The DigitalOcean Fleet is the only Fleet
+in this work and is a separately deployed staging testbed intended to resemble
+production with lower resource use; a future production Fleet is another
+distinct environment. Deploy applications directly to the staging Fleet.
+Mini-to-Fleet application promotion or data migration is not an initial release
+gate. If cross-environment mobility is offered later, qualify explicit
+identity, data and provenance mappings without cloning Mini's control database
+or sharing its authority.
 
 ## Milestone order
 
@@ -167,8 +178,9 @@ General cross-backend conversion, local single-member etcd, Fleet-PG qualificati
 ## Execution status
 
 The current dated status, observations, findings and next actions are maintained
-in [Norn v3 launch state](LAUNCH-STATE.md). No M0–M9 gate has a recorded owner
-sign-off as of 2026-10-04. The detailed historical execution snapshots that
-previously occupied this section remain in Git history. Keep this document as
-the milestone contract and update the launch-state page when new live or
-protected evidence changes a disposition.
+in [Norn v3 launch state](LAUNCH-STATE.md). No full M0–M9 gate has a recorded
+owner sign-off as of 2026-11-07. The Mini direct v3 adoption subgate is complete;
+the broader M6 low-interruption, rollback and application-database criteria and
+the separate DO staging Fleet gates remain open. Keep this document as the
+milestone contract and update the launch-state page when new live or protected
+evidence changes a disposition.

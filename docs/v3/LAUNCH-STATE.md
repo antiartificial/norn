@@ -1,5 +1,69 @@
 # Norn v3 launch state
 
+## Mini direct v3 upgrade completed (2026-11-07)
+
+The Mini has completed its controller-mediated direct upgrade as an independent
+node. It is not a Fleet member. The DigitalOcean deployment remains the only
+Fleet in this work and is a lower-resource staging testbed intended to resemble
+production.
+
+- The exact signed target is `bba290db041e9f497c7161543c679d9d348b742d`,
+  published from protected `master` in [release run 42408397039](https://github.com/antiartificial/norn/actions/runs/42408397039)
+  after full qualification run [42408083511](https://github.com/antiartificial/norn/actions/runs/42408083511).
+- Current source `e117d5645f7764ac6ba6bc316aa19fa241521655` was verified as a
+  signed descendant of the retained adoption source. A fresh protected backup
+  and exact-target signed shadow passed before transition.
+- The controller created generation
+  `gen-ac83feb81071c9f0e096d9df96d53983`, transition
+  `mini-v3-20261107-bba290db-r1`. Its journal is `candidate-promoted`, and its
+  signed preservation receipt reports `preservationMatched=true`.
+- The migration completed at schema 51 with reader floor 5 and writer floor
+  33. API health is `ok`, the runtime mutation fence is inactive, and the API
+  serves the exact target SHA. Platform smoke passed with zero active Mini
+  operations; host doctor/status report Nomad, Consul, API, host agent and
+  cloudflared up.
+- Seven queued `fleet.github.apply-dispatch` receipts were preserved through
+  the Mini-only drain. They are not Fleet membership or evidence of running
+  provider mutations.
+- A PID-reuse race interrupted host-agent fencing and required a distinct
+  signed repair controller from `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+  (published in [release run 42410387388](https://github.com/antiartificial/norn/actions/runs/42410387388)).
+  The target candidate and its evidence remained bound to `bba290d` throughout
+  repair. The regression fix is PR [#298](https://github.com/antiartificial/norn/pull/298).
+
+This proves the Mini direct adoption and a controller-recovered schema-compatible
+forward transition. It does not prove uninterrupted API availability, a
+general online migration protocol, rollback across future incompatible schema
+changes, production admission, or the separate DigitalOcean Fleet gates. The
+older dated Mini sections below are historical snapshots and do not describe
+the current runtime.
+
+## Fresh Mini inventory (2026-11-07 21:38 UTC)
+
+Authenticated read-only inventory reconfirmed source
+`bba290db041e9f497c7161543c679d9d348b742d`
+(`v3.0.0-rc.1-platform-251-gbba290db`), API/host status `ok`, 30 app records
+and 46 service records. Mini is not a DO Fleet member. Its API does report
+`fleet_configured=true`: [`loadFleetInventory`](../../v2/api/handler/fleet.go#L116)
+defines that flag as a Fleet config path being set, and the loaded document is
+the separate DigitalOcean staging target `norn-disposable-nyc3` in `nyc3`, with
+`control` and `ingress` pools. This is
+target configuration on the Mini control plane, not Mini membership or proof
+of live provider state.
+
+The API still reports seven queued `fleet.github.apply-dispatch` operations
+dated 2026-10-08 through 2026-10-10. They are durable dispatch receipts, not
+running provider mutations or Mini workloads; classify them before any new
+dispatch. The Mini has 25 open incident groups (22 latest-critical and 3
+latest-warning), and its production-readiness endpoint is blocked by the
+compatibility development profile and single-node substrate. These findings
+do not invalidate the successful v3 API/host postflight, but host `ok` alone
+does not mean every application is healthy or that Mini is production-ready.
+A read-only `norn events reconcile --dry-run` at 21:01 UTC scanned 200 recent
+events: 80 matched deterministic reconciliation rules and 120 still need
+review. It acknowledged nothing; the incident groups remain open until a
+separate evidence-backed reconciliation.
+
 ## Post-M8 protected evidence (2026-11-07)
 
 The protected work-staging release-state readback
@@ -20,6 +84,34 @@ stopped after 20 retries; its secret-safe diagnostic returned
 unknown; do not retry or continue the serial rollout until a protected,
 secret-safe diagnosis identifies the cause and fresh cluster-health evidence
 is available. The catalog readback above does not prove observability ingest.
+
+The later protected DO staging Genesis readback
+([run 42398114376](https://github.com/antiartificial/norn-fleet/actions/runs/42398114376))
+stopped in its local runner preflight before contacting the management host:
+`ansible-inventory` was absent from `PATH`. It did not change Fleet state. The
+did not change Fleet state. Replacement Fleet PR
+[#938](https://github.com/antiartificial/norn-fleet/pull/938) added the pinned
+Ansible virtualenv to `GITHUB_PATH` and was squash-merged at 21:10 UTC as
+`6f9b46886950f3109abe4c26eecead91f823965d` after its protected checks passed.
+
+A fresh owner-signed read-only intent and one-use runner authorization then
+dispatched protected run
+[#42415121479](https://github.com/antiartificial/norn-fleet/actions/runs/42415121479).
+Its runner preflight, checkout, input verification, and private management
+transport all passed; the runner was retired afterward. The readback failed
+when its final verifier ran Git as root against the protected bare source repo
+owned by `norn-exec`. Git rejected that ownership as dubious. Both the pinned
+capability commit `86ad17b6407bcbcd028f534f17a9db2253c5de6c` and signed target
+commit `9e2e33ad9d2fd0d815e5c19157e1925d6a7e5a05` are present in the repository
+when checked as `norn-exec`, and an invocation-scoped `safe.directory` check
+finds both without changing global Git trust. The Genesis readback therefore
+remains unpassed; the Genesis journal and Fleet state were unchanged.
+
+Fleet PR [#939](https://github.com/antiartificial/norn-fleet/pull/939) applies
+that exact-path Git ownership fix to the shared verifier used by both Genesis
+rollout and readback. It is awaiting protected checks. After it merges, repeat
+the readback with a fresh signed intent and one-use runner authorization; the
+failed intent and run are terminal and must not be reused.
 
 ## Mini in-place upgrade checkpoint (historical observation, 2026-11-07)
 
@@ -137,40 +229,54 @@ host-agent startup timing; those facts remain part of the evidence rather than
 an autonomous-repeat claim. The Mini checkout and current `master` may advance
 independently of the immutable runtime source, so neither is runtime provenance.
 
-The DigitalOcean staging Fleet is a separate testbed intended to resemble
-production with lower resource use. It retains its
-own gates for directly deployed representative workloads and data, placement
+The DigitalOcean staging Fleet is the only Fleet in this work: a separate
+testbed intended to resemble production with lower resource use. Mini is not a
+member. The Mini API's configured DO target and queued Fleet dispatch receipts
+are control-plane records, not evidence that Mini is a Fleet node or that
+provider work is running. The DO testbed retains its own gates for directly
+deployed representative workloads and data, placement
 and loaded node-count 2-to-3-to-2 scaling with safe drain, running-version upgrade under
 traffic, whole-node fault/restore and HA, external admission, soak, and
-operational handoff. Seven historical `fleet.github.apply-dispatch` operations
-dated 2026-10-08 through 2026-10-10 still appear active as queued receipts in
-Mini's local operation history. They do not make Mini a Fleet member or a
-dependent of the DigitalOcean staging testbed; classify their durable status
-before any later Mini platform drain or upgrade.
+operational handoff. Classify the seven queued dispatch receipts before any
+new Fleet dispatch.
 Production readiness is still blocked. No Mini transition should be replayed or
 made dependent on the separate Fleet work.
 
-## Operating lanes and API retirement boundary (2026-11-07)
+## Operating lanes and API retirement boundary (historical pre-upgrade snapshot, 2026-11-07)
 
 The release has distinct execution lanes across independent environments:
 (1) Direct Mini for its independent, individually controlled node, (2) Fleet
 bootstrap for the DigitalOcean staging testbed with the default two
 application node pools, (3) Fleet upgrade for an existing Fleet with workloads,
-and (4) capacity changes as a separate, workload-aware operation. Direct Mini
-does not require Fleet signing authority or Fleet connectivity, but still uses a verified signed
-release, protected backup and shadow evidence, controller-mediated fencing,
-health checks, and a recoverable journal. Fleet bootstrap is not the Fleet
+and (4) capacity changes as a separate, workload-aware operation. The direct
+Mini upgrade did not require Fleet signing authority or Fleet connectivity,
+and still used a verified signed release, protected backup and shadow evidence,
+controller-mediated fencing, health checks, and a recoverable journal. Mini's
+control API may hold configuration for the separate DO staging target; that
+does not make Mini a Fleet member. Fleet bootstrap is not the Fleet
 running-upgrade gate; online rollout should preserve availability where proven,
 with a controlled offline window as an explicit fallback.
 
-This branch does not support the V3 API exclusively yet. Keep the V2 API
-compatibility path and its behavior tests until Mini has completed V3 adoption,
-the running system has passed post-upgrade verification, and the supported
-rollback/read-compatibility window has closed. Then remove only V2 API paths
-that have no supported callers and tests that assert only retired behavior;
-retain migration, recovery, and compatibility tests for any state that still
-must be read or safely recovered. PR [#295](https://github.com/antiartificial/norn/pull/295)
-merged the Mini generation catch-up changes as `3f51e35ad246c68a835977d1f1e3b8fdf0a8511c`.
+The Mini's adoption and post-upgrade verification are now complete. A source
+review found no `/api/v2` route namespace: the production router exposes the
+current `/api/v1` contract and older unversioned `/api` handlers. The `v2/api`
+Go import path is the repository's package layout, not evidence of an HTTP API
+version. A specific Fleet offline-effect subprotocol is still explicitly
+versioned in the route `/api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants/v2`;
+its tests protect one-use evidence and recovery behavior. It needs a caller and
+protocol migration review before removal as part of V3-only support. Tests
+mentioning “legacy”, “V2”, or “Postgres” therefore cannot be removed by name
+alone; many protect durable state recovery, signed Fleet protocol revisions,
+or Postgres conformance. Before retiring any old
+unversioned handler, trace supported callers and replace its behavioral
+coverage at the current contract boundary. Keep migration/recovery and
+rollback-read compatibility coverage until the corresponding stored state is
+no longer supported. No test deletion is justified by the route/name search
+alone.
+
+This is a correction to the pre-upgrade terminology in this historical
+snapshot. PR [#295](https://github.com/antiartificial/norn/pull/295) merged the
+Mini generation catch-up changes as `3f51e35ad246c68a835977d1f1e3b8fdf0a8511c`.
 The signed prerelease for `0701add87b34d0de7ead5031579b3d74cd829bd7` was
 published in [run 42406296055](https://github.com/antiartificial/norn/actions/runs/42406296055).
 The generation catch-up logic preserves older signed journals/receipts and
@@ -240,10 +346,10 @@ management nodes, and Fleet etcd are not prerequisites for this Mini update.
 
 Historical architecture note: Mini is the independent single-node development
 platform and uses its existing unmanaged PostgreSQL service. It does not host
-or require Fleet management nodes or an etcd quorum. Earlier proposals
-considered connecting Mini to Fleet; that is not the current environment
-relationship. The DigitalOcean Fleet is a separate staging testbed, and Mini's
-v3 qualification proceeds independently of it.
+Fleet nodes or require Fleet management nodes or an etcd quorum. Earlier
+proposals considered making Mini a Fleet member; that is not the current
+topology. The DigitalOcean Fleet is a separate staging testbed. The Mini's
+current API target configuration for DO is recorded separately above.
 
 At 2026-10-11 19:42 UTC, protected signed release
 `798c82847c04156d99a9876c0bb0d6d4b76f901b` was published and independently
@@ -274,9 +380,9 @@ owner sign-offs. Recheck external state before any new mutation.
 
 The Mini is being upgraded as its own single-node Norn instance. It uses its
 existing unmanaged PostgreSQL and does not need Fleet nodes, Fleet management
-nodes, or Fleet etcd. Fleet availability is not an upgrade prerequisite.
-Mini does not connect to or belong to a Fleet. Fleet validation is performed
-against the separate DigitalOcean staging testbed.
+nodes, or Fleet etcd. Fleet availability is not an upgrade prerequisite. Mini
+is not a Fleet member; its control API's configured DO staging target is
+separate from the Mini host and its workload topology.
 
 Norn PR [#144](https://github.com/antiartificial/norn/pull/144) merged as
 `85fb2830ac18a711b2e3e20de45c1adcbbd4935d`; the protected signed prerelease
@@ -762,33 +868,32 @@ running Fleet qualification.
 | M3 etcd Fleet | 45% | Local three-member rehearsals and live five-node provider creation exist; no bootstrapped etcd membership, quorum, fault/restore, alarm, rotation or soak proof. |
 | M4 capacity and ingress | 40% | Local admission and two-ingress fixtures exist; no live route, placement, loaded 2→3→2 or drain proof. |
 | M5 isolated Mac rehearsal | 55% | Controller-managed host preparation and signed preflight evidence exist; the exact latest guest-create attempt ended ambiguous, and a complete isolated guest rehearsal is not proven. The user-selected Mini upgrade is a separate M6 path. |
-| M6 online upgrades and app DB | 25% | Mini currently runs healthy V3 source `e117…`; the earlier `3602…`→`03934…` attempt correctly stopped before migration because all writers could not be proven stopped. The e117-based exact-candidate backup/shadow, writer fencing, handoff and interruption evidence remain. |
+| M6 online upgrades and app DB | 35% | Mini direct v3 adoption is complete and journal/preservation/host assurance passed. Continuous API availability, rollback under an incompatible schema change, Fleet running upgrades and application DB lifecycle remain unqualified. |
 | M7 mobility | 30% | Isolated Mini fixture web/worker/tick and private restore comparison passed. No Fleet target or complete move exists. |
 | M8 release qualification | Complete for soak only | Protected current-main audit completed the 72h35m soak with 4,254 hash-chained samples and zero alarms, gaps or invalid observations. Other release gates, promotion evidence and owner sign-off remain open. |
-| M9 adoption | 10% | Mini's independent API runs v3 code, with current-source health confirmed above. The DigitalOcean staging Fleet remains a separate testbed with incomplete Fleet qualification; controlled application adoption and promotion remain open. |
+| M9 adoption | 20% | Mini's independent direct v3 upgrade and postflight are complete. The DigitalOcean staging Fleet remains a separate testbed with incomplete Fleet qualification; controlled workload adoption and production promotion remain open. |
 
 ## Next actions
 
-1. Prioritize online upgrade. Implement a signed plan/status operation delegated
-   to an OS-supervised executor with a durable journal outside the API, host
-   agent and control database it may replace. Start with read-only planning and
-   actionable blockers; do not enable live execution until handoff and restart
-   reconciliation are sound.
-2. Add complete writer identity and enforceable admission/epoch fencing, then
-   move from implicit `auto` migrations to controller-owned migration. Keep
-   migration 51's writer floor 33; build a signed compatible bridge from schema
-   49 to 51 rather than weakening the invariant.
+1. Measure and qualify low-interruption upgrade behavior. The direct Mini
+   transition used a brief API/host-agent fence; do not describe it as
+   uninterrupted service. Extend the controller's durable phase recovery and
+   outage measurement before promising online upgrades.
+2. Keep schema migration controller-owned and writer-fenced. Mini is now at
+   migration 51 with writer floor 33; preserve that compatibility invariant.
+   Qualify any bridge needed by a future target from its actual source schema
+   rather than weakening the floor.
 3. Add migration compatibility lint and bounded expand/backfill/contract
    semantics. Stage the candidate passively, implement owner/traffic handoff
    and phase-aware recovery, and measure API outage, write pause and job delay.
-4. Qualify the Mini forward upgrade through the controller after exact-target
-   backup/shadow evidence, current writer inventory, generation-chain continuity
-   and preflight pass. Preserve the currently running `e117…` release until then. Full Tart IPSW restore is
-   not a prerequisite for this database/platform path; resolve the ambiguous
-   exact guest-create outcome before any Tart retry or cleanup.
-5. Continue post-M8 work independently: obtain fresh protected Fleet state and
-   review host-key, inventory, catalog, artifact and continuity evidence before
-   M6 catalog/readback/promotion/rollback; finish Grafana Cloud observability
+4. Keep the completed Mini transition as the direct-lane recovery example:
+   retain its exact backup, shadow, journal, preservation receipt and signed
+   repair-controller evidence. Full Tart IPSW restore was not required for this
+   database/platform path; resolve the ambiguous guest-create outcome before
+   any Tart retry or cleanup.
+5. Continue DO staging Fleet work independently: obtain fresh protected state
+   and review host-key, inventory, catalog, artifact and continuity evidence
+   before its readback/promotion/rollback gates; finish Grafana Cloud observability
    and its separate 1–2 hour telemetry qualification; then complete M5's
    isolated Mac rehearsal through protected executor workflows and one-use
    runners. Refresh M0–M4/M7/M9 evidence before claiming full v3 readiness.
