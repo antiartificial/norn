@@ -23,46 +23,33 @@ is available. The catalog readback above does not prove observability ingest.
 
 ## Mini in-place upgrade checkpoint (2026-11-07)
 
-This newer live read supersedes older present-tense Mini upgrade statements
-below. From the management workstation, SSH to `mini` succeeded. The Mini API
-reported HTTP 200 and source
-`3602e7e3d5fe5c0ef333b4041580d48ec15b24c5` (`v3.0.0-rc.1-platform-34`),
-schema migration 49, minimum reader 5, and minimum writer 32. The LaunchAgent
-was running in active/check mode. Candidate
-`03934cc2e9fdbd9b57cf09270f8c7884aada552f` is installed locally but is not
-current; it requires schema 51 and raises the writer floor to 33. The attempted
-upgrade stopped before migration or promotion because the ordinary restart
-lane cannot prove every database writer, including `norn-host-agent`, is
-stopped or compatible. The Mini was not upgraded.
+PR [#289](https://github.com/antiartificial/norn/pull/289) and PR
+[#290](https://github.com/antiartificial/norn/pull/290) are merged; the latter
+is `e8c8ddd37f6d0db5d411ec0e3ddd7ab98114abee`, published as a signed prerelease
+in [run 42358665477](https://github.com/antiartificial/norn/actions/runs/42358665477)
+and imported on the Mini. The active pointer still resolves to
+`3602e7e3d5fe5c0ef333b4041580d48ec15b24c5`; API health is `ok`, schema is 49,
+and writer floor is 32. The candidate requires schema 51 and writer floor 33.
 
-The API listed seven old queued `fleet.github.apply-dispatch` receipts. They
-remain preserved and need durable classification before a later Mini drain;
-do not infer that they are live work or discard them based on age. The signed
-recovered-forward generation for the current Mini source was finalized. The
-local generation controller now supports a successor whose exact source is
-the completed generation's promoted candidate, and its generation-preparation
-regression suite passes. This fix is source-only; it has not yet been included
-in a signed release. Candidate `03934…` still needs fresh candidate-specific
-backup/shadow evidence and a writer-fenced migration path. See the dated
-[Mini observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md) and
-[online-upgrade capability proposal](online-upgrade-lessons-2026-11-07.md).
+The prior recovered-forward transition from `3da50fe…` to `3602e7e…` has now
+been finalized and verified with its exact signed controller. The original
+adoption receipt was retained by digest; a successor receipt is now bound to
+the running `3602e7e…` source. A fresh protected backup and exact-candidate
+signed shadow for `e8c8ddd…` passed: 65 tables and 398,805 rows matched, both
+migration passes reached schema 51, passive health passed, and the source was
+read-only. Seven queued `fleet.github.apply-dispatch` receipts remain
+preserved.
 
-The immediate Mini work is to build a controller-managed, forward-only staged
-upgrade: exact-candidate backup/shadow evidence; writer compatibility
-registration and fencing; additive migration; candidate handoff; and measured
-postflight. Preserve current release `3602…` until that path can establish
-each phase safely. This is a Mini database/platform upgrade; it does not
-require a full macOS IPSW restore. This checkpoint does not refresh Fleet or
-other milestone evidence.
-
-The separate protected Tart guest-create run
-[`42297051412`](https://github.com/antiartificial/norn/actions/runs/42297051412)
-failed during Packer guest build. Reconciliation found an empty guest inventory
-but marked the create outcome ambiguous; this does not prove final absence of
-that exact guest. Earlier retirement run `42295531572` predates the create and
-only covers a prior attempt. The user chose the independent live Mini for
-upgrade observation, so do not make another full IPSW restore a prerequisite
-unless OS installation itself becomes an explicit qualification target.
+Ordinary upgrade correctly refused the writer-floor change because it cannot
+prove all writers are stopped. The recovered-forward wrapper then exposed a
+missing successor-generation branch: it could prepare successors from a
+legacy-fixed journal but not from the active, completed generation whose
+candidate is the exact current source. A local fix now requires that exact
+source/candidate binding and has passed 13 wrapper tests and 20
+generation-preparer tests. It is not yet merged or released, and no migration
+or candidate promotion has occurred. The Mini remains healthy on
+`3602e7e…`. See the dated [Mini observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md)
+and [online-upgrade capability proposal](online-upgrade-lessons-2026-11-07.md).
 
 ## Fleet running-upgrade checkpoint (2026-11-02 00:10 UTC)
 

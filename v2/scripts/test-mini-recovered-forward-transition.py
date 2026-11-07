@@ -77,6 +77,22 @@ class RecoveredForwardWrapperTests(unittest.TestCase):
         mutation = source.index('invoke_platform(platform_script, "recovered-forward-controller"')
         self.assertLess(verification, mutation)
 
+    def test_completed_generation_can_start_successor_only_from_its_promoted_candidate(self):
+        journal = {"state": "candidate-promoted", "sourceSHA": self.source,
+                   "candidateReleaseSHA": self.candidate}
+        self.assertTrue(WRAPPER.is_completed_successor(
+            {"selection": "generation", "candidateSHA": self.candidate}, journal, self.candidate))
+        self.assertTrue(WRAPPER.is_completed_successor(
+            {"selection": "legacy-fixed"}, journal, self.candidate))
+        self.assertFalse(WRAPPER.is_completed_successor(
+            {"selection": "generation", "candidateSHA": "d" * 40}, journal, self.candidate))
+        self.assertFalse(WRAPPER.is_completed_successor(
+            {"selection": "generation", "candidateSHA": self.candidate},
+            {**journal, "state": "candidate-postflight-failed"}, self.candidate))
+        self.assertFalse(WRAPPER.is_completed_successor(
+            {"selection": "generation", "candidateSHA": self.candidate},
+            {**journal, "candidateReleaseSHA": "d" * 40}, self.candidate))
+
     def test_receipt_rejects_duplicate_fields_and_wrong_hmac(self):
         raw = WRAPPER.signed_document({"schema": WRAPPER.RECEIPT_SCHEMA, "x": 1}, self.key)
         duplicate = raw[:-1] + b',"x":2}'
