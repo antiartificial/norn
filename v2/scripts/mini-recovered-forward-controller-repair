@@ -39,6 +39,21 @@ REPAIR_PHASES = {"host-agent-fencing", "host-agent-fenced", "api-fencing",
                  "legacy-fenced", "migration-started", "schema-migrated",
                  "candidate-activation-started", "candidate-postflight-failed"}
 SOURCE_API_PHASES = {"host-agent-fencing", "host-agent-fenced"}
+ACTION_PHASES = {
+    "run": {"candidate-postflight-failed", "candidate-preservation-pending",
+            "candidate-finalize-requested", "candidate-normal-activation-pending",
+            "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart",
+            "candidate-promoted"},
+    "prepare": REPAIR_PHASES,
+    "verify": REPAIR_PHASES,
+    "plist-stage": {"candidate-activation-started", "candidate-postflight-failed"},
+    "preserve": {"candidate-preservation-pending"},
+    "launcher-verify": {"candidate-postflight-failed", "candidate-preservation-pending",
+                         "candidate-finalize-requested", "candidate-normal-activation-pending"},
+    "plist-normal": {"candidate-normal-activation-pending"},
+    "plist-restore": {"candidate-normal-active-pending-host-agent",
+                      "candidate-normal-active-pending-host-agent-restart", "candidate-promoted"},
+}
 
 
 def fail(message: str) -> None:
@@ -735,23 +750,9 @@ def parser():
 def main():
     args = parser().parse_args()
     key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
-    phases = {
-        "run": {"candidate-postflight-failed", "candidate-preservation-pending",
-                "candidate-finalize-requested", "candidate-normal-activation-pending",
-                "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart",
-                "candidate-promoted"},
-        "prepare": REPAIR_PHASES, "verify": REPAIR_PHASES,
-        "plist-stage": {"candidate-postflight-failed"},
-        "preserve": {"candidate-preservation-pending"},
-        "launcher-verify": {"candidate-postflight-failed", "candidate-preservation-pending",
-                            "candidate-finalize-requested", "candidate-normal-activation-pending"},
-        "plist-normal": {"candidate-normal-activation-pending"},
-        "plist-restore": {"candidate-normal-active-pending-host-agent",
-                          "candidate-normal-active-pending-host-agent-restart", "candidate-promoted"},
-    }
     journal_phase = json_object(owned(args.journal, "transition journal"), "transition journal").get("state")
     host_restart_phases = {"candidate-normal-active-pending-host-agent-restart", "candidate-promoted"}
-    expected, manifest = checked_state(args, key, phases[args.action],
+    expected, manifest = checked_state(args, key, ACTION_PHASES[args.action],
                                        allow_candidate_host=(args.action in {"run", "plist-restore"}
                                                              and journal_phase in host_restart_phases))
     authorization = args.journal.parent / ("controller-repair-" + expected["journalSHA256"]
