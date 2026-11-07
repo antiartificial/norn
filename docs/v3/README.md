@@ -1,14 +1,17 @@
 # Norn v3 planning package
 
 **Current release work:** start with [Norn v3 launch state](LAUNCH-STATE.md)
-for the current Mini and Fleet observations, M0–M9 disposition, findings and
-next sequence. The [2026-09-29 handoff](session-resume-2026-09-29.md) is a
+for the current Mini and DigitalOcean staging Fleet observations, M0–M9
+disposition, findings and next sequence. Mini is an independent node, not a
+Fleet member or client; the DO Fleet is the separate lower-resource staging
+testbed. The [2026-09-29 handoff](session-resume-2026-09-29.md) is a
 historical snapshot. The milestone exit criteria remain in
 [execution milestones](execution-milestones.md).
 
 The architecture below began as a proposal on 2026-09-22. Use the current
-handoff and execution milestones to distinguish later implementation from
-release qualification and live operations.
+launch state for deployment status and execution milestones for exit criteria;
+the proposal and older dated handoffs preserve rationale and historical state.
+The active Norn recovery-lineage change is [PR #295](https://github.com/antiartificial/norn/pull/295).
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 

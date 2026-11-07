@@ -131,7 +131,7 @@ def check_current_source(current_link: Path, releases: Path, source_sha: str) ->
         target = current_link.resolve(strict=True)
     except OSError as error:
         raise ValueError("Mini current release symlink is invalid") from error
-    if target != releases / source_sha:
+    if os.path.realpath(target) != os.path.realpath(releases / source_sha):
         fail("Mini current release no longer points to the exact prepared source")
 
 
@@ -196,6 +196,50 @@ def release_identity(releases: Path, sha: str, label: str) -> None:
             values[name] = value
     if values.get("NORN_RELEASE_SHA") != sha:
         fail(f"{label} immutable release identity does not match its directory")
+
+
+def verify_signed_release(releases: Path, sha: str, label: str) -> Path:
+    release_identity(releases, sha, label)
+    release = releases / sha
+    verifier = os.environ.get("NORN_RELEASE_VERIFY_HOOK", "")
+    if not verifier or not Path(verifier).is_absolute() or not Path(verifier).is_file() or not os.access(verifier, os.X_OK):
+        fail("signed release lineage requires the configured external release verifier")
+    result = subprocess.run([verifier, str(release), str(release / "release.json")],
+                            env=os.environ.copy(), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, check=False)
+    if result.returncode:
+        fail(f"{label} release signature verification failed")
+    return release
+
+
+def verify_release_ancestry(predecessor_sha: str, source_sha: str, releases: Path,
+                            current_link: Path) -> dict[str, Any]:
+    """Bind a later signed current release to an older completed candidate."""
+    if predecessor_sha == source_sha:
+        fail("release catch-up requires distinct predecessor and current source SHAs")
+    if (not current_link.is_symlink()
+            or os.path.realpath(current_link) != os.path.realpath(releases / source_sha)):
+        fail("release catch-up requires the exact current signed source symlink")
+    predecessor_release = verify_signed_release(releases, predecessor_sha, "completed predecessor")
+    source_release = verify_signed_release(releases, source_sha, "current source")
+    repository = os.environ.get("NORN_PLATFORM_REPO", "")
+    if not repository or not Path(repository).is_absolute() or not (Path(repository) / ".git").exists():
+        fail("release catch-up requires the configured Norn Git repository")
+    ancestor = subprocess.run(["git", "-C", repository, "merge-base", "--is-ancestor",
+                               predecessor_sha, source_sha],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if ancestor.returncode != 0:
+        fail("current signed source is not a Git descendant of the completed recovery candidate")
+    return {
+        "schema": "norn.recovered-forward-lineage-catchup/v1",
+        "predecessorCandidateSHA": predecessor_sha,
+        "currentSourceSHA": source_sha,
+        "predecessorReleaseSignatureSHA256": hashlib.sha256(
+            (predecessor_release / "release.signature.json").read_bytes()).hexdigest(),
+        "currentReleaseSignatureSHA256": hashlib.sha256(
+            (source_release / "release.signature.json").read_bytes()).hexdigest(),
+        "gitAncestryVerified": True,
+    }
 
 
 def predecessor_adoption_receipt(evidence_path: Path, evidence_raw: bytes) -> Path | None:
@@ -325,22 +369,51 @@ def completed_predecessor(root: Path, releases: Path, key: bytes,
 
 
 def completed_generation_predecessor(selected: dict[str, Any], current_link: Path, releases: Path,
-                                     key: bytes) -> dict[str, Any]:
-    """Accept only an active generation whose exact candidate is now serving."""
+                                     source_sha: str, key: bytes) -> dict[str, Any]:
+    """Verify a completed generation, including an authenticated release catch-up."""
     journal_path = Path(str(selected.get("journalPath", "")))
     receipt_path = Path(str(selected.get("preservationReceiptPath", "")))
     journal_raw = private_bytes(journal_path, "active recovered-forward journal")
     journal = strict_json(journal_raw, "active recovered-forward journal")
-    if (journal.get("schema") != JOURNAL_SCHEMA or journal.get("state") != "candidate-promoted"
+    if (journal.get("schema") != JOURNAL_SCHEMA
             or journal.get("candidateReleaseSHA") != selected.get("candidateSHA")):
+        fail("active generation is not the exact completed candidate-promoted transition")
+    if journal.get("state") not in {"prepared", "candidate-promoted"}:
+        fail("only an active prepared generation or an exactly completed generation can be superseded")
+    if journal.get("state") == "prepared":
+        if selected.get("sourceSHA") != source_sha:
+            fail("prepared generation successor requires the same exact source SHA")
+        if receipt_path.exists() or receipt_path.is_symlink():
+            fail("prepared generation has a preservation receipt and cannot be superseded")
+        return {
+            "predecessorState": "prepared",
+            "predecessorTransitionID": journal["transitionID"],
+            "predecessorSourceSHA": journal["sourceSHA"],
+            "predecessorCandidateSHA": journal["candidateReleaseSHA"],
+            "predecessorJournalPath": str(journal_path),
+            "predecessorJournalSHA256": hashlib.sha256(journal_raw).hexdigest(),
+            "predecessorEvidencePath": journal["sourceEvidencePath"],
+            "predecessorEvidenceSHA256": journal["sourceEvidenceSHA256"],
+            "predecessorReceiptPath": str(receipt_path),
+            "predecessorReceiptSHA256": "0" * 64,
+            "predecessorGenerationID": selected.get("generationID"),
+        }
+    if journal.get("state") != "candidate-promoted":
         fail("active generation is not the exact completed candidate-promoted transition")
     receipt_raw = private_bytes(receipt_path, "active recovered-forward preservation receipt")
     gate_env = os.environ.copy()
     gate_env.pop("NORN_AUDIT_HISTORICAL_SIGNING_KEY", None)
     gate_env["NORN_AUDIT_SIGNING_KEY"] = key.decode("utf-8")
+    catchup = None
+    if selected.get("candidateSHA") == source_sha:
+        gate_args = [str(COMPLETED_GATE), str(journal_path), str(current_link), str(releases), str(receipt_path)]
+    else:
+        catchup = verify_release_ancestry(str(selected.get("candidateSHA", "")), source_sha,
+                                          releases, current_link)
+        gate_args = [str(COMPLETED_GATE), str(journal_path), str(current_link),
+                     str(releases), str(receipt_path), "--historical"]
     gate = subprocess.run(
-        [str(COMPLETED_GATE), str(journal_path), str(current_link),
-         str(releases), str(receipt_path)],
+        gate_args,
         env=gate_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
     )
     if gate.returncode:
@@ -367,6 +440,7 @@ def completed_generation_predecessor(selected: dict[str, Any], current_link: Pat
         "predecessorReceiptPath": str(receipt_path),
         "predecessorReceiptSHA256": hashlib.sha256(receipt_raw).hexdigest(),
         "predecessorGenerationID": generation_id,
+        **({"predecessorCatchup": catchup} if catchup is not None else {}),
     }
 
 
@@ -392,7 +466,8 @@ def fsync_dir(path: Path) -> None:
 
 def prepared_successor(root: Path, selected: dict[str, Any], pointer_raw: bytes,
                        source_sha: str, candidate_sha: str,
-                       transition_id: str) -> dict[str, Any]:
+                       transition_id: str, current_link: Path,
+                       releases: Path) -> dict[str, Any]:
     """Verify that an active generation can be superseded before mutation.
 
     The signed resolver proves the pointer, manifest, immutable inputs and
@@ -409,9 +484,13 @@ def prepared_successor(root: Path, selected: dict[str, Any], pointer_raw: bytes,
     journal_raw = private_bytes(journal_path, "active prepared generation journal")
     journal = strict_json(journal_raw, "active prepared generation journal")
     state = journal.get("state")
+    catchup = None
     if state == "candidate-promoted":
-        if selected.get("candidateSHA") != source_sha or journal.get("candidateReleaseSHA") != source_sha:
-            fail("completed generation successor requires its exact promoted candidate as source")
+        if journal.get("candidateReleaseSHA") != selected.get("candidateSHA"):
+            fail("completed generation successor is not bound to its signed promoted candidate")
+        if selected.get("candidateSHA") != source_sha:
+            catchup = verify_release_ancestry(str(selected.get("candidateSHA", "")), source_sha,
+                                              releases, current_link)
     elif state == "prepared":
         if selected.get("sourceSHA") != source_sha:
             fail("prepared generation successor requires the same exact source SHA")
@@ -432,6 +511,7 @@ def prepared_successor(root: Path, selected: dict[str, Any], pointer_raw: bytes,
         "pointerRaw": pointer_raw,
         "pointerSHA256": pointer_digest,
         "archivePath": root / f"active-generation.previous-{generation_id}-{pointer_digest}.json",
+        **({"catchup": catchup} if catchup is not None else {}),
     }
 
 
@@ -583,9 +663,12 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             fail("active exact generation is missing its signed predecessor binding")
         predecessor = {field: manifest[field] for field in predecessor_fields}
         predecessor["predecessorGenerationID"] = manifest.get("predecessorGenerationID")
+        if "predecessorCatchup" in manifest:
+            predecessor["predecessorCatchup"] = manifest["predecessorCatchup"]
     elif (selected is not None and selected.get("selection") == "generation"
-            and selected.get("candidateSHA") == args.source_sha):
-        predecessor = completed_generation_predecessor(selected, args.current_link, releases, key)
+            and selected.get("candidateSHA") != args.candidate_sha):
+        predecessor = completed_generation_predecessor(selected, args.current_link, releases,
+                                                       args.source_sha, key)
     else:
         predecessor = completed_predecessor(root, releases, key, historical_key)
 
@@ -683,7 +766,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             verify_pointer_archives(root, key, generation_id)
             return result(root, generation_id, generation, manifest_raw, active_raw)
         successor = prepared_successor(root, selected, active_raw, args.source_sha,
-                                       args.candidate_sha, args.transition_id)
+                                       args.candidate_sha, args.transition_id,
+                                       args.current_link, releases)
 
     existing_entries = {item.name for item in generations.iterdir()}
     allowed = {generation_id, f".prepare-{generation_id}"}
