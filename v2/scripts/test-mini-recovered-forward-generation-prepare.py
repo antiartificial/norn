@@ -435,6 +435,92 @@ class GenerationPrepareTest(unittest.TestCase):
         self.assertNotEqual(tampered_retry.returncode, 0)
         self.assertIn("pointer archive identity is invalid", tampered_retry.stderr)
 
+    def test_completed_generation_can_become_exact_source_of_next_generation(self):
+        first = self.invoke()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        first_generation = self.root / "generations" / first_result["generationID"]
+        first_bytes = {path: path.read_bytes() for path in first_generation.iterdir()}
+
+        receipt = {
+            "schema": "norn.recovered-forward-preservation/v1",
+            "transitionId": NEW_TRANSITION,
+            "candidateSHA": NEW_CANDIDATE,
+            "sourceEvidenceSHA256": hashlib.sha256((first_generation / "transition.json.source-evidence.json").read_bytes()).hexdigest(),
+            "beforeDigest": "7" * 64,
+            "afterDigest": "7" * 64,
+            "preservationMatched": True,
+            "finalizedAt": "2026-11-07T12:00:00Z",
+        }
+        receipt_raw = sign(receipt)
+        private(first_generation / "preservation-receipt.json", receipt_raw)
+        journal_path = first_generation / "transition.json"
+        journal = json.loads(journal_path.read_bytes())
+        journal["state"] = "candidate-promoted"
+        journal["preservationReceiptSHA256"] = hashlib.sha256(receipt_raw).hexdigest()
+        private(journal_path, dump(journal))
+        self.current.unlink()
+        self.current.symlink_to(self.releases / NEW_CANDIDATE)
+
+        # Construct fresh signed inputs for a transition sourced from the
+        # exact candidate that the completed generation promoted.
+        adoption_path = self.home / ".config/norn/.norn-recovered-baseline-adoption-v2.json"
+        adoption = json.loads(adoption_path.read_bytes())
+        adoption.pop("signature")
+        adoption["sourceSHA"] = NEW_CANDIDATE
+        adoption_raw = sign(adoption)
+        private(adoption_path, adoption_raw)
+
+        next_proof_value = json.loads(self.fixture.proof.read_bytes())
+        next_proof_value["sourceReleaseSHA"] = NEW_CANDIDATE
+        next_proof = private(self.base / "next-proof.json", dump(next_proof_value))
+        next_shadow_value = json.loads(self.new_shadow.read_bytes())
+        next_shadow_value["candidateSHA"] = SUCCESSOR_CANDIDATE
+        next_shadow = private(self.base / "next-shadow.json", dump(next_shadow_value))
+        next_evidence_value = json.loads(self.new_evidence.read_bytes())
+        next_evidence_value.pop("signature")
+        next_transition = NEW_TRANSITION + "-after-completed"
+        next_evidence_value.update({
+            "transitionId": next_transition,
+            "sourceSHA": NEW_CANDIDATE,
+            "candidateSHA": SUCCESSOR_CANDIDATE,
+            "adoptionReceiptSHA256": hashlib.sha256(adoption_raw).hexdigest(),
+            "backupProofSHA256": hashlib.sha256(next_proof.read_bytes()).hexdigest(),
+            "shadowReceiptSHA256": hashlib.sha256(next_shadow.read_bytes()).hexdigest(),
+        })
+        next_evidence = private(self.base / "next-evidence.json", sign(next_evidence_value))
+        replacements = {
+            self.args[self.args.index("--transition-id") + 1]: next_transition,
+            self.args[self.args.index("--source-sha") + 1]: NEW_CANDIDATE,
+            self.args[self.args.index("--candidate-sha") + 1]: SUCCESSOR_CANDIDATE,
+            self.args[self.args.index("--source-evidence") + 1]: str(next_evidence),
+            self.args[self.args.index("--backup-proof") + 1]: str(next_proof),
+            self.args[self.args.index("--shadow-receipt") + 1]: str(next_shadow),
+        }
+        self.args = [replacements.get(value, value) for value in self.args]
+
+        second = self.invoke()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_result = json.loads(second.stdout)
+        second_generation = self.root / "generations" / second_result["generationID"]
+        manifest = json.loads((second_generation / "generation.json").read_bytes())
+        self.assertEqual(manifest["predecessorGenerationID"], first_result["generationID"])
+        self.assertEqual(manifest["predecessorCandidateSHA"], NEW_CANDIDATE)
+        self.assertEqual({path: path.read_bytes() for path in first_generation.iterdir()}, first_bytes | {
+            first_generation / "transition.json": journal_path.read_bytes(),
+            first_generation / "preservation-receipt.json": receipt_raw,
+        })
+
+        # The active pointer now refers to the successor, while the archived
+        # pointer is the immutable predecessor identity.
+        archives = list(self.root.glob(f"active-generation.previous-{first_result['generationID']}-*.json"))
+        self.assertEqual(len(archives), 1)
+        resolver = Path(__file__).with_name("mini-recovered-forward-generation-resolve")
+        resolved = subprocess.run([str(resolver), "--root", str(self.root)], env=self.env,
+                                  capture_output=True, text=True, timeout=15)
+        self.assertEqual(resolved.returncode, 0, resolved.stderr)
+        self.assertEqual(json.loads(resolved.stdout)["generationID"], second_result["generationID"])
+
     def test_only_exact_prepared_generation_can_be_superseded(self):
         first = self.invoke()
         self.assertEqual(first.returncode, 0, first.stderr)
