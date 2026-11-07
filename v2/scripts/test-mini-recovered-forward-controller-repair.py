@@ -42,6 +42,13 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
             config.chmod(0o644)
             with self.assertRaisesRegex(SystemExit, "owner-only"):
                 LAUNCHER.release_public_key(home)
+            config.unlink()
+            target = home / "release-target.env"
+            target.write_text("NORN_RELEASE_PUBLIC_KEY=/private/release-public.pem\n")
+            target.chmod(0o600)
+            config.symlink_to(target)
+            with self.assertRaisesRegex(SystemExit, "owner-only"):
+                LAUNCHER.release_public_key(home)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -227,6 +234,66 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
             # Crash after original plist restoration and before journal promotion.
             REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-restore")
             self.assertEqual(plist.read_bytes(), original)
+
+    def test_plist_stage_rebinds_a_signed_record_to_new_controller(self):
+        home = self.directory
+        journal = home / "transition.json"
+        plist = home / "com.norn.api.plist"
+        original = plistlib.dumps({
+            "Label": "com.norn.api",
+            "ProgramArguments": [str(home / "bin/norn-api-sops-launcher")],
+        })
+        plist.write_bytes(original)
+        plist.chmod(0o644)
+        old_sha = "d" * 40
+        old_release = home / "norn/releases" / old_sha
+        old_launcher = old_release / "bin/mini-recovered-forward-api-launcher"
+        old_launcher.parent.mkdir(parents=True)
+        old_launcher.write_text("#!/usr/bin/python3\n# previous signed controller launcher\n")
+        old_launcher.chmod(0o555)
+        values = REPAIR.plist_maintenance_values(
+            self.expected, {"sourceEvidencePath": str(journal) + ".source-evidence.json",
+                            "sourceEvidenceSHA256": self.expected["evidenceSHA256"]})
+        with patch.object(Path, "home", return_value=home):
+            old_staged = REPAIR.plist_variant(original, values, clear_recovery=False,
+                                               signed_launcher=old_launcher)
+        plist.write_bytes(old_staged)
+        record = {
+            "schema": REPAIR.PLIST_SCHEMA, "controllerSHA": old_sha,
+            "candidateSHA": self.expected["candidateSHA"], "sourceSHA": self.expected["sourceSHA"],
+            "transitionID": self.expected["transitionID"], "generationID": self.expected["generationID"],
+            "evidenceSHA256": self.expected["evidenceSHA256"],
+            "originalPlistBase64": REPAIR.base64.b64encode(original).decode(),
+            "originalPlistSHA256": REPAIR.digest(original), "originalPlistMode": 0o644,
+            "maintenancePlistSHA256": REPAIR.digest(old_staged),
+            "originalLauncherSHA256": "a" * 64,
+            "signedLauncherSHA256": REPAIR.digest(old_launcher.read_bytes()),
+        }
+        sidecar = REPAIR.plist_record_path(journal)
+        sidecar.write_bytes(REPAIR.canonical(dict(
+            record, signature=REPAIR.plist_signature(record, self.key))))
+        sidecar.chmod(0o600)
+        new_launcher = SCRIPT.with_name("mini-recovered-forward-api-launcher")
+        new_launcher_sha = REPAIR.digest(new_launcher.read_bytes())
+        manifest = {"sourceEvidencePath": str(journal) + ".source-evidence.json",
+                    "sourceEvidenceSHA256": self.expected["evidenceSHA256"]}
+        with patch.object(Path, "home", return_value=home), patch.object(
+                REPAIR, "api_plist_path", return_value=plist), patch.object(
+                REPAIR, "verify_launchers", return_value=("a" * 64, new_launcher_sha)), patch.object(
+                REPAIR, "configured_verifier", return_value=home / "verify-release"), patch.object(
+                REPAIR, "release", return_value=old_release):
+            verified_launcher = REPAIR.verify_previous_api_launcher(
+                str(old_launcher), journal, home / "norn/releases", home / "verify-release", self.key,
+                candidate=self.expected["candidateSHA"], source=self.expected["sourceSHA"],
+                transition=self.expected["transitionID"], generation_id=self.expected["generationID"],
+                evidence_sha=self.expected["evidenceSHA256"], original_launcher_sha="a" * 64)
+            self.assertEqual(verified_launcher, old_launcher)
+            REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+        rebound = REPAIR.read_plist_record(sidecar, self.key)
+        self.assertEqual(rebound["controllerSHA"], self.expected["controllerSHA"])
+        self.assertEqual(rebound["signedLauncherSHA256"], new_launcher_sha)
+        self.assertEqual(REPAIR.digest(plist.read_bytes()), rebound["maintenancePlistSHA256"])
+        self.assertEqual(plistlib.loads(plist.read_bytes())["ProgramArguments"], [str(new_launcher)])
 
     def test_plist_tamper_or_changed_transition_fails_closed(self):
         plist = self.directory / "com.norn.api.plist"

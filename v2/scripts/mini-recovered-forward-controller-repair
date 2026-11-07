@@ -227,7 +227,7 @@ def checked_state(args, key: bytes, allowed_phases=REPAIR_PHASES, *, allow_candi
     home = Path.home()
     verifier = configured_verifier(home)
     controller_release = release(releases, controller_sha, verifier)
-    verify_launchers(controller)
+    original_launcher_sha, signed_launcher_sha = verify_launchers(controller)
     if controller_release == releases / args.candidate:
         fail("controller substitution requires a distinct signed release")
     release(releases, args.source, verifier)
@@ -318,8 +318,16 @@ def checked_state(args, key: bytes, allowed_phases=REPAIR_PHASES, *, allow_candi
         api_job = plistlib.loads(plist_raw)
         allowed_launchers = {str(home / "bin/norn-api-sops-launcher"),
                              str(controller.parent / "mini-recovered-forward-api-launcher")}
+        api_program = api_job.get("ProgramArguments", [None])[0]
+        prior_launcher = None
+        if api_program not in allowed_launchers:
+            prior_launcher = verify_previous_api_launcher(
+                api_program, args.journal, releases, verifier, key,
+                candidate=args.candidate, source=args.source, transition=args.transition,
+                generation_id=selected["generationID"], evidence_sha=evidence_sha,
+                original_launcher_sha=original_launcher_sha)
         if (api_job.get("Label") != "com.norn.api"
-                or api_job.get("ProgramArguments", [None])[0] not in allowed_launchers):
+                or (api_program not in allowed_launchers and prior_launcher is None)):
             fail("candidate API LaunchAgent is not the expected managed job")
         api_state = subprocess.run(["launchctl", "print", f"gui/{os.geteuid()}/com.norn.api"],
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
@@ -434,6 +442,27 @@ def read_plist_record(path: Path, key: bytes) -> dict:
     return value
 
 
+def verify_previous_api_launcher(api_program: str | None, journal: Path, releases: Path,
+                                 verifier: Path, key: bytes, *, candidate: str, source: str,
+                                 transition: str, generation_id: str, evidence_sha: str,
+                                 original_launcher_sha: str) -> Path:
+    record = read_plist_record(plist_record_path(journal), key)
+    prior_controller = record.get("controllerSHA")
+    if (record.get("candidateSHA") != candidate or record.get("sourceSHA") != source
+            or record.get("transitionID") != transition or record.get("generationID") != generation_id
+            or record.get("evidenceSHA256") != evidence_sha
+            or record.get("originalLauncherSHA256") != original_launcher_sha
+            or not isinstance(prior_controller, str) or not HEX40.fullmatch(prior_controller)
+            or prior_controller == candidate):
+        fail("candidate API LaunchAgent is not bound to this signed transition")
+    previous_release = release(releases, prior_controller, verifier)
+    previous_launcher = previous_release / "bin/mini-recovered-forward-api-launcher"
+    if (api_program != str(previous_launcher)
+            or digest(previous_launcher.read_bytes()) != record.get("signedLauncherSHA256")):
+        fail("candidate API LaunchAgent does not match its previous signed controller")
+    return previous_launcher
+
+
 def plist_maintenance_values(expected: dict, manifest: dict) -> dict[str, str]:
     return {
         "NORN_STARTUP_MODE": "active", "NORN_SCHEMA_MODE": "check",
@@ -452,20 +481,48 @@ def stage_plist(journal: Path, expected: dict, manifest: dict, key: bytes):
     path = plist_record_path(journal)
     actual, mode = api_plist_bytes()
     original_launcher_sha, signed_launcher_sha = verify_launchers(Path(__file__).with_name("platform-upgrade"))
+    previous_staged = None
+    record_needs_rebind = False
     if path.exists() or path.is_symlink():
         record = read_plist_record(path, key)
-        if any(record.get(k) != expected[k] for k in ("controllerSHA", "candidateSHA", "sourceSHA", "transitionID", "generationID", "evidenceSHA256")):
+        if any(record.get(k) != expected[k] for k in ("candidateSHA", "sourceSHA", "transitionID", "generationID", "evidenceSHA256")):
             fail("signed API plist recovery record belongs to another transition")
-        if (record.get("originalLauncherSHA256") != original_launcher_sha
-                or record.get("signedLauncherSHA256") != signed_launcher_sha):
-            fail("API launcher identity changed during recovery")
         original = base64.b64decode(record["originalPlistBase64"], validate=True)
         if digest(original) != record["originalPlistSHA256"] or mode != record["originalPlistMode"]:
             fail("signed original API plist changed")
+        if record.get("originalLauncherSHA256") != original_launcher_sha:
+            fail("original API launcher identity changed during recovery")
+        previous_controller_sha = record.get("controllerSHA")
+        if previous_controller_sha != expected["controllerSHA"]:
+            if (not isinstance(previous_controller_sha, str) or not HEX40.fullmatch(previous_controller_sha)
+                    or previous_controller_sha == expected["candidateSHA"]):
+                fail("previous signed API controller identity is invalid")
+            home = Path.home()
+            releases = home / "norn/releases"
+            verifier = configured_verifier(home)
+            previous_release = release(releases, previous_controller_sha, verifier)
+            previous_launcher = previous_release / "bin/mini-recovered-forward-api-launcher"
+            if digest(previous_launcher.read_bytes()) != record.get("signedLauncherSHA256"):
+                fail("previous signed API launcher differs from its recovery record")
+            previous_staged = plist_variant(
+                original, plist_maintenance_values(expected, manifest), clear_recovery=False,
+                signed_launcher=previous_launcher)
+            if digest(previous_staged) != record.get("maintenancePlistSHA256"):
+                fail("previous signed maintenance API plist does not verify")
         staged = plist_variant(original, plist_maintenance_values(expected, manifest), clear_recovery=False,
                                signed_launcher=Path(__file__).with_name("mini-recovered-forward-api-launcher"))
-        if digest(staged) != record["maintenancePlistSHA256"]:
-            fail("signed maintenance API plist changed")
+        if previous_controller_sha == expected["controllerSHA"]:
+            if record.get("signedLauncherSHA256") != signed_launcher_sha:
+                fail("API launcher identity changed during recovery")
+            if digest(staged) != record["maintenancePlistSHA256"]:
+                fail("signed maintenance API plist changed")
+        else:
+            if actual not in {original, previous_staged, staged}:
+                fail("API plist changed outside the exact signed controller transition")
+            record["controllerSHA"] = expected["controllerSHA"]
+            record["signedLauncherSHA256"] = signed_launcher_sha
+            record["maintenancePlistSHA256"] = digest(staged)
+            record_needs_rebind = True
     else:
         original = actual
         staged = plist_variant(original, plist_maintenance_values(expected, manifest), clear_recovery=False,
@@ -500,11 +557,12 @@ def stage_plist(journal: Path, expected: dict, manifest: dict, key: bytes):
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
-    if actual == staged:
-        return
-    if actual != original:
-        fail("API plist is neither the signed original nor the exact maintenance variant")
-    atomic_replace(api_plist_path(), staged, mode)
+    if actual != staged:
+        if actual != original and actual != previous_staged:
+            fail("API plist is neither the signed original nor the exact maintenance variant")
+        atomic_replace(api_plist_path(), staged, mode)
+    if record_needs_rebind:
+        atomic_replace(path, canonical(dict(record, signature=plist_signature(record, key))), 0o600)
     if api_plist_bytes()[0] != staged:
         fail("API maintenance plist did not persist")
 
