@@ -1,6 +1,7 @@
 # ADR 0005: Independent upgrades and bounded compatibility
 
-Status: proposed, 2026-09-22. Planning only; no upgrade authorized.
+Status: proposed, 2026-09-22; capability reconciliation updated 2026-11-07.
+Planning only; this ADR does not authorize a live upgrade.
 
 ## Context
 
@@ -10,11 +11,11 @@ The [v3 roadmap](../architecture-roadmap.md#p4--running-upgrades-and-database-av
 
 Publish an explicit compatibility matrix for Norn server/client/runner releases, persisted schema/object formats and supported PostgreSQL, etcd, Nomad and Consul versions. Product and document versions remain independent. Capability negotiation gates optional features; unsupported combinations fail before accepting mutations.
 
-Require two initial release paths: upgrade the existing v2 Mini to v3 on its current PostgreSQL and runtime, and bootstrap fresh HA DigitalOcean Fleet directly into v3 with three control-node etcd members. Neither path requires PG↔etcd conversion; that capability is deferred under [ADR 0006](0006-migration-authority.md). A Norn release does not implicitly upgrade application schemas, database engines or consensus services.
+Keep the paths and their authority separate: upgrade the existing Mini directly on its current PostgreSQL and runtime; bootstrap or release the one DO staging Fleet through its protected Fleet workflows. Mini is independent and is not a Fleet member. DO is the staging testbed, not a production Fleet. Neither path requires PG↔etcd conversion; that capability is deferred under [ADR 0006](0006-migration-authority.md). A Norn release does not implicitly upgrade application schemas, database engines or consensus services.
 
 Use additive expand/contract schema changes with one migration owner. Allow mixed binaries only within a tested version window, advertise minimum readable/writable versions, and defer destructive contraction until older writers and the rollback window have been retired. Qualify owner-aware session recovery and controlled single-active API handoff before promising control API availability; active-active serving needs a separate concurrency decision.
 
-Use health-gated, drained app rollouts and one-member-at-a-time consensus upgrades with catch-up checks. Preserve workload serving during control maintenance wherever the data path remains independent.
+Use health-gated, drained app rollouts and one-member-at-a-time consensus upgrades with catch-up checks. Preserve workload serving during control maintenance wherever the data path remains independent. Workload allocation resize and application-version overlap are separate from Norn control binary compatibility: use additive schema and explicit reader/writer epochs for the workload, and do not mix Norn Fleet control versions until their control-store, role-fencing, quorum and recovery matrix passes on DO. The existing DO Norn release workflow is an all-stop, forward-only maintenance lane.
 
 ## Alternatives and tradeoffs
 
@@ -40,4 +41,4 @@ Test the complete Mini v2→v3 upgrade and rollback rehearsal, fresh Fleet boots
 
 ## Unresolved decisions
 
-Set the supported mixed-version window, single-active handoff versus active-active scope, schema contraction delay and numerical availability budgets. Confirm whether long-lived streams reconnect or drain to completion. Continuous control API service remains a qualification target until these tests establish it.
+Set the supported mixed-version window, single-active handoff versus active-active scope, schema contraction delay and numerical availability budgets. Confirm whether long-lived streams reconnect or drain to completion. The 2026-11-07 Mini V3 attempt correctly blocked before schema migration because it could not prove every writer compatible or quiescent. The DO Norn mixed-control-version window remains unqualified; see the [current release lane guide](../release-lanes-and-workload-resizing.md). Continuous control API service remains a qualification target until these tests establish it.
