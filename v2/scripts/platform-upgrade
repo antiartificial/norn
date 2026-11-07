@@ -428,12 +428,17 @@ PY
 recovered_baseline_receipt_validate() {
   local receipt_path="$HOME/.config/norn/.norn-recovered-baseline-adoption-v2.json"
   [[ -n "$receipt_path" ]] || return 1
-  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" "$current_link" "$releases" "$recovered_journal_path" <<'PY'
+  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" "$current_link" "$releases" "$recovered_journal_path" "${NORN_RELEASE_MANIFEST_HELPER:-$script_dir/platform-release-manifest}" "${NORN_RELEASE_VERIFY_HOOK:-}" "${NORN_PLATFORM_REPO:-$repo}" "$mode" <<'PY'
 import hashlib, hmac, json, os, stat, sys
+import subprocess
 path = os.path.abspath(os.path.expanduser(sys.argv[1]))
 current_link = os.path.abspath(os.path.expanduser(sys.argv[2]))
 release_root = os.path.realpath(os.path.expanduser(sys.argv[3]))
 transition_path = os.path.abspath(os.path.expanduser(sys.argv[4]))
+manifest_helper = os.path.abspath(os.path.expanduser(sys.argv[5]))
+release_verifier = os.path.abspath(os.path.expanduser(sys.argv[6])) if sys.argv[6] else ""
+repository = os.path.abspath(os.path.expanduser(sys.argv[7]))
+mode = sys.argv[8]
 key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
 if not key:
     raise SystemExit("audit signing key is unavailable")
@@ -477,24 +482,52 @@ except (OSError, ValueError):
 if current_values.get("NORN_RELEASE_SHA") != current_sha:
     raise SystemExit("Mini current release identity differs from its immutable directory")
 if current_sha != value["sourceSHA"]:
+    transition = None
     try:
         transition_info = os.lstat(transition_path)
         if (not stat.S_ISREG(transition_info.st_mode) or transition_info.st_uid != os.geteuid()
                 or stat.S_IMODE(transition_info.st_mode) != 0o600):
-            raise SystemExit("recovered-forward journal is unsafe")
+            raise ValueError("recovered-forward journal is unsafe")
         with open(transition_path, encoding="utf-8") as source:
-            transition = json.load(source)
+            candidate = json.load(source)
         phases = {"candidate-postflight-failed", "candidate-activation-started", "candidate-preservation-pending",
                   "candidate-finalize-requested", "candidate-normal-activation-pending",
                   "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart",
                   "candidate-promoted"}
-        if (transition.get("schema") != "norn.recovered-forward-transition/v1"
-                or transition.get("sourceSHA") != value["sourceSHA"]
-                or transition.get("candidateReleaseSHA") != current_sha
-                or transition.get("state") not in phases):
+        if (candidate.get("schema") == "norn.recovered-forward-transition/v1"
+                and candidate.get("sourceSHA") == value["sourceSHA"]
+                and candidate.get("candidateReleaseSHA") == current_sha
+                and candidate.get("state") in phases):
+            transition = candidate
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    if transition is None:
+        descendant_modes = {"preflight", "mini-protected-backup", "mini-signed-shadow", "recovered-forward"}
+        if mode not in descendant_modes:
             raise SystemExit("current Mini release is not the source or exact journaled recovery candidate")
-    except (OSError, ValueError):
-        raise SystemExit("current Mini release is not the source or exact journaled recovery candidate")
+        if (not os.path.isfile(manifest_helper) or os.path.islink(manifest_helper)
+                or not os.path.isabs(release_verifier)
+                or not os.access(release_verifier, os.X_OK)):
+            raise SystemExit("signed descendant catch-up requires the trusted manifest helper and external release verifier")
+        for label, sha in (("adoption source", value["sourceSHA"]), ("current Mini", current_sha)):
+            release = os.path.join(release_root, sha)
+            manifest = subprocess.run(
+                [sys.executable, manifest_helper, "verify", "--release", release, "--expected-sha", sha],
+                capture_output=True, text=True, check=False,
+            )
+            if manifest.returncode or manifest.stdout.strip() != "signed":
+                raise SystemExit(f"{label} release is not internally verified as signed")
+            external = subprocess.run([release_verifier, release, os.path.join(release, "release.json")],
+                                      capture_output=True, text=True, check=False)
+            if external.returncode:
+                raise SystemExit(f"{label} release failed external signature verification")
+        if not os.path.isdir(repository):
+            raise SystemExit("configured Norn Git repository is unavailable for signed descendant verification")
+        ancestry = subprocess.run(["git", "-C", repository, "merge-base", "--is-ancestor",
+                                   value["sourceSHA"], current_sha],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if ancestry.returncode != 0:
+            raise SystemExit("current signed Mini release is not a Git descendant of the adopted source")
 if not isinstance(signature, str) or not signature.startswith("hmac-sha256:"):
     raise SystemExit("recovered baseline receipt signature is missing")
 canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()

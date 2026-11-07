@@ -191,6 +191,44 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("adoption receipt is required", result.stderr)
 
+    def test_signed_descendant_of_adopted_source_can_enter_recovery_preflight(self):
+        self.assertEqual(self.adopt().returncode, 0)
+        base = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        base_release = self.releases / base
+        base_release.mkdir()
+        write(base_release / "release.env", f"NORN_RELEASE_SHA={base}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
+        write(base_release / "release.json", json.dumps({"sha": base, "version": VERSION}) + "\n", 0o644)
+
+        write(self.repo / "descendant.txt", "signed descendant\n", 0o644)
+        subprocess.run(["git", "-C", str(self.repo), "add", "descendant.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-q", "-m", "Signed descendant"], check=True)
+        descendant = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        descendant_release = self.releases / descendant
+        descendant_release.mkdir()
+        write(descendant_release / "release.env", f"NORN_RELEASE_SHA={descendant}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
+        write(descendant_release / "release.json", json.dumps({"sha": descendant, "version": VERSION}) + "\n", 0o644)
+
+        receipt = json.loads(self.receipt.read_text())
+        receipt.pop("signature")
+        receipt["sourceSHA"] = base
+        canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        receipt["signature"] = "hmac-sha256:" + hmac.new(
+            b"fixture-audit-signing-key-32-characters",
+            b"norn.recovered-baseline-adoption/v2\0" + canonical, hashlib.sha256).hexdigest()
+        write_json(self.receipt, receipt)
+        self.current_link.unlink()
+        self.current_link.symlink_to(descendant_release)
+
+        result = self.run_script("preflight", "f" * 40)
+        self.assertNotIn("current Mini release is not the source or exact journaled recovery candidate", result.stderr)
+        self.assertNotIn("adoption receipt is required", result.stderr)
+        self.assertIn("fatal: Needed a single revision", result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        direct_upgrade = self.run_script("upgrade", "HEAD")
+        self.assertNotEqual(direct_upgrade.returncode, 0)
+        self.assertIn("completed recovered-forward file bindings", direct_upgrade.stderr)
+
     def test_validly_signed_v2_receipt_cannot_rebind_failed_incident_identity(self):
         self.assertEqual(self.adopt().returncode, 0)
         receipt = json.loads(self.receipt.read_text())

@@ -170,11 +170,13 @@ rollback/read-compatibility window has closed. Then remove only V2 API paths
 that have no supported callers and tests that assert only retired behavior;
 retain migration, recovery, and compatibility tests for any state that still
 must be read or safely recovered. PR [#295](https://github.com/antiartificial/norn/pull/295)
-carries the Mini generation catch-up changes. Its checks passed, but it remains
-open and is not released. The changes preserve the older signed journal/receipts while
-binding a completed generation to the exact current source through external
-signature verification and Git ancestry; they do not authorize migration or
-candidate promotion by themselves.
+merged the Mini generation catch-up changes as `3f51e35ad246c68a835977d1f1e3b8fdf0a8511c`.
+The signed prerelease for `0701add87b34d0de7ead5031579b3d74cd829bd7` was
+published in [run 42406296055](https://github.com/antiartificial/norn/actions/runs/42406296055).
+The generation catch-up logic preserves older signed journals/receipts and
+binds a completed generation to the exact current source through external
+signature verification and Git ancestry; it does not authorize migration or
+candidate promotion by itself.
 
 Fresh authenticated Mini inventory on 2026-11-07 reports source
 `e117d5645f7764ac6ba6bc316aa19fa241521655`, version
@@ -185,8 +187,15 @@ transition `mini-v3-20261107-38fcec83`, candidate
 `38fcec83380c7ba989d46e11db6cc449510fad86`; its journal says
 `candidate-promoted`. Git confirms that candidate is an ancestor of the running
 source. This confirms a healthy V3 runtime and an earlier promoted candidate;
-it does not prove the pending e117-based schema migration or next release. No
-live migration was run for this checkpoint.
+it does not prove the pending e117-based schema migration. The signed
+`0701add8…` release was published, but Mini preflight stopped before candidate
+preparation because its legacy adoption guard accepts only the original
+adoption source or exact journaled candidate. A
+follow-up fix allows evidence preparation and recovered-forward control only
+after both source releases verify externally and Git proves ancestry; ordinary
+upgrade remains gated on the completed recovered-forward journal. That fix is
+still unreleased. No candidate import, database migration, or candidate
+promotion was verified in this checkpoint.
 
 This checkpoint supersedes older present-tense Mini source, schema, and
 generation statements below. Preserve those sections as historical evidence.
