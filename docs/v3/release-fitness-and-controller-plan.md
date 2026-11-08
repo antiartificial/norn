@@ -113,21 +113,23 @@ input chain:
 | Approved plan and dispatch | Successful protected plan run/artifact SHA, Norn capacity plan UUID, one-use dispatch nonce, and destructive acknowledgement are rebound before apply. | Join into one typed intent/receipt; model replay, expired nonce, changed artifact, and lost apply response. |
 | Provider/state authority | Supplied `DO_WORK_TOKEN`; supplied Spaces key ID/secret and backend coordinates. Preflight verifies active account UUID and exact versioned `norn-work-fleet-state` bucket/key/region/endpoint. | Current preflight does not validate DO token permission scope. Define least privilege and add synthetic scope admission coverage. |
 | SSH/firewall | Registered DO public-key fingerprint, protected runner private-key path, admin IPv4 `/32`s, SSH user, and per-run `known_hosts`. | Manifest provenance and host-key freshness/rotation receipt; assert no private key enters Terraform state/artifacts. |
-| Topology | Protected `staging/nyc3` source at `4451767624b12cbc41cc32e160a10d4b46006e0f` declares 3 control + 2 ingress + 4 app Droplets (9 total); explicit-context provider inventory matches. Managed PostgreSQL/MySQL are separate services. | Current helper tests and the bounded nine-node model do not prove protected apply/recovery, exact state/provider identity, or terminal receipt. The claimed eight-of-nine partial-output fixture was not located in either checkout. Disposable-root saved-plan retirement is tested separately; persistent work-staging has no sanctioned whole-Fleet destroy lane. |
+| Topology | Protected `staging/nyc3` source at `4451767624b12cbc41cc32e160a10d4b46006e0f` declares 3 control + 2 ingress + 4 app Droplets (9 total); explicit-context provider inventory matches. Managed PostgreSQL/MySQL are separate services. | Open [norn-fleet PR #941](https://github.com/antiartificial/norn-fleet/pull/941) adds a war-game that calls production plan/account/backend/topology/inventory/recovery-guard/local-PKI functions with synthetic data and tests an eight-of-nine hold. Its exact command passes 81 tests locally; protected validation is still running. It does not prove protected apply/recovery, durable same-intent state/provider identity, or terminal receipt. Disposable-root saved-plan retirement is tested separately; persistent work-staging has no sanctioned whole-Fleet destroy lane. |
 | Apply authorization | Protected runner, Norn API/OIDC audience, short-lived run-scoped token, writer-fence DSN, one-use plan/nonce. | Lost runner, token expiry, and durable same-intent recovery cases in integrated harness. |
 | Host configuration | Post-create reconciliation reads provider outputs, builds inventory, validates owner-only bootstrap vars/SSH material, generates cluster PKI, then runs checked-in Ansible. | A field-level manifest now maps protected paths and secret families; a complete per-file producer, owner, expiry, rotation, and revocation record remains open. |
 | Generated PKI/runtime | `prepare_pki.py` generates cluster-scoped Consul/Nomad/etcd CA and node material. Nomad tokens are created/rotated server-side. Norn's initial etcd credential is generated server-side, stored controller-private, removed from host, and expires in 72 hours. | Prove rerun/idempotency and rotation/revoke behavior with synthetic material; never reuse cluster/node identity across independent Norns. |
 | Supplied service secrets | Protected directory supplies ACL/bootstrap tokens, gossip keys, etcd/Norn passwords, API/authority, observability/audit, registry/TLS, and optional per-node Tailscale keys. Ansible uses no-log/private inputs for sensitive values. | Generation ceremony and provenance are not unified; manifest only, no value collection. Test mode/ownership, missing/expired inputs, and secret-safe receipts. |
 
 Existing focused tests cover account preflight, PKI generation, release
-contract validation, Fleet hooks, and Consul/Nomad/etcd helpers. A new
-credential-free vertical slice exercises real plan binding, account/backend
-checks, provider-output inventory, partial-inventory hold, local PKI
-generation/idempotency, and synthetic output validation. Earlier notes
-claiming a credential-free nine-node vertical slice and an eight-of-nine
-partial-output fixture were not reproducible in the checked-out source or
-tests. Protected main now confirms the current nine-node topology, but that
-does not establish an integrated input-to-recovery fixture. A separate
+contract validation, Fleet hooks, and Consul/Nomad/etcd helpers. The
+credential-free candidate vertical slice in open PR #941 exercises real plan
+binding, account/backend checks, provider-output inventory, partial-inventory
+hold, local PKI generation/idempotency, and synthetic output validation. It
+has a specific eight-of-nine partial-output case. It passed locally as 81
+unique tests after imported fixture `TestCase`s were changed to module
+references and checkpoint tests were listed explicitly; the PR is not yet
+merged and protected validation is still running. This helper-level evidence does not
+establish protected apply or an integrated durable input-to-recovery fixture.
+A separate
 round-trip test invokes the production durable `converge` and `recover` handlers
 with the existing local fake Norn/provider fixture for the existing Fleet's
 exact app-03 scale effect: fake apply commits then loses its response, and

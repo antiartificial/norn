@@ -8,7 +8,7 @@ deployment, provider mutation, or credential use.
 
 | Workstream | Scope | Owner seam | Exit artifact | Status |
 |---|---|---|---|---|
-| Evidence ledger | Reconcile Mini completion, DO soak, current health, Genesis readback, and release receipts against source and dated docs. | Norn and norn-fleet docs plus retained run IDs. | Independent Mini currently serves signed V3 RC `d4dc88e0c37003a1013caed444983b2eeb50fbcb`; smoke and host doctor passed. Route assurance is stale/failed, with 7 queued Fleet dispatch operations and 25 open incident groups still requiring separate follow-up. Live DO provider inventory was read through explicit `work` context, but private API/runtime health and protected Genesis source availability remain unverified. | Source audit refreshed; Mini app/route health is not fully clean; DO provider inventory refreshed |
+| Evidence ledger | Reconcile Mini completion, DO soak, current health, Genesis readback, and release receipts against source and dated docs. | Norn and norn-fleet docs plus retained run IDs. | Independent Mini currently serves signed V3 RC `d4dc88e0c37003a1013caed444983b2eeb50fbcb`; smoke and host doctor passed. Route assurance is stale/failed, with 7 queued Fleet-dispatch operations and 25 open incident groups still requiring separate follow-up. A route-authentication fix is proposed in open PR #301; its API/CLI/UI/OpenAPI and related CI checks pass, but it has not been merged, deployed to Mini, or verified with live `norn host assure` and route inventory. Live DO provider inventory was read through explicit `work` context, but private API/runtime health and protected Genesis source availability remain unverified. | Source audit refreshed; Mini app/route health is not fully clean; DO provider inventory refreshed |
 | Bootstrap input audit | Trace state, route, inventory, vars, provider scope, SSH, signed intent, runtime identity, and key flows; define the future two-app-pool input contract. | `norn-fleet` validators, workflows, Ansible, templates; [two-pool contract](fresh-fleet-two-app-pool-contract.md). | Field-level input manifest and existing-Fleet app-03 scale lost-response round trip added; a 51-pattern path inventory is checked against Ansible docs; future pool roles selected as general + stateful; IDs, sizes, count bounds, and placement remain undecided; per-file lifecycle evidence and complete fresh-Fleet workflow recovery remain. | Source audit complete; fitness partial |
 | Controller and V3 API audit | Reconcile Mini direct controller, DO platform release, workload resize, online proposal, and V2 surfaces. | Norn controllers/API/tests and V3 docs. | Mini and scale test entry points mapped; Mini bounded model is in the evidence bundle; V2 semantics clarified. | Source audit complete |
 | Offline models | Check existing DO platform release, Mini direct, existing-Fleet Genesis, disposable Fleet create/recovery, current staging source, future two-app-pool create/recovery, and proposed workload overlap. | TLA+ models and deterministic controller tests. | Protected `norn-fleet` main and provider inventory agree on the current 3+2+4 topology, with one app pool. The nine-node model covers that shape abstractly; the 45-state future two-pool model fixes General + Stateful roles and gates success on role-correct readiness plus stateful recovery proof. Neither is wired to the protected provider workflow or its detailed credential inputs; current staging recovery still lacks a joined code-level replay. | Nine bounded models check; topology shape reconciled; input/recovery failure coverage partial |
@@ -32,9 +32,12 @@ app Droplets, and explicit-context provider inventory agrees. The older local
 only control and ingress; the [topology audit](staging-topology-source-audit-2026-11-08.md)
 records why that five-node view is stale. Current staging has one app pool;
 the separate future fresh-Fleet contract is two pools, General + Stateful.
-Earlier claims of a credential-free nine-node vertical slice, an eight-of-nine
-test, and a joined persistent recovery fixture could not be tied to test files;
-they remain unverified despite the corrected source topology.
+Open [norn-fleet PR #941](https://github.com/antiartificial/norn-fleet/pull/941)
+contains the credential-free nine-node input slice and an eight-of-nine
+partial-output hold. Its documented command passes 81 tests locally; the
+current protected validation run has not completed. The PR remains candidate
+evidence, not merged coverage. It does not constitute a joined persistent
+provider apply/recovery fixture.
 
 On 2026-11-08, the current local `norn-fleet` checkout passed 15 targeted
 disposable input/checkpoint tests and its full Python suite: 1,830 tests passed
@@ -55,9 +58,16 @@ provision provider resources. V2 cleanup still distinguishes older unversioned
 handlers, the `v2/api` Go package path, and the separate `/effect-grants/v2`
 protocol. Do not delete code or tests based on names alone.
 
-The retained run note claims that the fresh-Fleet offline war-game passed 89
-tests and the separate disposable retirement suites passed 84 tests on
-2026-11-08. Their run chronology and source record remain unverified. Even if confirmed, those checks do not execute GitHub
+The documented fresh-Fleet war-game command was run against `norn-fleet` on
+2026-11-08: **81 tests passed** locally in 31 seconds. The command lists
+checkpoint coverage explicitly, and the recovery and adoption tests import
+fixture modules instead of test classes. Open PR #941 carries that war-game;
+its protected validation run has not completed. A separate open PR,
+[norn-fleet PR #942](https://github.com/antiartificial/norn-fleet/pull/942),
+changes workflow collection to classes defined by each test module. A local
+comparison preserves all 4,236 distinct test IDs and removes 248 repeated
+executions; protected validation has not completed. The separate
+disposable-retirement suite's 84-test run remains unverified. These checks do not execute GitHub
 Actions or prove protected runner, environment, artifact, provider, or teardown
 behavior.
 
@@ -87,10 +97,15 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
 
 ### M2. Build deterministic offline fitness
 
-- [ ] Add a credential-free `staging/nyc3` input vertical slice derived from
-  its current nine-node source through plan binding, provider/backend
-  checks, exact inventory, partial-inventory hold, and PKI generation; it must
-  stop before cloud effects.
+- [ ] Review and merge the credential-free `staging/nyc3` input vertical slice
+  in open `norn-fleet` PR #941. It calls production
+  plan-manifest, account/backend, topology, inventory, recovery-guard, and
+  local PKI functions with synthetic inputs; substitution and eight-of-nine
+  output hold before bootstrap. Its documented 81-test command passes
+  locally, and full protected validation is still running. This helper-level slice stops
+  before provider effects, SSH,
+  Ansible, durable staging recovery, or terminal receipt. Protected helper
+  tests separately cover controller-install pins and three-control SSH.
 - [x] Exercise production durable `converge`/`recover` handlers after a lost
   response for the existing Fleet's exact app-03 scale effect.
 - [ ] Join persistent staging provider apply/recovery handlers, durable
@@ -163,13 +178,18 @@ Fresh-Fleet input inventory from the source audit:
 | Network/SSH | Registered SSH fingerprint, protected runner private-key path, admin `/32`s, node host keys from first boot. | Synthetic absent/substituted key and firewall inputs; host-key freshness remains live read-only proof. |
 | Current staging topology | Protected `norn-fleet` main declares 3 control + 2 ingress + 4 app Droplets (9 total), one app pool labeled `workload: app`. Provider inventory through explicit `work` context matches counts, tags, and sizes. Managed PostgreSQL and MySQL are separate database services. | Fresh protected state, node enrollment, control-plane, workload placement, and route health remain unverified. The nine-node model matches the count shape but does not prove workflow implementation or exact state recovery. |
 | Future fresh-Fleet application pools | User selected two app pools for future new Fleets. Current DO staging remains one app pool and will not be migrated as part of this contract. | [Contract fields and recovery requirements](fresh-fleet-two-app-pool-contract.md) are recorded. Roles are general + stateful; stable IDs, sizes, min/desired/max, cost, placement, and workload/recovery semantics remain open before changing provider source. |
-| Node/bootstrap identity | Protected runner OIDC and writer fence; reconciliation derives inventory from provider outputs and invokes Ansible. PKI is generated per cluster after create. | Mock output→inventory→PKI→Ansible transformations and interrupted/repeated reconciliation. |
+| Node/bootstrap identity | Protected runner OIDC and writer fence; reconciliation derives inventory from provider outputs and invokes Ansible. PKI is generated per cluster after create. | Open `norn-fleet` PR #941 joins synthetic provider outputs→inventory→local PKI and checks exact count, restricted modes, secret-free evidence, and repeat digests. It stops before SSH/Ansible; protected interrupted/repeated reconciliation remains open. |
 | Service credentials | Many initial ACL, gossip, etcd, Norn, observability, registry, TLS, and optional Tailscale values are supplied through protected owner files. Nomad/Norn runtime tokens are generated or rotated server-side; the initial Norn etcd token expires after 72h. | Finish per-file producer, owner/mode, scope, expiry, rotation, and revoke evidence; qualify each owning service's rotation and revocation path. |
 
-Focused unit tests and a production-handler fake-provider round trip now cover
-plan binding, provider/backend checks, topology/inventory/PKI transformations,
-partial-inventory hold, lost apply response, same-intent recovery, and terminal
-receipt. Separate component tests cover owner-only secret materialization,
+The helper-level war-game in open `norn-fleet` PR #941 covers plan binding, provider/backend
+checks, topology/inventory/PKI transformations, partial-inventory hold, local
+PKI generation/idempotency, and secret redaction. A separate production-handler
+fake-provider round trip covers lost response, same-intent recovery, and
+terminal receipt for the existing Fleet's exact app-03 scale effect; it is not
+fresh-Fleet creation. Protected helper tests additionally cover exact control
+inventory/SSH continuity and read-only controller-install admission against
+pinned inputs. The war-game does not execute protected apply, durable
+persistent-Fleet recovery, Ansible, or terminal receipt. Separate component tests cover owner-only secret materialization,
 rotation/revoke and preflight receipt redaction. The documented disposable
 retirement suites are also reported as passing 84 tests on 2026-11-08, but
 their run chronology and source record remain unverified. They cover exact
