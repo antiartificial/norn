@@ -50,6 +50,13 @@ type PrivateWorkloadReleaseStore interface {
 	RequiredWorkloadReleaseInputKeys(context.Context) ([]string, error)
 }
 
+// PrivateWorkloadReleaseKeyStore exposes only the retained key IDs needed to
+// restore accepted private release inputs. It is separate from admission so
+// startup can fail closed before enabling the release capability.
+type PrivateWorkloadReleaseKeyStore interface {
+	RequiredWorkloadReleaseInputKeys(context.Context) ([]string, error)
+}
+
 type OperationActor struct {
 	Issuer  string `json:"issuer"`
 	Subject string `json:"subject"`

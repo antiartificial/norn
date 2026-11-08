@@ -600,6 +600,9 @@ func main() {
 	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, h.OperationStore()); err != nil {
 		log.Fatalf("private invocation startup preflight: %v", err)
 	}
+	if err := preflightConfiguredPrivateWorkloadReleaseKeys(context.Background(), cfg, h.OperationStore()); err != nil {
+		log.Fatalf("private workload release startup preflight: %v", err)
+	}
 	functionV3Admission, functionV3Worker, err := configureFunctionV3(cfg, db, pipe, nomadClient, sec, h.OperationStore())
 	if err != nil {
 		log.Fatalf("function v3 startup: %v", err)
@@ -2017,6 +2020,29 @@ func preflightConfiguredPrivateInvocationKeys(ctx context.Context, cfg *config.C
 		return fmt.Errorf("private invocation store is unavailable")
 	}
 	return startup.PreflightPrivateInvocationKeys(ctx, invocationStore, ring)
+}
+
+// preflightConfiguredPrivateWorkloadReleaseKeys keeps this future release
+// capability dormant unless explicitly enabled. When enabled, verify every
+// retained envelope key before workers or HTTP serving can accept new work.
+func preflightConfiguredPrivateWorkloadReleaseKeys(ctx context.Context, cfg *config.Config, operations store.OperationStore) error {
+	if cfg == nil || !cfg.WorkloadReleaseInputsEnabled {
+		return nil
+	}
+	raw := strings.TrimSpace(cfg.WorkloadReleaseInputKeys)
+	var supplied map[string][]byte
+	if err := json.Unmarshal([]byte(raw), &supplied); err != nil {
+		return fmt.Errorf("NORN_WORKLOAD_RELEASE_INPUT_KEYS is invalid")
+	}
+	keys, err := store.NewWorkloadReleaseInputKeyRing(cfg.WorkloadReleaseInputCurrentKeyID, supplied)
+	if err != nil {
+		return fmt.Errorf("workload release input key configuration: %w", err)
+	}
+	keyStore, ok := operations.(store.PrivateWorkloadReleaseKeyStore)
+	if !ok {
+		return fmt.Errorf("private workload release key store is unavailable")
+	}
+	return startup.PreflightPrivateWorkloadReleaseKeys(ctx, keyStore, keys)
 }
 
 func validateControlSecurityForBackend(cfg *config.Config, backend startup.ControlBackendConfig) error {

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1376,6 +1377,36 @@ func TestPrivateInvocationStartupPreflightIsCapabilityGated(t *testing.T) {
 	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), enabled, privateInvocationStartupStore{keyIDs: []string{"missing-retired"}}); err == nil || !strings.Contains(err.Error(), `"missing-retired"`) {
 		t.Fatalf("missing retained key preflight = %v", err)
 	}
+}
+
+func TestPrivateWorkloadReleaseStartupPreflightIsCapabilityGated(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x51}, 32))
+	keys := `{"current":"` + key + `","retired":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x52}, 32)) + `"}`
+	storeWithRetained := privateWorkloadReleaseStartupStore{keyIDs: []string{"retired", "current"}}
+	disabled := &config.Config{WorkloadReleaseInputKeys: "invalid"}
+	if err := preflightConfiguredPrivateWorkloadReleaseKeys(context.Background(), disabled, storeWithRetained); err != nil {
+		t.Fatalf("disabled workload release preflight = %v", err)
+	}
+	enabled := &config.Config{WorkloadReleaseInputsEnabled: true, WorkloadReleaseInputCurrentKeyID: "current", WorkloadReleaseInputKeys: keys}
+	if err := preflightConfiguredPrivateWorkloadReleaseKeys(context.Background(), enabled, storeWithRetained); err != nil {
+		t.Fatalf("enabled workload release preflight = %v", err)
+	}
+	if err := preflightConfiguredPrivateWorkloadReleaseKeys(context.Background(), enabled, privateWorkloadReleaseStartupStore{keyIDs: []string{"missing-retired"}}); err == nil || !strings.Contains(err.Error(), `"missing-retired"`) {
+		t.Fatalf("missing historical workload release key preflight = %v", err)
+	}
+	if err := preflightConfiguredPrivateWorkloadReleaseKeys(context.Background(), enabled, privateWorkloadReleaseStartupStore{keyErr: errors.New("inventory unavailable")}); err == nil || !strings.Contains(err.Error(), "inventory unavailable") {
+		t.Fatalf("unavailable workload release key inventory preflight = %v", err)
+	}
+}
+
+type privateWorkloadReleaseStartupStore struct {
+	store.OperationStore
+	keyIDs []string
+	keyErr error
+}
+
+func (s privateWorkloadReleaseStartupStore) RequiredWorkloadReleaseInputKeys(context.Context) ([]string, error) {
+	return s.keyIDs, s.keyErr
 }
 
 func TestPrivateInvocationRuntimeConfigurationStopsStartupValidation(t *testing.T) {

@@ -4,23 +4,23 @@ Status: the durable etcd worker, signed-acceptance verification, claim-bound
 route writer, old-stop recovery, and same-intent controller replay are wired
 as offline implementation seams. There is still no operator/API path to admit
 an `app.workload-release` operation. A production-driver crash matrix and
-live qualification remain open as of 2026-11-08.
+live qualification remain open as of 2026-11-08. The private-input key
+inventory is now checked at startup when the dedicated workload-release input
+capability is enabled; the capability remains disabled by default.
 This note authorizes no live workload, route, or provider change.
 
 ## Current branch verification — 2026-11-08
 
-PR [#302](https://github.com/antiartificial/norn/pull/302) is currently at
-`a2dfc9dace5303796ddd085ce2e242cb4dd4182e`. Norn CI run
-[42502328191](https://github.com/antiartificial/norn/actions/runs/42502328191)
-passed, including the three-Nomad-client durable replica qualification job;
-unselected qualification jobs were skipped. Repository CI run
-[42502328091](https://github.com/antiartificial/norn/actions/runs/42502328091)
-is still running: API tests, OpenAPI, UI, catalog publisher, workflow lint,
-and platform release gate passed, while the disposable Fleet pilot workload
-was still in progress at last read. Earlier passing CI at older heads does
-not qualify this current head. These checks validate branch code and
-disposable fixtures only; they do not qualify the deployed DO Fleet, Mini, or
-any live upgrade.
+PR [#302](https://github.com/antiartificial/norn/pull/302) was at
+`7c6fd821b81ca0dd67f122d202ed62f4237f5109` for its latest observed CI.
+Norn CI run [42504972220](https://github.com/antiartificial/norn/actions/runs/42504972220)
+and Repository CI run
+[42504972073](https://github.com/antiartificial/norn/actions/runs/42504972073)
+both passed on that exact SHA, including the three-Nomad-client durable
+replica qualification and disposable Fleet pilot workload. The local change
+described below is newer and has not yet been pushed or covered by those runs.
+These checks validate branch code and disposable fixtures only; they do not
+qualify the deployed DO Fleet, Mini, or any live upgrade.
 The offline statechart at `4703f5bcdd0c98943f86d1fc6cfc97ad3f027743` passes
 86-state/203-transition TLC with all ten safety invariants and the deadlock
 check; see the linked model below.
@@ -35,7 +35,7 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 | Milestone | Status | Work | Exit evidence | Can run alongside |
 | --- | --- | --- | --- | --- |
 | M5-A: offline protocol | Partial: bounded statechart, fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, and a one-use stage attempt marker pass locally; API admission and stage worker integration are absent. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on ambiguous create. | M5-B, input-provenance inventory, M5-C design |
-| M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound exact SOPS snapshot capture, and atomic etcd acceptance/input persistence exist; candidate qualification and complete secret/catalog/database lineage resolution are not yet part of the admission path. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Integrate provenance resolution and reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; envelope and acceptance commit atomically; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
+| M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound exact SOPS snapshot capture, atomic etcd acceptance/input persistence, and opt-in startup preflight for every retained envelope key exist; candidate qualification and complete secret/catalog/database lineage resolution are not yet part of the admission path. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Integrate provenance resolution and reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; envelope and acceptance commit atomically; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
 | M5-C: atomic release admission | Not implemented: no operator/API acceptance path exists. | Add the authenticated operator API/CLI admission and etcd transaction for idempotency, signature, single-app mutation slot, current serving/route predecessor, desired count, and Fleet generation. | Replay returns the same operation; key reuse with a different candidate conflicts; concurrent deploy/scale/release races admit at most one; stale predecessor writes nothing. | M5-A/B |
 | M5-D: private stage and binding | Partial: signed-plan-bound stage effect reservation, shared app gate, one-use attempt marker, exact Nomad lookup, and write-once binding seams exist; no worker yet constructs/stages the immutable job or recovers the external create end to end. | Wire pinned private inputs and candidate provenance into a claimed worker; construct one target job, reserve/mark the stage effect, perform create-only CAS, read exact source/no-diff and revision, then bind before health/route processing. | Fault matrix proves same-target recovery or conservative hold, never an unreviewed duplicate; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
@@ -213,6 +213,18 @@ snapshot before returning the original acceptance. Restore can enumerate all
 required envelope key IDs. This primitive is not yet mounted behind an
 authenticated workload-release admission API or connected to a target job
 builder, so it remains an implementation seam.
+
+The API can now opt into retained-key startup preflight with
+`NORN_WORKLOAD_RELEASE_INPUTS_ENABLED=true`,
+`NORN_WORKLOAD_RELEASE_INPUT_CURRENT_KEY_ID`, and
+`NORN_WORKLOAD_RELEASE_INPUT_KEYS` (a JSON object mapping key IDs to base64
+32-byte keys). This ring is separate from Function V3 and audit signing keys.
+When enabled, startup reads all retained workload-release envelope key IDs and
+fails before workers/HTTP serving if the store cannot be read, the store does
+not expose the key inventory, or any historical key is absent. Turning this
+capability on does not enable an admission endpoint or release worker. Key
+rotation/removal still needs an explicit retention and deletion policy; do not
+remove a key until all retained records that need it are retired or rewrapped.
 
 ## Qualification order
 

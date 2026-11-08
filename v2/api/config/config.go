@@ -122,14 +122,17 @@ type Config struct {
 	// Zero OperationReplayTTL retains indefinite request-identity replay.
 	OperationReplayTTL time.Duration
 	// Private invocation is opt-in and uses a key ring separate from audit keys.
-	PrivateInvocationEnabled        bool
-	FunctionV3PreviewEnabled        bool
-	PrivateInvocationCurrentKeyID   string
-	PrivateInvocationKeys           string
-	QualificationSigningKey         string
-	TrustedQualificationSigningKeys []string
-	GitHubActionsOIDCAudience       string
-	GitHubActionsOIDCJWKSURL        string
+	PrivateInvocationEnabled         bool
+	FunctionV3PreviewEnabled         bool
+	PrivateInvocationCurrentKeyID    string
+	PrivateInvocationKeys            string
+	WorkloadReleaseInputsEnabled     bool
+	WorkloadReleaseInputCurrentKeyID string
+	WorkloadReleaseInputKeys         string
+	QualificationSigningKey          string
+	TrustedQualificationSigningKeys  []string
+	GitHubActionsOIDCAudience        string
+	GitHubActionsOIDCJWKSURL         string
 	// GitHubActionsAllowedRepositories is retained only to parse legacy
 	// configuration. It is not authorization for any release lane; use
 	// GitHubActionsReleaseBindings instead.
@@ -391,6 +394,9 @@ func Load() *Config {
 		FunctionV3PreviewEnabled:                     envBoolOr("NORN_FUNCTION_V3_PREVIEW_ENABLED", false),
 		PrivateInvocationCurrentKeyID:                strings.TrimSpace(os.Getenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID")),
 		PrivateInvocationKeys:                        os.Getenv("NORN_PRIVATE_INVOCATION_KEYS"),
+		WorkloadReleaseInputsEnabled:                 envBoolOr("NORN_WORKLOAD_RELEASE_INPUTS_ENABLED", false),
+		WorkloadReleaseInputCurrentKeyID:             strings.TrimSpace(os.Getenv("NORN_WORKLOAD_RELEASE_INPUT_CURRENT_KEY_ID")),
+		WorkloadReleaseInputKeys:                     os.Getenv("NORN_WORKLOAD_RELEASE_INPUT_KEYS"),
 		QualificationSigningKey:                      os.Getenv("NORN_QUALIFICATION_SIGNING_KEY"),
 		TrustedQualificationSigningKeys:              splitNonEmpty(os.Getenv("NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")),
 		GitHubActionsOIDCAudience:                    strings.TrimSpace(os.Getenv("NORN_GITHUB_ACTIONS_OIDC_AUDIENCE")),
