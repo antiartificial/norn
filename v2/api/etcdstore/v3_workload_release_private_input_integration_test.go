@@ -47,7 +47,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatal(err)
 	}
 	material := []byte("exact-encrypted-sops-snapshot-v1")
-	qualification, trustedQualificationKey := privateInputQualification(t, intent)
+	qualification, trustedQualificationKey := privateInputQualification(t, intent, "missing-qualified-deployment")
 	write := func(key string, value interface{}) {
 		t.Helper()
 		encoded, err := json.Marshal(value)
@@ -63,6 +63,11 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		_, err := adapter.AcceptPrivateWorkloadRelease(ctx, request, qualification, []string{trustedQualificationKey}, material, keys)
 		return err
 	}
+	if err := accept(input); err == nil {
+		t.Fatal("accepted signed qualification without a control-owned successful staging deployment")
+	}
+	qualification.DeploymentID = acceptPrivateWorkloadReleaseSource(t, adapter, intent, target)
+	resignPrivateInputQualification(t, &qualification)
 	if err := accept(input); err == nil {
 		t.Fatal("accepted a workload release without a control-owned active route predecessor")
 	}
@@ -162,7 +167,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 }
 
-func privateInputQualification(t *testing.T, intent pipeline.WorkloadReleaseIntent) (model.ReleaseQualification, string) {
+func privateInputQualification(t *testing.T, intent pipeline.WorkloadReleaseIntent, deploymentID string) (model.ReleaseQualification, string) {
 	t.Helper()
 	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x71}, ed25519.SeedSize))
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -171,7 +176,7 @@ func privateInputQualification(t *testing.T, intent pipeline.WorkloadReleaseInte
 		ID:            "qualification-" + intent.App,
 		App:           intent.App,
 		Environment:   "staging",
-		DeploymentID:  "qualified-deployment",
+		DeploymentID:  deploymentID,
 		SourceSHA:     intent.SourceRevision,
 		Artifact:      intent.TargetImage,
 		IssuedAt:      now.Add(-time.Minute),
@@ -183,6 +188,56 @@ func privateInputQualification(t *testing.T, intent pipeline.WorkloadReleaseInte
 	resignPrivateInputQualification(t, &qualification)
 	trusted := base64.RawStdEncoding.EncodeToString(privateKey.Public().(ed25519.PublicKey))
 	return qualification, trusted
+}
+
+func acceptPrivateWorkloadReleaseSource(t *testing.T, adapter *V3OperationStore, intent pipeline.WorkloadReleaseIntent, target FleetAppTarget) string {
+	t.Helper()
+	ctx := context.Background()
+	deploymentID, sagaID := uuid.NewString(), uuid.NewString()
+	request := store.OperationAcceptance{
+		Identity: store.OperationRequestIdentity{Authority: adapter.authority,
+			Actor: store.OperationActor{Issuer: "https://operator.example.test", Subject: "release-operator"},
+			Kind:  "app.deploy", Resource: "app/" + intent.App, Key: "qualified-source-" + deploymentID},
+		Operation: model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: intent.App, SagaID: sagaID,
+			Status: model.OperationQueued, Source: "release-control-api", Payload: map[string]interface{}{
+				"deploymentId": deploymentID, "sourceSha": intent.SourceRevision, "artifact": intent.TargetImage,
+				"specDigest": intent.TargetSpecDigest,
+			}},
+		Deployment: &model.Deployment{ID: deploymentID, App: intent.App, Environment: "staging", SagaID: sagaID,
+			Status: model.StatusQueued, CommitSHA: intent.SourceRevision, ImageTag: intent.TargetImage,
+			SpecDigest: intent.TargetSpecDigest, SourceKind: "release", SourceRef: intent.SourceRevision, StartedAt: time.Now().UTC()},
+		Regions: []model.ResolvedRegion{{Name: target.Region, NomadRegion: target.NomadRegion,
+			Datacenters: append([]string(nil), target.Datacenters...), TrafficWeight: 0}},
+		Admission: store.OperationAdmissionPolicy{OneActiveMutablePerApp: true},
+		Audit:     store.AcceptanceAuditContext{Source: "release-qualification-test"},
+		Semantics: map[string]interface{}{"fleetAppTarget": target},
+	}
+	var err error
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := adapter.ClaimNextOperation(ctx, "qualification-source-worker", time.Minute, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, acquired, err := adapter.AcquireAppOperationLock(ctx, intent.App)
+	if err != nil || !acquired {
+		t.Fatalf("source deployment app lock acquired=%v err=%v", acquired, err)
+	}
+	defer lock.Release()
+	deployment := *accepted.Deployment
+	deployment.Status = model.StatusDeployed
+	regions := []model.DeploymentRegion{{DeploymentID: deploymentID, Region: target.Region, NomadRegion: target.NomadRegion,
+		Status: model.StatusDeployed, DesiredWeight: 0, ActiveWeight: 0, EvalID: "qualified-source-eval"}}
+	if err := adapter.finishClaimedDeployment(ctx, claim, lock, deployment, regions, model.OperationSucceeded, "qualified source deployed", nil); err != nil {
+		t.Fatal(err)
+	}
+	return deploymentID
 }
 
 func resignPrivateInputQualification(t *testing.T, qualification *model.ReleaseQualification) {

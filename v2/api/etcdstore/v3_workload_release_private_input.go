@@ -67,6 +67,9 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	if err := plan.ValidateWorkloadReleaseQualification(qualification, trustedQualificationKeys, time.Now().UTC()); err != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification does not authorize the plan"}
 	}
+	if err := s.verifyWorkloadReleaseQualificationSource(ctx, plan, qualification); err != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification has no matching successful staging deployment"}
+	}
 	payload["workloadReleaseQualification"] = qualification
 	input.Operation.Payload = payload
 	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
@@ -179,6 +182,47 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	delete(payload, "workloadReleasePrivateKeyId")
 	input.Operation.Payload = payload
 	return s.resolvePrivateWorkloadReleaseReplay(ctx, input, material, keys, prior)
+}
+
+// verifyWorkloadReleaseQualificationSource binds the signed qualification to
+// a completed V3 staging deployment. Signature validity alone does not prove
+// that this control plane actually accepted and completed the cited release.
+func (s *V3OperationStore) verifyWorkloadReleaseQualificationSource(ctx context.Context, plan pipeline.WorkloadReleasePlan, qualification model.ReleaseQualification) error {
+	index, err := s.kv.Get(ctx, s.deploymentAcceptanceIndexKey(qualification.DeploymentID))
+	if err != nil {
+		return fmt.Errorf("load qualified deployment acceptance: %w", err)
+	}
+	if len(index.Kvs) != 1 {
+		return fmt.Errorf("qualified deployment acceptance is missing")
+	}
+	key := string(index.Kvs[0].Value)
+	loaded, err := s.loadAcceptance(ctx, key)
+	if err != nil {
+		return err
+	}
+	if loaded.record.Accepted.Intent.DeploymentID != qualification.DeploymentID || s.acceptanceKey(loaded.record.Identity) != key {
+		return fmt.Errorf("qualified deployment index does not match its signed acceptance")
+	}
+	accepted, err := s.replay(ctx, key, loaded, loaded.record.Identity, loaded.record.Accepted.Intent.Fingerprint)
+	if err != nil {
+		return err
+	}
+	deployment := accepted.Deployment
+	if accepted.Operation.Kind != "app.deploy" || accepted.Operation.Status != model.OperationSucceeded || accepted.Operation.App != plan.Intent.App ||
+		accepted.Operation.Source != "release-control-api" || deployment == nil || deployment.ID != qualification.DeploymentID ||
+		deployment.App != qualification.App || deployment.Environment != "staging" || deployment.SourceKind != "release" ||
+		deployment.CommitSHA != plan.Intent.SourceRevision || deployment.ImageTag != plan.Intent.TargetImage ||
+		deployment.SpecDigest != plan.Intent.TargetSpecDigest || accepted.Operation.Payload["sourceSha"] != plan.Intent.SourceRevision ||
+		accepted.Operation.Payload["artifact"] != plan.Intent.TargetImage || accepted.Operation.Payload["specDigest"] != plan.Intent.TargetSpecDigest ||
+		len(deployment.Regions) == 0 {
+		return fmt.Errorf("qualified deployment does not match the signed workload release")
+	}
+	for _, region := range deployment.Regions {
+		if region.Status != model.StatusDeployed || region.ActiveWeight != region.DesiredWeight {
+			return fmt.Errorf("qualified staging deployment has an incomplete region")
+		}
+	}
+	return nil
 }
 
 // workloadReleasePredecessorCompares makes accepted plans name the currently
