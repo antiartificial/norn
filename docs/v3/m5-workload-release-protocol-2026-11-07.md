@@ -9,19 +9,18 @@ This note authorizes no live workload, route, or provider change.
 
 ## Current branch verification — 2026-11-08
 
-PR [#302](https://github.com/antiartificial/norn/pull/302) at
-`c065e12f41da468e954b491d00536be22e6f080f` passed Repository CI run
-[42494942539](https://github.com/antiartificial/norn/actions/runs/42494942539)
-and Norn CI run
-[42494942533](https://github.com/antiartificial/norn/actions/runs/42494942533).
-Passing checks include API and CLI Go tests, the disposable Fleet pilot
-workload and three-member etcd qualification, the three-Nomad-client durable
-replica qualification, OpenAPI, UI, catalog publisher, workflow lint, and the
-platform release gate. Unselected qualification jobs were skipped. These
-checks validate the branch and disposable fixtures only; they do not qualify
-the deployed DO Fleet, Mini, workload-release admission, or any live upgrade.
-The follow-up envelope-bounds change at `648196993a55624533395e94ade56a9acc398e86`
-has a passing focused store test; its required PR checks are still running.
+PR [#302](https://github.com/antiartificial/norn/pull/302) is currently at
+`a2dfc9dace5303796ddd085ce2e242cb4dd4182e`. Norn CI run
+[42502328191](https://github.com/antiartificial/norn/actions/runs/42502328191)
+passed, including the three-Nomad-client durable replica qualification job;
+unselected qualification jobs were skipped. Repository CI run
+[42502328091](https://github.com/antiartificial/norn/actions/runs/42502328091)
+is still running: API tests, OpenAPI, UI, catalog publisher, workflow lint,
+and platform release gate passed, while the disposable Fleet pilot workload
+was still in progress at last read. Earlier passing CI at older heads does
+not qualify this current head. These checks validate branch code and
+disposable fixtures only; they do not qualify the deployed DO Fleet, Mini, or
+any live upgrade.
 The offline statechart at `4703f5bcdd0c98943f86d1fc6cfc97ad3f027743` passes
 86-state/203-transition TLC with all ten safety invariants and the deadlock
 check; see the linked model below.
@@ -35,8 +34,8 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 
 | Milestone | Status | Work | Exit evidence | Can run alongside |
 | --- | --- | --- | --- | --- |
-| M5-A: offline protocol | Partial: bounded statechart and fake-driver lost-response matrix pass; admission/stage integration is absent. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on ambiguous create. | M5-B, input-provenance inventory, M5-C design |
-| M5-B: immutable input contract | Partial: provenance inventory, exact SOPS snapshot capture, and a purpose-separated envelope primitive exist; etcd/V3 still does not resolve candidate qualification or durably retain release inputs. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Add the etcd private record and accepted-release transaction; reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; envelope and acceptance commit atomically; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
+| M5-A: offline protocol | Partial: bounded statechart, fake-driver lost-response matrix, pure plan/binding resolver, and claim-fenced write-once etcd binding pass locally; admission/stage integration is absent. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on ambiguous create. | M5-B, input-provenance inventory, M5-C design |
+| M5-B: immutable input contract | Partial: provenance inventory, exact SOPS snapshot capture, purpose-separated envelope primitive, and plan-bound observed target binding exist; etcd/V3 still does not resolve candidate qualification or durably retain release inputs. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Add the etcd private record and accepted-release transaction; reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; envelope and acceptance commit atomically; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
 | M5-C: atomic release admission | Not implemented: no operator/API acceptance path exists. | Add the authenticated operator API/CLI admission and etcd transaction for idempotency, signature, single-app mutation slot, current serving/route predecessor, desired count, and Fleet generation. | Replay returns the same operation; key reuse with a different candidate conflicts; concurrent deploy/scale/release races admit at most one; stale predecessor writes nothing. | M5-A/B |
 | M5-D: private stage and binding | Not implemented. | Stage one immutable target privately, without public route publication; persist a write-once binding only after exact Nomad source/no-diff and job-revision readback. | Fault matrix proves same-target recovery or conservative hold, never an unreviewed duplicate; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
@@ -183,6 +182,15 @@ and app lock, and binds the intent to the current Fleet target generation and
 datacenter placement. Local etcd integration tests pass for the valid signed
 intent and fail closed on changed target, payload drift, or released lock. This
 verifies admission provenance only; it does not reserve or publish route steps.
+
+The admission design now also defines a scheduler-free
+`WorkloadReleasePlan` that resolves only after a create-only Nomad registration
+has been observed. The plan-to-binding resolver and etcd write-once binding
+store are implemented locally: binding requires the signed plan, live operation
+claim, app lock, and unchanged Fleet target generation; replay of the same
+binding is idempotent, while a conflicting binding or stale claim is rejected.
+These changes are at PR #302 head `a2dfc9da` and required CI remains in
+progress. They do not yet constitute an API admission path or stage controller.
 
 ## Qualification order
 
