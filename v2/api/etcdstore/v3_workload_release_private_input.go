@@ -41,32 +41,37 @@ func (s *V3OperationStore) workloadReleasePrivateInputPrefix() string {
 
 // AcceptPrivateWorkloadRelease atomically stores the signed plan, active-app
 // fence, control-owned Fleet target revision, and encrypted SOPS snapshot.
-func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, input store.OperationAcceptance, material []byte, keys *store.WorkloadReleaseInputKeyRing) (store.AcceptedOperation, error) {
+func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, input store.OperationAcceptance, qualification model.ReleaseQualification, trustedQualificationKeys []string, material []byte, keys *store.WorkloadReleaseInputKeyRing) (store.AcceptedOperation, error) {
 	if s == nil || s.kv == nil || s.signer == nil || keys == nil || input.Identity.Kind != "app.workload-release" ||
 		input.Operation.Kind != "app.workload-release" || input.Operation.ID == "" || input.Operation.App == "" ||
 		input.Operation.Status != model.OperationQueued || input.Identity.Resource != "app/"+input.Operation.App ||
 		!input.Admission.OneActiveMutablePerApp || input.Deployment != nil || len(input.Regions) != 0 {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "private workload release acceptance is incomplete"}
 	}
-	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
-		return s.resolvePrivateWorkloadReleaseReplay(ctx, input, material, keys, prior)
-	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
-		return store.AcceptedOperation{}, err
-	}
 	if input.Operation.Payload == nil {
 		input.Operation.Payload = map[string]interface{}{}
 	}
-	payload := make(map[string]interface{}, len(input.Operation.Payload)+3)
+	payload := make(map[string]interface{}, len(input.Operation.Payload)+4)
 	for key, value := range input.Operation.Payload {
 		payload[key] = value
 	}
-	for _, field := range []string{"workloadReleasePrivateRecordId", "workloadReleasePrivateInputDigest", "workloadReleasePrivateKeyId"} {
+	for _, field := range []string{"workloadReleasePrivateRecordId", "workloadReleasePrivateInputDigest", "workloadReleasePrivateKeyId", "workloadReleaseQualification"} {
 		if _, exists := payload[field]; exists {
 			return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release payload contains a reserved private-input field"}
 		}
 	}
 	plan, err := acceptedWorkloadReleasePlan(payload, input.Operation.App)
 	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
+	if err := plan.ValidateWorkloadReleaseQualification(qualification, trustedQualificationKeys, time.Now().UTC()); err != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification does not authorize the plan"}
+	}
+	payload["workloadReleaseQualification"] = qualification
+	input.Operation.Payload = payload
+	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
+		return s.resolvePrivateWorkloadReleaseReplay(ctx, input, material, keys, prior)
+	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
 		return store.AcceptedOperation{}, err
 	}
 	planDigest, err := plan.Digest()

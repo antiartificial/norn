@@ -3,9 +3,13 @@ package etcdstore
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"norn/v2/api/model"
@@ -24,6 +28,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatal(err)
 	}
 	intent := workloadReleaseEtcdIntentFixture(app, target)
+	intent.SourceRevision = strings.Repeat("a", 40)
 	intent.TargetJobVersion, intent.TargetJobModifyIndex = 0, 0
 	planBytes, err := json.Marshal(pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: intent})
 	if err != nil {
@@ -42,6 +47,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatal(err)
 	}
 	material := []byte("exact-encrypted-sops-snapshot-v1")
+	qualification, trustedQualificationKey := privateInputQualification(t, intent)
 	write := func(key string, value interface{}) {
 		t.Helper()
 		encoded, err := json.Marshal(value)
@@ -54,7 +60,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 	accept := func(request store.OperationAcceptance) error {
 		t.Helper()
-		_, err := adapter.AcceptPrivateWorkloadRelease(ctx, request, material, keys)
+		_, err := adapter.AcceptPrivateWorkloadRelease(ctx, request, qualification, []string{trustedQualificationKey}, material, keys)
 		return err
 	}
 	if err := accept(input); err == nil {
@@ -100,7 +106,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatal("accepted a workload release while the active route reservation disagreed")
 	}
 	write(adapter.fleetRouteReservationKey(app, target.ControlEnvironment, target.Region), initialFleetRouteReservation{IntentID: active.IntentID, Generation: active.Generation})
-	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, material, keys)
+	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,19 +117,28 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	competing.Operation = operation
 	competing.Operation.ID = uuid.NewString()
 	competing.Identity.Key = uuid.NewString()
-	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, competing, material, keys); err == nil {
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, competing, qualification, []string{trustedQualificationKey}, material, keys); err == nil {
 		t.Fatal("second mutable workload release was accepted while the first app operation remained active")
 	}
 	opened, err := adapter.OpenPrivateWorkloadRelease(ctx, accepted.Operation, keys)
 	if err != nil || !bytes.Equal(opened, material) {
 		t.Fatalf("opened private SOPS snapshot differs: equal=%v err=%v", bytes.Equal(opened, material), err)
 	}
-	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, material, keys)
+	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys)
 	if err != nil || replayed.Operation.ID != accepted.Operation.ID || replayed.Intent.CanonicalDigest != accepted.Intent.CanonicalDigest {
 		t.Fatalf("same private workload request did not return original acceptance: replay=%+v err=%v", replayed, err)
 	}
-	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, []byte("different-sops-snapshot"), keys); !errors.Is(err, store.ErrAcceptanceConflict) {
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, []byte("different-sops-snapshot"), keys); !errors.Is(err, store.ErrAcceptanceConflict) {
 		t.Fatalf("same idempotency key accepted different private inputs: %v", err)
+	}
+	differentQualification := qualification
+	differentQualification.ID += "-different"
+	resignPrivateInputQualification(t, &differentQualification)
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, differentQualification, []string{trustedQualificationKey}, material, keys); !errors.Is(err, store.ErrAcceptanceConflict) {
+		t.Fatalf("same idempotency key accepted different qualification evidence: %v", err)
+	}
+	if accepted.Operation.Payload["workloadReleaseQualification"] == nil {
+		t.Fatal("signed operation omitted its release qualification evidence")
 	}
 	ids, err := adapter.RequiredWorkloadReleaseInputKeys(ctx)
 	if err != nil || len(ids) != 1 || ids[0] != "release-input-v1" {
@@ -144,5 +159,42 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	tampered.Payload["workloadReleasePrivateInputDigest"] = "sha256:substituted"
 	if _, err := adapter.OpenPrivateWorkloadRelease(ctx, tampered, keys); err == nil {
 		t.Fatal("private workload input opened after signed digest substitution")
+	}
+}
+
+func privateInputQualification(t *testing.T, intent pipeline.WorkloadReleaseIntent) (model.ReleaseQualification, string) {
+	t.Helper()
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x71}, ed25519.SeedSize))
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	qualification := model.ReleaseQualification{
+		SchemaVersion: model.ReleaseQualificationSchema,
+		ID:            "qualification-" + intent.App,
+		App:           intent.App,
+		Environment:   "staging",
+		DeploymentID:  "qualified-deployment",
+		SourceSHA:     intent.SourceRevision,
+		Artifact:      intent.TargetImage,
+		IssuedAt:      now.Add(-time.Minute),
+		ExpiresAt:     now.Add(time.Hour),
+		Candidate: model.ReleaseCandidate{Attestation: model.ReleaseAttestationIdentity{
+			MaterialSHA: intent.SourceRevision, SubjectDigest: intent.TargetImageDigest,
+		}},
+	}
+	resignPrivateInputQualification(t, &qualification)
+	trusted := base64.RawStdEncoding.EncodeToString(privateKey.Public().(ed25519.PublicKey))
+	return qualification, trusted
+}
+
+func resignPrivateInputQualification(t *testing.T, qualification *model.ReleaseQualification) {
+	t.Helper()
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x71}, ed25519.SeedSize))
+	payload := []byte(model.CanonicalReleaseQualificationPayload(*qualification))
+	keyID := model.ReleaseQualificationKeyID(privateKey.Public().(ed25519.PublicKey))
+	signature := base64.RawStdEncoding.EncodeToString(ed25519.Sign(privateKey, model.DSSEPAE(model.ReleaseQualificationPayloadType, payload)))
+	qualification.KeyID, qualification.Signature = keyID, signature
+	qualification.DSSE = model.DSSEEnvelope{
+		PayloadType: model.ReleaseQualificationPayloadType,
+		Payload:     base64.RawStdEncoding.EncodeToString(payload),
+		Signatures:  []model.DSSESignature{{KeyID: keyID, Sig: signature}},
 	}
 }
