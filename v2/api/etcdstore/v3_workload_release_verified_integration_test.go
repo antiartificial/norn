@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
@@ -135,15 +136,63 @@ func TestV3WorkloadReleaseStagedTargetBindingIsClaimFencedAndWriteOnce(t *testin
 		t.Fatalf("acquired=%v err=%v", acquired, err)
 	}
 	defer lock.Release()
+	planDigest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageInput, err := json.Marshal(workloadReleaseStageTargetEffectInput{PlanDigest: planDigest, TargetJobID: intent.TargetJobID,
+		DeploymentID: intent.TargetDeploymentID, SpecDigest: intent.TargetSpecDigest, Image: intent.TargetImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageEffects, err := NewV3WorkloadReleaseEffectReservations(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: adapter.authority, Resource: "app/" + app + "/workload-release/" + intent.Region,
+		OperationClaim: effect.OperationClaim{OperationID: claim.OperationID(), OwnerID: claim.OwnerID(), Generation: claim.Generation()},
+		Stage:          workloadReleaseStageTargetEffectStage, Supervisor: workloadReleaseStageTargetSupervisor,
+		SupervisorExecutionID: workloadReleaseStageTargetExecutionID(claim.OperationID(), planDigest), LaunchPayload: stageInput}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongTarget := reservation
+	var changedStageInput workloadReleaseStageTargetEffectInput
+	if err := json.Unmarshal(wrongTarget.LaunchPayload, &changedStageInput); err != nil {
+		t.Fatal(err)
+	}
+	changedStageInput.TargetJobID = "substituted-target-job"
+	wrongTarget.LaunchPayload, err = json.Marshal(changedStageInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongTarget.InputDigest, err = effect.ComputeInputDigest(wrongTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stageEffects.Reserve(ctx, wrongTarget); err == nil {
+		t.Fatal("stage effect for a substituted target matched the signed plan")
+	}
+	reserved, err := stageEffects.Reserve(ctx, reservation)
+	if err != nil || !reserved.Created {
+		t.Fatalf("stage effect reservation=%+v err=%v", reserved, err)
+	}
+	if allowed, err := adapter.MarkWorkloadReleaseStageTargetAttempt(ctx, claim, lock, reserved.Record.Token.EffectID, "runtime-1"); err != nil || !allowed {
+		t.Fatalf("stage attempt allowed=%v err=%v", allowed, err)
+	}
+	if allowed, err := adapter.MarkWorkloadReleaseStageTargetAttempt(ctx, claim, lock, reserved.Record.Token.EffectID, "runtime-2"); err != nil || allowed {
+		t.Fatalf("replayed stage attempt allowed=%v err=%v", allowed, err)
+	}
 	observer := &workloadReleaseTargetObserver{observation: nomad.DeploymentJobObservation{State: nomad.DeploymentJobNotFound}}
-	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err == nil {
+	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, reserved.Record.Token.EffectID, observer); err == nil {
 		t.Fatal("missing Nomad target was bound before exact job readback")
 	}
 	if observer.calls != 1 || observer.request.ExpectedJobModifyIndex != 0 {
 		t.Fatalf("target lookup did not use exact create-only request: calls=%d request=%+v", observer.calls, observer.request)
 	}
 	observer.observation = nomad.DeploymentJobObservation{State: nomad.DeploymentJobFound, Version: 9, JobModifyIndex: 47}
-	written, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer)
+	written, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, reserved.Record.Token.EffectID, observer)
 	if err != nil {
 		t.Fatalf("binding=%+v err=%v", written, err)
 	}
@@ -151,25 +200,32 @@ func TestV3WorkloadReleaseStagedTargetBindingIsClaimFencedAndWriteOnce(t *testin
 	if observer.calls != 2 || observer.request.EffectiveJobID() != intent.TargetJobID || observer.request.ExpectedJobModifyIndex != 0 || observer.request.JobDigest != strings.TrimPrefix(intent.TargetJobDigest, "sha256:") {
 		t.Fatalf("observer did not receive exact create-only target identity: calls=%d request=%+v", observer.calls, observer.request)
 	}
-	resolved, loaded, accepted, err := adapter.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, "stage-effect-1")
+	completedEffect, _, _, err := stageEffects.loadToken(ctx, reserved.Record.Token)
+	if err != nil || completedEffect.Lifecycle != effect.LifecycleCompleted || completedEffect.Completion == nil || completedEffect.Completion.Verification.ResultDigest != written.ObservationDigest {
+		t.Fatalf("stage effect was not completed from the exact target readback: record=%+v err=%v", completedEffect, err)
+	}
+	if _, unresolved, err := stageEffects.UnresolvedForResource(ctx, adapter.authority, reservation.Resource); err != nil || unresolved {
+		t.Fatalf("completed stage effect still holds the shared app gate: unresolved=%v err=%v", unresolved, err)
+	}
+	resolved, loaded, accepted, err := adapter.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, reserved.Record.Token.EffectID)
 	if err != nil || resolved.TargetJobVersion != 9 || resolved.TargetJobModifyIndex != 47 || loaded != binding || accepted.Operation.ID != operation.ID {
 		t.Fatalf("resolved=%+v binding=%+v accepted=%+v err=%v", resolved, loaded, accepted.Operation, err)
 	}
-	if again, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err != nil || again != binding {
+	if again, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, reserved.Record.Token.EffectID, observer); err != nil || again != binding {
 		t.Fatalf("same binding replay=%+v err=%v", again, err)
 	}
 	observer.observation.Version++
 	observer.observation.JobModifyIndex++
-	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err == nil {
+	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, reserved.Record.Token.EffectID, observer); err == nil {
 		t.Fatal("a different staged target overwrote the write-once binding")
 	}
 	if _, err := client.Delete(ctx, adapter.ownerKey(operation.ID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err == nil {
+	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, reserved.Record.Token.EffectID, observer); err == nil {
 		t.Fatal("expired operation claim could write staged target evidence")
 	}
-	if _, _, _, err := adapter.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, "stage-effect-1"); err == nil {
+	if _, _, _, err := adapter.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, reserved.Record.Token.EffectID); err == nil {
 		t.Fatal("expired operation claim could resolve staged target evidence")
 	}
 }

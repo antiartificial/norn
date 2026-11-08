@@ -34,10 +34,10 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 
 | Milestone | Status | Work | Exit evidence | Can run alongside |
 | --- | --- | --- | --- | --- |
-| M5-A: offline protocol | Partial: bounded statechart, fake-driver lost-response matrix, pure plan/binding resolver, and claim-fenced write-once etcd binding pass locally; admission/stage integration is absent. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on ambiguous create. | M5-B, input-provenance inventory, M5-C design |
+| M5-A: offline protocol | Partial: bounded statechart, fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, and a one-use stage attempt marker pass locally; API admission and stage worker integration are absent. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on ambiguous create. | M5-B, input-provenance inventory, M5-C design |
 | M5-B: immutable input contract | Partial: provenance inventory, exact SOPS snapshot capture, purpose-separated envelope primitive, and plan-bound observed target binding exist; etcd/V3 still does not resolve candidate qualification or durably retain release inputs. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Add the etcd private record and accepted-release transaction; reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; envelope and acceptance commit atomically; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
 | M5-C: atomic release admission | Not implemented: no operator/API acceptance path exists. | Add the authenticated operator API/CLI admission and etcd transaction for idempotency, signature, single-app mutation slot, current serving/route predecessor, desired count, and Fleet generation. | Replay returns the same operation; key reuse with a different candidate conflicts; concurrent deploy/scale/release races admit at most one; stale predecessor writes nothing. | M5-A/B |
-| M5-D: private stage and binding | Not implemented. | Stage one immutable target privately, without public route publication; persist a write-once binding only after exact Nomad source/no-diff and job-revision readback. | Fault matrix proves same-target recovery or conservative hold, never an unreviewed duplicate; no route changes during stage. | M5-E test harness |
+| M5-D: private stage and binding | Partial: signed-plan-bound stage effect reservation, shared app gate, one-use attempt marker, exact Nomad lookup, and write-once binding seams exist; no worker yet constructs/stages the immutable job or recovers the external create end to end. | Wire pinned private inputs and candidate provenance into a claimed worker; construct one target job, reserve/mark the stage effect, perform create-only CAS, read exact source/no-diff and revision, then bind before health/route processing. | Fault matrix proves same-target recovery or conservative hold, never an unreviewed duplicate; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
 | M5-F: DO staging workload release | Partial: historical 2→3→2 scale, sequential drain, and canary probes passed; the 2026-11-08 public route serves source `be5ca5d…` across two reported allocations. The durable second-release operation receipt has not been re-read, and mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; after M5-A–E, run fixed-image resize and mixed-version recovery through the release-owned admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |
 | M5-G: independent Mini V3 upgrade | Complete for the 2026-11-07 direct V3 adoption; a 2026-11-08 read-only Mini refresh confirms a running V3 release and host services. | Retain the signed adoption/controller-repair receipts and repeat candidate-specific backup, compatibility, and postflight checks for every future Mini release. Keep Mini independent of Fleet. | Signed target `bba290d…`, controller journal and preservation receipt, schema-51 postflight, and current API/host readback on signed repair source `d4dc88e…`. This does not establish uninterrupted service or rollback across future incompatible schema changes. | Documentation; M6 low-interruption/rollback work |
@@ -189,8 +189,20 @@ has been observed. The plan-to-binding resolver and etcd write-once binding
 store are implemented locally: binding requires the signed plan, live operation
 claim, app lock, and unchanged Fleet target generation; replay of the same
 binding is idempotent, while a conflicting binding or stale claim is rejected.
-These changes are at PR #302 head `a2dfc9da` and required CI remains in
-progress. They do not yet constitute an API admission path or stage controller.
+These implementation seams are on PR #302. They do not yet constitute an API
+admission path or a stage controller.
+
+The stage effect now has a signed-plan validator and reserves through the
+shared app mutation gate. A claim-fenced one-use attempt marker is required
+before target binding; the binding path resolves the durable stage effect,
+checks the marker, performs an exact create-only Nomad lookup, and writes the
+observation once. Binding, successful effect completion, and app-gate release
+commit in one etcd transaction, so a crash cannot leave a written binding
+with a live staging gate or a completed stage without its binding. This is
+still an offline controller seam: no worker yet builds and submits the staged
+job or recovers a lost create response through this effect end to end.
+Candidate provenance, private input retention, and operator/API admission
+also remain open.
 
 ## Qualification order
 

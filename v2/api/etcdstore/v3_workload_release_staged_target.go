@@ -11,6 +11,7 @@ import (
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
@@ -41,6 +42,108 @@ type claimedWorkloadReleasePlan struct {
 func (s *V3OperationStore) workloadReleaseStagedTargetKey(operationID string) string {
 	sum := sha256.Sum256([]byte(operationID))
 	return s.prefix + "/v3/workload-release-staged-targets/" + hex.EncodeToString(sum[:])
+}
+
+func (s *V3OperationStore) workloadReleaseStageTargetEffect(ctx context.Context, operationID, effectID string) (effect.Record, string, int64, error) {
+	index, err := s.kv.Get(ctx, s.prefix+"/v3/effects/tokens/"+effectID)
+	if err != nil || len(index.Kvs) != 1 {
+		return effect.Record{}, "", 0, fmt.Errorf("workload release stage effect is unavailable")
+	}
+	key := string(index.Kvs[0].Value)
+	if !strings.HasPrefix(key, s.prefix+"/v3/effects/workload-release/") {
+		return effect.Record{}, "", 0, fmt.Errorf("workload release stage effect belongs to another namespace")
+	}
+	response, err := s.kv.Get(ctx, key)
+	var record effect.Record
+	if err != nil || len(response.Kvs) != 1 || json.Unmarshal(response.Kvs[0].Value, &record) != nil ||
+		record.Token.EffectID != effectID || record.Reservation.OperationClaim.OperationID != operationID ||
+		record.Reservation.Stage != workloadReleaseStageTargetEffectStage || key != (&V3CanaryEffectReservations{operations: s, namespace: "workload-release"}).effectKey(record.Reservation) {
+		return effect.Record{}, "", 0, fmt.Errorf("workload release stage effect identity is invalid")
+	}
+	return record, key, response.Kvs[0].ModRevision, nil
+}
+
+// MarkWorkloadReleaseStageTargetAttempt durably grants at most one Nomad
+// create attempt for the reserved stage effect under the live operation claim.
+func (s *V3OperationStore) MarkWorkloadReleaseStageTargetAttempt(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, effectID, runtimeInstanceID string) (bool, error) {
+	verified, err := s.verifyClaimedWorkloadReleasePlan(ctx, claim, lock)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(runtimeInstanceID) == "" {
+		return false, fmt.Errorf("workload release stage attempt requires a controller instance identity")
+	}
+	record, recordKey, recordRevision, err := s.workloadReleaseStageTargetEffect(ctx, claim.OperationID(), effectID)
+	if err != nil {
+		return false, err
+	}
+	digest, err := verified.Plan.Digest()
+	if err != nil || record.Reservation.OperationClaim.Generation != claim.Generation() || record.Reservation.SupervisorExecutionID != workloadReleaseStageTargetExecutionID(claim.OperationID(), digest) {
+		return false, fmt.Errorf("workload release stage effect differs from current claim or signed plan")
+	}
+	attemptKey := workloadReleaseStageTargetAttemptKey(s.prefix, record.Token)
+	prior, err := s.kv.Get(ctx, attemptKey)
+	if err != nil {
+		return false, err
+	}
+	if len(prior.Kvs) == 1 {
+		var attempt workloadReleaseStageTargetAttempt
+		if json.Unmarshal(prior.Kvs[0].Value, &attempt) != nil || attempt.Token != record.Token || attempt.InputDigest != record.Reservation.InputDigest {
+			return false, fmt.Errorf("workload release stage attempt marker is invalid")
+		}
+		return false, nil
+	}
+	if record.Lifecycle != effect.LifecycleReserved {
+		return false, effect.ErrStaleToken
+	}
+	ownerKey := s.ownerKey(claim.OperationID())
+	owner, err := s.kv.Get(ctx, ownerKey)
+	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 || string(owner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) {
+		return false, store.ErrOperationOwnershipLost
+	}
+	gateKey := (&V3CanaryEffectReservations{operations: s, namespace: "workload-release"}).gateKey(verified.App)
+	marker := workloadReleaseStageTargetAttempt{Token: record.Token, InputDigest: record.Reservation.InputDigest, RuntimeInstanceID: runtimeInstanceID}
+	encoded, err := json.Marshal(marker)
+	if err != nil {
+		return false, err
+	}
+	txn, err := s.kv.Txn(ctx).If(
+		clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", verified.OperationRevision),
+		clientv3.Compare(clientv3.ModRevision(ownerKey), "=", owner.Kvs[0].ModRevision),
+		clientv3.Compare(clientv3.Value(ownerKey), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
+		clientv3.Compare(clientv3.ModRevision(recordKey), "=", recordRevision),
+		clientv3.Compare(clientv3.Value(gateKey), "=", recordKey),
+		clientv3.Compare(clientv3.CreateRevision(attemptKey), "=", 0),
+	).Then(clientv3.OpPut(attemptKey, string(encoded))).Commit()
+	if err != nil {
+		return false, err
+	}
+	if !txn.Succeeded || lock.Context().Err() != nil {
+		return false, store.ErrOperationOwnershipLost
+	}
+	return true, nil
+}
+
+func (s *V3OperationStore) verifyWorkloadReleaseStageTargetAttempt(ctx context.Context, claim store.OperationClaim, effectID string, plan pipeline.WorkloadReleasePlan) (workloadReleaseStageTargetAttempt, error) {
+	record, _, _, err := s.workloadReleaseStageTargetEffect(ctx, claim.OperationID(), effectID)
+	if err != nil {
+		return workloadReleaseStageTargetAttempt{}, err
+	}
+	digest, err := plan.Digest()
+	if err != nil || record.Reservation.SupervisorExecutionID != workloadReleaseStageTargetExecutionID(claim.OperationID(), digest) ||
+		record.Reservation.OperationClaim.Generation > claim.Generation() || record.Lifecycle != effect.LifecycleReserved && record.Lifecycle != effect.LifecycleLaunched && record.Lifecycle != effect.LifecycleCompleted {
+		return workloadReleaseStageTargetAttempt{}, fmt.Errorf("workload release stage effect does not match the accepted target")
+	}
+	attemptKey := workloadReleaseStageTargetAttemptKey(s.prefix, record.Token)
+	response, err := s.kv.Get(ctx, attemptKey)
+	var attempt workloadReleaseStageTargetAttempt
+	if err != nil || len(response.Kvs) != 1 || json.Unmarshal(response.Kvs[0].Value, &attempt) != nil || attempt.Token != record.Token || attempt.InputDigest != record.Reservation.InputDigest {
+		return workloadReleaseStageTargetAttempt{}, fmt.Errorf("workload release stage target has no valid one-use attempt marker")
+	}
+	if strings.TrimSpace(attempt.RuntimeInstanceID) == "" {
+		return workloadReleaseStageTargetAttempt{}, fmt.Errorf("workload release stage attempt has no controller instance identity")
+	}
+	return attempt, nil
 }
 
 func (s *V3OperationStore) verifyClaimedWorkloadReleasePlan(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock) (claimedWorkloadReleasePlan, error) {
@@ -130,6 +233,10 @@ func (s *V3OperationStore) BindClaimedWorkloadReleaseTarget(ctx context.Context,
 	if observer == nil || strings.TrimSpace(effectID) == "" {
 		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release target observer and stage effect are required")
 	}
+	attempt, err := s.verifyWorkloadReleaseStageTargetAttempt(ctx, claim, effectID, verified.Plan)
+	if err != nil {
+		return pipeline.WorkloadReleaseStagedTarget{}, err
+	}
 	request := nomad.CASDeploymentJobRequest{
 		App: verified.Plan.Intent.TargetJobID, JobID: verified.Plan.Intent.TargetJobID,
 		Region: verified.Plan.Intent.NomadRegion, Namespace: verified.Plan.Intent.Namespace,
@@ -184,6 +291,29 @@ func (s *V3OperationStore) BindClaimedWorkloadReleaseTarget(ctx context.Context,
 	if binding.ClaimGeneration != claim.Generation() {
 		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("new staged target binding must be written by its current claim generation")
 	}
+	stageEffect, stageEffectKey, stageEffectRevision, err := s.workloadReleaseStageTargetEffect(ctx, claim.OperationID(), effectID)
+	if err != nil || stageEffect.Lifecycle != effect.LifecycleReserved && stageEffect.Lifecycle != effect.LifecycleLaunched {
+		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release stage effect is not open for target binding")
+	}
+	attemptKey := workloadReleaseStageTargetAttemptKey(s.prefix, stageEffect.Token)
+	attemptRecord, err := s.kv.Get(ctx, attemptKey)
+	var storedAttempt workloadReleaseStageTargetAttempt
+	if err != nil || len(attemptRecord.Kvs) != 1 || json.Unmarshal(attemptRecord.Kvs[0].Value, &storedAttempt) != nil || storedAttempt != attempt {
+		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release stage attempt changed before target binding")
+	}
+	stageEffect.Lifecycle = effect.LifecycleCompleted
+	stageEffect.Execution = effect.ExecutionIdentity{Supervisor: stageEffect.Reservation.Supervisor,
+		SupervisorExecutionID: stageEffect.Reservation.SupervisorExecutionID, RuntimeInstanceID: attempt.RuntimeInstanceID}
+	stageEffect.Completion = &effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: effect.Verification{
+		Decision: effect.VerificationSucceeded, InputDigest: stageEffect.Reservation.InputDigest, ResultDigest: binding.ObservationDigest,
+		ResultReference: key, SupervisorExecutionID: stageEffect.Reservation.SupervisorExecutionID, RuntimeInstanceID: attempt.RuntimeInstanceID,
+		EvidenceSource: "nomad-exact-job-readback", EvidenceReference: fmt.Sprintf("%s/%s/%d/%d", request.Region, request.EffectiveJobID(), observation.Version, observation.JobModifyIndex),
+		ObservedAt: time.Now().UTC().Truncate(time.Microsecond),
+	}}
+	stageEffectBytes, err := json.Marshal(stageEffect)
+	if err != nil {
+		return pipeline.WorkloadReleaseStagedTarget{}, err
+	}
 	if lock.Context().Err() != nil {
 		return pipeline.WorkloadReleaseStagedTarget{}, store.ErrOperationOwnershipLost
 	}
@@ -193,8 +323,12 @@ func (s *V3OperationStore) BindClaimedWorkloadReleaseTarget(ctx context.Context,
 		clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
 		clientv3.Compare(clientv3.Value(s.appLockKey(verified.App)), "=", lock.Fence()),
 		clientv3.Compare(clientv3.ModRevision(s.fleetAppTargetKey(verified.Target.App, verified.Target.ControlEnvironment)), "=", verified.TargetRevision),
+		clientv3.Compare(clientv3.ModRevision(stageEffectKey), "=", stageEffectRevision),
+		clientv3.Compare(clientv3.Value((&V3CanaryEffectReservations{operations: s, namespace: "workload-release"}).gateKey(verified.App)), "=", stageEffectKey),
+		clientv3.Compare(clientv3.ModRevision(attemptKey), "=", attemptRecord.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.CreateRevision(key), "=", 0),
-	).Then(clientv3.OpPut(key, string(encoded))).Commit()
+	).Then(clientv3.OpPut(key, string(encoded)), clientv3.OpPut(stageEffectKey, string(stageEffectBytes)),
+		clientv3.OpDelete((&V3CanaryEffectReservations{operations: s, namespace: "workload-release"}).gateKey(verified.App))).Commit()
 	if err != nil {
 		return pipeline.WorkloadReleaseStagedTarget{}, err
 	}

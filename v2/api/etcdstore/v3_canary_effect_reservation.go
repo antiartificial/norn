@@ -190,7 +190,7 @@ func (s *V3CanaryEffectReservations) Reserve(ctx context.Context, r effect.Reser
 	if s.effectNamespace() == "deploy" {
 		app, err = s.validateDeploymentEffectReservation(ctx, r, op.Operation)
 	} else if s.effectNamespace() == "workload-release" {
-		app, err = validateWorkloadReleaseEffectReservation(r, op.Operation, s.operations.authority)
+		app, err = s.validateWorkloadReleaseEffectReservation(ctx, r, op.Operation)
 	} else if s.effectNamespace() == "scale" {
 		app, err = validateScaleEffectReservation(r, op.Operation, s.operations.authority)
 	} else {

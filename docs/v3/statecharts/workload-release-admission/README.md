@@ -26,10 +26,15 @@ when the job identity does not match. A delayed create may still arrive after
 the controller holds, but the old workload remains active and no route change
 or stop follows from that late registration.
 
-In code, the model's matching-target observation is now an explicit runtime
-boundary: `BindClaimedWorkloadReleaseTarget` reloads the signed plan, derives
-the create-only Nomad lookup from its target identity and job digest, calls
-`LookupDeploymentJobRevision`, and only then writes the claim-fenced binding.
+In code, the model's create permission and matching-target observation map to
+durable runtime boundaries. The workload-release effect ledger validates a
+stage reservation against the signed plan and shared app gate;
+`MarkWorkloadReleaseStageTargetAttempt` grants one create attempt under the
+live claim. `BindClaimedWorkloadReleaseTarget` then reloads the signed plan,
+requires that attempt marker, derives the create-only Nomad lookup from its
+target identity and job digest, calls `LookupDeploymentJobRevision`, and only
+then writes the claim-fenced binding. The binding, successful stage-effect
+completion, and app-effect-gate release share one etcd transaction.
 The etcd integration test verifies that a not-found response writes nothing,
 that the lookup uses the signed target with expected modify index zero, and
 that a conflicting later revision cannot overwrite the first binding. The
