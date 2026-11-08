@@ -32,7 +32,7 @@ app Droplets, and explicit-context provider inventory agrees. The older local
 only control and ingress; the [topology audit](staging-topology-source-audit-2026-11-08.md)
 records why that five-node view is stale. Current staging has one app pool;
 the separate future fresh-Fleet contract is two pools, General + Stateful.
-Open [norn-fleet PR #941](https://github.com/antiartificial/norn-fleet/pull/941)
+[norn-fleet PR #941](https://github.com/antiartificial/norn-fleet/pull/941)
 contains the credential-free nine-node input slice and an eight-of-nine
 partial-output hold. Its documented command passes 81 tests locally, and
 protected CI run `42477659325` passed. The PR remains candidate
@@ -61,8 +61,8 @@ protocol. Do not delete code or tests based on names alone.
 The documented fresh-Fleet war-game command was run against `norn-fleet` on
 2026-11-08: **81 tests passed** locally in 31 seconds. The command lists
 checkpoint coverage explicitly, and the recovery and adoption tests import
-fixture modules instead of test classes. Open PR #941 carries that war-game;
-its protected validation run `42477659325` passed. A separate open PR,
+fixture modules instead of test classes. PR #941 carries that war-game;
+its protected validation run `42477659325` passed. A separate PR,
 [norn-fleet PR #942](https://github.com/antiartificial/norn-fleet/pull/942),
 changes workflow collection to classes defined by each test module. A local
 comparison preserves all 4,236 distinct test IDs and removes 248 repeated
@@ -100,7 +100,7 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
 ### M2. Build deterministic offline fitness
 
 - [ ] Review and merge the credential-free `staging/nyc3` input vertical slice
-  in open `norn-fleet` PR #941. It calls production
+  in `norn-fleet` PR #941. It calls production
   plan-manifest, account/backend, topology, inventory, recovery-guard, and
   local PKI functions with synthetic inputs; substitution and eight-of-nine
   output hold before bootstrap. Its documented 81-test command passes
@@ -180,10 +180,10 @@ Fresh-Fleet input inventory from the source audit:
 | Network/SSH | Registered SSH fingerprint, protected runner private-key path, admin `/32`s, node host keys from first boot. | Synthetic absent/substituted key and firewall inputs; host-key freshness remains live read-only proof. |
 | Current staging topology | Protected `norn-fleet` main declares 3 control + 2 ingress + 4 app Droplets (9 total), one app pool labeled `workload: app`. Provider inventory through explicit `work` context matches counts, tags, and sizes. Managed PostgreSQL and MySQL are separate database services. | Fresh protected state, node enrollment, control-plane, workload placement, and route health remain unverified. The nine-node model matches the count shape but does not prove workflow implementation or exact state recovery. |
 | Future fresh-Fleet application pools | User selected two app pools for future new Fleets. Current DO staging remains one app pool and will not be migrated as part of this contract. | [Contract fields and recovery requirements](fresh-fleet-two-app-pool-contract.md) are recorded. Roles are general + stateful; stable IDs, sizes, min/desired/max, cost, placement, and workload/recovery semantics remain open before changing provider source. |
-| Node/bootstrap identity | Protected runner OIDC and writer fence; reconciliation derives inventory from provider outputs and invokes Ansible. PKI is generated per cluster after create. | Open `norn-fleet` PR #941 joins synthetic provider outputs→inventory→local PKI and checks exact count, restricted modes, secret-free evidence, and repeat digests. It stops before SSH/Ansible; protected interrupted/repeated reconciliation remains open. |
+| Node/bootstrap identity | Protected runner OIDC and writer fence; reconciliation derives inventory from provider outputs and invokes Ansible. PKI is generated per cluster after create. | `norn-fleet` PR #941 joins synthetic provider outputs→inventory→local PKI and checks exact count, restricted modes, secret-free evidence, and repeat digests. It stops before SSH/Ansible; protected interrupted/repeated reconciliation remains open. |
 | Service credentials | Many initial ACL, gossip, etcd, Norn, observability, registry, TLS, and optional Tailscale values are supplied through protected owner files. Nomad/Norn runtime tokens are generated or rotated server-side; the initial Norn etcd token expires after 72h. | Finish per-file producer, owner/mode, scope, expiry, rotation, and revoke evidence; qualify each owning service's rotation and revocation path. |
 
-The helper-level war-game in open `norn-fleet` PR #941 covers plan binding, provider/backend
+The helper-level war-game in `norn-fleet` PR #941 covers plan binding, provider/backend
 checks, topology/inventory/PKI transformations, partial-inventory hold, local
 PKI generation/idempotency, and secret redaction. A separate production-handler
 fake-provider round trip covers lost response, same-intent recovery, and
