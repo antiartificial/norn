@@ -7,6 +7,36 @@ an `app.workload-release` operation. A production-driver crash matrix and
 live qualification remain open as of 2026-11-08.
 This note authorizes no live workload, route, or provider change.
 
+## Release-readiness milestones and order
+
+The current code and evidence support a staged plan, not a claim that V3 is
+ready to update either environment. Keep the independent Mini and the DO
+staging Fleet as separate release lanes. The DO provider inventory is not
+evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
+
+| Milestone | Status | Work | Exit evidence | Can run alongside |
+| --- | --- | --- | --- | --- |
+| M5-A: offline protocol | Partial: bounded statechart and fake-driver lost-response matrix pass; admission/stage integration is absent. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on ambiguous create. | M5-B, input-provenance inventory, M5-C design |
+| M5-B: immutable input contract | Partial inventory: signed staging qualification and immutable deployment/spec/image records exist through the existing DB handler; etcd/V3 does not yet resolve them, and generic runtime secret revisions are not pinned. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; unresolved/rotating inputs fail closed. | M5-A, M5-C design |
+| M5-C: atomic release admission | Not implemented: no operator/API acceptance path exists. | Add the authenticated operator API/CLI admission and etcd transaction for idempotency, signature, single-app mutation slot, current serving/route predecessor, desired count, and Fleet generation. | Replay returns the same operation; key reuse with a different candidate conflicts; concurrent deploy/scale/release races admit at most one; stale predecessor writes nothing. | M5-A/B |
+| M5-D: private stage and binding | Not implemented. | Stage one immutable target privately, without public route publication; persist a write-once binding only after exact Nomad source/no-diff and job-revision readback. | Fault matrix proves same-target recovery or conservative hold, never an unreviewed duplicate; no route changes during stage. | M5-E test harness |
+| M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
+| M5-F: DO staging workload release | Not run; provider inventory alone does not satisfy the DO runtime readiness gate. | After platform read-only health and capacity gates pass, test stateless `norn-fleet-canary`; test fixed-image 2→3→2 separately; then test mixed app versions. | Exact image/operation/route/drain receipts, healthy public probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-G preparation |
+| M5-G: independent Mini V3 upgrade | Not run; candidate-specific preflight must be refreshed before the final gate. | Re-read Mini preflight, backups, schema/runtime compatibility, signed candidate, service health, and recovery inputs; use its direct host/controller lane, never Fleet membership. | Candidate-specific pre/postflight, restored-service evidence, and recoverable prior release; interruption recorded if maintenance mode is selected. | Documentation and release automation |
+
+M5-A through M5-C are the next offline implementation priority. M5-B must
+identify a real source of qualified immutable candidates before M5-C exposes
+an operator action. M5-D/E require that contract. M5-F is the first workload
+qualification, and M5-G is the separate final Mini launch gate. M5-F and M5-G
+must not be inferred from one another. Run the platform/DO and Mini read-only
+readiness gates before scheduling either live lane.
+
+The fresh-Fleet bootstrap lane is separate from upgrading the existing DO
+staging Fleet. Its future two application pools default to **General** and
+**Stateful**; do not resize or reshape current staging to implement that
+default. Bootstrap still needs deterministic credential/input war-gaming and
+an idempotent controller recovery record before any provider mutation.
+
 ## Keep three changes separate
 
 1. **Replica resize:** change one workload's durable desired count while keeping

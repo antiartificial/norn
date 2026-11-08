@@ -68,6 +68,46 @@ For the first implementation, preserve the existing conservative recovery rule: 
 
 No runtime code has been changed to implement this design yet. Existing `WorkloadReleaseIntent` validation and its target-only-before-drain behavior remain authoritative. The protocol document's stale mixed-route-before-drain descriptions are corrected in the accompanying documentation change. Input provenance, stage effects, receipt digests, and every lineage reader must migrate as one release contract; a partial adapter is not a completed M5 lane.
 
+## Current input-provenance inventory
+
+The repository has useful candidate and deployment evidence, but these pieces
+do not yet form an etcd/V3 workload-release candidate authority:
+
+- `model.ReleaseQualification` binds app, staging deployment ID, source SHA,
+  content-addressed artifact, expiry, candidate identity, and staging signer.
+  The existing release handler emits and verifies it; normal release queueing
+  stores the qualification in deployment operation metadata. The relevant
+  paths are `v2/api/model/release.go` and `v2/api/handler/releases.go`. Those
+  handlers use the existing `Handler`/DB path; the etcd workload-release
+  verifier does not resolve or consume a qualification record.
+- The accepted deployment records `CommitSHA`, immutable image reference,
+  `SpecDigest`, environment, and regions. `v2/api/etcdstore/v3_deployment_acceptance.go`
+  retains the signed acceptance and immutable deployment projection. The
+  active serving target is resolved from the published route and its completed
+  deployment in `v2/api/etcdstore/v3_scale_target.go`.
+- `pipeline.BindDeploymentJobProvenance` binds deployment ID and spec digest
+  plus a digest of the exact accepted database binding payload. This is useful
+  lineage evidence, but the current release intent has no generic reference to
+  an immutable runtime secret revision. `InfraSpec.Secrets` carries names, and
+  `secrets.Manager` decrypts the current `secrets.enc.yaml` path; the interface
+  has no revision parameter. A name alone is not a restart-stable value/version.
+  The canonical spec digest is computed from YAML (including `Env`, which is
+  intentionally omitted from JSON), so it pins the spec bytes but does not pin
+  the separately encrypted secret file's selected revision.
+- Nomad job version, modify index, job digest, and observed allocation
+  identities are scheduler observations. The current strict release intent
+  requires them for execution, while the proposal correctly defers constructing
+  it until a private target has been read back and write-once bound.
+
+Therefore M5-B is **partially inventoried, contract not implemented**. The
+first candidate source must be an explicit adapter that verifies the signed
+qualification, confirms its successful staging deployment and app/spec
+binding, and resolves secret/catalog revisions without copying secret values
+into the signed plan. If the current store cannot provide a portable immutable
+reference for any required input, admission must refuse that candidate until
+the source contract is extended. Do not silently treat the legacy PostgreSQL
+qualification path as an etcd/V3 record.
+
 ## Open questions and risks
 
 - Which existing qualified-candidate record is authoritative for binding source, spec, and image to the same immutable build?
