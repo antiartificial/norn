@@ -1,58 +1,65 @@
 # DO staging topology source audit — 2026-11-08
 
-This audit reconciles the checked-in staging contract with the V3 release
-models. It is source evidence only; it does not prove current provider state
-or actual live membership.
+This audit distinguishes the current protected `norn-fleet` main source, an
+older local checkout, provider inventory, and unverified runtime health. The
+topology match is not proof of node enrollment, workload placement, or service
+availability.
 
-## Source evidence
+## Current protected source
 
-The current local `norn-fleet` checkout is at `cc2be083a00d6afd3964655519dc2abb580150b6`.
-The audited files are clean relative to that checkout:
+GitHub reports `antiartificial/norn-fleet` main at
+`4451767624b12cbc41cc32e160a10d4b46006e0f` (merge of PR #939). Its
+`environments/staging/nyc3/cluster.yaml` declares three pools:
 
-- `environments/staging/nyc3/cluster.yaml` declares two node pools: control
-  (`min=desired=max=3`) and ingress (`min=desired=2`, `max=3`). That is five
-  base compute nodes, with a separately approved one-node ingress scale-up
-  available for the 2→3→2 rehearsal.
-- `environments/staging/nyc3/main.tf` passes that `nodePools` map into the
-  DigitalOcean module. The module creates one Droplet per desired pool node
-  and exposes those Droplets through its sensitive `nodes` output.
-- The same root declares managed PostgreSQL and MySQL clusters separately.
-  Those databases are not application node pools and do not increase the
-  Droplet count.
-- The staging cluster document declares no application node pools.
+- 3 control Droplets (`s-2vcpu-4gb`);
+- 2 ingress Droplets (`s-1vcpu-2gb`);
+- 4 app Droplets (`s-2vcpu-4gb`).
 
-## Reconciliation
+The app pool is one pool labeled `workload: app`; this is not the future
+General + Stateful two-pool default. Managed PostgreSQL and MySQL are separate
+database services, not compute pools.
 
-Norn V3 documents and `FreshStagingRecovery.tla` currently describe a
-3-control + 2-ingress + 4-app (nine-node) target. The checked-in staging source
-does not implement that topology. Treat the nine-node chart as a proposed
-future Fleet scenario, not as the current DO staging contract or evidence of a
-deployed nine-node fleet. Prior notes describing a joined nine-node protected
-recovery test were not reproducible in the current Norn and `norn-fleet`
-checkouts during this audit; do not use that claim as a gate result without a
-test file and run record.
+The earlier local source audit used `norn-fleet` checkout
+`cc2be083a00d6afd3964655519dc2abb580150b6`, which declared only control and
+ingress pools. That checkout is behind the protected main source for this
+topology and must not be used as the current staging contract. Its state
+informs the origin of the stale five-node documentation, not today's source.
 
-The user separately specified that a new Fleet should default to two
-application node pools. That requirement is not represented in the current
-staging cluster document. Pool names, sizing, replica bounds, workload
-placement, and the relationship to control/ingress pools still need an
-explicit input contract before a new provider plan can be considered ready.
+## Provider readback
 
-## Live-state limit
+Read-only DigitalOcean API queries through explicit `work` context on
+2026-11-08 09:36 UTC found 9 active NYC3 Droplets with the expected control,
+ingress, and app tags/sizes, an active ingress load balancer, online managed
+PostgreSQL/MySQL, the expected project and VPC. This provider inventory agrees
+with the protected source's declared pool shape and desired counts. The
+default `norn-pilot` context is a different account; do not use it for staging
+inventory.
 
-The local `doctl` context does not match the pinned work-staging account. No
-provider inventory or health query was made. These source files establish the
-declared configuration only; current DO resource count, identities, and health
-remain unverified until the protected work-account read-only route is restored.
+This readback confirms provider-reported resources only. It does not establish
+exact protected-state identity, Nomad/Consul health, node enrollment, workload
+placement, Norn API health, public route health, or a successful platform
+release. The latest protected Genesis readback
+([42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411))
+failed in the source-capability check after private transport. Its pinned
+state and route inputs are from Oct 21, and the log does not identify which
+source object is absent. A new readback needs a fresh signed one-use intent
+bound to reviewed current inputs after that object availability is diagnosed.
 
-## Required follow-up
+## Reconciliation and next action
 
-1. Keep the current DO staging lane at its five-node source contract for
-   planning. Use the protected, fresh state/provider readback before making a
-   live claim.
-2. Define the future two-app-pool Fleet contract separately. Update its
-   validators, plan policy, bootstrap inputs, workflow, receipt, and recovery
-   model together before producing a reviewed plan.
-3. Reclassify the nine-node statechart as a proposed topology, or replace it
-   with a model derived from the adopted fresh-Fleet input contract. Do not
-   use it to claim coverage of the current staging workflow.
+The current DO staging Fleet is a 3-control + 2-ingress + 4-app, nine-node
+testbed. The nine-node statechart has the same pool counts and useful partial
+create/recovery invariants, but aggregates credentials and inputs and does not
+exercise the protected provider workflow. It must not be described as a live
+recovery qualification.
+
+The agreed General + Stateful two-app-pool default is for a future fresh
+Fleet. Its [input contract](fresh-fleet-two-app-pool-contract.md) and
+[separate model](statecharts/fresh-fleet-two-app-pools/README.md) do not change
+current staging. IDs, sizes, min/desired/max, cost limits, placement, and
+workload recovery policy remain open before provider-source changes.
+
+Before any DO write lane, obtain fresh protected state, route, and host-key
+receipts; verify private control APIs, etcd quorum, capabilities, workload and
+route health; and diagnose source-object availability. Provider inventory is
+not a substitute for those gates.

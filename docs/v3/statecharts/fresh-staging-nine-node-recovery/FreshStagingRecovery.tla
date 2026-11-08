@@ -1,8 +1,8 @@
 -------------------------- MODULE FreshStagingRecovery --------------------------
 EXTENDS Naturals, TLC
 
-\* Proposed 3-control + 2-ingress + 4-app topology only. The checked-in
-\* staging/nyc3 source declares five compute nodes and no app pools.
+\* 3-control + 2-ingress + 4-app shape matches protected norn-fleet main.
+\* Inputs, provider effects, and node identities remain abstract.
 MaxNodes == 9
 
 VARIABLES phase, inputsValid, intentBound, nonceUsed, providerNodes,

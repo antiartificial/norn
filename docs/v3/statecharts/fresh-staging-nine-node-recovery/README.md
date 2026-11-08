@@ -1,13 +1,15 @@
-# Proposed nine-node Fleet create and recovery model
+# Nine-node staging-topology create and recovery model
 
-This chart models a proposed 3-control + 2-ingress + 4-app Fleet, not the
-current checked-in `staging/nyc3` source. That source declares 3 control and 2
-ingress nodes, no application node pools, and separate managed databases; the
-current source has five base compute nodes. See the [topology source audit](../../staging-topology-source-audit-2026-11-08.md).
-The chart focuses on
-provider partial-create, lost response, exact state/provider readback, and
-same-intent forward recovery. Persistent staging has no sanctioned full-Fleet
-destroy path, so this model has no cleanup or retirement action.
+This chart models a 3-control + 2-ingress + 4-app Fleet. Those pool counts
+match protected `norn-fleet` main at
+`4451767624b12cbc41cc32e160a10d4b46006e0f` and the 2026-11-08 provider
+inventory. This is topology alignment, not a reproduction of the current
+protected input parser/workflow or proof of live bootstrap/recovery. The model
+abstracts inputs, provider calls, and node identities. It focuses on partial
+create, lost response, exact state/provider readback, and same-intent forward
+recovery. Persistent staging has no sanctioned full-Fleet destroy path, so
+this model has no cleanup or retirement action. See the [topology source
+audit](../../staging-topology-source-audit-2026-11-08.md).
 
 The aggregate `inputsValid` gate represents the saved plan and digest, capacity
 intent and one-use nonce, provider account identity, backend bucket/key/versioning,
@@ -26,15 +28,14 @@ match. It does not model live DigitalOcean APIs, Terraform resource-level
 dependency order, SSH, Ansible, PKI bytes, secret values, GitHub Actions
 artifact/environment behavior, or Norn's actual receipt APIs.
 
-This is a proposed protocol model for a topology that is not currently
-declared by the staging source. It is not evidence that a protected workflow
-implements each transition. Adopt a matching input contract, then replay each
-path against controller fixtures before treating this as qualification of a
-future Fleet.
+This protocol model matches the declared pool counts but is not evidence that
+the protected workflow implements each transition. Bind the model to the
+actual input parser and replay each path against controller fixtures before
+treating it as staging recovery qualification.
 
 ## TLC result
 
-TLC explored 102 states and 210 transitions. All nine configured invariants
+TLC explored 102 states and 210 transitions. All ten configured invariants
 and the deadlock check passed. Invalid/unadmitted input and unresolved identity
 mismatch are explicit safe hold states; other holds can read back and recover
 only when identity matches. The reader-facing chart groups resource-level

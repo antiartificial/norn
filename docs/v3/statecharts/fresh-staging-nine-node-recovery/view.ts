@@ -1,4 +1,4 @@
-export const title = "Proposed nine-node Fleet create and same-intent recovery";
+export const title = "Nine-node staging topology create and same-intent recovery";
 export const colors = { inputs: "blue", apply: "teal", hold: "orange", configure: "purple", done: "tan" };
 export const state = (v: any) => {
   if (v.phase === "inputs") return "Validate fresh plan and bootstrap inputs";

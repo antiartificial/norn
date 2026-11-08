@@ -1,7 +1,8 @@
 # V3 release fitness and controller plan
 
-Status: proposed execution order, reconciled against repository evidence on
-2026-11-07. This plan authorizes no deployment or provider mutation.
+Status: proposed execution order, reconciled against repository and
+provider-source evidence on 2026-11-08. This plan authorizes no deployment or
+provider mutation.
 
 The goal is to release Norn V3 through repeatable controllers with a small,
 reviewable operator decision, complete input accounting, deterministic offline
@@ -20,17 +21,18 @@ into a pass. Do not dispatch a write workflow until its preceding gate passes.
 
 | Area | Reconciled status | What remains unproven |
 |---|---|---|
-| Mini direct V3 | The Nov 7 launch record says the Mini completed controller-mediated V3 transition to `bba290db041e9f497c7161543c679d9d348b742d`, including schema 51, health, preservation receipt, and a signed repair after a PID-reuse race. Mini is independent of DO. | General online availability, future incompatible-schema rollback, and production readiness. Treat the older “Mini not upgraded” observation as an earlier checkpoint, not current state. |
-| DO staging Fleet | The launch record contains a completed 72h35m soak with 4,254 samples and zero recorded alarms, gaps, or invalid samples. Protected release-state readback passed on all three controls Nov 7. A later Genesis readback reached hosts at the Oct 21 pinned addresses but failed the source-capability check. | Current API health is unconfirmed: private `/api/health` and `/api/version` probes timed out. The Genesis attempt does not prove current provider identity or fresh host identity because its state and route pins are from Oct 21. A recent observability rollout also stopped on an unclassified etcd health error. The soak proves only its pinned run and interval. |
+| Mini direct V3 | On Nov 8 the independent Mini advanced to signed V3 RC `d4dc88e0c37003a1013caed444983b2eeb50fbcb`; smoke and host doctor passed. | General online availability, future incompatible-schema rollback, route assurance freshness, and production readiness. Treat the older `bba290d` observation as an earlier checkpoint. |
+| DO staging Fleet | The launch record contains a completed 72h35m soak with 4,254 samples and zero recorded alarms, gaps, or invalid samples. Protected release-state readback passed on all three controls Nov 7. Explicit-context DigitalOcean provider inventory on Nov 8 confirms the nine resources match protected `norn-fleet` main topology (3 control, 2 ingress, 4 app). | Current control/API/workload/route health is unconfirmed: private `/api/health` and `/api/version` probes timed out. The Genesis attempt does not prove current protected state or fresh host identity because its state and route pins are from Oct 21. A recent observability rollout also stopped on an unclassified etcd health error. Provider inventory and soak do not prove current service health. |
 | DO Genesis/readback | Protected run `42418784411` on Fleet merge `44517676` passed its pinned input checks and private management/control transport, then held because the management host's Norn source repository lacks the pinned capability commit or signed target commit; the log does not say which. Its state and route files date to Oct 21. | Refresh provider state and route/host-key receipts, diagnose source-object presence without mutation, then repeat readback under a fresh one-use intent. That run proves connectivity to pinned addresses, not current provider identity. |
-| Fresh DO Fleet | A provider `plan.yml`/`apply.yml` chain exists for `staging/nyc3`. Current checked-in source declares three control and two ingress Droplets, with no app pools; managed PostgreSQL and MySQL are separate services. The future two-app-pool default is specified as a contract skeleton in [the two-pool contract](fresh-fleet-two-app-pool-contract.md); the general + stateful role choice is captured; stable IDs, sizing, placement, and workload semantics remain unresolved. | The nine-node 3+2+4 model and earlier nine-node helper claims do not match the current source and are not staging qualification. The protected apply/recovery, fresh state/provider identity, same-intent replay, inventory/PKI/bootstrap, and terminal receipt remain unjoined. DO token permission scope and per-file credential lifecycle are not proven. Persistent staging has no whole-Fleet destroy lane. Genesis bootstrap itself does not create provider resources. |
+| Fresh DO Fleet | Protected `norn-fleet` main at `4451767624b12cbc41cc32e160a10d4b46006e0f` declares three control, two ingress, and four app Droplets; explicit-context provider inventory matches. Current staging has one app pool. A future two-app-pool default is specified in [the contract](fresh-fleet-two-app-pool-contract.md) with General + Stateful roles; stable IDs, sizing, placement, and workload semantics remain unresolved. | The nine-node model matches pool counts but aggregates inputs and is not staging workflow qualification. Protected apply/recovery, fresh protected state/provider identity, same-intent replay, inventory/PKI/bootstrap, and terminal receipt remain unjoined. DO token permission scope and per-file credential lifecycle are not proven. Persistent staging has no whole-Fleet destroy lane. Genesis bootstrap itself does not create provider resources. |
 | DO Norn release | The protected release runbook defines the existing Fleet all-stop, forward-only platform release path with exact artifacts, state, host keys, and a one-use runner. | Current health, post-fix Genesis readback, and a current end-to-end Norn release receipt. Mixed Norn control versions are not qualified. |
 | Workload changes | Application replica scale 2→3→2, app-node drain, and a 72h35m Fleet soak have historical evidence in the launch record. | Application mixed-version and schema-writer compatibility for each workload, loaded node-count resize, full node retirement, and online Norn control upgrade. |
 
 The M0 evidence ledger is reconciled in [LAUNCH-STATE.md](LAUNCH-STATE.md):
 the Mini result is current and independent of DO; the 72h35m soak is historical
-qualification; and current DO readiness remains held on the local account
-mismatch, stale state/route pins, and unresolved source-object readback failure.
+qualification; provider inventory is current but service health remains
+unverified; and protected readback is held on stale state/route pins and
+unresolved source-object availability.
 Earlier records remain as dated history. M0 completion means the evidence is
 classified accurately; it does not mean the DO Fleet is currently healthy.
 
@@ -57,12 +59,12 @@ does not identify whether the capability commit or target commit is missing.
 receipts or `held` with exact failing probes and no mutation. The soak is shown
 as completed qualification evidence, not as present-tense health.
 
-Current state: the soak is complete, but DO API health and current provider
-identity are unconfirmed. The local `doctl` context returned account UUID
-`05fe610a…`, not the work-staging account pinned by the protected workflow;
-no inventory was queried through that mismatched context. Post-fix Genesis
-readback is held on source-object availability. The latest run used Oct 21
-state/route files and failed read-only before any Genesis effect.
+Current state: the soak is complete and explicit-context provider inventory
+matches current main topology, but protected state identity and DO API/runtime
+health are unconfirmed. The local `norn-pilot` `doctl` context belongs to a
+different account; read-only inventory used explicit `work` context. Post-fix
+Genesis readback is held on source-object availability. The latest run used
+Oct 21 state/route files and failed read-only before any Genesis effect.
 
 The local Fleet source now distinguishes “target commit absent” from
 “capability commit absent” in this pre-effect check, with synthetic regression
@@ -111,7 +113,7 @@ input chain:
 | Approved plan and dispatch | Successful protected plan run/artifact SHA, Norn capacity plan UUID, one-use dispatch nonce, and destructive acknowledgement are rebound before apply. | Join into one typed intent/receipt; model replay, expired nonce, changed artifact, and lost apply response. |
 | Provider/state authority | Supplied `DO_WORK_TOKEN`; supplied Spaces key ID/secret and backend coordinates. Preflight verifies active account UUID and exact versioned `norn-work-fleet-state` bucket/key/region/endpoint. | Current preflight does not validate DO token permission scope. Define least privilege and add synthetic scope admission coverage. |
 | SSH/firewall | Registered DO public-key fingerprint, protected runner private-key path, admin IPv4 `/32`s, SSH user, and per-run `known_hosts`. | Manifest provenance and host-key freshness/rotation receipt; assert no private key enters Terraform state/artifacts. |
-| Topology | Checked-in `staging/nyc3/cluster.yaml` declares 3 control + 2 ingress Droplets (5 base nodes); ingress may scale to 3 for a separate rehearsal. There are no app pools; managed PostgreSQL/MySQL are separate services. | Current helper tests do not prove protected apply/recovery, exact state/provider identity, or terminal receipt. The claimed eight-of-nine partial-output fixture was not located in either checkout. The nine-node chart is a future proposal. Disposable-root saved-plan retirement is tested separately; persistent work-staging has no sanctioned whole-Fleet destroy lane. |
+| Topology | Protected `staging/nyc3` source at `4451767624b12cbc41cc32e160a10d4b46006e0f` declares 3 control + 2 ingress + 4 app Droplets (9 total); explicit-context provider inventory matches. Managed PostgreSQL/MySQL are separate services. | Current helper tests and the bounded nine-node model do not prove protected apply/recovery, exact state/provider identity, or terminal receipt. The claimed eight-of-nine partial-output fixture was not located in either checkout. Disposable-root saved-plan retirement is tested separately; persistent work-staging has no sanctioned whole-Fleet destroy lane. |
 | Apply authorization | Protected runner, Norn API/OIDC audience, short-lived run-scoped token, writer-fence DSN, one-use plan/nonce. | Lost runner, token expiry, and durable same-intent recovery cases in integrated harness. |
 | Host configuration | Post-create reconciliation reads provider outputs, builds inventory, validates owner-only bootstrap vars/SSH material, generates cluster PKI, then runs checked-in Ansible. | A field-level manifest now maps protected paths and secret families; a complete per-file producer, owner, expiry, rotation, and revocation record remains open. |
 | Generated PKI/runtime | `prepare_pki.py` generates cluster-scoped Consul/Nomad/etcd CA and node material. Nomad tokens are created/rotated server-side. Norn's initial etcd credential is generated server-side, stored controller-private, removed from host, and expires in 72 hours. | Prove rerun/idempotency and rotation/revoke behavior with synthetic material; never reuse cluster/node identity across independent Norns. |
@@ -121,10 +123,11 @@ Existing focused tests cover account preflight, PKI generation, release
 contract validation, Fleet hooks, and Consul/Nomad/etcd helpers. A new
 credential-free vertical slice exercises real plan binding, account/backend
 checks, provider-output inventory, partial-inventory hold, local PKI
-generation/idempotency, and synthetic output validation. The earlier notes
-claiming a current nine-node topology and an eight-of-nine partial-output
-fixture were not reproducible in the checked-out source or tests; the
-authoritative staging source declares five base Droplets. A separate
+generation/idempotency, and synthetic output validation. Earlier notes
+claiming a credential-free nine-node vertical slice and an eight-of-nine
+partial-output fixture were not reproducible in the checked-out source or
+tests. Protected main now confirms the current nine-node topology, but that
+does not establish an integrated input-to-recovery fixture. A separate
 round-trip test invokes the production durable `converge` and `recover` handlers
 with the existing local fake Norn/provider fixture for the existing Fleet's
 exact app-03 scale effect: fake apply commits then loses its response, and

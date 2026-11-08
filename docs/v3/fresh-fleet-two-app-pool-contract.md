@@ -5,14 +5,17 @@ Status: contract under definition. This does not change current
 
 ## Boundaries
 
-- Current DO staging is the checked-in three-control + two-ingress topology.
-  It has no app node pools. See the [source audit](staging-topology-source-audit-2026-11-08.md).
+- Current DO staging uses three control, two ingress, and four app Droplets
+  from one `workload: app` pool in protected `norn-fleet` main. Its topology
+  source and provider inventory agree, but runtime health is unverified. See
+  the [source audit](staging-topology-source-audit-2026-11-08.md).
 - A future fresh-Fleet default must declare two distinct application node
   pools. This contract is separate from Genesis, which installs a controller
   on an already-created Fleet, and from app replica scaling.
 - The requested future roles are **general** and **stateful**, one per pool.
   This records the operator's choice; it does not imply workload placement,
-  VM sizes, or capacity bounds from the old nine-node model.
+  VM sizes, or capacity bounds from the current single-app-pool staging source
+  or the abstract nine-node recovery model.
 
 ## Required intent fields
 

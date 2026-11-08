@@ -4,7 +4,8 @@
 for current Mini and DigitalOcean staging Fleet observations. Use the
 [release program milestones](release-program-milestones.md) for parallel
 workstreams and gate status, the [staging topology source audit](staging-topology-source-audit-2026-11-08.md)
-for the current five-node DO source versus the requested future app pools, and
+for the current nine-node DO source/provider shape versus the requested future
+General + Stateful pools, and
 the [future two-app-pool contract](fresh-fleet-two-app-pool-contract.md)
 for required inputs, recovery behavior, and unresolved sizing decisions. The
 [release fitness and controller plan](release-fitness-and-controller-plan.md)

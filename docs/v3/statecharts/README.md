@@ -12,7 +12,7 @@ provider state, host behavior, availability, or the implementation itself.
 | Workload mixed-version resize | 102 states, 279 steps; 10 invariants and deadlock check pass | Proposed protocol, not current controller behavior | Abstracts Nomad, app processes, database semantics, route implementation, and timing |
 | Fresh DO Fleet create and recovery | 308 states, 813 steps; 8 invariants and deadlock check pass | Bounded protected plan/apply, partial create, readback, same-intent recovery, PKI/configuration, exact cleanup | Three abstract node groups; detailed provider resources and secret lifecycle are omitted |
 | Future fresh Fleet with two app pools | 45 states, 98 steps; 14 invariants and deadlock check pass | General + stateful pool create/recovery, role-correct workload placement/readiness, stateful recovery proof, then shared inventory/configuration/receipt | Abstract counts/identities, provider API, secret lifecycle, workload-specific data integrity, and implementation behavior |
-| Proposed nine-node fresh Fleet create and recovery | 102 states, 210 steps; 9 invariants and deadlock check pass | Proposed 3+2+4 partial-create, fresh exact readback, same-intent forward recovery, then inventory/PKI/configuration | Not the checked-in `staging/nyc3` source, which declares 3 control + 2 ingress nodes and no app pools; node identities abstracted, inputs/credentials aggregate, no provider, GitHub Actions, SSH, Ansible, or teardown behavior |
+| Nine-node staging-topology create and recovery | 102 states, 210 steps; 10 invariants and deadlock check pass | 3+2+4 partial-create, fresh exact readback, same-intent forward recovery, then inventory/PKI/configuration; pool counts match protected `norn-fleet` main | Not wired to the protected provider workflow; node identities abstracted, inputs/credentials aggregate, no provider, GitHub Actions, SSH, Ansible, or teardown behavior |
 | Workload old-generation stop recovery | 10 states, 15 steps; 7 invariants and deadlock check pass | Bounded target-health and mixed-route gate, stop accepted/lost response, marker recovery, old allocation drain | Does not model effect-store crashes, signed admission, API dispatch, durable receipt loading, route publication, or live Nomad |
 | Workload route publication and recovery | 55 states, 111 steps; 8 invariants and deadlock check pass | Per-node mixed-route publication; atomic active-route/receipt CAS; same-generation recovery and fresh pre-stop route/inventory proof | Does not prove live workload authority, inventory source, route CAS store, ingress transport, or controller implementation |
 
@@ -24,7 +24,7 @@ provider state, host behavior, availability, or the implementation itself.
 - [Proposed workload mixed-version resize](workload-mixed-version/README.md)
 - [Fresh DO Fleet create and recovery](fresh-fleet-create/README.md)
 - [Future fresh Fleet with two app pools](fresh-fleet-two-app-pools/README.md)
-- [Proposed nine-node fresh Fleet create and recovery](fresh-staging-nine-node-recovery/README.md)
+- [Nine-node staging-topology create and recovery](fresh-staging-nine-node-recovery/README.md)
 - [Workload old-generation stop recovery](workload-stop-recovery/README.md)
 - [Workload route publication and recovery](workload-route-publication/README.md)
 
@@ -46,12 +46,12 @@ provider state, host behavior, availability, or the implementation itself.
 - Genesis covers an existing Fleet; the fresh-Fleet model is separate. The
   provider workflow's integrated input/credential tests, DO token permission
   scope, and exact live cleanup remain open despite the passing bounded model.
-- The proposed nine-node model is separate from both current staging source
-  and the five-node disposable model. Current `staging/nyc3` source is 3
-  control + 2 ingress with no app pools. The proposal assumes provider-scope
-  evidence at admission even though current preflight does not validate token
-  scope; it has no teardown action because persistent staging has no sanctioned
-  whole-Fleet destroy. Do not cite it as current staging recovery coverage.
+- The nine-node model's 3+2+4 pool counts match protected `norn-fleet` main
+  and the provider inventory, but its aggregate inputs do not prove the exact
+  source parser, protected workflow, or persistent staging recovery. It assumes
+  provider-scope evidence at admission even though current preflight does not
+  validate token scope; it has no teardown action because persistent staging
+  has no sanctioned whole-Fleet destroy.
 - No online mixed-version Norn control upgrade is modeled or qualified yet.
 
 Each lane directory contains the TLA+ spec, TLC config, chart view, Mermaid
