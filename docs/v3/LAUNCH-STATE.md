@@ -116,6 +116,13 @@ readback intent bound to the same verified state and host keys and an execution
 that uses the merged verifier. The previously signed intent and one-use runner
 authorization are terminal and must not be reused.
 
+The offline recovery contract is modeled in
+[`genesis-readback-source-gate`](statecharts/genesis-readback-source-gate/README.md):
+it requires dormant units, a reviewed source install, and a fresh one-use intent
+after the stale-source hold. TLC checked 18 states and 52 transitions with all
+five invariants and the deadlock check passing. The live bootstrap gate remains
+false or unset, so the modeled install is not a live-readiness claim.
+
 ## Post-M8 protected evidence (2026-11-07)
 
 The protected work-staging release-state readback
