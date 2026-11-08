@@ -17,11 +17,14 @@ resources report active/online. The inventory matches staging document
 
 The default `norn-pilot` doctl context is a different DigitalOcean account and
 does not show this testbed; repeat future provider checks with the explicit
-`work` context. This readback proves provider inventory and managed-database
-status only. It does not prove the Nomad/Consul control plane, node enrollment,
-application placement, public route health, or successful Norn platform
-release. The latest protected Genesis readback remains failed at the source
-capability check (run
+`work` context. A second read-only inventory at 2026-11-08 12:41 UTC again
+found all nine tagged Norn staging droplets active and the three Norn-related
+managed databases online (management authority Postgres, application Postgres,
+and application MySQL). That repeat did not query the cluster APIs or routes.
+This readback proves provider inventory and managed-database status only. It
+does not prove the Nomad/Consul control plane, node enrollment, application
+placement, public route health, or successful Norn platform release. The latest
+protected Genesis readback remains failed at the source capability check (run
 [42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411));
 do not dispatch a replacement until the pinned source-object availability is
 diagnosed and a new read-only intent is bound to fresh inputs.
@@ -43,11 +46,13 @@ release marker, and event checks; `norn host status` showed Consul, Nomad, API,
 host agent, supervisor, assurance timer, and cloudflared up/armed; `norn host
 doctor` passed. The smoke reported `activeOps=0` for Mini-affecting work while
 preserving seven queued Fleet GitHub dispatch receipts. Those records remain
-queued and are not Mini work or running provider applies. The latest host
-assurance receipt predates the upgrade, so this does not claim fresh route
-assurance or clear the 25 grouped open incidents (22 latest-critical, 3
-latest-warning). Production readiness remains blocked and is not the Mini
-direct upgrade gate.
+queued and are not Mini work or running provider applies. A read-only inventory
+at 2026-11-08 12:41 UTC again observed `/api/health=ok`, host status `ok`, and
+the same exact V3 RC source SHA. It also retained the seven queued Fleet
+dispatch receipts and 25 grouped open incidents. The latest host assurance
+receipt predates the upgrade, so this does not claim fresh route assurance or
+clear those incidents. Production readiness remains blocked and is not the
+Mini direct upgrade gate. No mutation was performed during this inventory.
 
 Node `v24.19.0` and pnpm `10.32.1` are now installed in the Mini user's NVM
 version. Non-interactive maintenance still needs the NVM `bin` directory on
