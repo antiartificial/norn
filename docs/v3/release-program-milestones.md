@@ -292,6 +292,10 @@ otherwise retain the all-stop contract.
   `/api/v1/apps` route. Both routes currently share the same handler; retain
   the legacy alias and compatibility tests while external usage and remaining
   `/api/apps/{id}/...` callers are unresolved.
+- [x] Move operation history and platform release-history reads to their
+  existing V1 routes in the CLI and UI. Preserve the unversioned aliases and
+  compatibility behavior; platform rollback remains unversioned until its
+  different V1 mutation contract is migrated explicitly.
 - [ ] Move callers to V3 before deleting V2-only code and low-value tests.
 - [ ] Retain only the compatibility fixtures and migration code needed to
   upgrade the supported V2 baseline safely.

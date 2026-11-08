@@ -30,6 +30,11 @@ The `active` collection is explicitly classified as a general `api:read`
 request; only an exact operation ID is eligible for the existing handler-bound
 scoped read.
 
+Platform release history now uses the existing `/api/v1/releases` read route in
+the CLI and UI. The platform rollback mutation remains on its legacy route
+because the V1 rollback endpoint has a different request contract and is not a
+drop-in replacement.
+
 Remaining examples include:
 
 - CLI reads `/api/ops/platform` and `/api/v1/operations/active`, and

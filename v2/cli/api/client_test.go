@@ -120,6 +120,24 @@ func TestListOperationsUsesVersionedRoute(t *testing.T) {
 	}
 }
 
+func TestPlatformReleasesUsesVersionedRoute(t *testing.T) {
+	var requestURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"current":"release-current","releases":[]}`))
+	}))
+	defer server.Close()
+
+	releases, err := New(server.URL).PlatformReleases()
+	if err != nil || releases.Current != "release-current" {
+		t.Fatalf("PlatformReleases() = %+v, %v", releases, err)
+	}
+	if want := "GET /api/v1/releases"; requestURI != want {
+		t.Fatalf("request = %q, want %q", requestURI, want)
+	}
+}
+
 func TestActiveOperationCountFailsClosedOnInconsistentOrTruncatedResponse(t *testing.T) {
 	for name, body := range map[string]string{
 		"inconsistent": `{"count":2,"operations":[{"id":"one","kind":"app.deploy","status":"queued"}]}`,

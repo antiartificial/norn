@@ -1606,7 +1606,7 @@ func (c *Client) AlertRules() ([]AlertRule, error) {
 
 func (c *Client) PlatformReleases() (*PlatformReleaseList, error) {
 	var releases PlatformReleaseList
-	if err := c.get("/api/platform/releases", &releases); err != nil {
+	if err := c.get("/api/v1/releases", &releases); err != nil {
 		return nil, err
 	}
 	return &releases, nil

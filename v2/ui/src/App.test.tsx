@@ -95,7 +95,7 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.endsWith('/api/events')) return json({ events: [] })
     if (url.includes('/api/v1/operations/active') || url.endsWith('/api/v1/operations')) return json({ count: 0, operations: [] })
     if (url.includes('/api/ops/platform')) return json(platformSummary())
-    if (url.includes('/api/platform/releases')) return json({ current: 'abc123', releases: [] })
+    if (url.includes('/api/v1/releases')) return json({ current: 'abc123', releases: [] })
     if (url.includes('/api/deploy-groups')) return json({ groups: [] })
     if (url.includes('/api/notifications/channels')) return json({ channels: [] })
     if (url.includes('/api/access/grants')) return json({ grants: [] })
@@ -443,7 +443,7 @@ describe('App shell routing', () => {
     expect(screen.queryByRole('button', { name: /search/i })).not.toBeInTheDocument()
 
     await waitFor(() => expect(calls.some((call) => call.includes('/api/v1/fleet/plans'))).toBe(true))
-    for (const unsupported of ['/api/apps', '/api/v1/deployments', '/api/events', '/api/access/patterns', '/api/v1/services/manifest', '/api/cloudflared', '/api/platform/releases']) {
+    for (const unsupported of ['/api/apps', '/api/v1/deployments', '/api/events', '/api/access/patterns', '/api/v1/services/manifest', '/api/cloudflared', '/api/v1/releases']) {
       expect(calls.some((call) => call.includes(unsupported))).toBe(false)
     }
   })
@@ -778,12 +778,14 @@ describe('App shell routing', () => {
   })
 
   it('syncs platform sub-tabs to routes', async () => {
-    installFetch({
-      '/api/platform/releases': () => json({ current: 'sha-current', releases: [{ sha: 'sha-current', version: 'v1', createdAt: new Date().toISOString(), path: '/releases/v1', current: true }] }),
+    const { calls } = installFetch({
+      '/api/v1/releases': () => json({ current: 'sha-current', releases: [{ sha: 'sha-current', version: 'v1', createdAt: new Date().toISOString(), path: '/releases/v1', current: true }] }),
     })
     renderApp('/platform/releases')
 
     await screen.findByRole('heading', { name: 'Norn Platform' })
+    await waitFor(() => expect(calls.some((call) => call.includes('/api/v1/releases'))).toBe(true))
+    expect(calls.some((call) => call.includes('/api/platform/releases'))).toBe(false)
     expect(screen.getByRole('tab', { name: 'Releases' })).toHaveAttribute('aria-selected', 'true')
     expect(await screen.findByText('v1')).toBeInTheDocument()
 
@@ -975,7 +977,7 @@ describe('App shell routing', () => {
 
   it('shows platform release rollback confirmation', async () => {
     installFetch({
-      '/api/platform/releases': () => json({ current: 'current', releases: [
+      '/api/v1/releases': () => json({ current: 'current', releases: [
         { sha: 'current', version: 'v2', createdAt: new Date().toISOString(), path: '/releases/v2', current: true },
         { sha: 'previous', version: 'platform-previous', displayVersion: 'v2.20.0-platform-gprevious', createdAt: new Date().toISOString(), path: '/releases/v1', current: false },
       ] }),
@@ -989,7 +991,7 @@ describe('App shell routing', () => {
 
   it('shows a platform release candidate label verbatim', async () => {
     installFetch({
-      '/api/platform/releases': () => json({ releases: [
+      '/api/v1/releases': () => json({ releases: [
         { sha: 'candidate', version: 'v3.0.0-rc.1-platform', displayVersion: 'v3.0.0-rc.1-platform', createdAt: new Date().toISOString(), path: '/releases/candidate', current: true },
       ] }),
     })
