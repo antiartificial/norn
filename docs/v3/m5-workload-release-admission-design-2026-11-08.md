@@ -68,7 +68,7 @@ For the first implementation, preserve the existing conservative recovery rule: 
 
 The pipeline now has a `WorkloadReleasePlan` → observed staged-target binding → strict `WorkloadReleaseIntent` resolver. The plan refuses scheduler version and modify-index values; the binding accepts only a successful plan-derived create-only Nomad job observation, binds it to target operation/execution/job digest and claim generation, and the resolver returns the existing strict intent for downstream health, route, and drain code. The etcd operation store can persist that binding once and reload it only while the signed plan, operation claim, app lock, and Fleet target generation still verify. Deterministic pipeline and etcd integration tests cover mismatch, overwrite, and lost-claim cases.
 
-This is not yet a complete release lane: the API does not accept this plan shape, and no private Nomad staging controller invokes the binder or resolver. Existing accepted strict intents remain the only wired release path. Input provenance, private envelope retention, atomic plan acceptance fences, stage effect admission, and all lineage readers must be integrated before the plan path is usable end to end.
+The plan path is not yet a complete release lane: the API does not accept this shape, and no private Nomad staging controller builds or registers its target job. Existing accepted strict intents remain the only wired release path. Candidate provenance, managed input revision resolution, route-predecessor acceptance fences, startup key preflight/retention cleanup, and lineage-reader migration remain before end-to-end use.
 
 ## Current input-provenance inventory
 
@@ -171,11 +171,12 @@ only the nonsecret ciphertext digest and source revision in the public receipt.
 
 The existing `PrivateInvocationStore` remains function-only: it accepts
 `function.invoke`, uses its own key-ring config, and scans its own records for
-key requirements. The workload-release envelope is now a separate store-level
-primitive, but has no etcd record, retained-key inventory scan, startup
-preflight wiring, retention cleanup, or acceptance transaction. These are
-explicit implementation items, not behavior inherited automatically from
-the function path.
+key requirements. The workload-release envelope is a separate store-level
+primitive with an etcd record, signed-plan-bound atomic acceptance,
+same-material replay comparison, and retained-key inventory scan. It does not
+yet have startup preflight wiring or retention cleanup. These are explicit
+implementation items, not behavior inherited automatically from the function
+path.
 
 ## Open questions and risks
 
@@ -188,4 +189,4 @@ the function path.
 
 ## Next implementation step
 
-Implement signed plan admission with idempotency identity, atomic app/route fences, and private input envelope in one acceptance transaction. Then add the private Nomad stage effect and wire its exact readback through the claim-fenced binding store and shared resolver before the existing reconciler can advance.
+Implement an authenticated operator admission producer that obtains a qualified immutable candidate, resolves the exact source/spec/image and managed input revisions, and admits the signed plan through the private-input transaction. Add the route-predecessor fence, startup key preflight, and retention rules. Then wire the existing stage effect, exact Nomad readback, claim-fenced binding, and shared resolver into a worker before the existing reconciler can advance.

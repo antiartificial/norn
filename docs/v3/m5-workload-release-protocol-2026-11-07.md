@@ -35,7 +35,7 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 | Milestone | Status | Work | Exit evidence | Can run alongside |
 | --- | --- | --- | --- | --- |
 | M5-A: offline protocol | Partial: bounded statechart, fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, and a one-use stage attempt marker pass locally; API admission and stage worker integration are absent. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on ambiguous create. | M5-B, input-provenance inventory, M5-C design |
-| M5-B: immutable input contract | Partial: provenance inventory, exact SOPS snapshot capture, purpose-separated envelope primitive, and plan-bound observed target binding exist; etcd/V3 still does not resolve candidate qualification or durably retain release inputs. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Add the etcd private record and accepted-release transaction; reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; envelope and acceptance commit atomically; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
+| M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound exact SOPS snapshot capture, and atomic etcd acceptance/input persistence exist; candidate qualification and complete secret/catalog/database lineage resolution are not yet part of the admission path. | Identify the authoritative qualified candidate, exact source/spec/image digests, secret/catalog/database revisions, and serving lineage. Integrate provenance resolution and reject caller-supplied scheduler observations. | Typed plan schema and provenance tests cover all restart-reconstructible inputs; envelope and acceptance commit atomically; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
 | M5-C: atomic release admission | Not implemented: no operator/API acceptance path exists. | Add the authenticated operator API/CLI admission and etcd transaction for idempotency, signature, single-app mutation slot, current serving/route predecessor, desired count, and Fleet generation. | Replay returns the same operation; key reuse with a different candidate conflicts; concurrent deploy/scale/release races admit at most one; stale predecessor writes nothing. | M5-A/B |
 | M5-D: private stage and binding | Partial: signed-plan-bound stage effect reservation, shared app gate, one-use attempt marker, exact Nomad lookup, and write-once binding seams exist; no worker yet constructs/stages the immutable job or recovers the external create end to end. | Wire pinned private inputs and candidate provenance into a claimed worker; construct one target job, reserve/mark the stage effect, perform create-only CAS, read exact source/no-diff and revision, then bind before health/route processing. | Fault matrix proves same-target recovery or conservative hold, never an unreviewed duplicate; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
@@ -203,6 +203,16 @@ still an offline controller seam: no worker yet builds and submits the staged
 job or recovers a lost create response through this effect end to end.
 Candidate provenance, private input retention, and operator/API admission
 also remain open.
+
+Private workload-release acceptance now has a separate etcd input record. Its
+purpose-separated envelope binds the exact encrypted SOPS bytes to authority,
+operation, app, and plan digest; the acceptance, private record, one-active-app
+fence, and current control-owned Fleet target revision commit atomically. A
+retry opens the retained envelope and constant-time compares the submitted
+snapshot before returning the original acceptance. Restore can enumerate all
+required envelope key IDs. This primitive is not yet mounted behind an
+authenticated workload-release admission API or connected to a target job
+builder, so it remains an implementation seam.
 
 ## Qualification order
 

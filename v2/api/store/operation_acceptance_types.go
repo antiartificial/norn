@@ -42,6 +42,14 @@ type PrivateInvocationStore interface {
 	RequiredPrivateInvocationKeys(context.Context) ([]string, error)
 }
 
+// PrivateWorkloadReleaseStore atomically accepts a signed workload release
+// plan with its separately encrypted, exact SOPS source snapshot.
+type PrivateWorkloadReleaseStore interface {
+	AcceptPrivateWorkloadRelease(context.Context, OperationAcceptance, []byte, *WorkloadReleaseInputKeyRing) (AcceptedOperation, error)
+	OpenPrivateWorkloadRelease(context.Context, model.Operation, *WorkloadReleaseInputKeyRing) ([]byte, error)
+	RequiredWorkloadReleaseInputKeys(context.Context) ([]string, error)
+}
+
 type OperationActor struct {
 	Issuer  string `json:"issuer"`
 	Subject string `json:"subject"`

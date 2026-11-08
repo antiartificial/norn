@@ -55,6 +55,15 @@ holds before scheduler submission. The target binding records that same
 revision. The model assumes secret plaintext remains outside operation and
 plan data; it checks identity and availability, not cryptographic encryption.
 
+The etcd acceptance seam now seals the exact encrypted SOPS snapshot with a
+separate workload-release key ring and binds its AAD to authority, operation,
+app, and canonical plan digest. Signed acceptance, the encrypted record,
+one-active-app admission, and the current Fleet target revision commit
+atomically. Replay opens the stored envelope and compares the submitted
+snapshot before returning the original operation. A key inventory reports all
+retained IDs. Startup preflight and deletion/retention policy are not yet wired
+to this store.
+
 The model also treats the workload envelope key as a recoverability input.
 If a successor cannot load the historical key before exact target binding, it
 holds the release and leaves the old route and workload untouched. Once an
