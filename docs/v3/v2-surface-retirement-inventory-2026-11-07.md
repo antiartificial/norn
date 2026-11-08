@@ -15,8 +15,8 @@ versioned routes under `/api/v1` and also registers numerous older routes under
 source search of the active router found no general `/api/v2` namespace.
 
 Several `/api` routes are still called by shipped source in this repository.
-The app-list caller has started moving: CLI `ListApps` and the UI app-list
-query now call `/api/v1/apps`. Both routes currently invoke the same
+The app-list migration is complete: CLI `ListApps` and the UI app-list query
+now call `/api/v1/apps`. Both routes currently invoke the same
 `ListApps` handler, and V1 is present in the published OpenAPI contract. A
 focused CLI test and UI assertion protect the V1 path. The legacy GET alias
 remains registered because external use has not been measured and the same
@@ -35,10 +35,16 @@ the CLI and UI. The platform rollback mutation remains on its legacy route
 because the V1 rollback endpoint has a different request contract and is not a
 drop-in replacement.
 
+The CLI app-detail and snapshot-inventory reads now use `/api/v1/apps/{id}` and
+`/api/v1/apps/{id}/snapshots`, which expose the same response shapes through
+scope-checked V1 handlers. Snapshot restore and retention mutations still use
+the compatibility contract until their distinct V1 request shape and named
+database-selection behavior are migrated.
+
 Remaining examples include:
 
-- CLI reads `/api/ops/platform` and `/api/v1/operations/active`, and
-  posts `/api/apps/{id}/deploy`, `/preflight`, and `/rollback`
+- CLI still reads `/api/ops/platform` and posts
+  `/api/apps/{id}/deploy`, `/preflight`, and `/rollback`
   (`v2/cli/api/client.go`, `PlatformOps`, `ListOperations`, `Deploy`,
   `Preflight`, and `Rollback`).
 - The CLI still uses `/api/events`, `/api/platform/releases`, app logs and

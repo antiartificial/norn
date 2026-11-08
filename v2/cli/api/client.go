@@ -1671,7 +1671,7 @@ func (c *Client) ContextDBRollbackFeedback(eventID, namespace, mode, reason, own
 
 func (c *Client) GetApp(id string) (*AppStatus, error) {
 	var app AppStatus
-	if err := c.get("/api/apps/"+id, &app); err != nil {
+	if err := c.get("/api/v1/apps/"+url.PathEscape(id), &app); err != nil {
 		return nil, err
 	}
 	return &app, nil
@@ -2181,7 +2181,7 @@ func (c *Client) Stats() (*StatsResponse, error) {
 
 func (c *Client) ListSnapshots(appID string) ([]Snapshot, error) {
 	var snaps []Snapshot
-	if err := c.get("/api/apps/"+appID+"/snapshots", &snaps); err != nil {
+	if err := c.get("/api/v1/apps/"+url.PathEscape(appID)+"/snapshots", &snaps); err != nil {
 		return nil, err
 	}
 	return snaps, nil

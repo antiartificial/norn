@@ -138,6 +138,41 @@ func TestPlatformReleasesUsesVersionedRoute(t *testing.T) {
 	}
 }
 
+func TestAppAndSnapshotReadsUseVersionedRoutes(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/apps/demo":
+			_, _ = w.Write([]byte(`{"healthy":true}`))
+		case "/api/v1/apps/demo/snapshots":
+			_, _ = w.Write([]byte(`[{"filename":"snapshot.dump","timestamp":"2026-11-08T12:00:00Z"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app, err := New(server.URL).GetApp("demo")
+	if err != nil || !app.Healthy {
+		t.Fatalf("GetApp() = %+v, %v", app, err)
+	}
+	snapshots, err := New(server.URL).ListSnapshots("demo")
+	if err != nil || len(snapshots) != 1 || snapshots[0].Filename != "snapshot.dump" {
+		t.Fatalf("ListSnapshots() = %+v, %v", snapshots, err)
+	}
+	want := []string{"GET /api/v1/apps/demo", "GET /api/v1/apps/demo/snapshots"}
+	if len(requests) != len(want) {
+		t.Fatalf("requests = %v, want %v", requests, want)
+	}
+	for i := range want {
+		if requests[i] != want[i] {
+			t.Fatalf("requests[%d] = %q, want %q", i, requests[i], want[i])
+		}
+	}
+}
+
 func TestActiveOperationCountFailsClosedOnInconsistentOrTruncatedResponse(t *testing.T) {
 	for name, body := range map[string]string{
 		"inconsistent": `{"count":2,"operations":[{"id":"one","kind":"app.deploy","status":"queued"}]}`,

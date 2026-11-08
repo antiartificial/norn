@@ -296,6 +296,9 @@ otherwise retain the all-stop contract.
   existing V1 routes in the CLI and UI. Preserve the unversioned aliases and
   compatibility behavior; platform rollback remains unversioned until its
   different V1 mutation contract is migrated explicitly.
+- [x] Move the CLI app-detail and snapshot-inventory reads to the equivalent
+  scope-checked V1 routes; retain snapshot restore/retention aliases pending
+  explicit parity for named-database selection and durable-operation inputs.
 - [ ] Move callers to V3 before deleting V2-only code and low-value tests.
 - [ ] Retain only the compatibility fixtures and migration code needed to
   upgrade the supported V2 baseline safely.
