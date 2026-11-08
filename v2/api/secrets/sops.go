@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -99,15 +100,11 @@ func (m *Manager) encrypt(appID string, data map[string]string) error {
 	if err != nil {
 		return err
 	}
-
-	tmpFile := path + ".tmp"
-	if err := os.WriteFile(tmpFile, plain, 0600); err != nil {
-		return err
-	}
-	defer os.Remove(tmpFile)
+	defer clear(plain)
 
 	configFile := filepath.Join(m.appsDir, appID, ".sops.yaml")
-	cmd := exec.Command("sops", "--config", configFile, "--encrypt", "--input-type", "yaml", "--output-type", "yaml", tmpFile)
+	cmd := exec.Command("sops", "--config", configFile, "--encrypt", "--input-type", "yaml", "--output-type", "yaml", "/dev/stdin")
+	cmd.Stdin = bytes.NewReader(plain)
 	encrypted, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -116,5 +113,39 @@ func (m *Manager) encrypt(appID string, data map[string]string) error {
 		return fmt.Errorf("sops encrypt: %w", err)
 	}
 
-	return os.WriteFile(path, encrypted, 0600)
+	return writeEncryptedSecretAtomically(path, encrypted)
+}
+
+func writeEncryptedSecretAtomically(path string, encrypted []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".secrets-encrypted-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(encrypted); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }

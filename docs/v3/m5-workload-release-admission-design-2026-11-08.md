@@ -94,6 +94,15 @@ do not yet form an etcd/V3 workload-release candidate authority:
   The canonical spec digest is computed from YAML (including `Env`, which is
   intentionally omitted from JSON), so it pins the spec bytes but does not pin
   the separately encrypted secret file's selected revision.
+- `secrets.Manager.SnapshotEncrypted` now reads the exact owner-only SOPS
+  ciphertext file without decrypting it and returns a content digest. It rejects
+  symlinked app/file inputs, wrong ownership, weak file permissions, empty or
+  oversized files. `secrets.Manager.Set` now installs encrypted output by
+  feeding plaintext directly to SOPS over stdin, then a synced encrypted-file
+  rename, so no plaintext temp file remains and readers see the previous or
+  replacement ciphertext rather than an in-place partial rewrite. This is a
+  safe input capture primitive, not durable release storage: no etcd private
+  record or accepted release currently retains the snapshot across host loss.
 - Nomad job version, modify index, job digest, and observed allocation
   identities are scheduler observations. The current strict release intent
   requires them for execution, while the proposal correctly defers constructing
@@ -112,19 +121,23 @@ qualification path as an etcd/V3 record.
 
 The current workload SOPS manager reads and rewrites a mutable filesystem path.
 Hashing the decrypted map is undesirable: it puts a stable password-derived
-value in public integrity metadata. Hashing only the ciphertext is safe as an
-identifier, but does not make those ciphertext bytes recoverable after a host
-or repository change. The admission contract must therefore bind both an
-opaque, immutable source revision and the digest of its encrypted bytes, with
-an availability/retention guarantee for the operation's recovery lifetime.
+value in public integrity metadata. Hashing only the SOPS file ciphertext is
+not necessarily safe as public metadata if the document contains unencrypted
+fields, and it does not make those bytes recoverable after a host or repository
+change. The admission contract must therefore bind an opaque, immutable
+private-record ID and the digest of its authenticated envelope, with an
+availability/retention guarantee for the operation's recovery lifetime.
 
 The signed release plan should contain only a reference such as
-`{sourceRevision, ciphertextDigest, schemaVersion}`. Before accepting the
-operation, the controller must prove that the exact encrypted input is
-durably retrievable. A worker restart must reopen that immutable ciphertext,
-decrypt it using the configured SOPS key authority, and validate the same
-reference before constructing the Nomad target. Never put decrypted values in
-the signed plan, operation payload, logs, test snapshots, or public receipts.
+`{privateInputRecordId, envelopeDigest, schemaVersion}`. The exact SOPS bytes
+belong inside the operation-bound private envelope; do not put the raw secret
+file digest in public signed metadata because SOPS documents may contain
+unencrypted metadata. Before accepting the operation, the controller must
+prove that the exact encrypted input is durably retrievable. A worker restart
+must reopen that immutable ciphertext, decrypt it using the configured SOPS
+key authority, and validate the envelope reference before constructing the
+Nomad target. Never put decrypted values in the signed plan, operation payload,
+logs, test snapshots, or public receipts.
 If the source cannot guarantee immutable retrieval, either add a private
 encrypted snapshot store with key rotation/retention semantics or keep this
 candidate ineligible for hands-free release. A local pathname or current
@@ -150,7 +163,7 @@ proved no-effect terminal outcome. Startup/restore preflight must require keys
 for every retained release envelope. A successful target binding should keep
 only the nonsecret ciphertext digest and source revision in the public receipt.
 
-Current implementation is function-only: `PrivateInvocationStore` accepts
+Current private-envelope implementation is function-only: `PrivateInvocationStore` accepts
 `function.invoke`, uses its own key-ring config, and scans its own records for
 key requirements. No workload-release private-envelope type, etcd record,
 retention cleanup, startup preflight, or acceptance transaction exists. These
