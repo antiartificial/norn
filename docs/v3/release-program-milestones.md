@@ -68,7 +68,7 @@ changes workflow collection to classes defined by each test module. A local
 comparison preserves all 4,236 distinct test IDs and removes 248 repeated
 executions. Its plan/reconciliation and executor suites passed in CI; the
 first full run failed later when the DigitalOcean provider checksum request
-timed out. The failed job is running again. The separate
+timed out. Full validation rerun `42477537463` passed. The separate
 disposable-retirement suite's 84-test run remains unverified. These checks do not execute GitHub
 Actions or prove protected runner, environment, artifact, provider, or teardown
 behavior.
