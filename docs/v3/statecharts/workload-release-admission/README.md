@@ -40,11 +40,26 @@ holds before scheduler submission. The target binding records that same
 revision. The model assumes secret plaintext remains outside operation and
 plan data; it checks identity and availability, not cryptographic encryption.
 
-The 2026-11-08 run checked 68 distinct states and 168 transitions. All listed
-safety invariants and deadlock checks passed. The model omits etcd transaction
-details, real Nomad and ingress behavior, credential retrieval and key
-availability, workload data compatibility, and provider failures. It is a
-protocol model, not a live qualification.
+The model also treats the workload envelope key as a recoverability input.
+If a successor cannot load the historical key before exact target binding, it
+holds the release and leaves the old route and workload untouched. Once an
+exact target binding exists, this model no longer explores loss of the private
+input key because that snapshot may be deleted under the retention contract.
+The model allows a delayed create to arrive after a hold, but keeps the
+operation held and the old service active.
+
+The 2026-11-08 run checked 86 distinct states and 203 transitions. The chart
+shows 16 states and 31 arrows; 109 model transitions remain hidden because
+they stay within the same reader-facing state. All listed
+safety invariants and deadlock checks passed. The first expanded run exposed a
+model transition that let a delayed scheduler acceptance resume a held
+operation; `NomadAccepts` is now limited to the active submitting phase, while
+late acceptance after hold remains an external effect with no route or stop
+progress. Target health loss is modeled only before completion so unrelated
+post-release service health does not reopen a terminal release. The model
+omits etcd transaction details, actual key retrieval and
+cryptography, real Nomad and ingress behavior, workload data compatibility, and
+provider failures. It is a protocol model, not a live qualification.
 
 The generated [statechart](chart.mmd) and [TLC report](report.md) show the
 checked transition graph and result. The conservative hold after an

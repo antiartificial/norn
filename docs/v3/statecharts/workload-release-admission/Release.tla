@@ -3,11 +3,11 @@ EXTENDS Naturals, TLC
 
 VARIABLES phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
           route, oldRunning, proofFresh, stopped, stopHadProof,
-          planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
+          planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable,
           inputsBound, boundSecretRevision
 vars == <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
           route, oldRunning, proofFresh, stopped, stopHadProof,
-          planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
+          planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable,
           inputsBound, boundSecretRevision>>
 
 Init ==
@@ -26,12 +26,14 @@ Init ==
   /\ planSecretRevision = "secret-revision-a"
   /\ currentSecretRevision = "secret-revision-a"
   /\ secretSnapshotAvailable = TRUE
+  /\ inputKeyAvailable = TRUE
   /\ inputsBound = FALSE
   /\ boundSecretRevision = "none"
 
 ResolvePinnedInputs ==
   /\ phase = "accepted"
   /\ secretSnapshotAvailable
+  /\ inputKeyAvailable
   /\ inputsBound = FALSE
   /\ inputsBound' = TRUE
   /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
@@ -54,9 +56,20 @@ LosePinnedSecretSnapshot ==
       route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, inputsBound, boundSecretRevision>>
 
+LosePinnedInputKey ==
+  /\ phase \in {"accepted", "attempt-marked", "submitting", "submitted", "ambiguous"}
+  /\ ~binding
+  /\ inputKeyAvailable
+  /\ inputKeyAvailable' = FALSE
+  /\ phase' = "held"
+  /\ proofFresh' = FALSE
+  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, inputsBound, boundSecretRevision>>
+
 HoldOnMissingPinnedInputs ==
   /\ phase \notin {"complete", "held"}
-  /\ ~secretSnapshotAvailable
+  /\ (~secretSnapshotAvailable \/ ~inputKeyAvailable)
   /\ phase' = "held"
   /\ proofFresh' = FALSE
   /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy,
@@ -67,6 +80,7 @@ MarkAttempt ==
   /\ phase = "accepted"
   /\ inputsBound
   /\ secretSnapshotAvailable
+  /\ inputKeyAvailable
   /\ ~attempt
   /\ attempt' = TRUE
   /\ phase' = "attempt-marked"
@@ -77,12 +91,14 @@ SendCreate ==
   /\ attempt
   /\ inputsBound
   /\ secretSnapshotAvailable
+  /\ inputKeyAvailable
   /\ job = "absent"
   /\ requestInFlight' = TRUE
   /\ phase' = "submitting"
   /\ UNCHANGED <<claim, attempt, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
 NomadAccepts ==
+  /\ phase = "submitting"
   /\ requestInFlight
   /\ job = "absent"
   /\ job' = "matching"
@@ -115,6 +131,7 @@ ObserveMatchingJob ==
   /\ claim > 1
   /\ attempt
   /\ inputsBound
+  /\ inputKeyAvailable
   /\ job = "matching"
   /\ binding' = TRUE
   /\ boundSecretRevision' = planSecretRevision
@@ -170,6 +187,7 @@ RefreshTargetOnlyProof ==
   /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, stopped, stopHadProof>>
 
 TargetLosesHealth ==
+  /\ phase \in {"bound", "warming", "old-only", "mixed", "target-only", "draining"}
   /\ targetHealthy
   /\ targetHealthy' = FALSE
   /\ IF stopped THEN phase' = "held" ELSE phase' = "held"
@@ -205,14 +223,15 @@ LateAcceptWhileHeld ==
 
 Done == phase \in {"complete", "held"} /\ UNCHANGED vars
 
-Next == ResolvePinnedInputs \/ RotateCurrentSecret \/ LosePinnedSecretSnapshot \/ HoldOnMissingPinnedInputs \/
-        ObserveMatchingJob \/
-        ((MarkAttempt \/ SendCreate \/ NomadAccepts \/ LoseResponse \/ CrashAndReclaim \/
+Next == ((ResolvePinnedInputs \/ RotateCurrentSecret \/ LosePinnedSecretSnapshot \/ HoldOnMissingPinnedInputs \/ ObserveMatchingJob)
+          /\ UNCHANGED <<inputKeyAvailable>>) \/
+        (((MarkAttempt \/ SendCreate \/ NomadAccepts \/ LoseResponse \/ CrashAndReclaim \/
           ObserveMissingAfterAttempt \/ ObserveMismatch \/ TargetBecomesHealthy \/
           ProveOldOnly \/ PublishMixed \/ PublishTargetOnly \/ RefreshTargetOnlyProof \/
           TargetLosesHealth \/ StopOld \/ Hold \/ LateAcceptWhileHeld \/ Done)
           /\ UNCHANGED <<planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
                          inputsBound, boundSecretRevision>>)
+          /\ UNCHANGED <<inputKeyAvailable>>) \/ LosePinnedInputKey
 
 TypeOK ==
   /\ phase \in {"accepted", "attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining", "complete", "held"}
@@ -230,6 +249,7 @@ TypeOK ==
   /\ planSecretRevision \in {"secret-revision-a"}
   /\ currentSecretRevision \in {"secret-revision-a", "secret-revision-b"}
   /\ secretSnapshotAvailable \in BOOLEAN
+  /\ inputKeyAvailable \in BOOLEAN
   /\ inputsBound \in BOOLEAN
   /\ boundSecretRevision \in {"none", "secret-revision-a"}
 
@@ -241,6 +261,8 @@ BindingRequiresMatchingTarget == binding => job = "matching"
 AttemptRequiresPinnedInputs == attempt => inputsBound
 BindingMatchesPinnedSecret == binding => (inputsBound /\ boundSecretRevision = planSecretRevision)
 NoAttemptAfterSecretSnapshotLoss == ~secretSnapshotAvailable => ~attempt
+MissingKeyHoldsUnboundRelease == (~inputKeyAvailable /\ ~binding) => phase = "held"
+MissingKeyKeepsOldService == (~inputKeyAvailable /\ ~binding) => (route = "old-only" /\ oldRunning)
 
 Spec == Init /\ [][Next]_vars
 

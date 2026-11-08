@@ -1,7 +1,7 @@
 # Release
 
-TLC reached 68 states and 168 steps. The chart draws 13 states and 23 arrows.
-The chart does not draw 88 steps that stay in one chart state.
+TLC reached 86 states and 203 steps. The chart draws 16 states and 31 arrows.
+The chart does not draw 109 steps that stay in one chart state.
 
 ## Rules that hold
-TypeOK, OldStopRequiresTargetProof, OldStopRequiresAuthorization, RouteDoesNotMoveBeforeBinding, OldWorkloadRemainsUntilSafeStop, AttemptRequiresPinnedInputs, BindingMatchesPinnedSecret, NoAttemptAfterSecretSnapshotLoss, NoDeadlock
+TypeOK, OldStopRequiresTargetProof, OldStopRequiresAuthorization, RouteDoesNotMoveBeforeBinding, OldWorkloadRemainsUntilSafeStop, AttemptRequiresPinnedInputs, BindingMatchesPinnedSecret, NoAttemptAfterSecretSnapshotLoss, MissingKeyHoldsUnboundRelease, MissingKeyKeepsOldService, NoDeadlock

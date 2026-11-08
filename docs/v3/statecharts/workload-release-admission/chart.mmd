@@ -11,52 +11,66 @@ stateDiagram-v2
   class lg1 orange
   class lg2 teal
   s0: Accepted, old service active
-  s1: Held, old service remains
-  s2: Create permission recorded
-  s3: Target create in flight
-  s4: Private target created
-  s5: Held, late target may exist
-  s6: Exact target revision bound
-  s7: Target warming, old route active
-  s8: Old route proven
-  s9: Traffic shifting, old task retained
-  s10: Target route active, old task retained
-  s11: Fresh target-only proof
-  s12: Target serving, old job stopped
+  s1: Held, release key unavailable with old service remaining
+  s2: Held, old service remains
+  s3: Create permission recorded
+  s4: Target create in flight
+  s5: Private target created
+  s6: Held, key unavailable and delayed target may exist
+  s7: Held, late target may exist
+  s8: Exact target revision bound
+  s9: Held, target health lost with old route remaining
+  s10: Target warming, old route active
+  s11: Old route proven
+  s12: Traffic shifting, old task retained
+  s13: Target route active, old task retained
+  s14: Fresh target-only proof
+  s15: Target serving, old job stopped
   [*] --> s0
-  s0 --> s1: Next or hold before scheduler submission
-  s0 --> s2: Next
-  s2 --> s1: Next
-  s2 --> s3: Next
-  s3 --> s1: Next
-  s3 --> s4: Next
-  s1 --> s4: Next
-  s1 --> s5: Next
-  s4 --> s5: Next
-  s4 --> s6: successor binds exact target readback
-  s6 --> s5: Next
-  s6 --> s7: Next
-  s7 --> s5: Next
-  s7 --> s8: Next
-  s8 --> s5: Next
-  s8 --> s9: Next
-  s9 --> s5: Next
-  s9 --> s10: Next
-  s10 --> s11: Next
-  s10 --> s5: Next
-  s11 --> s5: Next
-  s11 --> s12: Next
-  s12 --> s5: Next
+  s0 --> s1: historical envelope key is missing on recovery, hold before binding
+  s0 --> s2: required private input is unavailable and release holds
+  s0 --> s3: record create permission
+  s3 --> s1: historical envelope key is missing on recovery, hold before binding
+  s3 --> s2: required private input is unavailable and release holds
+  s3 --> s4: send create-only request
+  s4 --> s1: historical envelope key is missing on recovery, hold before binding
+  s4 --> s2: required private input is unavailable and release holds
+  s4 --> s5: scheduler accepts target
+  s1 --> s6: delayed target registration arrives after hold
+  s2 --> s7: delayed target registration arrives after hold
+  s5 --> s6: historical envelope key is missing on recovery, hold before binding
+  s5 --> s7: required private input is unavailable and release holds
+  s5 --> s8: successor binds exact target readback
+  s8 --> s9: held while preserving the old service
+  s8 --> s10: target reaches full health
+  s10 --> s9: target health or evidence is lost and release holds
+  s10 --> s2: target health or evidence is lost and release holds
+  s10 --> s11: prove current old-only route
+  s11 --> s9: target health or evidence is lost and release holds
+  s11 --> s2: target health or evidence is lost and release holds
+  s11 --> s12: publish admitted mixed route
+  s12 --> s9: target health or evidence is lost and release holds
+  s12 --> s2: target health or evidence is lost and release holds
+  s12 --> s13: publish target-only route
+  s13 --> s14: refresh target health and route proof
+  s13 --> s9: target health or evidence is lost and release holds
+  s13 --> s2: target health or evidence is lost and release holds
+  s14 --> s9: target health or evidence is lost and release holds
+  s14 --> s2: target health or evidence is lost and release holds
+  s14 --> s15: stop old job after fresh proof
   class s0 blue
   class s1 orange
-  class s2 blue
+  class s2 orange
   class s3 blue
   class s4 blue
-  class s5 orange
-  class s6 blue
-  class s7 blue
+  class s5 blue
+  class s6 orange
+  class s7 orange
   class s8 blue
-  class s9 blue
+  class s9 orange
   class s10 blue
   class s11 blue
-  class s12 teal
+  class s12 blue
+  class s13 blue
+  class s14 blue
+  class s15 teal
