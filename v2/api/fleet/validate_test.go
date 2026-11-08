@@ -52,6 +52,117 @@ func TestParseAndValidateAcceptsSafeFleet(t *testing.T) {
 	}
 }
 
+func TestFleetValidationAcceptsGeneralStatefulApplicationPair(t *testing.T) {
+	document := strings.Replace(validFleetDocument, `  app:
+    size: s-4vcpu-8gb
+    min: 2
+    desired: 2
+    max: 8
+    labels: { workload: app }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+`, `  general:
+    size: s-4vcpu-8gb
+    min: 2
+    desired: 2
+    max: 8
+    labels: { workload: general }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+  stateful:
+    size: s-4vcpu-8gb
+    min: 2
+    desired: 2
+    max: 8
+    labels: { workload: stateful }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+`, 1)
+	config, report := ParseAndValidate([]byte(document))
+	if config == nil || !report.Valid {
+		t.Fatalf("General/Stateful application pools rejected: %#v", report.Findings)
+	}
+	spec := &model.InfraSpec{App: "toy", Placement: &model.PlacementSpec{NodePool: "stateful"}, Processes: map[string]model.Process{"web": {Port: 8080, Health: &model.HealthSpec{Path: "/health"}}}}
+	result := ValidateInfraSpec(spec, config, model.ValidateSpec(spec))
+	if !result.Valid {
+		t.Fatalf("stateful scheduling pool is not available for placement: %#v", result.Findings)
+	}
+}
+
+func TestFleetValidationRejectsIncompleteMixedAndUndersizedAppPoolRoles(t *testing.T) {
+	pair := strings.Replace(validFleetDocument, `  app:
+    size: s-4vcpu-8gb
+    min: 2
+    desired: 2
+    max: 8
+    labels: { workload: app }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+`, `  general:
+    size: s-4vcpu-8gb
+    min: 2
+    desired: 2
+    max: 8
+    labels: { workload: general }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+  stateful:
+    size: s-4vcpu-8gb
+    min: 2
+    desired: 2
+    max: 8
+    labels: { workload: stateful }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+`, 1)
+	cases := map[string]struct {
+		document string
+		code     string
+	}{
+		"duplicate general role": {strings.Replace(pair, "workload: stateful", "workload: general", 1), "fleet.node-pool.role.topology.unsupported"},
+		"missing stateful pool":  {strings.Replace(pair, "  stateful:\n    size: s-4vcpu-8gb\n    min: 2\n    desired: 2\n    max: 8\n    labels: { workload: stateful }\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n      drainTimeout: 15m\n", "", 1), "fleet.node-pool.role.topology.unsupported"},
+		"mixed legacy app pool": {pair + `  extra-app:
+    size: s-4vcpu-8gb
+    min: 2
+    desired: 2
+    max: 8
+    labels: { workload: app }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+`, "fleet.node-pool.role.topology.unsupported"},
+		"undersized general pool": {strings.Replace(pair, "    min: 2\n    desired: 2\n    max: 8\n    labels: { workload: general }", "    min: 1\n    desired: 2\n    max: 8\n    labels: { workload: general }", 1), "fleet.app.redundancy.insufficient"},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, report := ParseAndValidate([]byte(test.document))
+			if report.Valid || !hasCode(report.Findings, test.code) {
+				t.Fatalf("expected %s; findings = %#v", test.code, report.Findings)
+			}
+		})
+	}
+}
+
 func TestFleetValidationAcceptsVPCOnlyTLSManagedDatabases(t *testing.T) {
 	document := validFleetDocument + `managedDatabases:
   - name: production-primary
