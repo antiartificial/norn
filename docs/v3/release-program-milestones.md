@@ -34,8 +34,8 @@ records why that five-node view is stale. Current staging has one app pool;
 the separate future fresh-Fleet contract is two pools, General + Stateful.
 Open [norn-fleet PR #941](https://github.com/antiartificial/norn-fleet/pull/941)
 contains the credential-free nine-node input slice and an eight-of-nine
-partial-output hold. Its documented command passes 81 tests locally; the
-current protected validation run has not completed. The PR remains candidate
+partial-output hold. Its documented command passes 81 tests locally, and
+protected CI run `42477659325` passed. The PR remains candidate
 evidence, not merged coverage. It does not constitute a joined persistent
 provider apply/recovery fixture.
 
@@ -62,11 +62,13 @@ The documented fresh-Fleet war-game command was run against `norn-fleet` on
 2026-11-08: **81 tests passed** locally in 31 seconds. The command lists
 checkpoint coverage explicitly, and the recovery and adoption tests import
 fixture modules instead of test classes. Open PR #941 carries that war-game;
-its protected validation run has not completed. A separate open PR,
+its protected validation run `42477659325` passed. A separate open PR,
 [norn-fleet PR #942](https://github.com/antiartificial/norn-fleet/pull/942),
 changes workflow collection to classes defined by each test module. A local
 comparison preserves all 4,236 distinct test IDs and removes 248 repeated
-executions; protected validation has not completed. The separate
+executions. Its plan/reconciliation and executor suites passed in CI; the
+first full run failed later when the DigitalOcean provider checksum request
+timed out. The failed job is running again. The separate
 disposable-retirement suite's 84-test run remains unverified. These checks do not execute GitHub
 Actions or prove protected runner, environment, artifact, provider, or teardown
 behavior.
@@ -102,7 +104,7 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   plan-manifest, account/backend, topology, inventory, recovery-guard, and
   local PKI functions with synthetic inputs; substitution and eight-of-nine
   output hold before bootstrap. Its documented 81-test command passes
-  locally, and full protected validation is still running. This helper-level slice stops
+  locally, and protected CI run `42477659325` passed. This helper-level slice stops
   before provider effects, SSH,
   Ansible, durable staging recovery, or terminal receipt. Protected helper
   tests separately cover controller-install pins and three-control SSH.
