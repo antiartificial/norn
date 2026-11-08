@@ -26,6 +26,16 @@ when the job identity does not match. A delayed create may still arrive after
 the controller holds, but the old workload remains active and no route change
 or stop follows from that late registration.
 
+In code, the model's matching-target observation is now an explicit runtime
+boundary: `BindClaimedWorkloadReleaseTarget` reloads the signed plan, derives
+the create-only Nomad lookup from its target identity and job digest, calls
+`LookupDeploymentJobRevision`, and only then writes the claim-fenced binding.
+The etcd integration test verifies that a not-found response writes nothing,
+that the lookup uses the signed target with expected modify index zero, and
+that a conflicting later revision cannot overwrite the first binding. The
+model abstracts this observer as a trusted exact readback; it does not model
+the Nomad HTTP request or a compromised observer implementation.
+
 The route sequence keeps the old workload running through old-only, mixed, and
 target-only routing. The old job stops only after the controller refreshes
 full target health and target-only route proof. The invariants check that the
