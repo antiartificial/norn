@@ -11,13 +11,14 @@ This note authorizes no live workload, route, or provider change.
 
 ## Current branch verification — 2026-11-08
 
-PR [#302](https://github.com/antiartificial/norn/pull/302) is open. Its last
-observed pushed SHA was `fcb23a4549fe84b20901f57c0218d4185f2ae304`; API Go
-tests, release qualification, and other component checks passed, while the
-disposable Fleet pilot and three-Nomad-client job were still running. The
-newer local provenance check described below has not yet been pushed or
-covered by CI. Checks on this PR validate branch code and disposable fixtures
-only; they do not qualify the deployed DO Fleet, Mini, or any live upgrade.
+PR [#302](https://github.com/antiartificial/norn/pull/302) is open. Commit
+`ac2dcc1825aef349625c17818ce4b521b39adb7e` adds the V3 deployment-source
+corroboration described below. The full API Go suite passed locally on that
+code. CI runs [42508471380](https://github.com/antiartificial/norn/actions/runs/42508471380)
+and [42508471431](https://github.com/antiartificial/norn/actions/runs/42508471431)
+were still in progress at the latest check. Checks on this PR validate branch
+code and disposable fixtures only; they do not qualify the deployed DO Fleet,
+Mini, or any live upgrade.
 The offline statechart at `4703f5bcdd0c98943f86d1fc6cfc97ad3f027743` passes
 86-state/203-transition TLC with all ten safety invariants and the deadlock
 check; see the linked model below.

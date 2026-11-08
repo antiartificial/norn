@@ -68,20 +68,25 @@ For the first implementation, preserve the existing conservative recovery rule: 
 
 The pipeline now has a `WorkloadReleasePlan` → observed staged-target binding → strict `WorkloadReleaseIntent` resolver. The plan refuses scheduler version and modify-index values; the binding accepts only a successful plan-derived create-only Nomad job observation, binds it to target operation/execution/job digest and claim generation, and the resolver returns the existing strict intent for downstream health, route, and drain code. The etcd operation store can persist that binding once and reload it only while the signed plan, operation claim, app lock, and Fleet target generation still verify. Deterministic pipeline and etcd integration tests cover mismatch, overwrite, and lost-claim cases.
 
-The plan path is not yet a complete release lane: the API does not accept this shape, and no private Nomad staging controller builds or registers its target job. Existing accepted strict intents remain the only wired release path. Candidate provenance, managed input revision resolution, route-predecessor acceptance fences, startup key preflight/retention cleanup, and lineage-reader migration remain before end-to-end use.
+The plan path is not yet a complete release lane: the API does not accept this shape, and no private Nomad staging controller builds or registers its target job. Existing accepted strict intents remain the only wired release path. Store-level candidate provenance and encrypted-input retention primitives now exist, but there is no operator admission API, automatic qualification discovery, managed catalog/secret revision resolution, or end-to-end stage/create recovery. Route-predecessor acceptance fences and startup retained-key preflight are implemented; key cleanup and lineage-reader migration remain open.
 
 ## Current input-provenance inventory
 
-The repository has useful candidate and deployment evidence, but these pieces
-do not yet form an etcd/V3 workload-release candidate authority:
+The repository has useful candidate and deployment evidence. The etcd/V3
+admission seam now corroborates signed qualification data against its own
+deployment records, but it does not yet provide automatic candidate discovery
+or a complete operator-facing source authority:
 
 - `model.ReleaseQualification` binds app, staging deployment ID, source SHA,
   content-addressed artifact, expiry, candidate identity, and staging signer.
   The existing release handler emits and verifies it; normal release queueing
   stores the qualification in deployment operation metadata. The relevant
-  paths are `v2/api/model/release.go` and `v2/api/handler/releases.go`. Those
-  handlers use the existing `Handler`/DB path; the etcd workload-release
-  verifier does not resolve or consume a qualification record.
+  paths are `v2/api/model/release.go` and `v2/api/handler/releases.go`. The
+  etcd workload-release acceptance verifies the signature, resolves its
+  deployment ID through the signed V3 acceptance index, and requires a
+  succeeded staging deployment with matching app, source, immutable image,
+  spec digest, and completed region results. No V3 route yet discovers and
+  supplies a current qualification automatically.
 - The accepted deployment records `CommitSHA`, immutable image reference,
   `SpecDigest`, environment, and regions. `v2/api/etcdstore/v3_deployment_acceptance.go`
   retains the signed acceptance and immutable deployment projection. The
@@ -106,22 +111,22 @@ do not yet form an etcd/V3 workload-release candidate authority:
   safe input capture primitive, not durable release storage. The distinct
   `WorkloadReleaseInputKeyRing` now seals these exact bytes in an authenticated
   envelope bound to authority, operation, app, and plan digest, with its own
-  key namespace, rotation support, and retained-key preflight API. No etcd
-  private record or accepted release currently retains the snapshot across
-  host loss.
+  key namespace, rotation support, and retained-key preflight API. The V3
+  acceptance now atomically retains the authenticated private record alongside
+  signed admission, and replay opens and compares the retained snapshot. The
+  retention lifetime and deletion policy still need an explicit contract.
 - Nomad job version, modify index, job digest, and observed allocation
   identities are scheduler observations. The current strict release intent
   requires them for execution, while the proposal correctly defers constructing
   it until a private target has been read back and write-once bound.
 
-Therefore M5-B is **partially inventoried, contract not implemented**. The
-first candidate source must be an explicit adapter that verifies the signed
-qualification, confirms its successful staging deployment and app/spec
-binding, and resolves secret/catalog revisions without copying secret values
-into the signed plan. If the current store cannot provide a portable immutable
-reference for any required input, admission must refuse that candidate until
-the source contract is extended. Do not silently treat the legacy PostgreSQL
-qualification path as an etcd/V3 record.
+Therefore M5-B is **partially implemented**. Signed qualification to V3
+deployment corroboration and encrypted SOPS snapshot retention are present at
+the store seam. The remaining admission adapter must discover qualification
+from trusted control state, resolve catalog and secret revisions without
+copying secret values into the signed plan, and fail closed when a required
+input lacks a portable immutable reference. Do not silently treat a legacy
+PostgreSQL qualification row as an etcd/V3 record.
 
 ### Secret input contract required before admission
 
