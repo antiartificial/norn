@@ -14,7 +14,7 @@ import (
 )
 
 func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t *testing.T) {
-	adapter, _, _ := functionInvocationEffectAttemptStore(t)
+	adapter, client, _ := functionInvocationEffectAttemptStore(t)
 	ctx := context.Background()
 	const app = "widgets"
 	target := FleetAppTarget{SchemaVersion: fleetAppTargetSchema, App: app, ControlEnvironment: "staging", Cluster: "norn-staging",
@@ -42,6 +42,64 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatal(err)
 	}
 	material := []byte("exact-encrypted-sops-snapshot-v1")
+	write := func(key string, value interface{}) {
+		t.Helper()
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Put(ctx, key, string(encoded)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accept := func(request store.OperationAcceptance) error {
+		t.Helper()
+		_, err := adapter.AcceptPrivateWorkloadRelease(ctx, request, material, keys)
+		return err
+	}
+	if err := accept(input); err == nil {
+		t.Fatal("accepted a workload release without a control-owned active route predecessor")
+	}
+	active := activeFleetRoute{IntentID: "current-serving-route", DeploymentID: intent.OldDeploymentID, Generation: intent.FirstRouteGeneration - 1, RouteSHA256: "sha256:current-route"}
+	write(adapter.fleetActiveRouteKey(app, target.ControlEnvironment, target.Region), active)
+	write(adapter.fleetRouteReservationKey(app, target.ControlEnvironment, target.Region), initialFleetRouteReservation{IntentID: active.IntentID, Generation: active.Generation})
+	stale := input
+	stale.Operation = operation
+	stale.Operation.ID = uuid.NewString()
+	stale.Identity.Key = uuid.NewString()
+	staleIntent := intent
+	staleIntent.OldDeploymentID = "superseded-deployment"
+	stalePlan, err := json.Marshal(pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: staleIntent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Operation.Payload = map[string]interface{}{"workloadReleasePlan": string(stalePlan)}
+	if err := accept(stale); err == nil {
+		t.Fatal("accepted a workload release whose predecessor differs from the active route")
+	}
+	staleGeneration := input
+	staleGeneration.Operation = operation
+	staleGeneration.Operation.ID = uuid.NewString()
+	staleGeneration.Identity.Key = uuid.NewString()
+	wrongGenerationIntent := intent
+	wrongGenerationIntent.FirstRouteGeneration++
+	wrongGenerationPlan, err := json.Marshal(pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: wrongGenerationIntent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleGeneration.Operation.Payload = map[string]interface{}{"workloadReleasePlan": string(wrongGenerationPlan)}
+	if err := accept(staleGeneration); err == nil {
+		t.Fatal("accepted a workload release with a non-successor route generation")
+	}
+	write(adapter.fleetRouteReservationKey(app, target.ControlEnvironment, target.Region), initialFleetRouteReservation{IntentID: "different-route", Generation: active.Generation})
+	staleReservation := input
+	staleReservation.Operation = operation
+	staleReservation.Operation.ID = uuid.NewString()
+	staleReservation.Identity.Key = uuid.NewString()
+	if err := accept(staleReservation); err == nil {
+		t.Fatal("accepted a workload release while the active route reservation disagreed")
+	}
+	write(adapter.fleetRouteReservationKey(app, target.ControlEnvironment, target.Region), initialFleetRouteReservation{IntentID: active.IntentID, Generation: active.Generation})
 	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, material, keys)
 	if err != nil {
 		t.Fatal(err)

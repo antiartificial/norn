@@ -105,6 +105,10 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	if !workloadReleasePlanMatchesFleetTarget(acceptedPlan, target) {
 		return store.AcceptedOperation{}, fmt.Errorf("workload release plan differs from current control-owned Fleet target")
 	}
+	predecessorCompares, err := s.workloadReleasePredecessorCompares(ctx, acceptedPlan)
+	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
 	appAdmission, err := s.prepareAppAdmission(ctx, acceptance)
 	if err != nil {
 		return store.AcceptedOperation{}, err
@@ -141,6 +145,7 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 		clientv3.Compare(clientv3.ModRevision(s.fleetAppTargetKey(target.App, target.ControlEnvironment)), "=", targetRevision),
 	}
 	compares = append(compares, appAdmission.compares...)
+	compares = append(compares, predecessorCompares...)
 	puts := []clientv3.Op{
 		clientv3.OpPut(key, string(acceptanceBytes)), clientv3.OpPut(acceptanceIndex, key),
 		clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(operationBytes)),
@@ -169,6 +174,38 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	delete(payload, "workloadReleasePrivateKeyId")
 	input.Operation.Payload = payload
 	return s.resolvePrivateWorkloadReleaseReplay(ctx, input, material, keys, prior)
+}
+
+// workloadReleasePredecessorCompares makes accepted plans name the currently
+// control-owned serving deployment and its immediate successor route
+// generation. Both revisions are checked by the acceptance transaction, so a
+// route handoff racing admission cannot leave a stale release queued.
+func (s *V3OperationStore) workloadReleasePredecessorCompares(ctx context.Context, plan pipeline.WorkloadReleasePlan) ([]clientv3.Cmp, error) {
+	intent := plan.Intent
+	activeKey := s.fleetActiveRouteKey(intent.App, intent.ControlEnvironment, intent.Region)
+	activeResponse, err := s.kv.Get(ctx, activeKey)
+	if err != nil || len(activeResponse.Kvs) != 1 {
+		return nil, fmt.Errorf("workload release requires a current active route predecessor")
+	}
+	var active activeFleetRoute
+	if decodeV3Record(activeResponse.Kvs[0].Value, &active) != nil || active.IntentID == "" || active.DeploymentID == "" ||
+		active.Generation == 0 || active.Generation == ^uint64(0) || active.RouteSHA256 == "" ||
+		active.DeploymentID != intent.OldDeploymentID || intent.FirstRouteGeneration != active.Generation+1 {
+		return nil, fmt.Errorf("workload release plan differs from the current active route predecessor")
+	}
+	reservationKey := s.fleetRouteReservationKey(intent.App, intent.ControlEnvironment, intent.Region)
+	reservationResponse, err := s.kv.Get(ctx, reservationKey)
+	if err != nil || len(reservationResponse.Kvs) != 1 {
+		return nil, fmt.Errorf("workload release active route reservation is unavailable")
+	}
+	var reservation initialFleetRouteReservation
+	if decodeV3Record(reservationResponse.Kvs[0].Value, &reservation) != nil || reservation.IntentID != active.IntentID || reservation.Generation != active.Generation {
+		return nil, fmt.Errorf("workload release active route differs from its current reservation")
+	}
+	return []clientv3.Cmp{
+		clientv3.Compare(clientv3.ModRevision(activeKey), "=", activeResponse.Kvs[0].ModRevision),
+		clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservationResponse.Kvs[0].ModRevision),
+	}, nil
 }
 
 func acceptedWorkloadReleasePlan(payload map[string]interface{}, app string) (pipeline.WorkloadReleasePlan, error) {
