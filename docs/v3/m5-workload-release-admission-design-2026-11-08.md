@@ -136,6 +136,27 @@ referenced credential document must also resolve from a stable retained
 revision. Re-resolving a mutable `secret:` path after acceptance must fail the
 release before stage or cutover rather than silently rotate the workload input.
 
+The etcd private-invocation envelope is a precedent for authenticated
+encryption, operation-bound AAD, atomic acceptance, retained-key inventory,
+and startup key preflight. Its function-specific key ring and purpose are not
+the workload-release key boundary. A release-input implementation needs a
+separate key namespace and AAD purpose, but should preserve those durable
+properties. Bind the ciphertext to authority, operation ID, app, and plan
+digest. Persist it atomically with signed release acceptance so a request-key
+replay returns the original operation before reading the current secret file.
+Retain the envelope and its decryption key while the stage effect is unresolved
+or held; allow deletion only after exact target binding or an independently
+proved no-effect terminal outcome. Startup/restore preflight must require keys
+for every retained release envelope. A successful target binding should keep
+only the nonsecret ciphertext digest and source revision in the public receipt.
+
+Current implementation is function-only: `PrivateInvocationStore` accepts
+`function.invoke`, uses its own key-ring config, and scans its own records for
+key requirements. No workload-release private-envelope type, etcd record,
+retention cleanup, startup preflight, or acceptance transaction exists. These
+are explicit implementation items, not behavior inherited automatically from
+the function path.
+
 ## Open questions and risks
 
 - Which existing qualified-candidate record is authoritative for binding source, spec, and image to the same immutable build?
