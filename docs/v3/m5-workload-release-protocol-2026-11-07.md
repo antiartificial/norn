@@ -7,6 +7,20 @@ an `app.workload-release` operation. A production-driver crash matrix and
 live qualification remain open as of 2026-11-08.
 This note authorizes no live workload, route, or provider change.
 
+## Current branch verification — 2026-11-08
+
+PR [#302](https://github.com/antiartificial/norn/pull/302) at
+`aa5d4227b35416dcff96d8891474c675807531fa` passed Repository CI run
+[42494310110](https://github.com/antiartificial/norn/actions/runs/42494310110)
+and Norn CI run
+[42494310093](https://github.com/antiartificial/norn/actions/runs/42494310093).
+Passing checks include API and CLI Go tests, the disposable Fleet pilot
+workload and three-member etcd qualification, the three-Nomad-client durable
+replica qualification, OpenAPI, UI, catalog publisher, workflow lint, and the
+platform release gate. Unselected qualification jobs were skipped. These
+checks validate the branch and disposable fixtures only; they do not qualify
+the deployed DO Fleet, Mini, workload-release admission, or any live upgrade.
+
 ## Release-readiness milestones and order
 
 The current code and evidence support a staged plan, not a claim that V3 is
