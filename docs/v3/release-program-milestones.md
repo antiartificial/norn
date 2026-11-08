@@ -255,6 +255,32 @@ The local Fleet controller now has separate synthetic tests for either missing
 commit and reports the exact missing object. This is not yet merged or
 installed, and no source objects have been added to the protected host.
 
+On 2026-11-08, a fresh explicit `doctl --context work` readback again showed
+all nine NYC3 staging Fleet droplets active (3 control, 2 ingress, 4
+app), the `tk-staging-nyc3-ingress` load balancer active, and the staging
+management authority PostgreSQL plus application PostgreSQL and MySQL
+databases online. The two management droplets were also active. This is
+provider metadata only; it does not verify Nomad, Consul, Norn/API, workload,
+or public/private route health.
+
+The protected readback failure was still only reported as a generic source
+capability hold. Fleet PR #940 now adds a local, credential-free diagnostic
+that distinguishes a missing capability commit, missing target commit,
+non-ancestor target, and missing target-tree markers. Its six focused tests
+pass locally. Protected validation run `42488580934` passed the broad
+plan/reconciliation suite and, at 14:22 UTC, was still running executor
+convergence/recovery; the diagnostic is neither installed nor run against the
+management host. Fresh protected state/route/host-key evidence and a new
+one-use signed intent remain required before another readback.
+
+On 2026-11-08, all nine committed Norn V3 statecharts were regenerated from
+the current checkout into `/tmp/norn-v3-statecharts-current`; TLC reported
+the committed state/transition counts and passed every listed invariant and
+deadlock check. These remain bounded models, not proofs of provider, host,
+credential-scope, or application behavior. The 51-path credential lifecycle
+manifest still records unresolved provider scope and several service
+rotation/revocation procedures as admission holds.
+
 On 2026-11-08, a fresh local `doctl account get` check matched the default
 account prefix (`05fe610a…`) and did not match the pinned work account prefix
 (`17f40050…`). The read-only provider inventory above used explicit context
