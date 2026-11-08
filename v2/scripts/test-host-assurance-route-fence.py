@@ -69,6 +69,12 @@ class HostAssuranceRouteFenceTest(unittest.TestCase):
             norn = config / "bin" / "norn"
             norn.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALL_LOG"\n')
             norn.chmod(0o700)
+            platform = config / "bin" / "platform-upgrade"
+            platform.write_text('#!/bin/sh\n[ "$1" = env-exec ] && [ "$2" = -- ] || exit 90\nshift 2\nexec "$@"\n')
+            platform.chmod(0o700)
+            runtime = config / "bin" / "host-runtime"
+            runtime.write_bytes(SCRIPT.read_bytes())
+            runtime.chmod(0o700)
             calls = root / "calls"
             env = {**os.environ, "NORN_URL": "http://127.0.0.1:8800", "NOMAD_ADDR": "http://127.0.0.1:8800",
                    "CONSUL_HTTP_ADDR": "http://127.0.0.1:8800", "CALL_LOG": str(calls)}
@@ -83,6 +89,35 @@ class HostAssuranceRouteFenceTest(unittest.TestCase):
                     self.assertEqual(calls.read_text().strip() if calls.exists() else "", "forge example-app" if allowed else "")
                     if not allowed:
                         self.assertIn("runtime mutation fence is active or unproven", result.stdout)
+
+    def test_authenticated_forge_child_is_allowlist_bound(self):
+        with tempfile.TemporaryDirectory(prefix="norn-assure-forge-child-") as root:
+            root = Path(root)
+            config = root / "config"
+            (config / "bin").mkdir(parents=True)
+            (config / "assure-forge").write_text("example-app\n")
+            calls = root / "calls"
+            norn = config / "bin" / "norn"
+            norn.write_text('#!/bin/sh\nprintf "%s|%s\\n" "$NORN_PLATFORM_REPO" "$*" >> "$CALL_LOG"\n')
+            norn.chmod(0o700)
+            env = {**os.environ, "NORN_PLATFORM_REPO": str(root / "repo"),
+                   "NORN_HOST_CONFIG_DIR": str(config), "CALL_LOG": str(calls)}
+            allowed = subprocess.run([str(SCRIPT), "_assurance-forge", "example-app"],
+                                     env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            self.assertEqual(calls.read_text().strip(),
+                             f"{root / 'repo'}|forge example-app")
+
+            calls.unlink()
+            denied = subprocess.run([str(SCRIPT), "_assurance-forge", "other-app"],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn("not in the assurance forge allowlist", denied.stderr)
+            self.assertFalse(calls.exists())
+
+            extra = subprocess.run([str(SCRIPT), "_assurance-forge", "example-app", "extra"],
+                                   env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(extra.returncode, 0)
 
 
 if __name__ == "__main__":

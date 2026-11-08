@@ -33,6 +33,7 @@ An Architecture Decision Record (ADR) captures a consequential choice, its alter
 11. [Foundation review](foundation-review.md): source-backed safety findings, bounded implementation slices and review acceptance tests.
 12. [Fleet controller plan](fleet-controller/plan.md) and [ADR 0009 — Fleet controller](adrs/0009-fleet-controller.md): the target fence, authority epoch and resource-status work for changes 1-4, plus its [lifecycle contract](fleet-controller/lifecycle-contract.md), [review](fleet-controller/plan-review.md) and [operator runbook](fleet-controller/operator-runbook.md).
 13. [Online upgrade lessons and capability proposal](online-upgrade-lessons-2026-11-07.md): Mini upgrade findings and a platform-wide path to low-interruption upgrades.
+14. [Mini host assurance route authentication](mini-host-assurance-route-auth.md): SOPS credential handoff, the narrow retained-fence exception, and live verification requirements.
 
 The older session and topic handoffs are available in Git history. Use the
 current release handoff above for next actions and the status and review
