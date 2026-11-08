@@ -2,9 +2,13 @@
 EXTENDS Naturals, TLC
 
 VARIABLES phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
-          route, oldRunning, proofFresh, stopped, stopHadProof
+          route, oldRunning, proofFresh, stopped, stopHadProof,
+          planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
+          inputsBound, boundSecretRevision
 vars == <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
-          route, oldRunning, proofFresh, stopped, stopHadProof>>
+          route, oldRunning, proofFresh, stopped, stopHadProof,
+          planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
+          inputsBound, boundSecretRevision>>
 
 Init ==
   /\ phase = "accepted"
@@ -19,9 +23,50 @@ Init ==
   /\ proofFresh = FALSE
   /\ stopped = FALSE
   /\ stopHadProof = FALSE
+  /\ planSecretRevision = "secret-revision-a"
+  /\ currentSecretRevision = "secret-revision-a"
+  /\ secretSnapshotAvailable = TRUE
+  /\ inputsBound = FALSE
+  /\ boundSecretRevision = "none"
+
+ResolvePinnedInputs ==
+  /\ phase = "accepted"
+  /\ secretSnapshotAvailable
+  /\ inputsBound = FALSE
+  /\ inputsBound' = TRUE
+  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, boundSecretRevision>>
+
+RotateCurrentSecret ==
+  /\ currentSecretRevision = "secret-revision-a"
+  /\ currentSecretRevision' = "secret-revision-b"
+  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      secretSnapshotAvailable, inputsBound, boundSecretRevision>>
+
+LosePinnedSecretSnapshot ==
+  /\ phase = "accepted"
+  /\ ~binding
+  /\ secretSnapshotAvailable
+  /\ secretSnapshotAvailable' = FALSE
+  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, inputsBound, boundSecretRevision>>
+
+HoldOnMissingPinnedInputs ==
+  /\ phase \notin {"complete", "held"}
+  /\ ~secretSnapshotAvailable
+  /\ phase' = "held"
+  /\ proofFresh' = FALSE
+  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, inputsBound, boundSecretRevision>>
 
 MarkAttempt ==
   /\ phase = "accepted"
+  /\ inputsBound
+  /\ secretSnapshotAvailable
   /\ ~attempt
   /\ attempt' = TRUE
   /\ phase' = "attempt-marked"
@@ -30,6 +75,8 @@ MarkAttempt ==
 SendCreate ==
   /\ phase = "attempt-marked"
   /\ attempt
+  /\ inputsBound
+  /\ secretSnapshotAvailable
   /\ job = "absent"
   /\ requestInFlight' = TRUE
   /\ phase' = "submitting"
@@ -67,10 +114,12 @@ ObserveMatchingJob ==
   /\ phase \in {"submitted", "ambiguous", "attempt-marked", "submitting"}
   /\ claim > 1
   /\ attempt
+  /\ inputsBound
   /\ job = "matching"
   /\ binding' = TRUE
+  /\ boundSecretRevision' = planSecretRevision
   /\ phase' = "bound"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, attempt, requestInFlight, job, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputsBound>>
 
 ObserveMismatch ==
   /\ phase \in {"submitted", "ambiguous", "attempt-marked", "submitting"}
@@ -156,10 +205,14 @@ LateAcceptWhileHeld ==
 
 Done == phase \in {"complete", "held"} /\ UNCHANGED vars
 
-Next == MarkAttempt \/ SendCreate \/ NomadAccepts \/ LoseResponse \/ CrashAndReclaim \/
-        ObserveMissingAfterAttempt \/ ObserveMatchingJob \/ ObserveMismatch \/ TargetBecomesHealthy \/
-        ProveOldOnly \/ PublishMixed \/ PublishTargetOnly \/ RefreshTargetOnlyProof \/
-        TargetLosesHealth \/ StopOld \/ Hold \/ LateAcceptWhileHeld \/ Done
+Next == ResolvePinnedInputs \/ RotateCurrentSecret \/ LosePinnedSecretSnapshot \/ HoldOnMissingPinnedInputs \/
+        ObserveMatchingJob \/
+        ((MarkAttempt \/ SendCreate \/ NomadAccepts \/ LoseResponse \/ CrashAndReclaim \/
+          ObserveMissingAfterAttempt \/ ObserveMismatch \/ TargetBecomesHealthy \/
+          ProveOldOnly \/ PublishMixed \/ PublishTargetOnly \/ RefreshTargetOnlyProof \/
+          TargetLosesHealth \/ StopOld \/ Hold \/ LateAcceptWhileHeld \/ Done)
+          /\ UNCHANGED <<planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
+                         inputsBound, boundSecretRevision>>)
 
 TypeOK ==
   /\ phase \in {"accepted", "attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining", "complete", "held"}
@@ -174,12 +227,20 @@ TypeOK ==
   /\ proofFresh \in BOOLEAN
   /\ stopped \in BOOLEAN
   /\ stopHadProof \in BOOLEAN
+  /\ planSecretRevision \in {"secret-revision-a"}
+  /\ currentSecretRevision \in {"secret-revision-a", "secret-revision-b"}
+  /\ secretSnapshotAvailable \in BOOLEAN
+  /\ inputsBound \in BOOLEAN
+  /\ boundSecretRevision \in {"none", "secret-revision-a"}
 
 OldStopRequiresTargetProof == stopped => stopHadProof
 OldStopRequiresAuthorization == stopped => (attempt /\ job = "matching" /\ binding)
 RouteDoesNotMoveBeforeBinding == (route # "old-only") => binding
 OldWorkloadRemainsUntilSafeStop == ~stopped => oldRunning
 BindingRequiresMatchingTarget == binding => job = "matching"
+AttemptRequiresPinnedInputs == attempt => inputsBound
+BindingMatchesPinnedSecret == binding => (inputsBound /\ boundSecretRevision = planSecretRevision)
+NoAttemptAfterSecretSnapshotLoss == ~secretSnapshotAvailable => ~attempt
 
 Spec == Init /\ [][Next]_vars
 

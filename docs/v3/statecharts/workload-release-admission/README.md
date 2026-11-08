@@ -32,11 +32,19 @@ full target health and target-only route proof. The invariants check that the
 stop has that proof, the target has an exact bound identity, traffic does not
 move before binding, and the old workload remains active until stop.
 
-The 2026-11-08 run checked 28 distinct states and 58 transitions. All listed
+The model also pins an immutable encrypted secret revision in the plan. A
+current-secret pointer may rotate independently without changing the accepted
+release input. The controller must resolve the exact pinned revision before
+recording the create attempt; if its encrypted snapshot is unavailable, it
+holds before scheduler submission. The target binding records that same
+revision. The model assumes secret plaintext remains outside operation and
+plan data; it checks identity and availability, not cryptographic encryption.
+
+The 2026-11-08 run checked 68 distinct states and 168 transitions. All listed
 safety invariants and deadlock checks passed. The model omits etcd transaction
-details, real Nomad and ingress behavior, credentials, workload data
-compatibility, and provider failures. It is a protocol model, not a live
-qualification.
+details, real Nomad and ingress behavior, credential retrieval and key
+availability, workload data compatibility, and provider failures. It is a
+protocol model, not a live qualification.
 
 The generated [statechart](chart.mmd) and [TLC report](report.md) show the
 checked transition graph and result. The conservative hold after an

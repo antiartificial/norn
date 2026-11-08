@@ -108,6 +108,34 @@ reference for any required input, admission must refuse that candidate until
 the source contract is extended. Do not silently treat the legacy PostgreSQL
 qualification path as an etcd/V3 record.
 
+### Secret input contract required before admission
+
+The current workload SOPS manager reads and rewrites a mutable filesystem path.
+Hashing the decrypted map is undesirable: it puts a stable password-derived
+value in public integrity metadata. Hashing only the ciphertext is safe as an
+identifier, but does not make those ciphertext bytes recoverable after a host
+or repository change. The admission contract must therefore bind both an
+opaque, immutable source revision and the digest of its encrypted bytes, with
+an availability/retention guarantee for the operation's recovery lifetime.
+
+The signed release plan should contain only a reference such as
+`{sourceRevision, ciphertextDigest, schemaVersion}`. Before accepting the
+operation, the controller must prove that the exact encrypted input is
+durably retrievable. A worker restart must reopen that immutable ciphertext,
+decrypt it using the configured SOPS key authority, and validate the same
+reference before constructing the Nomad target. Never put decrypted values in
+the signed plan, operation payload, logs, test snapshots, or public receipts.
+If the source cannot guarantee immutable retrieval, either add a private
+encrypted snapshot store with key rotation/retention semantics or keep this
+candidate ineligible for hands-free release. A local pathname or current
+secret-manager lookup is not sufficient recovery evidence.
+
+Database credentials follow the same principle: the existing catalog revision
+and exact binding payload digest are useful nonsecret identity, but every
+referenced credential document must also resolve from a stable retained
+revision. Re-resolving a mutable `secret:` path after acceptance must fail the
+release before stage or cutover rather than silently rotate the workload input.
+
 ## Open questions and risks
 
 - Which existing qualified-candidate record is authoritative for binding source, spec, and image to the same immutable build?

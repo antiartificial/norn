@@ -11,8 +11,8 @@ stateDiagram-v2
   class lg1 orange
   class lg2 teal
   s0: Accepted, old service active
-  s1: Create permission recorded
-  s2: Held, old service remains
+  s1: Held, old service remains
+  s2: Create permission recorded
   s3: Target create in flight
   s4: Private target created
   s5: Held, late target may exist
@@ -24,32 +24,32 @@ stateDiagram-v2
   s11: Fresh target-only proof
   s12: Target serving, old job stopped
   [*] --> s0
-  s0 --> s1: record create permission
-  s0 --> s2: evidence becomes uncertain [hold]
-  s1 --> s2: evidence becomes uncertain [hold] or successor sees no exact target [hold]
-  s1 --> s3: send create-only request
-  s3 --> s2: evidence becomes uncertain [hold] or successor sees no exact target [hold]
-  s3 --> s4: scheduler accepts target
-  s2 --> s4: scheduler accepts target
-  s2 --> s5: delayed create arrives after hold
-  s4 --> s5: evidence becomes uncertain [hold]
+  s0 --> s1: Next or hold before scheduler submission
+  s0 --> s2: Next
+  s2 --> s1: Next
+  s2 --> s3: Next
+  s3 --> s1: Next
+  s3 --> s4: Next
+  s1 --> s4: Next
+  s1 --> s5: Next
+  s4 --> s5: Next
   s4 --> s6: successor binds exact target readback
-  s6 --> s5: evidence becomes uncertain [hold]
-  s6 --> s7: target reaches full health
-  s7 --> s5: target health is lost [hold] or evidence becomes uncertain [hold]
-  s7 --> s8: prove current old-only route
-  s8 --> s5: target health is lost [hold] or evidence becomes uncertain [hold]
-  s8 --> s9: publish admitted mixed route
-  s9 --> s5: target health is lost [hold] or evidence becomes uncertain [hold]
-  s9 --> s10: publish target-only route
-  s10 --> s11: refresh target health and route proof
-  s10 --> s5: target health is lost [hold] or evidence becomes uncertain [hold]
-  s11 --> s5: target health is lost [hold] or evidence becomes uncertain [hold]
-  s11 --> s12: stop old job after fresh proof
-  s12 --> s5: target health is lost [hold]
+  s6 --> s5: Next
+  s6 --> s7: Next
+  s7 --> s5: Next
+  s7 --> s8: Next
+  s8 --> s5: Next
+  s8 --> s9: Next
+  s9 --> s5: Next
+  s9 --> s10: Next
+  s10 --> s11: Next
+  s10 --> s5: Next
+  s11 --> s5: Next
+  s11 --> s12: Next
+  s12 --> s5: Next
   class s0 blue
-  class s1 blue
-  class s2 orange
+  class s1 orange
+  class s2 blue
   class s3 blue
   class s4 blue
   class s5 orange

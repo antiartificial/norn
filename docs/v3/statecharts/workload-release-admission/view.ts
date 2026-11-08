@@ -18,6 +18,10 @@ export const state = (v: any) => {
   return labels[v.phase] ?? v.phase;
 };
 export const step = (action: string) => ({
+  ResolvePinnedInputs: "resolve immutable encrypted input revision",
+  RotateCurrentSecret: "rotate current secret pointer; accepted plan stays pinned",
+  LosePinnedSecretSnapshot: "pinned encrypted input becomes unavailable",
+  HoldOnMissingPinnedInputs: "hold before scheduler submission",
   MarkAttempt: "record create permission",
   SendCreate: "send create-only request",
   NomadAccepts: "scheduler accepts target",
