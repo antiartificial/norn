@@ -127,9 +127,16 @@ verifies admission provenance only; it does not reserve or publish route steps.
 
 ### A. Offline contract first
 
-Build a deterministic harness using synthetic images, payloads, operation IDs,
+Build a deterministic test fixture using synthetic images, payloads, operation IDs,
 schema epochs, and route receipts. No real Fleet credentials, provider calls,
 SSH, public route mutation, or production data should be available to it.
+
+The proposed release-owned staging and recovery path has a bounded TLA+ model
+in [`statecharts/workload-release-admission`](statecharts/workload-release-admission/README.md).
+It checks the attempt-marker crash gap, delayed create, exact target binding,
+route progression, and the target-only proof required before old-job stop.
+The model does not prove that the admission or staging code exists. It also
+does not replace disposable Nomad and ingress qualification.
 
 The stateless canary contract should assert:
 
@@ -212,9 +219,9 @@ same operation. A target-health controller also verifies the active claim and
 warming phase, reads the exact pinned target job through Nomad, and persists
 pending or healthy allocation evidence without mutating Nomad or ingress.
 The etcd runtime registers the worker for `app.workload-release` and
-verifies the signed acceptance under the app lock. The current API/CLI surface
-does not create such an accepted operation, so this remains an internal worker
-seam, not an operator-facing release action.
+verifies the signed acceptance under the app lock. The current API and CLI
+entry points do not create an accepted operation. Operators cannot use this
+worker path to start a release.
 
 The scale-target reader now resolves completed workload lineage through its
 signed acceptance and complete receipt. It also requires the shared route
