@@ -101,8 +101,12 @@ do not yet form an etcd/V3 workload-release candidate authority:
   feeding plaintext directly to SOPS over stdin, then a synced encrypted-file
   rename, so no plaintext temp file remains and readers see the previous or
   replacement ciphertext rather than an in-place partial rewrite. This is a
-  safe input capture primitive, not durable release storage: no etcd private
-  record or accepted release currently retains the snapshot across host loss.
+  safe input capture primitive, not durable release storage. The distinct
+  `WorkloadReleaseInputKeyRing` now seals these exact bytes in an authenticated
+  envelope bound to authority, operation, app, and plan digest, with its own
+  key namespace, rotation support, and retained-key preflight API. No etcd
+  private record or accepted release currently retains the snapshot across
+  host loss.
 - Nomad job version, modify index, job digest, and observed allocation
   identities are scheduler observations. The current strict release intent
   requires them for execution, while the proposal correctly defers constructing
@@ -163,11 +167,12 @@ proved no-effect terminal outcome. Startup/restore preflight must require keys
 for every retained release envelope. A successful target binding should keep
 only the nonsecret ciphertext digest and source revision in the public receipt.
 
-Current private-envelope implementation is function-only: `PrivateInvocationStore` accepts
+The existing `PrivateInvocationStore` remains function-only: it accepts
 `function.invoke`, uses its own key-ring config, and scans its own records for
-key requirements. No workload-release private-envelope type, etcd record,
-retention cleanup, startup preflight, or acceptance transaction exists. These
-are explicit implementation items, not behavior inherited automatically from
+key requirements. The workload-release envelope is now a separate store-level
+primitive, but has no etcd record, retained-key inventory scan, startup
+preflight wiring, retention cleanup, or acceptance transaction. These are
+explicit implementation items, not behavior inherited automatically from
 the function path.
 
 ## Open questions and risks
