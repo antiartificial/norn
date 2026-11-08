@@ -162,7 +162,7 @@ event-read access, while Receipts remains subject to the mutation-audit authoriz
 boundary. Secret activity displays key names only, never values.
 
 ### Operations (new)
-Durable operations queue from `/api/operations` (+ `/active`): table of kind, app,
+Durable operations queue from `/api/v1/operations` (+ `/active`): table of kind, app,
 status chip (queued/running/succeeded/failed/canceled), risk, attempts (n/max),
 next-attempt countdown for retrying ops, lastError expandable. Row click → saga
 inspector `/operations/:sagaId`: ordered saga event log from `/api/saga/{sagaId}`

@@ -93,7 +93,7 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/health')) return json({ status: 'ok', services: { postgres: 'up', nomad: 'up', consul: 'up' } })
     if (url.includes('/api/events/active')) return json({ incidents: [] })
     if (url.endsWith('/api/events')) return json({ events: [] })
-    if (url.includes('/api/operations/active') || url.endsWith('/api/operations')) return json({ count: 0, operations: [] })
+    if (url.includes('/api/v1/operations/active') || url.endsWith('/api/v1/operations')) return json({ count: 0, operations: [] })
     if (url.includes('/api/ops/platform')) return json(platformSummary())
     if (url.includes('/api/platform/releases')) return json({ current: 'abc123', releases: [] })
     if (url.includes('/api/deploy-groups')) return json({ groups: [] })
@@ -419,7 +419,7 @@ describe('App shell routing', () => {
         features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1', 'fleet-runner-attempts-v1', 'fleet-github-app-v1'],
         environment: { id: 'staging', profile: 'development' },
         auth: { scopes: ['api:read'], principal: { authenticated: true, subject: 'viewer-device', scopes: ['api:read'] } },
-        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active' },
+        endpoints: { operationList: '/api/v1/operations', activeOperations: '/api/v1/operations/active' },
       }),
       '/api/v1/fleet/node-pools': json({
         schemaVersion: 'norn.fleet-inventory/v1', configured: true, digest: 'sha256:abcdef1234567890',
@@ -457,7 +457,7 @@ describe('App shell routing', () => {
         features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'],
         environment: { id: 'staging', profile: 'development' },
         auth: { scopes: ['api:read'], principal: { authenticated: true, subject: 'viewer-device', scopes: ['api:read'] } },
-        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active' },
+        endpoints: { operationList: '/api/v1/operations', activeOperations: '/api/v1/operations/active' },
       }),
     })
     renderApp('/apps')
@@ -477,7 +477,7 @@ describe('App shell routing', () => {
         features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'],
         environment: { id: 'staging', profile: 'development' },
         auth: { scopes: ['api:read', 'api:write'], principal: { authenticated: false, scopes: [] } },
-        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active', enrollments: '/api/v1/enrollments' },
+        endpoints: { operationList: '/api/v1/operations', activeOperations: '/api/v1/operations/active', enrollments: '/api/v1/enrollments' },
       }),
     })
     renderApp('/fleet')
@@ -487,7 +487,7 @@ describe('App shell routing', () => {
     expect(screen.getByRole('checkbox', { name: /Request operator permission/i })).not.toBeChecked()
     await waitFor(() => expect(calls.some((call) => call.includes('/api/v1/capabilities'))).toBe(true))
     expect(calls.some((call) => call.includes('/api/v1/fleet/node-pools'))).toBe(false)
-    expect(calls.some((call) => call.includes('/api/operations/active'))).toBe(false)
+    expect(calls.some((call) => call.includes('/api/v1/operations/active'))).toBe(false)
   })
 
   it('revokes a paired authority session from the authenticated shell', async () => {
@@ -498,7 +498,7 @@ describe('App shell routing', () => {
         features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'],
         environment: { id: 'staging', profile: 'development' },
         auth: { scopes: ['api:read'], principal: { authenticated: true, subject: 'paired-browser', scopes: ['api:read'] } },
-        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active' },
+        endpoints: { operationList: '/api/v1/operations', activeOperations: '/api/v1/operations/active' },
       }),
     })
     renderApp('/fleet')
@@ -643,11 +643,11 @@ describe('App shell routing', () => {
           metadata: {},
         }],
       }),
-      '/api/operations/active': () => json({
+      '/api/v1/operations/active': () => json({
         count: 1,
         operations: [{ id: 'op-1', sagaId: 'saga-1', kind: 'deploy', app: 'api', status: 'running', attempts: 1, maxAttempts: 3, updatedAt: now }],
       }),
-      '/api/operations': () => json({
+      '/api/v1/operations': () => json({
         count: 1,
         operations: [{ id: 'op-2', sagaId: 'saga-2', kind: 'preflight', app: 'worker', status: 'queued', attempt: 2, maxAttempts: 4, startedAt: now }],
       }),
@@ -815,7 +815,7 @@ describe('App shell routing', () => {
   it('filters operations and renders next attempt countdown', async () => {
     const nextAttemptAt = new Date(Date.now() + 60_000).toISOString()
     installFetch({
-      '/api/operations': () => json({
+      '/api/v1/operations': () => json({
         count: 2,
         operations: [
           { id: 'op-1', sagaId: 'saga-1', kind: 'deploy', app: 'api', status: 'failed', attempts: 2, maxAttempts: 4, risk: 'high', lastError: 'boom', nextAttemptAt },
@@ -942,7 +942,7 @@ describe('App shell routing', () => {
 
   it('renders operation last error details', async () => {
     installFetch({
-      '/api/operations': () => json({ count: 1, operations: [{ id: 'op-1', sagaId: 'saga-1', kind: 'deploy', app: 'api', status: 'failed', attempts: 2, maxAttempts: 4, risk: 'high', lastError: 'boom' }] }),
+      '/api/v1/operations': () => json({ count: 1, operations: [{ id: 'op-1', sagaId: 'saga-1', kind: 'deploy', app: 'api', status: 'failed', attempts: 2, maxAttempts: 4, risk: 'high', lastError: 'boom' }] }),
     })
     renderApp('/operations')
     expect(await screen.findByText('last error')).toBeInTheDocument()

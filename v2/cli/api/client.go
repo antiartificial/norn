@@ -1105,7 +1105,7 @@ func (c *Client) ActiveOperationCount(excludeID string) (int, error) {
 	if excludeID = strings.TrimSpace(excludeID); excludeID != "" {
 		values.Set("excludeId", excludeID)
 	}
-	path := "/api/operations/active"
+	path := "/api/v1/operations/active"
 	if encoded := values.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
@@ -1168,7 +1168,7 @@ func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
 	if limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", limit))
 	}
-	path := "/api/operations"
+	path := "/api/v1/operations"
 	if encoded := values.Encode(); encoded != "" {
 		path += "?" + encoded
 	}

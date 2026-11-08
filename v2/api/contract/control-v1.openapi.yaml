@@ -2060,6 +2060,44 @@ paths:
           oneOf:
             - { $ref: '#/components/schemas/Event' }
             - { $ref: '#/components/schemas/HeartbeatFrame' }
+  /api/v1/operations:
+    get:
+      operationId: listOperations
+      description: Returns sanitized durable operation summaries. API readers may filter by app, kind, status, active, and limit.
+      parameters:
+        - { name: app, in: query, schema: { type: string } }
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Sanitized durable operation summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operations, count]
+                properties:
+                  operations: { type: array, items: { $ref: '#/components/schemas/Operation' } }
+                  count: { type: integer }
+  /api/v1/operations/active:
+    get:
+      operationId: listActiveOperations
+      description: Returns up to 100 active operation summaries, optionally excluding one operation ID.
+      parameters:
+        - { name: excludeId, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Active operation summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operations, count]
+                properties:
+                  operations: { type: array, items: { $ref: '#/components/schemas/Operation' } }
+                  count: { type: integer }
   /api/v1/operations/{id}:
     get:
       operationId: getOperation

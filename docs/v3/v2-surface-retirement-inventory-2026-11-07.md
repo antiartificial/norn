@@ -22,9 +22,17 @@ focused CLI test and UI assertion protect the V1 path. The legacy GET alias
 remains registered because external use has not been measured and the same
 `/api/apps` prefix still has live action, logs, snapshot, and other consumers.
 
+Operation history has now followed the same migration pattern. The V1 API
+provides `/api/v1/operations` and `/api/v1/operations/active`; CLI and UI
+callers use those routes, and capability discovery plus OpenAPI advertise them.
+The `/api/operations` aliases remain registered for unknown external clients.
+The `active` collection is explicitly classified as a general `api:read`
+request; only an exact operation ID is eligible for the existing handler-bound
+scoped read.
+
 Remaining examples include:
 
-- CLI reads `/api/ops/platform` and `/api/operations/active`, and
+- CLI reads `/api/ops/platform` and `/api/v1/operations/active`, and
   posts `/api/apps/{id}/deploy`, `/preflight`, and `/rollback`
   (`v2/cli/api/client.go`, `PlatformOps`, `ListOperations`, `Deploy`,
   `Preflight`, and `Rollback`).

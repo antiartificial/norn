@@ -97,7 +97,25 @@ func TestActiveOperationCountMatchesMiniUpgradeDrainSemantics(t *testing.T) {
 	if got != 2 {
 		t.Fatalf("ActiveOperationCount() = %d, want 2", got)
 	}
-	if want := "GET /api/operations/active?excludeId=excluded"; requestURI != want {
+	if want := "GET /api/v1/operations/active?excludeId=excluded"; requestURI != want {
+		t.Fatalf("request = %q, want %q", requestURI, want)
+	}
+}
+
+func TestListOperationsUsesVersionedRoute(t *testing.T) {
+	var requestURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":1,"operations":[{"id":"op-1","kind":"app.deploy","status":"succeeded"}]}`))
+	}))
+	defer server.Close()
+
+	operations, err := New(server.URL).ListOperations(true, 25)
+	if err != nil || len(operations) != 1 || operations[0].ID != "op-1" {
+		t.Fatalf("ListOperations() = %+v, %v", operations, err)
+	}
+	if want := "GET /api/v1/operations?active=true&limit=25"; requestURI != want {
 		t.Fatalf("request = %q, want %q", requestURI, want)
 	}
 }
