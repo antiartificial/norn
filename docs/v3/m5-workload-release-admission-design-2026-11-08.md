@@ -66,7 +66,9 @@ For the first implementation, preserve the existing conservative recovery rule: 
 
 ## Implementation reconciliation
 
-No runtime code has been changed to implement this design yet. Existing `WorkloadReleaseIntent` validation and its target-only-before-drain behavior remain authoritative. The protocol document's stale mixed-route-before-drain descriptions are corrected in the accompanying documentation change. Input provenance, stage effects, receipt digests, and every lineage reader must migrate as one release contract; a partial adapter is not a completed M5 lane.
+The pipeline now has a pure `WorkloadReleasePlan` → observed staged-target binding → strict `WorkloadReleaseIntent` resolver. The plan refuses scheduler version and modify-index values; the binding accepts only a successful exact Nomad job observation, binds it to the target operation/execution/job digest and current claim generation, and the resolver returns the existing strict intent for downstream health, route, and drain code. Focused deterministic tests cover mismatch and tamper cases.
+
+This is a domain contract only: the API does not yet accept this plan shape, etcd does not persist the staged binding, and no private Nomad staging controller invokes the resolver. Existing accepted strict intents remain the only wired release path. Input provenance, private envelope retention, atomic acceptance fences, durable write-once binding, stage effects, receipt digests, and every lineage reader must be integrated as one release contract; this pure adapter is not a completed M5 lane.
 
 ## Current input-provenance inventory
 
@@ -186,4 +188,4 @@ the function path.
 
 ## Next implementation step
 
-Implement the signed plan, atomic idempotent admission fences, and one shared plan-plus-binding resolver before wiring private Nomad staging into the existing reconciler.
+Persist the signed plan, idempotency identity, atomic app/route fences, and private input envelope in one acceptance transaction. Then add the claim-fenced write-once staged-target binding store and wire its readback through the shared resolver before private Nomad staging can advance the existing reconciler.
