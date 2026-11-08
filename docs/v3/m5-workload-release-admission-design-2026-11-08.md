@@ -66,9 +66,9 @@ For the first implementation, preserve the existing conservative recovery rule: 
 
 ## Implementation reconciliation
 
-The pipeline now has a pure `WorkloadReleasePlan` → observed staged-target binding → strict `WorkloadReleaseIntent` resolver. The plan refuses scheduler version and modify-index values; the binding accepts only a successful exact Nomad job observation, binds it to the target operation/execution/job digest and current claim generation, and the resolver returns the existing strict intent for downstream health, route, and drain code. Focused deterministic tests cover mismatch and tamper cases.
+The pipeline now has a `WorkloadReleasePlan` → observed staged-target binding → strict `WorkloadReleaseIntent` resolver. The plan refuses scheduler version and modify-index values; the binding accepts only a successful plan-derived create-only Nomad job observation, binds it to target operation/execution/job digest and claim generation, and the resolver returns the existing strict intent for downstream health, route, and drain code. The etcd operation store can persist that binding once and reload it only while the signed plan, operation claim, app lock, and Fleet target generation still verify. Deterministic pipeline and etcd integration tests cover mismatch, overwrite, and lost-claim cases.
 
-This is a domain contract only: the API does not yet accept this plan shape, etcd does not persist the staged binding, and no private Nomad staging controller invokes the resolver. Existing accepted strict intents remain the only wired release path. Input provenance, private envelope retention, atomic acceptance fences, durable write-once binding, stage effects, receipt digests, and every lineage reader must be integrated as one release contract; this pure adapter is not a completed M5 lane.
+This is not yet a complete release lane: the API does not accept this plan shape, and no private Nomad staging controller invokes the binder or resolver. Existing accepted strict intents remain the only wired release path. Input provenance, private envelope retention, atomic plan acceptance fences, stage effect admission, and all lineage readers must be integrated before the plan path is usable end to end.
 
 ## Current input-provenance inventory
 
@@ -188,4 +188,4 @@ the function path.
 
 ## Next implementation step
 
-Persist the signed plan, idempotency identity, atomic app/route fences, and private input envelope in one acceptance transaction. Then add the claim-fenced write-once staged-target binding store and wire its readback through the shared resolver before private Nomad staging can advance the existing reconciler.
+Implement signed plan admission with idempotency identity, atomic app/route fences, and private input envelope in one acceptance transaction. Then add the private Nomad stage effect and wire its exact readback through the claim-fenced binding store and shared resolver before the existing reconciler can advance.
