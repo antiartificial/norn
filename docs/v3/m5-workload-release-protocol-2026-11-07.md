@@ -198,8 +198,9 @@ The old-generation stop/recovery slice now has a bounded statechart and a
 deterministic Go lost-response fixture. The model checks one stop write per
 intent, marker recovery without a second stop, and completion only after the
 pinned old allocations are terminal. The executor requires a validated
-`draining` receipt proving full target health and the exact mixed-route
-generation before it reserves or launches the old-job stop. See
+`draining` receipt proving full target health and the final target-only route
+generation while the old allocations are still running before it reserves or
+launches the old-job stop. Mixed-route proof alone is not sufficient. See
 [`statecharts/workload-stop-recovery`](statecharts/workload-stop-recovery/README.md).
 The receipt repository now loads integrity-checked bytes from claim-fenced
 PostgreSQL or etcd CAS stores and validates each successor before storage. The
@@ -253,13 +254,14 @@ lease failures remains open; no live qualification has run.
 
 The receipt lifecycle refreshes target allocation health in warming, routing,
 and draining phases. Total target health loss after traffic begins records a
-terminal held receipt. Committing the mixed route transitions into draining,
-which makes the exact old-stop executor reachable only after mixed-route
-traffic proof. Its stable stop marker survives claim renewal. After the durable
-stop result, a fresh Nomad readback binds the exact stopped revision and every
-pinned allocation into the receipt; the final route can advance only after that
-drain proof, and terminal completion requires the target-only route and full
-target health. The lost-response integration fixture covers stop recovery,
+terminal held receipt. Committing the final target-only route while all old
+allocations are still running transitions into draining. Before any old-job
+stop request, the controller requires full target health and target-only route
+proof for the exact committed generation. Its stable stop marker survives
+claim renewal. After the durable stop result, a fresh Nomad readback binds the
+exact stopped revision and every pinned allocation into the receipt; terminal
+completion requires the target-only route, full target health, and the verified
+old-allocation drain. The lost-response integration fixture covers stop recovery,
 exact drain receipt, final-route receipt, and terminal completion. Route-intent
 integration covers replay after a lost commit response, and the top-level
 fixture covers eight durable response-loss boundaries with exactly one
