@@ -1186,7 +1186,7 @@ func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 				op.NextAttemptAt = now
 				op.Message = "catalog activation owner lease expired; retrying signed intent"
 				op.Metadata["recoveredAfterLeaseExpiry"] = true
-			} else if op.Kind == "app.canary-promote" || op.Kind == "app.scale" {
+			} else if op.Kind == "app.canary-promote" || op.Kind == "app.scale" || op.Kind == "app.workload-release" {
 				op.Status = model.OperationQueued
 				if op.Attempts > 0 {
 					op.Attempts--

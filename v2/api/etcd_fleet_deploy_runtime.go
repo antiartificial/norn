@@ -150,10 +150,16 @@ func newEtcdFleetDeployRuntime(ctx context.Context, cfg *config.Config, operatio
 		_ = privateSecrets.Close()
 		return nil, err
 	}
-	executor := &fleetdeploy.ClaimedFleetDeploymentExecutor{Store: operations, Nomad: nomadClient,
+	deployExecutor := &fleetdeploy.ClaimedFleetDeploymentExecutor{Store: operations, Nomad: nomadClient,
 		DatabaseSecrets: privateSecrets, JobSecrets: secrets.NewManager(cfg.AppsDir), AppsDir: cfg.AppsDir,
 		Authority: cfg.ControlAuthority, DatabaseProfile: cfg.DatabaseProfile, Route: transport}
-	return &etcdFleetDeployRuntime{worker: worker.NewOperationWorkerForKinds(operations, executor, []string{"app.deploy"}), secrets: privateSecrets}, nil
+	workloadExecutor, err := newEtcdWorkloadReleaseExecutor(operations, nomadClient, transport)
+	if err != nil {
+		_ = privateSecrets.Close()
+		return nil, err
+	}
+	executor := &etcdFleetReleaseOperationExecutor{deploy: deployExecutor, workload: workloadExecutor}
+	return &etcdFleetDeployRuntime{worker: worker.NewOperationWorkerForKinds(operations, executor, []string{"app.deploy", "app.workload-release"}), secrets: privateSecrets}, nil
 }
 
 // privateFleetDeployFile refuses symlinks, group/world access, and foreign

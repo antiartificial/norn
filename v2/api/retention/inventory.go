@@ -45,6 +45,7 @@ var PayloadInventory = []PayloadRetention{
 	{"function_invocation_effect_attempts", ClassHotEvidence, nil, "variable and job pre-call fences; retained while an invocation can require recovery or manual review"},
 	{"snapshot_publication_intents", ClassHotEvidence, []string{"target", "namespace", "filename"}, "snapshot publication and retry-safety intent; retained until object/copy recovery is qualified"},
 	{"snapshot_export_intents", ClassHotEvidence, nil, "unresolved export reservations and publication recovery remain available until their terminal evidence is qualified"},
+	{"workload_release_receipts", ClassHotEvidence, []string{"receipt"}, "claim-fenced route, allocation-health, and stop-drain evidence remains hot for operation recovery and release audit"},
 	{"private_invocation_material", ClassHotEvidence, nil, "encrypted invocation material remains available for accepted work and key-retirement preflight; never enters archive bundles"},
 	{"function_invocation_cleanup_intents", ClassHotEvidence, nil, "variable cleanup and remote job teardown intents remain until completion or manual recovery"},
 	{"mysql_runtime_launch_reservations", ClassHotEvidence, nil, "launch reservations remain through writer fencing and recovery reconciliation"},

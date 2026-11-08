@@ -16,6 +16,8 @@ const (
 	DeploymentExecutionIDMeta = "norn.executionId"
 	DeploymentOperationIDMeta = "norn.operationId"
 	DeploymentJobDigestMeta   = "norn.jobDigest"
+	DeploymentStopOperationMeta = "norn.releaseStopOperationId"
+	DeploymentStopIntentMeta    = "norn.releaseStopIntentDigest"
 )
 
 var (
