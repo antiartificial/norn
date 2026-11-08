@@ -18,16 +18,22 @@ resources report active/online. The inventory matches staging document
 The default `norn-pilot` doctl context is a different DigitalOcean account and
 does not show this testbed; repeat future provider checks with the explicit
 `work` context. A second read-only inventory at 2026-11-08 12:41 UTC again
-found all nine tagged Norn staging droplets active and the three Norn-related
-managed databases online (management authority Postgres, application Postgres,
-and application MySQL). That repeat did not query the cluster APIs or routes.
-This readback proves provider inventory and managed-database status only. It
-does not prove the Nomad/Consul control plane, node enrollment, application
-placement, public route health, or successful Norn platform release. The latest
-protected Genesis readback remains failed at the source capability check (run
-[42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411));
-do not dispatch a replacement until the pinned source-object availability is
-diagnosed and a new read-only intent is bound to fresh inputs.
+found all nine tagged Norn staging Droplets active and the three Norn-related managed
+databases online. At 13:52 UTC, a fresh provider-only inventory again found all
+nine active (3 control, 2 ingress, 4 app), the ingress load balancer active,
+and management-authority PostgreSQL plus application PostgreSQL/MySQL online.
+These queries do not check node APIs, cluster membership, workloads, or routes;
+provider status is not runtime health.
+
+The latest protected Genesis readback remains failed at the source capability
+check (run
+[42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411)).
+It passed runner, installed-input, and private-transport checks, then the
+installed controller refused because its protected source repository did not
+contain the pinned capability commit or signed target commit. The run used
+Oct 21 state and route pins; do not reuse them as current evidence. Diagnose
+the missing source objects, refresh state/route/host-key evidence, and bind any
+new read-only intent to those refreshed inputs before dispatch.
 
 ## Latest Mini direct release (2026-11-08 09:20 UTC)
 
