@@ -119,8 +119,12 @@ func (r *WorkloadReleaseInputKeyRing) Seal(binding WorkloadReleaseInputBinding, 
 	return WorkloadReleaseInputEnvelope{Schema: WorkloadReleasePrivateInputSchema, KeyID: r.current, WrapNonce: wrapNonce, WrappedDataKey: wrapped, DataNonce: dataNonce, Ciphertext: sealed}, nil
 }
 
+// Open authenticates the binding before returning the encrypted SOPS bytes.
+// The caller owns the returned plaintext buffer and should clear it after use.
 func (r *WorkloadReleaseInputKeyRing) Open(binding WorkloadReleaseInputBinding, envelope WorkloadReleaseInputEnvelope) ([]byte, error) {
-	if r == nil || envelope.Schema != WorkloadReleasePrivateInputSchema {
+	if r == nil || envelope.Schema != WorkloadReleasePrivateInputSchema ||
+		len(envelope.Ciphertext) == 0 || len(envelope.Ciphertext) > maxWorkloadReleasePrivateInput+16 ||
+		len(envelope.WrappedDataKey) != 32+16 {
 		return nil, errors.New("workload release input envelope is unavailable or unsupported")
 	}
 	key, ok := r.keys[envelope.KeyID]

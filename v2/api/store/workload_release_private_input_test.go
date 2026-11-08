@@ -66,6 +66,16 @@ func TestWorkloadReleasePrivateInputEnvelopeRecoveryAndBinding(t *testing.T) {
 	if _, err := rotated.Open(wrongApp, envelope); err == nil {
 		t.Fatal("opened a release input under another app")
 	}
+	wrongOperation := binding
+	wrongOperation.Operation = "operation-2"
+	if _, err := rotated.Open(wrongOperation, envelope); err == nil {
+		t.Fatal("opened a release input under another operation")
+	}
+	wrongAuthority := binding
+	wrongAuthority.Authority = "authority-2"
+	if _, err := rotated.Open(wrongAuthority, envelope); err == nil {
+		t.Fatal("opened a release input under another authority")
+	}
 	tampered := envelope
 	tampered.Ciphertext = bytes.Clone(envelope.Ciphertext)
 	tampered.Ciphertext[0] ^= 0x80
@@ -97,6 +107,13 @@ func TestWorkloadReleasePrivateInputBoundsAndDistinctPurpose(t *testing.T) {
 	}
 	if _, err := ring.Seal(binding, bytes.Repeat([]byte("x"), maxWorkloadReleasePrivateInput+1)); err == nil {
 		t.Fatal("accepted oversized encrypted snapshot")
+	}
+	oversizedEnvelope := WorkloadReleaseInputEnvelope{
+		Schema: WorkloadReleasePrivateInputSchema, KeyID: "release-one",
+		Ciphertext: bytes.Repeat([]byte{1}, maxWorkloadReleasePrivateInput+17),
+	}
+	if _, err := ring.Open(binding, oversizedEnvelope); err == nil {
+		t.Fatal("attempted to decrypt an oversized envelope")
 	}
 	wrongPurpose := WorkloadReleaseInputEnvelope{Schema: PrivateInvocationEnvelopeSchema, KeyID: "release-one"}
 	if _, err := ring.Open(binding, wrongPurpose); err == nil {
