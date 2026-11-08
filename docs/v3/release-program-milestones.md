@@ -267,11 +267,11 @@ The protected readback failure was still only reported as a generic source
 capability hold. Fleet PR #940 now adds a local, credential-free diagnostic
 that distinguishes a missing capability commit, missing target commit,
 non-ancestor target, and missing target-tree markers. Its six focused tests
-pass locally. Protected validation run `42488580934` passed the broad
-plan/reconciliation suite and, at 14:22 UTC, was still running executor
-convergence/recovery; the diagnostic is neither installed nor run against the
-management host. Fresh protected state/route/host-key evidence and a new
-one-use signed intent remain required before another readback.
+pass locally. Protected validation run `42488580934` passed its full contract
+workflow, including plan/reconciliation and executor convergence/recovery; the
+diagnostic is neither installed nor run against the management host. Fresh
+protected state/route/host-key evidence and a new one-use signed intent remain
+required before another readback.
 
 On 2026-11-08, all nine committed Norn V3 statecharts were regenerated from
 the current checkout into `/tmp/norn-v3-statecharts-current`; TLC reported
