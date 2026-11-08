@@ -54,6 +54,7 @@
     "websocketQueryToken": false
   },
   "endpoints": {
+    "activeOperations": "/api/v1/operations/active",
     "appCreation": "/api/v1/apps",
     "appDatabaseHealth": "/api/v1/apps/{id}/databases/health",
     "appDeployment": "/api/v1/apps/{id}/deployment",
@@ -96,6 +97,7 @@
     "mutationAudit": "/api/v1/audit/mutations",
     "mysqlRestoreInspection": "/api/v1/operations/{id}/mysql-restore-inspection",
     "openapi": "/api/v1/openapi.yaml",
+    "operationList": "/api/v1/operations",
     "operations": "/api/v1/operations/{id}",
     "platformPreflights": "/api/v1/platform/preflights",
     "platformRollbacks": "/api/v1/platform/rollbacks",
