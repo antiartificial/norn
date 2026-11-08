@@ -285,9 +285,13 @@ otherwise retain the all-stop contract.
 
 - [x] Inventory older unversioned handlers, adapters, flags, docs, clients, and
   tests. The [surface-retirement report](v2-surface-retirement-inventory-2026-11-07.md)
-  confirms `v2/api` and `v2/cli` are current V3 build module paths, the CLI/UI
-  still call unversioned `/api` routes, and a protected `norn-fleet` runner
-  still calls `/effect-grants/v2`.
+  confirms `v2/api` and `v2/cli` are current V3 build module paths, some CLI/UI
+  callers still use unversioned `/api` routes, and a protected `norn-fleet`
+  runner still calls `/effect-grants/v2`.
+- [x] Move the CLI and UI app-list reads from `/api/apps` to the documented
+  `/api/v1/apps` route. Both routes currently share the same handler; retain
+  the legacy alias and compatibility tests while external usage and remaining
+  `/api/apps/{id}/...` callers are unresolved.
 - [ ] Move callers to V3 before deleting V2-only code and low-value tests.
 - [ ] Retain only the compatibility fixtures and migration code needed to
   upgrade the supported V2 baseline safely.

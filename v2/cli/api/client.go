@@ -1050,7 +1050,7 @@ func (c *Client) CompleteRecoveryDrill(id, status string, evidence map[string]st
 
 func (c *Client) ListApps() ([]AppStatus, error) {
 	var apps []AppStatus
-	if err := c.get("/api/apps", &apps); err != nil {
+	if err := c.get("/api/v1/apps", &apps); err != nil {
 		return nil, err
 	}
 	return apps, nil

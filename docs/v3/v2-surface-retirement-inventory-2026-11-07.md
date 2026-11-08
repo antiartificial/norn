@@ -1,6 +1,7 @@
 # V2 surface retirement inventory
 
-Status: source audit, 2026-11-07. No runtime or test code was deleted.
+Status: source audit with first caller migration, refreshed 2026-11-08. No
+legacy handler or compatibility test was deleted.
 
 ## Findings
 
@@ -14,17 +15,24 @@ versioned routes under `/api/v1` and also registers numerous older routes under
 source search of the active router found no general `/api/v2` namespace.
 
 Several `/api` routes are still called by shipped source in this repository.
-Examples include:
+The app-list caller has started moving: CLI `ListApps` and the UI app-list
+query now call `/api/v1/apps`. Both routes currently invoke the same
+`ListApps` handler, and V1 is present in the published OpenAPI contract. A
+focused CLI test and UI assertion protect the V1 path. The legacy GET alias
+remains registered because external use has not been measured and the same
+`/api/apps` prefix still has live action, logs, snapshot, and other consumers.
 
-- CLI reads `/api/apps`, `/api/ops/platform`, and `/api/operations/active`, and
+Remaining examples include:
+
+- CLI reads `/api/ops/platform` and `/api/operations/active`, and
   posts `/api/apps/{id}/deploy`, `/preflight`, and `/rollback`
-  (`v2/cli/api/client.go`, lines 1051–1056, 1089–1119, and 1672–1704).
+  (`v2/cli/api/client.go`, `PlatformOps`, `ListOperations`, `Deploy`,
+  `Preflight`, and `Rollback`).
 - The CLI still uses `/api/events`, `/api/platform/releases`, app logs and
-  exec, secrets, scaling, and snapshot endpoints (same client, lines 1251–1284,
-  1609–1617, 1714 onward, and 2162 onward).
-- The V3 UI still calls `/api/apps`, `/api/access/patterns`, and
-  `/api/apps/{id}/{action}` (`v2/ui/src/runtime/AppRuntime.tsx`, lines 80–112,
-  143–195). It mixes those with `/api/v1` calls.
+  exec, secrets, scaling, and snapshot endpoints (same client methods).
+- The V3 UI still calls `/api/access/patterns` and
+  `/api/apps/{id}/{action}` (`v2/ui/src/runtime/AppRuntime.tsx` and app/action
+  components under `v2/ui/src`). It mixes those with `/api/v1` calls.
 
 These are actual in-tree consumers, not merely historical route declarations.
 The current API version therefore has a compatibility surface that is broader
@@ -86,6 +94,8 @@ records have a compatible replacement.
    compatibility rejection tests until their corresponding stored or
    installed version is out of support.
 
-No route or test deletion is recommended from this audit alone. The immediate
-useful cleanup is an endpoint-by-endpoint caller map and a staged migration
-plan, not a bulk removal based on “V2” names.
+No route or test deletion is recommended from this audit alone. The next
+retirement slices should migrate one V1-covered method/path at a time, compare
+consumer payload/auth behavior, and then re-scan the production router and all
+clients. Do not remove the `/api/apps` compatibility route until external use
+and remaining `/api/apps/{id}/...` callers are resolved.

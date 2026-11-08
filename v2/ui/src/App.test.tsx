@@ -80,7 +80,7 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (match) return typeof match[1] === 'function' ? match[1]() : match[1]
     if (url.includes('/api/apps/api/logs')) return new Response('')
     if (url.includes('/api/apps/api/canary') || url.includes('/api/apps/worker/canary')) return json(null)
-    if (url.includes('/api/apps')) return json([app, unhealthyApp])
+    if (url.endsWith('/api/v1/apps')) return json([app, unhealthyApp])
     if (url.includes('/services/manifest')) return json({ version: 2, generatedAt: new Date().toISOString(), networkMode: 'dev', services: [] })
     if (url.includes('/api/access/patterns')) return json({ windowHours: 24, idleAfterHours: 72, patterns: [] })
     if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1', 'fleet-runner-attempts-v1', 'fleet-github-app-v1', 'durable-app-recovery-v1'], auth: { scopes: [], principal: { authenticated: true, subject: 'operator', scopes: ['api:read', 'fleet:operate'] } } })
@@ -157,10 +157,12 @@ describe('App shell routing', () => {
   })
 
   it('persists sidebar collapse and highlights the active route', async () => {
-    installFetch()
+    const { calls } = installFetch()
     renderApp('/apps')
 
     await screen.findByRole('heading', { name: 'Apps' })
+    await waitFor(() => expect(calls).toContain('GET /api/v1/apps'))
+    expect(calls).not.toContain('GET /api/apps')
     expect(screen.getByRole('link', { name: /apps/i })).toHaveClass('active')
     fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
     expect(localStorage.getItem('norn.sidebar.collapsed:v1')).toBe('true')
@@ -673,7 +675,7 @@ describe('App shell routing', () => {
   it('renders fleet health issue rows and caps each group at 5', async () => {
     const names = ['api', 'worker', 'queue', 'cron', 'billing', 'search']
     installFetch({
-      '/api/apps': () => json(names.map(name => appWith(name, false))),
+      '/api/v1/apps': () => json(names.map(name => appWith(name, false))),
       '/api/access/patterns': () => json({
         windowHours: 24,
         idleAfterHours: 72,
