@@ -4,14 +4,18 @@ EXTENDS Naturals, TLC
 VARIABLES phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
           route, oldRunning, proofFresh, stopped, stopHadProof,
           planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable,
-          inputsBound, boundSecretRevision
+          inputsBound, boundSecretRevision, requestKeySeen, acceptedPlanDigest,
+          replayReturnedOriginal, appFenceHeld, routeReserved, writerAttempted,
+          competingWriter
 vars == <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
           route, oldRunning, proofFresh, stopped, stopHadProof,
           planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable,
-          inputsBound, boundSecretRevision>>
+          inputsBound, boundSecretRevision, requestKeySeen, acceptedPlanDigest,
+          replayReturnedOriginal, appFenceHeld, routeReserved, writerAttempted,
+          competingWriter>>
 
 Init ==
-  /\ phase = "accepted"
+  /\ phase = "request"
   /\ claim = 1
   /\ attempt = FALSE
   /\ requestInFlight = FALSE
@@ -29,9 +33,51 @@ Init ==
   /\ inputKeyAvailable = TRUE
   /\ inputsBound = FALSE
   /\ boundSecretRevision = "none"
+  /\ requestKeySeen = FALSE
+  /\ acceptedPlanDigest = "none"
+  /\ replayReturnedOriginal = FALSE
+  /\ appFenceHeld = FALSE
+  /\ routeReserved = FALSE
+  /\ writerAttempted = FALSE
+  /\ competingWriter = FALSE
+
+AcceptSignedPlan ==
+  /\ phase = "request"
+  /\ ~requestKeySeen
+  /\ requestKeySeen' = TRUE
+  /\ acceptedPlanDigest' = "sha256:accepted-plan"
+  /\ appFenceHeld' = TRUE
+  /\ routeReserved' = TRUE
+  /\ phase' = "accepted"
+  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
+      boundSecretRevision, replayReturnedOriginal, writerAttempted, competingWriter>>
+
+ReplaySameRequest ==
+  /\ requestKeySeen
+  /\ acceptedPlanDigest = "sha256:accepted-plan"
+  /\ replayReturnedOriginal' = TRUE
+  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
+      boundSecretRevision, requestKeySeen, acceptedPlanDigest, appFenceHeld,
+      routeReserved, writerAttempted, competingWriter>>
+
+CompetingWriterBlocked ==
+  /\ appFenceHeld
+  /\ ~writerAttempted
+  /\ writerAttempted' = TRUE
+  /\ competingWriter' = FALSE
+  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
+      boundSecretRevision, requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
+      appFenceHeld, routeReserved>>
 
 ResolvePinnedInputs ==
   /\ phase = "accepted"
+  /\ requestKeySeen
   /\ secretSnapshotAvailable
   /\ inputKeyAvailable
   /\ inputsBound = FALSE
@@ -78,6 +124,7 @@ HoldOnMissingPinnedInputs ==
 
 MarkAttempt ==
   /\ phase = "accepted"
+  /\ requestKeySeen
   /\ inputsBound
   /\ secretSnapshotAvailable
   /\ inputKeyAvailable
@@ -223,7 +270,11 @@ LateAcceptWhileHeld ==
 
 Done == phase \in {"complete", "held"} /\ UNCHANGED vars
 
-Next == ((ResolvePinnedInputs \/ RotateCurrentSecret \/ LosePinnedSecretSnapshot \/ HoldOnMissingPinnedInputs \/ ObserveMatchingJob)
+Next == ((AcceptSignedPlan \/ ReplaySameRequest \/ CompetingWriterBlocked)
+          /\ UNCHANGED <<inputKeyAvailable>>) \/
+        (((ResolvePinnedInputs \/ RotateCurrentSecret \/ LosePinnedSecretSnapshot \/ HoldOnMissingPinnedInputs \/ ObserveMatchingJob)
+          /\ UNCHANGED <<requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
+                         appFenceHeld, routeReserved, writerAttempted, competingWriter>>)
           /\ UNCHANGED <<inputKeyAvailable>>) \/
         (((MarkAttempt \/ SendCreate \/ NomadAccepts \/ LoseResponse \/ CrashAndReclaim \/
           ObserveMissingAfterAttempt \/ ObserveMismatch \/ TargetBecomesHealthy \/
@@ -231,10 +282,14 @@ Next == ((ResolvePinnedInputs \/ RotateCurrentSecret \/ LosePinnedSecretSnapshot
           TargetLosesHealth \/ StopOld \/ Hold \/ LateAcceptWhileHeld \/ Done)
           /\ UNCHANGED <<planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
                          inputsBound, boundSecretRevision>>)
-          /\ UNCHANGED <<inputKeyAvailable>>) \/ LosePinnedInputKey
+          /\ UNCHANGED <<requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
+                         appFenceHeld, routeReserved, writerAttempted, competingWriter>>
+          /\ UNCHANGED <<inputKeyAvailable>>) \/
+        (LosePinnedInputKey /\ UNCHANGED <<requestKeySeen, acceptedPlanDigest,
+          replayReturnedOriginal, appFenceHeld, routeReserved, writerAttempted, competingWriter>>)
 
 TypeOK ==
-  /\ phase \in {"accepted", "attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining", "complete", "held"}
+  /\ phase \in {"request", "accepted", "attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining", "complete", "held"}
   /\ claim \in Nat
   /\ attempt \in BOOLEAN
   /\ requestInFlight \in BOOLEAN
@@ -252,17 +307,29 @@ TypeOK ==
   /\ inputKeyAvailable \in BOOLEAN
   /\ inputsBound \in BOOLEAN
   /\ boundSecretRevision \in {"none", "secret-revision-a"}
+  /\ requestKeySeen \in BOOLEAN
+  /\ acceptedPlanDigest \in {"none", "sha256:accepted-plan"}
+  /\ replayReturnedOriginal \in BOOLEAN
+  /\ appFenceHeld \in BOOLEAN
+  /\ routeReserved \in BOOLEAN
+  /\ writerAttempted \in BOOLEAN
+  /\ competingWriter \in BOOLEAN
 
 OldStopRequiresTargetProof == stopped => stopHadProof
 OldStopRequiresAuthorization == stopped => (attempt /\ job = "matching" /\ binding)
 RouteDoesNotMoveBeforeBinding == (route # "old-only") => binding
 OldWorkloadRemainsUntilSafeStop == ~stopped => oldRunning
 BindingRequiresMatchingTarget == binding => job = "matching"
-AttemptRequiresPinnedInputs == attempt => inputsBound
+AttemptRequiresPinnedInputs == attempt => (inputsBound /\ requestKeySeen /\ appFenceHeld /\ routeReserved)
 BindingMatchesPinnedSecret == binding => (inputsBound /\ boundSecretRevision = planSecretRevision)
 NoAttemptAfterSecretSnapshotLoss == ~secretSnapshotAvailable => ~attempt
 MissingKeyHoldsUnboundRelease == (~inputKeyAvailable /\ ~binding) => phase = "held"
 MissingKeyKeepsOldService == (~inputKeyAvailable /\ ~binding) => (route = "old-only" /\ oldRunning)
+AcceptedPlanHasFences == requestKeySeen => (appFenceHeld /\ routeReserved)
+ReplayReturnsSameAcceptance == replayReturnedOriginal => (requestKeySeen /\ acceptedPlanDigest = "sha256:accepted-plan")
+NoConcurrentAppWriter == appFenceHeld => ~competingWriter
+WriterAttemptIsRecorded == writerAttempted => appFenceHeld
+RouteReservationHeldUntilTerminal == requestKeySeen /\ phase \notin {"complete", "held"} => routeReserved
 
 Spec == Init /\ [][Next]_vars
 

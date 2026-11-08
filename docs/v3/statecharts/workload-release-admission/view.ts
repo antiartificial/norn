@@ -1,5 +1,6 @@
 export const title = "V3 workload release: private staging and crash recovery";
 export const state = (v: any) => {
+  if (v.replayReturnedOriginal) return "Original acceptance replayed";
   if (v.phase === "held") {
     if (!v.inputKeyAvailable && !v.binding)
       return v.job === "matching"
@@ -11,6 +12,7 @@ export const state = (v: any) => {
     return "Held, old service remains";
   }
   const labels: Record<string, string> = {
+    request: "Release request received",
     accepted: "Accepted, old service active",
     "attempt-marked": "Create permission recorded",
     submitting: "Target create in flight",
@@ -27,6 +29,8 @@ export const state = (v: any) => {
   return labels[v.phase] ?? v.phase;
 };
 export const step = (action: string, from: any, to: any) => {
+  if (!from.replayReturnedOriginal && to.replayReturnedOriginal)
+    return "same request key returns the original accepted operation";
   if (from.inputKeyAvailable && !to.inputKeyAvailable)
     return "historical envelope key is missing on recovery, hold before binding";
   if (from.secretSnapshotAvailable && !to.secretSnapshotAvailable)
@@ -41,6 +45,7 @@ export const step = (action: string, from: any, to: any) => {
   if (from.phase !== to.phase) {
     const transitions: Record<string, string> = {
       "accepted:attempt-marked": "record create permission",
+      "request:accepted": "verify signed plan and reserve app and route",
       "attempt-marked:submitting": "send create-only request",
       "submitting:submitted": "scheduler accepts target",
       "submitting:ambiguous": "create response is lost",

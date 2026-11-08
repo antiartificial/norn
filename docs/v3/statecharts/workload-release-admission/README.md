@@ -48,7 +48,7 @@ input key because that snapshot may be deleted under the retention contract.
 The model allows a delayed create to arrive after a hold, but keeps the
 operation held and the old service active.
 
-The 2026-11-08 run checked 86 distinct states and 203 transitions. The chart
+The initial 2026-11-08 baseline checked 86 distinct states and 203 transitions. The chart
 shows 16 states and 31 arrows; 109 model transitions remain hidden because
 they stay within the same reader-facing state. All listed
 safety invariants and deadlock checks passed. The first expanded run exposed a
@@ -60,6 +60,19 @@ post-release service health does not reopen a terminal release. The model
 omits etcd transaction details, actual key retrieval and
 cryptography, real Nomad and ingress behavior, workload data compatibility, and
 provider failures. It is a protocol model, not a live qualification.
+
+The expanded 2026-11-08 run checks 348 distinct states and 1,228 transitions.
+It adds abstract signed-plan acceptance, request-key replay of the original
+plan, app mutation fencing, and route reservation. Five added invariants check
+that acceptance carries both fences, replay retains the original acceptance,
+a competing app writer cannot enter while the fence is held, and the writer
+attempt is accounted for. All 15 listed invariants and deadlock checking pass.
+The chart draws 18 reader-facing states and 49 arrows; 864 transitions
+stay within a displayed state and are hidden. The model treats acceptance and
+fencing as one atomic abstract step. It does not model etcd compare revisions,
+conflicting request fingerprints, route-writer internals, or exercise real
+handlers against the modeled steps. Those remain runtime integration and code
+review obligations.
 
 The generated [statechart](chart.mmd) and [TLC report](report.md) show the
 checked transition graph and result. The conservative hold after an
