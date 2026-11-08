@@ -1,5 +1,31 @@
 # Norn v3 launch state
 
+## DigitalOcean staging provider readback (2026-11-08 09:36 UTC)
+
+Read-only DigitalOcean API queries using the configured `work` auth context
+confirm that the independent DO staging testbed exists and its provider
+resources report active/online. The inventory matches staging document
+`antiartificial/norn-fleet@4451767624b12cbc41cc32e160a10d4b46006e0f`:
+
+- 3 `control`, 2 `ingress`, and 4 `app` Droplets are active in `nyc3`, with
+  the expected pool tags and sizes.
+- `tk-staging-nyc3-ingress` is an active `nyc3` load balancer.
+- `tk-staging-nyc3-application-postgres` (2 nodes) and
+  `tk-staging-nyc3-application-mysql` (3 nodes) report online.
+- Project `norn-staging` and VPC `tk-staging-nyc3` (`10.43.0.0/20`) are
+  present.
+
+The default `norn-pilot` doctl context is a different DigitalOcean account and
+does not show this testbed; repeat future provider checks with the explicit
+`work` context. This readback proves provider inventory and managed-database
+status only. It does not prove the Nomad/Consul control plane, node enrollment,
+application placement, public route health, or successful Norn platform
+release. The latest protected Genesis readback remains failed at the source
+capability check (run
+[42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411));
+do not dispatch a replacement until the pinned source-object availability is
+diagnosed and a new read-only intent is bound to fresh inputs.
+
 ## Latest Mini direct release (2026-11-08 09:20 UTC)
 
 The independent Mini advanced from signed V3 RC `bba290db041e9f497c7161543c679d9d348b742d`
@@ -955,10 +981,10 @@ and [release fitness plan](release-fitness-and-controller-plan.md).
 | Lane/gate | Current state | Next proof |
 | --- | --- | --- |
 | Mini direct | V3 transition and recovery completed; independent node, not Fleet. | Keep this as the direct-lane reference. Measure interruption on future changes; do not claim uninterrupted or generally online migration. |
-| DO staging Fleet / soak | 72h35m soak completed with 4,254 valid hash-chained samples and no recorded alarms/gaps. Historical qualification only. | Fresh health, etcd diagnosis, provider state, route, host identity, and exact control roster. |
+| DO staging Fleet / soak | 72h35m soak completed with 4,254 valid hash-chained samples and no recorded alarms/gaps. Fresh provider readback at 09:36 UTC confirms all nine expected Droplets active, the staging load balancer active, and the two staging managed databases online. | Fresh control-plane/node health, etcd diagnosis, service-route proof, host identity, and exact control roster. Provider status does not prove runtime or application health. |
 | DO Genesis readback | Latest protected readback `42418784411` reached the management/control hosts, then failed read-only because a required capability or signed target commit is absent from the protected source repository. Inputs used Oct 21 state/route pins. | Diagnose object presence without mutation; refresh state/route/host-key evidence; only then issue a fresh one-use readback intent. |
 | Existing DO Norn release | All-stop, forward-only controller is the supported release design. | Wait for fresh M3 readback and health gates; then execute exact-candidate release, postflight, and same-target recovery evidence. |
-| Fresh DO Fleet | The current checked-in `norn-fleet` `staging/nyc3` source declares 3 control + 2 ingress Droplets (5 base compute nodes), no app pools, and separate managed databases. The previously documented nine-node 3+2+4 model is a future proposal and does not match this source. Genesis is a separate existing-Fleet controller-install path. | Current DO provider state is unverified because the local account route is mismatched. The claimed nine-node helper/partial-output fixture was not located in current checkouts. Join reviewed plan, provider apply/recovery, exact state/provider identity, inventory/PKI/bootstrap, and terminal receipt for the adopted topology. The future two-pool contract selects general + stateful roles and has an offline role-aware model; provider source, IDs, sizes, capacity bounds, placement semantics, and integrated workflow remain open. Complete token-scope admission and per-file secret provenance/lifecycle. Persistent staging has no sanctioned whole-Fleet destroy path. |
+| Fresh DO Fleet | Future fresh-Fleet contract remains separate from staging. Current staging `main` source at `4451767624b12cbc41cc32e160a10d4b46006e0f` declares control 3, ingress 2, and one app pool at 4; the provider readback matches those nine nodes. It does not implement the future two-app-pool General + Stateful default. Genesis is a separate existing-Fleet controller-install path. | Complete the future General + Stateful pool contract, provider source, IDs/sizes/capacity bounds, placement semantics, and integrated workflow. Continue token-scope admission and per-file secret provenance/lifecycle. Persistent staging has no sanctioned whole-Fleet destroy path. |
 | Workload resize | Fixed-image replica scale, app-pool resize, and mixed-version application release remain separate lanes. M5 has an offline stateless release contract, durable PostgreSQL/etcd receipt CAS, signed-acceptance verification, claim-bound route intents with independent proof and atomic promotion, target-health gating, and old-job stop/readback recovery. PR #302 (`c55efd56`) fixes the stop-ordering defect: mixed traffic cannot authorize stopping the old job; stop requires target-only route proof. Focused Go tests, all PR CI checks, and the bounded statechart pass. | PR #302 remains open and unmerged; it is not live-qualified. The operator API/CLI admission path is absent, so the internal worker is not yet usable as a release action. A production-store worker process/lease crash matrix, target-specific public traffic evidence, live canary qualification, and stateful data-compatibility proof remain open. Prior replica 2→3→2 and sequential app-node drains do not establish mixed-version release safety. See the [M5 protocol](m5-workload-release-protocol-2026-11-07.md). |
 | Online Norn upgrade | Unsupported and not modeled. | Keep all-stop until compatibility, writer fencing, quorum, interruption and recovery contracts pass model and staging fault exercise. |
 | V2 cleanup | No general `/api/v2` namespace; current V3 CLI/UI still call unversioned `/api`, and the protected `norn-fleet` runner still calls `/effect-grants/v2`. | Migrate callers route-by-route and qualify a replacement grant protocol; retain V2 read/recovery support for saved grants until its recovery window closes. See the [surface-retirement inventory](v2-surface-retirement-inventory-2026-11-07.md). |
@@ -968,12 +994,13 @@ DO Fleet is not currently confirmed healthy from fresh evidence, despite its
 completed soak. No new protected release or provider mutation is authorized by
 this status update.
 
-The local `doctl` default context returned active account UUID prefix
-`05fe610a`, which does not match the work-staging account UUID prefix
-`17f40050` enforced by its preflight. No inventory query was made through that
-mismatched context. This does not establish which resources are currently
-deployed; it confirms only that local `doctl` cannot refresh the staging
-readback. A fresh protected work-account receipt is still required.
+The `doctl` `work` context returned the work-staging account UUID prefix
+`17f40050` enforced by its preflight and was used for the provider readback
+above. The current `norn-pilot` context is a different account (prefix
+`05fe610a`) and must not be used for staging inventory. Provider inventory is
+now confirmed, but a fresh protected Norn readback is still required for
+control-plane, node, route, and application health. The failed Genesis
+readback is not that proof and must not be retried with its expired intent.
 
 ## Evidence locations
 
