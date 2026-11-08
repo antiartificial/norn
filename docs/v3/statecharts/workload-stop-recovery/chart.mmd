@@ -1,0 +1,39 @@
+---
+title: "Old deployment stop and lost-response recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: planned
+    lg1: stopped
+    lg2: recovery
+    lg3: done
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  class lg3 purple
+  s0: Intent pins the old deployment
+  s1: One stop effect reserved
+  s2: Nomad accepted one guarded stop
+  s3: Waiting for pinned allocations to terminate
+  s4: Stop response was lost
+  s5: Pinned allocations are terminal
+  s6: Same intent checks the stop marker
+  s7: Stop and drain receipt complete
+  [*] --> s0
+  s0 --> s1: reserve one operation under the exact intent
+  s1 --> s2: Nomad accepts one old-revision CAS stop
+  s2 --> s3: the stop response includes its revision receipt
+  s2 --> s4: the stop commits but its response is lost
+  s3 --> s5: Nomad confirms each pinned old allocation is terminal
+  s4 --> s6: restart the same durable operation
+  s5 --> s7: record verified stop and drain evidence
+  s6 --> s3: read the exact marker without another stop write
+  class s0 blue
+  class s1 blue
+  class s2 teal
+  class s3 teal
+  class s4 orange
+  class s5 teal
+  class s6 orange
+  class s7 purple

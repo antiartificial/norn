@@ -1,0 +1,42 @@
+---
+title: "Mixed application version resize (proposed contract)"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: planning
+    lg1: rollout
+    lg2: held
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  s0: Old version serving
+  s1: Failure held for reconciliation
+  s2: Intent rejected, no effect
+  s3: Exact intent admitted
+  s4: Additive schema ready
+  s5: Reconcile same durable intent
+  s6: Target cohort warming
+  s7: Canary route, versions overlap
+  s8: Canary route evidence stale, rollout held
+  [*] --> s0
+  s0 --> s1: controller stops with durable intent retained
+  s0 --> s2: reject a stale or incompatible intent
+  s0 --> s3: accept one exact signed target
+  s3 --> s4: expand the schema while both versions remain compatible
+  s4 --> s6: start target allocations within surge capacity
+  s1 --> s5: restart under the same intent
+  s5 --> s3: reconcile observed allocations before resuming
+  s6 --> s1: target health fails, keep old cohort and hold
+  s6 --> s7: target health passes
+  s7 --> s8: route proof is lost, stop further effects
+  s8 --> s1: fresh readback confirms the exact current route
+  class s0 blue
+  class s1 orange
+  class s2 orange
+  class s3 blue
+  class s4 blue
+  class s5 orange
+  class s6 teal
+  class s7 teal
+  class s8 orange

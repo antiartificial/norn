@@ -10,10 +10,10 @@ it does not prove that a service is healthy now.
 
 | Lane | Use | Current mechanism | Availability and recovery |
 |---|---|---|---|
-| Mini direct | Upgrade the independent Mini | Signed Norn release, local protected backup and candidate shadow restore, then the installed Mini upgrade controller | Single-node service interruption. The 2026-11-07 V3 attempt correctly stopped before migration because schema 51 raises the writer floor and not every writer could be proven quiescent. Do not bypass the guard or run SQL by hand. |
+| Mini direct | Upgrade the independent Mini | Signed Norn release, local protected backup and candidate shadow restore, then the installed Mini upgrade controller | The Nov 7 controller-mediated V3 transition completed at `bba290db041e9f497c7161543c679d9d348b742d` with schema 51 and writer floor 33. A signed repair recovered a PID-reuse race. This proves that transition, not uninterrupted service or general online migration support. |
 | DO Fleet Norn release | Change Norn API/UI on the existing three-control DO Fleet | `work-staging-norn-release.yml`; exact publisher artifacts, fresh protected state readback, host key receipt, all-member staging, all-stop, target promotion, singleton verification, then durable pin update | Deliberate maintenance interruption. Forward-only recovery resumes the same target. Never restart old bytes after any target starts. |
-| Fleet bootstrap | Create or recreate the DO staging Fleet | Protected plan/apply and platform Genesis lanes | Creates provider resources, protected state, management/control services and the default two application node pools. This is infrastructure lifecycle work, not the routine platform release lane. |
-| Workload resize | Add or remove application capacity or move workload allocations | Capacity and placement intents, Nomad readiness/drain, and workload-specific release controls | Can be online only when the workload and its data contract support overlap. Norn control binaries remain on their qualified platform version unless separately released. |
+| Fleet bootstrap | Create or recreate the DO staging Fleet | Protected provider `plan.yml`/`apply.yml`, then post-create reconciliation and Ansible. The checked-in `staging/nyc3` source declares 3 control and 2 ingress Droplets (5 total), with ingress allowed to scale to 3 for a rehearsal; managed databases are separate. It declares no app node pools. The requested default of two app pools for a future Fleet is not yet encoded. Genesis installs a dormant controller on an existing Fleet; it does not create provider resources. See the [topology source audit](staging-topology-source-audit-2026-11-08.md). | Infrastructure lifecycle work, separate from platform release. Apply binds a reviewed plan and one-use capacity dispatch; partial-create recovery, complete secret provenance, and DO-token permission-scope admission still need integrated offline qualification. |
+| Workload resize | Add or remove application capacity or release a new application version | Fixed-image replica scaling and node-pool capacity are separate from the internal M5 mixed-version controller. It has signed-acceptance checks, durable progress, claim-bound route publication/proof/promotion, health gates, and stop/readback recovery. | The operator API/CLI admission path and production-store process/lease crash matrix are open, so M5 is not yet an operator-facing release lane. Live canary and stateful data-compatibility qualification are also open. Route-proof loss holds progress and requires fresh same-generation readback. Norn control binaries stay fixed unless separately released. |
 
 The DO fleet's last confirmed Norn source inventory in the retained release
 record was `31db2de8dafe14d234ac9e2f29c8480245dae7b4` on all three controls
@@ -96,10 +96,13 @@ For an online workload resize or workload release:
 At every phase, persist the intent, source inventory digest, target image
 identity, schema epoch, placement decision, drain receipt and last completed
 checkpoint before the side effect. Retrying the same intent must converge on
-the same target. If target health fails before incompatible writes, route back
-to old allocations and keep the additive schema. After the writer/schema fence
-moves, resume forward or restore from an explicitly tested recovery point;
-changing an image or symlink does not reverse data writes.
+the same target. If target health or route proof fails, hold drains and schema
+contraction while preserving the last published route. A switch back to old
+allocations requires a separately admitted intent and fresh proof that the old
+generation is healthy and remains compatible with current data and writer
+epochs. After the writer/schema fence moves, resume forward or restore from an
+explicitly tested recovery point; changing an image or symlink does not reverse
+data writes.
 
 ## Qualification required for online Norn platform upgrades
 

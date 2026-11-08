@@ -1,0 +1,54 @@
+---
+title: "Norn Fleet release and recovery (offline model)"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: release
+    lg1: recovery
+    lg2: held
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  s0: Signed intent ready
+  s1: Failure held
+  s2: Unknown bytes observed, held
+  s3: Staging and verifying target bytes
+  s4: Target staged on all controls
+  s5: Stopping old services
+  s6: All old services stopped
+  s7: Target selected on all controls
+  s8: Starting target services
+  s9: Checking singleton health
+  s10: Target healthy, pins pending
+  s11: Target healthy, pins durable
+  [*] --> s0
+  s0 --> s1: unsigned, expired or mismatched intent is rejected or failure or ambiguous outcome, preserve journal
+  s0 --> s2: unexpected bytes found, hold without overwrite
+  s0 --> s3: controller admits the fresh signed intent
+  s3 --> s4: all target bytes verify on every control
+  s4 --> s5: all three staged, begin the stop window
+  s5 --> s1: failure or ambiguous outcome, preserve journal
+  s5 --> s6: all old services stop
+  s6 --> s2: unexpected bytes found, hold without overwrite
+  s6 --> s7: select target bytes on every stopped control
+  s7 --> s8: all three select target, begin startup
+  s8 --> s1: failure or ambiguous outcome, preserve journal
+  s8 --> s2: unexpected bytes found, hold without overwrite
+  s1 --> s8: resume same signed target from durable checkpoint
+  s8 --> s9: target services start on all controls
+  s9 --> s10: singleton and backend health pass
+  s9 --> s2: unexpected bytes found, hold without overwrite
+  s10 --> s11: persist target pins and retire runner
+  class s0 blue
+  class s1 orange
+  class s2 orange
+  class s3 blue
+  class s4 blue
+  class s5 blue
+  class s6 blue
+  class s7 blue
+  class s8 teal
+  class s9 teal
+  class s10 teal
+  class s11 teal
