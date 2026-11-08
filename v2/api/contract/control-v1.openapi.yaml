@@ -2069,7 +2069,7 @@ paths:
         - { name: kind, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { type: string } }
         - { name: active, in: query, schema: { type: boolean } }
-        - { name: limit, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer } }
       responses:
         '200':
           description: Sanitized durable operation summaries
