@@ -4,6 +4,12 @@ Status: **not upgraded**. The Mini remains healthy on signed release
 `3602e7e3d5fe5c0ef333b4041580d48ec15b24c5`; no database migration or release
 promotion occurred during this attempt.
 
+This is a historical pre-upgrade observation for the failed candidate below.
+It was superseded by the successful independent Mini V3 adoption and
+controller recovery recorded at the top of [LAUNCH-STATE.md](LAUNCH-STATE.md)
+on 2026-11-07, with a live read-only refresh on 2026-11-08. Do not use this
+status as the current Mini release state.
+
 ## Live evidence
 
 - Mini API health returned HTTP 200. Its schema is migration 49, reader floor 5,

@@ -64,6 +64,32 @@ events: 80 matched deterministic reconciliation rules and 120 still need
 review. It acknowledged nothing; the incident groups remain open until a
 separate evidence-backed reconciliation.
 
+## Read-only Mini refresh (2026-11-08 15:41 UTC)
+
+The authenticated inventory helper completed without mutation. API health and
+host status reported `ok`; the host services `consul`, `nomad`, `postgres`,
+and `workload-connector/nomad-consul` reported up, and the latest host
+assurance reported succeeded. The active platform release source reported by
+the API is
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`), which is the next controller release
+after the original signed Mini adoption target
+`bba290db041e9f497c7161543c679d9d348b742d`.
+The latter remains in the installed release inventory as a prior release.
+This reconciles the post-upgrade repair release with the adoption journal;
+`bba290d` remains the target whose transition and preservation receipt were
+verified.
+
+The same point-in-time read reported 30 app records, 19 healthy, 25 open
+incident groups, seven queued `fleet.github.apply-dispatch` receipts, and
+production readiness `blocked`. The platform rollup also warned that snapshot
+retention was over limit for four apps. Therefore API/host-upgrade success is
+confirmed, but this inventory does not claim that every app is healthy or
+that Mini is production-admitted. The Mini's `fleet_configured=true` API flag
+still describes the separate DO staging target configuration, not Fleet
+membership. This observation confirms only the Mini; it says nothing about
+current DO runtime health.
+
 ## Post-M8 protected evidence (2026-11-07)
 
 The protected work-staging release-state readback
@@ -145,7 +171,36 @@ or released, and no migration or candidate promotion had occurred. See
 the dated [Mini observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md)
 and [online-upgrade capability proposal](online-upgrade-lessons-2026-11-07.md).
 
+## DO staging Fleet read-only refresh (2026-11-08 15:45 UTC)
+
+The DigitalOcean `work` credential context returned nine droplets tagged for
+`tk-staging-nyc3`, all `active`: three control, two ingress, and four app
+nodes. The `tk-staging-nyc3-ingress` load balancer was `active`. These are
+provider-inventory facts, not proof of Norn control-plane quorum or every
+application's health.
+
+The public canary endpoints passed read-only HTTPS probes with normal
+certificate validation. `/route-proof` returned `norn-fleet-canary`; five
+`/version` requests all returned source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db`, reporting two distinct allocation
+IDs on two distinct node IDs. This confirms the canary route is serving that
+source across two reported allocations. It does not verify the DO Norn API,
+Nomad/Consul quorum, or the durable deployment operation receipt.
+
+The November 2 record for operation
+`6d96db37-a54e-4231-b1b8-e3e616beb3ab` still says failed/manual recovery
+required. The public route now serves the same source SHA as that attempt, but
+this read did not correlate the route to a terminal signed controller
+receipt. Keep that operation unresolved until its durable record is read back.
+The Fleet is provider-active and its canary is publicly reachable; its full
+control-plane/runtime health and hands-free mixed-version recovery are not
+established by this refresh.
+
 ## Fleet running-upgrade checkpoint (2026-11-02 00:10 UTC)
+
+This is the point-in-time state from 2026-11-02. The later public-route
+readback above reports source `be5ca5d…`; it does not provide a terminal
+receipt for the failed operation recorded here.
 
 The first protected staging canary release remains live on public HTTPS. A second protected release from source `be5ca5d969ccf3509e62ce04a833516bb5c204db` built and attested image `ghcr.io/antiartificial/norn-fleet-canary@sha256:33265daecc36215776c2029b7e0cd16463570e559c28678d3a94e249bd43ba52`, but [run 41364735627](https://github.com/antiartificial/norn/actions/runs/41364735627) failed during deployment completion. Its new Nomad job has two healthy allocations on app-03 and app-04. The previous job also has two healthy allocations, and the public `/version` route still serves the first release source `182b719bb8f5b84f8c7272e715f83553a00acb4d`. The deployment operation `6d96db37-a54e-4231-b1b8-e3e616beb3ab` is failed with manual recovery required; its durable Nomad effect says completed. The one-use runner was disabled and unregistered.
 

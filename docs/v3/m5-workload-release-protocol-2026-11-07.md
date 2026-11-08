@@ -40,21 +40,33 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 | M5-C: atomic release admission | Not implemented: no operator/API acceptance path exists. | Add the authenticated operator API/CLI admission and etcd transaction for idempotency, signature, single-app mutation slot, current serving/route predecessor, desired count, and Fleet generation. | Replay returns the same operation; key reuse with a different candidate conflicts; concurrent deploy/scale/release races admit at most one; stale predecessor writes nothing. | M5-A/B |
 | M5-D: private stage and binding | Not implemented. | Stage one immutable target privately, without public route publication; persist a write-once binding only after exact Nomad source/no-diff and job-revision readback. | Fault matrix proves same-target recovery or conservative hold, never an unreviewed duplicate; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
-| M5-F: DO staging workload release | Not run; provider inventory alone does not satisfy the DO runtime readiness gate. | After platform read-only health and capacity gates pass, test stateless `norn-fleet-canary`; test fixed-image 2→3→2 separately; then test mixed app versions. | Exact image/operation/route/drain receipts, healthy public probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-G preparation |
-| M5-G: independent Mini V3 upgrade | Not run; candidate-specific preflight must be refreshed before the final gate. | Re-read Mini preflight, backups, schema/runtime compatibility, signed candidate, service health, and recovery inputs; use its direct host/controller lane, never Fleet membership. | Candidate-specific pre/postflight, restored-service evidence, and recoverable prior release; interruption recorded if maintenance mode is selected. | Documentation and release automation |
+| M5-F: DO staging workload release | Partial: historical 2→3→2 scale, sequential drain, and canary probes passed; the 2026-11-08 public route serves source `be5ca5d…` across two reported allocations. The durable second-release operation receipt has not been re-read, and mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; after M5-A–E, run fixed-image resize and mixed-version recovery through the release-owned admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |
+| M5-G: independent Mini V3 upgrade | Complete for the 2026-11-07 direct V3 adoption; a 2026-11-08 read-only Mini refresh confirms a running V3 release and host services. | Retain the signed adoption/controller-repair receipts and repeat candidate-specific backup, compatibility, and postflight checks for every future Mini release. Keep Mini independent of Fleet. | Signed target `bba290d…`, controller journal and preservation receipt, schema-51 postflight, and current API/host readback on signed repair source `d4dc88e…`. This does not establish uninterrupted service or rollback across future incompatible schema changes. | Documentation; M6 low-interruption/rollback work |
 
 M5-A through M5-C are the next offline implementation priority. M5-B must
 identify a real source of qualified immutable candidates before M5-C exposes
 an operator action. M5-D/E require that contract. M5-F is the first workload
-qualification, and M5-G is the separate final Mini launch gate. M5-F and M5-G
-must not be inferred from one another. Run the platform/DO and Mini read-only
-readiness gates before scheduling either live lane.
+qualification. M5-G records the completed independent Mini adoption; it does
+not qualify DO workloads. Run the DO runtime/capacity gate before M5-F and
+refresh Mini preflight before any later Mini release.
 
 The fresh-Fleet bootstrap lane is separate from upgrading the existing DO
 staging Fleet. Its future two application pools default to **General** and
 **Stateful**; do not resize or reshape current staging to implement that
 default. Bootstrap still needs deterministic credential/input war-gaming and
 an idempotent controller recovery record before any provider mutation.
+
+## V2 compatibility and test retirement
+
+The current versioned HTTP contract is `/api/v1`; `v2/api` is the Go source
+path, not evidence of a separate `/api/v2` API. A few `v2` test names refer to
+wire-schema generations rather than the retired server contract. The runtime
+still retains an unset-database-profile fallback for historical PostgreSQL
+deployments, and legacy migration/recovery fixtures still protect the Mini
+transition. No test is safe to delete based on its name alone. Retire tests
+with the legacy runtime paths they cover after the Mini PostgreSQL/runtime
+compatibility gate is explicitly closed; keep recovery and fail-closed
+security tests until then.
 
 ## Keep three changes separate
 
