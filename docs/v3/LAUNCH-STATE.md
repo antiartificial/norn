@@ -90,6 +90,32 @@ still describes the separate DO staging target configuration, not Fleet
 membership. This observation confirms only the Mini; it says nothing about
 current DO runtime health.
 
+## Read-only refresh (2026-11-08 18:12 UTC)
+
+The Mini inventory helper completed remotely without mutation. The API and
+host reported `ok`; latest host assurance was `succeeded`; Nomad, Consul,
+Postgres, S3, SOPS, and the Nomad/Consul workload connector were up. The API
+reported source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`), seven queued
+`fleet.github.apply-dispatch` operations, and production readiness `blocked`
+(7 passed, 1 warning, 18 failed). Four snapshot-retention warnings remain.
+The API's `environment.id=staging` and configured `control`/`ingress` Fleet
+document describe the Mini control plane's configured target, not Mini Fleet
+membership and not current DO runtime state. Mini remains an independent
+node.
+
+Fleet PR [#939](https://github.com/antiartificial/norn-fleet/pull/939) merged
+at `4451767624b12cbc41cc32e160a10d4b46006e0f`. The subsequent protected,
+read-only Genesis readback [run 42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411)
+failed its source-capability check: it executed controller source
+`2de3cbd832688a06fc549ec68172145dca4404fc`, and the reviewed capability or
+target commit was absent from the source repository seen by that run. The run
+made no reported changes. This does not establish that DO Genesis readback
+passed or that the DO Fleet is currently online. A repeat requires a fresh
+readback intent bound to the same verified state and host keys and an execution
+that uses the merged verifier. The previously signed intent and one-use runner
+authorization are terminal and must not be reused.
+
 ## Post-M8 protected evidence (2026-11-07)
 
 The protected work-staging release-state readback
@@ -133,11 +159,13 @@ when checked as `norn-exec`, and an invocation-scoped `safe.directory` check
 finds both without changing global Git trust. The Genesis readback therefore
 remains unpassed; the Genesis journal and Fleet state were unchanged.
 
-Fleet PR [#939](https://github.com/antiartificial/norn-fleet/pull/939) applies
-that exact-path Git ownership fix to the shared verifier used by both Genesis
-rollout and readback. It is awaiting protected checks. After it merges, repeat
-the readback with a fresh signed intent and one-use runner authorization; the
-failed intent and run are terminal and must not be reused.
+Fleet PR [#939](https://github.com/antiartificial/norn-fleet/pull/939) merged
+the exact-path Git ownership fix at `4451767624b12cbc41cc32e160a10d4b46006e0f`.
+The first readback using that repository head still ran the installed
+controller source pinned to `2de3cbd832688a06fc549ec68172145dca4404fc` and
+failed because the reviewed source commits were absent. See the 2026-11-08
+read-only refresh above; install/verify the merged verifier through its
+protected path before attempting another readback.
 
 ## Mini in-place upgrade checkpoint (historical observation, 2026-11-07)
 
