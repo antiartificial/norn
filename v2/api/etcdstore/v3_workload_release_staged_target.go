@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
@@ -112,12 +114,37 @@ func (s *V3OperationStore) verifyClaimedWorkloadReleasePlan(ctx context.Context,
 		OwnerRevision: owner.Kvs[0].ModRevision, App: current.Operation.App, Target: target, TargetRevision: targetRevision}, nil
 }
 
-// BindClaimedWorkloadReleaseTarget persists a plan-bound exact scheduler
-// observation once, while the signed operation, worker claim, app lock, and
-// Fleet target generation are all current. A matching retry is idempotent;
-// any different binding is a conflict and cannot overwrite the first target.
-func (s *V3OperationStore) BindClaimedWorkloadReleaseTarget(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, binding pipeline.WorkloadReleaseStagedTarget) (pipeline.WorkloadReleaseStagedTarget, error) {
+// BindClaimedWorkloadReleaseTarget derives an exact create-only Nomad lookup
+// from the signed plan, observes it, then persists the resulting binding once
+// while the operation claim, app lock, and Fleet target generation are current.
+// A matching retry is idempotent; a conflicting observation cannot overwrite
+// the first target.
+func (s *V3OperationStore) BindClaimedWorkloadReleaseTarget(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, effectID string,
+	observer interface {
+		LookupDeploymentJobRevision(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error)
+	}) (pipeline.WorkloadReleaseStagedTarget, error) {
 	verified, err := s.verifyClaimedWorkloadReleasePlan(ctx, claim, lock)
+	if err != nil {
+		return pipeline.WorkloadReleaseStagedTarget{}, err
+	}
+	if observer == nil || strings.TrimSpace(effectID) == "" {
+		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release target observer and stage effect are required")
+	}
+	request := nomad.CASDeploymentJobRequest{
+		App: verified.Plan.Intent.TargetJobID, JobID: verified.Plan.Intent.TargetJobID,
+		Region: verified.Plan.Intent.NomadRegion, Namespace: verified.Plan.Intent.Namespace,
+		DeploymentID: verified.Plan.Intent.TargetDeploymentID, SpecDigest: verified.Plan.Intent.TargetSpecDigest,
+		OperationID: verified.Plan.Intent.TargetOperationID, ExecutionID: verified.Plan.Intent.TargetExecutionID,
+		JobDigest: strings.TrimPrefix(verified.Plan.Intent.TargetJobDigest, "sha256:"), ImageTag: verified.Plan.Intent.TargetImage,
+	}
+	observation, err := observer.LookupDeploymentJobRevision(ctx, request)
+	if err != nil {
+		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release exact Nomad target readback is unavailable: %w", err)
+	}
+	if observation.State != nomad.DeploymentJobFound {
+		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release exact Nomad target readback is not found")
+	}
+	binding, err := verified.Plan.BindObservedTarget(effectID, claim.Generation(), request, observation)
 	if err != nil {
 		return pipeline.WorkloadReleaseStagedTarget{}, err
 	}

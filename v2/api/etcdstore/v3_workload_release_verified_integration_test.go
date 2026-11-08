@@ -135,44 +135,55 @@ func TestV3WorkloadReleaseStagedTargetBindingIsClaimFencedAndWriteOnce(t *testin
 		t.Fatalf("acquired=%v err=%v", acquired, err)
 	}
 	defer lock.Release()
-	request := nomad.CASDeploymentJobRequest{App: intent.TargetJobID, Region: intent.NomadRegion, Namespace: intent.Namespace,
-		DeploymentID: intent.TargetDeploymentID, SpecDigest: intent.TargetSpecDigest, OperationID: intent.TargetOperationID,
-		ExecutionID: intent.TargetExecutionID, JobDigest: strings.TrimPrefix(intent.TargetJobDigest, "sha256:"), ImageTag: intent.TargetImage}
-	observation := nomad.DeploymentJobObservation{State: nomad.DeploymentJobFound, Version: 9, JobModifyIndex: 47}
-	binding, err := plan.BindObservedTarget("stage-effect-1", claim.Generation(), request, observation)
-	if err != nil {
-		t.Fatal(err)
+	observer := &workloadReleaseTargetObserver{observation: nomad.DeploymentJobObservation{State: nomad.DeploymentJobNotFound}}
+	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err == nil {
+		t.Fatal("missing Nomad target was bound before exact job readback")
 	}
-	written, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, binding)
-	if err != nil || written != binding {
+	if observer.calls != 1 || observer.request.ExpectedJobModifyIndex != 0 {
+		t.Fatalf("target lookup did not use exact create-only request: calls=%d request=%+v", observer.calls, observer.request)
+	}
+	observer.observation = nomad.DeploymentJobObservation{State: nomad.DeploymentJobFound, Version: 9, JobModifyIndex: 47}
+	written, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer)
+	if err != nil {
 		t.Fatalf("binding=%+v err=%v", written, err)
+	}
+	binding := written
+	if observer.calls != 2 || observer.request.EffectiveJobID() != intent.TargetJobID || observer.request.ExpectedJobModifyIndex != 0 || observer.request.JobDigest != strings.TrimPrefix(intent.TargetJobDigest, "sha256:") {
+		t.Fatalf("observer did not receive exact create-only target identity: calls=%d request=%+v", observer.calls, observer.request)
 	}
 	resolved, loaded, accepted, err := adapter.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, "stage-effect-1")
 	if err != nil || resolved.TargetJobVersion != 9 || resolved.TargetJobModifyIndex != 47 || loaded != binding || accepted.Operation.ID != operation.ID {
 		t.Fatalf("resolved=%+v binding=%+v accepted=%+v err=%v", resolved, loaded, accepted.Operation, err)
 	}
-	if again, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, binding); err != nil || again != binding {
+	if again, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err != nil || again != binding {
 		t.Fatalf("same binding replay=%+v err=%v", again, err)
 	}
-	conflictObservation := observation
-	conflictObservation.Version++
-	conflictObservation.JobModifyIndex++
-	conflict, err := plan.BindObservedTarget("stage-effect-1", claim.Generation(), request, conflictObservation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, conflict); err == nil {
+	observer.observation.Version++
+	observer.observation.JobModifyIndex++
+	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err == nil {
 		t.Fatal("a different staged target overwrote the write-once binding")
 	}
 	if _, err := client.Delete(ctx, adapter.ownerKey(operation.ID)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, conflict); err == nil {
+	if _, err := adapter.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, "stage-effect-1", observer); err == nil {
 		t.Fatal("expired operation claim could write staged target evidence")
 	}
 	if _, _, _, err := adapter.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, "stage-effect-1"); err == nil {
 		t.Fatal("expired operation claim could resolve staged target evidence")
 	}
+}
+
+type workloadReleaseTargetObserver struct {
+	observation nomad.DeploymentJobObservation
+	request     nomad.CASDeploymentJobRequest
+	calls       int
+}
+
+func (o *workloadReleaseTargetObserver) LookupDeploymentJobRevision(_ context.Context, request nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error) {
+	o.calls++
+	o.request = request
+	return o.observation, nil
 }
 
 func workloadReleaseEtcdIntentFixture(app string, target FleetAppTarget) pipeline.WorkloadReleaseIntent {
