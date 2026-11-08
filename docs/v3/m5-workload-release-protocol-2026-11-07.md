@@ -10,16 +10,21 @@ This note authorizes no live workload, route, or provider change.
 ## Current branch verification — 2026-11-08
 
 PR [#302](https://github.com/antiartificial/norn/pull/302) at
-`aa5d4227b35416dcff96d8891474c675807531fa` passed Repository CI run
-[42494310110](https://github.com/antiartificial/norn/actions/runs/42494310110)
+`c065e12f41da468e954b491d00536be22e6f080f` passed Repository CI run
+[42494942539](https://github.com/antiartificial/norn/actions/runs/42494942539)
 and Norn CI run
-[42494310093](https://github.com/antiartificial/norn/actions/runs/42494310093).
+[42494942533](https://github.com/antiartificial/norn/actions/runs/42494942533).
 Passing checks include API and CLI Go tests, the disposable Fleet pilot
 workload and three-member etcd qualification, the three-Nomad-client durable
 replica qualification, OpenAPI, UI, catalog publisher, workflow lint, and the
 platform release gate. Unselected qualification jobs were skipped. These
 checks validate the branch and disposable fixtures only; they do not qualify
 the deployed DO Fleet, Mini, workload-release admission, or any live upgrade.
+The follow-up envelope-bounds change at `648196993a55624533395e94ade56a9acc398e86`
+has a passing focused store test; its required PR checks are still running.
+The offline statechart at `4703f5bcdd0c98943f86d1fc6cfc97ad3f027743` passes
+86-state/203-transition TLC with all ten safety invariants and the deadlock
+check; see the linked model below.
 
 ## Release-readiness milestones and order
 
