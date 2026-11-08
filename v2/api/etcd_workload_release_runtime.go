@@ -147,12 +147,6 @@ func reconcileWorkloadRelease(ctx context.Context, claim store.OperationClaim, l
 				}
 				continue
 			}
-			if receipt.RouteStep < len(intent.RouteSteps)-1 {
-				if err := driver.PublishRouteStep(ctx, claim, lock, intent, receipt.RouteStep+1); err != nil {
-					return nil, err
-				}
-				continue
-			}
 			completed, err := driver.Complete(ctx, claim, intent)
 			if err != nil {
 				return nil, err

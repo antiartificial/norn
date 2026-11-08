@@ -134,7 +134,7 @@ func (s *V3OperationStore) commitClaimedWorkloadReleaseRouteStep(ctx context.Con
 	step := intent.RouteSteps[route.Step]
 	next := receipt
 	next.Phase = pipeline.WorkloadReleaseRouting
-	if route.Step >= 1 {
+	if route.Step == len(intent.RouteSteps)-1 {
 		next.Phase = pipeline.WorkloadReleaseDraining
 	}
 	next.RouteStep = route.Step

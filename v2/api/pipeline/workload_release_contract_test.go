@@ -130,9 +130,9 @@ func TestWorkloadReleaseBindsOldDeploymentStopAndDrainReadback(t *testing.T) {
 		t.Fatalf("old stop observer request=%+v err=%v", request, err)
 	}
 	base := WorkloadReleaseReceipt{IntentID: intent.ID, Phase: WorkloadReleaseDraining,
-		TargetAllocations: targetAllocationObservations("target-a", "target-b"), RouteStep: 1,
-		RouteOldWeight: 50, RouteTargetWeight: 50, RouteGeneration: intent.FirstRouteGeneration + 1,
-		RouteSHA256: workloadReleaseRouteDigest(t, intent, 1)}
+		TargetAllocations: targetAllocationObservations("target-a", "target-b"), RouteStep: len(intent.RouteSteps) - 1,
+		RouteOldWeight: 0, RouteTargetWeight: 100, RouteGeneration: intent.FirstRouteGeneration + uint64(len(intent.RouteSteps)-1),
+		RouteSHA256: workloadReleaseRouteDigest(t, intent, len(intent.RouteSteps)-1)}
 	readback := nomad.StoppedDeploymentObservation{JobID: intent.OldJobID, DeploymentID: intent.OldDeploymentID,
 		JobVersion: intent.OldJobVersion + 1, JobModifyIndex: intent.OldJobModifyIndex + 2,
 		DrainedAllocationIDs: []string{"old-b", "old-a"}}
@@ -170,9 +170,10 @@ func TestWorkloadReleaseReceiptRecoveryRejectsUnsafeProgress(t *testing.T) {
 	// A durable receipt survives process restart byte-for-byte and can be
 	// validated against the same immutable intent before recovery continues.
 	receipt := WorkloadReleaseReceipt{IntentID: intent.ID, Phase: WorkloadReleaseDraining,
-		TargetAllocations: targetAllocationObservations("target-a", "target-b"), RouteStep: 1,
-		RouteOldWeight: 50, RouteTargetWeight: 50, RouteGeneration: 12,
-		RouteSHA256: workloadReleaseRouteDigest(t, intent, 1), DrainedOldIDs: []string{"old-a"}}
+		TargetAllocations: targetAllocationObservations("target-a", "target-b"),
+		RouteGeneration:   intent.FirstRouteGeneration + uint64(len(intent.RouteSteps)-1),
+		RouteStep:         len(intent.RouteSteps) - 1, RouteOldWeight: 0, RouteTargetWeight: 100,
+		RouteSHA256: workloadReleaseRouteDigest(t, intent, len(intent.RouteSteps)-1), DrainedOldIDs: []string{"old-a"}}
 	withOldJobStopEvidence(&receipt, intent)
 	encoded, err := json.Marshal(receipt)
 	if err != nil {
@@ -305,10 +306,12 @@ func TestWorkloadReleasePhaseTransitionsRequireEvidence(t *testing.T) {
 	}
 	draining := mixed
 	draining.Phase = WorkloadReleaseDraining
-	draining.DrainedOldIDs = []string{"old-a"}
-	withOldJobStopEvidence(&draining, intent)
+	draining.RouteStep = len(intent.RouteSteps) - 1
+	draining.RouteOldWeight, draining.RouteTargetWeight = 0, 100
+	draining.RouteGeneration = intent.FirstRouteGeneration + uint64(draining.RouteStep)
+	draining.RouteSHA256 = workloadReleaseRouteDigest(t, intent, draining.RouteStep)
 	if err := draining.ValidateSuccessor(intent, mixed); err != nil {
-		t.Fatalf("fully healthy target could not enter draining: %v", err)
+		t.Fatalf("target-only route could not enter draining: %v", err)
 	}
 	complete := WorkloadReleaseReceipt{IntentID: intent.ID, Phase: WorkloadReleaseComplete,
 		TargetAllocations: targetAllocationObservations("target-a", "target-b"), RouteStep: len(intent.RouteSteps) - 1,
@@ -442,6 +445,10 @@ func TestWorkloadReleaseSuccessorRequiresMonotoneSingleStepProgress(t *testing.T
 	}
 	withDrain := mixed
 	withDrain.Phase = WorkloadReleaseDraining
+	withDrain.RouteStep = len(intent.RouteSteps) - 1
+	withDrain.RouteOldWeight, withDrain.RouteTargetWeight = 0, 100
+	withDrain.RouteGeneration = intent.FirstRouteGeneration + uint64(withDrain.RouteStep)
+	withDrain.RouteSHA256 = workloadReleaseRouteDigest(t, intent, withDrain.RouteStep)
 	withDrain.DrainedOldIDs = []string{"old-a"}
 	withOldJobStopEvidence(&withDrain, intent)
 	if err := withDrain.ValidateAgainst(intent); err != nil {
@@ -479,9 +486,6 @@ func TestWorkloadReleaseIntentRejectsUnsafeRoutePlans(t *testing.T) {
 		"reused old job identity": func(intent *WorkloadReleaseIntent) {
 			intent.TargetJobID = intent.OldJobID
 		},
-		"missing old job version": func(intent *WorkloadReleaseIntent) {
-			intent.OldJobVersion = 0
-		},
 		"missing old job modify index": func(intent *WorkloadReleaseIntent) {
 			intent.OldJobModifyIndex = 0
 		},
@@ -490,6 +494,9 @@ func TestWorkloadReleaseIntentRejectsUnsafeRoutePlans(t *testing.T) {
 		},
 		"traffic moves backward": func(intent *WorkloadReleaseIntent) {
 			intent.RouteSteps = []WorkloadReleaseRouteStep{{OldWeight: 100}, {OldWeight: 30, TargetWeight: 70}, {OldWeight: 50, TargetWeight: 50}, {TargetWeight: 100}}
+		},
+		"duplicate old-only route step": func(intent *WorkloadReleaseIntent) {
+			intent.RouteSteps = []WorkloadReleaseRouteStep{{OldWeight: 100}, {OldWeight: 100}, {OldWeight: 50, TargetWeight: 50}, {TargetWeight: 100}}
 		},
 		"weight total is ambiguous": func(intent *WorkloadReleaseIntent) {
 			intent.RouteSteps[1] = WorkloadReleaseRouteStep{OldWeight: 40, TargetWeight: 40}
@@ -509,6 +516,24 @@ func TestWorkloadReleaseIntentRejectsUnsafeRoutePlans(t *testing.T) {
 				t.Fatal("unsafe workload release intent accepted")
 			}
 		})
+	}
+}
+
+func TestWorkloadReleaseAcceptsFirstNomadJobRevisionZero(t *testing.T) {
+	intent := workloadReleaseFixture()
+	intent.OldJobVersion = 0
+	intent.TargetJobVersion = 0
+	if err := intent.Validate(); err != nil {
+		t.Fatalf("first Nomad job revision rejected: %v", err)
+	}
+	allocations := []nomad.DeploymentJobAllocationHealthObservation{
+		{AllocationID: "target-a", NodeID: "node-a", JobID: intent.TargetJobID, Namespace: intent.Namespace, TaskGroup: intent.Process, JobVersion: 0, JobModifyIndex: intent.TargetJobModifyIndex, ImageDigest: intent.TargetImageDigest, Healthy: true},
+		{AllocationID: "target-b", NodeID: "node-b", JobID: intent.TargetJobID, Namespace: intent.Namespace, TaskGroup: intent.Process, JobVersion: 0, JobModifyIndex: intent.TargetJobModifyIndex, ImageDigest: intent.TargetImageDigest, Healthy: true},
+	}
+	readback := nomad.DeploymentJobHealthObservation{State: nomad.DeploymentJobHealthReady,
+		JobVersion: 0, JobModifyIndex: intent.TargetJobModifyIndex, AllocationIDs: []string{"target-a", "target-b"}, Allocations: allocations}
+	if _, err := (WorkloadReleaseReceipt{IntentID: intent.ID, Phase: WorkloadReleaseWarming}).WithTargetAllocationReadback(intent, readback); err != nil {
+		t.Fatalf("first-revision allocation readback rejected: %v", err)
 	}
 }
 

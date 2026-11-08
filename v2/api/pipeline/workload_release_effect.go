@@ -217,14 +217,14 @@ func (e *WorkloadReleaseStopEffects) stopReservation(ctx context.Context, claim 
 
 // validateWorkloadReleaseStopPrerequisite prevents the irreversible old-job
 // stop from running until a durable receipt proves full target health and an
-// observed mixed route. The caller must load this receipt from the release
+// observed target-only route. The caller must load this receipt from the release
 // controller's durable CAS store; a command response is not sufficient.
 func validateWorkloadReleaseStopPrerequisite(intent WorkloadReleaseIntent, receipt WorkloadReleaseReceipt) error {
 	if err := receipt.ValidateAgainst(intent); err != nil {
 		return fmt.Errorf("old deployment stop prerequisite receipt is invalid: %w", err)
 	}
-	if receipt.Phase != WorkloadReleaseDraining || receipt.RouteStep < 1 || len(receipt.TargetAllocations) < intent.TargetReplicas || healthyTargetCount(receipt) != intent.TargetReplicas {
-		return fmt.Errorf("old deployment stop requires full target health and mixed-route readback in the draining phase")
+	if receipt.Phase != WorkloadReleaseDraining || receipt.RouteStep != len(intent.RouteSteps)-1 || receipt.RouteOldWeight != 0 || receipt.RouteTargetWeight != 100 || len(receipt.TargetAllocations) < intent.TargetReplicas || healthyTargetCount(receipt) != intent.TargetReplicas {
+		return fmt.Errorf("old deployment stop requires full target health and target-only route readback in the draining phase")
 	}
 	return nil
 }

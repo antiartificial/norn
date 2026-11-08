@@ -248,7 +248,7 @@ func validStoppedDeploymentBaseRequest(request StoppedDeploymentRequest) bool {
 	if strings.TrimSpace(request.JobID) == "" || strings.TrimSpace(request.Region) == "" || strings.TrimSpace(request.DeploymentID) == "" ||
 		strings.TrimSpace(request.StopOperationID) == "" || !validDeploymentDigest(request.IntentDigest) ||
 		!validDeploymentDigest(request.SpecDigest) || !validDeploymentDigest(request.JobDigest) || !validDeploymentDigest(request.ImageDigest) ||
-		strings.TrimSpace(request.TaskGroup) == "" || request.OriginalJobVersion == 0 || request.OriginalJobModifyIndex == 0 || len(request.AllocationIDs) == 0 {
+		strings.TrimSpace(request.TaskGroup) == "" || request.OriginalJobVersion == ^uint64(0) || request.OriginalJobModifyIndex == 0 || len(request.AllocationIDs) == 0 {
 		return false
 	}
 	seen := make(map[string]struct{}, len(request.AllocationIDs))

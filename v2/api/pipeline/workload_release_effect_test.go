@@ -152,7 +152,7 @@ func TestWorkloadReleaseTargetHealthRefreshesMixedRouteAndHoldsTotalLoss(t *test
 		if err != nil {
 			t.Fatal(err)
 		}
-		mixed := WorkloadReleaseReceipt{IntentID: intent.ID, Phase: WorkloadReleaseDraining, TargetAllocations: targetAllocationObservations("target-a", "target-b"),
+		mixed := WorkloadReleaseReceipt{IntentID: intent.ID, Phase: WorkloadReleaseRouting, TargetAllocations: targetAllocationObservations("target-a", "target-b"),
 			RouteStep: 1, RouteOldWeight: 50, RouteTargetWeight: 50, RouteGeneration: intent.FirstRouteGeneration + 1, RouteSHA256: workloadReleaseRouteDigest(t, intent, 1)}
 		if _, err := repository.Advance(context.Background(), claim, intent, routed.ReceiptDigest, mixed); err != nil {
 			t.Fatal(err)
@@ -189,7 +189,7 @@ func TestWorkloadReleaseTargetHealthRefreshesMixedRouteAndHoldsTotalLoss(t *test
 		if loseAll && (got.Phase != WorkloadReleaseHeld || got.HeldReason == "") {
 			t.Fatalf("total target loss did not durably hold the release: %+v", got)
 		}
-		if !loseAll && (got.Phase != WorkloadReleaseDraining || got.RouteGeneration != intent.FirstRouteGeneration+1 || len(got.TargetAllocations) != 2) {
+		if !loseAll && (got.Phase != WorkloadReleaseRouting || got.RouteGeneration != intent.FirstRouteGeneration+1 || len(got.TargetAllocations) != 2) {
 			t.Fatalf("healthy mixed-route refresh regressed progress: %+v", got)
 		}
 	}
@@ -364,6 +364,18 @@ func TestWorkloadReleaseStopRecoversLostNomadResponseWithoutSecondStop(t *testin
 	if _, err := effects.AdvanceReceipt(context.Background(), claim, intent, effectStore.receiptRecord.ReceiptDigest, routing); err != nil {
 		t.Fatalf("advance to initial route: %v", err)
 	}
+	mixed := routing
+	mixed.RouteStep = 1
+	mixed.RouteOldWeight, mixed.RouteTargetWeight = 50, 50
+	mixed.RouteGeneration = intent.FirstRouteGeneration + 1
+	mixed.RouteSHA256 = workloadReleaseRouteDigest(t, intent, 1)
+	if _, err := effects.AdvanceReceipt(context.Background(), claim, intent, effectStore.receiptRecord.ReceiptDigest, mixed); err != nil {
+		t.Fatalf("advance to mixed route: %v", err)
+	}
+	prerequisite.RouteStep = len(intent.RouteSteps) - 1
+	prerequisite.RouteOldWeight, prerequisite.RouteTargetWeight = 0, 100
+	prerequisite.RouteGeneration = intent.FirstRouteGeneration + uint64(prerequisite.RouteStep)
+	prerequisite.RouteSHA256 = workloadReleaseRouteDigest(t, intent, prerequisite.RouteStep)
 	if _, err := effects.AdvanceReceipt(context.Background(), claim, intent, effectStore.receiptRecord.ReceiptDigest, prerequisite); err != nil {
 		t.Fatalf("persist stop prerequisite receipt: %v", err)
 	}
@@ -434,16 +446,16 @@ func TestWorkloadReleaseStopRequiresHealthyMixedRouteReceipt(t *testing.T) {
 	}
 	for name, receipt := range map[string]WorkloadReleaseReceipt{
 		"planned": {IntentID: intent.ID, Phase: WorkloadReleasePlanned, RouteStep: 0},
-		"mixed route without healthy targets": {
+		"mixed route even with healthy targets": {
 			IntentID: intent.ID, Phase: WorkloadReleaseDraining, RouteStep: 1, RouteOldWeight: 50, RouteTargetWeight: 50,
-			RouteGeneration: intent.FirstRouteGeneration + 1, RouteSHA256: workloadReleaseRouteDigest(t, intent, 1),
+			TargetAllocations: targetAllocationObservations("target-a", "target-b"), RouteGeneration: intent.FirstRouteGeneration + 1, RouteSHA256: workloadReleaseRouteDigest(t, intent, 1),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			encoded, _ := json.Marshal(receipt)
 			effectStore.receiptRecord = &store.WorkloadReleaseReceiptRecord{IntentID: intent.ID, OperationID: claim.OperationID(), Receipt: encoded, ReceiptDigest: workloadReceiptDigest(encoded)}
 			if _, err := effects.ExecuteStop(context.Background(), claim, intent); err == nil {
-				t.Fatal("old deployment stop accepted without full healthy mixed-route proof")
+				t.Fatal("old deployment stop accepted without a target-only route")
 			}
 			if effectStore.has {
 				t.Fatal("unsafe stop prerequisite reserved a durable effect")
@@ -457,8 +469,8 @@ func workloadReleaseDrainPrerequisite(t *testing.T, intent WorkloadReleaseIntent
 	receipt := WorkloadReleaseReceipt{
 		IntentID: intent.ID, Phase: WorkloadReleaseDraining,
 		TargetAllocations: targetAllocationObservations("target-a", "target-b"),
-		RouteStep:         1, RouteOldWeight: 50, RouteTargetWeight: 50,
-		RouteGeneration: intent.FirstRouteGeneration + 1, RouteSHA256: workloadReleaseRouteDigest(t, intent, 1),
+		RouteStep:         len(intent.RouteSteps) - 1, RouteOldWeight: 0, RouteTargetWeight: 100,
+		RouteGeneration: intent.FirstRouteGeneration + uint64(len(intent.RouteSteps)-1), RouteSHA256: workloadReleaseRouteDigest(t, intent, len(intent.RouteSteps)-1),
 	}
 	if err := validateWorkloadReleaseStopPrerequisite(intent, receipt); err != nil {
 		t.Fatalf("test stop prerequisite invalid: %v", err)

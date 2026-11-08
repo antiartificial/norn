@@ -51,11 +51,11 @@ func TestWorkloadRouteStepAuthorizationRequiresHealthyForwardProgress(t *testing
 	if !workloadRouteStepAllowed(intent, mixed, 1) {
 		t.Fatal("healthy route receipt could not authorize its next mixed step")
 	}
-	final := pipeline.WorkloadReleaseReceipt{IntentID: intent.ID, Phase: pipeline.WorkloadReleaseDraining, TargetAllocations: targets,
+	final := pipeline.WorkloadReleaseReceipt{IntentID: intent.ID, Phase: pipeline.WorkloadReleaseRouting, TargetAllocations: targets,
 		RouteStep: 1, RouteOldWeight: 90, RouteTargetWeight: 10, RouteGeneration: intent.FirstRouteGeneration + 1,
-		RouteSHA256: "sha256:" + route1.SHA256, OldJobStoppedVersion: 2, OldJobStoppedModifyIndex: 3, DrainedOldIDs: []string{"old-allocation"}}
+		RouteSHA256: "sha256:" + route1.SHA256}
 	if !workloadRouteStepAllowed(intent, final, 2) {
-		t.Fatal("fully drained receipt could not authorize the final target-only route")
+		t.Fatal("mixed route receipt could not authorize the final target-only route")
 	}
 	final.TargetAllocations = append([]pipeline.WorkloadReleaseAllocationObservation(nil), targets...)
 	final.TargetAllocations[0].Healthy = false

@@ -76,10 +76,10 @@ func (d *workloadReleaseTestDriver) PublishRouteStep(_ context.Context, _ store.
 		d.receipt.RouteGeneration = uint64(11 + step)
 		d.receipt.RouteOldWeight = d.intent.RouteSteps[step].OldWeight
 		d.receipt.RouteTargetWeight = d.intent.RouteSteps[step].TargetWeight
-		if step == 0 {
-			d.receipt.Phase = pipeline.WorkloadReleaseRouting
-		} else {
+		if step == len(d.intent.RouteSteps)-1 {
 			d.receipt.Phase = pipeline.WorkloadReleaseDraining
+		} else {
+			d.receipt.Phase = pipeline.WorkloadReleaseRouting
 		}
 	}
 	return d.lost(fmt.Sprintf("route-%d", step))

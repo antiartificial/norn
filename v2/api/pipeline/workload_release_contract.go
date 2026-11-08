@@ -141,10 +141,10 @@ func (i WorkloadReleaseIntent) Validate() error {
 		strings.TrimSpace(i.ControlEnvironment) == "" || strings.TrimSpace(i.FleetCluster) == "" || strings.TrimSpace(i.FleetEnvironment) == "" || len(i.FleetDatacenters) == 0 || i.FleetTargetGeneration == 0 || strings.TrimSpace(i.Process) == "" || strings.TrimSpace(i.Endpoint) == "" ||
 		!validReleaseDigest(i.SpecDigest) || strings.TrimSpace(i.SourceRevision) == "" ||
 		strings.TrimSpace(i.OldDeploymentID) == "" || !validReleaseDigest(i.OldImageDigest) || !validReleaseDigest(i.OldSpecDigest) ||
-		strings.TrimSpace(i.OldJobID) == "" || !validReleaseDigest(i.OldJobDigest) || i.OldJobVersion == 0 || i.OldJobModifyIndex == 0 ||
+		strings.TrimSpace(i.OldJobID) == "" || !validReleaseDigest(i.OldJobDigest) || i.OldJobModifyIndex == 0 ||
 		strings.TrimSpace(i.TargetDeploymentID) == "" || i.TargetDeploymentID == i.OldDeploymentID || !validReleaseDigest(i.TargetImageDigest) || !contentAddressedImageMatches(i.TargetImage, i.TargetImageDigest) ||
 		strings.TrimSpace(i.TargetJobID) == "" || i.TargetJobID == i.OldJobID || !validReleaseDigest(i.TargetJobDigest) || !validReleaseDigest(i.TargetSpecDigest) || strings.TrimSpace(i.TargetOperationID) == "" || strings.TrimSpace(i.TargetExecutionID) == "" ||
-		i.TargetReplicas < 1 || i.SurgeLimit < 1 || i.TargetJobVersion == 0 || i.TargetJobModifyIndex == 0 || i.FirstRouteGeneration == 0 || len(i.OldAllocationIDs) == 0 || len(i.RouteSteps) < 3 {
+		i.TargetReplicas < 1 || i.SurgeLimit < 1 || i.TargetJobModifyIndex == 0 || i.FirstRouteGeneration == 0 || len(i.OldAllocationIDs) == 0 || len(i.RouteSteps) < 3 {
 		return fmt.Errorf("workload release intent is incomplete")
 	}
 	if uint64(len(i.RouteSteps)-1) > ^uint64(0)-i.FirstRouteGeneration {
@@ -176,12 +176,15 @@ func (i WorkloadReleaseIntent) Validate() error {
 	}
 	hasMixedStep := false
 	previousTargetWeight := -1
-	for _, step := range i.RouteSteps {
+	for index, step := range i.RouteSteps {
 		if step.OldWeight < 0 || step.TargetWeight < 0 || step.OldWeight+step.TargetWeight != 100 {
 			return fmt.Errorf("workload release route weights must total 100")
 		}
 		if step.TargetWeight < previousTargetWeight {
 			return fmt.Errorf("workload release route sequence cannot move traffic backward")
+		}
+		if index > 0 && (step.TargetWeight <= previousTargetWeight || step.OldWeight == 0 && step.TargetWeight != 100) {
+			return fmt.Errorf("workload release route sequence must make strict progress through mixed steps to target-only")
 		}
 		previousTargetWeight = step.TargetWeight
 		if step.OldWeight > 0 && step.TargetWeight > 0 {
@@ -388,7 +391,7 @@ func (r WorkloadReleaseReceipt) ValidateAgainst(i WorkloadReleaseIntent) error {
 	targetNodes := make(map[string]struct{}, len(r.TargetAllocations))
 	healthySet := make(map[string]struct{}, len(r.TargetAllocations))
 	for _, allocation := range r.TargetAllocations {
-		if allocation.AllocationID == "" || allocation.NodeID == "" || allocation.JobVersion == 0 ||
+		if allocation.AllocationID == "" || allocation.NodeID == "" ||
 			allocation.JobID != i.TargetJobID || allocation.Namespace != i.Namespace || allocation.TaskGroup != i.Process ||
 			allocation.ImageDigest != i.TargetImageDigest {
 			return fmt.Errorf("workload release receipt contains an incomplete target allocation identity")
@@ -428,8 +431,8 @@ func (r WorkloadReleaseReceipt) ValidateAgainst(i WorkloadReleaseIntent) error {
 	} else if i.OldJobVersion == ^uint64(0) || r.OldJobStoppedVersion != i.OldJobVersion+1 || r.OldJobStoppedModifyIndex <= i.OldJobModifyIndex {
 		return fmt.Errorf("workload release old job stop revision differs from the pinned effect")
 	}
-	if len(drained) > 0 && r.RouteStep < 1 {
-		return fmt.Errorf("workload release cannot drain before mixed-route proof")
+	if len(drained) > 0 && (r.RouteStep != len(i.RouteSteps)-1 || r.RouteOldWeight != 0 || r.RouteTargetWeight != 100) {
+		return fmt.Errorf("workload release cannot drain before target-only route proof")
 	}
 	if len(targetSet) > i.TargetReplicas+i.SurgeLimit {
 		return fmt.Errorf("workload release receipt exceeds the admitted target surge")
@@ -502,8 +505,8 @@ func (next WorkloadReleaseReceipt) ValidateSuccessor(i WorkloadReleaseIntent, cu
 	for _, id := range next.DrainedOldIDs {
 		nextDrained[id] = struct{}{}
 		if _, retained := currentDrained[id]; !retained {
-			if current.RouteStep < 1 || healthyTargetCount(current) != i.TargetReplicas {
-				return fmt.Errorf("new drain requires prior mixed-route proof and full target health")
+			if current.Phase != WorkloadReleaseDraining || current.RouteStep != len(i.RouteSteps)-1 || current.RouteOldWeight != 0 || current.RouteTargetWeight != 100 || healthyTargetCount(current) != i.TargetReplicas {
+				return fmt.Errorf("new drain requires prior target-only route proof and full target health")
 			}
 		}
 	}
@@ -568,7 +571,7 @@ func validReleasePhaseTransition(current, next WorkloadReleaseReceipt, intent Wo
 	case WorkloadReleaseWarming:
 		return next.Phase == WorkloadReleaseRouting && len(next.TargetAllocations) > 0 && healthyTargetCount(next) > 0 && next.RouteStep == 0
 	case WorkloadReleaseRouting:
-		return next.Phase == WorkloadReleaseDraining && next.RouteStep >= 1 && healthyTargetCount(current) == intent.TargetReplicas && healthyTargetCount(next) == intent.TargetReplicas
+		return next.Phase == WorkloadReleaseDraining && next.RouteStep == len(intent.RouteSteps)-1 && next.RouteOldWeight == 0 && next.RouteTargetWeight == 100 && healthyTargetCount(current) == intent.TargetReplicas && healthyTargetCount(next) == intent.TargetReplicas
 	case WorkloadReleaseDraining:
 		return next.Phase == WorkloadReleaseComplete && next.RouteStep == len(intent.RouteSteps)-1 && healthyTargetCount(next) == intent.TargetReplicas && len(next.DrainedOldIDs) == len(intent.OldAllocationIDs)
 	default:

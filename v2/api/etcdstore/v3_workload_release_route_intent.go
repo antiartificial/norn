@@ -396,9 +396,9 @@ func workloadRouteStepAllowed(intent pipeline.WorkloadReleaseIntent, receipt pip
 		return false
 	}
 	if receipt.Phase == pipeline.WorkloadReleaseRouting {
-		return step < len(intent.RouteSteps)-1
+		return step < len(intent.RouteSteps)
 	}
-	return receipt.Phase == pipeline.WorkloadReleaseDraining && len(receipt.DrainedOldIDs) == len(intent.OldAllocationIDs)
+	return false
 }
 
 func workloadRoutePredecessorMatches(intent pipeline.WorkloadReleaseIntent, receipt pipeline.WorkloadReleaseReceipt, step int, rendered ingress.RenderedRoute, prior activeFleetRoute) bool {
