@@ -8,11 +8,41 @@ deployment, provider mutation, or credential use.
 
 | Workstream | Scope | Owner seam | Exit artifact | Status |
 |---|---|---|---|---|
-| Evidence ledger | Reconcile Mini completion, DO soak, current health, Genesis readback, and release receipts against source and dated docs. | Norn and norn-fleet docs plus retained run IDs. | Independent Mini currently serves signed V3 RC `d4dc88e0c37003a1013caed444983b2eeb50fbcb`; smoke and host doctor passed. Route assurance is stale/failed, with 7 queued Fleet-dispatch operations and 25 open incident groups still requiring separate follow-up. A route-authentication fix is proposed in open PR #301; its API/CLI/UI/OpenAPI and related CI checks pass, but it has not been merged, deployed to Mini, or verified with live `norn host assure` and route inventory. Live DO provider inventory was read through explicit `work` context, but private API/runtime health and protected Genesis source availability remain unverified. | Source audit refreshed; Mini app/route health is not fully clean; DO provider inventory refreshed |
+| Evidence ledger | Reconcile Mini completion, DO soak, current health, Genesis readback, and release receipts against source and dated docs. | Norn and norn-fleet docs plus retained run IDs. | Mini runs the current immutable V3 RC; current host/route evidence and open events need follow-up. The DO private API/runtime and protected Genesis source remain unverified. See the dated Mini readback below. | Mini runtime V3; postflight/route assurance incomplete; DO runtime unverified |
 | Bootstrap input audit | Trace state, route, inventory, vars, provider scope, SSH, signed intent, runtime identity, and key flows; define the future two-app-pool input contract. | `norn-fleet` validators, workflows, Ansible, templates; [two-pool contract](fresh-fleet-two-app-pool-contract.md). | Field-level input manifest and existing-Fleet app-03 scale lost-response round trip added; a 51-pattern path inventory is checked against Ansible docs; future pool roles selected as general + stateful; IDs, sizes, count bounds, and placement remain undecided; per-file lifecycle evidence and complete fresh-Fleet workflow recovery remain. | Source audit complete; fitness partial |
 | Controller and V3 API audit | Reconcile Mini direct controller, DO platform release, workload resize, online proposal, and V2 surfaces. | Norn controllers/API/tests and V3 docs. | Mini and scale test entry points mapped; Mini bounded model is in the evidence bundle; V2 semantics clarified. | Source audit complete |
 | Offline models | Check existing DO platform release, Mini direct, existing-Fleet Genesis, disposable Fleet create/recovery, current staging source, future two-app-pool create/recovery, and proposed workload overlap. | TLA+ models and deterministic controller tests. | Protected `norn-fleet` main and provider inventory agree on the current 3+2+4 topology, with one app pool. The nine-node model covers that shape abstractly; the 45-state future two-pool model fixes General + Stateful roles and gates success on role-correct readiness plus stateful recovery proof. Neither is wired to the protected provider workflow or its detailed credential inputs; current staging recovery still lacks a joined code-level replay. | Nine bounded models check; topology shape reconciled; input/recovery failure coverage partial |
 | Workload release protocol | Separate replica scaling, application rollout, and app-pool resize; select stateless then stateful qualification candidates. | Norn app-scale and workload catalog; [M5 protocol](m5-workload-release-protocol-2026-11-07.md). | Sequence names `norn-fleet-canary` then `hello-norn-mysql-managed`; stateless intent pins both generations' job/source/spec/image identities, public traffic-probe path/body digest, and weighted TLS routes. Receipt adapters provide claim-fenced CAS; etcd lease-expiry recovery requeues the same release. The stop executor requires exact target-health and mixed-route proof. | Offline contract, durable receipt CAS, refreshable target-health step, old-stop executor and fresh drain readback, prerequisite guard, scale-target reader, route-step intent/authority, independent route/traffic proof, atomic active-route/receipt promotion, and claim-bound publish/prove/commit entry point are implemented. A signed `app.workload-release` worker now verifies acceptance under the app lock and reconciles health → weighted route steps → durable old-stop/readback → final route → terminal receipt; deploy and workload route writers share a serialized executor. Tests cover total-health hold, stable stop marker across claim renewal, lost-response stop recovery, exact drain receipt, final-route receipt, terminal completion, and same-step route replay after lost response. A driver-level fixture now loses the response after receipt initialization, health readback, each route step, stop, drain receipt, and completion, then re-enters the same reconciler to a single-stop terminal receipt. A production-store worker fixture, process/lease crash matrix, and live qualification remain open. |
+
+## Mini direct readback — 2026-11-08
+
+- `/api/health` and host status report `ok`. Mini serves V3 source
+  `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+  (`v3.0.0-rc.1-platform`), the current code release; `master` is one
+  documentation-only commit ahead. Norn CI
+  [42410071278](https://github.com/antiartificial/norn/actions/runs/42410071278)
+  and immutable prerelease publication
+  [42410387388](https://github.com/antiartificial/norn/actions/runs/42410387388)
+  passed, with manifest, signature, SBOM, and archive assets for Darwin/Linux
+  amd64/arm64.
+- The latest stored host-assurance receipt is from 2026-09-06; the newest open
+  `host.assurance.failed` group was seen 2026-11-08 23:17 UTC. Snapshot
+  retention warnings remain. The active-event endpoint reports 25 unresolved
+  incident groups (22 critical, 3 warning).
+- A read-only event-reconcile dry-run at 2026-11-08 23:55 UTC (requested
+  limit: 200) scanned 200 events: 54 task-restart events would be acknowledged
+  by the deterministic rule; 146 need review, including 32 host-assurance
+  failures, 94 failed/lost allocations, and 12 capacity warnings without
+  later recovery evidence. No event was acknowledged.
+- The exact installed Mini upgrade script matches the script in source
+  `d4dc88e0` and excludes queued `fleet.github.apply-dispatch` receipts from
+  the Mini drain. Seven such receipts remain queued with no terminal receipt;
+  preserve them for Fleet reconciliation. They do not block direct Mini work.
+  Running Fleet dispatches and other active Mini operations still block the
+  `fail`/`wait` drain.
+- Norn [PR #301](https://github.com/antiartificial/norn/pull/301) contains a
+  route-authentication fix, but is not merged or deployed. Its protected
+  release must be followed by fresh Mini host assurance and route inventory.
 
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
