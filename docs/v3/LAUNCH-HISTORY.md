@@ -1,5 +1,19 @@
 # Norn v3 launch history
 
+## DO staging provider inventory (2026-11-09 18:58 UTC)
+
+Read-only `doctl --context work` queries found all nine `tk-staging-nyc3`
+Droplets active (3 control, 2 ingress, 4 app), both staging-management
+Droplets active, and the `tk-staging-nyc3-ingress` load balancer active.
+The management-authority PostgreSQL and application PostgreSQL/MySQL
+databases report online. A read-only public HTTPS probe at 19:01 UTC returned
+`norn-fleet-canary` from `/route-proof`; five `/version` samples reported
+source `be5ca5d969ccf3509e62ce04a833516bb5c204db` across two allocation IDs on
+two nodes. This confirms the canary route is serving that source, but does not
+verify the DO Norn API, etcd quorum, Nomad/Consul health, application catalog,
+or terminal receipt for the earlier failed deployment. No provider, host,
+deployment, or route mutation was run.
+
 ## Read-only Mini and DO refresh (2026-11-09 15:48–15:49 UTC)
 
 The authenticated Mini inventory at 15:48 UTC reported API and host status

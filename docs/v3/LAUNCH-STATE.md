@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 18:51 UTC)
+## Current V3 release readiness (2026-11-09 19:01 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -29,7 +29,9 @@ release has been published and the Mini has not changed. After publication,
 the Mini still requires exact-SHA signed import/verification, protected
 backup, signed shadow, controller preflight, promotion, smoke, and host
 assurance. A fresh Mini inventory at 18:48 UTC confirmed the current read-only
-state below; the DO runtime readiness evidence remains the Nov 8 readback.
+state below. The latest DO provider inventory is from 18:58 UTC. A 19:01 UTC
+public canary probe passed, but full Fleet control-plane/runtime health is not
+verified.
 
 - **Mini direct:** the independent Mini's completed Nov 7 controller-mediated
   direct adoption remains in place; this refresh did not attempt another
@@ -57,12 +59,13 @@ state below; the DO runtime readiness evidence remains the Nov 8 readback.
   `d4dc88e0`, before the exact-push-SHA fix merged as `ccb49a56`. See the
   [Mini Git-to-controller workload path](release-lanes-and-workload-resizing.md#mini-git-to-controller-workload-path).
   Mini remains independent of Fleet.
-- **DO staging:** read-only `doctl --context work` queries at 15:49 UTC found
+- **DO staging:** read-only `doctl --context work` queries at 18:58 UTC found
   all nine `tk-staging-nyc3` Droplets active (3 control, 2 ingress, 4 app),
-  the ingress load balancer active, and the management-authority PostgreSQL
-  plus application PostgreSQL/MySQL databases online. The latest public
-  canary probe is still the 13:09 UTC read: `/route-proof` returned
-  `norn-fleet-canary`, and five `/version` responses reported source
+  both management Droplets active, the ingress load balancer active, and the
+  management-authority PostgreSQL plus application PostgreSQL/MySQL databases
+  online. A public HTTPS probe at 19:01 UTC returned
+  `norn-fleet-canary` from `/route-proof`; five `/version` responses reported
+  the same source SHA
   `be5ca5d969ccf3509e62ce04a833516bb5c204db` across two allocation IDs and
   two node IDs. The canary hostname returns 404 for `/api/health`. Current
   Provider resources and that earlier canary probe do not establish current
