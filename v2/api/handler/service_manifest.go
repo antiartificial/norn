@@ -207,12 +207,12 @@ func endpointScope(endpoints []model.Endpoint) string {
 	if len(endpoints) == 0 {
 		return "none"
 	}
-	scope := "public"
+	scope := "local"
 	for _, endpoint := range endpoints {
 		host := endpointHostname(endpoint.URL)
 		switch classifyHostScope(host) {
-		case "local":
-			return "local"
+		case "public":
+			return "public"
 		case "private":
 			scope = "private"
 		}
