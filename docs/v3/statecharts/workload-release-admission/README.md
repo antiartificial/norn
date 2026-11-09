@@ -106,6 +106,23 @@ exercise `etcdWorkloadReleaseExecutor`, production Nomad/ingress adapters, or
 full worker-runtime wiring. Those gates and private-input retention remain
 open.
 
+Reproduce the lost-route-response/restart case against a disposable local etcd
+endpoint with:
+
+```sh
+cd v2/api
+NORN_TEST_ETCD_ENDPOINTS=http://127.0.0.1:12579 \
+  go test . -run '^TestWorkloadReleaseReconcilerRecoversRouteLostResponseAfterRestartEtcd$' -count=1 -v
+```
+
+The 2026-11-09 local run passed against etcd 3.7.3. It revokes the original
+operation lease, reconstructs the etcd client and store, reclaims the same
+operation under a successor generation, and verifies that every route write
+and old-job stop occurs once. Only persistence, leases, claims, and receipts
+are real in this fixture; route, health, scheduler, and stop effects are
+controlled fakes. It does not qualify the production executor or Nomad/ingress
+drivers.
+
 The separate [concurrent admission model](../workload-release-concurrent-admission/README.md)
 and its two-client etcd regression test cover simultaneous same-key acceptance
 at the store boundary. The [HTTP concurrency model](../workload-release-http-concurrency/README.md)
