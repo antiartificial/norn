@@ -1,48 +1,71 @@
 ---
-title: "V3 workload admission: stable replay before mutable reads"
+title: "V3 workload admission: replay after response loss and restart"
 ---
 stateDiagram-v2
   state "Legend" as legend {
     lg0: request
     lg1: accepted
-    lg2: replayed
-    lg3: rejected
+    lg2: recovering
+    lg3: replayed
+    lg4: rejected
   }
   class lg0 blue
   class lg1 purple
-  class lg2 teal
-  class lg3 orange
+  class lg2 orange
+  class lg3 teal
+  class lg4 tan
   s0: Qualification request received
-  s1: Accepted qualification and source still available
-  s2: Retry changes qualification or target size
-  s3: Accepted qualification expired
-  s4: Accepted deployment source unavailable
-  s5: Original accepted receipt returned
-  s6: Requested size rejected by app policy
-  s7: Changed qualification rejected
-  s8: Accepted qualification expired, source unavailable
+  s1: Acceptance committed#59; response lost
+  s2: Accepted qualification and source still available
+  s3: Controller stopped#59; durable receipt remains
+  s4: Retry changes qualification or target size
+  s5: Accepted qualification expired
+  s6: Accepted deployment source unavailable
+  s7: Original durable receipt returned
+  s8: Requested size rejected by app policy
+  s9: Changed qualification rejected
+  s10: Controller restarted#59; loading durable acceptance
+  s11: Accepted qualification expired, source unavailable
   [*] --> s0
-  s0 --> s1: verify source and persist the signed acceptance
-  s1 --> s2: retry changes the selected qualification or retry changes the target replica count
-  s1 --> s3: qualification expires after acceptance
-  s1 --> s4: source deployment becomes unavailable
-  s1 --> s5: retry with the same idempotency key and request
-  s0 --> s6: reject a target size outside the operator-approved range
-  s2 --> s7: reject changed qualification or size without rereading source
-  s3 --> s2: retry changes the selected qualification or retry changes the target replica count
-  s3 --> s8: source deployment becomes unavailable
-  s3 --> s5: retry with the same idempotency key and request
-  s4 --> s2: retry changes the selected qualification or retry changes the target replica count
-  s4 --> s8: qualification expires after acceptance
-  s4 --> s5: retry with the same idempotency key and request
-  s8 --> s2: retry changes the selected qualification or retry changes the target replica count
-  s8 --> s5: retry with the same idempotency key and request
+  s0 --> s1: persist verified acceptance but lose the HTTP response
+  s0 --> s2: persist verified acceptance and return its receipt
+  s1 --> s3: controller stops after the durable commit
+  s1 --> s7: retry with the same idempotency key and request
+  s2 --> s3: controller stops after the durable commit
+  s2 --> s4: retry changes the selected qualification or retry changes the target replica count
+  s2 --> s5: qualification expires after acceptance
+  s2 --> s6: source deployment becomes unavailable
+  s2 --> s7: retry with the same idempotency key and request
+  s0 --> s8: reject a target size outside the operator-approved range
+  s3 --> s10: new process starts without local acceptance memory
+  s1 --> s9: reject changed qualification or size without rereading source
+  s4 --> s3: controller stops after the durable commit
+  s4 --> s9: reject changed qualification or size without rereading source
+  s5 --> s3: controller stops after the durable commit
+  s5 --> s4: retry changes the selected qualification or retry changes the target replica count
+  s5 --> s11: source deployment becomes unavailable
+  s5 --> s7: retry with the same idempotency key and request
+  s6 --> s3: controller stops after the durable commit
+  s6 --> s4: retry changes the selected qualification or retry changes the target replica count
+  s6 --> s11: qualification expires after acceptance
+  s6 --> s7: retry with the same idempotency key and request
+  s7 --> s3: controller stops after the durable commit
+  s9 --> s3: controller stops after the durable commit
+  s10 --> s3: controller stops after the durable commit
+  s10 --> s7: retry with the same idempotency key and request
+  s11 --> s3: controller stops after the durable commit
+  s11 --> s4: retry changes the selected qualification or retry changes the target replica count
+  s11 --> s7: retry with the same idempotency key and request
+  s10 --> s9: reject changed qualification or size without rereading source
   class s0 blue
   class s1 purple
   class s2 purple
-  class s3 purple
+  class s3 orange
   class s4 purple
-  class s5 teal
-  class s6 orange
-  class s7 orange
-  class s8 purple
+  class s5 purple
+  class s6 purple
+  class s7 teal
+  class s8 tan
+  class s9 tan
+  class s10 purple
+  class s11 purple
