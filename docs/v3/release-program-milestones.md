@@ -231,6 +231,10 @@ claim mixed Norn control versions.
   accepts a signed qualification ID and target replica count, resolves exact
   replay before mutable reads, then derives policy, Fleet target, serving
   route, Nomad lineage, app source and encrypted SOPS snapshot server-side.
+- [x] Cover fresh handler admission and exact-replay ordering in deterministic
+  in-process tests. PR #321 verifies trusted-input resolution, protected SOPS
+  capture, acceptance, and response redaction; it does not establish durable
+  recovery across worker or controller restart.
 - [ ] Pin and durably recover the exact app source and prove private-input
   retention/key lifecycle across worker and controller restart. The current
   producer reads configured app source and SOPS ciphertext at admission;
