@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 23:30 UTC)
+## Current V3 release readiness (2026-11-09 23:42 UTC)
 
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
 source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
@@ -15,15 +15,20 @@ at schema 51 versus required 52. The subsequent signed recovered-forward
 attempt stopped before fencing or migration because the evidence verifier
 rejected the older signed adoption source despite its valid ancestry to the
 current source. PR #373 fixed that verifier and merged at
-`a4b9c3b313d65c8a054fb869b18455fde33d3a70`; this fix is not in the published
-`9d9d6208` release.
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. Full protected-master
+qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745)
+passed all 12 jobs. Exact-source release workflow
+[42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811)
+passed authorization, pinned UI, and all four platform bundles; its protected
+`publish` job is waiting for owner approval. It has not been signed or
+published. This fix is not in the already published `9d9d6208` release.
 
 The Mini remains on `d4dc88e0c37003a1013caed444983b2eeb50fbcb`, health `ok`,
 runtime mutation fence `inactive`. No migration or candidate promotion
-occurred. The source-lineage correction needs protected-master qualification
-and a new exact-source release. The prior publish approval applied only to
-`9d9d6208`, so do not publish a replacement without exact-SHA approval. DO
-was not changed.
+occurred. The exact replacement release is ready at the protected approval
+gate. The earlier publish approval applied only to `9d9d6208`; a separate
+approval is required for `a4b9c3b313d65c8a054fb869b18455fde33d3a70`. DO was
+not changed.
 
 The seven stale DO `fleet.github.apply-dispatch` receipts remain queued. A
 fresh authenticated inventory confirmed the count. The current handler rejects
@@ -50,7 +55,8 @@ not runtime or controller-refinement evidence. See the dated
 [launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2256-utc)
 for per-model counts and limits.
 
-The latest authenticated Mini runtime evidence is the 22:47 UTC snapshot below.
+The latest authenticated Mini runtime evidence is the 22:47 UTC snapshot below;
+it is historical and must be refreshed before the next live step.
 Refresh Mini API/host/schema/generation state and the protected DO read-only
 status before any live step. After owner approval and publication,
 import and verify the exact signed replacement on Mini, then create a fresh
