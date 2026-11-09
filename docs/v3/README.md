@@ -1,27 +1,21 @@
 # Norn v3 planning package
 
 **Current release work:** start with [Norn v3 launch state](LAUNCH-STATE.md)
-for current Mini and DigitalOcean staging Fleet observations. Use the
-[release program milestones](release-program-milestones.md) for parallel
-workstreams and gate status, the [staging topology source audit](staging-topology-source-audit-2026-11-08.md)
-for the current nine-node DO source/provider shape versus the requested future
-General + Stateful pools, and
-the [future two-app-pool contract](fresh-fleet-two-app-pool-contract.md)
-for required inputs, recovery behavior, and unresolved sizing decisions. The
-[release fitness and controller plan](release-fitness-and-controller-plan.md)
-for lane contracts, offline war-games, credentials, recovery and exit criteria.
-The [release lanes and workload resizing guide](release-lanes-and-workload-resizing.md)
-defines the execution boundaries. Mini is an independent node, not a
-Fleet member. Its control API may hold target configuration for the separate
-DO staging Fleet, which is the only Fleet in this work. The
-[M5 workload release protocol](m5-workload-release-protocol-2026-11-07.md)
-separates replica scaling, application rollout, and app-pool resizing. The
+for current gates and the next actions. Dated observations and superseded
+snapshots are retained separately in [launch history](LAUNCH-HISTORY.md).
+For sequencing and exit criteria, use the
+[release program milestones](release-program-milestones.md) and
+[execution milestones](execution-milestones.md). For lane procedures and
+contracts, see the [release fitness and controller plan](release-fitness-and-controller-plan.md),
+[release lanes and workload resizing guide](release-lanes-and-workload-resizing.md),
+[DO staging topology audit](staging-topology-source-audit-2026-11-08.md),
+[future two-app-pool contract](fresh-fleet-two-app-pool-contract.md), and
+[M5 workload release protocol](m5-workload-release-protocol-2026-11-07.md).
+Mini is an independent node, not a Fleet member; the DigitalOcean staging
+environment is the only Fleet in this work. The
 [V2 surface retirement inventory](v2-surface-retirement-inventory-2026-11-07.md)
-maps current CLI/UI and protected Fleet callers before any legacy routes or
-tests are removed. The
-[2026-09-29 handoff](session-resume-2026-09-29.md) is a
-historical snapshot. The milestone exit criteria remain in
-[execution milestones](execution-milestones.md).
+maps callers and recovery coverage before legacy routes or tests are removed.
+Older handoffs preserve rationale and prior state.
 
 The architecture below began as a proposal on 2026-09-22. Use the new release
 program milestones for current gate disposition; [execution milestones](execution-milestones.md)

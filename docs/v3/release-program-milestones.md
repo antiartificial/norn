@@ -7,7 +7,8 @@ deployment, provider mutation, or credential use.
 ## Reuse release lessons before repeating work
 
 Keep this milestone map and the operator runbooks procedural. Consult the
-[launch evidence ledger](LAUNCH-STATE.md) for dated live observations, the
+[launch state](LAUNCH-STATE.md) for current gates and
+[launch history](LAUNCH-HISTORY.md) for dated observations, the
 [Mini upgrade observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md)
 for the direct-lane recovery sequence, the
 [upgrade lessons](online-upgrade-lessons-2026-11-07.md) for platform-wide
