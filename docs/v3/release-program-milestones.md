@@ -4,6 +4,21 @@ Status: active work map, refreshed 2026-11-08. This checklist orders the [releas
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
+## Reuse release lessons before repeating work
+
+Keep this milestone map and the operator runbooks procedural. Consult the
+[launch evidence ledger](LAUNCH-STATE.md) for dated live observations, the
+[Mini upgrade observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md)
+for the direct-lane recovery sequence, the
+[upgrade lessons](online-upgrade-lessons-2026-11-07.md) for platform-wide
+capability gaps, and the
+[M5 workload protocol](m5-workload-release-protocol-2026-11-07.md) before
+repeating workload changes. Before a rerun, compare the prior attempt's exact
+source, intent, state and resource identities, terminal evidence, and stated
+redo conditions with current inputs. A historical pass is not current runtime
+evidence; a timeout or empty readback is not proof that an external effect did
+not happen.
+
 ## Parallel work that can start now
 
 | Workstream | Scope | Owner seam | Exit artifact | Status |
