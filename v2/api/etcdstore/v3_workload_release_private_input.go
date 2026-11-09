@@ -145,6 +145,21 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	if !workloadReleasePlanMatchesFleetTarget(acceptedPlan, target) {
 		return store.AcceptedOperation{}, fmt.Errorf("workload release plan differs from current control-owned Fleet target")
 	}
+	policy, policyRevision, err := s.CurrentWorkloadReleasePolicy(ctx, acceptedPlan.Intent.App, acceptedPlan.Intent.ControlEnvironment)
+	if err != nil {
+		return store.AcceptedOperation{}, fmt.Errorf("load current workload release policy: %w", err)
+	}
+	policyDigest, err := WorkloadReleasePolicyDigest(policy)
+	if err != nil || acceptedPlan.Intent.PolicyApprovalID != policy.ApprovalID || acceptedPlan.Intent.PolicyDigest != policyDigest ||
+		acceptedPlan.Intent.TargetReplicas < policy.MinReplicas || acceptedPlan.Intent.TargetReplicas > policy.MaxReplicas ||
+		acceptedPlan.Intent.SurgeLimit != policy.SurgeLimit || len(acceptedPlan.Intent.RouteSteps) != len(policy.RouteSteps) {
+		return store.AcceptedOperation{}, fmt.Errorf("workload release plan differs from current approved policy")
+	}
+	for index, step := range acceptedPlan.Intent.RouteSteps {
+		if step.OldWeight != policy.RouteSteps[index].OldWeight || step.TargetWeight != policy.RouteSteps[index].TargetWeight {
+			return store.AcceptedOperation{}, fmt.Errorf("workload release route differs from current approved policy")
+		}
+	}
 	activePredecessor, predecessorCompares, err := s.workloadReleasePredecessorCompares(ctx, acceptedPlan)
 	if err != nil {
 		return store.AcceptedOperation{}, err
@@ -186,6 +201,7 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 		clientv3.Compare(clientv3.CreateRevision(privateKey), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(acceptanceIndex), "=", 0),
 		clientv3.Compare(clientv3.ModRevision(s.fleetAppTargetKey(target.App, target.ControlEnvironment)), "=", targetRevision),
+		clientv3.Compare(clientv3.ModRevision(s.workloadReleasePolicyKey(target.App, target.ControlEnvironment)), "=", policyRevision),
 	}
 	compares = append(compares, appAdmission.compares...)
 	compares = append(compares, predecessorCompares...)

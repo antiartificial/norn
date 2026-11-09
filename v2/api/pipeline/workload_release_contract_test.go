@@ -559,6 +559,7 @@ func workloadReleaseFixture() WorkloadReleaseIntent {
 		TargetOperationID:  "operation-target",
 		TargetExecutionID:  "nomad-deployment-target",
 		OldAllocationIDs:   []string{"old-a", "old-b"}, TargetReplicas: 2, SurgeLimit: 1,
+		PolicyApprovalID: "11111111-1111-4111-8111-111111111111", PolicyDigest: "sha256:" + strings.Repeat("6", 64),
 		TargetJobVersion:     8,
 		TargetJobModifyIndex: 43,
 		FirstRouteGeneration: 11,

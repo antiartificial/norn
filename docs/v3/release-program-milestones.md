@@ -222,10 +222,13 @@ claim mixed Norn control versions.
 - [x] Add a separate CAS-protected, operator-approved stateless overlap
   policy bound to the current Fleet placement generation. It records the
   approver and time, replica bounds, surge limit, and monotonic route steps;
-  it is absent by default and is not yet consumed by release admission.
-- [ ] Bind the stored policy and approval into the signed workload release plan
-  and expose the authenticated admission producer. Until then the policy is
-  configuration evidence only, not an enabled release lane.
+  it is absent by default.
+- [x] Bind the approval ID and canonical policy digest into the signed
+  workload release plan. Private acceptance checks replica/surge/route bounds
+  against the current policy and compares its etcd revision in the acceptance
+  transaction; exact replay still resolves before mutable policy reads.
+- [ ] Expose the authenticated admission producer. The store acceptance seam
+  remains internal, so this is not yet an operator-facing release lane.
 
 **Exit:** data, routes, acknowledgements, and desired/observed capacity remain
 correct through restart, drain, failure, and retry.

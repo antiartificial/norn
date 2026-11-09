@@ -302,7 +302,26 @@ func workloadReleaseEtcdIntentFixture(app string, target FleetAppTarget) pipelin
 		TargetDeploymentID: "target-deploy", TargetImage: "registry.example.test/widgets@" + functionInvocationEffectAttemptDigest, TargetImageDigest: functionInvocationEffectAttemptDigest,
 		TargetJobID: "widgets-web-target", TargetJobDigest: functionInvocationEffectAttemptDigest, TargetSpecDigest: functionInvocationEffectAttemptDigest,
 		TargetOperationID: "target-operation", TargetExecutionID: "target-execution", OldAllocationIDs: []string{"old-allocation"}, TargetJobVersion: 1, TargetJobModifyIndex: 3,
-		TargetReplicas: 1, SurgeLimit: 1, FirstRouteGeneration: 4,
+		TargetReplicas: 1, SurgeLimit: 1, PolicyApprovalID: workloadReleaseTestPolicyApprovalID,
+		PolicyDigest: workloadReleaseTestPolicyDigest(app, target), FirstRouteGeneration: 4,
 		RouteSteps: []pipeline.WorkloadReleaseRouteStep{{OldWeight: 100, TargetWeight: 0}, {OldWeight: 90, TargetWeight: 10}, {OldWeight: 0, TargetWeight: 100}},
 	}
+}
+
+const workloadReleaseTestPolicyApprovalID = "11111111-1111-4111-8111-111111111111"
+
+func workloadReleaseTestPolicy(app string, target FleetAppTarget) store.WorkloadReleasePolicy {
+	return store.WorkloadReleasePolicy{App: app, ControlEnvironment: target.ControlEnvironment, FleetTargetGeneration: target.Generation,
+		SchemaVersion: store.WorkloadReleasePolicySchema, ApprovalID: workloadReleaseTestPolicyApprovalID, ApprovedBy: "workload-release-test",
+		ApprovedAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), Mode: store.WorkloadReleasePolicyStatelessOverlap,
+		MinReplicas: 1, MaxReplicas: 5, SurgeLimit: 1,
+		RouteSteps: []store.WorkloadReleasePolicyStep{{OldWeight: 100}, {OldWeight: 90, TargetWeight: 10}, {TargetWeight: 100}}}
+}
+
+func workloadReleaseTestPolicyDigest(app string, target FleetAppTarget) string {
+	digest, err := WorkloadReleasePolicyDigest(workloadReleaseTestPolicy(app, target))
+	if err != nil {
+		panic(err)
+	}
+	return digest
 }

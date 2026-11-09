@@ -57,6 +57,8 @@ type WorkloadReleaseIntent struct {
 	TargetJobModifyIndex   uint64                     `json:"targetJobModifyIndex"`
 	TargetReplicas         int                        `json:"targetReplicas"`
 	SurgeLimit             int                        `json:"surgeLimit"`
+	PolicyApprovalID       string                     `json:"policyApprovalId"`
+	PolicyDigest           string                     `json:"policyDigest"`
 	FirstRouteGeneration   uint64                     `json:"firstRouteGeneration"`
 	RouteSteps             []WorkloadReleaseRouteStep `json:"routeSteps"`
 }
@@ -144,7 +146,7 @@ func (i WorkloadReleaseIntent) Validate() error {
 		strings.TrimSpace(i.OldJobID) == "" || !validReleaseDigest(i.OldJobDigest) || i.OldJobModifyIndex == 0 ||
 		strings.TrimSpace(i.TargetDeploymentID) == "" || i.TargetDeploymentID == i.OldDeploymentID || !validReleaseDigest(i.TargetImageDigest) || !contentAddressedImageMatches(i.TargetImage, i.TargetImageDigest) ||
 		strings.TrimSpace(i.TargetJobID) == "" || i.TargetJobID == i.OldJobID || !validReleaseDigest(i.TargetJobDigest) || !validReleaseDigest(i.TargetSpecDigest) || strings.TrimSpace(i.TargetOperationID) == "" || strings.TrimSpace(i.TargetExecutionID) == "" ||
-		i.TargetReplicas < 1 || i.SurgeLimit < 1 || i.TargetJobModifyIndex == 0 || i.FirstRouteGeneration == 0 || len(i.OldAllocationIDs) == 0 || len(i.RouteSteps) < 3 {
+		i.TargetReplicas < 1 || i.SurgeLimit < 1 || strings.TrimSpace(i.PolicyApprovalID) == "" || !validReleaseDigest(i.PolicyDigest) || i.TargetJobModifyIndex == 0 || i.FirstRouteGeneration == 0 || len(i.OldAllocationIDs) == 0 || len(i.RouteSteps) < 3 {
 		return fmt.Errorf("workload release intent is incomplete")
 	}
 	if uint64(len(i.RouteSteps)-1) > ^uint64(0)-i.FirstRouteGeneration {
