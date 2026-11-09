@@ -1,6 +1,6 @@
 # Workload mixed-version model
 
-This is a bounded **protocol model**, not a model of currently deployed mixed-version behavior. The repository has an internal M5 controller candidate with signed acceptance, durable receipts, route proof, and stop recovery, but the candidate is not merged, operator-admitted, or live-qualified. This model checks protocol ordering, including target-only route proof before the old cohort can drain.
+This is a bounded **protocol model**, not a model of currently deployed mixed-version behavior. The M5 workload controller and its signed acceptance, durable receipts, route proof, and stop recovery are merged in Norn PR #302. Operator-facing workload-release admission is still absent, and the path is not live-qualified. This model checks protocol ordering, including target-only route proof before the old cohort can drain.
 
 Scope: two old allocations, two target allocations, one workload, one additive schema expansion, and one controller. Each allocation is a writer-bearing workload unit. The model runs with a three-allocation cap and a four-allocation cap. It does not represent separate web/worker processes, real Nomad placement, cloud eventual consistency, route implementation, database semantics, timing, or credential custody.
 
@@ -44,6 +44,14 @@ four-allocation run. [`chart-capacity3.mmd`](chart-capacity3.mmd) and
 [`report-capacity3.md`](report-capacity3.md) preserve the insufficient-capacity
 case for comparison.
 
+On 2026-11-09, both checked-in configurations were rerun from the current Norn
+master source. TLC reproduced 103 states / 275 steps for capacity four and 24
+states / 52 steps for capacity three, with all listed invariants and deadlock
+checks holding. Focused Go tests also passed for workload receipt transitions,
+lost-response recovery, one-use target creation, and deterministic target-job
+construction. These offline results confirm the bounded model and selected
+controller contracts; they do not qualify Nomad placement or public traffic.
+
 The compact view groups route-proof loss into one held state and hides repeated
 crashes from later phases, route-proof-loss cases outside the canary phase, and
 recovery reconciliations that rejoin later main-flow states; TLC still checks
@@ -72,4 +80,4 @@ admitted intent and fresh proof that the older workload remains healthy and
 data-compatible.
 
 
-The implementation review found and fixed a stop-ordering defect: a mixed route had been allowed to enter draining, which could stop old capacity while the route still sent traffic to it. The controller now keeps every mixed step in `Routing`; only the final 0/100 target-only proof enters `Draining`. The model encodes this as `NoOldRetirementBeforeTargetOnlyRoute`. This proves the bounded ordering contract, while the focused Go tests replay receipt admission and stop prerequisites. The candidate remains unmerged and lacks target-specific public traffic evidence and live qualification.
+The implementation review found and fixed a stop-ordering defect: a mixed route had been allowed to enter draining, which could stop old capacity while the route still sent traffic to it. The merged controller keeps every mixed step in `Routing`; only the final 0/100 target-only proof enters `Draining`. The model encodes this as `NoOldRetirementBeforeTargetOnlyRoute`. This proves the bounded ordering contract, while the focused Go tests replay receipt admission and stop prerequisites. Target-specific public traffic evidence and live qualification are still missing.
