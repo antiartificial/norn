@@ -918,6 +918,45 @@ func signReleaseQualification(encodedKey string, receipt *model.ReleaseQualifica
 	return nil
 }
 
+// SignReleaseQualification exposes the staging control plane's canonical DSSE
+// signer to its etcd-backed V3 qualification issuer. Qualification content
+// must be built from a verified successful release operation before signing.
+func SignReleaseQualification(encodedKey string, receipt *model.ReleaseQualification) error {
+	if receipt == nil {
+		return fmt.Errorf("release qualification is missing")
+	}
+	return signReleaseQualification(encodedKey, receipt)
+}
+
+// ValidateReleaseQualificationSigningKey lets opt-in V3 issuer startup fail
+// before serving requests when the staging signing authority is unavailable.
+func ValidateReleaseQualificationSigningKey(encodedKey string) error {
+	_, err := parseEd25519PrivateKey(encodedKey)
+	if err != nil {
+		return fmt.Errorf("invalid Ed25519 staging signing key: %w", err)
+	}
+	return nil
+}
+
+// ReleaseQualificationVerificationKeys combines rotated trusted public keys
+// with the public half of the configured staging signer for self-issued V3
+// qualifications.
+func ReleaseQualificationVerificationKeys(trusted []string, encodedPrivate string) ([]string, error) {
+	private, err := parseEd25519PrivateKey(encodedPrivate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Ed25519 staging signing key: %w", err)
+	}
+	keys := append([]string(nil), trusted...)
+	keys = append(keys, base64.RawStdEncoding.EncodeToString(private.Public().(ed25519.PublicKey)))
+	return keys, nil
+}
+
+// QualificationIntentPermitsCandidate applies the same CI-to-candidate
+// binding used by the PostgreSQL staging issuer.
+func QualificationIntentPermitsCandidate(principal AccessPrincipal, candidate model.ReleaseCandidate) (bool, string) {
+	return qualificationIntentPermitsCandidate(principal, candidate)
+}
+
 func dssePAE(payloadType string, payload []byte) []byte {
 	return []byte(fmt.Sprintf("DSSEv1 %d %s %d %s", len(payloadType), payloadType, len(payload), payload))
 }

@@ -17,6 +17,7 @@ import (
 )
 
 var fleetReleaseSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var fleetReleaseSpecDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // fleetReleaseAdmissionInputs are server-owned or verified values. No field in
 // this struct is decoded directly from a deployment request body.

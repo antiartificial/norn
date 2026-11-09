@@ -151,11 +151,18 @@ does not mount the legacy `Handler.CreateReleaseQualification` route. The
 legacy `/v1/apps/{id}/qualifications` reader uses `h.db` (PostgreSQL), while
 `ResolveWorkloadReleaseQualification` reads a signed V3 etcd operation index.
 The store resolver and its integration fixtures therefore do not establish a
-production V3 qualification issuer. Before an operator can select a usable V3
-candidate, add a staging-only issuer that verifies and retains qualification
-evidence against the exact successful V3 staging deployment, or document an
-equivalent trusted import path. Candidate listing by itself cannot close this
-gap.
+production V3 qualification issuer. An opt-in staging-only V3 issuer now
+accepts a deployment ID, resolves the signed V3 `app.deploy` record and its
+completed deployment projection, takes source/artifact/candidate provenance
+from that record, signs a qualification, and stores it as a signed
+`release.qualification` operation. Its replay path returns the accepted
+receipt before rereading source state; concurrent same-deployment requests
+resolve the first committed receipt. The route requires
+`NORN_ETCD_FLEET_QUALIFICATION_HTTP=true` alongside the existing V3 staging
+release and deploy-worker configuration. Deterministic tests cover source
+binding, replay, changed deployment IDs, malformed JSON, and signature
+self-verification; an etcd-backed integration test verifies lookup through the
+signed acceptance index. This source is not yet deployed or live-qualified.
 
 Admission must derive the target job digest before it can sign the complete
 `WorkloadReleasePlan`; it must not duplicate the translator or accept a
@@ -246,4 +253,4 @@ this is explicit work, not behavior inherited from the function path.
 
 ## Next implementation step
 
-The private-input materialization and validated create/readback path are now wired into the claimed worker locally; do not treat that as deployed qualification. The next implementation step is an authenticated operator admission producer that discovers a qualified immutable candidate, resolves source/spec/image and managed input revisions, and atomically admits the signed plan with its private-input envelope. In parallel, extend deterministic fixtures across marker, delayed Nomad acceptance, response loss, successor claim, target readback, and durable hold. Then run the same path against version-pinned disposable Nomad and ingress with the configured ACL policy. Keep route-predecessor fencing, startup key preflight, and explicit envelope retention; do not enable provider or workload mutation until those gates pass.
+The private-input materialization and validated create/readback path are now wired into the claimed worker locally; do not treat that as deployed qualification. The next implementation step is an authenticated operator admission producer that resolves the newly issuable V3 qualification and then obtains server-owned predecessor, current Fleet target, serving-lineage and encrypted-input facts before atomically admitting the signed plan and private envelope. In parallel, extend deterministic fixtures across marker, delayed Nomad acceptance, response loss, successor claim, target readback, and durable hold. Then run the same path against version-pinned disposable Nomad and ingress with the configured ACL policy. Keep route-predecessor fencing, startup key preflight, and explicit envelope retention; do not enable provider or workload mutation until those gates pass.

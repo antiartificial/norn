@@ -155,6 +155,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}
 	}
 	releaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetReleaseHTTPEnv)), "true")
+	qualificationHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetQualificationHTTPEnv)), "true")
 	var releaseVerifier *pipeline.Pipeline
 	if releaseHTTPEnabled {
 		if deployConfig == "" {
@@ -163,6 +164,14 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		releaseVerifier, err = newEtcdFleetReleaseVerifier(cfg)
 		if err != nil {
 			return fmt.Errorf("configure etcd Fleet release admission: %w", err)
+		}
+	}
+	if qualificationHTTPEnabled {
+		if !releaseHTTPEnabled || deployConfig == "" {
+			return fmt.Errorf("%s requires %s=true and %s", etcdFleetQualificationHTTPEnv, etcdFleetReleaseHTTPEnv, etcdFleetDeployWorkerConfigEnv)
+		}
+		if err := handler.ValidateReleaseQualificationSigningKey(cfg.QualificationSigningKey); err != nil {
+			return fmt.Errorf("configure V3 staging qualification issuer: %w", err)
 		}
 	}
 	router := chi.NewRouter()
@@ -236,6 +245,10 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if releaseHTTPEnabled {
 		releaseStage := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)
 		router.With(releaseStage).Post("/api/v1/apps/{id}/releases/deployments", etcdFleetReleaseDeployment(cfg, operations, releaseVerifier))
+	}
+	if qualificationHTTPEnabled {
+		qualificationAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseQualify, handler.ScopeAPIWrite)
+		router.With(qualificationAuth).Post("/api/v1/apps/{id}/qualifications", etcdFleetReleaseQualification(cfg, operations, identities))
 	}
 	router.With(platformOperate).Put("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetConfigure(cfg, operations))
 	router.With(read).Get("/api/v1/database/catalog", etcdFleetDatabaseCatalog(operations))
