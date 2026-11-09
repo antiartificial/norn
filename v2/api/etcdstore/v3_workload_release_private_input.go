@@ -39,6 +39,27 @@ func (s *V3OperationStore) workloadReleasePrivateInputPrefix() string {
 	return s.prefix + "/v3/workload-release-private-inputs/"
 }
 
+// ResolvePrivateWorkloadReleaseReplay resolves only the stable request
+// identity and selection digest. Producers call it before consulting mutable
+// qualification, app source, scheduler, route, policy, or encrypted-input
+// state, then continue to full admission only when the identity is absent.
+func (s *V3OperationStore) ResolvePrivateWorkloadReleaseReplay(ctx context.Context, identity store.OperationRequestIdentity, operation model.Operation) (store.AcceptedOperation, error) {
+	if s == nil || s.kv == nil || s.signer == nil || identity.Kind != "app.workload-release" ||
+		operation.Kind != "app.workload-release" || operation.ID == "" || operation.App == "" || operation.Status != model.OperationQueued ||
+		identity.Resource != "app/"+operation.App || workloadReleaseRequestDigest(operation) == "" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release replay selection is incomplete"}
+	}
+	prior, err := s.ResolveIdentity(ctx, identity)
+	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
+	if prior.Operation.Kind != operation.Kind || prior.Operation.App != operation.App ||
+		workloadReleaseRequestDigest(prior.Operation) != workloadReleaseRequestDigest(operation) {
+		return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: identity}
+	}
+	return prior, nil
+}
+
 // AcceptPrivateWorkloadRelease atomically stores the signed plan, active-app
 // fence, control-owned Fleet target revision, and encrypted SOPS snapshot.
 func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, input store.OperationAcceptance, qualification model.ReleaseQualification, trustedQualificationKeys []string, material []byte, keys *store.WorkloadReleaseInputKeyRing, lineageObserver nomad.ActiveDeploymentLineageObserver) (store.AcceptedOperation, error) {
@@ -53,12 +74,7 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	// (qualification ID and requested replica count), not mutable source files,
 	// current scheduler observations, or the SOPS snapshot captured for the
 	// first acceptance. Resolve it before validating or opening any fresh facts.
-	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
-		if prior.Operation.Kind != "app.workload-release" || prior.Operation.App != input.Operation.App ||
-			workloadReleaseRequestDigest(input.Operation) == "" ||
-			workloadReleaseRequestDigest(input.Operation) != workloadReleaseRequestDigest(prior.Operation) {
-			return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
-		}
+	if prior, err := s.ResolvePrivateWorkloadReleaseReplay(ctx, input.Identity, input.Operation); err == nil {
 		return prior, nil
 	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
 		return store.AcceptedOperation{}, err
