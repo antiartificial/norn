@@ -67,15 +67,14 @@ the sole staging Fleet and remains a separate qualification target.
   #940 (release intent controller), and #945 (provider scope contract) are
   merged. PR #943 closed when its stacked base merged; replacement PR #947
   (bootstrap credential lifecycle) and PR #942 (module-owned test collection)
-  are also merged. The remaining protected ingress tailnet enrollment
-  prerequisite is Fleet PR #837 at head
-  `eef00505d23e37c66cdaed75c5f4c5504a1cd22b`; its required `contract` check is
-  failing during DigitalOcean provider installation: run 42578247221 could not
-  download the pinned `digitalocean/digitalocean` v2.100.0 Linux provider ZIP
-  after three attempts. GitHub reports it blocked. Do not merge it until that
-  exact-head contract passes. No provider apply or Genesis readback was run.
-  Integrated controller recovery and credential lifecycle evidence remain
-  gates before any provider mutation.
+  are also merged. Fleet PR #837 at head
+  `eef00505d23e37c66cdaed75c5f4c5504a1cd22b` merged as
+  `6335c667693d0333d4239f91edf2efb9772ab63a` after its exact-head contract
+  rerun (42578247221) and both security checks passed. The rerun succeeded
+  after the earlier transient provider download failure. This is source
+  readiness only: it did not enroll a host, apply provider changes, or perform
+  Genesis readback. Integrated controller recovery and credential lifecycle
+  evidence remain gates before any provider mutation.
 
 The milestone table near the end of this file is a historical estimate; use
 the lane evidence above and the M5 protocol's dated status for current gates.
