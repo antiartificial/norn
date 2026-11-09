@@ -37,7 +37,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 	operation := model.Operation{ID: uuid.NewString(), Kind: "app.workload-release", App: app, Status: model.OperationQueued,
 		MaxAttempts: 3, Source: "operator-api", Payload: map[string]interface{}{"workloadReleasePlan": string(planBytes)},
-		Metadata: map[string]interface{}{"workloadReleaseRequestDigest": "sha256:" + strings.Repeat("1", 64)}}
+		Metadata: map[string]interface{}{}}
 	input := store.OperationAcceptance{
 		Identity: store.OperationRequestIdentity{Authority: adapter.authority, Actor: store.OperationActor{Issuer: "https://operator.example.test", Subject: "operator-1"},
 			Kind: operation.Kind, Resource: "app/" + app, Key: uuid.NewString()},
@@ -50,6 +50,12 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 	material := []byte("exact-encrypted-sops-snapshot-v1")
 	qualification, trustedQualificationKey := privateInputQualification(t, intent, "missing-qualified-deployment")
+	requestDigest, err := pipeline.WorkloadReleaseRequestDigest(qualification.ID, intent.TargetReplicas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation.Metadata["workloadReleaseRequestDigest"] = requestDigest
+	input.Operation = operation
 	write := func(key string, value interface{}) {
 		t.Helper()
 		encoded, err := json.Marshal(value)
@@ -68,6 +74,14 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 	if err := accept(input); err == nil {
 		t.Fatal("accepted signed qualification without a control-owned successful staging deployment")
+	}
+	wrongDigest := input
+	wrongDigest.Operation = operation
+	wrongDigest.Operation.ID = uuid.NewString()
+	wrongDigest.Identity.Key = uuid.NewString()
+	wrongDigest.Operation.Metadata = map[string]interface{}{"workloadReleaseRequestDigest": "sha256:" + strings.Repeat("1", 64)}
+	if err := accept(wrongDigest); !errors.Is(err, store.ErrAcceptanceInvalid) {
+		t.Fatalf("accepted a request digest that does not bind its qualification and replica selection: %v", err)
 	}
 	qualification.DeploymentID = acceptPrivateWorkloadReleaseSource(t, adapter, intent, target)
 	resignPrivateInputQualification(t, &qualification)
@@ -199,12 +213,27 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	differentQualification.ID += "-different"
 	resignPrivateInputQualification(t, &differentQualification)
 	changedRequest := input
-	changedRequest.Operation.Metadata = map[string]interface{}{"workloadReleaseRequestDigest": "sha256:" + strings.Repeat("2", 64)}
+	changedQualificationDigest, err := pipeline.WorkloadReleaseRequestDigest(differentQualification.ID, intent.TargetReplicas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedRequest.Operation.Metadata = map[string]interface{}{"workloadReleaseRequestDigest": changedQualificationDigest}
 	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, changedRequest, differentQualification, []string{trustedQualificationKey}, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
 		t.Fatalf("same idempotency key accepted different qualification evidence: %v", err)
 	}
 	changedReplicaRequest := input
-	changedReplicaRequest.Operation.Metadata = map[string]interface{}{"workloadReleaseRequestDigest": "sha256:" + strings.Repeat("3", 64)}
+	changedIntent := intent
+	changedIntent.TargetReplicas++
+	changedPlan, err := json.Marshal(pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: changedIntent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedReplicaRequest.Operation.Payload = map[string]interface{}{"workloadReleasePlan": string(changedPlan)}
+	changedReplicaDigest, err := pipeline.WorkloadReleaseRequestDigest(qualification.ID, changedIntent.TargetReplicas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedReplicaRequest.Operation.Metadata = map[string]interface{}{"workloadReleaseRequestDigest": changedReplicaDigest}
 	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, changedReplicaRequest, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
 		t.Fatalf("same idempotency key accepted a different target size: %v", err)
 	}
