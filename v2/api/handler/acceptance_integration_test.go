@@ -579,7 +579,8 @@ processes:
 		h.Webhook(rec, req)
 		return rec
 	}
-	body := `{"ref":"refs/heads/main","repository":{"clone_url":"https://example.test/owner/repo.git"}}`
+	commitSHA := strings.Repeat("a", 40)
+	body := `{"ref":"refs/heads/main","after":"` + commitSHA + `","repository":{"clone_url":"https://example.test/owner/repo.git"}}`
 	first := serve(body)
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
@@ -599,9 +600,17 @@ processes:
 	if replayBody["operationId"] != firstBody["operationId"] || replayBody["sagaId"] != firstBody["sagaId"] {
 		t.Fatalf("webhook replay changed operation: first=%v replay=%v", firstBody, replayBody)
 	}
-	changed := serve(`{"ref":"refs/heads/main","after":"different","repository":{"clone_url":"https://example.test/owner/repo.git"}}`)
+	changedSHA := strings.Repeat("b", 40)
+	changed := serve(`{"ref":"refs/heads/main","after":"` + changedSHA + `","repository":{"clone_url":"https://example.test/owner/repo.git"}}`)
 	if changed.Code != http.StatusConflict || !strings.Contains(changed.Body.String(), "idempotency_key_reused") {
 		t.Fatalf("changed body status=%d body=%s", changed.Code, changed.Body.String())
+	}
+	if invalid := serve(`{"ref":"refs/heads/main","repository":{"clone_url":"https://example.test/owner/repo.git"}}`); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("missing commit SHA status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+	deleted := serve(`{"ref":"refs/heads/main","after":"` + strings.Repeat("0", 40) + `","deleted":true,"repository":{"clone_url":"https://example.test/owner/repo.git"}}`)
+	if deleted.Code != http.StatusOK || !strings.Contains(deleted.Body.String(), `"ignored":true`) {
+		t.Fatalf("branch deletion status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
 	var operations int
 	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM operations WHERE app='demo' AND kind='app.deploy'`).Scan(&operations); err != nil {
@@ -609,6 +618,42 @@ processes:
 	}
 	if operations != 1 {
 		t.Fatalf("webhook retry created %d operations", operations)
+	}
+	var acceptedRef string
+	if err := db.Pool.QueryRow(context.Background(), `SELECT ref FROM operations WHERE app='demo' AND kind='app.deploy'`).Scan(&acceptedRef); err != nil {
+		t.Fatal(err)
+	}
+	if acceptedRef != commitSHA {
+		t.Fatalf("accepted deployment ref=%q, want push commit SHA %q", acceptedRef, commitSHA)
+	}
+	var storedDeliveryID string
+	if err := db.Pool.QueryRow(context.Background(), `SELECT id FROM webhook_deliveries WHERE provider='github' AND delivery_id='provider-delivery-1' AND payload->>'after'=$1 ORDER BY id LIMIT 1`, commitSHA).Scan(&storedDeliveryID); err != nil {
+		t.Fatal(err)
+	}
+	replayRequest := httptest.NewRequest(http.MethodPost, "/api/webhooks/deliveries/"+storedDeliveryID+"/replay", strings.NewReader(`{"mode":"deploy"}`))
+	replayRequest.Header.Set("Idempotency-Key", "webhook-manual-replay-1")
+	replayRequest = withOperationAcceptanceRequestContext(replayRequest, operationAcceptanceRequestContext{
+		ReceiptID: "webhook-replay-receipt", RequestID: "webhook-replay-request",
+		Actor: verifiedOperationActor{Issuer: "https://access.example.test", Subject: "operator"},
+	})
+	replayRoute := chi.NewRouteContext()
+	replayRoute.URLParams.Add("id", storedDeliveryID)
+	replayRequest = replayRequest.WithContext(context.WithValue(replayRequest.Context(), chi.RouteCtxKey, replayRoute))
+	replayResponse := httptest.NewRecorder()
+	h.ReplayWebhookDelivery(replayResponse, replayRequest)
+	if replayResponse.Code != http.StatusOK {
+		t.Fatalf("manual replay status=%d body=%s", replayResponse.Code, replayResponse.Body.String())
+	}
+	var replayResult map[string]string
+	if err := json.Unmarshal(replayResponse.Body.Bytes(), &replayResult); err != nil {
+		t.Fatal(err)
+	}
+	var replayRef string
+	if err := db.Pool.QueryRow(context.Background(), `SELECT ref FROM operations WHERE id=$1`, replayResult["operationId"]).Scan(&replayRef); err != nil {
+		t.Fatal(err)
+	}
+	if replayRef != commitSHA {
+		t.Fatalf("manual replay ref=%q, want original push commit SHA %q", replayRef, commitSHA)
 	}
 }
 
