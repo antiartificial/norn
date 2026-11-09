@@ -44,7 +44,7 @@ type PrivateInvocationStore interface {
 }
 
 // PrivateWorkloadReleaseStore atomically accepts a signed workload release
-// plan with its separately encrypted, exact SOPS source snapshot.
+// plan with separately encrypted pinned app source and exact SOPS snapshot.
 type PrivateWorkloadReleaseStore interface {
 	ResolvePrivateWorkloadReleaseReplay(context.Context, OperationRequestIdentity, model.Operation) (AcceptedOperation, error)
 	AcceptPrivateWorkloadRelease(context.Context, OperationAcceptance, model.ReleaseQualification, []string, []byte, *WorkloadReleaseInputKeyRing, nomad.ActiveDeploymentLineageObserver) (AcceptedOperation, error)

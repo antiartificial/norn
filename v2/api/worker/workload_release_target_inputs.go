@@ -30,14 +30,14 @@ type WorkloadReleaseTargetInputs struct {
 // snapshot, decrypts it from memory, and selects only inputs required by the
 // plan-derived target job. The returned secret map must only be passed to the
 // exact target job's private Nomad Variable staging path.
-func PrepareWorkloadReleaseTargetInputs(ctx context.Context, operation model.Operation, plan pipeline.WorkloadReleasePlan, spec *model.InfraSpec,
+func PrepareWorkloadReleaseTargetInputs(ctx context.Context, operation model.Operation, plan pipeline.WorkloadReleasePlan,
 	opener WorkloadReleasePrivateInputOpener, keys *store.WorkloadReleaseInputKeyRing) (WorkloadReleaseTargetInputs, error) {
-	return prepareWorkloadReleaseTargetInputs(ctx, operation, plan, spec, opener, keys, secrets.DecryptSOPSSnapshot)
+	return prepareWorkloadReleaseTargetInputs(ctx, operation, plan, opener, keys, secrets.DecryptSOPSSnapshot)
 }
 
 type workloadReleaseSnapshotDecryptor func([]byte) (map[string]string, error)
 
-func prepareWorkloadReleaseTargetInputs(ctx context.Context, operation model.Operation, plan pipeline.WorkloadReleasePlan, spec *model.InfraSpec,
+func prepareWorkloadReleaseTargetInputs(ctx context.Context, operation model.Operation, plan pipeline.WorkloadReleasePlan,
 	opener WorkloadReleasePrivateInputOpener, keys *store.WorkloadReleaseInputKeyRing, decrypt workloadReleaseSnapshotDecryptor) (WorkloadReleaseTargetInputs, error) {
 	invalid := func(err error) (WorkloadReleaseTargetInputs, error) {
 		return WorkloadReleaseTargetInputs{}, err
@@ -57,16 +57,22 @@ func prepareWorkloadReleaseTargetInputs(ctx context.Context, operation model.Ope
 	if !ok || !bytes.Equal(encodedPlan, []byte(acceptedPlan)) {
 		return invalid(fmt.Errorf("workload release operation does not contain the exact accepted plan"))
 	}
+	materialBytes, err := opener.OpenPrivateWorkloadRelease(ctx, operation, keys)
+	if err != nil {
+		return invalid(fmt.Errorf("accepted workload release input snapshot is unavailable"))
+	}
+	defer clear(materialBytes)
+	spec, encryptedSOPSSnapshot, err := store.DecodeWorkloadReleasePinnedMaterial(materialBytes, plan.Intent.App, plan.Intent.TargetSpecDigest)
+	if err != nil {
+		return invalid(fmt.Errorf("accepted workload release source and input snapshot are unavailable"))
+	}
+	defer clear(encryptedSOPSSnapshot)
+	defer clearWorkloadReleaseSourceSpec(spec)
 	jobPlan, err := BuildWorkloadReleaseTargetJobPlan(plan, spec)
 	if err != nil {
 		return invalid(err)
 	}
-	ciphertext, err := opener.OpenPrivateWorkloadRelease(ctx, operation, keys)
-	if err != nil {
-		return invalid(fmt.Errorf("accepted workload release input snapshot is unavailable"))
-	}
-	defer clear(ciphertext)
-	values, err := decrypt(ciphertext)
+	values, err := decrypt(encryptedSOPSSnapshot)
 	if err != nil {
 		return invalid(fmt.Errorf("accepted workload release input snapshot could not be decrypted"))
 	}
@@ -76,4 +82,21 @@ func prepareWorkloadReleaseTargetInputs(ctx context.Context, operation model.Ope
 		return invalid(fmt.Errorf("accepted workload release input snapshot lacks a target job secret"))
 	}
 	return WorkloadReleaseTargetInputs{JobPlan: jobPlan, Secrets: selected}, nil
+}
+
+func clearWorkloadReleaseSourceSpec(spec *model.InfraSpec) {
+	if spec == nil {
+		return
+	}
+	for key := range spec.Env {
+		spec.Env[key] = ""
+		delete(spec.Env, key)
+	}
+	for processName, process := range spec.Processes {
+		for key := range process.Env {
+			process.Env[key] = ""
+			delete(process.Env, key)
+		}
+		spec.Processes[processName] = process
+	}
 }

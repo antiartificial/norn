@@ -27,7 +27,6 @@ type etcdWorkloadReleaseExecutor struct {
 	stageEffects *etcdstore.V3CanaryEffectReservations
 	nomad        *nomad.Client
 	route        fleetdeploy.ClaimedFleetRouteTransport
-	appsDir      string
 	inputKeys    *store.WorkloadReleaseInputKeyRing
 	runtimeID    string
 	target       *pipeline.WorkloadReleaseTargetHealthController
@@ -35,7 +34,7 @@ type etcdWorkloadReleaseExecutor struct {
 }
 
 func newEtcdWorkloadReleaseExecutor(operations *etcdstore.V3OperationStore, nomadClient *nomad.Client, route fleetdeploy.ClaimedFleetRouteTransport,
-	appsDir string, inputKeys *store.WorkloadReleaseInputKeyRing) (*etcdWorkloadReleaseExecutor, error) {
+	inputKeys *store.WorkloadReleaseInputKeyRing) (*etcdWorkloadReleaseExecutor, error) {
 	if operations == nil || nomadClient == nil || route.Listen == nil {
 		return nil, fmt.Errorf("etcd workload release executor dependencies are incomplete")
 	}
@@ -52,7 +51,7 @@ func newEtcdWorkloadReleaseExecutor(operations *etcdstore.V3OperationStore, noma
 		return nil, err
 	}
 	return &etcdWorkloadReleaseExecutor{operations: operations, stageEffects: effects, nomad: nomadClient, route: route,
-		appsDir: appsDir, inputKeys: inputKeys, runtimeID: "workload-release-controller:" + uuid.NewString(), target: target, stop: stop}, nil
+		inputKeys: inputKeys, runtimeID: "workload-release-controller:" + uuid.NewString(), target: target, stop: stop}, nil
 }
 
 func (e *etcdWorkloadReleaseExecutor) ExecuteOperation(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error) {
@@ -215,14 +214,10 @@ func (e *etcdWorkloadReleaseExecutor) verifyAndStageWorkloadReleasePlan(ctx cont
 	if reserved.Record.Lifecycle != effect.LifecycleReserved && reserved.Record.Lifecycle != effect.LifecycleLaunched {
 		return pipeline.WorkloadReleaseIntent{}, fmt.Errorf("workload release target effect is not recoverable")
 	}
-	if e.appsDir == "" || e.inputKeys == nil {
+	if e.inputKeys == nil {
 		return pipeline.WorkloadReleaseIntent{}, fmt.Errorf("workload release private input capability is disabled")
 	}
-	spec, err := workloadReleaseSourceSpec(e.appsDir, operation.App)
-	if err != nil {
-		return pipeline.WorkloadReleaseIntent{}, err
-	}
-	inputs, err := workerruntime.PrepareWorkloadReleaseTargetInputs(ctx, operation, plan, spec, e.operations, e.inputKeys)
+	inputs, err := workerruntime.PrepareWorkloadReleaseTargetInputs(ctx, operation, plan, e.operations, e.inputKeys)
 	if err != nil {
 		return pipeline.WorkloadReleaseIntent{}, err
 	}

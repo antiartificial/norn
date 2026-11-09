@@ -91,6 +91,7 @@ func workloadReleaseTargetPlanFixture(t *testing.T) (pipeline.WorkloadReleasePla
 	spec := &model.InfraSpec{App: "demo", NomadNamespace: "default", Processes: map[string]model.Process{"web": {
 		Port: 8080, Command: "./server", NomadVariables: &model.NomadVariableFiles{UID: 1000, GID: 1000,
 			Files: []model.NomadVariableFile{{Key: "API_TOKEN", Destination: "api-token"}}},
+		Resources: &model.Resources{CPU: 100, Memory: 128},
 	}}, Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "local", Process: "web",
 		TrafficProbe:      &model.TrafficProbeSpec{Path: "/", BodySHA256: strings.Repeat("a", 64)},
 		RestrictedIngress: &model.RestrictedIngressSpec{PublicPaths: []string{"/"}, RetryGETPaths: []string{"/"}, PrivateReadinessPath: "/ready"}}}}

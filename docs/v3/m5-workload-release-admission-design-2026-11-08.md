@@ -6,9 +6,11 @@
 > `877ad4ba`. It accepts only `qualificationId` and `targetReplicas`, checks
 > exact replay before mutable input reads, then derives the plan from current
 > qualification, approved policy, Fleet target, serving route, Nomad lineage,
-> configured app source and encrypted SOPS snapshot. It is opt-in and has not
-> been deployed or live-qualified. Exact source recovery, private-input
-> retention/deletion semantics, deterministic full worker recovery coverage,
+> configured app source and encrypted SOPS snapshot. Accepted private material
+> now pins the job-driving app spec together with the encrypted snapshot, so
+> worker recovery need not reread the current checkout. It is opt-in and has
+> not been deployed or live-qualified. Private-input retention/deletion
+> semantics, deterministic full worker recovery coverage,
 > and disposable Nomad/ingress qualification remain open. Historical passages
 > below that say the producer is absent describe the pre-#319 state.
 

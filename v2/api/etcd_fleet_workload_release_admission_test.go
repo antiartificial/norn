@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -474,6 +475,18 @@ func TestEtcdWorkloadReleaseAdmissionConcurrentSameKeyConverges(t *testing.T) {
 		plan.Intent.OldJobVersion != lineage.lineage.JobVersion || plan.Intent.OldJobModifyIndex != lineage.lineage.ModifyIndex ||
 		plan.Intent.FirstRouteGeneration != route.Generation+1 || operations.acceptedQualification.ID != qualification.ID {
 		t.Fatalf("accepted plan did not bind trusted current inputs: plan=%+v acceptance=%+v", plan, operations.acceptedInput)
+	}
+	pinnedSpec, pinnedSOPS, err := store.DecodeWorkloadReleasePinnedMaterial(operations.acceptedPrivateInput, "demo", plan.Intent.TargetSpecDigest)
+	if err != nil || pinnedSpec.App != "demo" || !bytes.Equal(pinnedSOPS, []byte(encryptedInputs)) {
+		t.Fatalf("acceptance did not pin the exact app source with encrypted SOPS bytes: spec=%+v sops=%q err=%v", pinnedSpec, pinnedSOPS, err)
+	}
+	clear(pinnedSOPS)
+	payloadJSON, err := json.Marshal(operations.acceptedInput.Operation.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payloadJSON, []byte(encryptedInputs)) {
+		t.Fatal("encrypted SOPS bytes were copied into the public operation payload")
 	}
 }
 

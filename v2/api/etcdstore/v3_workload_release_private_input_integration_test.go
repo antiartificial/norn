@@ -36,6 +36,15 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	intent := workloadReleaseEtcdIntentFixture(app, target)
 	intent.SourceRevision = strings.Repeat("a", 40)
 	intent.TargetJobVersion, intent.TargetJobModifyIndex = 0, 0
+	sourceSpec := &model.InfraSpec{App: app, NomadNamespace: target.NomadNamespace,
+		Env: map[string]string{"PRIVATE_SETTING": "pinned-source-secret"},
+		Processes: map[string]model.Process{"web": {Port: 8080, Resources: &model.Resources{CPU: 100, Memory: 128},
+			Env: map[string]string{"PROCESS_SETTING": "pinned-process-secret"}}}}
+	targetSpecDigest, err := model.InfraSpecDigest(sourceSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.TargetSpecDigest = targetSpecDigest
 	planBytes, err := json.Marshal(pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: intent})
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +62,11 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	material := []byte("exact-encrypted-sops-snapshot-v1")
+	encryptedSOPSSnapshot := []byte("exact-encrypted-sops-snapshot-v1")
+	material, err := store.EncodeWorkloadReleasePinnedMaterial(sourceSpec, intent.TargetSpecDigest, encryptedSOPSSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	qualification, trustedQualificationKey := privateInputQualification(t, intent, "missing-qualified-deployment")
 	requestDigest, err := pipeline.WorkloadReleaseRequestDigest(qualification.ID, intent.TargetReplicas)
 	if err != nil {
@@ -252,7 +265,7 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	if replayCount != 1 {
 		t.Fatalf("concurrent same-key callers must observe one acceptance and one replay: replayed=%d", replayCount)
 	}
-	if lineageObserver.calls != 2 && lineageObserver.calls != 4 {
+	if lineageObserver.calls != 2 && lineageObserver.calls != 3 && lineageObserver.calls != 4 {
 		t.Fatalf("serving lineage was not rechecked immediately before each fresh transaction: calls=%d", lineageObserver.calls)
 	}
 	if accepted.Operation.ID != operation.ID || accepted.Operation.Payload["workloadReleasePrivateRecordId"] != operation.ID || accepted.FleetAppTarget == nil || !sameFleetAppTarget(*accepted.FleetAppTarget, target) {
@@ -267,8 +280,15 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 	opened, err := adapter.OpenPrivateWorkloadRelease(ctx, accepted.Operation, keys)
 	if err != nil || !bytes.Equal(opened, material) {
-		t.Fatalf("opened private SOPS snapshot differs: equal=%v err=%v", bytes.Equal(opened, material), err)
+		t.Fatalf("opened private workload material differs: equal=%v err=%v", bytes.Equal(opened, material), err)
 	}
+	recoveredSpec, recoveredSOPS, err := store.DecodeWorkloadReleasePinnedMaterial(opened, app, intent.TargetSpecDigest)
+	if err != nil || recoveredSpec.Env["PRIVATE_SETTING"] != "pinned-source-secret" ||
+		recoveredSpec.Processes["web"].Env["PROCESS_SETTING"] != "pinned-process-secret" || !bytes.Equal(recoveredSOPS, encryptedSOPSSnapshot) {
+		t.Fatalf("recovered private workload material spec=%+v sops=%q err=%v", recoveredSpec, recoveredSOPS, err)
+	}
+	clear(recoveredSOPS)
+	clear(opened)
 	priorLineageReads := lineageObserver.calls
 	if _, err := adapter.kv.Delete(ctx, adapter.deploymentKey(qualification.DeploymentID)); err != nil {
 		t.Fatalf("remove mutable source projection before exact replay: %v", err)
