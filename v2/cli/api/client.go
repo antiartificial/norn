@@ -1050,7 +1050,7 @@ func (c *Client) CompleteRecoveryDrill(id, status string, evidence map[string]st
 
 func (c *Client) ListApps() ([]AppStatus, error) {
 	var apps []AppStatus
-	if err := c.get("/api/apps", &apps); err != nil {
+	if err := c.get("/api/v1/apps", &apps); err != nil {
 		return nil, err
 	}
 	return apps, nil
@@ -1105,7 +1105,7 @@ func (c *Client) ActiveOperationCount(excludeID string) (int, error) {
 	if excludeID = strings.TrimSpace(excludeID); excludeID != "" {
 		values.Set("excludeId", excludeID)
 	}
-	path := "/api/operations/active"
+	path := "/api/v1/operations/active"
 	if encoded := values.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
@@ -1168,7 +1168,7 @@ func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
 	if limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", limit))
 	}
-	path := "/api/operations"
+	path := "/api/v1/operations"
 	if encoded := values.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
@@ -1606,7 +1606,7 @@ func (c *Client) AlertRules() ([]AlertRule, error) {
 
 func (c *Client) PlatformReleases() (*PlatformReleaseList, error) {
 	var releases PlatformReleaseList
-	if err := c.get("/api/platform/releases", &releases); err != nil {
+	if err := c.get("/api/v1/releases", &releases); err != nil {
 		return nil, err
 	}
 	return &releases, nil
@@ -1671,7 +1671,7 @@ func (c *Client) ContextDBRollbackFeedback(eventID, namespace, mode, reason, own
 
 func (c *Client) GetApp(id string) (*AppStatus, error) {
 	var app AppStatus
-	if err := c.get("/api/apps/"+id, &app); err != nil {
+	if err := c.get("/api/v1/apps/"+url.PathEscape(id), &app); err != nil {
 		return nil, err
 	}
 	return &app, nil
@@ -2181,7 +2181,7 @@ func (c *Client) Stats() (*StatsResponse, error) {
 
 func (c *Client) ListSnapshots(appID string) ([]Snapshot, error) {
 	var snaps []Snapshot
-	if err := c.get("/api/apps/"+appID+"/snapshots", &snaps); err != nil {
+	if err := c.get("/api/v1/apps/"+url.PathEscape(appID)+"/snapshots", &snaps); err != nil {
 		return nil, err
 	}
 	return snaps, nil

@@ -1,0 +1,65 @@
+---
+title: "Existing Fleet Genesis and fresh-Fleet boundary"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: install
+    lg1: rollout
+    lg2: held
+    lg3: absent
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  class lg3 tan
+  s0: Inputs not checked
+  s1: Fresh Fleet request blocked, no provider effects
+  s2: Held (input-validation)
+  s3: Protected inputs checked
+  s4: Controller installed, services stopped
+  s5: Signed Genesis intent journaled
+  s6: Genesis explicitly enabled
+  s7: Staging target on all controls
+  s8: Held for one-use recovery proof
+  s9: One-use recovery proof accepted
+  s10: All controls staged
+  s11: Held after the modeled recovery retry
+  s12: First passive control promoted
+  s13: Both passive controls promoted
+  s14: Serving control promoted
+  s15: Genesis complete
+  [*] --> s0
+  s0 --> s1: request fresh provider creation, but no create lane exists
+  s0 --> s2: an input mismatch blocks the install
+  s0 --> s3: owner-protected inputs pass offline checks
+  s3 --> s4: install the controller with services stopped
+  s4 --> s5: verify and journal the signed Genesis intent
+  s5 --> s6: explicitly enable Genesis
+  s6 --> s7: start the one-use Genesis attempt
+  s7 --> s8: the controller stops during a member effect
+  s8 --> s9: an independent recovery proof is recorded
+  s9 --> s7: resume the same intent once after independent recovery proof
+  s7 --> s10: all three controls finish staging and verification
+  s10 --> s8: the controller stops during a member effect
+  s10 --> s12: promote a passive control after all controls are staged
+  s7 --> s11: the controller stops during a member effect
+  s12 --> s13: promote a passive control after all controls are staged
+  s13 --> s14: promote the serving control last
+  s14 --> s15: verify target capability and record completion
+  s10 --> s11: the controller stops during a member effect
+  class s0 blue
+  class s1 tan
+  class s2 orange
+  class s3 blue
+  class s4 blue
+  class s5 blue
+  class s6 blue
+  class s7 teal
+  class s8 orange
+  class s9 orange
+  class s10 teal
+  class s11 orange
+  class s12 teal
+  class s13 teal
+  class s14 teal
+  class s15 teal

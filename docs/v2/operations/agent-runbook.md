@@ -192,9 +192,15 @@ Before `upgrade` or `rollback`, check active operations when auth is available. 
 
 | Mode | Behavior |
 |------|----------|
-| `fail` | Refuse to proceed while active operations exist |
-| `wait` | Wait for active operations to finish |
+| `fail` | Refuse while Mini-affecting active operations exist |
+| `wait` | Wait for Mini-affecting active operations to finish |
 | `force` | Skip the drain gate |
+
+The drain preserves queued `fleet.github.apply-dispatch` receipts and excludes
+them from Mini-affecting work; they remain pending Fleet work, not completed
+receipts. A running Fleet dispatch and other queued or running Mini work still
+hold the drain. Do not cancel a queued Fleet receipt to make a direct Mini
+release pass; reconcile it in the Fleet lane.
 
 ## Host Runtime Recovery
 

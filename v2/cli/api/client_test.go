@@ -97,8 +97,79 @@ func TestActiveOperationCountMatchesMiniUpgradeDrainSemantics(t *testing.T) {
 	if got != 2 {
 		t.Fatalf("ActiveOperationCount() = %d, want 2", got)
 	}
-	if want := "GET /api/operations/active?excludeId=excluded"; requestURI != want {
+	if want := "GET /api/v1/operations/active?excludeId=excluded"; requestURI != want {
 		t.Fatalf("request = %q, want %q", requestURI, want)
+	}
+}
+
+func TestListOperationsUsesVersionedRoute(t *testing.T) {
+	var requestURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":1,"operations":[{"id":"op-1","kind":"app.deploy","status":"succeeded"}]}`))
+	}))
+	defer server.Close()
+
+	operations, err := New(server.URL).ListOperations(true, 25)
+	if err != nil || len(operations) != 1 || operations[0].ID != "op-1" {
+		t.Fatalf("ListOperations() = %+v, %v", operations, err)
+	}
+	if want := "GET /api/v1/operations?active=true&limit=25"; requestURI != want {
+		t.Fatalf("request = %q, want %q", requestURI, want)
+	}
+}
+
+func TestPlatformReleasesUsesVersionedRoute(t *testing.T) {
+	var requestURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"current":"release-current","releases":[]}`))
+	}))
+	defer server.Close()
+
+	releases, err := New(server.URL).PlatformReleases()
+	if err != nil || releases.Current != "release-current" {
+		t.Fatalf("PlatformReleases() = %+v, %v", releases, err)
+	}
+	if want := "GET /api/v1/releases"; requestURI != want {
+		t.Fatalf("request = %q, want %q", requestURI, want)
+	}
+}
+
+func TestAppAndSnapshotReadsUseVersionedRoutes(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/apps/demo":
+			_, _ = w.Write([]byte(`{"healthy":true}`))
+		case "/api/v1/apps/demo/snapshots":
+			_, _ = w.Write([]byte(`[{"filename":"snapshot.dump","timestamp":"2026-11-08T12:00:00Z"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app, err := New(server.URL).GetApp("demo")
+	if err != nil || !app.Healthy {
+		t.Fatalf("GetApp() = %+v, %v", app, err)
+	}
+	snapshots, err := New(server.URL).ListSnapshots("demo")
+	if err != nil || len(snapshots) != 1 || snapshots[0].Filename != "snapshot.dump" {
+		t.Fatalf("ListSnapshots() = %+v, %v", snapshots, err)
+	}
+	want := []string{"GET /api/v1/apps/demo", "GET /api/v1/apps/demo/snapshots"}
+	if len(requests) != len(want) {
+		t.Fatalf("requests = %v, want %v", requests, want)
+	}
+	for i := range want {
+		if requests[i] != want[i] {
+			t.Fatalf("requests[%d] = %q, want %q", i, requests[i], want[i])
+		}
 	}
 }
 

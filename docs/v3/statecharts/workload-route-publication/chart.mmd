@@ -1,0 +1,68 @@
+---
+title: "Workload route publication and recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: active
+    lg1: publish
+    lg2: recovery
+    lg3: proof
+    lg4: held
+    lg5: done
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  class lg3 purple
+  class lg4 tan
+  class lg5 pink
+  s0: Target is healthy, old route serves
+  s1: Publishing the same route step to 0 of 2 ingress nodes
+  s2: Authority, inventory, or health changed#59; release is held
+  s3: Publishing the same route step to 1 of 2 ingress nodes
+  s4: Publisher response was lost#59; intent is retained
+  s5: Publishing the same route step to 2 of 2 ingress nodes
+  s6: Every node serves the route#59; traffic proof is pending
+  s7: Independent route and traffic proof passed
+  s8: Active route and mixed receipt committed atomically
+  s9: Fresh route, inventory, and target proof authorize old stop
+  s10: Route and receipt committed#59; same intent refreshes route proof
+  s11: Old-generation stop is authorized
+  [*] --> s0
+  s0 --> s1: reserve generation 11 and the admitted mixed step
+  s1 --> s2: target health regresses during rollout or the live ingress inventory changes during publication or operation claim or app lock is lost or detect another route writer and hold the old stop
+  s1 --> s3: publish the same opaque intent to one current ingress node
+  s3 --> s2: target health regresses during rollout or the live ingress inventory changes during publication or operation claim or app lock is lost or detect another route writer and hold the old stop
+  s3 --> s5: publish the same opaque intent to one current ingress node
+  s3 --> s4: the first node commits but its response is lost
+  s4 --> s1: reacquire authority and resume the same route generation
+  s4 --> s2: the live ingress inventory changes during publication or operation claim or app lock is lost
+  s5 --> s2: target health regresses during rollout or the live ingress inventory changes during publication or operation claim or app lock is lost or detect another route writer and hold the old stop
+  s5 --> s6: independently read back the exact route on every node
+  s4 --> s3: reacquire authority and resume the same route generation
+  s6 --> s7: confirm application and public-path traffic
+  s6 --> s2: target health regresses during rollout or the live ingress inventory changes during publication or operation claim or app lock is lost or detect another route writer and hold the old stop
+  s4 --> s5: reacquire authority and resume the same route generation
+  s7 --> s2: target health regresses during rollout or the live ingress inventory changes during publication or operation claim or app lock is lost or detect another route writer and hold the old stop
+  s7 --> s8: atomically compare-and-swap the route and commit its receipt
+  s8 --> s2: target health regresses during rollout or inventory changes after route receipt#59; old stop stays held
+  s8 --> s4: active route and receipt commit#59; controller loses the response
+  s8 --> s9: freshly confirm route, inventory, and target before old stop
+  s4 --> s10: reacquire authority and reconcile the committed generation
+  s9 --> s2: target health regresses during rollout or inventory changes after route receipt#59; old stop stays held or operation claim or app lock is lost or another route writer advances after receipt#59; old stop stays held
+  s9 --> s11: recheck current inventory, route, and target before the old stop
+  s10 --> s2: target health regresses during rollout or the live ingress inventory changes during publication or operation claim or app lock is lost
+  s10 --> s6: refresh exact route readback after same-intent recovery
+  s6 --> s8: confirm application and public-path traffic
+  class s0 blue
+  class s1 teal
+  class s2 tan
+  class s3 teal
+  class s4 orange
+  class s5 teal
+  class s6 purple
+  class s7 purple
+  class s8 pink
+  class s9 purple
+  class s10 purple
+  class s11 pink

@@ -53,6 +53,9 @@ func TestFleetAuthorityManagementShellAndCapabilityContract(t *testing.T) {
 			t.Fatalf("missing %s endpoint", name)
 		}
 	}
+	if caps.Endpoints["operationList"] != "/api/v1/operations" || caps.Endpoints["activeOperations"] != "/api/v1/operations/active" {
+		t.Fatalf("operation endpoints = %v, want versioned collection routes", caps.Endpoints)
+	}
 	if caps.Auth["websocketBearerHeader"] != false || caps.Auth["websocketQueryToken"] != false || caps.Auth["deviceEnrollment"] != true {
 		t.Fatal("inaccurate authority auth capabilities")
 	}
