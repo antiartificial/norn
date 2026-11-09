@@ -27,6 +27,7 @@ provider state, host behavior, availability, or the implementation itself.
 - [Nine-node staging-topology create and recovery](fresh-staging-nine-node-recovery/README.md)
 - [Workload old-generation stop recovery](workload-stop-recovery/README.md)
 - [Workload route publication and recovery](workload-route-publication/README.md)
+- [Concurrent workload admission replay](workload-release-concurrent-admission/README.md)
 
 ## Findings to carry into implementation
 

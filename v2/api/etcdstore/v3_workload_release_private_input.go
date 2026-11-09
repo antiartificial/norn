@@ -169,6 +169,17 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	}
 	appAdmission, err := s.prepareAppAdmission(ctx, acceptance)
 	if err != nil {
+		// A same-key request may have passed the initial replay lookup before
+		// another caller committed. If that winner acquired the app fence first,
+		// resolve its stable request before surfacing the competing-admission
+		// error so concurrent retries converge on the original acceptance.
+		prior, replayErr := s.ResolvePrivateWorkloadReleaseReplay(ctx, input.Identity, input.Operation)
+		if replayErr == nil {
+			return prior, nil
+		}
+		if !errors.Is(replayErr, store.ErrAcceptanceNotFound) {
+			return store.AcceptedOperation{}, errors.Join(err, replayErr)
+		}
 		return store.AcceptedOperation{}, err
 	}
 	key := s.acceptanceKey(acceptance.Identity)

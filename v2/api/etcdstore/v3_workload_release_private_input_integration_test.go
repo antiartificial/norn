@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
@@ -19,7 +21,7 @@ import (
 )
 
 func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t *testing.T) {
-	adapter, client, _ := functionInvocationEffectAttemptStore(t)
+	adapter, client, prefix := functionInvocationEffectAttemptStore(t)
 	ctx := context.Background()
 	const app = "widgets"
 	target := FleetAppTarget{SchemaVersion: fleetAppTargetSchema, App: app, ControlEnvironment: "staging", Cluster: "norn-staging",
@@ -187,12 +189,71 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	if err := accept(wrongPolicy); err == nil {
 		t.Fatal("accepted a workload release plan bound to a different overlap policy")
 	}
-	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver)
+	secondClient, err := clientv3.New(clientv3.Config{Endpoints: client.Endpoints(), DialTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lineageObserver.calls != 2 {
-		t.Fatalf("fresh serving lineage was not rechecked immediately before acceptance: calls=%d", lineageObserver.calls)
+	t.Cleanup(func() { _ = secondClient.Close() })
+	secondAdapter, err := NewV3OperationStore(secondClient, prefix, adapter.authority, adapter.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloneRequest := func() store.OperationAcceptance {
+		request := input
+		request.Operation.Metadata = make(map[string]interface{}, len(input.Operation.Metadata))
+		for key, value := range input.Operation.Metadata {
+			request.Operation.Metadata[key] = value
+		}
+		request.Operation.Payload = make(map[string]interface{}, len(input.Operation.Payload))
+		for key, value := range input.Operation.Payload {
+			request.Operation.Payload[key] = value
+		}
+		request.Semantics = make(map[string]interface{}, len(input.Semantics))
+		for key, value := range input.Semantics {
+			request.Semantics[key] = value
+		}
+		return request
+	}
+	type acceptanceResult struct {
+		accepted store.AcceptedOperation
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan acceptanceResult, 2)
+	var workers sync.WaitGroup
+	for _, current := range []*V3OperationStore{adapter, secondAdapter} {
+		workers.Add(1)
+		go func(current *V3OperationStore) {
+			defer workers.Done()
+			<-start
+			accepted, err := current.AcceptPrivateWorkloadRelease(ctx, cloneRequest(), qualification,
+				[]string{trustedQualificationKey}, material, keys, lineageObserver)
+			results <- acceptanceResult{accepted: accepted, err: err}
+		}(current)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	var accepted store.AcceptedOperation
+	replayCount := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent same-key workload admission failed: %v", result.err)
+		}
+		if result.accepted.Operation.ID != operation.ID || result.accepted.Intent.CanonicalDigest == "" {
+			t.Fatalf("concurrent admission did not resolve to the accepted operation: %+v", result.accepted)
+		}
+		if result.accepted.Replayed {
+			replayCount++
+		} else {
+			accepted = result.accepted
+		}
+	}
+	if replayCount != 1 {
+		t.Fatalf("concurrent same-key callers must observe one acceptance and one replay: replayed=%d", replayCount)
+	}
+	if lineageObserver.calls != 2 && lineageObserver.calls != 4 {
+		t.Fatalf("serving lineage was not rechecked immediately before each fresh transaction: calls=%d", lineageObserver.calls)
 	}
 	if accepted.Operation.ID != operation.ID || accepted.Operation.Payload["workloadReleasePrivateRecordId"] != operation.ID || accepted.FleetAppTarget == nil || !sameFleetAppTarget(*accepted.FleetAppTarget, target) {
 		t.Fatalf("accepted private workload release lost signed plan or target binding: %+v", accepted)
@@ -371,6 +432,7 @@ func resignPrivateInputQualification(t *testing.T, qualification *model.ReleaseQ
 }
 
 type workloadReleaseLineageObserverFixture struct {
+	mu      sync.Mutex
 	lineage nomad.ActiveDeploymentLineage
 	calls   int
 }
@@ -388,6 +450,8 @@ func newWorkloadReleaseLineageObserverFixture(intent pipeline.WorkloadReleaseInt
 
 func (f *workloadReleaseLineageObserverFixture) ObserveActiveDeploymentLineage(_ context.Context, app, region, nomadRegion, namespace,
 	deploymentID, operationID, specDigest, expectedJobDigest, imageTag, process string) (nomad.ActiveDeploymentLineage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	lineage := f.lineage
 	if app != lineage.App || region != lineage.Region || nomadRegion != lineage.NomadRegion || namespace != lineage.Namespace ||

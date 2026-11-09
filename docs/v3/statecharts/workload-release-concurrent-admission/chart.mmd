@@ -1,0 +1,32 @@
+stateDiagram-v2
+  s0: resultA="none" resultB="none" a="initial" b="initial" committed=FALSE
+  s1: resultA="none" resultB="none" a="initial" b="prepared" committed=FALSE
+  s2: resultA="none" resultB="none" a="prepared" b="initial" committed=FALSE
+  s3: resultA="none" resultB="none" a="accepted" b="initial" committed=TRUE
+  s4: resultA="none" resultB="none" a="initial" b="accepted" committed=TRUE
+  s5: resultA="none" resultB="none" a="prepared" b="prepared" committed=FALSE
+  s6: resultA="none" resultB="none" a="accepted" b="prepared" committed=TRUE
+  s7: resultA="none" resultB="none" a="prepared" b="accepted" committed=TRUE
+  s8: resultA="none" resultB="none" a="accepted" b="rechecking" committed=TRUE
+  s9: resultA="none" resultB="none" a="rechecking" b="accepted" committed=TRUE
+  s10: resultA="none" resultB="none" a="accepted" b="replayed" committed=TRUE
+  s11: resultA="none" resultB="none" a="replayed" b="accepted" committed=TRUE
+  s12: resultA="fresh" resultB="replay" a="accepted" b="replayed" committed=TRUE
+  s13: resultA="replay" resultB="fresh" a="replayed" b="accepted" committed=TRUE
+  [*] --> s0
+  s0 --> s1: MissB
+  s0 --> s2: MissA
+  s1 --> s4: CommitB
+  s1 --> s5: MissA
+  s2 --> s3: CommitA
+  s2 --> s5: MissB
+  s3 --> s6: MissB
+  s4 --> s7: MissA
+  s5 --> s6: CommitA
+  s5 --> s7: CommitB
+  s6 --> s8: FenceLoseB
+  s7 --> s9: FenceLoseA
+  s8 --> s10: ReplayB
+  s9 --> s11: ReplayA
+  s10 --> s12: Finish
+  s11 --> s13: Finish

@@ -81,6 +81,12 @@ chart and report were regenerated from the checked-in spec and view.
 
 ## Runtime test evidence
 
+The separate [concurrent admission model](../workload-release-concurrent-admission/README.md)
+and its two-client etcd regression test cover simultaneous same-key acceptance
+at the store boundary. This closes the earlier store-level concurrent request
+gap. Simultaneous HTTP handler requests, controller restart/response-loss
+qualification, production drivers, and private-input retention remain open.
+
 The API module command `cd v2/api && go test ./... -count=1` passed. The
 environment did not have an etcd test endpoint, so endpoint-gated integration
 tests were skipped in that run. Four focused etcd tests were then run against
