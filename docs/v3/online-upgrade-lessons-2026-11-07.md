@@ -43,6 +43,13 @@ The later successful direct transition does not erase this finding: it used a
 controller-recovered, writer-fenced forward path and included a brief service
 fence. It is a Mini direct-lane result, not a multi-node online upgrade proof.
 
+An offline model now records the proposed online sequence and recovery rules:
+[online Norn upgrade statechart](statecharts/online-norn-upgrade/README.md).
+TLC checked 97 states and 251 steps with 12 invariants and deadlock checking
+passing. The model assumes the old binary reads the expanded schema and the
+target passes readiness on it; those compatibility and writer-fencing
+contracts are still open implementation gates.
+
 ## Proposed upgrade experience
 
 The operator should submit one signed “upgrade to this release” intent. Norn's

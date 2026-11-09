@@ -169,8 +169,15 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   and terminal receipt. Pool identities are abstract and no counts or capacity bounds are
   adopted; see [the two-pool model](statecharts/fresh-fleet-two-app-pools/README.md)
   and [input contract](fresh-fleet-two-app-pool-contract.md).
-- [ ] Model a future online Norn upgrade after its compatibility and fencing
-  contract is reviewed.
+- [x] Bound a proposed online Norn platform-upgrade sequence with additive
+  schema expansion, passive candidate checks, fenced traffic/writer handoff,
+  same-intent crash recovery, and delayed schema contraction. TLC checked 97
+  states / 251 steps; all 12 invariants and deadlock checking passed. This
+  records protocol assumptions only; the compatibility/fencing contract is
+  not yet reviewed or implemented. See the [online-upgrade model](statecharts/online-norn-upgrade/README.md).
+- [ ] Review the binary/schema compatibility and writer-fencing contract, map
+  each modeled transition to an idempotent controller phase, and replay those
+  transitions against implementation tests before claiming online-upgrade support.
 - [ ] Replay every counterexample against controller tests. Record model
   omissions and the live proof needed for each.
 

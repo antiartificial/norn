@@ -1,0 +1,62 @@
+---
+title: "Online Norn upgrade with fenced recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: Held
+    lg1: Complete
+    lg2: Transition
+  }
+  class lg0 orange
+  class lg1 teal
+  class lg2 blue
+  s0: Old release serving
+  s1: Held for same-intent recovery
+  s2: Backup and shadow ready
+  s3: Intent bound#59; old release serving
+  s4: Expanded schema#59; old release serving
+  s5: Passive candidate started
+  s6: Held on changed intent
+  s7: Candidate verified#59; old release serving
+  s8: Target owns traffic and writes
+  s9: Target owns writes#59; old process retained
+  s10: Old writer retired
+  s11: Old schema contract retired
+  s12: Target release verified
+  [*] --> s0
+  s0 --> s2: controller validates backup and candidate shadow
+  s2 --> s3: controller binds the signed release intent
+  s3 --> s4: controller expands schema while old release serves
+  s3 --> s1: controller stops with an uncertain effect
+  s4 --> s5: controller starts target in passive mode
+  s1 --> s6: new target conflicts with the bound intent
+  s5 --> s1: candidate readiness fails#59; old release keeps serving
+  s5 --> s7: candidate passes compatibility and readiness checks
+  s6 --> s1: operator retries the journaled target
+  s1 --> s4: successor reconciles the same bound intent
+  s7 --> s1: candidate readiness fails#59; old release keeps serving
+  s7 --> s8: controller atomically transfers traffic and writer authority
+  s8 --> s1: controller stops with an uncertain effect
+  s8 --> s9: target release accepts a write
+  s1 --> s8: successor reconciles the same bound intent
+  s9 --> s1: controller stops with an uncertain effect
+  s1 --> s9: successor reconciles the same bound intent
+  s9 --> s10: controller retires the old process after cutover proof
+  s10 --> s11: controller contracts schema after old writer retirement
+  s10 --> s1: controller stops with an uncertain effect
+  s11 --> s12: controller records the verified terminal receipt
+  s11 --> s1: controller stops with an uncertain effect
+  s1 --> s11: successor reconciles the same bound intent
+  class s0 blue
+  class s1 orange
+  class s2 blue
+  class s3 blue
+  class s4 blue
+  class s5 blue
+  class s6 orange
+  class s7 blue
+  class s8 blue
+  class s9 blue
+  class s10 blue
+  class s11 blue
+  class s12 teal
