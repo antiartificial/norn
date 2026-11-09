@@ -3,6 +3,11 @@
 > **Current delta (2026-11-09):** The authenticated, staging-only workload
 > admission API merged as Norn PR #319 (`877ad4ba`), and PR #324
 > (`3fcdc154`) fixes concurrent same-key replay at the etcd store boundary.
+> PR #331 (`c58df6aa`) reconstructs the etcd client and operation store after
+> claim loss, reloads the durable receipt, and advances it under a successor
+> claim. Its full `etcdstore` package run and exact-head CI pass. This is
+> store-level restart evidence, not a full controller restart or lost-response
+> proof.
 > Two independent store clients now converge on one fresh acceptance and one
 > replay; its bounded model records the pre-fix counterexample. A separate
 > handler test and statechart force two initial replay misses and prove one
@@ -42,8 +47,9 @@ coverage across two independent etcd clients and records the repaired race in a
 separate statechart. A deterministic HTTP test now forces two handlers to miss
 the initial replay lookup, then checks one fresh response and one replay with
 the same operation ID. That HTTP test uses a fake atomic store; an
-implementation-backed HTTP-to-etcd concurrency test, restart/response-loss
-recovery, and production-driver qualification remain open.
+implementation-backed HTTP-to-etcd concurrency test, full worker/controller
+restart and lost-response recovery, and production-driver qualification remain
+open.
 
 ### HTTP-to-etcd fixture boundary (2026-11-09)
 
@@ -94,10 +100,11 @@ matching completed staging deployment and region results. Both that lookup and
 private-input acceptance have passed against disposable local etcd. PR #319's
 API admission producer calls this resolver and private acceptance; PR #321
 exercises that path with a fake store and Nomad-lineage observer. PR #324 proves
-same-key concurrency at the store boundary. The separate HTTP concurrency test
-exercises two real handler calls through a fake atomic store; the end-to-end
-HTTP-to-etcd path, restart recovery, and production driver behavior remain
-unqualified.
+same-key concurrency at the store boundary. PR #331 reconstructs the client and
+store to verify durable receipt reload and successor-claim recovery. The
+separate HTTP concurrency test exercises two real handler calls through a fake
+atomic store; the end-to-end HTTP-to-etcd path, full worker/controller restart
+and lost-response path, and production driver behavior remain unqualified.
 
 ## Release-readiness milestones and order
 
