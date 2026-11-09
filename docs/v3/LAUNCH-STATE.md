@@ -35,6 +35,15 @@ Oct 21 state and route pins; do not reuse them as current evidence. Diagnose
 the missing source objects, refresh state/route/host-key evidence, and bind any
 new read-only intent to those refreshed inputs before dispatch.
 
+## Fresh DO staging provider inventory (2026-11-09 01:51 UTC)
+
+An explicit `doctl --context work` readback matched the pinned staging account
+and returned nine `tk-staging-nyc3-*` Droplets, all active in `nyc3`: 3
+control, 2 ingress, and 4 app. This rechecks provider VMs only; it does not
+recheck load balancers or managed databases and proves nothing about Norn API,
+Nomad/Consul, workloads, routes, or Genesis journal health. The protected
+Genesis readback remains unpassed.
+
 ## Latest Mini direct release (2026-11-08 09:20 UTC)
 
 The independent Mini advanced from signed V3 RC `bba290db041e9f497c7161543c679d9d348b742d`
@@ -66,6 +75,22 @@ version. Non-interactive maintenance still needs the NVM `bin` directory on
 automatically load NVM. No UI rebuild was needed because the exact signed
 target bundle was present. The installed release is V3 RC, not a final stable
 release. PR #302 remains open and was not deployed.
+
+## Fresh Mini live check (2026-11-09 01:50 UTC)
+
+The read-only authenticated inventory still reports `/api/health=ok` and V3
+source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`). `norn host doctor` exited 0 and
+passed current managed-file, LaunchAgent, runtime, and Cloudflare checks.
+The `latestAssurance` receipt is still the successful operation from
+2026-09-06 17:23:57 -05:00, not fresh assurance; 25 active incident groups
+remain (22 critical, 3 warning). Host assurance and route reconciliation
+therefore remain open. No route or host mutation was run.
+
+The Mini API's configured Fleet document names `norn-disposable-nyc3` and
+declares only 3 control + 2 ingress nodes. This is configuration held by the
+independent Mini, not proof that Mini belongs to a Fleet or a readback of the
+separate DO staging topology.
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
