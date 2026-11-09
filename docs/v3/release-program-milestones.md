@@ -86,6 +86,10 @@ deployment, provider mutation, or credential use.
 - The active-operation endpoint returned seven old queued
   `fleet.github.apply-dispatch` receipts. They remain Fleet reconciliation
   work; this readback found no Mini platform-upgrade operation.
+- `norn smoke platform` exited successfully with `activeOps=0`, 10 critical,
+  and 10 warning event counts. Its drain view excludes the queued Fleet
+  dispatch receipts. The smoke result does not clear the 25 active incident
+  groups or prove route reachability.
 - Norn PR #301 remains open. A new successful host assurance and route
   inventory remain required after the protected release.
 
