@@ -23,6 +23,8 @@ type workloadReleaseTestDriver struct {
 	routeWrites  map[int]int
 	loseAfter    string
 	lossInjected bool
+	cleanupCalls int
+	inputDeleted bool
 }
 
 func newWorkloadReleaseTestDriver(loseAfter string) *workloadReleaseTestDriver {
@@ -152,6 +154,13 @@ func (d *workloadReleaseTestDriver) Complete(context.Context, store.OperationCla
 	return store.WorkloadReleaseReceiptRecord{IntentID: d.intent.ID, OperationID: "operation-1", ReceiptDigest: "sha256:complete"}, d.lost("complete")
 }
 
+func (d *workloadReleaseTestDriver) DeleteCompletedPrivateInput(context.Context, store.OperationClaim, store.AppOperationLock,
+	pipeline.WorkloadReleaseIntent, store.WorkloadReleaseReceiptRecord) error {
+	d.cleanupCalls++
+	d.inputDeleted = true
+	return d.lost("private-input-deletion")
+}
+
 func (d *workloadReleaseTestDriver) lost(boundary string) error {
 	if d.loseAfter == boundary && !d.lossInjected {
 		d.lossInjected = true
@@ -167,7 +176,7 @@ func (workloadReleaseTestLock) Fence() string              { return "fence-1" }
 func (workloadReleaseTestLock) Release()                   {}
 
 func TestWorkloadReleaseReconcilerRecoversLostResponsesAtEveryBoundary(t *testing.T) {
-	boundaries := []string{"initialize", "health", "route-0", "route-1", "stop", "drain", "route-2", "complete"}
+	boundaries := []string{"initialize", "health", "route-0", "route-1", "stop", "drain", "route-2", "complete", "private-input-deletion"}
 	for _, boundary := range boundaries {
 		t.Run(boundary, func(t *testing.T) {
 			claim, err := store.NewOperationClaim("operation-1", "worker-1", 1)
@@ -187,6 +196,10 @@ func TestWorkloadReleaseReconcilerRecoversLostResponsesAtEveryBoundary(t *testin
 			}
 			if driver.receipt.Phase != pipeline.WorkloadReleaseComplete || driver.stopWrites != 1 {
 				t.Fatalf("terminal receipt=%q stop writes=%d, want complete and exactly one", driver.receipt.Phase, driver.stopWrites)
+			}
+			if !driver.inputDeleted || driver.cleanupCalls != 1 && boundary != "private-input-deletion" ||
+				boundary == "private-input-deletion" && driver.cleanupCalls != 2 {
+				t.Fatalf("private-input cleanup deleted=%t calls=%d for lost boundary %q", driver.inputDeleted, driver.cleanupCalls, boundary)
 			}
 			for step := range driver.intent.RouteSteps {
 				if driver.routeWrites[step] != 1 {

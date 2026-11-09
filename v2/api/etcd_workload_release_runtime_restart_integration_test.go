@@ -149,6 +149,8 @@ type workloadReleaseRuntimeRestartState struct {
 	loseAfterStep        int
 	lostResponseInjected bool
 	stopWrites           int
+	privateInputDeletes  int
+	privateInputDeleted  bool
 }
 
 type workloadReleaseEtcdReceiptDriver struct {
@@ -293,6 +295,17 @@ func (d workloadReleaseEtcdReceiptDriver) Complete(ctx context.Context, claim st
 	}
 	receipt.Phase = pipeline.WorkloadReleaseComplete
 	return d.Advance(ctx, claim, intent, record.ReceiptDigest, receipt)
+}
+
+func (d workloadReleaseEtcdReceiptDriver) DeleteCompletedPrivateInput(ctx context.Context, _ store.OperationClaim, _ store.AppOperationLock,
+	intent pipeline.WorkloadReleaseIntent, completed store.WorkloadReleaseReceiptRecord) error {
+	record, receipt, err := d.Load(ctx, intent)
+	if err != nil || record == nil || receipt.Phase != pipeline.WorkloadReleaseComplete || record.ReceiptDigest != completed.ReceiptDigest {
+		return errors.New("private input cleanup did not receive the durable completed receipt")
+	}
+	d.state.privateInputDeletes++
+	d.state.privateInputDeleted = true
+	return nil
 }
 
 func (d workloadReleaseEtcdReceiptDriver) loadReceipt(ctx context.Context) (*store.WorkloadReleaseReceiptRecord, pipeline.WorkloadReleaseReceipt, error) {
