@@ -219,6 +219,13 @@ claim mixed Norn control versions.
 - [ ] Exercise canary, mixed application versions, drain, route failure, node
   loss, and rollback boundary under synthetic load first.
 - [ ] Move the same declared workload class to DO only after M3 and M4 pass.
+- [x] Add a separate CAS-protected, operator-approved stateless overlap
+  policy bound to the current Fleet placement generation. It records the
+  approver and time, replica bounds, surge limit, and monotonic route steps;
+  it is absent by default and is not yet consumed by release admission.
+- [ ] Bind the stored policy and approval into the signed workload release plan
+  and expose the authenticated admission producer. Until then the policy is
+  configuration evidence only, not an enabled release lane.
 
 **Exit:** data, routes, acknowledgements, and desired/observed capacity remain
 correct through restart, drain, failure, and retry.
