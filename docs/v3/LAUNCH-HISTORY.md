@@ -1,6 +1,6 @@
 # Norn v3 launch history
 
-## Recovered-forward repair merged; exact-source release prepared (2026-11-09 22:45 UTC)
+## Recovered-forward repair merged; exact-source release prepared (2026-11-09 22:56 UTC)
 
 Norn PR #370 merged at exact source
 `9d9d6208654b995cddc8b76e13d089c665c52fd6`. It repairs the
@@ -10,13 +10,13 @@ protected-master CI dispatch [42713422353](https://github.com/antiartificial/nor
 completed successfully with all 12 jobs. Exact-source release workflow
 [42714046058](https://github.com/antiartificial/norn/actions/runs/42714046058)
 passed protected-master authorization, pinned UI build, and all four Linux/
-Darwin amd64/arm64 bundle builds. At 22:45 UTC, its protected signing and
-publish job is waiting at the owner-approval environment. No signature,
+Darwin amd64/arm64 bundle builds. At 22:56 UTC, its protected signing and
+publish job remains waiting at the owner-approval environment. No signature,
 immutable release, or Mini deployment has been created by that workflow.
 
-The checked-in offline statecharts were rerun from current `master` with the
-statechart skill into scratch outputs under `/tmp` (no repository artifacts or
-provider actions): Mini direct (82 states / 164 steps), existing DO platform
+All 21 checked-in TLC configurations were rerun from current `master`
+`19297662` with the statechart skill into scratch outputs under `/tmp` (no
+repository artifacts or provider actions): Mini direct (82 states / 164 steps), existing DO platform
 release (299 / 1,036), fresh-Fleet create (308 / 813), current nine-node
 staging recovery (102 / 210), future two-app-pool Fleet (45 / 98), existing
 Fleet Genesis (69 / 107), Genesis readback source gate (18 / 52), proposed
@@ -24,8 +24,12 @@ online Norn upgrade (97 / 251), mixed-version workload resize at capacity 4
 (103 / 275) and capacity 3 (24 / 52), workload route publication (55 / 111),
 workload stop recovery (10 / 15), release admission (458 / 1,663), admission
 replay after restart (115 / 365), simultaneous HTTP admission (19 / 28), and
-private-input retention (12 / 25). Every configured invariant and deadlock
-check passed. The capacity-3 resize model still has no target-only route or
+private-input retention (12 / 25). The four missing-evidence admission
+configurations each explored 4 states / 6 steps and rejected incomplete
+admission; concurrent two-client store admission explored 14 states / 18
+steps. Every configured rule passed. Deadlock checks passed where enabled;
+the concurrent-admission configuration intentionally disables deadlock checks
+for terminal stutter states. The capacity-3 resize model still has no target-only route or
 terminal receipt; capacity 4 does. These models validate bounded protocol
 contracts only; they do not establish code-to-model refinement, fresh-Fleet
 workflow integration, live DO readiness, workload availability, or Mini

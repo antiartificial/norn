@@ -4,6 +4,17 @@ These bounded TLA+ checks are offline models. A passing model checks the
 specified state transitions and invariants; it does not prove live credentials,
 provider state, host behavior, availability, or the implementation itself.
 
+On 2026-11-09, all 21 checked-in TLC configurations were rerun against Norn
+master `19297662` using the statechart skill. Every configured rule passed.
+Configurations with `NoDeadlock` enabled passed deadlock checking; the
+concurrent-admission config deliberately disables deadlock checking because
+terminal result states stutter. This includes the four missing-evidence
+admission cases (each 4 states / 6 steps) and the two-client concurrent store
+case (14 states / 18 steps), as well as the primary lane models listed below.
+Outputs were written under `/tmp/norn-*-check`; no generated outputs or
+provider effects were added to the repository. The statechart reports record
+the bounds and omissions for each model.
+
 | Lane | Result | Model status | Main limit |
 |---|---:|---|---|
 | Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |

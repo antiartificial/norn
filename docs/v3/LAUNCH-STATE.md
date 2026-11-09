@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 22:45 UTC)
+## Current V3 release readiness (2026-11-09 22:56 UTC)
 
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
 source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
@@ -22,16 +22,20 @@ those receipts under signed transition evidence while `legacy-baseline`
 continues to require them drained. This does not resolve their binding
 mismatch or change them.
 
-Offline statechart runs on current `master` passed all configured rules and
-deadlock checks for Mini direct, existing DO release, existing-Fleet Genesis
-and readback, fresh Fleet create (current 3+2+4 topology and future General +
-Stateful pools), proposed online Norn upgrade, and workload admission,
-publication, stop recovery, private-input retention, and mixed-version resize.
+All 21 checked-in statechart configurations were rerun from current `master`;
+their configured rules passed, including four missing-evidence workload
+admission cases and concurrent two-client admission. Deadlock checks passed
+where enabled; the concurrent-admission model intentionally disables them for
+terminal stutter states. Coverage includes Mini direct, existing DO release,
+existing-Fleet Genesis and readback, fresh Fleet create (current 3+2+4
+topology and future General + Stateful pools), proposed online Norn upgrade,
+and workload admission, publication, stop recovery, private-input retention,
+and mixed-version resize.
 The bounded resize comparison still demonstrates that capacity 3 cannot
 reach a target-only route and terminal receipt while retaining the old cohort;
 capacity 4 reaches the modeled completion. These are protocol-model results,
 not runtime or controller-refinement evidence. See the dated
-[launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2245-utc)
+[launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2256-utc)
 for per-model counts and limits.
 
 The latest authenticated Mini runtime evidence is the 22:47 UTC snapshot below.

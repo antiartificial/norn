@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-09 22:45 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-09 22:56 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,7 +20,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Latest gate update (2026-11-09 22:45 UTC): the recovered-forward evidence-path
+Latest gate update (2026-11-09 22:56 UTC): the recovered-forward evidence-path
 and lane-specific drain fix merged as Norn PR #370 (`9d9d6208`). Full protected
 master qualification run [42713422353](https://github.com/antiartificial/norn/actions/runs/42713422353)
 passed all 12 jobs. Exact-source platform release run
@@ -34,9 +34,12 @@ running and healthy, and seven queued Fleet receipts. Refresh it before any
 live upgrade step. DO has not been freshly read in this turn; its last
 provider/runtime evidence is dated 18:58–19:01 UTC, so use a new protected
 readback before claiming current Fleet health.
-All core checked-in lane statecharts were also rerun from their current
-master source; results and their bounds are recorded in the latest
-[launch-history entry](LAUNCH-HISTORY.md).
+All 21 checked-in TLC configurations were rerun from current master, including
+the four missing-evidence workload-admission scenarios and concurrent
+two-client store admission. Configured rules passed; the concurrent-admission
+config intentionally disables deadlock checking for terminal stutter states.
+Per-model bounds are recorded in the [statechart index](statecharts/README.md)
+and the latest [launch-history entry](LAUNCH-HISTORY.md).
 
 ## Parallel workstreams
 
@@ -227,7 +230,7 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
 **Exit:** each lane has a synthetic success case, a failure matrix, invariant
 results, and secret-safe output checks. No provider or SSH call occurs.
 
-Twelve reader-facing lane statecharts and their specs, configs, views, reports,
+Reader-facing lane statecharts and their specs, configs, views, reports,
 and TLC output are indexed in [the statechart bundle](statecharts/README.md);
 focused admission and source-gate models are linked from their parent lanes. The
 workload chart models the offline protocol; its active-route generation and
