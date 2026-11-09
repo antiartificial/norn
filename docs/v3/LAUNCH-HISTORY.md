@@ -1,5 +1,16 @@
 # Norn v3 launch history
 
+## Admission replay recovery model merged (2026-11-09)
+
+Norn PR [#333](https://github.com/antiartificial/norn/pull/333) merged as
+`443ca8404b8188c004d6229871b34792f0912c37`. Its TLA+ model checks durable
+admission acceptance followed by a lost response, controller crash/restart
+without process-local acceptance memory, and same-key replay from the durable
+receipt. TLC explored 115 states and 365 steps; ten invariants and deadlock
+checking passed. This strengthens offline protocol evidence only. The combined
+HTTP-to-etcd path and full runtime worker/controller restart and response-loss
+behavior remain unproven; no deployment or workload mutation was performed.
+
 ## Read-only runtime and provider refresh (2026-11-09 12:29 UTC)
 
 The authenticated Mini inventory again returned API and host status `ok` on
