@@ -4,9 +4,11 @@ This bounded TLA+ model describes the M5 release-owned staging and recovery
 protocol. The claimed worker now executes signed-plan target staging and
 resolves the observed binding to the existing strict
 `WorkloadReleaseIntent` downstream contract. The opt-in authenticated staging
-API is implemented in PR #319, and PR #321 covers fresh admission and exact
-replay through the HTTP handler with deterministic fakes. Production-driver
-and restart qualification remain incomplete.
+API is implemented in PR #319. Handler fakes cover fresh admission and exact
+replay ordering. Real-etcd HTTP replay and shared-reconciler restart recovery
+have focused integration coverage, while fresh HTTP admission with real
+qualification/private-input persistence and the production workload executor
+remain unqualified.
 
 ## Regenerate the chart
 
@@ -25,7 +27,8 @@ Use a new or empty output folder for each run.
 The separate admission replay model isolates the idempotency and process-recovery
 contract. Its stable request comprises a qualification ID and a target replica
 count bounded by an operator-approved app policy. The handler implements this
-request in PR #319; PR #321 verifies fresh selection and exact replay ordering.
+request in PR #319; deterministic handler tests verify fresh selection and
+exact replay ordering.
 The model checks that acceptance may commit while its HTTP response is lost,
 the controller may stop and restart without local acceptance memory, and an
 exact same-key retry returns the durable original receipt without rereading
@@ -90,18 +93,24 @@ The receipt CAS integration test now reconstructs a fresh etcd client and
 reloads the durable receipt, recovers the expired operation, and advances that
 same intent under a successor claim; the stale claim remains fenced. This
 proves store-level process-restart recovery for the receipt boundary against
-real etcd. It does not restart the controller worker or qualify response loss
-across the full runtime, so controller restart/response-loss qualification,
-production drivers, and private-input retention remain open.
+real etcd. PR #339 additionally reconstructs the etcd client and operation
+store after a route-effect response loss, recovers the operation under a
+successor claim, and completes the production shared
+`reconcileWorkloadRelease` lifecycle without duplicating the route write. Its
+scheduler, route, health, and drain effects are controlled fakes; it does not
+exercise `etcdWorkloadReleaseExecutor`, production Nomad/ingress adapters, or
+full worker-runtime wiring. Those gates and private-input retention remain
+open.
 
 The separate [concurrent admission model](../workload-release-concurrent-admission/README.md)
 and its two-client etcd regression test cover simultaneous same-key acceptance
 at the store boundary. The [HTTP concurrency model](../workload-release-http-concurrency/README.md)
 and handler test force both requests past an initial replay miss, then verify
 one fresh response and one replay with the same operation ID through a
-deterministic fake store. These adjacent proofs do not combine the handler with
-real etcd in one test. Controller restart/response-loss qualification,
-production drivers, and private-input retention remain open.
+deterministic fake store. PR #335 exercises authenticated HTTP replay against
+real etcd after a dropped response using a seeded durable acceptance; PR #337
+reconstructs the handler and etcd adapters before retry. These tests do not
+exercise fresh admission through real qualification/private-input persistence.
 
 The API module command `cd v2/api && go test ./... -count=1` passed. The
 environment did not have an etcd test endpoint, so endpoint-gated integration
@@ -116,9 +125,12 @@ NORN_TEST_ETCD_ENDPOINTS=http://127.0.0.1:12379 go test ./etcdstore \
 
 This verifies the signed qualification lookup, atomic private-input acceptance
 and replay, receipt CAS and successor-claim target binding across a reconstructed
-store/client against real etcd transactions. PR #321 separately exercises the
-authenticated admission route in-process using deterministic fakes. Neither
-test runs ingress or a production Nomad/ingress driver configuration.
+store/client against real etcd transactions. The deterministic handler tests
+exercise fresh admission in-process using fakes, and PRs #335/#337 cover the
+real-etcd replay branch across adapter reconstruction. No test currently
+combines fresh HTTP admission, real qualification and private-input
+persistence, and verified Nomad lineage. None of these tests runs ingress or a
+production Nomad/ingress driver configuration.
 
 The updated private-input acceptance test also deletes the qualified source
 deployment projection, supplies an invalid current plan and a new operation
@@ -188,11 +200,13 @@ all retained IDs. Startup preflight checks configured keys against retained
 IDs; deletion/retention policy is not yet implemented. The authenticated
 request producer that computes this digest is implemented by PR #319. The
 model abstracts its HTTP identity and mutable evidence lookups; handler-level
-tests cover fresh acceptance and exact retry. PR #331 separately proves
-store-level receipt reload and successor-claim recovery after reconstructing
-the client and store. Combined HTTP-to-etcd replay, worker/controller runtime
-restart and response-loss behavior, and private-input deletion/retention
-remain open. Store-level same-key concurrency is covered by the separate
+tests cover fresh acceptance and exact retry. PRs #335/#337 cover authenticated
+HTTP replay with real etcd and handler/adapter reconstruction. PR #339 covers
+the shared reconciler across an etcd-backed successor claim after route effect
+response loss, using controlled external-effect fakes. Full production
+executor/worker restart recovery, fresh HTTP admission with real qualification
+and private-input persistence, and private-input deletion/retention remain
+open. Store-level same-key concurrency is covered by the separate
 concurrent-admission model and etcd regression test.
 
 The model also treats the workload envelope key as a recoverability input.
