@@ -124,6 +124,24 @@ deployment, provider mutation, or credential use.
   missing, check the owning script's configured evidence path before deciding
   to repeat a live operation.
 
+## Mini live readback — 2026-11-09 01:50 UTC
+
+- A fresh read-only inventory reports `/api/health` and `/api/v1/host/status`
+  as `ok`; `/api/version` still reports V3 source
+  `d4dc88e0c37003a1013caed444983b2eeb50fbcb`. `norn host doctor` exited 0 and
+  passed managed files, LaunchAgents, Consul/Nomad/Norn runtime checks, and
+  Cloudflare config/process checks.
+- The `latestAssurance` operation referenced by host status is
+  `7d3e45e7-f550-4289-8e8c-f8258be0649b`; its operation record finished
+  2026-09-06 17:23:57 -05:00. It is not fresh assurance evidence. The active
+  event readback still has 25 groups (22 critical, 3 warning), so these doctor
+  and health results do not close Mini host assurance or route reconciliation.
+- The Mini API's configured Fleet document names `norn-disposable-nyc3` and
+  declares 3 control + 2 ingress nodes. That configuration is neither proof
+  that Mini belongs to a Fleet nor evidence of the DO staging Fleet's
+  3+2+4 provider/runtime topology. Keep the independent Mini and DO Fleet
+  evidence separate.
+
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
 recovery work, workload protocol refinement, and V2 caller migration planning.
