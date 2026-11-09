@@ -108,13 +108,21 @@ deployment, provider mutation, or credential use.
 - `norn operations --limit 100` returned no successful `platform.upgrade`
   operation for the current V3 release. The newest listed upgrade failed on
   2026-10-10, and the newest listed preflight failed on 2026-10-13.
-- The current release catalog proves that the Mini serves the V3 artifact. It
-  does not prove which upgrade procedure promoted it or provide a durable
-  successful operation receipt. Preserve this as an evidence gap when we
-  assess the direct controller lane.
-- The bundled `bin/platform-upgrade` SHA-256 matches the script at the exact
-  `d4dc88e0` source commit. The release directory has no `logs/` directory or
-  `postflight-version.json`, so it has no local post-promotion version record.
+- This is specifically an API operation-history gap; it does not mean the
+  direct upgrade lacks local postflight evidence. The release script writes
+  under `~/norn/release-logs`, outside the immutable release directory.
+- `~/norn/release-logs/d4dc88e0c370.Xr2j8y/` contains candidate version,
+  health, and schema captures plus `postflight-version.json` and
+  `postflight-schema.json` dated 2026-11-08 around 09:20 UTC. The postflight
+  version records the full current source SHA and exact API version; the
+  schema capture reports the same version. The installed `bin/platform-upgrade`
+  SHA-256 matches the script blob at source commit `d4dc88e0`.
+- Together, these artifacts support that the direct script completed its
+  version/schema postflight for the current Mini release. They are not a
+  `platform.upgrade` API operation receipt, and they do not close the separate
+  fresh host-assurance and route-reachability gates. When evidence appears
+  missing, check the owning script's configured evidence path before deciding
+  to repeat a live operation.
 
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
