@@ -67,7 +67,7 @@ func discoverApps(appsDir string, deployOnly bool) ([]*InfraSpec, error) {
 // FindByRepoURL finds an app spec matching the given repo URL and branch
 // that has autoDeploy enabled.
 func FindByRepoURL(specs []*InfraSpec, repoURL, branch string) *InfraSpec {
-	incoming := normalizeRepoPath(repoURL)
+	incoming := normalizeRepoIdentity(repoURL)
 	for _, s := range specs {
 		if s.Repo == nil || !s.Repo.AutoDeploy {
 			continue
@@ -79,34 +79,42 @@ func FindByRepoURL(specs []*InfraSpec, repoURL, branch string) *InfraSpec {
 		if specBranch != branch {
 			continue
 		}
-		if normalizeRepoPath(s.Repo.URL) == incoming {
+		if incoming != "" && normalizeRepoIdentity(s.Repo.URL) == incoming {
 			return s
 		}
 	}
 	return nil
 }
 
-// normalizeRepoPath extracts the owner/repo path from a git URL,
-// stripping .git suffix, for comparison.
-func normalizeRepoPath(rawURL string) string {
+// normalizeRepoIdentity extracts the host and owner/repo path from a git URL,
+// making HTTPS and SSH forms for the same repository equivalent without
+// allowing an unrelated host with the same path to select the app.
+func normalizeRepoIdentity(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
+	var host, path string
 
 	// Handle SSH URLs like git@github.com:owner/repo.git
 	if strings.HasPrefix(rawURL, "git@") {
 		if idx := strings.Index(rawURL, ":"); idx != -1 {
-			path := rawURL[idx+1:]
-			path = strings.TrimSuffix(path, ".git")
-			return strings.ToLower(path)
+			host = rawURL[len("git@"):idx]
+			path = rawURL[idx+1:]
 		}
+	} else {
+		// Parse URL forms such as https://github.com/owner/repo.git and
+		// ssh://git@github.com/owner/repo.git.
+		u, err := url.Parse(rawURL)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+		host = u.Host
+		path = strings.TrimPrefix(u.Path, "/")
 	}
 
-	// Parse as URL
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return strings.ToLower(strings.TrimSuffix(rawURL, ".git"))
-	}
-
-	path := strings.TrimPrefix(u.Path, "/")
 	path = strings.TrimSuffix(path, ".git")
-	return strings.ToLower(path)
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	path = strings.ToLower(strings.Trim(path, "/"))
+	if host == "" || path == "" {
+		return ""
+	}
+	return host + "/" + path
 }

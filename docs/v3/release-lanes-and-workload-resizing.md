@@ -59,7 +59,12 @@ destinations, not a successful current push-to-Mini deployment. Hooks were
 absent for the other checked personal repositories `audio-scene-lab`,
 `motifgarden`, and `norn-bloom`. GitHub does not return saved hook secrets;
 the process-level check proves that the Mini has a secret configured, but not
-that its value matches each GitHub hook.
+that its value matches each GitHub hook. The current API accepts one
+`NORN_WEBHOOK_SECRET` for all configured GitHub and Gitea hooks; it does not
+provide per-repository secret isolation. Configure hooks to match that shared
+secret and treat rotation as a coordinated change across the hooks. Repository
+matching includes the Git host as well as owner/repository path, so an
+unrelated host with the same path cannot select the app.
 
 The webhook handler previously queued the branch ref. This can deploy a later
 commit if the branch advances before the worker fetches it. The current source
@@ -76,7 +81,8 @@ Use one-way mirroring to Norn only when a local/private copy is useful; do not
 make two independently writable remotes release authorities. The six hooks
 above already point to Norn's webhook hostname. Before treating any one as a
 working Mini deploy path, reconcile that hostname's ingress to this Mini,
-confirm the repository-specific hook secret, and verify its exact app mapping.
+confirm the hook uses the configured shared secret, and verify its exact app
+mapping.
 A hook requests deployment; Norn maps the repo and branch to one configured
 app and records the resulting operation.
 
