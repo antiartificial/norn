@@ -76,11 +76,15 @@ The four bounded checks each reached four states and six steps. They all
 passed `TypeOK`, `IncompleteAdmissionIsRejected`,
 `AcceptedPlanHasCompleteEvidence`, and deadlock checking. Their two-state
 charts and TLC reports are under `admission-gates/`. These checks model the
-admission decisions abstractly; they do not individually exercise each
-missing-evidence rejection through the HTTP handler. Handler tests cover a
-valid fresh admission, exact retry before mutable reads, CI-principal
-rejection, and simultaneous same-key requests. Production drivers remain
-open.
+admission decisions abstractly. The HTTP handler tests now exercise ordered
+rejection for missing qualification, Fleet target, approved policy, and active
+serving route, plus missing Nomad serving lineage and encrypted input snapshot;
+each case verifies that no acceptance is persisted. They use deterministic
+store/lineage fakes, so real-etcd fresh admission and its signed qualification,
+deployment, and private-input persistence remain unqualified. The same handler
+suite covers valid fresh admission, exact retry before mutable reads,
+CI-principal rejection, and simultaneous same-key requests. Production drivers
+remain open.
 
 After adding the admission gate, the full release model reaches 458 states and
 1,663 steps; its 18 listed invariants and deadlock check pass. Its generated
