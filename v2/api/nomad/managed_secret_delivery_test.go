@@ -96,3 +96,14 @@ func TestManagedSecretSourceSelectsExactKeysAfterDatabaseStage(t *testing.T) {
 		t.Fatalf("missing source secret wrote Nomad Variable: writes=%d err=%v", fake.writes, err)
 	}
 }
+
+func TestSelectManagedJobSecretInputsCopiesOnlyPlanKeys(t *testing.T) {
+	plan := ManagedJobInputRequirements{RequiredKeys: []string{"API_TOKEN", "norn_database_primary_target_r7"}}
+	selected, err := SelectManagedJobSecretInputs(plan, map[string]string{"API_TOKEN": "secret", "UNRELATED": "ignored"})
+	if err != nil || len(selected) != 1 || selected["API_TOKEN"] != "secret" {
+		t.Fatalf("selected=%v err=%v, want only API_TOKEN", selected, err)
+	}
+	if _, err := SelectManagedJobSecretInputs(plan, map[string]string{"UNRELATED": "ignored"}); err == nil {
+		t.Fatal("missing planned secret was accepted")
+	}
+}

@@ -54,14 +54,15 @@ func TestManagedDeploymentJobsReadBackAndHealIndependently(t *testing.T) {
 		current.Version, current.JobModifyIndex = &version, &index
 		healthy := true
 		allocID := "allocation-" + deploymentID
-		stub := &nomadapi.AllocationListStub{ID: allocID, JobID: request.JobID, JobVersion: version, TaskGroup: groupName,
+		nodeID := "node-" + deploymentID
+		stub := &nomadapi.AllocationListStub{ID: allocID, NodeID: nodeID, JobID: request.JobID, JobVersion: version, TaskGroup: groupName,
 			ClientStatus: nomadapi.AllocClientStatusRunning, DesiredStatus: nomadapi.AllocDesiredStatusRun,
 			DeploymentStatus: &nomadapi.AllocDeploymentStatus{Healthy: &healthy}}
 		requests[request.JobID] = request
 		sources[request.JobID] = string(source)
 		jobs[request.JobID] = &current
 		stubs[request.JobID] = stub
-		allocations[allocID] = &nomadapi.Allocation{ID: allocID, JobID: request.JobID, TaskGroup: groupName, Job: &current,
+		allocations[allocID] = &nomadapi.Allocation{ID: allocID, NodeID: nodeID, JobID: request.JobID, Namespace: effectiveNomadNamespace(request.Namespace), TaskGroup: groupName, Job: &current,
 			ClientStatus: stub.ClientStatus, DesiredStatus: stub.DesiredStatus,
 			TaskStates: map[string]*nomadapi.TaskState{groupName: {State: "running"}}}
 	}

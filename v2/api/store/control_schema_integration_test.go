@@ -34,8 +34,8 @@ func TestReleaseAttestationByteMigrationBackfillsExistingEvidence(t *testing.T) 
 		t.Fatal(err)
 	}
 	status, err := current.Migrate(ctx)
-	if err != nil || status.CurrentMigrationVersion != 51 {
-		t.Fatalf("migration through 51 status=%+v err=%v", status, err)
+	if err != nil || status.CurrentMigrationVersion != 52 {
+		t.Fatalf("migration through 52 status=%+v err=%v", status, err)
 	}
 	var reserved, actual int64
 	if err := pool.QueryRow(ctx, `SELECT r.reserved_bytes, octet_length(o.payload::text)+octet_length(o.metadata::text)
@@ -91,7 +91,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 51 || len(status.AppliedVersions) != 51 || status.AppliedVersions[50] != 51 || status.MinimumReaderVersion != MySQLRetainedArtifactReaderVersion || status.MinimumWriterVersion != FleetRunnerFenceBindingWriterVersion {
+	if status.CurrentMigrationVersion != 52 || len(status.AppliedVersions) != 52 || status.AppliedVersions[51] != 52 || status.MinimumReaderVersion != MySQLRetainedArtifactReaderVersion || status.MinimumWriterVersion != FleetRunnerFenceBindingWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 

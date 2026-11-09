@@ -26,12 +26,7 @@ func loadManagedJobSecrets(app string, plan ManagedJobInputRequirements, source 
 	if app == "" {
 		return nil, fmt.Errorf("managed job secret source is unavailable")
 	}
-	required := map[string]bool{}
-	for _, key := range plan.RequiredKeys {
-		if !strings.HasPrefix(key, "norn_") {
-			required[key] = true
-		}
-	}
+	required := managedApplicationSecretKeys(plan)
 	if len(required) == 0 {
 		return nil, nil
 	}
@@ -42,6 +37,17 @@ func loadManagedJobSecrets(app string, plan ManagedJobInputRequirements, source 
 	if err != nil {
 		return nil, fmt.Errorf("managed job secret source failed for %s", app)
 	}
+	return SelectManagedJobSecretInputs(plan, all)
+}
+
+// SelectManagedJobSecretInputs copies only application-secret keys required
+// by the exact job input plan. It can consume a decrypted immutable release
+// snapshot or the legacy live secret source, without returning unrelated data.
+func SelectManagedJobSecretInputs(plan ManagedJobInputRequirements, all map[string]string) (map[string]string, error) {
+	if len(plan.RequiredKeys) == 0 {
+		return nil, nil
+	}
+	required := managedApplicationSecretKeys(plan)
 	selected := make(map[string]string, len(required))
 	for key := range required {
 		if all[key] == "" {
@@ -50,6 +56,16 @@ func loadManagedJobSecrets(app string, plan ManagedJobInputRequirements, source 
 		selected[key] = all[key]
 	}
 	return selected, nil
+}
+
+func managedApplicationSecretKeys(plan ManagedJobInputRequirements) map[string]bool {
+	required := map[string]bool{}
+	for _, key := range plan.RequiredKeys {
+		if !strings.HasPrefix(key, "norn_") {
+			required[key] = true
+		}
+	}
+	return required
 }
 
 // StageManagedJobSecretInputs adds only the file keys required by a managed

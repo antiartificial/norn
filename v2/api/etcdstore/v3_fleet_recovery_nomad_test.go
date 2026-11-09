@@ -65,8 +65,8 @@ func recoveryNomadFixtureWithHook(t *testing.T, accepted store.AcceptedOperation
 	_ = json.Unmarshal(source, &current)
 	version, index, healthy := uint64(3), uint64(7), true
 	current.Version, current.JobModifyIndex = &version, &index
-	stub := &nomadapi.AllocationListStub{ID: "alloc-1", JobID: input.App, JobVersion: version, TaskGroup: groupName, ClientStatus: nomadapi.AllocClientStatusRunning, DesiredStatus: nomadapi.AllocDesiredStatusRun, DeploymentStatus: &nomadapi.AllocDeploymentStatus{Healthy: &healthy}}
-	allocation := &nomadapi.Allocation{ID: stub.ID, JobID: input.App, TaskGroup: groupName, Job: &current, ClientStatus: stub.ClientStatus, DesiredStatus: stub.DesiredStatus, TaskStates: map[string]*nomadapi.TaskState{groupName: {State: "running"}}}
+	stub := &nomadapi.AllocationListStub{ID: "alloc-1", NodeID: "node-1", JobID: input.App, JobVersion: version, TaskGroup: groupName, ClientStatus: nomadapi.AllocClientStatusRunning, DesiredStatus: nomadapi.AllocDesiredStatusRun, DeploymentStatus: &nomadapi.AllocDeploymentStatus{Healthy: &healthy}}
+	allocation := &nomadapi.Allocation{ID: stub.ID, NodeID: stub.NodeID, JobID: input.App, TaskGroup: groupName, Namespace: "default", Job: &current, ClientStatus: stub.ClientStatus, DesiredStatus: stub.DesiredStatus, TaskStates: map[string]*nomadapi.TaskState{groupName: {State: "running"}}}
 	var observeOnce sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if onObserve != nil {

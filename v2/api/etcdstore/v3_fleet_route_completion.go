@@ -22,8 +22,13 @@ type initialFleetCompletionSource struct {
 type activeFleetRoute struct {
 	IntentID     string `json:"intentId"`
 	DeploymentID string `json:"deploymentId"`
+	OperationID  string `json:"operationId"`
 	Generation   uint64 `json:"generation"`
 	RouteSHA256  string `json:"routeSha256"`
+	JobDigest    string `json:"jobDigest"`
+	SpecDigest   string `json:"specDigest"`
+	ImageTag     string `json:"imageTag"`
+	Process      string `json:"process"`
 }
 
 // CompleteClaimedInitialFleetDeployment is the only positive-traffic
@@ -81,9 +86,16 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 	if err != nil {
 		return nil, nil, err
 	}
-	_, effectKey, effectRevision, err := effects.loadToken(ctx, proof.HealthEffect)
+	healthEffect, effectKey, effectRevision, err := effects.loadToken(ctx, proof.HealthEffect)
 	if err != nil {
 		return nil, nil, err
+	}
+	if _, err := effects.validateDeploymentEffectReservation(ctx, healthEffect.Reservation, accepted.Operation); err != nil {
+		return nil, nil, fmt.Errorf("deployment route has no accepted job digest: %w", err)
+	}
+	var healthInput deploymentEffectInput
+	if json.Unmarshal(healthEffect.Reservation.LaunchPayload, &healthInput) != nil || healthInput.JobDigest == "" {
+		return nil, nil, fmt.Errorf("deployment route job digest is unavailable")
 	}
 	attemptKey := effects.submitAttemptKey(proof.HealthEffect)
 	attempt, err := s.kv.Get(ctx, attemptKey)
@@ -132,7 +144,9 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 		return nil, nil, err
 	}
 	activeKey := s.fleetActiveRouteKey(intent.App, intent.ControlEnvironment, intent.Region)
-	active, err := json.Marshal(activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.DeploymentID, Generation: intent.Generation, RouteSHA256: intent.RenderedRoute.SHA256})
+	active, err := json.Marshal(activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.DeploymentID, OperationID: intent.OperationID,
+		Generation: intent.Generation, RouteSHA256: intent.RenderedRoute.SHA256, JobDigest: "sha256:" + healthInput.JobDigest,
+		SpecDigest: healthInput.SpecDigest, ImageTag: healthInput.ImageTag, Process: intent.Endpoint.Process})
 	if err != nil {
 		return nil, nil, err
 	}

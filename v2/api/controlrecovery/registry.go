@@ -117,6 +117,7 @@ func InspectionRegistry() []Table {
 		// and fleet_runner_attempts.metadata are.
 		{Name: "fleet_resources", OrderBy: []string{"name"}, Columns: classified(include("name", "target_id", "revision", "authority_epoch", "observation_sequence", "created_at", "updated_at"), "document")},
 		{Name: "fleet_observations", OrderBy: []string{"resource", "sequence"}, Columns: classified(include("resource", "sequence", "source", "observed_at", "received_at", "applied", "reporter"), "facts", "evidence_refs")},
+		{Name: "workload_release_receipts", OrderBy: []string{"intent_id"}, Columns: classified(include("intent_id", "operation_id", "receipt_digest", "claim_generation", "revision", "updated_at"), "receipt")},
 	}
 
 	result := make([]Table, len(tables))

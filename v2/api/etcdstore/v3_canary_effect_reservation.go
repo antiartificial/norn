@@ -42,6 +42,16 @@ func NewV3ScaleEffectReservations(operations *V3OperationStore) (*V3CanaryEffect
 	return &V3CanaryEffectReservations{operations: operations, namespace: "scale"}, nil
 }
 
+// NewV3WorkloadReleaseEffectReservations creates the etcd effect ledger for
+// mixed-version workload releases. It shares the app-wide mutation gate with
+// scale, deployment, and canary effects.
+func NewV3WorkloadReleaseEffectReservations(operations *V3OperationStore) (*V3CanaryEffectReservations, error) {
+	if operations == nil || operations.kv == nil || operations.lease == nil || operations.authority == "" {
+		return nil, fmt.Errorf("etcd workload release effect reservations require a v3 operation store")
+	}
+	return &V3CanaryEffectReservations{operations: operations, namespace: "workload-release"}, nil
+}
+
 func (s *V3CanaryEffectReservations) Authority(ctx context.Context) (string, error) {
 	return s.operations.Authority(ctx)
 }
@@ -62,6 +72,9 @@ func (s *V3CanaryEffectReservations) effectNamespace() string {
 	}
 	if s.namespace == "scale" {
 		return "scale"
+	}
+	if s.namespace == "workload-release" {
+		return "workload-release"
 	}
 	return "canary"
 }
@@ -176,6 +189,8 @@ func (s *V3CanaryEffectReservations) Reserve(ctx context.Context, r effect.Reser
 	var app string
 	if s.effectNamespace() == "deploy" {
 		app, err = s.validateDeploymentEffectReservation(ctx, r, op.Operation)
+	} else if s.effectNamespace() == "workload-release" {
+		app, err = s.validateWorkloadReleaseEffectReservation(ctx, r, op.Operation)
 	} else if s.effectNamespace() == "scale" {
 		app, err = validateScaleEffectReservation(r, op.Operation, s.operations.authority)
 	} else {

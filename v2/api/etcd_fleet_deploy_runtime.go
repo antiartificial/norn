@@ -19,6 +19,7 @@ import (
 	"norn/v2/api/ingress"
 	"norn/v2/api/nomad"
 	"norn/v2/api/secrets"
+	"norn/v2/api/startup"
 	"norn/v2/api/worker"
 )
 
@@ -150,10 +151,28 @@ func newEtcdFleetDeployRuntime(ctx context.Context, cfg *config.Config, operatio
 		_ = privateSecrets.Close()
 		return nil, err
 	}
-	executor := &fleetdeploy.ClaimedFleetDeploymentExecutor{Store: operations, Nomad: nomadClient,
+	workloadReleaseKeys, err := startup.WorkloadReleaseInputKeyRingFromRuntimeConfig(cfg.WorkloadReleaseInputsEnabled,
+		cfg.WorkloadReleaseInputCurrentKeyID, cfg.WorkloadReleaseInputKeys)
+	if err != nil {
+		_ = privateSecrets.Close()
+		return nil, err
+	}
+	if cfg.WorkloadReleaseInputsEnabled {
+		if err := startup.PreflightPrivateWorkloadReleaseKeys(ctx, operations, workloadReleaseKeys); err != nil {
+			_ = privateSecrets.Close()
+			return nil, fmt.Errorf("private workload release key preflight: %w", err)
+		}
+	}
+	deployExecutor := &fleetdeploy.ClaimedFleetDeploymentExecutor{Store: operations, Nomad: nomadClient,
 		DatabaseSecrets: privateSecrets, JobSecrets: secrets.NewManager(cfg.AppsDir), AppsDir: cfg.AppsDir,
 		Authority: cfg.ControlAuthority, DatabaseProfile: cfg.DatabaseProfile, Route: transport}
-	return &etcdFleetDeployRuntime{worker: worker.NewOperationWorkerForKinds(operations, executor, []string{"app.deploy"}), secrets: privateSecrets}, nil
+	workloadExecutor, err := newEtcdWorkloadReleaseExecutor(operations, nomadClient, transport, cfg.AppsDir, workloadReleaseKeys)
+	if err != nil {
+		_ = privateSecrets.Close()
+		return nil, err
+	}
+	executor := &etcdFleetReleaseOperationExecutor{deploy: deployExecutor, workload: workloadExecutor}
+	return &etcdFleetDeployRuntime{worker: worker.NewOperationWorkerForKinds(operations, executor, []string{"app.deploy", "app.workload-release"}), secrets: privateSecrets}, nil
 }
 
 // privateFleetDeployFile refuses symlinks, group/world access, and foreign

@@ -62,6 +62,16 @@ func TestPrivateInvocationKeyRingRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestWorkloadReleaseInputKeyRingRuntimeConfig(t *testing.T) {
+	t.Setenv("NORN_WORKLOAD_RELEASE_INPUTS_ENABLED", "true")
+	t.Setenv("NORN_WORKLOAD_RELEASE_INPUT_CURRENT_KEY_ID", "release-2026-11")
+	t.Setenv("NORN_WORKLOAD_RELEASE_INPUT_KEYS", `{"release-2026-11":"base64-key-material"}`)
+	cfg := Load()
+	if !cfg.WorkloadReleaseInputsEnabled || cfg.WorkloadReleaseInputCurrentKeyID != "release-2026-11" || cfg.WorkloadReleaseInputKeys == "" {
+		t.Fatal("workload release input key-ring configuration was not loaded")
+	}
+}
+
 func TestLegacyTokenSigningDeadline(t *testing.T) {
 	t.Setenv("NORN_LEGACY_TOKEN_SIGNING_UNTIL", "2026-08-10T12:00:00Z")
 	if got := Load().LegacyTokenSigningUntil; !got.Equal(time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)) {

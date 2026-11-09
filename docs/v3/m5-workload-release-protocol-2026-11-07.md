@@ -1,26 +1,98 @@
 # M5 workload resize and mixed-version protocol
 
-Status (2026-11-09): internal stateless release controller, durable receipt
-CAS, claim-bound route-step intent/authority, atomic route promotion, runtime
-dispatch, target health gating, and old-job stop/readback are implemented in
-the PR #302 candidate. Commit `c55efd56` requires a proved target-only route
-before old-job stop. Focused tests, full PR CI, and the bounded statechart pass.
-The PR remains open and unmerged; operator API/CLI admission, a
-production-store worker/lease crash matrix, target-specific public traffic
-evidence, live canary qualification, and stateful data compatibility remain
-open.
+Status: the durable etcd worker, signed-acceptance verification, claim-bound
+route writer, old-stop recovery, and same-intent controller replay are wired
+as offline implementation seams. There is still no operator/API path to admit
+an `app.workload-release` operation. A production-driver crash matrix and
+live qualification remain open as of 2026-11-08. The private-input key
+inventory is now checked at startup when the dedicated workload-release input
+capability is enabled; the capability remains disabled by default.
 This note authorizes no live workload, route, or provider change.
 
-The mixed-version statechart now checks two allocation-capacity cases. With
-two old and two target allocations, capacity 3 preserves every safety
-invariant but has no path to target-only routing or completion under the
-target-only-before-drain rule. Capacity 4 reaches the terminal receipt while
-preserving that rule. Treat capacity as schedulable allocation slots under
-the actual placement/resource constraints, not as a node count. Before an
-online release, prove that the full target cohort can be healthy alongside
-the serving cohort; a single spare slot only stages the first target and is
-not enough for this modeled protocol. See the
-[two-capacity statechart](statecharts/workload-mixed-version/README.md).
+## Current branch verification — 2026-11-08
+
+PR [#302](https://github.com/antiartificial/norn/pull/302) is open. Commit
+`ac2dcc1825aef349625c17818ce4b521b39adb7e` adds the V3 deployment-source
+corroboration described below. The full API Go suite passed locally on that
+code. CI runs [42508471380](https://github.com/antiartificial/norn/actions/runs/42508471380)
+and [42508471431](https://github.com/antiartificial/norn/actions/runs/42508471431)
+were still in progress at the latest check. Checks on this PR validate branch
+code and disposable fixtures only; they do not qualify the deployed DO Fleet,
+Mini, or any live upgrade.
+The earlier offline statechart at `4703f5bcdd0c98943f86d1fc6cfc97ad3f027743`
+passed 86-state/203-transition TLC. The current expanded model in
+`docs/v3/statecharts/workload-release-admission/` was regenerated on
+2026-11-08: TLC checked 458 states and 1,663 transitions, all 18 listed
+safety invariants and deadlock, with no violations. The model now separates
+the active route predecessor from independently observed serving lineage, and
+each can be removed independently in a fail-closed admission scenario. It includes a
+crash after stage-effect reservation but before the create marker, and models
+scheduler acceptance plus a lost response as one transition. This remains a
+protocol model, not proof of the runtime driver.
+
+The current M5 working tree adds a deterministic, database-free target job
+builder, a private-input preparation helper, and claimed-worker wiring for
+secret staging, one-use create marking, create-only Nomad registration, and
+exact readback binding. The worker ignores the registration response; a
+missing or ambiguous readback stays pending and cannot trigger a second
+registration. Existing route, health, drain, and stop readers resolve the
+binding to the strict intent. Local tests cover the builder, SOPS/age input
+handling, etcd successor recovery, plan verification, and plan-derived stop
+effect acceptance; `go test ./... -count=1` passes for `v2/api`. This remains
+local implementation evidence, not live qualification. Delayed Nomad
+acceptance, production ACL behavior, and retention lifecycle remain open.
+
+The V3 store now resolves a qualification by exact ID from its signed operation
+record, checks the trusted staging signature and expiry, and requires a
+matching completed deployment and region results. The etcd integration test
+also caught a source-verification bug: the check read the immutable deployment
+record without its mutable region results and rejected the qualification.
+Qualification verification now reads the store's verified deployment
+projection; both this lookup and private-input acceptance pass against
+disposable local etcd. Authenticated operator admission still does not call
+this resolver.
+
+## Release-readiness milestones and order
+
+The current code and evidence support a staged plan, not a claim that V3 is
+ready to update either environment. Keep the independent Mini and the DO
+staging Fleet as separate release lanes. The DO provider inventory is not
+evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
+
+| Milestone | Status | Work | Exit evidence | Can run alongside |
+| --- | --- | --- | --- | --- |
+| M5-A: offline protocol | Partial: expanded bounded statechart (458 states/1,663 transitions, 18 invariants plus deadlock), fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, one-use attempt marker, and stage-worker wiring pass locally. Offline tests cover secret-stage failure before marker/create, conservative hold while an ambiguous create remains absent, and exact-target adoption when it becomes visible without resubmission. Four independent missing-admission-evidence scenarios now reject. Production-driver failure matrix remains open. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, pre-attempt reservation recovery, exact-target adoption after response loss, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on absent or mismatched target. | M5-B, input-provenance inventory, M5-C design |
+| M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound exact SOPS snapshot capture, atomic etcd acceptance/input persistence, opt-in startup preflight for retained envelope keys, a signed-qualification-to-plan validator, and a V3 store lookup by exact qualification ID are implemented locally. A server-side Nomad lineage observer now binds the active route operation/spec/image/process/job digest to fresh version, modify-index, replica, and exact allocation readback at the private store boundary. Automatic qualification discovery and complete secret/catalog/database revision resolution are not yet joined to an authenticated producer. | Resolve a qualified candidate from trusted control state; bind exact source/spec/image digests, secret/catalog/database revisions, serving lineage, and qualification expiry. Reject caller-supplied scheduler observations. | Deterministic tests bind app, trusted signer, validity window, completed staging deployment, source SHA, exact content-addressed artifact, and attestation subject digest; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
+| M5-C: atomic release admission | Partial guard: private etcd acceptance requires an injected trusted Nomad observer, current active route/reservation, exact serving-lineage match, and immediate successor route generation; it repeats the lineage read before commit and compares route revisions in the acceptance transaction. Disposable-etcd tests cover missing observer, stale Nomad modify index, exact match, and idempotent replay without mutable reads. No authenticated operator/API acceptance path exists. | Add authenticated operator API/CLI admission using a server-resolved signed qualification, current serving lineage, exact plan, and private-input snapshot. Bind idempotency, signature, one-app mutation slot, desired count, and Fleet generation in one transaction. | Replay returns the same operation; key reuse with different candidate/input conflicts; concurrent deploy/scale/release races admit at most one; stale candidate or predecessor writes nothing. | M5-A/B |
+| M5-D: private stage and binding | Partial: signed-plan-bound stage effect, shared app gate, one-use attempt marker, successor-claim recovery, exact database-free job builder, operation-bound SOPS input decryption, private Nomad secret staging, create-only CAS, exact readback, and strict-intent downstream wiring implemented locally. Retained input-key preflight now checks V3 etcd before its deploy worker starts. Offline orchestration tests prove secret-stage failure, claim loss after secret staging, and marker transaction failure all prevent create; absent readback holds, and a later exact readback is adopted without a second registration. Full API Go suite passes. Delayed-request/production-driver cases are not yet qualified. | Extend deterministic worker fault cases for every stage/create/readback/bind boundary, then run the same protocol against a version-pinned disposable Nomad/ingress stack with delayed acceptance and lost responses. | Fault matrix proves exact-target adoption after lost response or durable conservative hold, never a duplicate create; no route changes during stage. | M5-E test harness |
+| M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
+| M5-F: DO staging workload release | Partial: historical 2→3→2 scale, sequential drain, and canary probes passed; the 2026-11-08 public route serves source `be5ca5d…` across two reported allocations. The durable second-release operation receipt has not been re-read, and mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; after M5-A–E, run fixed-image resize and mixed-version recovery through the release-owned admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |
+| M5-G: independent Mini V3 upgrade | Complete for the 2026-11-07 direct V3 adoption; a 2026-11-08 read-only Mini refresh confirms a running V3 release and host services. | Retain the signed adoption/controller-repair receipts and repeat candidate-specific backup, compatibility, and postflight checks for every future Mini release. Keep Mini independent of Fleet. | Signed target `bba290d…`, controller journal and preservation receipt, schema-51 postflight, and current API/host readback on signed repair source `d4dc88e…`. This does not establish uninterrupted service or rollback across future incompatible schema changes. | Documentation; M6 low-interruption/rollback work |
+
+M5-A through M5-C are the next offline implementation priority. M5-B must
+identify a real source of qualified immutable candidates before M5-C exposes
+an operator action. M5-D/E require that contract. M5-F is the first workload
+qualification. M5-G records the completed independent Mini adoption; it does
+not qualify DO workloads. Run the DO runtime/capacity gate before M5-F and
+refresh Mini preflight before any later Mini release.
+
+The fresh-Fleet bootstrap lane is separate from upgrading the existing DO
+staging Fleet. Its future two application pools default to **General** and
+**Stateful**; do not resize or reshape current staging to implement that
+default. Bootstrap still needs deterministic credential/input war-gaming and
+an idempotent controller recovery record before any provider mutation.
+
+## V2 compatibility and test retirement
+
+The current versioned HTTP contract is `/api/v1`; `v2/api` is the Go source
+path, not evidence of a separate `/api/v2` API. A few `v2` test names refer to
+wire-schema generations rather than the retired server contract. The runtime
+still retains an unset-database-profile fallback for historical PostgreSQL
+deployments, and legacy migration/recovery fixtures still protect the Mini
+transition. No test is safe to delete based on its name alone. Retire tests
+with the legacy runtime paths they cover after the Mini PostgreSQL/runtime
+compatibility gate is explicitly closed; keep recovery and fail-closed
+security tests until then.
 
 ## Keep three changes separate
 
@@ -72,7 +144,7 @@ The mixed-version statechart in
 `docs/v3/statecharts/workload-mixed-version/` is a proposed transition contract,
 not a description of a shipped generic mixed-version release controller. It
 requires additive schema expansion, compatible old/new writers during overlap,
-healthy target capacity, a freshly proved target-only route before any old allocation drains,
+healthy target capacity before each old allocation drains, fresh route proof,
 and same-intent recovery. Proposed route policy is forward-only: loss of route
 proof holds drains and schema contraction; recovery resumes only after a fresh
 readback confirms the exact currently published generation. Automatic fallback
@@ -138,13 +210,82 @@ datacenter placement. Local etcd integration tests pass for the valid signed
 intent and fail closed on changed target, payload drift, or released lock. This
 verifies admission provenance only; it does not reserve or publish route steps.
 
+The admission design now also defines a scheduler-free
+`WorkloadReleasePlan` that resolves only after a create-only Nomad registration
+has been observed. The plan-to-binding resolver and etcd write-once binding
+store are implemented locally: binding requires the signed plan, live operation
+claim, app lock, and unchanged Fleet target generation; replay of the same
+binding is idempotent, while a conflicting binding or stale claim is rejected.
+The plan resolver and write-once binding were part of PR #302. Subsequent
+worker, private-input, and recovery wiring in this worktree is uncommitted.
+Authenticated API admission remains absent.
+
+The stage effect has a signed-plan validator and reserves through the shared
+app mutation gate. The claimed worker now rebuilds the target from the exact
+local InfraSpec, opens only the operation-bound encrypted managed inputs,
+stages those inputs, writes a claim-fenced one-use attempt marker, and issues
+create-only Nomad CAS. It ignores the write response and binds only after exact
+source/no-diff Nomad readback. A missing or ambiguous target returns pending;
+the worker does not retry registration. Existing health, route, drain, and
+stop readers resolve the durable binding back into the strict intent. Binding,
+successful effect completion, and app-gate release commit in one etcd
+transaction. Focused etcdstore, startup, worker, secrets, and API package tests
+pass locally. Full repository verification and delayed-request/production
+driver qualification remain open.
+Qualification provenance now has a store-level check against the completed
+V3 deployment record, described below. Automatic qualification discovery,
+managed secret/catalog revision resolution, and authenticated operator/API
+admission remain open.
+
+Private workload-release acceptance now requires a trusted signed staging
+qualification and corroborates it against the V3 deployment store: the
+qualification's deployment ID must resolve through the signed acceptance
+index to a succeeded `app.deploy` operation, with matching staging app,
+source revision, immutable image, spec digest, and completed region results.
+A valid signed receipt without that completed V3 source is refused. This is a
+store-level provenance check; it does not yet provide an authenticated
+workload-release HTTP admission route or automatic qualification discovery.
+
+Private workload-release acceptance now has a separate etcd input record. Its
+purpose-separated envelope binds the exact encrypted SOPS bytes to authority,
+operation, app, and plan digest; the acceptance, private record, one-active-app
+fence, and current control-owned Fleet target revision commit atomically. A
+retry opens the retained envelope and constant-time compares the submitted
+snapshot before returning the original acceptance. Restore can enumerate all
+required envelope key IDs. Admission also requires a current control-owned
+active route and matching reservation; the signed plan's old deployment must
+match that route, and its first route generation must be the immediate
+successor. Both etcd revisions are compared in the acceptance transaction, so
+a route handoff racing acceptance cannot leave a stale release queued. This
+primitive is not yet mounted behind an authenticated workload-release admission
+API or connected to a target job builder, so it remains an implementation seam.
+
+The API can now opt into retained-key startup preflight with
+`NORN_WORKLOAD_RELEASE_INPUTS_ENABLED=true`,
+`NORN_WORKLOAD_RELEASE_INPUT_CURRENT_KEY_ID`, and
+`NORN_WORKLOAD_RELEASE_INPUT_KEYS` (a JSON object mapping key IDs to base64
+32-byte keys). This ring is separate from Function V3 and audit signing keys.
+When enabled, startup reads all retained workload-release envelope key IDs and
+fails before workers/HTTP serving if the store cannot be read, the store does
+not expose the key inventory, or any historical key is absent. Turning this
+capability on does not enable an admission endpoint or release worker. Key
+rotation/removal still needs an explicit retention and deletion policy; do not
+remove a key until all retained records that need it are retired or rewrapped.
+
 ## Qualification order
 
 ### A. Offline contract first
 
-Build a deterministic harness using synthetic images, payloads, operation IDs,
+Build a deterministic test fixture using synthetic images, payloads, operation IDs,
 schema epochs, and route receipts. No real Fleet credentials, provider calls,
 SSH, public route mutation, or production data should be available to it.
+
+The proposed release-owned staging and recovery path has a bounded TLA+ model
+in [`statecharts/workload-release-admission`](statecharts/workload-release-admission/README.md).
+It checks the attempt-marker crash gap, delayed create, exact target binding,
+route progression, and the target-only proof required before old-job stop.
+The model does not prove that the admission or staging code exists. It also
+does not replace disposable Nomad and ingress qualification.
 
 The stateless canary contract should assert:
 
@@ -181,14 +322,9 @@ or response bodies.
 Only after the DO read-only readiness milestone and platform release gate pass:
 
 1. Read capacity, eligible app nodes, allocations, route target, pending work,
-   and exact current image/operation receipts. Verify schedulable capacity for
-   the complete target cohort while the old cohort continues serving. For the
-   modeled two-old/two-target case, prove four simultaneous allocation slots
-   under the real Nomad placement and resource constraints. One spare slot
-   permits an initial target allocation but cannot reach target-only routing
-   while old allocations are retained. If full overlap capacity is absent,
-   hold before admission or separately qualify and approve a different
-   availability protocol; do not bypass the target-only route fence.
+   and exact current image/operation receipts. Verify there is one extra
+   schedulable app node for a two-replica, distinct-host canary; otherwise
+   separately approve capacity first.
 2. Use the existing `norn-fleet-canary` with a protected immutable candidate
    digest. Record continuous route probes, target allocation health, operation
    and effect receipts, errors/latency, drain acknowledgements, and exact
@@ -217,13 +353,10 @@ Nomad alone does not prove public-route availability or data correctness.
 The old-generation stop/recovery slice now has a bounded statechart and a
 deterministic Go lost-response fixture. The model checks one stop write per
 intent, marker recovery without a second stop, and completion only after the
-pinned old allocations are terminal. The executor requires a validated `draining` receipt proving full target health
-and the exact target-only (0 old / 100 target) route generation before it
-reserves or launches the old-job stop. Review found that entering `draining`
-at the first mixed route could stop the old job while the route still sent it
-traffic. The candidate fix keeps mixed steps in `routing` and enters `draining`
-only after target-only proof; focused tests and a refreshed statechart check
-this ordering. The fix is unmerged and not live-qualified. See
+pinned old allocations are terminal. The executor requires a validated
+`draining` receipt proving full target health and the final target-only route
+generation while the old allocations are still running before it reserves or
+launches the old-job stop. Mixed-route proof alone is not sufficient. See
 [`statecharts/workload-stop-recovery`](statecharts/workload-stop-recovery/README.md).
 The receipt repository now loads integrity-checked bytes from claim-fenced
 PostgreSQL or etcd CAS stores and validates each successor before storage. The
@@ -234,10 +367,10 @@ The stop executor loads the receipt itself and checks that it belongs to the
 same operation. A target-health controller also verifies the active claim and
 warming phase, reads the exact pinned target job through Nomad, and persists
 pending or healthy allocation evidence without mutating Nomad or ingress.
-The etcd worker verifies signed admission and route-generation
-reservation/publication/readback are wired as internal controller seams. The
-API/CLI admission path remains unwired, so this is not yet an operator-facing
-release action.
+The etcd runtime registers the worker for `app.workload-release` and
+verifies the signed acceptance under the app lock. The current API and CLI
+entry points do not create an accepted operation. Operators cannot use this
+worker path to start a release.
 
 The scale-target reader now resolves completed workload lineage through its
 signed acceptance and complete receipt. It also requires the shared route
@@ -269,26 +402,26 @@ signed `app.workload-release` operations, verifies acceptance under the app
 lock, and reconciles health, route steps, old-stop/readback, final route, and
 terminal receipt. Deploy and workload route writers share a serialized
 executor because they bind the same private authority listener. Owner-only
-transport configuration is reused. The top-level lifecycle now has a
-deterministic driver-level fixture that injects lost responses after
-initialization, health, each route step, stop, drain, and completion, then
-re-enters the same reconciler. A fixture using production etcd, Nomad, and
-ingress drivers to inject process and lease failures remains open; no live
-qualification has run.
+transport configuration is reused. The controller lifecycle has a deterministic driver-level fixture that injects
+lost responses after initialization, health, each route step, stop, drain, and
+completion, then re-enters the same reconciler. A production-store worker
+fixture using the real etcd, Nomad, and ingress adapters to inject process and
+lease failures remains open; no live qualification has run.
 
-The receipt lifecycle now refreshes target allocation health in warming,
-routing, and draining phases. Total target health loss after traffic begins
-records a terminal held receipt. Mixed route commits remain in `routing`. Only
-committing and freshly proving the final target-only route transitions into
-`draining`, which makes the exact old-stop executor reachable. Its stable stop marker survives claim
-renewal. After the durable stop result, a fresh Nomad readback binds the exact
-stopped revision and every pinned allocation into the receipt; the final route
-can advance only after that drain proof, and terminal completion requires the
-target-only route and full target health. The lost-response integration
-fixture now covers stop recovery, exact drain receipt, final-route receipt, and
-terminal completion. Route-intent integration covers replay after a lost
-commit response, and the top-level fixture covers eight durable
-response-loss boundaries with exactly one old-stop write. The full repository test run exposed migration inventories
+The receipt lifecycle refreshes target allocation health in warming, routing,
+and draining phases. Total target health loss after traffic begins records a
+terminal held receipt. Committing the final target-only route while all old
+allocations are still running transitions into draining. Before any old-job
+stop request, the controller requires full target health and target-only route
+proof for the exact committed generation. Its stable stop marker survives
+claim renewal. After the durable stop result, a fresh Nomad readback binds the
+exact stopped revision and every pinned allocation into the receipt; terminal
+completion requires the target-only route, full target health, and the verified
+old-allocation drain. The lost-response integration fixture covers stop recovery,
+exact drain receipt, final-route receipt, and terminal completion. Route-intent
+integration covers replay after a lost commit response, and the top-level
+fixture covers eight durable response-loss boundaries with exactly one
+old-stop write. The full repository test run exposed migration inventories
 that must be updated alongside any new durable table: startup contract,
 control-recovery inspection, and retention classification now include
 workload-release receipt migration 52. After extracting the driver seam,
@@ -301,10 +434,10 @@ checks 55 states and 111 transitions across eight safety invariants and
 deadlock freedom. It models partial per-node publication and an atomic etcd
 transaction that advances the active route and receipt together. A lost
 response after commit requires fresh same-intent route and traffic
-revalidation before the old stop. Route-step authority, durable intent,
-independent traffic proof, and atomic active-route/receipt promotion now exist
-as controller seams. Worker dispatch and driver-level lost-response replay are
-implemented; production-driver crash matrix and live qualification remain
+revalidation before the old stop. Route-step authority, durable intent, independent traffic proof, and atomic
+active-route/receipt promotion now exist as controller seams. Internal worker
+dispatch and driver-level lost-response replay are implemented. Operator/API
+admission, a production-driver crash matrix, and live qualification remain
 open.
 
 - Fixed-image replica scaling, application-version overlap, and node-pool
