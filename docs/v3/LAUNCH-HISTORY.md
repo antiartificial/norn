@@ -1,5 +1,34 @@
 # Norn v3 launch history
 
+## Mini release candidate and queued Fleet receipt review (2026-11-09 21:31 UTC)
+
+The protected `platform-release` approval published immutable signed
+prerelease `platform-e9a21d2095d60c8a96c1440e35e045dd0b6a7637` from exact source
+`e9a21d2095d60c8a96c1440e35e045dd0b6a7637`. The Darwin/arm64 bundle passed
+signature, manifest, archive-inventory, SBOM, and source-SHA verification.
+Mini remained healthy on `d4dc88e0c37003a1013caed444983b2eeb50fbcb`, schema
+51. Candidate passive preflight required schema 52 and stopped before DDL or
+promotion; this is a safe hold, not an upgrade failure after mutation.
+
+The seven stale DO dispatch receipts were submitted individually to the
+lookup-only reconciliation endpoint. Each returned 409
+`fleet_github_dispatch_binding_mismatch` because the reservation's Fleet lane
+no longer matches current configuration. None was reconciled or modified, and
+no dispatch/apply was triggered. Preserve these receipts through Mini schema
+migration; do not rebind them to the present lane.
+
+Source review found the `legacy-baseline` migration path logged that queued
+Fleet receipts were preserved but omitted the migrator option that permits
+only queued `fleet.github.apply-dispatch` rows during strict database
+quiescence. The resulting migration would stop after the old API and host agent
+were fenced. The local controller now passes the preserve option, and its
+focused end-to-end transition regression confirms the migration process
+receives it; the full `startup` package and shell syntax check pass. This fix
+still requires merge, protected qualification, and a new signed release. The
+Mini has not migrated or promoted the candidate. A fresh protected backup,
+private restore proof, new-source artifact verification, and repeat preflight
+remain required before a scheduled transition.
+
 ## DO token-scope admission (2026-11-09 20:27 UTC)
 
 `norn-fleet` PR #948 merged as

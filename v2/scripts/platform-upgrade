@@ -2889,19 +2889,20 @@ run_schema_migration() {
       NORN_STARTUP_MODE=active \
       NORN_SCHEMA_MODE=migrate-only \
       NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
-	  NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true \
-	  "$release/bin/norn-api"
-  elif [[ "$mode" == "legacy-baseline" && "${NORN_M5_TRANSITION_TEST_HOOKS:-}" != "1" ]]; then
-	  env \
-	    -u NORN_SKIP_DEPLOYMENT_RECOVERY \
-	    -u NORN_SKIP_OPERATION_RECOVERY \
-	    -u NORN_SKIP_OPERATION_WORKER \
-	    -u NORN_SKIP_NOMAD_WATCHER \
-	    -u NORN_RECOVERED_FORWARD_MAINTENANCE \
-	    -u NORN_LEGACY_BASELINE_MAINTENANCE \
-	    NORN_STARTUP_MODE=active \
-	    NORN_SCHEMA_MODE=migrate-only \
-	    NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
+      NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true \
+      "$release/bin/norn-api"
+  elif [[ "$mode" == "legacy-baseline" ]]; then
+    env \
+      -u NORN_SKIP_DEPLOYMENT_RECOVERY \
+      -u NORN_SKIP_OPERATION_RECOVERY \
+      -u NORN_SKIP_OPERATION_WORKER \
+      -u NORN_SKIP_NOMAD_WATCHER \
+      -u NORN_RECOVERED_FORWARD_MAINTENANCE \
+      -u NORN_LEGACY_BASELINE_MAINTENANCE \
+      NORN_STARTUP_MODE=active \
+      NORN_SCHEMA_MODE=migrate-only \
+      NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
+      NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true \
       "$release/bin/norn-api"
   else
     env \
