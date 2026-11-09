@@ -2,11 +2,25 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 15:49 UTC)
+## Current V3 release readiness (2026-11-09 18:32 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
 the sole staging Fleet and remains a separate qualification target.
+
+The last protected-master qualification attempt used `d8b08a32` in run
+[42670882840](https://github.com/antiartificial/norn/actions/runs/42670882840)
+and failed three API tests: manual webhook replay lacked its audit-receipt
+fixture, and two schema assertions still expected migration 51 instead of 52.
+PR [#359](https://github.com/antiartificial/norn/pull/359) at
+`4ee0a27e10769d6b47c9e8480bdbab55edb72f01` repairs those fixtures/assertions.
+Its rerun passed the API suite, CLI, Fleet pilot, M4 durable-replica, UI,
+release-contract, workflow-lint, and security checks. The rerun did not produce
+the required `OpenAPI contract` check, so branch protection still blocks the
+merge. The protected-master qualification has not been rerun on the fix;
+release publishing and another Mini upgrade have not run. Mini Git-path
+readback at 17:53 UTC remains the newest Mini evidence below; the DO runtime
+readiness evidence remains the Nov 8 readback below.
 
 - **Mini direct:** the independent Mini's completed Nov 7 controller-mediated
   direct adoption remains in place; this refresh did not attempt another
