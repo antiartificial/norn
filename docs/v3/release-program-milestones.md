@@ -73,6 +73,22 @@ deployment, provider mutation, or credential use.
   inventory. Host assurance can publish or prune routes, so treat it as a live
   mutation. Do not substitute platform smoke for this gate.
 
+## Mini read-only check — 2026-11-09 01:20 UTC
+
+- The Mini API returned V3 source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`.
+  The read-only inventory reported API health and host status as `ok`, with 30
+  apps and 46 services.
+- `norn host doctor` passed its managed-file, LaunchAgent, runtime, and
+  Cloudflare config/process checks. It does not test route reachability or
+  create a host-assurance receipt. No host assurance or upgrade ran.
+- The active-event endpoint returned 25 incident groups: 22 critical and 3
+  warning. The host-assurance failure group was last seen at 01:20:25 UTC.
+- The active-operation endpoint returned seven old queued
+  `fleet.github.apply-dispatch` receipts. They remain Fleet reconciliation
+  work; this readback found no Mini platform-upgrade operation.
+- Norn PR #301 remains open. A new successful host assurance and route
+  inventory remain required after the protected release.
+
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
 recovery work, workload protocol refinement, and V2 caller migration planning.
