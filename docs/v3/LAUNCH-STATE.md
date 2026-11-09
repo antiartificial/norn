@@ -2,24 +2,27 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 15:02 UTC)
+## Current V3 release readiness (2026-11-09 15:49 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
 the sole staging Fleet and remains a separate qualification target.
 
-- **Mini direct:** the independent Mini reports API health and host status
-  `ok` on signed V3 repair release
-  `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
-  (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The 2026-11-09 14:59 UTC
-  authenticated read found 30 app records, 46 services (19 passing, 27
-  unknown), seven queued `fleet.github.apply-dispatch` receipts last updated
-  Oct 8–10, 25 active incident groups, and four snapshot-retention warnings.
-  Production readiness was generated at 14:59 UTC and remains blocked (7
-  passed, 1 warning, 18 failed). Host status is `ok`, but its latest assurance
-  receipt remains the successful 2026-09-06 operation; fresh route assurance
-  is still unproven. Mini remains independent of Fleet.
-- **DO staging:** read-only `doctl --context work` queries at 15:02 UTC found
+- **Mini direct:** the independent Mini's completed Nov 7 controller-mediated
+  direct adoption remains in place; this refresh did not attempt another
+  upgrade. At 15:48 UTC, authenticated reads reported API health and host
+  status `ok`, `runtimeMutationFence=inactive`, and the Consul, Nomad,
+  Postgres, S3, SOPS, and Nomad/Consul workload-connector services up on signed
+  V3 repair release `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+  (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The inventory contained 30 app
+  records and 46 service records (19 passing, 27 unknown), with 21 of 21
+  allocations running. It also found seven queued `fleet.github.apply-dispatch`
+  receipts last updated Oct 8–10, 25 active incident groups, and four
+  snapshot-retention warnings. Production readiness generated at 15:48:50 UTC
+  remains blocked (7 passed, 1 warning, 18 failed). The latest assurance
+  receipt is successful but its operation timestamp is 2026-09-06; this refresh
+  did not run route assurance. Mini remains independent of Fleet.
+- **DO staging:** read-only `doctl --context work` queries at 15:49 UTC found
   all nine `tk-staging-nyc3` Droplets active (3 control, 2 ingress, 4 app),
   the ingress load balancer active, and the management-authority PostgreSQL
   plus application PostgreSQL/MySQL databases online. The latest public
@@ -27,7 +30,7 @@ the sole staging Fleet and remains a separate qualification target.
   `norn-fleet-canary`, and five `/version` responses reported source
   `be5ca5d969ccf3509e62ce04a833516bb5c204db` across two allocation IDs and
   two node IDs. The canary hostname returns 404 for `/api/health`. Current
-  provider resources and the earlier canary probe do not establish current
+  Provider resources and that earlier canary probe do not establish current
   Norn API health, etcd quorum, Nomad/Consul control-plane health, application
   catalog state, or the terminal receipt for the earlier failed deployment.
   Full Fleet runtime health remains unverified. Genesis readback remains

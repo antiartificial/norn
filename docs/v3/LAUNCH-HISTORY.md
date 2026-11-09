@@ -1,5 +1,28 @@
 # Norn v3 launch history
 
+## Read-only Mini and DO refresh (2026-11-09 15:48–15:49 UTC)
+
+The authenticated Mini inventory at 15:48 UTC reported API and host status
+`ok`, an inactive runtime mutation fence, and Consul, Nomad, Postgres, S3,
+SOPS, and the Nomad/Consul workload connector up on signed V3 repair release
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`. It contained 30 app records and
+46 service records (19 passing, 27 unknown), with 21 of 21 allocations
+running. Seven `fleet.github.apply-dispatch` receipts remain queued from Oct
+8–10; 25 incident groups remain open, and snapshot retention is over limit for
+four apps. Production readiness generated at 15:48:50 UTC remains blocked (7
+passed, 1 warning, 18 failed). The latest assurance operation succeeded but
+its operation timestamp is still Sep 6; this refresh did not run route
+assurance. The Mini's Nov 7 direct adoption remains complete; no new upgrade
+was attempted.
+
+Read-only `doctl --context work` queries at 15:49 UTC found all nine
+`tk-staging-nyc3` Droplets active, the ingress load balancer active, and the
+management-authority PostgreSQL plus application PostgreSQL/MySQL databases
+online. This provider inventory does not verify current Norn API, etcd,
+Nomad/Consul, application catalog, or route health. The canary proof remains
+the separately dated 13:09 UTC probe recorded below. No provider, host,
+deployment, or route mutation was run.
+
 ## Read-only Mini and DO refresh (2026-11-09 14:59–15:02 UTC)
 
 The authenticated Mini inventory at 14:59 UTC reports API health and host
