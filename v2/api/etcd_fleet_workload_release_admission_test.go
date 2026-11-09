@@ -193,33 +193,19 @@ func (f *workloadReleaseAdmissionLineageFake) ObserveActiveDeploymentLineage(con
 	return f.lineage, nil
 }
 
-func TestEtcdWorkloadReleaseAdmissionResolvesReplayBeforeMutableEvidence(t *testing.T) {
-	const app, qualificationID, key = "demo", "qualification-1", "retry-key"
-	digest, err := pipeline.WorkloadReleaseRequestDigest(qualificationID, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := store.OperationRequestIdentity{Authority: "authority-1", Actor: store.OperationActor{Issuer: "norn://managed-token", Subject: "root-operator"},
-		Kind: "app.workload-release", Resource: "app/" + app, Key: key}
-	prior := store.AcceptedOperation{Intent: store.SignedAcceptanceIntent{CanonicalDigest: "sha256:prior"},
-		Operation: model.Operation{ID: "accepted-release", Kind: identity.Kind, App: app, Status: model.OperationQueued,
-			Metadata: map[string]interface{}{"workloadReleaseRequestDigest": digest}}}
-	operations := &workloadReleaseAdmissionStoreFake{authority: identity.Authority, prior: &prior, identity: identity}
-	response := serveWorkloadReleaseAdmission(t, operations, `{"qualificationId":"qualification-1","targetReplicas":2}`, key, false)
-	if response.Code != http.StatusOK || operations.resolve != 1 || operations.accept != 0 || operations.targetReads+operations.policyReads+operations.route+operations.qualify != 0 || !strings.Contains(response.Body.String(), `"replayed":true`) {
-		t.Fatalf("exact retry read mutable admission state: code=%d body=%s store=%+v", response.Code, response.Body.String(), operations)
-	}
+type workloadReleaseAdmissionFixture struct {
+	cfg                      *config.Config
+	operations               *workloadReleaseAdmissionStoreFake
+	lineage                  *workloadReleaseAdmissionLineageFake
+	trustedQualificationKeys []string
+	encryptedInputs          string
+	secretPath               string
+	policy                   store.WorkloadReleasePolicy
+	route                    etcdstore.WorkloadReleaseServingRoute
 }
 
-func TestEtcdWorkloadReleaseAdmissionRejectsCIPrincipal(t *testing.T) {
-	operations := &workloadReleaseAdmissionStoreFake{authority: "authority-1"}
-	response := serveWorkloadReleaseAdmission(t, operations, `{"qualificationId":"qualification-1","targetReplicas":2}`, "key", true)
-	if response.Code != http.StatusForbidden || operations.resolve != 0 || operations.accept != 0 {
-		t.Fatalf("CI principal reached owner-operated admission: code=%d body=%s", response.Code, response.Body.String())
-	}
-}
-
-func TestEtcdWorkloadReleaseAdmissionConcurrentSameKeyConverges(t *testing.T) {
+func newWorkloadReleaseAdmissionFixture(t *testing.T) workloadReleaseAdmissionFixture {
+	t.Helper()
 	cfg, signingKey := qualificationTestConfig(t)
 	appsDir := t.TempDir()
 	if err := os.Chmod(appsDir, 0o750); err != nil {
@@ -260,7 +246,8 @@ endpoints:
 		t.Fatal(err)
 	}
 	const encryptedInputs = "encrypted-sops-fixture"
-	if err := os.WriteFile(filepath.Join(appDir, "secrets.enc.yaml"), []byte(encryptedInputs), 0o600); err != nil {
+	secretPath := filepath.Join(appDir, "secrets.enc.yaml")
+	if err := os.WriteFile(secretPath, []byte(encryptedInputs), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg.AppsDir = appsDir
@@ -312,7 +299,113 @@ endpoints:
 		JobDigest: strings.TrimPrefix(route.JobDigest, "sha256:"), JobVersion: 7, ModifyIndex: 55, Process: route.Process,
 		Replicas: 1, AllocationIDs: []string{"old-allocation"}}}
 	operations := &workloadReleaseAdmissionStoreFake{authority: "authority-1", qualification: qualification,
-		targetInfo: target, policyInfo: policy, routeInfo: route, deployment: deployment, initialReplayBarrier: make(chan struct{})}
+		targetInfo: target, policyInfo: policy, routeInfo: route, deployment: deployment}
+	return workloadReleaseAdmissionFixture{cfg: cfg, operations: operations, lineage: lineage,
+		trustedQualificationKeys: trustedQualificationKeys, encryptedInputs: encryptedInputs, secretPath: secretPath,
+		policy: policy, route: route}
+}
+
+func TestEtcdWorkloadReleaseAdmissionResolvesReplayBeforeMutableEvidence(t *testing.T) {
+	const app, qualificationID, key = "demo", "qualification-1", "retry-key"
+	digest, err := pipeline.WorkloadReleaseRequestDigest(qualificationID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := store.OperationRequestIdentity{Authority: "authority-1", Actor: store.OperationActor{Issuer: "norn://managed-token", Subject: "root-operator"},
+		Kind: "app.workload-release", Resource: "app/" + app, Key: key}
+	prior := store.AcceptedOperation{Intent: store.SignedAcceptanceIntent{CanonicalDigest: "sha256:prior"},
+		Operation: model.Operation{ID: "accepted-release", Kind: identity.Kind, App: app, Status: model.OperationQueued,
+			Metadata: map[string]interface{}{"workloadReleaseRequestDigest": digest}}}
+	operations := &workloadReleaseAdmissionStoreFake{authority: identity.Authority, prior: &prior, identity: identity}
+	response := serveWorkloadReleaseAdmission(t, operations, `{"qualificationId":"qualification-1","targetReplicas":2}`, key, false)
+	if response.Code != http.StatusOK || operations.resolve != 1 || operations.accept != 0 || operations.targetReads+operations.policyReads+operations.route+operations.qualify != 0 || !strings.Contains(response.Body.String(), `"replayed":true`) {
+		t.Fatalf("exact retry read mutable admission state: code=%d body=%s store=%+v", response.Code, response.Body.String(), operations)
+	}
+}
+
+func TestEtcdWorkloadReleaseAdmissionRejectsCIPrincipal(t *testing.T) {
+	operations := &workloadReleaseAdmissionStoreFake{authority: "authority-1"}
+	response := serveWorkloadReleaseAdmission(t, operations, `{"qualificationId":"qualification-1","targetReplicas":2}`, "key", true)
+	if response.Code != http.StatusForbidden || operations.resolve != 0 || operations.accept != 0 {
+		t.Fatalf("CI principal reached owner-operated admission: code=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestEtcdWorkloadReleaseAdmissionRejectsMissingControlEvidenceInOrder(t *testing.T) {
+	target := etcdstore.FleetAppTarget{App: "demo", ControlEnvironment: "staging", Region: "local", Generation: 4}
+	policy := store.WorkloadReleasePolicy{App: "demo", ControlEnvironment: "staging", FleetTargetGeneration: target.Generation,
+		MinReplicas: 1, MaxReplicas: 4}
+	cases := []struct {
+		name            string
+		qualification   model.ReleaseQualification
+		target          etcdstore.FleetAppTarget
+		policy          store.WorkloadReleasePolicy
+		problem         string
+		wantTargetReads int
+		wantPolicyReads int
+		wantRouteReads  int
+	}{
+		{name: "qualification", problem: "workload_release_qualification_unavailable"},
+		{name: "fleet target", qualification: model.ReleaseQualification{ID: "qualification-1"},
+			problem: "workload_release_target_unavailable", wantTargetReads: 1},
+		{name: "approved policy", qualification: model.ReleaseQualification{ID: "qualification-1"}, target: target,
+			problem: "workload_release_policy_unavailable", wantTargetReads: 1, wantPolicyReads: 1},
+		{name: "active serving route", qualification: model.ReleaseQualification{ID: "qualification-1"}, target: target, policy: policy,
+			problem: "workload_release_route_unavailable", wantTargetReads: 1, wantPolicyReads: 1, wantRouteReads: 1},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			operations := &workloadReleaseAdmissionStoreFake{authority: "authority-1", qualification: test.qualification,
+				targetInfo: test.target, policyInfo: test.policy}
+			response := serveWorkloadReleaseAdmission(t, operations,
+				`{"qualificationId":"qualification-1","targetReplicas":2}`, "missing-"+strings.ReplaceAll(test.name, " ", "-"), false)
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), test.problem) {
+				t.Fatalf("missing control evidence response=%d %s, want conflict %q", response.Code, response.Body.String(), test.problem)
+			}
+			if operations.resolve != 1 || operations.qualify != 1 || operations.targetReads != test.wantTargetReads ||
+				operations.policyReads != test.wantPolicyReads || operations.route != test.wantRouteReads ||
+				operations.deploymentReads != 0 || operations.accept != 0 {
+				t.Fatalf("admission read past the first missing evidence: store=%+v", operations)
+			}
+		})
+	}
+}
+
+func TestEtcdWorkloadReleaseAdmissionRejectsMissingServingLineage(t *testing.T) {
+	fixture := newWorkloadReleaseAdmissionFixture(t)
+	fixture.lineage.lineage = nomad.ActiveDeploymentLineage{}
+	response := serveWorkloadReleaseAdmissionWithConfig(t, fixture.cfg, fixture.operations, fixture.lineage,
+		fixture.trustedQualificationKeys, `{"qualificationId":"qualification-1","targetReplicas":2}`, "missing-lineage", false)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "workload_release_lineage_unavailable") {
+		t.Fatalf("missing serving lineage response=%d %s", response.Code, response.Body.String())
+	}
+	if fixture.lineage.calls != 1 || fixture.operations.accept != 0 || len(fixture.operations.acceptedPrivateInput) != 0 {
+		t.Fatalf("missing serving lineage crossed the acceptance boundary: lineage=%+v operations=%+v", fixture.lineage, fixture.operations)
+	}
+}
+
+func TestEtcdWorkloadReleaseAdmissionRejectsMissingEncryptedSnapshot(t *testing.T) {
+	fixture := newWorkloadReleaseAdmissionFixture(t)
+	if err := os.Remove(fixture.secretPath); err != nil {
+		t.Fatal(err)
+	}
+	response := serveWorkloadReleaseAdmissionWithConfig(t, fixture.cfg, fixture.operations, fixture.lineage,
+		fixture.trustedQualificationKeys, `{"qualificationId":"qualification-1","targetReplicas":2}`, "missing-snapshot", false)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "workload_release_secret_snapshot_unavailable") {
+		t.Fatalf("missing encrypted snapshot response=%d %s", response.Code, response.Body.String())
+	}
+	if fixture.lineage.calls != 1 || fixture.operations.accept != 0 || len(fixture.operations.acceptedPrivateInput) != 0 {
+		t.Fatalf("missing encrypted snapshot crossed the acceptance boundary: lineage=%+v operations=%+v", fixture.lineage, fixture.operations)
+	}
+}
+
+func TestEtcdWorkloadReleaseAdmissionConcurrentSameKeyConverges(t *testing.T) {
+	fixture := newWorkloadReleaseAdmissionFixture(t)
+	cfg, operations, lineage := fixture.cfg, fixture.operations, fixture.lineage
+	trustedQualificationKeys, encryptedInputs := fixture.trustedQualificationKeys, fixture.encryptedInputs
+	qualification := operations.qualification
+	policy, route := fixture.policy, fixture.route
+	operations.initialReplayBarrier = make(chan struct{})
 	type admissionResponse struct {
 		status int
 		body   string

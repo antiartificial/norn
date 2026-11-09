@@ -134,6 +134,11 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   client, rebuilds both adapters and the handler, then verifies the same replay.
   These tests do not exercise fresh handler admission or workload
   worker/controller runtime restart.
+- [x] Exercise ordered HTTP rejection when qualification, Fleet target, approved
+  policy, active serving route, Nomad serving lineage, or encrypted input is
+  missing. The deterministic handler tests verify conflict responses and no
+  acceptance write; they do not join fresh admission to real etcd qualification
+  and private-input persistence.
 - [x] Recover the production shared workload-release reconciler across a
   controller-runtime restart after route publication loses its response. PR
   #339 persists operation receipts and claim recovery in real etcd, rebuilds
