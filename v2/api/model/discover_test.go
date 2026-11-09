@@ -72,6 +72,29 @@ func TestDiscoverAppsIgnoresRetainedSourceWithExplicitMarker(t *testing.T) {
 	}
 }
 
+func TestFindByRepoURLRequiresConfiguredHostAndBranch(t *testing.T) {
+	spec := &InfraSpec{
+		App:  "demo",
+		Repo: &RepoSpec{URL: "https://github.com/owner/repo.git", Branch: "main", AutoDeploy: true},
+	}
+	specs := []*InfraSpec{spec}
+
+	if got := FindByRepoURL(specs, "git@github.com:owner/repo.git", "main"); got != spec {
+		t.Fatalf("SSH form of configured repository did not select app: got=%p want=%p", got, spec)
+	}
+	if got := FindByRepoURL(specs, "https://git.example.test/owner/repo.git", "main"); got != nil {
+		t.Fatalf("repository on unrelated host selected app %q", got.App)
+	}
+	if got := FindByRepoURL(specs, "https://github.com/owner/repo.git", "release"); got != nil {
+		t.Fatalf("unconfigured branch selected app %q", got.App)
+	}
+
+	spec.Repo.AutoDeploy = false
+	if got := FindByRepoURL(specs, "https://github.com/owner/repo.git", "main"); got != nil {
+		t.Fatalf("app with autoDeploy disabled selected app %q", got.App)
+	}
+}
+
 func writeDiscoverySpec(t *testing.T, root, directory, contents string) {
 	t.Helper()
 	dir := filepath.Join(root, directory)
