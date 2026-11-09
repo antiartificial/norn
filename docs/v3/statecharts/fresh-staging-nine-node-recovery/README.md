@@ -2,14 +2,14 @@
 
 This chart models a 3-control + 2-ingress + 4-app Fleet. Those pool counts
 match protected `norn-fleet` main at
-`4451767624b12cbc41cc32e160a10d4b46006e0f` and the 2026-11-08 provider
-inventory. This is topology alignment, not a reproduction of the current
-protected input parser/workflow or proof of live bootstrap/recovery. The model
-abstracts inputs, provider calls, and node identities. It focuses on partial
-create, lost response, exact state/provider readback, and same-intent forward
-recovery. Persistent staging has no sanctioned full-Fleet destroy path, so
-this model has no cleanup or retirement action. See the [topology source
-audit](../../staging-topology-source-audit-2026-11-08.md).
+`6335c667693d0333d4239f91edf2efb9772ab63a` and the 2026-11-09 18:58 UTC
+provider inventory. This is topology alignment, not a reproduction of the
+current protected input parser/workflow or proof of live bootstrap/recovery.
+The model abstracts inputs, provider calls, and node identities. It focuses
+on partial create, lost response, exact state/provider readback, and same-intent
+forward recovery. Persistent staging has no sanctioned full-Fleet destroy
+path, so this model has no cleanup or retirement action. See the [topology
+source audit](../../staging-topology-source-audit-2026-11-08.md).
 
 The aggregate `inputsValid` gate represents the saved plan and digest, capacity
 intent and one-use nonce, provider account identity, backend bucket/key/versioning,
@@ -53,5 +53,10 @@ bun "$HOME/.agents/skills/statechart/scripts/statechart.ts" \
   --view docs/v3/statecharts/fresh-staging-nine-node-recovery/view.ts \
   --out /tmp/fresh-staging-nine-node-recovery-model
 ```
+
+The model was rerun on 2026-11-09 and reproduced 102 states, 210 steps, all
+ten invariants, and the deadlock check. The current public canary route was
+read separately at 19:01 UTC; neither result qualifies fresh-Fleet bootstrap or
+its protected apply/recovery workflow.
 
 The generated chart, TLC report, and `tlc.out` are retained in this directory.
