@@ -1,0 +1,77 @@
+---
+title: "Fresh Fleet create and recovery with two app pools"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: normal
+    lg1: held
+    lg2: configuring
+    lg3: complete
+  }
+  class lg0 blue
+  class lg1 orange
+  class lg2 purple
+  class lg3 teal
+  s0: Checking Fleet inputs
+  s1: Held: invalid inputs, no provider effects
+  s2: Inputs ready
+  s3: Creating Fleet pools
+  s4: Creating Fleet pools: one pool confirmed
+  s5: Held: a pool create response is unknown
+  s6: Creating Fleet pools: both pools confirmed
+  s7: Held: readback complete, same intent can resume
+  s8: Held: provider identity mismatch
+  s9: Resuming the same intent: one pool confirmed
+  s10: Building complete inventory
+  s11: Resuming the same intent: both pools confirmed
+  s12: Configuring both app pools
+  s13: One pool configured
+  s14: Both pools configured#59; placement pending
+  s15: Workloads placed#59; readiness pending
+  s16: General and stateful workloads ready
+  s17: Terminal receipt verified
+  [*] --> s0
+  s0 --> s1: input validation holds before effects
+  s0 --> s2: inputs pass validation
+  s2 --> s3: bind one intent and dispatch nonce
+  s3 --> s4: create a declared app pool
+  s3 --> s5: a pool create response is lost
+  s4 --> s6: create a declared app pool
+  s4 --> s8: provider readback does not match
+  s4 --> s5: a pool create response is lost
+  s5 --> s7: read back a pool by exact identity
+  s5 --> s8: provider readback does not match
+  s6 --> s8: provider readback does not match
+  s6 --> s10: confirm both pools and build inventory
+  s7 --> s8: provider readback does not match
+  s7 --> s9: resume the same intent
+  s7 --> s11: resume the same intent
+  s9 --> s8: provider readback does not match
+  s9 --> s5: a pool create response is lost
+  s9 --> s11: create a declared app pool
+  s11 --> s8: provider readback does not match
+  s11 --> s10: confirm both pools and build inventory
+  s10 --> s12: begin host configuration
+  s12 --> s13: configure one app pool
+  s13 --> s14: configure one app pool
+  s14 --> s15: place workload on its declared role pool
+  s15 --> s16: prove workload readiness for its role
+  s16 --> s17: commit terminal Fleet receipt
+  class s0 blue
+  class s1 orange
+  class s2 blue
+  class s3 blue
+  class s4 blue
+  class s5 orange
+  class s6 blue
+  class s7 orange
+  class s8 orange
+  class s9 blue
+  class s10 blue
+  class s11 blue
+  class s12 purple
+  class s13 purple
+  class s14 purple
+  class s15 purple
+  class s16 purple
+  class s17 teal

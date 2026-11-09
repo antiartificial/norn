@@ -1235,7 +1235,7 @@ func TestExactOperationReadDefersScopeToBoundHandler(t *testing.T) {
 			t.Fatalf("%s exact operation global scope=%q, want handler-owned scope", method, got)
 		}
 	}
-	for _, path := range []string{"/api/v1/operations", "/api/v1/operations/operation-id/extra", "/api/v1/operations/operation-id/cancel"} {
+	for _, path := range []string{"/api/v1/operations", "/api/v1/operations/active", "/api/v1/operations/operation-id/extra", "/api/v1/operations/operation-id/cancel"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		if got := controlScopeForRequest(request); got != handler.ScopeAPIRead {
 			t.Fatalf("non-exact operation path %q scope=%q, want api:read", path, got)

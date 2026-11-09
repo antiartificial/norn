@@ -35,7 +35,7 @@ export function OperationsPage() {
     return <AuthorityOperationReceipt operationID={sagaId} />
   }
   if (sagaId) return <SagaTimeline sagaId={sagaId} />
-  const query = useQuery({ queryKey: ['operations'], queryFn: () => apiFetch<OperationsResponse>('/api/operations'), staleTime: 15_000, enabled: runtime.capabilities !== undefined && (runtime.authority === 'full' || runtime.authenticated) })
+  const query = useQuery({ queryKey: ['operations'], queryFn: () => apiFetch<OperationsResponse>('/api/v1/operations'), staleTime: 15_000, enabled: runtime.capabilities !== undefined && (runtime.authority === 'full' || runtime.authenticated) })
   const operations = query.data?.operations ?? []
   const statuses = useMemo(() => ['all', ...new Set(operations.map(op => op.status).filter(Boolean) as string[])], [operations])
   const filtered = useMemo(() => status === 'all' ? operations : operations.filter(op => op.status === status), [operations, status])

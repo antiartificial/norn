@@ -30,7 +30,7 @@ export function OverviewPage() {
   const ctx = useRuntimeContext()
   const [selection, setSelection] = useState<IncidentSelection | null>(null)
   const incidents = useQuery({ queryKey: ['events', 'active'], queryFn: () => apiFetch<ActiveIncidentsResponse>('/api/events/active'), staleTime: 15_000 })
-  const operations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/operations/active'), staleTime: 15_000 })
+  const operations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/v1/operations/active'), staleTime: 15_000 })
   const deploys = useQuery({ queryKey: ['deployments-v1', { limit: 5 }], queryFn: () => apiFetch<DeploymentListResponse>('/api/v1/deployments?limit=5'), staleTime: 15_000 })
   const version = useQuery({ queryKey: ['version'], queryFn: () => apiFetch<VersionResponse>('/api/version'), staleTime: 60_000 })
   const healthy = ctx.apps.filter((app) => app.healthy).length

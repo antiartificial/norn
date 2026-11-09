@@ -80,7 +80,7 @@ export function useRuntimeContext() {
 function useAppsQuery(enabled: boolean) {
   return useQuery({
     queryKey: ['apps'],
-    queryFn: () => apiFetch<AppStatus[]>('/api/apps'),
+    queryFn: () => apiFetch<AppStatus[]>('/api/v1/apps'),
     staleTime: 10_000,
     refetchInterval: 15_000,
     enabled,

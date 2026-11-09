@@ -173,7 +173,7 @@ function routeAPI(request, response, pathname, state) {
   if (method === 'GET' && pathname === '/api/version') return sendJSON(response, 200, { version: 'browser-fixture' })
   if (method === 'GET' && pathname === '/api/health') return sendJSON(response, 200, { status: 'ok', services: { fixture: 'up' } })
   if (method === 'GET' && pathname === '/api/ops/platform') return sendJSON(response, 200, platformSummary())
-  if (method === 'GET' && pathname === '/api/platform/releases') return sendJSON(response, 200, { current: 'fixture', releases: [] })
+  if (method === 'GET' && pathname === '/api/v1/releases') return sendJSON(response, 200, { current: 'fixture', releases: [] })
   if (method === 'GET' && pathname === '/api/deploy-groups') {
     return sendJSON(response, 200, { groups: [{ name: 'core', apps: [{ app: 'api' }, { app: 'worker', waitReady: true }] }] })
   }

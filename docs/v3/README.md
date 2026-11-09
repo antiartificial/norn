@@ -1,17 +1,27 @@
 # Norn v3 planning package
 
 **Current release work:** start with [Norn v3 launch state](LAUNCH-STATE.md)
-for the current Mini and DigitalOcean staging Fleet observations, M0–M9
-disposition, findings and next sequence. Mini is an independent node, not a
-Fleet member. Its control API may hold target configuration for the separate
-DO staging Fleet, which is the only Fleet in this work. The
-[2026-09-29 handoff](session-resume-2026-09-29.md) is a
-historical snapshot. The milestone exit criteria remain in
-[execution milestones](execution-milestones.md).
+for current gates and the next actions. Dated observations and superseded
+snapshots are retained separately in [launch history](LAUNCH-HISTORY.md).
+For sequencing and exit criteria, use the
+[release program milestones](release-program-milestones.md) and
+[execution milestones](execution-milestones.md). For lane procedures and
+contracts, see the [release fitness and controller plan](release-fitness-and-controller-plan.md),
+[release lanes and workload resizing guide](release-lanes-and-workload-resizing.md),
+[DO staging topology audit](staging-topology-source-audit-2026-11-08.md),
+[future two-app-pool contract](fresh-fleet-two-app-pool-contract.md), and
+[M5 workload release protocol](m5-workload-release-protocol-2026-11-07.md).
+Mini is an independent node, not a Fleet member; the DigitalOcean staging
+environment is the only Fleet in this work. The
+[V2 surface retirement inventory](v2-surface-retirement-inventory-2026-11-07.md)
+maps callers and recovery coverage before legacy routes or tests are removed.
+Older handoffs preserve rationale and prior state.
 
-The architecture below began as a proposal on 2026-09-22. Use the current
-launch state for deployment status and execution milestones for exit criteria;
-the proposal and older dated handoffs preserve rationale and historical state.
+The architecture below began as a proposal on 2026-09-22. Use the new release
+program milestones for current gate disposition; [execution milestones](execution-milestones.md)
+retain the earlier M0–M9 plan and are historical context unless a current gate
+explicitly links to them. The proposal and older dated handoffs preserve
+rationale and historical state.
 The direct Mini v3 upgrade completed on 2026-11-07; PR [#298](https://github.com/antiartificial/norn/pull/298)
 fixed a PID-reuse race found during controller recovery. DO staging Fleet
 qualification remains separate and incomplete.
@@ -33,6 +43,7 @@ An Architecture Decision Record (ADR) captures a consequential choice, its alter
 11. [Foundation review](foundation-review.md): source-backed safety findings, bounded implementation slices and review acceptance tests.
 12. [Fleet controller plan](fleet-controller/plan.md) and [ADR 0009 — Fleet controller](adrs/0009-fleet-controller.md): the target fence, authority epoch and resource-status work for changes 1-4, plus its [lifecycle contract](fleet-controller/lifecycle-contract.md), [review](fleet-controller/plan-review.md) and [operator runbook](fleet-controller/operator-runbook.md).
 13. [Online upgrade lessons and capability proposal](online-upgrade-lessons-2026-11-07.md): Mini upgrade findings and a platform-wide path to low-interruption upgrades.
+14. [Offline lane statecharts](statecharts/README.md): bounded release, Mini, existing-Fleet Genesis, fresh-Fleet create/recovery, and workload models with reproduction instructions.
 
 The older session and topic handoffs are available in Git history. Use the
 current release handoff above for next actions and the status and review
