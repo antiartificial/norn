@@ -252,14 +252,20 @@ qualifies a billable fresh-Fleet deployment.
 ### M3. Re-establish DO readiness without writes
 
 - [ ] Recheck the exact management runner, route, provider state, and three
-  control identities with fresh protected receipts. The latest provider-only
-  inventory does not establish Norn/API, Nomad/Consul, workload, or route health.
+  control identities with fresh protected receipts. The 2026-11-09 18:58 UTC
+  provider inventory found all nine staging nodes, both management nodes, the
+  ingress load balancer, and three managed databases active/online. A 19:01 UTC
+  public canary probe served the expected source across two allocations on two
+  nodes. These reads do not establish Norn/API, etcd, Nomad/Consul, full
+  workload, or terminal operation-receipt health.
 - [ ] Diagnose source availability on the management host without mutation.
-  Fleet PR #946 merged the pre-effect missing-source check, but the fix has not
-  been installed there. Merged-main contract validation
+  Fleet PR #946 merged the pre-effect missing-source check; current protected
+  main is `6335c667693d0333d4239f91edf2efb9772ab63a`, and merged-main
+  contract validation
   [42555418496](https://github.com/antiartificial/norn-fleet/actions/runs/42555418496)
-  passed; install the exact reviewed source only after separately reviewing the
-  provider-plan effect below.
+  passed. Installation on the management host remains unverified; install the
+  exact reviewed source only after separately reviewing the provider-plan
+  effect below.
 - [ ] Review the staging plan from run
   [42555418513](https://github.com/antiartificial/norn-fleet/actions/runs/42555418513):
   it proposes `management_ingress_runtime[0]` (ports 18082/18083 from the
@@ -273,8 +279,9 @@ qualifies a billable fresh-Fleet deployment.
   preparing any fresh readback.
 - [ ] Refresh state, route, and host-key evidence, then request a new signed
   one-use Genesis readback intent only after every preflight passes. The failed
-  intent and runner authorization cannot be reused; both protected dispatch
-  gates were absent at 03:06 UTC.
+  intent and runner authorization cannot be reused. At 19:09 UTC the protected
+  `NORN_WORK_PLATFORM_CONTROLLER_BOOTSTRAP_ENABLED` setting was `false`, so
+  reviewed source installation is not currently enabled.
 
 **Exit:** all identities and services have fresh read-only receipts. Otherwise
 publish the exact hold and keep write workflows disabled. See the
