@@ -1,6 +1,8 @@
 -------------------------- MODULE WorkloadMixedVersion --------------------------
 EXTENDS Naturals, TLC
 
+CONSTANT AllocationCapacity
+
 VARIABLES phase, intent, compatible, schemaExpanded, schemaContracted,
           oldAlloc, newAlloc, readyNew, route, routeReceipt,
           routeEvidenceRecorded, drainAck, oldWriters,
@@ -64,7 +66,7 @@ StartTarget ==
     /\ compatible
     /\ (~routeEvidenceRecorded \/ routeReceipt)
     /\ newAlloc < 2
-    /\ oldAlloc + newAlloc < 3
+    /\ oldAlloc + newAlloc < AllocationCapacity
     /\ newAlloc' = newAlloc + 1
     /\ phase' = "warming"
     /\ UNCHANGED <<intent, compatible, schemaExpanded, schemaContracted,
@@ -275,7 +277,7 @@ Next == AdmitIntent \/ RejectBadIntent \/ ExpandSchema \/ StartTarget
 DoneStutter == phase \in {"complete", "held"} /\ UNCHANGED vars
 Spec == Init /\ [][Next \/ DoneStutter]_vars
 
-CapacityBound == oldAlloc + newAlloc <= 3
+CapacityBound == oldAlloc + newAlloc <= AllocationCapacity
 AllocationBounds == oldAlloc \in 0..2 /\ newAlloc \in 0..2
 ReadyBound == readyNew <= newAlloc
 RouteHasReadyTarget == route \in {"old", "mixed", "target"} /\ (route = "old" \/ readyNew > 0)

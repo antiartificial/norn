@@ -2,7 +2,7 @@
 
 This is a bounded **protocol model**, not a model of currently deployed mixed-version behavior. The repository has an internal M5 controller candidate with signed acceptance, durable receipts, route proof, and stop recovery, but the candidate is not merged, operator-admitted, or live-qualified. This model checks protocol ordering, including target-only route proof before the old cohort can drain.
 
-Scope: two old allocations, two target allocations, three total surge slots, one workload, one additive schema expansion, and one controller. It abstracts each allocation as a writer-bearing workload unit. It does not represent separate web/worker processes, real Nomad placement, cloud eventual consistency, route implementation, database semantics, timing, or credential custody.
+Scope: two old allocations, two target allocations, one workload, one additive schema expansion, and one controller. Each allocation is a writer-bearing workload unit. The model runs with a three-allocation cap and a four-allocation cap. It does not represent separate web/worker processes, real Nomad placement, cloud eventual consistency, route implementation, database semantics, timing, or credential custody.
 
 Generate/check with:
 
@@ -11,24 +11,47 @@ bun /Users/arti/.agents/skills/statechart/scripts/statechart.ts \
   "$PWD/WorkloadMixedVersion.tla" \
   --config "$PWD/WorkloadMixedVersion.cfg" \
   --view "$PWD/view.ts" \
-  --out "$PWD/reproduced-output"
+  --out "$PWD/reproduced-capacity4"
+
+bun /Users/arti/.agents/skills/statechart/scripts/statechart.ts \
+  "$PWD/WorkloadMixedVersion.tla" \
+  --config "$PWD/WorkloadMixedVersion.capacity3.cfg" \
+  --view "$PWD/view.ts" \
+  --out "$PWD/reproduced-capacity3"
 ```
 
 Run the command from this directory.
 
-Latest deterministic run: TLC reached 24 states and 52 steps. The chart shows 9 states and 11 arrows; its view hides 34 steps. It includes the release ordering rule that old allocations may drain only after a target-only route is published and proved. It exposes separate stale-route
-holds and the fresh readback that confirms the exact current route before
-effects resume. It also includes loss of one canary allocation while the mixed
-route is serving: that invalidates route proof and holds old-version drain.
-The compact view hides repeated crashes from later phases, route-proof-loss
-cases outside the canary phase, and recovery reconciliations that rejoin later
-main-flow states; TLC still checks them all. TLC found no invariant violations
-and checked `NoDeadlock`. Invariants cover surge capacity, allocation bounds,
-ready allocation counts, route readiness, drain ordering, compatibility during
-overlap, schema contraction after old writers exit, terminal receipt
-correctness, and explicit holds. This is a proof of the bounded proposed
-transition system only, not proof that the current controller implements
-mixed-version releases.
+The default four-allocation run reaches 103 states and 275 steps. All 11
+invariants and `NoDeadlock` hold; the compact chart shows 14 states and 19
+arrows, including target-only routing, old-cohort drain, writer quiescence, and
+terminal receipt. The model treats capacity as simultaneous allocation slots,
+not node count. For the two-old/two-target case, live preflight must prove the
+target cohort can become fully healthy alongside the serving cohort under
+actual Nomad placement and resource constraints.
+
+The three-allocation run reaches 24 states and 52 steps. All 11 invariants and
+`NoDeadlock` hold, but the graph has no target-only route, old-cohort drain, or
+terminal receipt. This is a progress gap rather than an invariant failure:
+with two old and two target allocations, capacity 3 cannot reach the required
+fully healthy target cohort while retaining the old cohort. The controller's
+target-only route fence correctly prevents draining old allocations to make
+room. Do not read a green invariant report as proof that this capacity can
+complete a release.
+
+The checked-in [`chart.mmd`](chart.mmd) and [`report.md`](report.md) are the
+four-allocation run. [`chart-capacity3.mmd`](chart-capacity3.mmd) and
+[`report-capacity3.md`](report-capacity3.md) preserve the insufficient-capacity
+case for comparison.
+
+The compact view groups route-proof loss into one held state and hides repeated
+crashes from later phases, route-proof-loss cases outside the canary phase, and
+recovery reconciliations that rejoin later main-flow states; TLC still checks
+them all. Invariants cover capacity, allocation bounds, ready allocation
+counts, route readiness, drain ordering, compatibility during overlap, schema
+contraction after old writers exit, terminal receipt correctness, and explicit
+holds. These are bounded proposed-transition results, not proof that the
+current controller implements mixed-version releases.
 
 During model refinement, TLC exposed two unsafe paths in the draft contract:
 recovery could continue old-writer quiescence while held, and the old cohort

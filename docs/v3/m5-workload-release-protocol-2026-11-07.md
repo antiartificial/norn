@@ -1,6 +1,6 @@
 # M5 workload resize and mixed-version protocol
 
-Status (2026-11-08): internal stateless release controller, durable receipt
+Status (2026-11-09): internal stateless release controller, durable receipt
 CAS, claim-bound route-step intent/authority, atomic route promotion, runtime
 dispatch, target health gating, and old-job stop/readback are implemented in
 the PR #302 candidate. Commit `c55efd56` requires a proved target-only route
@@ -10,6 +10,17 @@ production-store worker/lease crash matrix, target-specific public traffic
 evidence, live canary qualification, and stateful data compatibility remain
 open.
 This note authorizes no live workload, route, or provider change.
+
+The mixed-version statechart now checks two allocation-capacity cases. With
+two old and two target allocations, capacity 3 preserves every safety
+invariant but has no path to target-only routing or completion under the
+target-only-before-drain rule. Capacity 4 reaches the terminal receipt while
+preserving that rule. Treat capacity as schedulable allocation slots under
+the actual placement/resource constraints, not as a node count. Before an
+online release, prove that the full target cohort can be healthy alongside
+the serving cohort; a single spare slot only stages the first target and is
+not enough for this modeled protocol. See the
+[two-capacity statechart](statecharts/workload-mixed-version/README.md).
 
 ## Keep three changes separate
 
@@ -170,9 +181,14 @@ or response bodies.
 Only after the DO read-only readiness milestone and platform release gate pass:
 
 1. Read capacity, eligible app nodes, allocations, route target, pending work,
-   and exact current image/operation receipts. Verify there is one extra
-   schedulable app node for a two-replica, distinct-host canary; otherwise
-   separately approve capacity first.
+   and exact current image/operation receipts. Verify schedulable capacity for
+   the complete target cohort while the old cohort continues serving. For the
+   modeled two-old/two-target case, prove four simultaneous allocation slots
+   under the real Nomad placement and resource constraints. One spare slot
+   permits an initial target allocation but cannot reach target-only routing
+   while old allocations are retained. If full overlap capacity is absent,
+   hold before admission or separately qualify and approve a different
+   availability protocol; do not bypass the target-only route fence.
 2. Use the existing `norn-fleet-canary` with a protected immutable candidate
    digest. Record continuous route probes, target allocation health, operation
    and effect receipts, errors/latency, drain acknowledgements, and exact
