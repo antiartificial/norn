@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 18:47 UTC)
+## Current V3 release readiness (2026-11-09 18:51 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -28,26 +28,29 @@ waiting for the configured `platform-release` environment approval. No signed
 release has been published and the Mini has not changed. After publication,
 the Mini still requires exact-SHA signed import/verification, protected
 backup, signed shadow, controller preflight, promotion, smoke, and host
-assurance. Mini Git-path readback at 17:53 UTC remains the newest Mini evidence
-below; the DO runtime readiness evidence remains the Nov 8 readback below.
+assurance. A fresh Mini inventory at 18:48 UTC confirmed the current read-only
+state below; the DO runtime readiness evidence remains the Nov 8 readback.
 
 - **Mini direct:** the independent Mini's completed Nov 7 controller-mediated
   direct adoption remains in place; this refresh did not attempt another
-  upgrade. At 15:48 UTC, authenticated reads reported API health and host
-  status `ok`, `runtimeMutationFence=inactive`, and the Consul, Nomad,
-  Postgres, S3, SOPS, and Nomad/Consul workload-connector services up on signed
-  V3 repair release `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+  upgrade. At 18:48 UTC, authenticated reads reported API and host status `ok`,
+  `runtimeMutationFence=inactive`, and Consul, Nomad, Postgres, S3, SOPS, and
+  the Nomad/Consul workload connector up on signed V3 repair release
+  `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
   (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The inventory contained 30 app
-  records and 46 service records (19 passing, 27 unknown), with 21 of 21
-  allocations running. It also found seven queued `fleet.github.apply-dispatch`
-  receipts last updated Oct 8–10, 25 active incident groups, and four
-  snapshot-retention warnings. Production readiness generated at 15:48:50 UTC
-  remains blocked (7 passed, 1 warning, 18 failed). The latest assurance
-  receipt is successful but its operation timestamp is 2026-09-06; this refresh
-  did not run route assurance. A separate 17:53 UTC read-only Git-path check
-  confirmed API health `ok`, 12 `repo.autoDeploy` app records, a configured
-  webhook secret in the running API process, and 25 recent GitHub delivery
-  receipts (17 `deploying`, 8 `ignored`). Six active GitHub push hooks for
+  records and 46 service records; 19 app records were running, two pending, one
+  dead, and eight had no allocation. The latest `host.assure` receipt succeeded
+  at 18:48:53 UTC (exit 0), covering 11 required services, 10 endpoint probes,
+  and six public-route checks. Seven queued `fleet.github.apply-dispatch`
+  receipts remain; no other active operations were reported. There are 25
+  active incident groups, including 51 open entries in the host-assurance
+  failure group, and four snapshot-retention warnings. The 18:48:55 UTC
+  production-readiness report remains blocked (7 passed, 1 warning, 18 failed)
+  by the separate production-admission contract; this is not evidence that the
+  Mini cannot host its currently running workloads. A separate 17:53 UTC
+  read-only Git-path check confirmed 12 `repo.autoDeploy` app records, a
+  configured webhook secret in the running API process, and 25 recent GitHub
+  delivery receipts (17 `deploying`, 8 `ignored`). Six active GitHub push hooks for
   mapped personal repositories target `norn-webhooks.slopistry.com`; their
   recent GitHub delivery lists were empty, and endpoint-to-Mini routing and
   delivery-to-operation outcomes were not correlated. The Mini still runs
