@@ -280,7 +280,7 @@ Authenticated read-only inventory reconfirmed source
 `bba290db041e9f497c7161543c679d9d348b742d`
 (`v3.0.0-rc.1-platform-251-gbba290db`), API/host status `ok`, 30 app records
 and 46 service records. Mini is not a DO Fleet member. Its API does report
-`fleet_configured=true`: [`loadFleetInventory`](../../v2/api/handler/fleet.go#L116)
+`fleet_configured=true`: [`loadFleetInventory`](https://github.com/antiartificial/norn/blob/877ad4ba/v2/api/handler/fleet.go#L116)
 defines that flag as a Fleet config path being set, and the loaded document is
 the separate DigitalOcean staging target `norn-disposable-nyc3` in `nyc3`, with
 `control` and `ingress` pools. This is

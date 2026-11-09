@@ -1,5 +1,17 @@
 # M5 workload release admission
 
+> **Current status (2026-11-09):** This design note records the proposal and
+> implementation evidence available before PR #319. The authenticated,
+> staging-only HTTP producer is now merged at Norn `master` commit
+> `877ad4ba`. It accepts only `qualificationId` and `targetReplicas`, checks
+> exact replay before mutable input reads, then derives the plan from current
+> qualification, approved policy, Fleet target, serving route, Nomad lineage,
+> configured app source and encrypted SOPS snapshot. It is opt-in and has not
+> been deployed or live-qualified. Exact source recovery, private-input
+> retention/deletion semantics, deterministic full worker recovery coverage,
+> and disposable Nomad/ingress qualification remain open. Historical passages
+> below that say the producer is absent describe the pre-#319 state.
+
 ## Problem
 
 The workload-release worker already owns health, weighted routing, and old-job stop recovery, but its signed `WorkloadReleaseIntent` requires the target Nomad version and modify index before the target job exists. Ordinary `app.deploy` cannot be used as a staging step because its successful path publishes the public route. Admission must own a private target create and then enter the strict existing release protocol without treating caller input as scheduler evidence.
@@ -12,6 +24,9 @@ An operator selects one already-qualified immutable candidate and supplies an id
 norn app release <app> --candidate <qualified-candidate> --request-key <key>
 norn operation get <operation-id>
 ```
+
+This CLI example is a proposed interface. PR #319 exposes the HTTP endpoint;
+it does not add a CLI command.
 
 The same key and request return the original operation. Reusing the key with a different candidate is a conflict. Scheduler indices, old allocation IDs, route weights, arbitrary Nomad jobs, and compatibility flags are not accepted from the caller.
 
@@ -61,9 +76,10 @@ The staging Fleet control API exposes this record at
 `GET/PUT /api/v1/apps/{id}/workload-release-policy`; updates require a non-CI
 `platform:operate` identity and compare the policy's etcd revision. It does not
 modify Fleet placement identity or the active route. A placement generation
-change makes the policy stale until it is approved again. This is policy
-storage only: no authenticated workload-release producer consumes it yet,
-and configuring it does not enable a release.
+change makes the policy stale until it is approved again. PR #319's
+staging-only producer consumes this policy and binds its digest into the
+signed plan. The endpoint is opt-in; configuring a policy alone does not
+enable a release.
 
 ## Synthesis decision
 
@@ -90,9 +106,9 @@ For the first implementation, preserve the existing conservative recovery rule: 
 
 The pipeline now has a `WorkloadReleasePlan` → observed staged-target binding → strict `WorkloadReleaseIntent` resolver. The plan refuses scheduler version and modify-index values; the binding accepts only a successful plan-derived create-only Nomad job observation, binds it to target operation/execution/job digest and claim generation, and the resolver returns the existing strict intent for downstream health, route, and drain code. The etcd operation store can persist that binding once and reload it only while the signed plan, operation claim, app lock, and Fleet target generation still verify. Deterministic pipeline and etcd integration tests cover mismatch, overwrite, and lost-claim cases.
 
-The claimed release worker now accepts the signed plan shape, reserves the durable stage effect, rebuilds the exact database-free Nomad job from the local InfraSpec, decrypts only operation-bound encrypted managed inputs, stages those inputs, and records the one-use create marker before create-only CAS registration. It ignores the registration response and binds only after exact Nomad source/no-diff readback. Missing or unavailable readback returns pending and never repeats registration; retries and successor claims observe the same durable effect and binding. Deterministic worker tests cover private-input staging failure, claim loss after staging but before the attempt marker, marker transaction failure, and ambiguous registration followed by missing readback; an etcd integration test verifies successor-claim binding through the shared verifier and acceptance-derived stop authorization. Existing health, route, drain, and stop readers resolve the write-once binding to the same strict intent contract. The full API Go suite passes locally. This worker path is not yet an end-to-end release lane: authenticated API admission, automatic qualification discovery, managed catalog/secret revision resolution, and delayed-request/production-driver qualification remain open. Route-predecessor acceptance fences and startup retained-key preflight are implemented; key cleanup and lineage-reader migration remain open.
+The claimed release worker now accepts the signed plan shape, reserves the durable stage effect, rebuilds the exact database-free Nomad job from the local InfraSpec, decrypts only operation-bound encrypted managed inputs, stages those inputs, and records the one-use create marker before create-only CAS registration. It ignores the registration response and binds only after exact Nomad source/no-diff readback. Missing or unavailable readback returns pending and never repeats registration; retries and successor claims observe the same durable effect and binding. Deterministic worker tests cover private-input staging failure, claim loss after staging but before the attempt marker, marker transaction failure, and ambiguous registration followed by missing readback; an etcd integration test verifies successor-claim binding through the shared verifier and acceptance-derived stop authorization. Existing health, route, drain, and stop readers resolve the write-once binding to the same strict intent contract. PR #319 now connects an opt-in staging-only authenticated HTTP admission route. The end-to-end release lane remains unqualified: portable exact-source recovery, private-input retention/deletion policy, and delayed-request/production-driver qualification remain open. Route-predecessor acceptance fences and startup retained-key preflight are implemented; key cleanup and lineage-reader migration remain open.
 
-The private etcd acceptance boundary now takes a configured `nomad.ActiveDeploymentLineageObserver`. Active route records retain operation ID, spec digest, image, process, and job digest from validated deployment effects; workload-release route commits advance those fields from the accepted staged target. Admission rejects an absent observer, compares these control-owned fields with the signed predecessor, then checks Nomad's job ID, version, modify index, replica count, and exact allocation ID set. It repeats the observation immediately before the atomic acceptance transaction, which also compares active-route and reservation revisions. Focused disposable-etcd coverage verifies exact match, stale modify-index rejection, missing-observer rejection, and idempotent replay without fresh mutable reads. The authenticated API/CLI producer still does not exist, so no operator request currently supplies the configured observer to this boundary. The separate overlap policy is not yet bound into a signed plan or consumed at admission. Production Nomad/ingress qualification is also open.
+The private etcd acceptance boundary takes a configured `nomad.ActiveDeploymentLineageObserver`. Active route records retain operation ID, spec digest, image, process, and job digest from validated deployment effects; workload-release route commits advance those fields from the accepted staged target. Admission rejects an absent observer, compares these control-owned fields with the signed predecessor, then checks Nomad's job ID, version, modify index, replica count, and exact allocation ID set. It repeats the observation immediately before the atomic acceptance transaction, which also compares active-route and reservation revisions. Focused disposable-etcd coverage verifies exact match, stale Nomad modify-index rejection, missing-observer rejection, and idempotent replay without fresh mutable reads. PR #319 now passes the configured observer and consumes the placement-bound overlap policy in the signed plan. It exposes no CLI command. Production Nomad/ingress qualification is still open.
 
 Existing active-route records written before the job-digest field was introduced have no trusted digest and therefore fail workload-release admission closed. A verified route refresh/reconciliation must populate that field from its completed deployment effect before those apps can enter the release lane; do not backfill it from Nomad metadata alone.
 
@@ -106,10 +122,9 @@ The repository has useful candidate and deployment evidence. The etcd/V3
 admission seam now corroborates signed qualification data against its own
 deployment records. The store can resolve one qualification by exact ID from
 its signed operation record, verify the trusted staging signature and expiry,
-and require its matching deployment and regions to be complete. No
-authenticated workload-release admission endpoint consumes that resolver yet;
-automatic candidate discovery and complete operator-facing source authority
-remain open:
+and require its matching deployment and regions to be complete. PR #319
+connects this resolver to the opt-in staging admission endpoint; the operator
+selects the qualification ID rather than relying on automatic discovery:
 
 - `model.ReleaseQualification` binds app, staging deployment ID, source SHA,
   content-addressed artifact, expiry, candidate identity, and staging signer.
@@ -165,12 +180,15 @@ remain open:
   it until a private target has been read back and write-once bound.
 
 Therefore M5-B is **partially implemented**. Signed qualification lookup and
-V3 deployment corroboration, plus encrypted SOPS snapshot retention, are
-present at the store seam. The remaining admission adapter must obtain a
-qualification ID from trusted control state, resolve catalog and secret
-revisions without copying secret values into the signed plan, and fail closed
-when a required input lacks a portable immutable reference. Do not silently
-treat a legacy PostgreSQL qualification row as an etcd/V3 record.
+V3 deployment corroboration, plus encrypted SOPS snapshot capture and private
+envelope retention, are present. PR #319 requires an operator-selected
+qualification ID and resolves it from trusted V3 control state; it does not
+automatically discover a candidate. The configured app source is checked
+against the qualified deployment's spec digest at admission, but a worker
+restart still depends on that source being locally available. The envelope
+key inventory is checked at startup when enabled, but retention lifetime and
+deletion policy are not defined. Do not silently treat a legacy PostgreSQL
+qualification row as an etcd/V3 record.
 
 The source audit on 2026-11-09 narrowed this gate: the normal V3 Fleet router
 does not mount the legacy `Handler.CreateReleaseQualification` route. The
@@ -195,8 +213,9 @@ Admission must derive the target job digest before it can sign the complete
 caller-provided digest. This is now implemented: the shared target builder
 lives beside the release contract in
 `pipeline.BuildWorkloadReleaseTargetJobPlan`; the worker delegates to it, and
-admission can call `pipeline.DeriveWorkloadReleaseTargetJobDigest` with an
-intent that has no target digest. Derivation rejects a prefilled digest and
+PR #319's authenticated staging producer calls
+`pipeline.DeriveWorkloadReleaseTargetJobDigest` with an intent that has no
+target digest. Derivation rejects a prefilled digest and
 reuses the exact translator and input-plan validation used again by the
 worker. Focused pipeline/worker tests and the full `go test ./...` API module
 suite passed on 2026-11-09. This closes the digest-construction cycle only; it
@@ -278,4 +297,13 @@ this is explicit work, not behavior inherited from the function path.
 
 ## Next implementation step
 
-The private-input materialization and validated create/readback path are now wired into the claimed worker locally; do not treat that as deployed qualification. The next implementation step is an authenticated operator admission producer that resolves the newly issuable V3 qualification and then obtains server-owned predecessor, current Fleet target, serving-lineage and encrypted-input facts before atomically admitting the signed plan and private envelope. In parallel, extend deterministic fixtures across marker, delayed Nomad acceptance, response loss, successor claim, target readback, and durable hold. Then run the same path against version-pinned disposable Nomad and ingress with the configured ACL policy. Keep route-predecessor fencing, startup key preflight, and explicit envelope retention; do not enable provider or workload mutation until those gates pass.
+The private-input materialization, authenticated staging admission route and
+validated create/readback path are implemented behind explicit runtime gates;
+do not treat this as deployed qualification. Next, pin and durably retrieve the
+exact app source across worker restart, define private-envelope
+retention/deletion semantics, and extend deterministic fixtures across marker,
+delayed Nomad acceptance, response loss, successor claim, target readback, and
+durable hold. Then run the same path against version-pinned disposable Nomad
+and ingress with the configured ACL policy. Keep route-predecessor fencing and
+startup key preflight; do not enable provider or workload mutation until those
+gates pass.

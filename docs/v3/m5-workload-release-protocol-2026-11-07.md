@@ -1,13 +1,20 @@
 # M5 workload resize and mixed-version protocol
 
-Status: the durable etcd worker, signed-acceptance verification, claim-bound
-route writer, old-stop recovery, and same-intent controller replay are wired
-as offline implementation seams. There is still no authenticated operator/API
-path to admit an `app.workload-release` operation. A production-driver crash
-matrix and live qualification remain open as of 2026-11-09. The private-input
-key inventory is checked at startup when its dedicated capability is enabled;
-that capability remains disabled by default. This note authorizes no live
-workload, route, or provider change.
+> **Current delta (2026-11-09):** The authenticated, staging-only workload
+> admission API merged as Norn PR #319 (`877ad4ba`). The older status text
+> below predates that producer and should be read as implementation history.
+> The API remains opt-in, undeployed, and unqualified against live or
+> disposable Nomad/ingress drivers. Exact source recovery, private-input
+> retention/deletion semantics, and full recovery qualification remain open.
+
+Status of the pre-#319 implementation snapshot: the durable etcd worker,
+signed-acceptance verification, claim-bound route writer, old-stop recovery,
+and same-intent controller replay are wired as offline implementation seams.
+At that snapshot there was no authenticated operator/API path. PR #319 adds
+that path, but production-driver crash qualification and live qualification
+remain open. The private-input key inventory is checked at startup when its
+dedicated capability is enabled; that capability remains disabled by default.
+This note authorizes no live workload, route, or provider change.
 
 ## Current verification — 2026-11-09
 
@@ -21,8 +28,9 @@ loopback-etcd integration test accepts once, removes the current source
 projection, retries with a new proposed operation ID and changed plan and
 SOPS bytes, and verifies the original accepted operation returns without a
 fresh lineage read. Changed qualification or replica selection conflicts.
-This is a store-boundary guarantee; no authenticated API/CLI producer
-currently computes and submits that digest.
+This is a store-boundary guarantee. PR #319 adds an opt-in staging API that
+computes the stable request digest and submits it through private acceptance;
+handler-level response-loss and concurrency coverage remain open.
 
 Exact-head PR #311 checks passed for API Go tests, Fleet pilot workload,
 durable replicas on three Nomad clients, app catalog, CLI, OpenAPI, platform
@@ -63,17 +71,17 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 | Milestone | Status | Work | Exit evidence | Can run alongside |
 | --- | --- | --- | --- | --- |
 | M5-A: offline protocol | Partial: merged PR #311 now adds exact stable-request replay before mutable reads; expanded bounded statechart (458 states/1,663 transitions, 18 invariants plus deadlock), fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, one-use attempt marker, and stage-worker wiring pass locally. Offline tests cover secret-stage failure before marker/create, conservative hold while an ambiguous create remains absent, and exact-target adoption when it becomes visible without resubmission. Four independent missing-admission-evidence scenarios now reject. Production-driver failure matrix remains open. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, pre-attempt reservation recovery, exact-target adoption after response loss, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on absent or mismatched target. | M5-B, input-provenance inventory, M5-C design |
-| M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound exact SOPS snapshot capture, atomic etcd acceptance/input persistence, opt-in startup preflight for retained envelope keys, a signed-qualification-to-plan validator, and a V3 store lookup by exact qualification ID are implemented locally. A server-side Nomad lineage observer now binds the active route operation/spec/image/process/job digest to fresh version, modify-index, replica, and exact allocation readback at the private store boundary. Automatic qualification discovery and complete secret/catalog/database revision resolution are not yet joined to an authenticated producer. | Resolve a qualified candidate from trusted control state; bind exact source/spec/image digests, secret/catalog/database revisions, serving lineage, and qualification expiry. Reject caller-supplied scheduler observations. | Deterministic tests bind app, trusted signer, validity window, completed staging deployment, source SHA, exact content-addressed artifact, and attestation subject digest; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
-| M5-C: atomic release admission | Partial guard: private etcd acceptance requires an injected trusted Nomad observer, current active route/reservation, exact serving-lineage match, and immediate successor route generation; it repeats the lineage read before commit and compares route revisions in the acceptance transaction. Disposable-etcd tests cover missing observer, stale Nomad modify index, exact match, and exact request replay before mutable reads. No authenticated operator/API acceptance path exists. | Add authenticated operator API/CLI admission using a server-resolved signed qualification, current serving lineage, exact plan, and private-input snapshot. Bind idempotency, signature, one-app mutation slot, desired count, and Fleet generation in one transaction. | Replay returns the same operation; key reuse with different candidate/input conflicts; concurrent deploy/scale/release races admit at most one; stale candidate or predecessor writes nothing. | M5-A/B |
+| M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound SOPS snapshot capture, atomic etcd acceptance/input persistence, opt-in retained-key preflight, signed qualification lookup, and server-side Nomad lineage are implemented. PR #319 resolves an operator-selected qualification ID and checks configured app-source spec digest, but automatic candidate discovery is not provided; durable source retrieval after worker restart and private-envelope retention/deletion semantics remain open. | Make exact app source durably retrievable; define private envelope availability, rotation, retention and deletion; preserve qualification expiry and reject caller-supplied scheduler observations. | Deterministic tests bind app, trusted signer, validity window, completed staging deployment, source SHA, exact content-addressed artifact, and attestation subject digest; missing or rotated inputs fail closed across restart. | M5-A, M5-C design |
+| M5-C: atomic release admission | Implemented, not deployed: PR #319 adds an opt-in staging-only managed-operator endpoint. It accepts only qualification ID and target replica count, resolves exact replay before mutable reads, derives serving lineage/current Fleet target/approved policy/source/SOPS snapshot, and calls private acceptance with the Nomad observer. | Prove response-loss and concurrent replay at the handler boundary, then install only after DO M3/M4 and finish exact-source/private-input recovery design. | Replay returns the same operation before mutable evidence reads; changed selection conflicts; concurrent deploy/scale/release admits at most one; stale candidate or predecessor writes nothing. Full end-to-end driver qualification remains required. | M5-A/B |
 | M5-D: private stage and binding | Partial: signed-plan-bound stage effect, shared app gate, one-use attempt marker, successor-claim recovery, exact database-free job builder, operation-bound SOPS input decryption, private Nomad secret staging, create-only CAS, exact readback, and strict-intent downstream wiring implemented locally. Retained input-key preflight now checks V3 etcd before its deploy worker starts. Offline orchestration tests prove secret-stage failure, claim loss after secret staging, and marker transaction failure all prevent create; absent readback holds, and a later exact readback is adopted without a second registration. Full API Go suite passes. Delayed-request/production-driver cases are not yet qualified. | Extend deterministic worker fault cases for every stage/create/readback/bind boundary, then run the same protocol against a version-pinned disposable Nomad/ingress stack with delayed acceptance and lost responses. | Fault matrix proves exact-target adoption after lost response or durable conservative hold, never a duplicate create; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
 | M5-F: DO staging workload release | Partial: historical 2→3→2 scale, sequential drain, and canary probes passed; the 2026-11-08 public route serves source `be5ca5d…` across two reported allocations. The durable second-release operation receipt has not been re-read, and mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; after M5-A–E, run fixed-image resize and mixed-version recovery through the release-owned admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |
 | M5-G: independent Mini V3 upgrade | Complete for the 2026-11-07 direct V3 adoption; a 2026-11-08 read-only Mini refresh confirms a running V3 release and host services. | Retain the signed adoption/controller-repair receipts and repeat candidate-specific backup, compatibility, and postflight checks for every future Mini release. Keep Mini independent of Fleet. | Signed target `bba290d…`, controller journal and preservation receipt, schema-51 postflight, and current API/host readback on signed repair source `d4dc88e…`. This does not establish uninterrupted service or rollback across future incompatible schema changes. | Documentation; M6 low-interruption/rollback work |
 
-M5-A through M5-C are the next offline implementation priority. M5-B must
-identify a real source of qualified immutable candidates before M5-C exposes
-an operator action. M5-D/E require that contract. M5-F is the first workload
-qualification. M5-G records the completed independent Mini adoption; it does
+M5-A counterexample replay and M5-B source/private-input recovery are the
+next offline priorities. PR #319 exposes an operator action, so keep its
+runtime gate disabled until those recovery contracts and M5-D/E are proven.
+M5-F is the first workload qualification. M5-G records the completed independent Mini adoption; it does
 not qualify DO workloads. Run the DO runtime/capacity gate before M5-F and
 refresh Mini preflight before any later Mini release.
 
@@ -199,10 +207,9 @@ stores and stop executor are connected to claim-bound progress and stop
 recovery. The etcd runtime verifies signed acceptance and dispatches the
 internal worker; route generation reservation, per-node publication,
 independent readback, and atomic promotion are also implemented as controller
-seams. The external API/CLI path that creates an accepted release operation is
-still absent, so these slices do not yet form an operator-facing release
-action. A production-store worker crash matrix and live qualification also
-remain open.
+seams. PR #319 now adds an opt-in authenticated staging API that creates an
+accepted release operation. It is not deployed or live-qualified. A
+production-store worker crash matrix remains open.
 
 The etcd claim verifier now reloads the signed `app.workload-release`
 acceptance, requires its exact `app/<name>` identity, checks the running claim
@@ -218,8 +225,9 @@ store are implemented locally: binding requires the signed plan, live operation
 claim, app lock, and unchanged Fleet target generation; replay of the same
 binding is idempotent, while a conflicting binding or stale claim is rejected.
 The plan resolver and write-once binding were part of PR #302. Subsequent
-worker, private-input, and recovery wiring in this worktree is uncommitted.
-Authenticated API admission remains absent.
+worker, private-input, and recovery wiring merged in later PRs, including the
+operator admission route in PR #319. Exact source and private-input recovery
+contracts and live driver qualification remain open.
 
 The stage effect has a signed-plan validator and reserves through the shared
 app mutation gate. The claimed worker now rebuilds the target from the exact
@@ -233,19 +241,19 @@ successful effect completion, and app-gate release commit in one etcd
 transaction. Focused etcdstore, startup, worker, secrets, and API package tests
 pass locally. Full repository verification and delayed-request/production
 driver qualification remain open.
-Qualification provenance now has a store-level check against the completed
-V3 deployment record, described below. Automatic qualification discovery,
-managed secret/catalog revision resolution, and authenticated operator/API
-admission remain open.
+Qualification provenance has a store-level check against the completed V3
+deployment record, described below. PR #319 resolves an operator-selected
+qualification ID; automatic candidate discovery is not provided. Exact source
+retrieval and private-input retention semantics remain open.
 
 Private workload-release acceptance now requires a trusted signed staging
 qualification and corroborates it against the V3 deployment store: the
 qualification's deployment ID must resolve through the signed acceptance
 index to a succeeded `app.deploy` operation, with matching staging app,
 source revision, immutable image, spec digest, and completed region results.
-A valid signed receipt without that completed V3 source is refused. This is a
-store-level provenance check; it does not yet provide an authenticated
-workload-release HTTP admission route or automatic qualification discovery.
+A valid signed receipt without that completed V3 source is refused. PR #319
+connects this resolver to the opt-in staging HTTP admission route. The
+operator selects the qualification ID; candidate discovery remains explicit.
 
 Private workload-release acceptance now has a separate etcd input record. Its
 purpose-separated envelope binds the exact encrypted SOPS bytes to authority,
@@ -258,8 +266,9 @@ active route and matching reservation; the signed plan's old deployment must
 match that route, and its first route generation must be the immediate
 successor. Both etcd revisions are compared in the acceptance transaction, so
 a route handoff racing acceptance cannot leave a stale release queued. This
-primitive is not yet mounted behind an authenticated workload-release admission
-API or connected to a target job builder, so it remains an implementation seam.
+PR #319 mounts this primitive behind the staging-only authenticated
+admission API and connects it to the shared target job builder; deployment and
+live qualification remain open.
 
 The API can now opt into retained-key startup preflight with
 `NORN_WORKLOAD_RELEASE_INPUTS_ENABLED=true`,

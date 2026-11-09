@@ -201,7 +201,7 @@ conflicting request fingerprints, route-writer internals, or exercise real
 handlers against the modeled steps. Those remain runtime integration and code
 review obligations.
 
-The generated [statechart](chart.mmd) and [TLC report](report.md) show the
+The generated [statechart source](https://github.com/antiartificial/norn/blob/877ad4ba/docs/v3/statecharts/workload-release-admission/chart.mmd) and [TLC report](report.md) show the
 checked transition graph and result. The conservative hold after an
 attempt-marker crash is deliberate. A future retry protocol needs separate
 Nomad-version, ACL, retention, and delayed-request qualification.

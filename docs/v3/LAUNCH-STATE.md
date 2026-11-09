@@ -26,10 +26,13 @@ the sole staging Fleet and remains a separate qualification target.
   `c792564c9440805a467a832a4fcb6b433a1f68c3`; PR #307 is merged at
   `1a254466cacf37b636efd50cdecfdd7d6cf5e75f`; PR #311 is merged at
   `4c90aecfc47d4687cc3f39d433d8d5d182d61a7`, PR #314 at
-  `db4623a1`, and PR #315 at `fc7bb70f`. PR #311 returns the accepted
-  operation before rereading mutable inputs; PR #314 binds the stable request
-  digest to qualification and target size; PR #315 exposes replay-only lookup
-  for admission producers. The exact-head API, Fleet pilot, durable replica,
+  `db4623a1`, PR #315 at `fc7bb70f`, and PR #319 at `877ad4ba`.
+  PR #311 returns the accepted operation before rereading mutable inputs;
+  PR #314 binds the stable request digest to qualification and target size;
+  PR #315 exposes replay-only lookup for admission producers; PR #319 adds an
+  opt-in staging-only authenticated API that derives the plan from current
+  qualified deployment, approved policy, Fleet target, route, Nomad lineage,
+  app source and encrypted SOPS snapshot. The exact-head API, Fleet pilot, durable replica,
   CLI, OpenAPI, UI,
   qualification, workflow, and security checks passed. The offline stateless
   controller, durable receipt/recovery path, and statecharts are in source, but
@@ -38,12 +41,13 @@ the sole staging Fleet and remains a separate qualification target.
   missing-evidence scenarios each explored 4 states and 6 steps and rejected
   incomplete admission. The API suite and focused etcd-backed integration
   coverage passed; they do not exercise a live Nomad/ingress driver or provider.
-  The authenticated operator/API producer remains open. A separate
-  CAS-protected staging policy now records explicit owner-approved stateless
-  overlap bounds and route steps without changing placement identity; admission
-  does not yet consume or bind it into the signed release plan. Production
-  driver fault qualification and DO mixed-version release remain open. The
-  API/CLI producer does not yet call the private-store admission boundary.
+  PR #319 consumes the CAS-protected staging policy and binds its digest into
+  the signed plan through private acceptance. Its request is limited to a
+  qualification ID and replica count; exact retries resolve before mutable
+  reads. The admission path is opt-in and is not deployed or live-qualified.
+  Exact app-source recovery and private-input retention/deletion semantics,
+  production-driver crash qualification, and DO mixed-version release remain
+  open. Stateful workloads still need separate writer/schema/data authorization.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected future application pool roles. Fleet PR #941 (offline war-game),
   #940 (release intent controller), and #945 (provider scope contract) are
@@ -103,7 +107,7 @@ Authenticated read-only inventory reconfirmed source
 `bba290db041e9f497c7161543c679d9d348b742d`
 (`v3.0.0-rc.1-platform-251-gbba290db`), API/host status `ok`, 30 app records
 and 46 service records. Mini is not a DO Fleet member. Its API does report
-`fleet_configured=true`: [`loadFleetInventory`](../../v2/api/handler/fleet.go#L116)
+`fleet_configured=true`: [`loadFleetInventory`](https://github.com/antiartificial/norn/blob/877ad4ba/v2/api/handler/fleet.go#L116)
 defines that flag as a Fleet config path being set, and the loaded document is
 the separate DigitalOcean staging target `norn-disposable-nyc3` in `nyc3`, with
 `control` and `ingress` pools. This is
