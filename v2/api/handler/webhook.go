@@ -107,6 +107,8 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	// Parse push payload
 	var payload struct {
 		Ref        string `json:"ref"`
+		After      string `json:"after"`
+		Deleted    bool   `json:"deleted"`
 		Repository struct {
 			CloneURL string `json:"clone_url"`
 			SSHURL   string `json:"ssh_url"`
@@ -124,9 +126,21 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	delivery.Repository = payload.Repository.CloneURL
 	delivery.Payload = map[string]interface{}{
 		"ref":       payload.Ref,
+		"after":     payload.After,
+		"deleted":   payload.Deleted,
 		"clone_url": payload.Repository.CloneURL,
 		"ssh_url":   payload.Repository.SSHURL,
 		"branch":    branch,
+	}
+	if payload.Deleted {
+		h.finishWebhookDelivery(r, delivery, "ignored", "branch deletion does not deploy")
+		writeJSON(w, map[string]bool{"ignored": true})
+		return
+	}
+	if !validWebhookCommitSHA(payload.After) {
+		h.finishWebhookDelivery(r, delivery, "failed", "push event has no immutable commit SHA")
+		WriteControlProblem(w, r, http.StatusBadRequest, "webhook_source_unpinned", "push event must identify an immutable 40-character commit SHA")
+		return
 	}
 
 	// Discover apps and find match
@@ -153,7 +167,7 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 
 	bodySum := sha256.Sum256(body)
 	enqueue, err := h.systemPipelineEnqueueRequest(r, "webhook:"+provider, "webhook:"+provider+":"+deliveryID, "webhook-"+provider, map[string]interface{}{
-		"provider": provider, "deliveryId": deliveryID, "event": eventHeader, "bodySha256": hex.EncodeToString(bodySum[:]),
+		"provider": provider, "deliveryId": deliveryID, "event": eventHeader, "bodySha256": hex.EncodeToString(bodySum[:]), "sourceSha": payload.After,
 		"repository": payload.Repository.CloneURL, "ref": payload.Ref, "app": spec.App,
 	})
 	if err != nil {
@@ -161,7 +175,7 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	accepted, err := h.pipeline.Run(r.Context(), spec, payload.Ref, enqueue)
+	accepted, err := h.pipeline.Run(r.Context(), spec, payload.After, enqueue)
 	if err != nil {
 		h.finishWebhookDelivery(r, delivery, "failed", "operation acceptance failed")
 		writeOperationAcceptanceError(w, r, err)
@@ -215,17 +229,15 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ref := delivery.Ref
-	if ref == "" {
-		ref = mapString(delivery.Payload, "ref")
-	}
-	if ref == "" {
-		ref = "HEAD"
+	ref := mapString(delivery.Payload, "after")
+	if !validWebhookCommitSHA(ref) {
+		WriteControlProblem(w, r, http.StatusConflict, "webhook_source_unpinned", "delivery has no immutable commit SHA and cannot be replayed safely")
+		return
 	}
 
 	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{
 		"action": "webhook-replay", "deliveryId": delivery.ID, "providerDeliveryId": delivery.DeliveryID,
-		"provider": delivery.Provider, "mode": req.Mode, "ref": ref, "app": spec.App,
+		"provider": delivery.Provider, "mode": req.Mode, "sourceSha": ref, "branch": delivery.Branch, "app": spec.App,
 	})
 	if !ok {
 		return
@@ -242,10 +254,6 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 	}
 
 	delivery.App = spec.App
-	delivery.Ref = ref
-	if delivery.Branch == "" {
-		delivery.Branch = strings.TrimPrefix(ref, "refs/heads/")
-	}
 	delivery.SagaID = accepted.Operation.SagaID
 	delivery.Status = "replayed"
 	delivery.Reason = "replayed as " + req.Mode
@@ -265,6 +273,22 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 		"mode":        req.Mode,
 		"status":      string(accepted.Operation.Status),
 	})
+}
+
+func validWebhookCommitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		return false
+	}
+	for _, b := range decoded {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) specForWebhookDelivery(delivery *model.WebhookDelivery) (*model.InfraSpec, error) {
