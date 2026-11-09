@@ -583,7 +583,11 @@ PY
           [[ "${#recovered_agent_args[@]}" -eq 4 && "${recovered_agent_args[0]}" == "--platform-script" && "${recovered_agent_args[1]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" && "${recovered_agent_args[2]}" == "--host-script" && "${recovered_agent_args[3]}" == "${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}" ]] || fail "recovered baseline rejects noncanonical host-agent startup"
         else
           [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
-          if [[ "$(basename "${recovered_early_args[0]}")" == "mini-recovered-forward-transition" ]]; then
+          if [[ "$(basename "${recovered_early_args[0]}")" == "host-runtime" && "${recovered_early_args[1]}" == "_assurance-forge" ]]; then
+            [[ "${recovered_early_args[0]}" == "$HOME/.config/norn/host/bin/host-runtime" && "${#recovered_early_args[@]}" -eq 3 ]] || fail "recovered baseline requires the canonical managed host-runtime assurance child"
+            [[ "${NORN_HOST_CONFIG_DIR:-$HOME/.config/norn/host}" == "$HOME/.config/norn/host" ]] || fail "recovered baseline assurance config directory is not canonical"
+            [[ "${NORN_PLATFORM_REPO:-}" == "$repo" && "${NORN_HOST_REPO:-}" == "$repo" ]] || fail "recovered baseline assurance repository binding is invalid"
+          elif [[ "$(basename "${recovered_early_args[0]}")" == "mini-recovered-forward-transition" ]]; then
             recovered_forward_transition_child_validate "${recovered_early_args[0]}" "${recovered_early_args[1]}" "${recovered_early_args[@]:2}"
           else
             case "${recovered_early_args[1]}" in
@@ -4047,6 +4051,10 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       recovered_env_command="${recovered_env_args[0]}"; recovered_env_mode="${recovered_env_args[1]}"
       if [[ "$(basename "$recovered_env_command")" == "mini-recovered-forward-transition" ]]; then
         recovered_forward_transition_child_validate "$recovered_env_command" "$recovered_env_mode" "${recovered_env_args[@]:2}"
+      elif [[ "$(basename "$recovered_env_command")" == "host-runtime" && "$recovered_env_mode" == "_assurance-forge" ]]; then
+        [[ "$recovered_env_command" == "$HOME/.config/norn/host/bin/host-runtime" && "${#recovered_env_args[@]}" -eq 3 ]] || fail "recovered baseline requires the canonical managed host-runtime assurance child"
+        [[ "${NORN_HOST_CONFIG_DIR:-$HOME/.config/norn/host}" == "$HOME/.config/norn/host" ]] || fail "recovered baseline assurance config directory is not canonical"
+        [[ "${NORN_PLATFORM_REPO:-}" == "$repo" && "${NORN_HOST_REPO:-}" == "$repo" ]] || fail "recovered baseline assurance repository binding is invalid"
       else
         [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
         case "$recovered_env_mode" in

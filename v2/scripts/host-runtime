@@ -83,6 +83,26 @@ mode="${1:-}"
 [ -n "$mode" ] || { usage >&2; exit 2; }
 shift
 
+# Narrow child mode for SOPS-backed route-only assurance. Bind the operation
+# to the managed route list and permit route publication only; never permit
+# workload mutations here.
+if [ "$mode" = "_assurance-forge" ]; then
+  [ "$#" -eq 1 ] || die "assurance forge requires exactly one app"
+  app="$1"
+  [ -n "${NORN_PLATFORM_REPO:-}" ] || die "assurance forge requires the configured repository"
+  config_dir="${NORN_HOST_CONFIG_DIR:-$HOME/.config/norn/host}"
+  config_dir="$(expand_home "$config_dir")"
+  [ -f "$config_dir/assure-forge" ] || die "assurance forge allowlist is missing"
+  python3 - "$config_dir/assure-forge" "$app" <<'PY' || die "app is not in the assurance forge allowlist"
+import sys
+items = [line.strip() for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+raise SystemExit(0 if items.count(sys.argv[2]) == 1 else 1)
+PY
+  norn="$config_dir/bin/norn"
+  [ -x "$norn" ] || die "managed norn CLI is missing"
+  exec env NORN_PLATFORM_REPO="$NORN_PLATFORM_REPO" "$norn" forge "$app"
+fi
+
 repo="${NORN_HOST_REPO:-}"
 config_dir="${NORN_HOST_CONFIG_DIR:-$HOME/.config/norn/host}"
 state_dir="${NORN_HOST_STATE_DIR:-$HOME/.local/share/norn/host}"
@@ -847,7 +867,14 @@ wait_required_service() {
 
 run_managed_norn() {
   [ -x "$norn_copy" ] || { record_assurance_failure "managed norn CLI is missing"; return 1; }
-  NORN_PLATFORM_REPO="$repo" "$norn_copy" "$@"
+  if [[ "${1:-}" == "forge" && "$#" -eq 2 ]]; then
+    [ -x "$platform_copy" ] || { record_assurance_failure "managed platform-upgrade helper is missing"; return 1; }
+    NORN_PLATFORM_REPO="$repo" NORN_HOST_REPO="$repo" NORN_HOST_CONFIG_DIR="$config_dir" \
+      NORN_HOST_STATE_DIR="$state_dir" NORN_HOST_LOG_DIR="$log_dir" \
+      "$platform_copy" env-exec -- "$runtime_copy" _assurance-forge "$2"
+  else
+    NORN_PLATFORM_REPO="$repo" "$norn_copy" "$@"
+  fi
 }
 
 # Host recovery has no database credentials. The control API projects the

@@ -170,6 +170,18 @@ the recovery supervisor and by `com.norn.host-assurance`.
   Nomad must recreate task, network, and port-binding state. Assurance then
   waits for the required Consul service to pass on IPv4.
 - Route reconciliation runs before endpoint probes.
+- Public-route reconciliation uses the managed platform helper's SOPS-backed
+  API environment; API credentials are not copied into the assurance plist.
+  Under the retained `candidate-postflight-failed` recovery fence, env-exec
+  admits only the canonical host-runtime child in its single
+  `_assurance-forge <allowlisted-app>` mode. It does not admit arbitrary CLI
+  commands or required-app deploy/restart actions. This exception exists so
+  route reconciliation can retain stable API actor context without weakening
+  the recovery fence.
+- `norn smoke platform` checks API health and read surfaces but does not run
+  host assurance. A successful `norn host assure` may publish or prune
+  Cloudflare routes for configured apps; treat it as a live host mutation and
+  verify the resulting route inventory and fresh assurance event afterward.
 - HTTP probes retry with bounded backoff.
 - A failing pass exits non-zero and emits `host.assurance.failed` through
   Beacon, deduplicated for one hour.
