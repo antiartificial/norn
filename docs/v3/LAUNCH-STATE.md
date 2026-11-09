@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 13:09 UTC)
+## Current V3 release readiness (2026-11-09 15:02 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -11,28 +11,26 @@ the sole staging Fleet and remains a separate qualification target.
 - **Mini direct:** the independent Mini reports API health and host status
   `ok` on signed V3 repair release
   `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
-  (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The 2026-11-09 12:29 UTC
+  (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The 2026-11-09 14:59 UTC
   authenticated read found 30 app records, 46 services (19 passing, 27
   unknown), seven queued `fleet.github.apply-dispatch` receipts last updated
   Oct 8–10, 25 active incident groups, and four snapshot-retention warnings.
-  Production readiness was generated at 12:29 UTC and remains blocked (7
-  passed, 1 warning, 18 failed). The inventory did not run route assurance;
-  the latest recorded assurance receipt says `succeeded` but is dated
-  2026-09-06, so route assurance is not fresh. Mini remains independent of
-  Fleet.
-- **DO staging:** a read-only `doctl --context work` refresh at 13:09 UTC
-  found all nine staging Droplets active (3 control, 2 ingress, 4 app), both
-  management Droplets active, the ingress load balancer active, and the
-  management-authority PostgreSQL plus application PostgreSQL/MySQL databases
-  online. Verified public HTTPS probes to the canary returned 200 for
-  `/route-proof` (`norn-fleet-canary`) and five `/version` responses from the
-  same source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, across two allocation
-  IDs and two node IDs. The canary hostname returns 404 for `/api/health`.
-  This confirms provider resources are active and the canary is serving; it
-  does not establish Norn API health, etcd quorum, Nomad/Consul control-plane
-  health, application catalog state, or the terminal receipt for the earlier
-  failed deployment. DO is online at the provider and canary levels, while
-  full Fleet runtime health remains unverified. Genesis readback remains
+  Production readiness was generated at 14:59 UTC and remains blocked (7
+  passed, 1 warning, 18 failed). Host status is `ok`, but its latest assurance
+  receipt remains the successful 2026-09-06 operation; fresh route assurance
+  is still unproven. Mini remains independent of Fleet.
+- **DO staging:** read-only `doctl --context work` queries at 15:02 UTC found
+  all nine `tk-staging-nyc3` Droplets active (3 control, 2 ingress, 4 app),
+  the ingress load balancer active, and the management-authority PostgreSQL
+  plus application PostgreSQL/MySQL databases online. The latest public
+  canary probe is still the 13:09 UTC read: `/route-proof` returned
+  `norn-fleet-canary`, and five `/version` responses reported source
+  `be5ca5d969ccf3509e62ce04a833516bb5c204db` across two allocation IDs and
+  two node IDs. The canary hostname returns 404 for `/api/health`. Current
+  provider resources and the earlier canary probe do not establish current
+  Norn API health, etcd quorum, Nomad/Consul control-plane health, application
+  catalog state, or the terminal receipt for the earlier failed deployment.
+  Full Fleet runtime health remains unverified. Genesis readback remains
   unpassed: run 42418784411 used an installed verifier whose pinned source
   objects were absent, and later attempts also stopped before a successful
   readback. Those intents and one-use runners are terminal. Fleet PR #946
@@ -67,11 +65,16 @@ the sole staging Fleet and remains a separate qualification target.
   submitting the same request: the losing caller rechecks and returns the
   winner's durable acceptance. Its two-client test passed ten consecutive
   local-etcd runs, the race detector, and API suite; the bounded regression
-  model checks 14 states and 18 transitions. The admission path is opt-in and
-  is not deployed or live-qualified. Simultaneous HTTP-handler requests,
-  worker/controller restart, exact app-source recovery, private-input
-  retention/deletion, production drivers, and DO mixed-version release remain
-  open. Stateful workloads still need separate writer/schema/data authorization.
+  model checks 14 states and 18 transitions. PR #335 exercises authenticated
+  HTTP replay against real etcd after response loss using seeded acceptance;
+  PR #337 reconstructs the handler and etcd adapters before replay; PR #339
+  recovers the shared reconciler across an etcd-backed successor claim after a
+  lost route-effect response, with controlled fake scheduler/route/health/drain
+  effects. Fresh HTTP admission with real qualification and private-input
+  persistence, production executor/worker restart recovery, exact app-source
+  recovery, private-input retention/deletion, and DO mixed-version release
+  remain open. Stateful workloads still need separate writer/schema/data
+  authorization.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected future application pool roles. Fleet PR #941 (offline war-game),
   #940 (release intent controller), and #945 (provider scope contract) are

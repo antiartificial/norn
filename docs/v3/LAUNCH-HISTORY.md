@@ -1,5 +1,29 @@
 # Norn v3 launch history
 
+## Read-only Mini and DO refresh (2026-11-09 14:59–15:02 UTC)
+
+The authenticated Mini inventory at 14:59 UTC reports API health and host
+status `ok` on signed V3 release
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`). It reports 30 app records, 46
+services (19 passing, 27 unknown), seven queued `fleet.github.apply-dispatch`
+records last updated Oct 8–10, 25 active incident groups, and four
+snapshot-retention warnings. Production readiness is blocked (7 passed, 1
+warning, 18 failed). The latest host assurance receipt is still the successful
+operation from Sep 6; this read did not run route assurance. These queued
+records and incidents remain unresolved; this read made no mutation.
+
+Read-only `doctl --context work` reads at 15:02 UTC found all nine
+`tk-staging-nyc3` Droplets active (3 control, 2 ingress, 4 app), the ingress
+load balancer active, and the management-authority PostgreSQL plus application
+PostgreSQL/MySQL databases online. The latest public canary probe remains the
+13:09 UTC read: `/route-proof` returned `norn-fleet-canary`, and five
+`/version` responses reported source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db` across two allocation IDs and two
+node IDs. Provider activity and that earlier route proof do not establish
+current DO Norn API, etcd, Nomad/Consul, or full catalog health. No provider,
+deployment, route, or host mutation was run.
+
 ## Admission replay recovery model merged (2026-11-09)
 
 Norn PR [#333](https://github.com/antiartificial/norn/pull/333) merged as
@@ -7,9 +31,13 @@ Norn PR [#333](https://github.com/antiartificial/norn/pull/333) merged as
 admission acceptance followed by a lost response, controller crash/restart
 without process-local acceptance memory, and same-key replay from the durable
 receipt. TLC explored 115 states and 365 steps; ten invariants and deadlock
-checking passed. This strengthens offline protocol evidence only. The combined
-HTTP-to-etcd path and full runtime worker/controller restart and response-loss
-behavior remain unproven; no deployment or workload mutation was performed.
+checking passed. This strengthens offline protocol evidence only. PRs #335 and
+#337 later exercised real-etcd HTTP replay across response loss and handler/
+adapter reconstruction; PR #339 exercised shared-reconciler recovery across
+an etcd-backed successor claim with controlled external-effect fakes. Fresh
+HTTP admission with real qualification/private-input persistence and full
+production executor/worker restart remain unproven; no deployment or workload
+mutation was performed.
 
 ## Read-only runtime and provider refresh (2026-11-09 12:29 UTC)
 
