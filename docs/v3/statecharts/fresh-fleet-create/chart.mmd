@@ -1,0 +1,53 @@
+---
+title: "Fresh DO Fleet create and recovery (bounded contract)"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: inputs
+    lg1: create
+    lg2: held
+    lg3: done
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  class lg3 purple
+  s0: Gather and validate protected inputs
+  s1: Hold: require readback or explicit cleanup
+  s2: Exact one-use apply admitted
+  s3: Provider create in progress (partial state possible)
+  s4: Resume exact intent after readback
+  s5: Fresh provider state reconciled
+  s6: Exact IDs read back#59; cleanup approved
+  s7: Generate PKI and configure created nodes
+  s8: Exact partial resources retired
+  s9: All node groups configured
+  s10: Fresh Fleet ready with terminal receipt
+  [*] --> s0
+  s0 --> s1: reject stale, incomplete, or expired input
+  s0 --> s2: admit one exact apply intent
+  s2 --> s1: controller stops#59; durable intent remains
+  s3 --> s1: provider effect may exist#59; response is lost or controller stops#59; durable intent remains
+  s1 --> s4: recover same intent after exact state proof
+  s4 --> s3: resume at observed create/configure checkpoint
+  s3 --> s5: read back exact provider state and identities
+  s5 --> s7: generate cluster-scoped PKI after create
+  s5 --> s1: controller stops#59; durable intent remains
+  s1 --> s6: require fresh readback before cleanup
+  s6 --> s8: retire only reconciled resource IDs
+  s7 --> s1: controller stops#59; durable intent remains
+  s4 --> s5: resume at observed create/configure checkpoint
+  s9 --> s10: record ready receipt
+  s9 --> s1: controller stops#59; durable intent remains
+  s4 --> s9: resume at observed create/configure checkpoint
+  class s0 blue
+  class s1 orange
+  class s2 blue
+  class s3 teal
+  class s4 orange
+  class s5 teal
+  class s6 orange
+  class s7 teal
+  class s8 purple
+  class s9 teal
+  class s10 purple

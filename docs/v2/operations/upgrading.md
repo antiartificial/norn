@@ -2,6 +2,14 @@
 
 Use this runbook when Norn itself is installed as the local LaunchAgent `com.norn.api`.
 
+For V3 release planning, use the current [platform release lanes and workload
+resizing guide](../../v3/release-lanes-and-workload-resizing.md). Mini is an
+independent node; the DO staging Fleet is a separate environment. The existing
+DO Norn release protocol is all-stop and forward-only. Mixed-version Norn
+control upgrades are not qualified. The Mini V3 transition remains gated on
+database writer compatibility and recovery proof; a preflight refusal is an
+intentional safety boundary.
+
 The safe upgrade path restarts only the Norn API process. Do not use `make down` for a production-ish local upgrade because it also stops Nomad and Consul, which can disrupt hosted apps.
 
 ## First-Class Platform Lane

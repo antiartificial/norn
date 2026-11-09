@@ -1,12 +1,15 @@
 # Online upgrade lessons and capability proposal — 2026-11-07
 
-This note turns the 2026-11-07 Mini attempt into platform-wide upgrade
-requirements. It is a proposal for the next engineering slices, not a claim
-that online upgrades are implemented or that the Mini was upgraded.
+This note turns the initial 2026-11-07 Mini refusal and recovery work into
+platform-wide upgrade requirements. It is a proposal for the next engineering
+slices, not a claim that online upgrades are implemented. The Mini later
+completed its controller-mediated direct V3 transition and signed repair; that
+bounded forward transition is recorded in [launch state](LAUNCH-STATE.md). It
+did not establish uninterrupted service or general online-upgrade support.
 
-## What the Mini attempt taught us
+## What the initial Mini attempt taught us
 
-The attempt stopped safely before changing the database or promoting a release.
+The initial attempt stopped safely before changing the database or promoting a release.
 The candidate required schema 51 while the Mini was at 49, and raised the
 minimum writer contract from 32 to 33. The ordinary upgrade lane could not
 prove that every writer, including `norn-host-agent`, was stopped or compatible.
@@ -35,6 +38,10 @@ The lesson is broader than “schedule a maintenance window”:
 
 The full observed evidence is in
 [`m6-mini-v3-forward-upgrade-observation-2026-11-07.md`](m6-mini-v3-forward-upgrade-observation-2026-11-07.md).
+
+The later successful direct transition does not erase this finding: it used a
+controller-recovered, writer-fenced forward path and included a brief service
+fence. It is a Mini direct-lane result, not a multi-node online upgrade proof.
 
 ## Proposed upgrade experience
 

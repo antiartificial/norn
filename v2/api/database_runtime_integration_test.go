@@ -16,7 +16,7 @@ import (
 )
 
 func TestDatabaseTargetsConfigurationFailsClosed(t *testing.T) {
-	// Unset keeps v2 routing without touching the store.
+	// Unset keeps legacy API routes registered without touching the store.
 	if targets, err := configureDatabaseTargets(context.Background(), &config.Config{}, nil); targets != nil || err != nil {
 		t.Fatalf("unset profile = %+v, %v", targets, err)
 	}

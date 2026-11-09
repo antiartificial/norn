@@ -88,23 +88,35 @@ jobs:
       - name: Run pilot exercise tests
         working-directory: v2/infra/fleet-pilot
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_exercise.py -v
-      - name: Install etcdctl from the pinned etcd image
+      - name: Prepare pinned etcdctl
         env:
+          ETCD_VERSION: 3.5.17
           NORN_ETCD_IMAGE: quay.io/coreos/etcd@sha256:a055da833a7c013b836ed0822e8ec1f99b059658be255ad8d0fcd31b635ae3d6
         run: |
           set -euo pipefail
           docker pull "$NORN_ETCD_IMAGE"
-          container="$(docker create "$NORN_ETCD_IMAGE")"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          version_output="$(docker run --rm --network none "$NORN_ETCD_IMAGE" /usr/local/bin/etcdctl version)"
+          printf '%s\n' "$version_output" | grep -Fx "etcdctl version: $ETCD_VERSION" >/dev/null
           tool_dir="$RUNNER_TEMP/etcd-tools"
           mkdir -p "$tool_dir"
-          docker cp "$container:/usr/local/bin/etcdctl" "$tool_dir/etcdctl"
+          cat > "$tool_dir/etcdctl" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${NORN_ETCD_IMAGE:?pinned etcd image is required}"
+          : "${RUNNER_TEMP:?runner temp directory is required}"
+          env_args=()
+          for name in ETCDCTL_API ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY ETCDCTL_USER ETCDCTL_PASSWORD; do
+            if printenv "$name" >/dev/null 2>&1; then env_args+=(--env "$name"); fi
+          done
+          exec docker run --rm --user "$(id -u):$(id -g)" --network host --volume "$RUNNER_TEMP:$RUNNER_TEMP" \
+            "${env_args[@]}" "$NORN_ETCD_IMAGE" /usr/local/bin/etcdctl "$@"
+          EOF
           chmod 0755 "$tool_dir/etcdctl"
           echo "$tool_dir" >> "$GITHUB_PATH"
-          test "$("$tool_dir/etcdctl" version | sed -n '1p')" = 'etcdctl version: 3.5.17'
       - name: Qualify three-member Fleet control store
         env:
           NORN_ETCD_IMAGE: quay.io/coreos/etcd@sha256:a055da833a7c013b836ed0822e8ec1f99b059658be255ad8d0fcd31b635ae3d6
+          TMPDIR: ${{ runner.temp }}
         timeout-minutes: 10
         run: |
           bash v2/scripts/test-etcd-three-member-fleet

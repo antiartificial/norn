@@ -1,0 +1,86 @@
+---
+title: "Nine-node staging topology create and same-intent recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: inputs
+    lg1: apply
+    lg2: hold
+    lg3: configure
+    lg4: done
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  class lg3 purple
+  class lg4 tan
+  s0: Validate fresh plan and bootstrap inputs
+  s1: Hold: read back provider state before recovery
+  s2: Prepare protected owner bootstrap secret files
+  s3: Hold: exact state read back#59; same-intent recovery available
+  s4: Validated inputs and secrets#59; ready for exact apply
+  s5: Ready to create#59; no provider nodes exist
+  s6: Partial provider create (1#8211;8 of 9 nodes)
+  s7: Hold: state or provider identity mismatch
+  s8: Resume same intent after exact readback
+  s9: Nine provider nodes created#59; verify state
+  s10: Read back full provider state
+  s11: Exact nine-node state confirmed
+  s12: Generate exact inventory
+  s13: Begin node configuration
+  s14: Partial node configuration (1#8211;8 of 9 nodes)
+  s15: All nodes configured#59; ready to seal
+  s16: Ready receipt records verified Fleet
+  [*] --> s0
+  s0 --> s1: hold on absent, invalid, or stale input
+  s0 --> s2: validate plan, account, backend, SSH, scope, and bootstrap inputs
+  s1 --> s3: read provider IDs and backend state before recovery
+  s2 --> s4: materialize owner-only protected bootstrap files
+  s4 --> s5: bind immutable intent and consume one-use nonce
+  s5 --> s6: create one node and record its response
+  s5 --> s1: controller stops with durable intent or provider creates a node but response is lost
+  s5 --> s7: provider inventory reveals an unclassified resource
+  s6 --> s1: controller stops with durable intent or provider creates a node but response is lost
+  s6 --> s7: provider inventory reveals an unclassified resource
+  s3 --> s8: resume the same intent after exact readback
+  s8 --> s1: controller stops with durable intent or provider creates a node but response is lost
+  s8 --> s7: provider inventory reveals an unclassified resource
+  s6 --> s9: create one node and record its response
+  s9 --> s10: start exact state readback after apply
+  s9 --> s1: controller stops with durable intent
+  s9 --> s7: provider inventory reveals an unclassified resource
+  s10 --> s1: controller stops with durable intent
+  s10 --> s7: provider inventory reveals an unclassified resource
+  s10 --> s11: confirm all nine nodes and matching identities
+  s3 --> s11: resume the same intent after exact readback
+  s11 --> s1: controller stops with durable intent
+  s11 --> s12: derive inventory only from all nine nodes
+  s8 --> s10: start exact state readback after apply
+  s12 --> s13: generate cluster-scoped node identities
+  s12 --> s1: controller stops with durable intent
+  s13 --> s14: configure one node from verified inventory
+  s13 --> s1: controller stops with durable intent
+  s14 --> s1: controller stops with durable intent
+  s3 --> s13: resume the same intent after exact readback
+  s3 --> s14: resume the same intent after exact readback
+  s14 --> s15: configure one node from verified inventory
+  s15 --> s16: record terminal readiness receipt
+  s15 --> s1: controller stops with durable intent
+  s3 --> s15: resume the same intent after exact readback
+  class s0 blue
+  class s1 orange
+  class s2 blue
+  class s3 orange
+  class s4 blue
+  class s5 teal
+  class s6 teal
+  class s7 orange
+  class s8 teal
+  class s9 teal
+  class s10 teal
+  class s11 teal
+  class s12 purple
+  class s13 purple
+  class s14 purple
+  class s15 purple
+  class s16 tan

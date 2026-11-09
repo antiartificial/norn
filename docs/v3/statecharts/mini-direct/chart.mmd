@@ -1,0 +1,56 @@
+---
+title: "Mini direct V3 upgrade and recovery (offline model)"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: prepare
+    lg1: transition
+    lg2: verify
+    lg3: held
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 purple
+  class lg3 orange
+  s0: Plan exact source and target
+  s1: Protected backup and target shadow
+  s2: Interrupted#59; journal preserved
+  s3: Writer set proven#59; intent ready
+  s4: Fence host agent
+  s5: Fence old API
+  s6: Changed target rejected#59; transition held
+  s7: Old writers stopped#59; writes fenced
+  s8: Apply schema migration
+  s9: Schema 51 ready#59; target pinned
+  s10: Start signed target
+  s11: Target healthy#59; preservation checked
+  s12: Transition receipt complete
+  [*] --> s0
+  s0 --> s1: verify protected backup and exact candidate shadow
+  s1 --> s2: unknown writer holds after safe backup and shadow preparation
+  s1 --> s3: prove all writers compatible or fenceable before transition
+  s2 --> s3: collect fresh writer proof
+  s3 --> s4: bind exact signed target in the generation journal
+  s4 --> s5: stop and fence host agent
+  s5 --> s7: drain and fence old API
+  s2 --> s6: changed target is held against the journal
+  s7 --> s8: persist migration start
+  s8 --> s9: complete resumable schema migration
+  s9 --> s10: start exact signed target and matching host agent
+  s9 --> s2: process stops or effect outcome is uncertain
+  s10 --> s11: check health and workload preservation
+  s2 --> s9: reconcile and resume the same signed target
+  s11 --> s12: write terminal receipt and release mutation fence
+  class s0 blue
+  class s1 blue
+  class s2 orange
+  class s3 blue
+  class s4 teal
+  class s5 teal
+  class s6 orange
+  class s7 teal
+  class s8 teal
+  class s9 teal
+  class s10 purple
+  class s11 purple
+  class s12 purple

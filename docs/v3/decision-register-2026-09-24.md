@@ -2,6 +2,8 @@
 
 This is a reconciliation of the v3 planning ADRs and the accepted auth-aggregate decision from the durable branch. Implementation does not by itself accept a proposed ADR or qualify a milestone.
 
+Operational lane status was reconciled on 2026-11-07 in the [V3 release lane guide](release-lanes-and-workload-resizing.md). The Mini is an independent node; DO is the only Fleet and a staging testbed. Retained DO deployment/state evidence is dated evidence, not a current service-health claim. No online mixed-version Norn control release is qualified.
+
 | ADR | Current disposition | Review needed before exit |
 | --- | --- | --- |
 | [0001: State, evidence, observability](adrs/0001-state-evidence-and-observability.md) | Proposed; archive and event foundations implemented in part | Accept retention/restore guarantees and measured byte budgets after Mini fixture and outage tests. |

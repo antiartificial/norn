@@ -126,7 +126,7 @@ export function PlatformPanel() {
 function ReleasesTab() {
   const queryClient = useQueryClient()
   const { toast } = useToast()
-  const releases = useQuery({ queryKey: ['platform', 'releases'], queryFn: () => apiFetch<PlatformReleaseList>('/api/platform/releases'), staleTime: 15_000 })
+  const releases = useQuery({ queryKey: ['platform', 'releases'], queryFn: () => apiFetch<PlatformReleaseList>('/api/v1/releases'), staleTime: 15_000 })
   const [rollbackTarget, setRollbackTarget] = useState<PlatformRelease | null>(null)
   const rollback = useMutation({
     mutationFn: (sha: string) => apiFetch(`/api/platform/releases/${encodeURIComponent(sha)}/rollback`, { method: 'POST' }),
