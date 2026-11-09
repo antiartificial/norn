@@ -1,5 +1,22 @@
 # Norn v3 launch history
 
+## Read-only runtime and provider refresh (2026-11-09 12:29 UTC)
+
+The authenticated Mini inventory again returned API and host status `ok` on
+source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`. It reported 30 app records,
+46 services (19 passing, 27 unknown), seven queued GitHub apply-dispatch
+receipts last updated Oct 8–10, 25 incident groups, and four snapshot-retention
+warnings. Production readiness generated at 12:29 UTC remains blocked (7
+passed, 1 warning, 18 failed). This read did not run route assurance; the
+latest recorded assurance is still dated Sep 6.
+
+Read-only `doctl --context work` queries found all nine `tk-staging-nyc3`
+Droplets, both management Droplets, and the staging ingress load balancer
+active. These provider reads do not establish database, Norn/API, etcd,
+Nomad/Consul, workload, or public-route health. DO runtime health and Genesis
+readback remain unverified. No provider mutation, deployment, or host change
+was made.
+
 ## Fresh release-readiness reconciliation (2026-11-09 12:25 UTC)
 
 Norn PR [#324](https://github.com/antiartificial/norn/pull/324) merged at

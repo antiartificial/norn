@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 11:59 UTC)
+## Current V3 release readiness (2026-11-09 12:29 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -11,15 +11,17 @@ the sole staging Fleet and remains a separate qualification target.
 - **Mini direct:** the independent Mini reports API health and host status
   `ok` on signed V3 repair release
   `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
-  (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The 2026-11-09 11:59 UTC
+  (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The 2026-11-09 12:29 UTC
   authenticated read found 30 app records, 46 services (19 passing, 27
-  unknown), seven queued `fleet.github.apply-dispatch` receipts, 25 active
-  incident groups, and four snapshot-retention warnings. Production readiness
-  remains blocked (7 passed, 1 warning, 18 failed). The latest assurance
-  receipt says `succeeded` but is dated 2026-09-06; route assurance is not
-  fresh. Mini remains independent of Fleet.
+  unknown), seven queued `fleet.github.apply-dispatch` receipts last updated
+  Oct 8–10, 25 active incident groups, and four snapshot-retention warnings.
+  Production readiness was generated at 12:29 UTC and remains blocked (7
+  passed, 1 warning, 18 failed). The inventory did not run route assurance;
+  the latest recorded assurance receipt says `succeeded` but is dated
+  2026-09-06, so route assurance is not fresh. Mini remains independent of
+  Fleet.
 - **DO staging:** a fresh read-only `doctl --context work` query at about
-  12:00 UTC found all nine staging Droplets (3 control, 2 ingress, 4 app),
+  12:29 UTC found all nine staging Droplets (3 control, 2 ingress, 4 app),
   both management Droplets, and the ingress load balancer active. The query did
   not inspect managed databases, Norn APIs, etcd quorum, Nomad/Consul workloads,
   or public routes. DO runtime health remains unverified. Genesis readback
