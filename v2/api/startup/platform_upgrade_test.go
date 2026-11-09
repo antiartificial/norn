@@ -697,6 +697,7 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
 	cmd.Env = append(cmd.Env,
 		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
+		"FAKE_MIGRATION_PRESERVE_PATH="+filepath.Join(fixture.root, "migration-preserve-fleet-dispatch"),
 		"FAKE_ACTIVE_OPERATIONS_JSON="+queuedFleetDispatchReceiptsJSON(t, 7),
 		"FAKE_REQUIRE_AUTH_AFTER_PROMOTION=1",
 		"FAKE_FENCED="+fenced,
@@ -726,6 +727,10 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	}
 	if _, err := os.Stat(fixture.migrationMarker); err != nil {
 		t.Fatalf("legacy baseline did not execute migration after fencing: %v\n%s", err, out)
+	}
+	preservation, err := os.ReadFile(filepath.Join(fixture.root, "migration-preserve-fleet-dispatch"))
+	if err != nil || strings.TrimSpace(string(preservation)) != "true" {
+		t.Fatalf("legacy baseline did not enable queued Fleet dispatch preservation: %v %q\n%s", err, preservation, out)
 	}
 	if err := exec.Command("kill", "-0", fmt.Sprintf("%d", legacyProcess.Process.Pid)).Run(); err == nil {
 		t.Fatalf("legacy service survived direct frozen-PID termination:\n%s", out)
@@ -1728,7 +1733,7 @@ exit 2
 func fakeSchemaContractBinary(version, contract string, migrates bool) string {
 	migrate := "exit 0"
 	if migrates {
-		migrate = `: > "$FAKE_MIGRATION_MARKER"; exit 0`
+		migrate = `: > "$FAKE_MIGRATION_MARKER"; printf '%s\n' "${NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH:-}" > "${FAKE_MIGRATION_PRESERVE_PATH:-/dev/null}"; exit 0`
 	}
 	return `#!/usr/bin/env bash
 set -euo pipefail

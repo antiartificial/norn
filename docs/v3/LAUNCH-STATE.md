@@ -2,40 +2,45 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 19:01 UTC)
+## Current V3 release readiness (2026-11-09 21:44 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
 the sole staging Fleet and remains a separate qualification target.
 
-The protected-master qualification attempt on `d8b08a32` in run
-[42670882840](https://github.com/antiartificial/norn/actions/runs/42670882840)
-and failed three API tests: manual webhook replay lacked its audit-receipt
-fixture, and two schema assertions still expected migration 51 instead of 52.
-PR [#359](https://github.com/antiartificial/norn/pull/359) repaired those
-fixtures/assertions and merged at `b5b2657f325291bd32ced8bf74d42824fb516f88`
-after its complete required check set passed in run
-[42674943401](https://github.com/antiartificial/norn/actions/runs/42674943401).
-The full protected-master qualification passed against that exact SHA in run
-[42675609475](https://github.com/antiartificial/norn/actions/runs/42675609475).
-The signed release workflow
-[42676303794](https://github.com/antiartificial/norn/actions/runs/42676303794)
-also passed authorization, UI build, and all four OS/architecture bundle jobs.
-Downloaded bundle archives match their manifest SHA-256 values; all four
-manifests bind the same commit and
-`v3.0.0-rc.1-platform-313-gb5b2657f` prerelease version. The `publish` job is
-waiting for the configured `platform-release` environment approval. No signed
-release has been published and the Mini has not changed. After publication,
-the Mini still requires exact-SHA signed import/verification, protected
-backup, signed shadow, controller preflight, promotion, smoke, and host
-assurance. A fresh Mini inventory at 18:48 UTC confirmed the current read-only
-state below. The latest DO provider inventory is from 18:58 UTC. A 19:01 UTC
-public canary probe passed, but full Fleet control-plane/runtime health is not
-verified.
+Protected-master qualification run
+[42700530242](https://github.com/antiartificial/norn/actions/runs/42700530242)
+passed at `e9a21d2095d60c8a96c1440e35e045dd0b6a7637`. Release run
+[42701234927](https://github.com/antiartificial/norn/actions/runs/42701234927)
+passed exact-source authorization and all five UI/platform bundle jobs. The
+owner approved its protected `platform-release` job; immutable signed
+prerelease `platform-e9a21d2095d60c8a96c1440e35e045dd0b6a7637` was published
+at 21:28 UTC. The downloaded Darwin/arm64 bundle passed signature, manifest,
+archive-inventory, SBOM, and exact-source verification.
 
-- **Mini direct:** the independent Mini's completed Nov 7 controller-mediated
-  direct adoption remains in place; this refresh did not attempt another
-  upgrade. At 18:48 UTC, authenticated reads reported API and host status `ok`,
+At 21:31 UTC, Mini health remained `ok` on source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`, schema 51. The exact signed
+`e9a21d20` candidate was imported and its passive controller preflight stopped
+before any database migration or API promotion because the candidate requires
+schema 52. The seven old DO `fleet.github.apply-dispatch` receipts were each
+sent through the protected lookup-only reconcile endpoint. All seven returned
+HTTP 409 `fleet_github_dispatch_binding_mismatch`: their stored bindings do not
+match the current Fleet lane. No receipt was changed, and no GitHub workflow
+dispatch or provider apply was requested.
+
+Review of the Mini legacy-baseline migration path found that it reported these
+queued Fleet receipts as preserved but did not pass the migrator's
+`NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true` option. That would have made
+schema migration reject the seven queued receipts after fencing. The local fix
+and a focused transition regression test pass; they are not merged, signed, or
+deployed. Publish a new exact-source release, complete the required Mini backup
+and private-restore proof, then repeat the signed preflight before scheduling
+the fenced schema transition. No Mini migration or release promotion has
+occurred. DO's latest provider inventory remains 18:58 UTC and its 19:01 UTC
+public canary probe is not proof of control-plane health.
+
+- **Mini direct (18:48 UTC inventory):** the independent Mini's completed Nov 7 controller-mediated
+  direct adoption remains in place. At 18:48 UTC, authenticated reads reported API and host status `ok`,
   `runtimeMutationFence=inactive`, and Consul, Nomad, Postgres, S3, SOPS, and
   the Nomad/Consul workload connector up on signed V3 repair release
   `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
