@@ -1,5 +1,75 @@
 # Norn v3 launch history
 
+## Recovered-forward verifier source-lineage fix merged (2026-11-09 23:29 UTC)
+
+The signed Mini transition for candidate `9d9d6208654b995cddc8b76e13d089c665c52fd6`
+stopped before fencing or database mutation. Its evidence verifier incorrectly
+required the adopted source SHA to equal the currently serving source, even
+though the signed adoption source `e117d5645f7764ac6ba6bc316aa19fa241521655`
+is an ancestor of current `d4dc88e0c37003a1013caed444983b2eeb50fbcb`. PR #373
+fixes this by requiring both releases to verify as externally signed and
+checking exact Git ancestry, while keeping the historical incident candidate
+exactly bound. Its positive and negative regression tests passed, as did all
+required CI, including API/CLI tests, the Fleet pilot workload, Web UI build,
+and the three-client durable-replica qualification. It was squash-merged at
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`.
+
+The approved `9d9d6208` candidate is already immutable and signed, but it does
+not contain this verifier fix. The Mini remains on `d4dc88e0`; health is `ok`,
+the runtime mutation fence is inactive, and no transition generation pointer,
+host fence, migration, or release promotion was made by the failed attempt.
+The attempt-specific `r3` evidence was preserved and must not be reused. The
+fix needs protected-master qualification and a new exact-source release; the
+prior publish approval was specific to `9d9d6208` and does not authorize that
+new release. After publication, repeat candidate-specific import, backup,
+shadow, preflight, and recovered-forward admission with a fresh transition ID.
+
+## Seven stale Fleet dispatch receipts remain unreconcilable on current lane (2026-11-09 23:08 UTC)
+
+The user approved another protected, lookup-only reconciliation attempt for the
+seven stale `fleet.github.apply-dispatch` receipts. A fresh authenticated Mini
+inventory confirmed all seven are still queued. Review of the deployed V3
+handler shows it checks that each saved dispatch binding matches the currently
+configured Fleet environment before calling the lookup-only GitHub recovery
+client. These seven bindings fail that guard, so the endpoint returns
+`fleet_github_dispatch_binding_mismatch` without performing the GitHub lookup
+or changing the operation. This was already observed for each receipt at
+21:31 UTC; repeating the POST against unchanged configuration would only
+produce another audited 409.
+
+No receipt was canceled, rebound, or otherwise changed. No GitHub workflow
+dispatch or provider apply occurred. Do not edit these operation rows or
+temporarily change the Fleet lane to force a match. A future code path would
+need to prove each immutable saved binding against its exact GitHub run using
+read-only scope, persist only a positive `recovered` or
+`verified-no-write/canceled` result, and leave ambiguous cases queued. Until
+then the seven receipts remain preserved for the signed recovered-forward
+Mini transition; they are not individually reconciled and must not be counted
+as a cleared Fleet drain gate.
+
+## Fresh-Fleet General + Stateful role path verified (2026-11-09 23:02 UTC)
+
+Read-only inspection of protected `norn-fleet` main
+`35e1c893198efbdc9e407d708e5096a32b485f7d` found that the selected
+General + Stateful application-pool pair is now supported by its source:
+`sanity.py` accepts exactly the legacy single `app` pool or the two distinct
+`general`/`stateful` workload labels; generated inventory preserves each pool
+ID and role under the app group; `bootstrap-topology.yml` enforces at least two
+clients per app pool; and Nomad bootstrap registers each distinct pool before
+clients join. The Nomad client template keeps the real node-pool ID and derives
+its class from the workload role.
+
+Three focused tests against that exact source passed for topology validation,
+inventory rendering, and Nomad bootstrap wiring. The checked-in staging
+configuration remains one `workload: app` pool. Stable future IDs are now
+recorded as `general` and `stateful`; no fresh-Fleet profile or provider plan
+was created. SKU, capacity, budget, placement/workload policy, stateful data
+recovery, and joined persistent apply/recovery with exact provider identities
+and terminal receipt remain open. This was a source review and synthetic test
+run only; no DigitalOcean read, apply, or host change occurred. The original
+`norn-fleet` checkout had unrelated uncommitted changes and was left untouched;
+verification used a separate clean worktree.
+
 ## Recovered-forward repair merged; exact-source release prepared (2026-11-09 22:56 UTC)
 
 Norn PR #370 merged at exact source
