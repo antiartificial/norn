@@ -8,6 +8,7 @@ provider state, host behavior, availability, or the implementation itself.
 |---|---:|---|---|
 | Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |
 | Mini direct V3 upgrade | 82 states, 164 steps; 7 invariants and deadlock check pass | Bounded model of backup/shadow, writer proof, fencing, migration, promotion, receipt, and same-target recovery | Abstracts real key custody, writer discovery, Launchd PID reuse, and host effects |
+| Proposed online Norn platform upgrade | 97 states, 251 steps; 12 invariants and deadlock check pass | Old release serves through additive schema expansion and passive candidate verification; writer/traffic handoff is fenced, crash recovery keeps the same intent, and schema contraction waits until old-writer retirement | Proposed protocol only; assumes binary/schema compatibility and post-handoff health; abstracts real migrations, writer discovery, fencing, supervision, workload/data integrity, and availability measurements |
 | Existing Fleet Genesis | 69 states, 107 steps; 9 invariants and deadlock check pass | Dormant install, signed intent, staged controls, passive-first promotion, recovery; fresh-Fleet request is explicitly blocked | Inputs are modeled as one valid/invalid gate; provider create workflow is absent from this model |
 | Workload mixed-version resize | Capacity 3: 24 states / 52 steps; capacity 4: 103 / 275; 11 invariants and deadlock check pass in both | Proposed protocol, not current controller behavior; capacity 3 has no target-only route or terminal path under the target-only-before-drain rule, while capacity 4 reaches terminal receipt | Abstracts Nomad placement, app processes, database semantics, route implementation, and timing; live preflight must prove full overlap capacity |
 | Fresh DO Fleet create and recovery | 308 states, 813 steps; 8 invariants and deadlock check pass | Bounded protected plan/apply, partial create, readback, same-intent recovery, PKI/configuration, exact cleanup | Three abstract node groups; detailed provider resources and secret lifecycle are omitted |
@@ -23,6 +24,7 @@ provider state, host behavior, availability, or the implementation itself.
 
 - [Existing DO platform release](fleet-platform-release/README.md)
 - [Mini direct upgrade](mini-direct/README.md)
+- [Proposed online Norn platform upgrade](online-norn-upgrade/README.md)
 - [Genesis on existing DO controls](genesis-existing-fleet/README.md)
 - [Proposed workload mixed-version resize](workload-mixed-version/README.md)
 - [Fresh DO Fleet create and recovery](fresh-fleet-create/README.md)
@@ -63,7 +65,8 @@ provider state, host behavior, availability, or the implementation itself.
   provider-scope evidence at admission even though current preflight does not
   validate token scope; it has no teardown action because persistent staging
   has no sanctioned whole-Fleet destroy.
-- No online mixed-version Norn control upgrade is modeled or qualified yet.
+- The online Norn upgrade now has a bounded proposed model, but no controller
+  implementation or live online-upgrade qualification is established.
 
 Each lane directory contains the TLA+ spec, TLC config, chart view, Mermaid
 chart, report, run output, and reproduction notes. Regenerate with the command
