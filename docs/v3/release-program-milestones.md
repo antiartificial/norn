@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-09 13:28 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-09 14:10 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -28,7 +28,7 @@ not happen.
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
 | Fresh-Fleet bootstrap | PRs #941 (offline war-game), #940 (controller release intent), #945 (provider-scope contract), #947 (bootstrap credential lifecycle), and #942 (module-owned test collection) are merged. General + Stateful remain the selected future app-pool roles. Fleet PR #837 (protected tailnet ingress enrollment prerequisite) merged at `6335c667` after its exact-head contract and both security checks passed (run 42578247221). This is source readiness only: no host enrollment, provider apply, or Genesis readback occurred. | Complete integrated persistent apply/recovery, exact state/provider identity readback, per-service credential lifecycle, and terminal receipt before any protected apply. The #837 enrollment lane still requires fresh owner-reviewed key/tag/host/digest inputs and a separately approved one-use dispatch; merge did not create those inputs or enroll ingress. |
 | Offline models | Twelve reader-facing lane models are indexed, with focused admission and source-gate models linked from their parent lanes. The same-key race has separate store and HTTP interleaving models, and admission recovery now models response loss and process restart. | Replay remaining counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
-| Workload release | PR #302's stateless mixed-version protocol is extended by merged PRs #311, #315, #316, and #317 for stable replay, replay preflight, placement-bound overlap policy, and signed policy binding. PR #319 (`877ad4ba`) adds the opt-in staging-only authenticated producer; PR #324 (`3fcdc154`) fixes concurrent same-key store replay; PR #331 (`c58df6aa`) proves receipt reload and successor-claim recovery after rebuilding the etcd client and store. PR #333 (`443ca840`) adds a bounded TLA+ model for acceptance commit with a lost response, controller crash/restart, and durable same-key replay (115 states / 365 steps; ten invariants and deadlock check pass). That model abstracts the HTTP and runtime controller; the HTTP interleaving model and handler test still use a fake atomic store. No live workload release is qualified. | Add an implementation-backed HTTP-to-etcd concurrency/replay test; prove exact source and encrypted-input recovery, full worker/controller runtime crash and lost-response behavior, and target-only public-route evidence. Live staging canary remains gated on DO M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
+| Workload release | PR #302's stateless mixed-version protocol is extended by merged PRs #311, #315, #316, and #317 for stable replay, replay preflight, placement-bound overlap policy, and signed policy binding. PR #319 (`877ad4ba`) adds the opt-in staging-only authenticated producer; PR #324 (`3fcdc154`) fixes concurrent same-key store replay; PR #331 (`c58df6aa`) proves receipt reload and successor-claim recovery after rebuilding the etcd client and store. PR #333 (`443ca840`) adds a bounded TLA+ model for acceptance commit with a lost response, controller crash/restart, and durable same-key replay (115 states / 365 steps; ten invariants and deadlock check pass). PR #335 (`0eb10852`) exercises authenticated HTTP replay against real etcd after a dropped response, using a previously seeded durable acceptance. It does not exercise fresh admission or runtime restart. No live workload release is qualified. | Prove fresh HTTP admission through real qualification and private-input persistence; prove exact source and encrypted-input recovery, full worker/controller runtime crash and lost-response behavior, and target-only public-route evidence. Live staging canary remains gated on DO M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
 
 Mini is an independent node, not a Fleet member. The DO staging environment is
 the only Fleet in this release work. Provider inventory, controller health,
@@ -114,8 +114,9 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   counterexample and checks 14 fixed states / 18 transitions. A separate HTTP
   interleaving model and deterministic handler test force two initial replay
   misses and return one fresh result plus one same-ID replay through a fake
-  atomic store. End-to-end HTTP-to-etcd and restart/response-loss qualification
-  remain open.
+  atomic store. PR #335 exercises authenticated replay through the real HTTP
+  handler and etcd after a dropped response, using a seeded acceptance. Fresh
+  HTTP admission and runtime restart/response-loss qualification remain open.
 - [x] Reconstruct the etcd client and operation store after claim loss, reload
   the durable workload receipt, and recover the same intent under a successor
   claim. PR #331's full `etcdstore` suite and exact-head CI passed. This proves
@@ -126,8 +127,14 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   and 365 steps; all ten invariants and deadlock checking passed. This is
   protocol evidence only; it does not exercise the HTTP handler, etcd adapter,
   or runtime worker/controller restart.
-- [ ] Prove the combined HTTP-to-etcd replay path and full worker/controller
-  runtime restart and response-loss behavior.
+- [x] Exercise authenticated HTTP replay against real etcd after dropping the
+  response. PR #335 seeds the prior signed durable acceptance through the real
+  store, then retries through the production handler and verifies same-ID
+  replay and changed-selection conflict. It does not exercise fresh handler
+  admission or worker/controller runtime restart.
+- [ ] Prove fresh HTTP admission with real qualification and private-input
+  persistence, then prove full worker/controller runtime restart and
+  response-loss behavior.
 - [x] Model future fresh-Fleet bootstrap with two independent app pools,
   lost-create-response readback, same-intent recovery, full-inventory gating,
   and terminal receipt. Pool identities are abstract and no counts or capacity bounds are
