@@ -183,6 +183,21 @@ disposable-retirement suite's 84-test run remains unverified. These checks do no
 Actions or prove protected runner, environment, artifact, provider, or teardown
 behavior.
 
+## Offline statechart reproduction — 2026-11-09
+
+All nine checked-in lane models were rerun with their documented configs; the
+additional workload capacity-3 config was also checked. Every configured
+invariant and deadlock check passed. TLC state/transition counts matched the
+statechart summaries: existing DO release 299/1,036; Mini direct 82/164;
+existing-Fleet Genesis 69/107; workload overlap capacity 3 24/52 and capacity
+4 103/275; fresh DO create 308/813; future two-pool Fleet 45/98; nine-node
+staging recovery 102/210; workload stop recovery 10/15; route publication 55/111.
+Rendered charts and reports were written under `/tmp` with prefix
+`norn-v3-statechart-` and suffix `20261109`; the checked-in specs, configs, and
+views remain the durable reproduction source. These bounded runs verify the
+models as written, not the controller implementation, live credentials,
+providers, hosts, or availability.
+
 ## Ordered gates
 
 ### M0. Freeze the present-tense evidence
