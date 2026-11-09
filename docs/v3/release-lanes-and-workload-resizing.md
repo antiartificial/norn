@@ -1,7 +1,7 @@
 # V3 platform release lanes and workload resizing
 
 Status: operator guidance updated 2026-11-09 against merged Norn `master` at
-`877ad4ba`. The authenticated workload-release producer exists as an opt-in
+`ccb49a56`. The authenticated workload-release producer exists as an opt-in
 staging API, but has not been deployed or live-qualified.
 The Mini is an independent node. The DigitalOcean (DO) work Fleet is the only
 Fleet and is a staging testbed intended to resemble production at lower scale.
@@ -12,7 +12,7 @@ it does not prove that a service is healthy now.
 
 | Lane | Use | Current mechanism | Availability and recovery |
 |---|---|---|---|
-| Mini direct | Upgrade the independent Mini; optionally deploy its app workloads from an in-Norn Git host | Signed Norn release and installed Mini upgrade controller for the platform. The PostgreSQL-backed app API has GitHub/Gitea deploy webhooks. Mini endpoint and configuration are not freshly verified; see [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 controller-mediated V3 transition completed at `bba290db041e9f497c7161543c679d9d348b742d` with schema 51 and writer floor 33; a signed repair recovered a PID-reuse race. On Nov 8, the Mini advanced to signed RC `d4dc88e0c37003a1013caed444983b2eeb50fbcb`; smoke and host doctor passed. This proves those forward transitions, not uninterrupted service or general online migration support. |
+| Mini direct | Upgrade the independent Mini; deploy its app workloads from GitHub through Norn | Signed Norn release and installed Mini upgrade controller for the platform. The PostgreSQL-backed app API has GitHub/Gitea deploy webhooks. The Mini has GitHub hooks and recorded deliveries, but still runs a build before the exact-SHA fix; see [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 controller-mediated V3 transition completed at `bba290db041e9f497c7161543c679d9d348b742d` with schema 51 and writer floor 33; a signed repair recovered a PID-reuse race. On Nov 8, the Mini advanced to signed RC `d4dc88e0c37003a1013caed444983b2eeb50fbcb`; Nov 9 API health and host status read `ok`. This proves those forward transitions, not uninterrupted service or general online migration support. |
 | DO Fleet Norn release | Change Norn API/UI on the existing three-control DO Fleet | `work-staging-norn-release.yml`; exact publisher artifacts, fresh protected state readback, host key receipt, all-member staging, all-stop, target promotion, singleton verification, then durable pin update | Deliberate maintenance interruption. Forward-only recovery resumes the same target. Never restart old bytes after any target starts. |
 | Fleet bootstrap | Create or recreate a Fleet | Protected provider `plan.yml`/`apply.yml`, then post-create reconciliation and Ansible. Protected `norn-fleet` main at `4451767624b12cbc41cc32e160a10d4b46006e0f` declares the existing DO staging shape: 3 control, 2 ingress, 4 app Droplets; provider readback matches that shape. There is one app pool (`workload: app`). A future fresh-Fleet default of two pools (General + Stateful) is agreed but not yet encoded, and must not be conflated with current staging. Genesis installs a dormant controller on an existing Fleet; it does not create provider resources. See the [topology source audit](staging-topology-source-audit-2026-11-08.md). | Infrastructure lifecycle work, separate from platform release. Apply binds a reviewed plan and one-use capacity dispatch; partial-create recovery, complete secret provenance, and DO-token permission-scope admission still need integrated offline qualification. |
 | Workload resize/release | Add or remove application capacity or release a new application version | Fixed-image replica scaling and node-pool capacity are separate from the M5 mixed-version controller. The staging-only authenticated admission API accepts a signed V3 qualification ID and target replica count, then derives current policy, Fleet placement, active route, Nomad lineage, app source and encrypted SOPS snapshot. Accepted recovery input now pins the exact job-driving app spec plus encrypted SOPS bytes in a key-ring envelope; worker target construction no longer needs the current checkout. | The API is opt-in and not deployed or live-qualified. Offline acceptance/recovery evidence now includes store/worker tests and a real-etcd acceptance/open integration test. Full production executor/worker restart recovery, private-input retention/deletion, production-store process/lease crash matrix, and disposable Nomad/ingress qualification remain open. Live canary and stateful data-compatibility qualification are also open. Route-proof loss holds progress and requires fresh same-generation readback. Norn control binaries stay fixed unless separately released. |
@@ -38,9 +38,28 @@ The PostgreSQL-backed app API already has `POST /api/webhooks/github` and
 `POST /api/webhooks/gitea`. The handler verifies the provider HMAC, matches the
 repository URL and branch to an app whose `repo.autoDeploy` is enabled, records
 the delivery, and queues a durable `app.deploy` operation. The V3 etcd Fleet
-router does not mount these routes. The current Mini API backend and webhook
-configuration have not been checked in this update, so source support does not
-prove that a hook to the Mini will work.
+router does not mount these routes.
+
+A read-only Mini inventory on Nov 9 at 17:53 UTC reported API health `ok` on
+source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`. The running API process had
+`NORN_WEBHOOK_SECRET` configured, and the delivery readback returned 25 recent
+rows, all from GitHub (17 `deploying`, 8 `ignored`). Those are receipt states;
+`deploying` does not prove the corresponding deployment operation succeeded.
+The app inventory contained 30 records, including 12 records with
+`repo.autoDeploy`; some apps have more than one repository mapping. Gitea has
+no healthy allocation or service in that readback, so do not rely on it as a
+live source host today.
+
+A read-only GitHub hook audit found active `push` hooks on
+`antiartificial/field-harbor`, `ft-trove`, `mail-agent`, `mail-indexer`,
+`mail-mcp`, and `signal-sideband`. All six point to
+`norn-webhooks.slopistry.com/api/webhooks/github`. The GitHub delivery API
+returned no recent delivery rows for those hooks, so this verifies configured
+destinations, not a successful current push-to-Mini deployment. Hooks were
+absent for the other checked personal repositories `audio-scene-lab`,
+`motifgarden`, and `norn-bloom`. GitHub does not return saved hook secrets;
+the process-level check proves that the Mini has a secret configured, but not
+that its value matches each GitHub hook.
 
 The webhook handler previously queued the branch ref. This can deploy a later
 commit if the branch advances before the worker fetches it. The current source
@@ -52,13 +71,14 @@ It has not been deployed or live-qualified. Until the Mini runs this build and
 passes the webhook rehearsal below, do not treat its webhook path as an
 exact-push deployment trigger.
 
-For your personal toy and sample projects, keep GitHub as the canonical remote
-and configure the GitHub push webhook to the Mini only after verifying the
-Mini's API runtime, `NORN_WEBHOOK_SECRET`, app `repo.url`, `repo.branch`, and
-`repo.autoDeploy`. A second remote hosted on Norn can serve as a mirror or a
-source for private projects. Do not use two independently writable remotes as
-release authorities. A hook requests deployment; Norn maps the repo and branch
-to one configured app and records the resulting operation.
+For personal toy and sample projects, keep GitHub as the canonical remote.
+Use one-way mirroring to Norn only when a local/private copy is useful; do not
+make two independently writable remotes release authorities. The six hooks
+above already point to Norn's webhook hostname. Before treating any one as a
+working Mini deploy path, reconcile that hostname's ingress to this Mini,
+confirm the repository-specific hook secret, and verify its exact app mapping.
+A hook requests deployment; Norn maps the repo and branch to one configured
+app and records the resulting operation.
 
 Progressive mixed-version release is a separate capability. The V3
 `app.workload-release` HTTP producer is staging-only. It accepts a qualification
@@ -98,8 +118,11 @@ conflicting payload rejection, missing commit SHA, branch deletion, and
 same-SHA manual replay. Keep the broader gates open until tests cover unknown
 repo/ref mappings, checkout changes after acceptance, controller restart, and
 lost scheduler or route responses. Then verify the Mini endpoint and webhook
-configuration in a private rehearsal. Do not claim live Mini webhook support
-until that readback passes. Do not claim mixed-version Mini availability
+configuration in a private rehearsal. The Mini currently runs
+`d4dc88e0…`, before the source-pinning fix merged as `ccb49a56…`; existing hooks
+therefore do not yet have the exact-push-SHA guarantee. Do not claim live
+exact-SHA Mini webhook support until that build is installed and the private
+rehearsal passes. Do not claim mixed-version Mini availability
 without the separate overlap protocol and qualification.
 
 ## DO Norn release protocol

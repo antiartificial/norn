@@ -21,7 +21,16 @@ the sole staging Fleet and remains a separate qualification target.
   snapshot-retention warnings. Production readiness generated at 15:48:50 UTC
   remains blocked (7 passed, 1 warning, 18 failed). The latest assurance
   receipt is successful but its operation timestamp is 2026-09-06; this refresh
-  did not run route assurance. Mini remains independent of Fleet.
+  did not run route assurance. A separate 17:53 UTC read-only Git-path check
+  confirmed API health `ok`, 12 `repo.autoDeploy` app records, a configured
+  webhook secret in the running API process, and 25 recent GitHub delivery
+  receipts (17 `deploying`, 8 `ignored`). Six active GitHub push hooks for
+  mapped personal repositories target `norn-webhooks.slopistry.com`; their
+  recent GitHub delivery lists were empty, and endpoint-to-Mini routing and
+  delivery-to-operation outcomes were not correlated. The Mini still runs
+  `d4dc88e0`, before the exact-push-SHA fix merged as `ccb49a56`. See the
+  [Mini Git-to-controller workload path](release-lanes-and-workload-resizing.md#mini-git-to-controller-workload-path).
+  Mini remains independent of Fleet.
 - **DO staging:** read-only `doctl --context work` queries at 15:49 UTC found
   all nine `tk-staging-nyc3` Droplets active (3 control, 2 ingress, 4 app),
   the ingress load balancer active, and the management-authority PostgreSQL

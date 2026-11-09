@@ -1,6 +1,6 @@
 # Workload mixed-version model
 
-This is a bounded **protocol model**, not a model of currently deployed mixed-version behavior. The M5 workload controller and its signed acceptance, durable receipts, route proof, and stop recovery are merged in Norn PR #302. Operator-facing workload-release admission is still absent, and the path is not live-qualified. This model checks protocol ordering, including target-only route proof before the old cohort can drain.
+This is a bounded **protocol model**, not a model of currently deployed mixed-version behavior. The M5 workload controller and its signed acceptance, durable receipts, route proof, and stop recovery are merged in Norn PR #302. An authenticated, staging-only workload-release admission API is implemented, but neither it nor the release path is deployed or live-qualified. This model checks protocol ordering, including target-only route proof before the old cohort can drain.
 
 Scope: two old allocations, two target allocations, one workload, one additive schema expansion, and one controller. Each allocation is a writer-bearing workload unit. The model runs with a three-allocation cap and a four-allocation cap. It does not represent separate web/worker processes, real Nomad placement, cloud eventual consistency, route implementation, database semantics, timing, or credential custody.
 
@@ -39,8 +39,8 @@ target-only route fence correctly prevents draining old allocations to make
 room. Do not read a green invariant report as proof that this capacity can
 complete a release.
 
-The checked-in [chart source](https://github.com/antiartificial/norn/blob/877ad4ba/docs/v3/statecharts/workload-mixed-version/chart.mmd) and [`report.md`](report.md) are the
-four-allocation run. [Capacity-three chart source](https://github.com/antiartificial/norn/blob/877ad4ba/docs/v3/statecharts/workload-mixed-version/chart-capacity3.mmd) and
+The checked-in [chart source](https://github.com/antiartificial/norn/blob/ccb49a56/docs/v3/statecharts/workload-mixed-version/chart.mmd) and [`report.md`](report.md) are the
+four-allocation run. [Capacity-three chart source](https://github.com/antiartificial/norn/blob/ccb49a56/docs/v3/statecharts/workload-mixed-version/chart-capacity3.mmd) and
 [`report-capacity3.md`](report-capacity3.md) preserve the insufficient-capacity
 case for comparison.
 
