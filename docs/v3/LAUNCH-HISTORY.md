@@ -1,6 +1,6 @@
 # Norn v3 launch history
 
-## Fresh release-readiness reconciliation (2026-11-09 12:00 UTC)
+## Fresh release-readiness reconciliation (2026-11-09 12:25 UTC)
 
 Norn PR [#324](https://github.com/antiartificial/norn/pull/324) merged at
 `3fcdc154e247d5b32a8ad025e4fb9690390b5022`. It fixes a race where two
@@ -26,9 +26,14 @@ At about 12:00 UTC, read-only `doctl --context work` queries found all nine
 staging Droplets, both management Droplets, and the staging ingress load
 balancer active. The queries did not inspect the managed databases or any Norn
 API, etcd, Nomad/Consul, workload, or route state. DO runtime health remains
-unverified. Fleet PR #837 remains blocked: exact-head contract run
-42578247221 failed downloading pinned DigitalOcean provider v2.100.0 after
-three attempts. No provider mutation or Genesis readback ran.
+unverified. Fleet PR #837 at head
+`eef00505d23e37c66cdaed75c5f4c5504a1cd22b` merged at 12:22 UTC as
+`6335c667693d0333d4239f91edf2efb9772ab63a`. Its exact-head contract rerun
+42578247221 passed after the earlier transient DigitalOcean provider v2.100.0
+download failure; both Socket security checks also passed. This merged source
+adds a default-off protected ingress-enrollment prerequisite. No host was
+enrolled, provider mutation ran, or Genesis readback occurred. Fresh owner-
+reviewed inputs and separately authorized one-use dispatch are still required.
 
 ## Release merge and gate update (2026-11-09 05:35 UTC)
 
