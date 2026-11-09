@@ -1,5 +1,25 @@
 # Norn v3 launch history
 
+## DO token-scope admission (2026-11-09 20:27 UTC)
+
+`norn-fleet` PR #948 merged as
+[`92b615d`](https://github.com/antiartificial/norn-fleet/commit/92b615d9aa281a921788774e9b1738593804aede)
+after its exact-head contract and security checks passed. The change requires
+an owner-attested scope record and redacted grant evidence bound to the run's
+account UUID and exact DigitalOcean token fingerprint. It rejects broad global
+aliases, missing plan-derived mutation scopes, stale evidence, and unsupported
+provider actions. The bounded admission statechart and offline tests passed.
+This is an offline contract, not DigitalOcean introspection or proof that the
+protected runner's live token has those grants.
+
+Merged-main read-only plan run
+[42693143436](https://github.com/antiartificial/norn-fleet/actions/runs/42693143436)
+completed successfully. The staging plan proposed only
+`management_ingress_runtime[0]`, which allows the exact private management
+runner to reach ingress ports 18082 and 18083. No provider apply ran. The
+production target was unconfigured and skipped. The separate `norn-fleet`
+runbook update in PR #949 records this repeated plan result.
+
 ## DO staging provider inventory (2026-11-09 18:58 UTC)
 
 Read-only `doctl --context work` queries found all nine `tk-staging-nyc3`

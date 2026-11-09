@@ -122,10 +122,16 @@ verified.
   authorization.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected future application pool roles. Fleet PR #941 (offline war-game),
-  #940 (release intent controller), and #945 (provider scope contract) are
-  merged. PR #943 closed when its stacked base merged; replacement PR #947
-  (bootstrap credential lifecycle) and PR #942 (module-owned test collection)
-  are also merged. Fleet PR #837 at head
+  #940 (release intent controller), #945 (provider scope contract), #947
+  (bootstrap credential lifecycle), #942 (module-owned test collection), and
+  #948 (attested DO token-scope admission) are merged. PR #948's contract and
+  security checks passed at exact head `951ca701`. Its owner-supplied evidence
+  binds the granted-scope record to the exact token fingerprint and account,
+  and its offline checks pass. It does not query DO to prove the live token's
+  grants. Merged-main plan run `42693143436` completed read-only and proposed
+  one management-runner-only ingress firewall for ports 18082 and 18083,
+  with no other changes or destroys. No apply occurred. PR #943 closed when its stacked base merged;
+  Fleet PR #837 at head
   `eef00505d23e37c66cdaed75c5f4c5504a1cd22b` merged as
   `6335c667693d0333d4239f91edf2efb9772ab63a` after its exact-head contract
   rerun (42578247221) and both security checks passed. The rerun succeeded
