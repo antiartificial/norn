@@ -66,18 +66,20 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
-	if err := plan.ValidateWorkloadReleaseQualification(qualification, trustedQualificationKeys, time.Now().UTC()); err != nil {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification does not authorize the plan"}
-	}
-	if err := s.verifyWorkloadReleaseQualificationSource(ctx, plan, qualification); err != nil {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification has no matching successful staging deployment"}
-	}
+	// Exact retries match the qualification in the signed acceptance even if
+	// its trust, validity window, or source deployment can no longer be verified.
 	payload["workloadReleaseQualification"] = qualification
 	input.Operation.Payload = payload
 	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
 		return s.resolvePrivateWorkloadReleaseReplay(ctx, input, material, keys, prior)
 	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
 		return store.AcceptedOperation{}, err
+	}
+	if err := plan.ValidateWorkloadReleaseQualification(qualification, trustedQualificationKeys, time.Now().UTC()); err != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification does not authorize the plan"}
+	}
+	if err := s.verifyWorkloadReleaseQualificationSource(ctx, plan, qualification); err != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification has no matching successful staging deployment"}
 	}
 	planDigest, err := plan.Digest()
 	if err != nil {
