@@ -109,7 +109,8 @@ func workloadReleaseTargetPlanFixture(t *testing.T) (pipeline.WorkloadReleasePla
 		TargetDeploymentID: "target-deploy", TargetImage: "registry.example.test/demo@sha256:" + strings.Repeat("f", 64),
 		TargetImageDigest: "sha256:" + strings.Repeat("f", 64), TargetJobID: "", TargetJobDigest: "", TargetSpecDigest: specDigest,
 		TargetOperationID: "target-op", TargetExecutionID: "target-exec", OldAllocationIDs: []string{"alloc-old"},
-		TargetJobVersion: 0, TargetJobModifyIndex: 0, TargetReplicas: 2, SurgeLimit: 1, FirstRouteGeneration: 4,
+		TargetJobVersion: 0, TargetJobModifyIndex: 0, TargetReplicas: 2, SurgeLimit: 1,
+		PolicyApprovalID: "11111111-1111-4111-8111-111111111111", PolicyDigest: "sha256:" + strings.Repeat("a", 64), FirstRouteGeneration: 4,
 		RouteSteps: []pipeline.WorkloadReleaseRouteStep{{OldWeight: 100}, {OldWeight: 90, TargetWeight: 10}, {TargetWeight: 100}}}
 	intent.TargetJobID, err = nomad.ManagedDeploymentJobID(intent.App, intent.Region, intent.TargetDeploymentID)
 	if err != nil {

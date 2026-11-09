@@ -28,6 +28,9 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	if _, err := adapter.ConfigureFleetAppTarget(ctx, target, 0); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := adapter.ConfigureWorkloadReleasePolicy(ctx, workloadReleaseTestPolicy(app, target), 0); err != nil {
+		t.Fatal(err)
+	}
 	intent := workloadReleaseEtcdIntentFixture(app, target)
 	intent.SourceRevision = strings.Repeat("a", 40)
 	intent.TargetJobVersion, intent.TargetJobModifyIndex = 0, 0
@@ -169,6 +172,20 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, nil, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceInvalid) {
 		t.Fatalf("fresh admission must require a trusted qualification: %v", err)
+	}
+	wrongPolicy := input
+	wrongPolicy.Operation = operation
+	wrongPolicy.Operation.ID = uuid.NewString()
+	wrongPolicy.Identity.Key = uuid.NewString()
+	wrongPolicyIntent := intent
+	wrongPolicyIntent.PolicyDigest = "sha256:" + strings.Repeat("9", 64)
+	wrongPolicyPlan, err := json.Marshal(pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: wrongPolicyIntent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongPolicy.Operation.Payload = map[string]interface{}{"workloadReleasePlan": string(wrongPolicyPlan)}
+	if err := accept(wrongPolicy); err == nil {
+		t.Fatal("accepted a workload release plan bound to a different overlap policy")
 	}
 	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver)
 	if err != nil {

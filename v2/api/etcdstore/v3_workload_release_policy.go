@@ -47,6 +47,20 @@ func validateWorkloadReleasePolicy(policy store.WorkloadReleasePolicy) error {
 	return nil
 }
 
+// WorkloadReleasePolicyDigest binds a plan to the complete approved policy,
+// including approver identity and approval time.
+func WorkloadReleasePolicyDigest(policy store.WorkloadReleasePolicy) (string, error) {
+	if err := validateWorkloadReleasePolicy(policy); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
 func (s *V3OperationStore) workloadReleasePolicyKey(app, environment string) string {
 	sum := sha256.Sum256([]byte(app + "\x00" + environment))
 	return s.prefix + "/v3/workload-release-policies/" + hex.EncodeToString(sum[:])
