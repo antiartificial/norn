@@ -1,5 +1,19 @@
 # Norn v3 launch history
 
+## Verifier fix fully qualified; replacement release awaits owner approval (2026-11-09 23:42 UTC)
+
+Norn PR #373 merged at exact source
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. Its full protected-master
+qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745)
+passed all 12 jobs. Exact-source release run
+[42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811)
+passed authorization, pinned UI build, and all four platform bundles. Its
+protected `publish` job is waiting for owner approval; the release has not
+been signed or published. The Mini and DO were not changed. The already
+published `9d9d6208` release predates this verifier correction, so the exact
+replacement SHA must be published before repeating the Mini recovery sequence.
+The replacement workflow does not authorize or perform that Mini transition.
+
 ## Recovered-forward verifier source-lineage fix merged (2026-11-09 23:29 UTC)
 
 The signed Mini transition for candidate `9d9d6208654b995cddc8b76e13d089c665c52fd6`
