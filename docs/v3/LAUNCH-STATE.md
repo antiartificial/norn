@@ -73,10 +73,14 @@ the sole staging Fleet and remains a separate qualification target.
   PR #337 reconstructs the handler and etcd adapters before replay; PR #339
   recovers the shared reconciler across an etcd-backed successor claim after a
   lost route-effect response, with controlled fake scheduler/route/health/drain
-  effects. Fresh HTTP admission with real qualification and private-input
-  persistence, production executor/worker restart recovery, exact app-source
-  recovery, private-input retention/deletion, and DO mixed-version release
-  remain open. Stateful workloads still need separate writer/schema/data
+  effects. PR #351 (merged as `ed296c17`) pins the exact job-driving app spec
+  and encrypted SOPS snapshot in the release key-ring envelope. Worker tests
+  reconstruct target inputs without a current checkout, and a real-etcd
+  acceptance/open integration test verifies persisted source and ciphertext.
+  Fresh HTTP admission with real qualification and private-input persistence,
+  whole production executor/worker restart recovery, private-input
+  retention/deletion, and DO mixed-version release remain open. Stateful
+  workloads still need separate writer/schema/data
   authorization.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected future application pool roles. Fleet PR #941 (offline war-game),
