@@ -3,8 +3,6 @@ package etcdstore
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,8 +45,23 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	if s == nil || s.kv == nil || s.signer == nil || keys == nil || input.Identity.Kind != "app.workload-release" ||
 		input.Operation.Kind != "app.workload-release" || input.Operation.ID == "" || input.Operation.App == "" ||
 		input.Operation.Status != model.OperationQueued || input.Identity.Resource != "app/"+input.Operation.App ||
-		!input.Admission.OneActiveMutablePerApp || input.Deployment != nil || len(input.Regions) != 0 {
+		!input.Admission.OneActiveMutablePerApp || input.Deployment != nil || len(input.Regions) != 0 ||
+		workloadReleaseRequestDigest(input.Operation) == "" {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "private workload release acceptance is incomplete"}
+	}
+	// The server-computed request digest covers the caller's stable selection
+	// (qualification ID and requested replica count), not mutable source files,
+	// current scheduler observations, or the SOPS snapshot captured for the
+	// first acceptance. Resolve it before validating or opening any fresh facts.
+	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
+		if prior.Operation.Kind != "app.workload-release" || prior.Operation.App != input.Operation.App ||
+			workloadReleaseRequestDigest(input.Operation) == "" ||
+			workloadReleaseRequestDigest(input.Operation) != workloadReleaseRequestDigest(prior.Operation) {
+			return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
+		}
+		return prior, nil
+	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
+		return store.AcceptedOperation{}, err
 	}
 	if input.Operation.Payload == nil {
 		input.Operation.Payload = map[string]interface{}{}
@@ -70,11 +83,6 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	// its trust, validity window, or source deployment can no longer be verified.
 	payload["workloadReleaseQualification"] = qualification
 	input.Operation.Payload = payload
-	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
-		return s.resolvePrivateWorkloadReleaseReplay(ctx, input, material, keys, prior)
-	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
-		return store.AcceptedOperation{}, err
-	}
 	if err := plan.ValidateWorkloadReleaseQualification(qualification, trustedQualificationKeys, time.Now().UTC()); err != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release qualification does not authorize the plan"}
 	}
@@ -191,7 +199,7 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	delete(payload, "workloadReleasePrivateInputDigest")
 	delete(payload, "workloadReleasePrivateKeyId")
 	input.Operation.Payload = payload
-	return s.resolvePrivateWorkloadReleaseReplay(ctx, input, material, keys, prior)
+	return resolvePrivateWorkloadReleaseReplay(input, prior)
 }
 
 // verifyWorkloadReleaseQualificationSource binds the signed qualification to
@@ -336,39 +344,29 @@ func workloadReleasePlanMatchesFleetTarget(plan pipeline.WorkloadReleasePlan, ta
 		intent.Namespace == target.NomadNamespace && intent.FleetTargetGeneration == target.Generation && slices.Equal(intent.FleetDatacenters, target.Datacenters)
 }
 
-func (s *V3OperationStore) resolvePrivateWorkloadReleaseReplay(ctx context.Context, input store.OperationAcceptance, material []byte, keys *store.WorkloadReleaseInputKeyRing, prior store.AcceptedOperation) (store.AcceptedOperation, error) {
-	if prior.Operation.Kind != "app.workload-release" || prior.Operation.App != input.Operation.App {
-		return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
-	}
-	stored, err := s.OpenPrivateWorkloadRelease(ctx, prior.Operation, keys)
-	if err != nil {
-		return store.AcceptedOperation{}, err
-	}
-	defer clear(stored)
-	wantHash, gotHash := sha256.Sum256(material), sha256.Sum256(stored)
-	if subtle.ConstantTimeCompare(wantHash[:], gotHash[:]) != 1 {
-		return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
-	}
-	payload := make(map[string]interface{}, len(input.Operation.Payload)+3)
-	for key, value := range input.Operation.Payload {
-		payload[key] = value
-	}
-	for _, field := range []string{"workloadReleasePrivateRecordId", "workloadReleasePrivateInputDigest", "workloadReleasePrivateKeyId"} {
-		if _, exists := payload[field]; exists {
-			return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
-		}
-		value, exists := prior.Operation.Payload[field]
-		if !exists {
-			return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
-		}
-		payload[field] = value
-	}
-	input.Operation.Payload = payload
-	input.Fingerprint, err = store.CanonicalOperationRequestFingerprint(input)
-	if err != nil || input.Fingerprint != prior.Intent.Fingerprint {
+func resolvePrivateWorkloadReleaseReplay(input store.OperationAcceptance, prior store.AcceptedOperation) (store.AcceptedOperation, error) {
+	if prior.Operation.Kind != "app.workload-release" || prior.Operation.App != input.Operation.App ||
+		workloadReleaseRequestDigest(input.Operation) == "" ||
+		workloadReleaseRequestDigest(input.Operation) != workloadReleaseRequestDigest(prior.Operation) {
 		return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
 	}
 	return prior, nil
+}
+
+func workloadReleaseRequestDigest(operation model.Operation) string {
+	if operation.Metadata == nil {
+		return ""
+	}
+	digest, _ := operation.Metadata["workloadReleaseRequestDigest"].(string)
+	if len(digest) != len("sha256:")+64 || !strings.HasPrefix(digest, "sha256:") {
+		return ""
+	}
+	for _, character := range digest[len("sha256:"):] {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return ""
+		}
+	}
+	return digest
 }
 
 func (s *V3OperationStore) OpenPrivateWorkloadRelease(ctx context.Context, operation model.Operation, keys *store.WorkloadReleaseInputKeyRing) ([]byte, error) {

@@ -20,6 +20,27 @@ From the repository root, run:
 
 Use a new or empty output folder for each run.
 
+The separate admission replay model isolates the idempotency contract. Its
+planned stable request comprises a qualification ID and a target replica count
+bounded by an operator-approved app policy. The authenticated producer is
+still open. The model checks that an exact same-key retry
+returns the originally accepted receipt without rereading mutable
+qualification, source, or secret inputs, even after expiry or source loss.
+Changed qualification or target size conflicts; an out-of-policy size is
+rejected before acceptance:
+
+```sh
+~/.agents/skills/statechart/scripts/statechart \
+  docs/v3/statecharts/workload-release-admission/AdmissionReplay.tla \
+  --config docs/v3/statecharts/workload-release-admission/AdmissionReplay.cfg \
+  --view docs/v3/statecharts/workload-release-admission/replay-view.ts \
+  --out /tmp/norn-m5-admission-replay
+```
+
+The 27-state, 60-step check passes all six replay/admission invariants and
+deadlock checking. Its generated chart and report are stored in
+`qualification-replay/`.
+
 ## Check missing admission evidence
 
 Admission requires a signed staging qualification, freshly observed Nomad
@@ -71,6 +92,13 @@ This verifies the signed qualification lookup, atomic private-input acceptance
 and replay, receipt CAS, and successor-claim target binding against real etcd
 transactions. It does not exercise the Nomad HTTP API, ingress, authenticated
 admission route, or a production driver configuration.
+
+The updated private-input acceptance test also deletes the qualified source
+deployment projection, supplies an invalid current plan and a new operation
+ID, removes current qualification trust, and changes current SOPS bytes before
+retry. Against disposable etcd, the same stable request returns the stored
+acceptance without another lineage read; changed request digests for
+qualification or target size conflict.
 
 ## Checked behavior
 
@@ -126,10 +154,12 @@ The etcd acceptance seam now seals the exact encrypted SOPS snapshot with a
 separate workload-release key ring and binds its AAD to authority, operation,
 app, and canonical plan digest. Signed acceptance, the encrypted record,
 one-active-app admission, and the current Fleet target revision commit
-atomically. Replay opens the stored envelope and compares the submitted
-snapshot before returning the original operation. A key inventory reports all
-retained IDs. Startup preflight checks configured keys against retained IDs;
-deletion/retention policy is not yet implemented.
+atomically. A matching request digest returns the original signed acceptance
+before opening current SOPS/source data or observing Nomad; the stored
+encrypted snapshot remains the input for recovery. A key inventory reports
+all retained IDs. Startup preflight checks configured keys against retained
+IDs; deletion/retention policy is not yet implemented. The authenticated
+request producer that computes this digest remains open.
 
 The model also treats the workload envelope key as a recoverability input.
 If a successor cannot load the historical key before exact target binding, it
