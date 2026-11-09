@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-09 15:57 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-09 16:23 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -148,6 +148,13 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   'Test(ResolveWorkloadReleaseQualificationRequiresSignedCompletedSource|V3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable|V3WorkloadReleaseStagedTargetBindingIsClaimFencedAndWriteOnce|V3WorkloadReleaseReceiptCASFencesAndRecoversEtcd|EtcdWorkloadReleaseAdmissionHTTPReplaysDurableAcceptanceAfterRestart)$'
   -count=1`). This refreshes component evidence; it still does not join fresh
   HTTP admission to those real-etcd prerequisites.
+  At 16:22 UTC, seven of these existing integration tests were rerun against a
+  newly started disposable local etcd 3.7.3 on macOS: the authenticated seeded-
+  acceptance HTTP replay and reconciler lost-route-response restart tests, plus
+  signed qualification, atomic private-input, staged-target binding, receipt
+  CAS, and route-intent recovery. All passed. This is a repeat of the same
+  component boundary; it does not close fresh HTTP admission or qualify a live
+  Nomad/ingress effect.
 - [x] Exercise ordered HTTP rejection when qualification, Fleet target, approved
   policy, active serving route, Nomad serving lineage, or encrypted input is
   missing. The deterministic handler tests verify conflict responses and no
