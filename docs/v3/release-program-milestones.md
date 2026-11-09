@@ -168,6 +168,19 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   health, and drain effects are controlled fakes; this does not exercise the
   production etcd workload executor or fresh HTTP admission. The focused test
   passed against disposable local etcd.
+- Fresh HTTP admission has two distinct real-etcd building blocks, not one
+  joined proof: handler tests use mutable-evidence fakes, while the store
+  integration test calls `AcceptPrivateWorkloadRelease` directly with a real
+  signed qualification and encrypted-input envelope. The production handler
+  path also requires a completed signed staging deployment and a control-owned
+  active route whose route intent, reservation, target, and deployment receipts
+  agree; private acceptance rechecks that predecessor atomically. The joined
+  fixture must create or faithfully replay those records through the owned
+  deployment/route completion path, keep production etcd ownership checks in
+  place, and use deterministic adapters only at external Nomad/ingress
+  boundaries. Then send the authenticated HTTP request and inspect the durable
+  acceptance and envelope after adapter restart. Do not write an arbitrary
+  active-route marker: that bypasses the ownership proof under test.
 - [ ] Prove fresh HTTP admission with real qualification and private-input
   persistence, then exercise the production workload executor and worker
   runtime across process/lease loss and external-effect response loss.
