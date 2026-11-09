@@ -483,9 +483,14 @@ terminal receipt. Deploy and workload route writers share a serialized
 executor because they bind the same private authority listener. Owner-only
 transport configuration is reused. The controller lifecycle has a deterministic driver-level fixture that injects
 lost responses after initialization, health, each route step, stop, drain, and
-completion, then re-enters the same reconciler. A production-store worker
-fixture using the real etcd, Nomad, and ingress adapters to inject process and
-lease failures remains open; no live qualification has run.
+completion, then re-enters the same reconciler. Merged PR #339 additionally
+rebuilds the etcd client and operation store after a lost route-effect response,
+recovers the operation under a successor claim, and runs the production shared
+`reconcileWorkloadRelease` lifecycle to completion. Its scheduler, route,
+health, and drain effects are controlled fakes; it does not exercise the
+production `etcdWorkloadReleaseExecutor`, Nomad/ingress adapters, fresh HTTP
+admission, or full worker-runtime wiring. Those production-driver and live
+qualification gates remain open.
 
 The receipt lifecycle refreshes target allocation health in warming, routing,
 and draining phases. Total target health loss after traffic begins records a
