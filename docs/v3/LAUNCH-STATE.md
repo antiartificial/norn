@@ -102,6 +102,20 @@ declares only 3 control + 2 ingress nodes. This is configuration held by the
 independent Mini, not proof that Mini belongs to a Fleet or a readback of the
 separate DO staging topology.
 
+## Fresh Mini read-only inventory (2026-11-09 02:32 UTC)
+
+The authenticated `norn_inventory.sh` read returned `/api/health=ok`, host
+status `ok`, and V3 source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`). It found 30 app records, 46 service
+records, seven queued `fleet.github.apply-dispatch` receipts, and 25 active
+incident groups (22 latest-critical, 3 latest-warning). The latest successful
+host-assurance receipt remains from 2026-09-06 17:23:57 -05:00. This read did
+not run host assurance or change routes; route assurance remains unverified.
+The API's `fleet_configured=true` describes the separate target configuration
+with `control` and `ingress` pools, not Mini Fleet membership. The raw
+owner-only inventory is temporary and is not a release artifact.
+
 ## Mini direct v3 upgrade completed (2026-11-07)
 
 The Mini has completed its controller-mediated direct upgrade as an independent
