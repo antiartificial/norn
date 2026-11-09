@@ -138,6 +138,27 @@ The API's `fleet_configured=true` describes the separate target configuration
 with `control` and `ingress` pools, not Mini Fleet membership. The raw
 owner-only inventory is temporary and is not a release artifact.
 
+## Mini event-reconcile dry-runs and route fix qualification (2026-11-09)
+
+- At 2026-11-08 23:55 UTC, the read-only event-reconcile dry-run scanned 200
+  events. It would acknowledge 54 task-restart events under the deterministic
+  rule; 146 required review, including host-assurance failures, failed/lost
+  allocations, and capacity warnings without later recovery evidence. No event
+  was acknowledged.
+- At 00:55 UTC, a second dry-run scanned 200 events: 53 matched the
+  deterministic acknowledgement rule and 147 remained for review. No events
+  were acknowledged. Host-assurance failures and lost allocations had no
+  automatic acknowledgement rule. The seven queued Fleet dispatch receipts
+  remained separate from Mini-affecting active operations.
+- Norn PR [#301](https://github.com/antiartificial/norn/pull/301) adds an
+  allowlisted route-forge child through the managed SOPS environment while
+  retaining the runtime-mutation fence for other children. At exact head
+  `fef0d6b5e2fa364c9327f733f513e5b0ec01912a`, focused shell checks passed 2
+  route-fence cases and 10 recovered-baseline cases. This is offline evidence;
+  the change remains undeployed and live host assurance can publish or prune
+  routes. Require a fresh receipt and route inventory after the protected
+  release and controlled assurance action.
+
 ## Mini direct v3 upgrade completed (2026-11-07)
 
 The Mini has completed its controller-mediated direct upgrade as an independent
