@@ -37,7 +37,9 @@ func TestV3WorkloadRouteIntentFencesAndRecoversSameStepEtcd(t *testing.T) {
 		TargetDeploymentID: "new-deploy", TargetImage: "registry.example.test/widgets@sha256:" + strings.Repeat("5", 64), TargetImageDigest: "sha256:" + strings.Repeat("5", 64),
 		TargetJobID: "widgets-web-new", TargetJobDigest: "sha256:" + strings.Repeat("6", 64), TargetSpecDigest: "sha256:" + strings.Repeat("7", 64),
 		TargetOperationID: "target-operation", TargetExecutionID: "target-execution", OldAllocationIDs: []string{"old-allocation"},
-		TargetJobVersion: 2, TargetJobModifyIndex: 3, TargetReplicas: 1, SurgeLimit: 1, FirstRouteGeneration: 10,
+		TargetJobVersion: 2, TargetJobModifyIndex: 3, TargetReplicas: 1, SurgeLimit: 1,
+		PolicyApprovalID: workloadReleaseTestPolicyApprovalID,
+		PolicyDigest:     workloadReleaseTestPolicyDigest(app, target), FirstRouteGeneration: 10,
 		RouteSteps: []pipeline.WorkloadReleaseRouteStep{{OldWeight: 100}, {OldWeight: 90, TargetWeight: 10}, {TargetWeight: 100}},
 	}
 	intentBytes, err := json.Marshal(intent)

@@ -65,15 +65,36 @@ func TestV3WorkloadReleaseReceiptCASFencesAndRecoversEtcd(t *testing.T) {
 	if _, err := adapter.CompareAndSwapWorkloadReleaseReceipt(ctx, claim, "intent-1", advanced.ReceiptDigest, first); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("expired claim CAS error=%v", err)
 	}
-	if err := adapter.RecoverExpiredOperations(ctx); err != nil {
+
+	// Reconstruct both the etcd client and operation store as a new controller
+	// process would after crashing. Only the durable prefix and configured
+	// authority/signing key survive this boundary.
+	restartedClient, err := clientv3.New(clientv3.Config{Endpoints: client.Endpoints(), DialTimeout: 5 * time.Second})
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, successor, err := adapter.ClaimNextOperation(ctx, "workload-release-recovery", time.Minute, []string{operation.Kind})
+	t.Cleanup(func() { _ = restartedClient.Close() })
+	restartedSigner, err := store.NewHMACAcceptanceSigner("norn-etcd-function-effects-signing-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewV3OperationStore(restartedClient, adapter.prefix, adapter.authority, restartedSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := restarted.LoadWorkloadReleaseReceipt(ctx, "intent-1")
+	if err != nil || persisted == nil || persisted.Revision != advanced.Revision || persisted.ReceiptDigest != advanced.ReceiptDigest || string(persisted.Receipt) != string(second) {
+		t.Fatalf("receipt after controller restart=%+v err=%v", persisted, err)
+	}
+	if err := restarted.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, successor, err := restarted.ClaimNextOperation(ctx, "workload-release-recovery", time.Minute, []string{operation.Kind})
 	if err != nil || successor.OperationID() != claim.OperationID() || successor.Generation() <= claim.Generation() {
 		t.Fatalf("successor claim=%+v err=%v", successor, err)
 	}
 	third := json.RawMessage(`{"intentId":"intent-1","phase":"routing"}`)
-	recovered, err := adapter.CompareAndSwapWorkloadReleaseReceipt(ctx, successor, "intent-1", advanced.ReceiptDigest, third)
+	recovered, err := restarted.CompareAndSwapWorkloadReleaseReceipt(ctx, successor, "intent-1", advanced.ReceiptDigest, third)
 	if err != nil || recovered.Revision != 3 || recovered.ClaimGeneration != successor.Generation() {
 		t.Fatalf("same-intent successor receipt=%+v err=%v", recovered, err)
 	}
@@ -81,7 +102,7 @@ func TestV3WorkloadReleaseReceiptCASFencesAndRecoversEtcd(t *testing.T) {
 	if _, err := client.Put(ctx, adapter.workloadReleaseReceiptKey("intent-1"), `{}`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.LoadWorkloadReleaseReceipt(ctx, "intent-1"); err == nil {
+	if _, err := restarted.LoadWorkloadReleaseReceipt(ctx, "intent-1"); err == nil {
 		t.Fatal("corrupt receipt was returned")
 	}
 }
