@@ -23,7 +23,7 @@ Each future app-pool record must bind:
 
 | Field | Required evidence / validation |
 |---|---|
-| Stable pool ID and role | Unique within the Fleet; the requested role set is `general` + `stateful`, one per pool. Stable IDs remain to be selected; roles must not be inferred from provider node names. |
+| Stable pool ID and role | Use the stable IDs `general` and `stateful`, one per role. Roles come from the declared workload labels, never provider node names. |
 | Provider size | Exact provider SKU plus a fresh region availability/capability read. |
 | Capacity bounds | Integer `min`, `desired`, and `max`; `min <= desired <= max`; approved cost/resource envelope covers the maximum. |
 | Placement | Region, VPC/subnet, labels, and separation constraints. Must not permit app workloads onto control nodes unless a separate policy explicitly admits that. |
@@ -40,29 +40,25 @@ owner/mode, expiry, and rotation/revocation reference where applicable.
 
 ## Current implementation boundary (2026-11-09)
 
-The two-pool model is not a deployable provider configuration. The current
-`norn-fleet` source still rejects this topology at several layers:
+Protected `norn-fleet` main at `35e1c893` supports the General + Stateful role
+pair in its topology validator and bootstrap path. Three focused source tests
+passed against that exact main revision: `sanity.py` accepts the two-role
+topology, generated inventory preserves each pool ID and role, and Ansible
+registers separate Nomad pools before clients join. The generated inventory
+places both in `norn_role_app` while retaining `norn_fleet_pool` and
+`norn_fleet_workload_role`; Nomad uses the real node-pool assignment and a
+role-derived node class. The existing protected staging configuration remains
+the single `workload: app` pool; no current staging resource was changed.
 
-- `norn-fleet/scripts/sanity.py` accepts only `control-plane`, `ingress`,
-  and `app` workload roles, and rejects more than one `app` pool.
-- `norn-fleet/scripts/fleet_hooks_inventory.py` emits role groups for
-  `control-plane`, `ingress`, `app`, or `worker`; it has no `general` or
-  `stateful` role.
-- `norn-fleet/ansible/playbooks/bootstrap-topology.yml` requires app nodes to
-  come from at most one pool. Its protected staging check also names
-  `app-01` through `app-04` and reads capacity from `nodePools.app`.
-- `norn-fleet/ansible/playbooks/bootstrap-etcd-consul-nomad.yml` registers
-  one Nomad app scheduling pool from the first app node. It does not register
-  separate general and stateful pools.
-
-Keep current `staging/nyc3` unchanged. Implement the role schema, generated
-inventory groups, Nomad pool registration, workload placement policy, and
-synthetic topology fixtures together before adding a future fresh-Fleet
-configuration. The contract must prove that current single-pool staging still
-passes and that the two-pool fixture reaches bootstrap only with exact
-per-pool identities and workload readiness. Provider sizes, capacity bounds,
-stateful storage and recovery requirements, and a total cost limit remain
-unselected, so no executable default or provider plan is ready.
+This is role-pair implementation support, not a ready fresh-Fleet provider
+profile or end-to-end provider qualification. No future environment config
+has been added or applied. Fresh-Fleet sizing, region/SKU availability, cost
+envelope, workload eligibility and anti-affinity, and stateful storage/data
+recovery remain open. The deterministic tests exercise validation, generated
+inventory and bootstrap composition separately; they do not join those
+contracts to a fresh protected apply/recovery, exact provider identity, or a
+terminal receipt. Keep the two-pool model as a design contract until that
+integrated offline workflow exists.
 
 ## Recovery contract
 
@@ -119,7 +115,6 @@ checks before a provider run.
 
 ## Open decisions before configuration changes
 
-- Stable pool IDs/names and which ID carries each selected role.
 - Provider SKU and region-specific availability for each pool.
 - `min` / `desired` / `max` and total cost/resource budget.
 - Workload placement and anti-affinity within the selected general/stateful

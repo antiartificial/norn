@@ -8,16 +8,20 @@ availability.
 ## Current protected source
 
 GitHub reports `antiartificial/norn-fleet` main at
-`6335c667693d0333d4239f91edf2efb9772ab63a` (including PR #837 and the merged
-PR #946 source-admission fix). Its
+`35e1c893198efbdc9e407d708e5096a32b485f7d` (including PR #949's repeated
+staging-plan readback). Its
 `environments/staging/nyc3/cluster.yaml` declares three pools:
 
 - 3 control Droplets (`s-2vcpu-4gb`);
 - 2 ingress Droplets (`s-1vcpu-2gb`);
 - 4 app Droplets (`s-2vcpu-4gb`).
 
-The app pool is one pool labeled `workload: app`; this is not the future
-General + Stateful two-pool default. Managed PostgreSQL and MySQL are separate
+The current app pool is one pool labeled `workload: app`; this does not change
+the future General + Stateful two-pool default. Protected source supports the
+future pair in validation, generated inventory, and Ansible/Nomad bootstrap,
+but staging's checked-in cluster configuration remains unchanged. Three
+focused tests for the two-pool validator, inventory, and bootstrap boundaries
+passed against main `35e1c893`. Managed PostgreSQL and MySQL are separate
 database services, not compute pools.
 
 The earlier local source audit used `norn-fleet` checkout
@@ -58,8 +62,10 @@ recovery qualification.
 The agreed General + Stateful two-app-pool default is for a future fresh
 Fleet. Its [input contract](fresh-fleet-two-app-pool-contract.md) and
 [separate model](statecharts/fresh-fleet-two-app-pools/README.md) do not change
-current staging. IDs, sizes, min/desired/max, cost limits, placement, and
-workload recovery policy remain open before provider-source changes.
+current staging. Stable pool IDs are selected as `general` and `stateful`.
+Sizes, min/desired/max, cost limits, placement, stateful recovery policy, and
+an integrated protected apply/recovery fixture remain open before a fresh
+provider profile or plan exists.
 
 Before any DO write lane, obtain fresh protected state, route, and host-key
 receipts; verify private control APIs, etcd quorum, capabilities, workload and

@@ -2,36 +2,52 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 22:45 UTC)
+## Current V3 release readiness (2026-11-09 23:30 UTC)
 
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
 source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
 qualification [42713422353](https://github.com/antiartificial/norn/actions/runs/42713422353)
 passed all 12 jobs. Exact-source release workflow
 [42714046058](https://github.com/antiartificial/norn/actions/runs/42714046058)
-passed authorization, pinned UI build, and all four platform bundles. Its
-protected signing/publish job is waiting for owner approval. The earlier
-approval applied to release `e9a21d20` and does not authorize publishing this
-replacement SHA. No new release has been signed or published; Mini and DO
-have not been mutated by this work.
+completed after explicit approval; the immutable signed release is published.
+A fresh Mini backup and signed shadow passed, but preflight correctly stopped
+at schema 51 versus required 52. The subsequent signed recovered-forward
+attempt stopped before fencing or migration because the evidence verifier
+rejected the older signed adoption source despite its valid ancestry to the
+current source. PR #373 fixed that verifier and merged at
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`; this fix is not in the published
+`9d9d6208` release.
 
-The seven stale DO `fleet.github.apply-dispatch` receipts remain queued after
-lookup-only reconciliation returned binding mismatch; no workflow dispatch or
-provider apply occurred. PR #370 makes the recovered-forward Mini lane preserve
-those receipts under signed transition evidence while `legacy-baseline`
-continues to require them drained. This does not resolve their binding
-mismatch or change them.
+The Mini remains on `d4dc88e0c37003a1013caed444983b2eeb50fbcb`, health `ok`,
+runtime mutation fence `inactive`. No migration or candidate promotion
+occurred. The source-lineage correction needs protected-master qualification
+and a new exact-source release. The prior publish approval applied only to
+`9d9d6208`, so do not publish a replacement without exact-SHA approval. DO
+was not changed.
 
-Offline statechart runs on current `master` passed all configured rules and
-deadlock checks for Mini direct, existing DO release, existing-Fleet Genesis
-and readback, fresh Fleet create (current 3+2+4 topology and future General +
-Stateful pools), proposed online Norn upgrade, and workload admission,
-publication, stop recovery, private-input retention, and mixed-version resize.
+The seven stale DO `fleet.github.apply-dispatch` receipts remain queued. A
+fresh authenticated inventory confirmed the count. The current handler rejects
+their old Fleet-lane bindings before invoking GitHub lookup, so reconciliation
+cannot proceed on the current lane; it would require a new, exact-binding
+read-only recovery path. No workflow dispatch, provider apply, or receipt
+change occurred. PR #370 makes the recovered-forward Mini lane preserve these
+receipts under signed transition evidence while `legacy-baseline` continues
+to require them drained. See the [23:08 reconciliation finding](LAUNCH-HISTORY.md#seven-stale-fleet-dispatch-receipts-remain-unreconcilable-on-current-lane-2026-11-09-2308-utc).
+
+All 21 checked-in statechart configurations were rerun from current `master`;
+their configured rules passed, including four missing-evidence workload
+admission cases and concurrent two-client admission. Deadlock checks passed
+where enabled; the concurrent-admission model intentionally disables them for
+terminal stutter states. Coverage includes Mini direct, existing DO release,
+existing-Fleet Genesis and readback, fresh Fleet create (current 3+2+4
+topology and future General + Stateful pools), proposed online Norn upgrade,
+and workload admission, publication, stop recovery, private-input retention,
+and mixed-version resize.
 The bounded resize comparison still demonstrates that capacity 3 cannot
 reach a target-only route and terminal receipt while retaining the old cohort;
 capacity 4 reaches the modeled completion. These are protocol-model results,
 not runtime or controller-refinement evidence. See the dated
-[launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2245-utc)
+[launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2256-utc)
 for per-model counts and limits.
 
 The latest authenticated Mini runtime evidence is the 22:47 UTC snapshot below.
@@ -218,7 +234,14 @@ probe is not proof of control-plane health.
   workloads still need separate writer/schema/data
   authorization.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
-  selected future application pool roles. Fleet PR #941 (offline war-game),
+  selected future application pool roles, with stable pool IDs `general` and
+  `stateful`. Protected `norn-fleet` main `35e1c893` now accepts that pair in
+  topology validation, renders per-pool identity/role in inventory, and
+  registers distinct Nomad pools before clients join. Three focused validator,
+  inventory, and bootstrap tests passed against that exact main revision.
+  This does not add a future provider profile: current staging remains the
+  single `workload: app` pool, and sizing, cost, placement and stateful recovery
+  are still open. Fleet PR #941 (offline war-game),
   #940 (release intent controller), #945 (provider scope contract), #947
   (bootstrap credential lifecycle), #942 (module-owned test collection), and
   #948 (attested DO token-scope admission) are merged. PR #948's contract and
@@ -236,6 +259,15 @@ probe is not proof of control-plane health.
   readiness only: it did not enroll a host, apply provider changes, or perform
   Genesis readback. Integrated controller recovery and credential lifecycle
   evidence remain gates before any provider mutation.
+
+The current `norn-fleet` source has the General + Stateful role wiring; prior
+documentation claiming that its validator and Ansible rejected the pair was
+stale. This does not create a fresh-Fleet profile or alter current staging,
+which remains one `workload: app` pool. The stable future IDs are now
+`general` and `stateful`. See the 23:02 UTC
+[source-verification entry](LAUNCH-HISTORY.md#fresh-fleet-general-stateful-role-path-verified-2026-11-09-2302-utc)
+for the exact main revision, focused tests, and remaining profile/workflow
+gates.
 
 The milestone table near the end of this file is a historical estimate; use
 the lane evidence above and the M5 protocol's dated status for current gates.
