@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-09 14:27 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-09 15:57 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -24,7 +24,7 @@ not happen.
 
 | Workstream | Current evidence | Next proof |
 |---|---|---|
-| Release evidence | Fresh Mini API/host reads are `ok` on signed repair release `d4dc88e`; its latest assurance receipt is dated Sep 6, and 25 incidents remain. DO provider read confirms nine staging nodes and the ingress LB active; runtime health is unverified. | Use [launch state](LAUNCH-STATE.md) for current receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. |
+| Release evidence | PR #347 merged the 15:48 UTC Mini and 15:49 UTC DO evidence refresh. Mini API/host reads are `ok` on signed repair release `d4dc88e`, but production readiness remains blocked (18 failures) and the latest host assurance operation is dated Sep 6. DO provider inventory confirms nine staging nodes and the ingress LB active; it does not establish current runtime health. | Use [launch state](LAUNCH-STATE.md) for current receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. Obtain fresh protected runtime and route evidence before treating DO as online or attempting a release. |
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
 | Fresh-Fleet bootstrap | PRs #941 (offline war-game), #940 (controller release intent), #945 (provider-scope contract), #947 (bootstrap credential lifecycle), and #942 (module-owned test collection) are merged. General + Stateful remain the selected future app-pool roles. Fleet PR #837 (protected tailnet ingress enrollment prerequisite) merged at `6335c667` after its exact-head contract and both security checks passed (run 42578247221). This is source readiness only: no host enrollment, provider apply, or Genesis readback occurred. | Complete integrated persistent apply/recovery, exact state/provider identity readback, per-service credential lifecycle, and terminal receipt before any protected apply. The #837 enrollment lane still requires fresh owner-reviewed key/tag/host/digest inputs and a separately approved one-use dispatch; merge did not create those inputs or enroll ingress. |
 | Offline models | Twelve reader-facing lane models are indexed, with focused admission and source-gate models linked from their parent lanes. The same-key race has separate store and HTTP interleaving models, and admission recovery now models response loss and process restart. | Replay remaining counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
