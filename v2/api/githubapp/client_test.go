@@ -685,7 +685,7 @@ func TestRecoverBoundPlanDoesNotRecoverCancelledHashMatchedRun(t *testing.T) {
 			fmt.Fprint(w, `{"slug":"norn"}`)
 			return
 		}
-		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
 			return
 		}
 		switch {
@@ -1296,7 +1296,7 @@ func TestRecoverBoundPlanFindsHashMatchedRunAfterCrashWithoutPosting(t *testing.
 			fmt.Fprint(w, `{"slug":"norn"}`)
 			return
 		}
-		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
 			return
 		}
 		switch {
@@ -1337,7 +1337,7 @@ func TestRecoverBoundPlanRejectsMultipleHashMatches(t *testing.T) {
 			fmt.Fprint(w, `{"slug":"norn"}`)
 			return
 		}
-		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
 			return
 		}
 		switch {
@@ -1372,7 +1372,7 @@ func TestRecoverBoundPlanClassifiesRunListFailureWithoutLeakingResponse(t *testi
 			fmt.Fprint(w, `{"slug":"norn"}`)
 			return
 		}
-		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
 			return
 		}
 		if strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs") {

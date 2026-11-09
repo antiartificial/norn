@@ -621,7 +621,7 @@ func (c *Client) RecoverBoundPlan(ctx context.Context, planID, fleetEnvironment 
 	if fleetEnvironment != c.fleetRoot() || approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !sha256Re.MatchString(nonceHash) || approved.PilotRunID != c.cfg.PilotRunID {
 		return nil, recoveryFailure("binding")
 	}
-	token, err := c.installationToken(ctx, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"})
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read"})
 	if err != nil {
 		return nil, recoveryFailure("installation-token")
 	}
