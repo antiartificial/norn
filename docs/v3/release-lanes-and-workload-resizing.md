@@ -47,8 +47,10 @@ commit if the branch advances before the worker fetches it. The current source
 change queues the push event's `after` SHA instead, ignores branch deletion,
 and uses the stored SHA for manual replay. The focused disposable-PostgreSQL
 integration test verifies the accepted operation and replay retain that SHA.
-This change has not been merged or deployed. Until it is, do not treat the
-webhook path as an exact-push deployment trigger.
+PR #356 merged this change as `ccb49a5662a73a550274ce6d144bd5d6daf7491d`.
+It has not been deployed or live-qualified. Until the Mini runs this build and
+passes the webhook rehearsal below, do not treat its webhook path as an
+exact-push deployment trigger.
 
 For your personal toy and sample projects, keep GitHub as the canonical remote
 and configure the GitHub push webhook to the Mini only after verifying the
