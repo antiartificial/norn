@@ -38,6 +38,32 @@ provenance, and the exact workflow/artifact. Secret values never appear in
 receipts; the receipt records source path/role, digest or public fingerprint,
 owner/mode, expiry, and rotation/revocation reference where applicable.
 
+## Current implementation boundary (2026-11-09)
+
+The two-pool model is not a deployable provider configuration. The current
+`norn-fleet` source still rejects this topology at several layers:
+
+- `norn-fleet/scripts/sanity.py` accepts only `control-plane`, `ingress`,
+  and `app` workload roles, and rejects more than one `app` pool.
+- `norn-fleet/scripts/fleet_hooks_inventory.py` emits role groups for
+  `control-plane`, `ingress`, `app`, or `worker`; it has no `general` or
+  `stateful` role.
+- `norn-fleet/ansible/playbooks/bootstrap-topology.yml` requires app nodes to
+  come from at most one pool. Its protected staging check also names
+  `app-01` through `app-04` and reads capacity from `nodePools.app`.
+- `norn-fleet/ansible/playbooks/bootstrap-etcd-consul-nomad.yml` registers
+  one Nomad app scheduling pool from the first app node. It does not register
+  separate general and stateful pools.
+
+Keep current `staging/nyc3` unchanged. Implement the role schema, generated
+inventory groups, Nomad pool registration, workload placement policy, and
+synthetic topology fixtures together before adding a future fresh-Fleet
+configuration. The contract must prove that current single-pool staging still
+passes and that the two-pool fixture reaches bootstrap only with exact
+per-pool identities and workload readiness. Provider sizes, capacity bounds,
+stateful storage and recovery requirements, and a total cost limit remain
+unselected, so no executable default or provider plan is ready.
+
 ## Recovery contract
 
 1. Validate both app-pool records and all enclosing inputs before provider
