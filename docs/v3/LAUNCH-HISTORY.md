@@ -1,5 +1,51 @@
 # Norn v3 launch history
 
+## Recovered-forward repair merged; exact-source release prepared (2026-11-09 22:45 UTC)
+
+Norn PR #370 merged at exact source
+`9d9d6208654b995cddc8b76e13d089c665c52fd6`. It repairs the
+recovered-forward source-evidence path binding and gives `legacy-baseline` and
+`recovered-forward` separate queued Fleet receipt policies. The full
+protected-master CI dispatch [42713422353](https://github.com/antiartificial/norn/actions/runs/42713422353)
+completed successfully with all 12 jobs. Exact-source release workflow
+[42714046058](https://github.com/antiartificial/norn/actions/runs/42714046058)
+passed protected-master authorization, pinned UI build, and all four Linux/
+Darwin amd64/arm64 bundle builds. At 22:45 UTC, its protected signing and
+publish job is waiting at the owner-approval environment. No signature,
+immutable release, or Mini deployment has been created by that workflow.
+
+The checked-in offline statecharts were rerun from current `master` with the
+statechart skill into scratch outputs under `/tmp` (no repository artifacts or
+provider actions): Mini direct (82 states / 164 steps), existing DO platform
+release (299 / 1,036), fresh-Fleet create (308 / 813), current nine-node
+staging recovery (102 / 210), future two-app-pool Fleet (45 / 98), existing
+Fleet Genesis (69 / 107), Genesis readback source gate (18 / 52), proposed
+online Norn upgrade (97 / 251), mixed-version workload resize at capacity 4
+(103 / 275) and capacity 3 (24 / 52), workload route publication (55 / 111),
+workload stop recovery (10 / 15), release admission (458 / 1,663), admission
+replay after restart (115 / 365), simultaneous HTTP admission (19 / 28), and
+private-input retention (12 / 25). Every configured invariant and deadlock
+check passed. The capacity-3 resize model still has no target-only route or
+terminal receipt; capacity 4 does. These models validate bounded protocol
+contracts only; they do not establish code-to-model refinement, fresh-Fleet
+workflow integration, live DO readiness, workload availability, or Mini
+runtime state.
+
+The latest authenticated Mini inventory was refreshed at 22:47 UTC: API/host
+`ok`, runtime mutation fence inactive, source `d4dc88e0`, schema 51, floors
+5/33, and the latest host-assurance record succeeded. Nineteen of 30 app
+records were running and healthy; two were pending, one dead, and eight had no
+Nomad status. Seven active operations remain queued Fleet dispatch receipts;
+all 25 active incident groups and four snapshot-retention warnings remain.
+Production readiness is separately blocked (7 passed, 1 warning, 18 failed).
+The Mini can host current workloads; this is not evidence that all app records
+are healthy. The DO provider/runtime snapshot was not refreshed in this turn;
+its latest evidence remains 18:58–19:01 UTC and needs a new protected
+readback before claiming current Fleet health. No direct local provider query
+or provider mutation occurred. The exact-source replacement must be approved
+and published before importing it or preparing new source-bound backup and
+shadow evidence.
+
 ## Mini recovered-forward gate refresh (2026-11-09 22:20 UTC)
 
 Fresh authenticated Mini inventory at 22:08 UTC reported API and host `ok`,

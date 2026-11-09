@@ -2,7 +2,75 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 22:08 UTC)
+## Current V3 release readiness (2026-11-09 22:45 UTC)
+
+The Mini recovered-forward controller repair merged as Norn PR #370 at exact
+source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
+qualification [42713422353](https://github.com/antiartificial/norn/actions/runs/42713422353)
+passed all 12 jobs. Exact-source release workflow
+[42714046058](https://github.com/antiartificial/norn/actions/runs/42714046058)
+passed authorization, pinned UI build, and all four platform bundles. Its
+protected signing/publish job is waiting for owner approval. The earlier
+approval applied to release `e9a21d20` and does not authorize publishing this
+replacement SHA. No new release has been signed or published; Mini and DO
+have not been mutated by this work.
+
+The seven stale DO `fleet.github.apply-dispatch` receipts remain queued after
+lookup-only reconciliation returned binding mismatch; no workflow dispatch or
+provider apply occurred. PR #370 makes the recovered-forward Mini lane preserve
+those receipts under signed transition evidence while `legacy-baseline`
+continues to require them drained. This does not resolve their binding
+mismatch or change them.
+
+Offline statechart runs on current `master` passed all configured rules and
+deadlock checks for Mini direct, existing DO release, existing-Fleet Genesis
+and readback, fresh Fleet create (current 3+2+4 topology and future General +
+Stateful pools), proposed online Norn upgrade, and workload admission,
+publication, stop recovery, private-input retention, and mixed-version resize.
+The bounded resize comparison still demonstrates that capacity 3 cannot
+reach a target-only route and terminal receipt while retaining the old cohort;
+capacity 4 reaches the modeled completion. These are protocol-model results,
+not runtime or controller-refinement evidence. See the dated
+[launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2245-utc)
+for per-model counts and limits.
+
+The latest authenticated Mini runtime evidence is the 22:47 UTC snapshot below.
+Refresh Mini API/host/schema/generation state and the protected DO read-only
+status before any live step. After owner approval and publication,
+import and verify the exact signed replacement on Mini, then create a fresh
+source-bound backup and shadow receipt, rerun preflight, and invoke only the
+signed `mini-recovered-forward-transition` wrapper. Verify migration 52,
+generation receipt, API/schema, host assurance, and workload smoke afterward.
+
+## Mini runtime evidence snapshot (2026-11-09 22:47 UTC)
+
+The read-only inventory at 22:47 UTC reports `/api/health` and host status
+`ok`, runtime mutation fence `inactive`, and exact current release/source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`. `/api/schema` reports migration
+51 and reader/writer floors 5/33. The host-status read reports the latest
+`host.assure` as `succeeded` with exit code 0. This is sufficient evidence
+that the independent Mini is online and currently hosting workloads: 19 of 30
+app records are running and healthy. The inventory also records two pending,
+one dead, and eight without a Nomad status; it is not a claim that every app is
+healthy.
+
+Seven active operations remain, all queued `fleet.github.apply-dispatch`
+receipts. The earlier lookup-only reconciliation returned
+`fleet_github_dispatch_binding_mismatch` for all seven; no receipt was changed.
+There are 25 active incident groups, four snapshot-retention warnings, and
+production readiness remains blocked (7 checks passed, 1 warning, 18 failed).
+These are separate from the evidence that the Mini API and running workloads
+are online. The runbook lane is recovered-forward after release `9d9d6208` is
+signed and published; the seven Fleet receipts will be preserved under that
+lane's transition evidence.
+
+The DO staging provider/runtime snapshot remains the dated 18:58–19:01 UTC
+evidence below. It has not been freshly read in this turn. Provider credentials
+remain in the protected Fleet runner; a fresh DO control-plane/runtime status
+requires a new exact-bound readback intent and runner receipt. No local
+provider query or DO mutation was made.
+
+## Prior Mini/DO runtime evidence snapshot (2026-11-09 22:08 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
