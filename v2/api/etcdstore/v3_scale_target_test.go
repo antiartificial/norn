@@ -125,7 +125,8 @@ func TestV3ScaleTargetResolvesCompletedWorkloadRoute(t *testing.T) {
 		TargetDeploymentID: "target-deploy", TargetImage: "registry.example.test/widgets@" + functionInvocationEffectAttemptDigest, TargetImageDigest: functionInvocationEffectAttemptDigest,
 		TargetJobID: "widgets-web-target", TargetJobDigest: functionInvocationEffectAttemptDigest, TargetSpecDigest: functionInvocationEffectAttemptDigest,
 		TargetOperationID: "target-operation", TargetExecutionID: "target-execution", OldAllocationIDs: []string{"old-allocation"}, TargetJobVersion: 1, TargetJobModifyIndex: 3,
-		TargetReplicas: 1, SurgeLimit: 1, FirstRouteGeneration: 4,
+		TargetReplicas: 1, SurgeLimit: 1, PolicyApprovalID: workloadReleaseTestPolicyApprovalID,
+		PolicyDigest: workloadReleaseTestPolicyDigest(app, target), FirstRouteGeneration: 4,
 		RouteSteps: []pipeline.WorkloadReleaseRouteStep{{OldWeight: 100, TargetWeight: 0}, {OldWeight: 90, TargetWeight: 10}, {OldWeight: 0, TargetWeight: 100}},
 	}
 	intentBytes, err := json.Marshal(intent)

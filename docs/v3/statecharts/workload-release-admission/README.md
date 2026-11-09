@@ -82,6 +82,15 @@ chart and report were regenerated from the checked-in spec and view.
 
 ## Runtime test evidence
 
+The receipt CAS integration test now reconstructs a fresh etcd client and
+`V3OperationStore` after revoking the original claim. The reconstructed store
+reloads the durable receipt, recovers the expired operation, and advances that
+same intent under a successor claim; the stale claim remains fenced. This
+proves store-level process-restart recovery for the receipt boundary against
+real etcd. It does not restart the controller worker or qualify response loss
+across the full runtime, so controller restart/response-loss qualification,
+production drivers, and private-input retention remain open.
+
 The separate [concurrent admission model](../workload-release-concurrent-admission/README.md)
 and its two-client etcd regression test cover simultaneous same-key acceptance
 at the store boundary. The [HTTP concurrency model](../workload-release-http-concurrency/README.md)
@@ -103,10 +112,10 @@ NORN_TEST_ETCD_ENDPOINTS=http://127.0.0.1:12379 go test ./etcdstore \
 ```
 
 This verifies the signed qualification lookup, atomic private-input acceptance
-and replay, receipt CAS, and successor-claim target binding against real etcd
-transactions. PR #321 separately exercises the authenticated admission route
-in-process using deterministic fakes. Neither test runs ingress or a
-production Nomad/ingress driver configuration.
+and replay, receipt CAS and successor-claim target binding across a reconstructed
+store/client against real etcd transactions. PR #321 separately exercises the
+authenticated admission route in-process using deterministic fakes. Neither
+test runs ingress or a production Nomad/ingress driver configuration.
 
 The updated private-input acceptance test also deletes the qualified source
 deployment projection, supplies an invalid current plan and a new operation
