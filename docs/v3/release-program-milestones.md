@@ -26,9 +26,9 @@ not happen.
 |---|---|---|
 | Release evidence | Mini serves the signed V3 RC; fresh route assurance is open. DO provider inventory is active, but runtime health is unverified. | Use [launch state](LAUNCH-STATE.md) for current receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. |
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
-| Fresh-Fleet bootstrap | PR #941 (offline war-game), #940 (controller release intent), and #945 (provider-scope contract) are merged. General + Stateful remain the selected future app-pool roles. PR #943 closed with its stacked base; replacement PR #947 carries credential lifecycle work and is draft. PR #942 test-collection work is open. Their refreshed contract runs currently fail at OpenTofu provider installation after GitHub 504 responses; no provider changes were made. | Rerun the required contracts when provider downloads recover, then merge only after policy checks pass. Complete integrated persistent apply/recovery, exact state/provider readback, per-service credential lifecycle, and terminal receipt before any protected apply. |
+| Fresh-Fleet bootstrap | PRs #941 (offline war-game), #940 (controller release intent), #945 (provider-scope contract), #947 (bootstrap credential lifecycle), and #942 (module-owned test collection) are merged. General + Stateful remain the selected future app-pool roles. DO tailnet ingress enrollment remains blocked at Fleet PR #837: its required contract check fails during provider installation after repeated checksum/archive HTTP 504 responses. No provider apply or Genesis readback was run. | Rerun PR #837's exact-head contract when provider downloads recover. Complete integrated persistent apply/recovery, exact state/provider readback, per-service credential lifecycle, and terminal receipt before any protected apply. |
 | Offline models | Nine checked-in lane models and the additional workload capacity-3 configuration pass their listed invariants and deadlock checks. | Replay counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
-| Workload release | PR #302 is merged to Norn `master` at `c792564c`; offline stateless mixed-version controller/statechart evidence is in source, but it is not live-qualified. | Add operator admission, durable worker crash/restart proof, target-only public-route evidence, a live canary, and stateful data-compatibility proof. |
+| Workload release | PR #302's stateless mixed-version protocol is extended by merged PR #311 (`4c90aecf`, 2026-11-09): stable request-digest replay returns the accepted operation before rereading mutable qualification, source, plan, or secret snapshot state. Exact-head API, Fleet pilot, durable replica, CLI, OpenAPI, UI, qualification, workflow, and security checks passed. The store acceptance seam remains unconnected to an authenticated operator/API producer; no live workload release is qualified. | Implement the authenticated V3 admission producer and explicit owner-approved per-app overlap policy. Then prove durable worker crash/restart, target-only public-route evidence, and a live canary only after M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
 
 Mini is an independent node, not a Fleet member. The DO staging environment is
 the only Fleet in this release work. Provider inventory, controller health,
@@ -101,6 +101,12 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   prerequisite for PKI/configuration. Pool counts now match current
   `staging/nyc3`, but the model is not wired to its parser, workflow, or exact
   inputs; token-scope admission is modeled but not implemented.
+- [x] Model stable workload-release request replay before mutable qualification,
+  source, plan, scheduler-lineage, or encrypted-input reads. Merged PR #311's
+  etcd-backed regression test replays the accepted operation after removing
+  source evidence and changing the current plan and encrypted snapshot; changed
+  request selection conflicts. This proves the store boundary, not an API
+  producer or live controller path.
 - [x] Model future fresh-Fleet bootstrap with two independent app pools,
   lost-create-response readback, same-intent recovery, full-inventory gating,
   and terminal receipt. Pool identities are abstract and no counts or capacity bounds are
@@ -141,7 +147,7 @@ credential lifecycle evidence, or qualify a live workload release.
 
 Input provenance and pool semantics are maintained in the
 [future two-app-pool contract](fresh-fleet-two-app-pool-contract.md), merged
-PR #941, and open draft PR #947. Keep the full path inventory in its
+PRs #941 and #947. Keep the full path inventory in its
 source-derived contract rather than duplicating it here. The remaining offline
 work is an integrated persistent-staging apply/recovery replay, per-service
 rotation/revocation coverage, and missing/stale input holds. Merged PR #945
