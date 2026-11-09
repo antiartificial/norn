@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 12:29 UTC)
+## Current V3 release readiness (2026-11-09 13:09 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -20,17 +20,25 @@ the sole staging Fleet and remains a separate qualification target.
   the latest recorded assurance receipt says `succeeded` but is dated
   2026-09-06, so route assurance is not fresh. Mini remains independent of
   Fleet.
-- **DO staging:** a fresh read-only `doctl --context work` query at about
-  12:29 UTC found all nine staging Droplets (3 control, 2 ingress, 4 app),
-  both management Droplets, and the ingress load balancer active. The query did
-  not inspect managed databases, Norn APIs, etcd quorum, Nomad/Consul workloads,
-  or public routes. DO runtime health remains unverified. Genesis readback
-  remains unpassed: run 42418784411 used an installed verifier whose pinned
-  source objects were absent. Its intent and one-use runner are terminal.
-  Fleet PR #946 merged the source-admission preflight, but no protected
-  installer or readback has run against that merged source. A repeat needs a
-  fresh authorized intent and one-use runner; do not reuse the old
-  authorization or claim runtime health from provider inventory.
+- **DO staging:** a read-only `doctl --context work` refresh at 13:09 UTC
+  found all nine staging Droplets active (3 control, 2 ingress, 4 app), both
+  management Droplets active, the ingress load balancer active, and the
+  management-authority PostgreSQL plus application PostgreSQL/MySQL databases
+  online. Verified public HTTPS probes to the canary returned 200 for
+  `/route-proof` (`norn-fleet-canary`) and five `/version` responses from the
+  same source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, across two allocation
+  IDs and two node IDs. The canary hostname returns 404 for `/api/health`.
+  This confirms provider resources are active and the canary is serving; it
+  does not establish Norn API health, etcd quorum, Nomad/Consul control-plane
+  health, application catalog state, or the terminal receipt for the earlier
+  failed deployment. DO is online at the provider and canary levels, while
+  full Fleet runtime health remains unverified. Genesis readback remains
+  unpassed: run 42418784411 used an installed verifier whose pinned source
+  objects were absent, and later attempts also stopped before a successful
+  readback. Those intents and one-use runners are terminal. Fleet PR #946
+  merged the source-admission preflight, but no protected installer or
+  readback has run against that merged source. A repeat needs a fresh
+  authorized intent and one-use runner; do not reuse prior authorization.
 - **Workload release/resize:** PR #302 is merged to Norn `master` at
   `c792564c9440805a467a832a4fcb6b433a1f68c3`; PR #307 is merged at
   `1a254466cacf37b636efd50cdecfdd7d6cf5e75f`; PR #311 is merged at
