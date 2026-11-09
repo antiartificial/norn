@@ -2,25 +2,34 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 18:32 UTC)
+## Current V3 release readiness (2026-11-09 18:47 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
 the sole staging Fleet and remains a separate qualification target.
 
-The last protected-master qualification attempt used `d8b08a32` in run
+The protected-master qualification attempt on `d8b08a32` in run
 [42670882840](https://github.com/antiartificial/norn/actions/runs/42670882840)
 and failed three API tests: manual webhook replay lacked its audit-receipt
 fixture, and two schema assertions still expected migration 51 instead of 52.
-PR [#359](https://github.com/antiartificial/norn/pull/359) at
-`4ee0a27e10769d6b47c9e8480bdbab55edb72f01` repairs those fixtures/assertions.
-Its rerun passed the API suite, CLI, Fleet pilot, M4 durable-replica, UI,
-release-contract, workflow-lint, and security checks. The rerun did not produce
-the required `OpenAPI contract` check, so branch protection still blocks the
-merge. The protected-master qualification has not been rerun on the fix;
-release publishing and another Mini upgrade have not run. Mini Git-path
-readback at 17:53 UTC remains the newest Mini evidence below; the DO runtime
-readiness evidence remains the Nov 8 readback below.
+PR [#359](https://github.com/antiartificial/norn/pull/359) repaired those
+fixtures/assertions and merged at `b5b2657f325291bd32ced8bf74d42824fb516f88`
+after its complete required check set passed in run
+[42674943401](https://github.com/antiartificial/norn/actions/runs/42674943401).
+The full protected-master qualification passed against that exact SHA in run
+[42675609475](https://github.com/antiartificial/norn/actions/runs/42675609475).
+The signed release workflow
+[42676303794](https://github.com/antiartificial/norn/actions/runs/42676303794)
+also passed authorization, UI build, and all four OS/architecture bundle jobs.
+Downloaded bundle archives match their manifest SHA-256 values; all four
+manifests bind the same commit and
+`v3.0.0-rc.1-platform-313-gb5b2657f` prerelease version. The `publish` job is
+waiting for the configured `platform-release` environment approval. No signed
+release has been published and the Mini has not changed. After publication,
+the Mini still requires exact-SHA signed import/verification, protected
+backup, signed shadow, controller preflight, promotion, smoke, and host
+assurance. Mini Git-path readback at 17:53 UTC remains the newest Mini evidence
+below; the DO runtime readiness evidence remains the Nov 8 readback below.
 
 - **Mini direct:** the independent Mini's completed Nov 7 controller-mediated
   direct adoption remains in place; this refresh did not attempt another
