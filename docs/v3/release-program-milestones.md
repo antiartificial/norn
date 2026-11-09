@@ -44,6 +44,35 @@ deployment, provider mutation, or credential use.
   route-authentication fix, but is not merged or deployed. Its protected
   release must be followed by fresh Mini host assurance and route inventory.
 
+## Mini assurance recheck — 2026-11-09 00:55 UTC
+
+- The API still reports `ok` on V3 source
+  `d4dc88e0c37003a1013caed444983b2eeb50fbcb`. Consul, Nomad, Postgres, and the
+  Nomad-Consul workload connector report `up`. `norn host doctor` passed its
+  managed-file, LaunchAgent, runtime, and Cloudflare process/config checks.
+- The latest successful `host.assure` receipt remains from 2026-09-06. The
+  active-event endpoint reports 25 incident groups: 22 critical and 3 warning.
+  The host-assurance failure group was last seen at 2026-11-09 00:19 UTC.
+- `norn smoke platform` exits successfully and reports healthy API, drain,
+  release, and event-read surfaces. It also reports recent critical and warning
+  counts. Its `ok events` result does not clear those incidents or prove public
+  routes.
+- The authenticated event-reconcile dry-run scanned 200 events. It marked 53
+  for deterministic acknowledgement and 147 for review. No events were
+  acknowledged. Preserve the review set; host-assurance failures and lost
+  allocations have no automatic acknowledgement rule.
+- The active-operation API still lists seven queued
+  `fleet.github.apply-dispatch` receipts. The direct Mini smoke reports zero
+  Mini-affecting active operations because the installed script preserves and
+  excludes those queued Fleet receipts. They remain Fleet work and do not
+  block the Mini drain.
+- The Cloudflare inventory lists 20 configured hostnames, but neither that
+  inventory nor `norn host doctor` probes route reachability. PR #301 remains
+  open and undeployed. After its protected signed release, run controlled host
+  assurance and verify a fresh successful assurance event plus route
+  inventory. Host assurance can publish or prune routes, so treat it as a live
+  mutation. Do not substitute platform smoke for this gate.
+
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
 recovery work, workload protocol refinement, and V2 caller migration planning.
