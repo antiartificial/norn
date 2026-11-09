@@ -26,9 +26,9 @@ not happen.
 |---|---|---|
 | Release evidence | Mini serves the signed V3 RC; fresh route assurance is open. DO provider inventory is active, but runtime health is unverified. | Use [launch state](LAUNCH-STATE.md) for current receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. |
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
-| Fresh-Fleet bootstrap | PRs #941, #943, and #945 provide offline topology/input, credential-provenance, and provider-scope work. Future app pools are General + Stateful. | Join persistent provider apply, exact state/provider readback, same-intent recovery, PKI/bootstrap, and terminal receipt; complete provider scope and credential lifecycle gates. |
+| Fresh-Fleet bootstrap | PR #941 (offline war-game), #940 (controller release intent), and #945 (provider-scope contract) are merged. General + Stateful remain the selected future app-pool roles. PR #943 closed with its stacked base; replacement PR #947 carries credential lifecycle work and is draft. PR #942 test-collection work is open. Their refreshed contract runs currently fail at OpenTofu provider installation after GitHub 504 responses; no provider changes were made. | Rerun the required contracts when provider downloads recover, then merge only after policy checks pass. Complete integrated persistent apply/recovery, exact state/provider readback, per-service credential lifecycle, and terminal receipt before any protected apply. |
 | Offline models | Nine checked-in lane models and the additional workload capacity-3 configuration pass their listed invariants and deadlock checks. | Replay counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
-| Workload release | PR #302 contains offline stateless mixed-version controller/statechart evidence; it is not live-qualified. | Add operator admission, durable worker crash/restart proof, target-only public-route evidence, a live canary, and stateful data-compatibility proof. |
+| Workload release | PR #302 is merged to Norn `master` at `c792564c`; offline stateless mixed-version controller/statechart evidence is in source, but it is not live-qualified. | Add operator admission, durable worker crash/restart proof, target-only public-route evidence, a live canary, and stateful data-compatibility proof. |
 
 Mini is an independent node, not a Fleet member. The DO staging environment is
 the only Fleet in this release work. Provider inventory, controller health,
@@ -140,13 +140,13 @@ do not prove the live controller implements the contract, finish per-file
 credential lifecycle evidence, or qualify a live workload release.
 
 Input provenance and pool semantics are maintained in the
-[future two-app-pool contract](fresh-fleet-two-app-pool-contract.md) and the
-open Fleet PRs #941, #943, and #945. Keep the full path inventory in its
+[future two-app-pool contract](fresh-fleet-two-app-pool-contract.md), merged
+PR #941, and open draft PR #947. Keep the full path inventory in its
 source-derived contract rather than duplicating it here. The remaining offline
 work is an integrated persistent-staging apply/recovery replay, per-service
-rotation/revocation coverage, and missing/stale input holds. PR #945 cannot
-attest the live DO token's scopes; obtain a current owner-reviewed scope
-readback before any protected apply. Persistent `work-staging` has no
+rotation/revocation coverage, and missing/stale input holds. Merged PR #945
+cannot attest the live DO token's scopes; obtain a current owner-reviewed
+scope readback before any protected apply. Persistent `work-staging` has no
 sanctioned whole-Fleet destroy path.
 
 The helper war-game stops before provider effects, SSH, Ansible, durable

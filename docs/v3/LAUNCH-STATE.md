@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09)
+## Current V3 release readiness (2026-11-09 05:35 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -22,29 +22,29 @@ the sole staging Fleet and remains a separate qualification target.
   no protected installer or readback has run against that merged source. A
   repeat needs a fresh authorized intent and one-use runner; do not reuse the
   old authorization or claim runtime health from provider inventory.
-- **Workload release/resize:** implementation commit `94c6f590` is on open PR
-  #302; the current candidate head `c88a7f6` passed CI in runs
-  [42562702921](https://github.com/antiartificial/norn/actions/runs/42562702921)
-  and [42562702877](https://github.com/antiartificial/norn/actions/runs/42562702877).
-  The staged-target, encrypted-input, and recovery changes are committed but
-  not merged or deployed. The authenticated operator/API producer,
-  production-driver fault
-  qualification, and DO mixed-version release remain open. The offline
-  statechart separates signed staging qualification, current route predecessor,
-  observed serving lineage, and durable encrypted input. TLC explored 458
-  states and 1,663 steps: 18 safety invariants and deadlock checking passed.
-  Each of four missing-evidence scenarios explored 4 states and 6 steps and
-  rejected incomplete admission. Affected Go packages passed, including their
-  etcd-backed integration tests against a temporary loopback etcd 3.7.3. This
-  did not exercise a live Nomad/ingress driver or provider. Active routes retain
-  accepted operation/spec/image/process/job lineage. The private-store admission
-  boundary re-observes the serving deployment and checks its job version,
-  modify index, replicas, and exact allocation IDs before atomic acceptance;
-  missing or changed lineage rejects, while exact replay avoids mutable reads.
-  The authenticated API/CLI producer does not yet call this boundary.
+- **Workload release/resize:** PR #302 is merged to Norn `master` at
+  `c792564c9440805a467a832a4fcb6b433a1f68c3`. Its offline stateless controller,
+  durable receipt/recovery path, and statechart are in source, but have not been
+  deployed or live-qualified. TLC explored 458 states and 1,663 steps: 18
+  safety invariants and deadlock checking passed. Four missing-evidence
+  scenarios each explored 4 states and 6 steps and rejected incomplete
+  admission. Affected Go packages and etcd-backed integration tests against a
+  temporary loopback etcd 3.7.3 passed; these did not exercise a live
+  Nomad/ingress driver or provider. The authenticated operator/API producer,
+  production-driver fault qualification, and DO mixed-version release remain
+  open. The API/CLI producer does not yet call the private-store admission
+  boundary.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
-  selected default application pool roles, but credential war-game and
-  controller recovery evidence must precede any provider mutation.
+  selected future application pool roles. Fleet PR #941 (offline war-game),
+  #940 (release intent controller), and #945 (provider scope contract) are
+  merged. PR #943 closed when its stacked base merged; replacement PR #947
+  contains the bootstrap credential lifecycle work and remains a draft. PR
+  #942 (module-owned test collection) is also open. Their refreshed contract
+  runs are blocked at OpenTofu provider installation by repeated GitHub 504
+  responses for the DigitalOcean provider checksums/signature; earlier phases
+  passed. Branch policy blocks merging them while the required contract fails.
+  No provider apply or Genesis readback was run. Integrated controller recovery
+  and credential lifecycle evidence remain gates before any provider mutation.
 
 The milestone table near the end of this file is a historical estimate; use
 the lane evidence above and the M5 protocol's dated status for current gates.
