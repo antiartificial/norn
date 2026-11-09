@@ -141,7 +141,13 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   replay and changed-selection conflict. PR #337 closes the handler and etcd
   client, rebuilds both adapters and the handler, then verifies the same replay.
   These tests do not exercise fresh handler admission or workload
-  worker/controller runtime restart.
+  worker/controller runtime restart. On 2026-11-09, the five focused tests for
+  signed qualification lookup, atomic private-input acceptance/replay, receipt
+  recovery, and this seeded-acceptance HTTP replay passed against disposable
+  loopback etcd at `127.0.0.1:12379` (`go test ./... -run
+  'Test(ResolveWorkloadReleaseQualificationRequiresSignedCompletedSource|V3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable|V3WorkloadReleaseStagedTargetBindingIsClaimFencedAndWriteOnce|V3WorkloadReleaseReceiptCASFencesAndRecoversEtcd|EtcdWorkloadReleaseAdmissionHTTPReplaysDurableAcceptanceAfterRestart)$'
+  -count=1`). This refreshes component evidence; it still does not join fresh
+  HTTP admission to those real-etcd prerequisites.
 - [x] Exercise ordered HTTP rejection when qualification, Fleet target, approved
   policy, active serving route, Nomad serving lineage, or encrypted input is
   missing. The deterministic handler tests verify conflict responses and no
