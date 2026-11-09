@@ -50,8 +50,9 @@ import (
 )
 
 const (
-	etcdCanaryWorkerEnv      = "NORN_ETCD_CANARY_WORKER"
-	etcdCanaryHTTPPreviewEnv = "NORN_ETCD_CANARY_HTTP_PREVIEW"
+	etcdCanaryWorkerEnv        = "NORN_ETCD_CANARY_WORKER"
+	etcdCanaryHTTPPreviewEnv   = "NORN_ETCD_CANARY_HTTP_PREVIEW"
+	etcdWorkloadReleaseHTTPEnv = "NORN_ETCD_WORKLOAD_RELEASE_HTTP"
 )
 
 func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfig) error {
@@ -156,6 +157,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	releaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetReleaseHTTPEnv)), "true")
 	qualificationHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetQualificationHTTPEnv)), "true")
+	workloadReleaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdWorkloadReleaseHTTPEnv)), "true")
 	var releaseVerifier *pipeline.Pipeline
 	if releaseHTTPEnabled {
 		if deployConfig == "" {
@@ -172,6 +174,16 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}
 		if err := handler.ValidateReleaseQualificationSigningKey(cfg.QualificationSigningKey); err != nil {
 			return fmt.Errorf("configure V3 staging qualification issuer: %w", err)
+		}
+	}
+	var workloadQualificationKeys []string
+	if workloadReleaseHTTPEnabled {
+		if cfg.EnvironmentID() != "staging" || !qualificationHTTPEnabled || deploy == nil || deploy.workloadKeys == nil || deploy.lineage == nil {
+			return fmt.Errorf("%s requires staging, %s=true, private workload keys, and the configured Fleet deploy runtime", etcdWorkloadReleaseHTTPEnv, etcdFleetQualificationHTTPEnv)
+		}
+		workloadQualificationKeys, err = handler.ReleaseQualificationVerificationKeys(cfg.TrustedQualificationSigningKeys, cfg.QualificationSigningKey)
+		if err != nil {
+			return fmt.Errorf("configure workload release qualification trust: %w", err)
 		}
 	}
 	router := chi.NewRouter()
@@ -209,7 +221,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
 	})
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(cfg, canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled, scaleHTTPEnabled))
+		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(cfg, canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled, scaleHTTPEnabled, workloadReleaseHTTPEnabled))
 	})
 	// Fleet runners carry fleet:operate only for their own attempts and
 	// reconciliation checkpoints. Inventory and general operation reads still
@@ -251,6 +263,11 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if qualificationHTTPEnabled {
 		qualificationAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseQualify, handler.ScopeAPIWrite)
 		router.With(qualificationAuth).Post("/api/v1/apps/{id}/qualifications", etcdFleetReleaseQualification(cfg, operations, identities))
+	}
+	if workloadReleaseHTTPEnabled {
+		releaseStage := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)
+		router.With(releaseStage).Post("/api/v1/apps/{id}/workload-releases", etcdWorkloadReleaseAdmission(cfg, operations, identities,
+			deploy.workloadKeys, deploy.lineage, workloadQualificationKeys))
 	}
 	router.With(platformOperate).Put("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetConfigure(cfg, operations))
 	router.With(read).Get("/api/v1/database/catalog", etcdFleetDatabaseCatalog(operations))
@@ -463,6 +480,11 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		features = append(features, "durable-app-scale-etcd-preview")
 		endpoints["appScale"] = "/api/v1/apps/{id}/scale"
 		endpoints["appScaleStatus"] = "/api/v1/apps/{id}/scale-status"
+		unsupported[0] = "other-app-mutations"
+	}
+	if len(githubEnabled) > 3 && githubEnabled[3] {
+		features = append(features, "staging-workload-release-admission-v1")
+		endpoints["appWorkloadRelease"] = "/api/v1/apps/{id}/workload-releases"
 		unsupported[0] = "other-app-mutations"
 	}
 	auth := map[string]interface{}{

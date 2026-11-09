@@ -20,6 +20,7 @@ import (
 	"norn/v2/api/nomad"
 	"norn/v2/api/secrets"
 	"norn/v2/api/startup"
+	"norn/v2/api/store"
 	"norn/v2/api/worker"
 )
 
@@ -44,8 +45,10 @@ type etcdFleetDeployWorkerConfig struct {
 }
 
 type etcdFleetDeployRuntime struct {
-	worker  *worker.OperationWorker
-	secrets *database.DirectorySecretSource
+	worker       *worker.OperationWorker
+	secrets      *database.DirectorySecretSource
+	lineage      nomad.ActiveDeploymentLineageObserver
+	workloadKeys *store.WorkloadReleaseInputKeyRing
 }
 
 func newEtcdFleetDeployRuntime(ctx context.Context, cfg *config.Config, operations *etcdstore.V3OperationStore,
@@ -172,7 +175,8 @@ func newEtcdFleetDeployRuntime(ctx context.Context, cfg *config.Config, operatio
 		return nil, err
 	}
 	executor := &etcdFleetReleaseOperationExecutor{deploy: deployExecutor, workload: workloadExecutor}
-	return &etcdFleetDeployRuntime{worker: worker.NewOperationWorkerForKinds(operations, executor, []string{"app.deploy", "app.workload-release"}), secrets: privateSecrets}, nil
+	return &etcdFleetDeployRuntime{worker: worker.NewOperationWorkerForKinds(operations, executor, []string{"app.deploy", "app.workload-release"}),
+		secrets: privateSecrets, lineage: nomadClient, workloadKeys: workloadReleaseKeys}, nil
 }
 
 // privateFleetDeployFile refuses symlinks, group/world access, and foreign

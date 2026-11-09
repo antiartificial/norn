@@ -24,6 +24,42 @@ type FleetScaleTarget struct {
 	NomadNamespace string
 }
 
+// WorkloadReleaseServingRoute is the control-owned predecessor identity used
+// to derive a new release plan. The controller must still perform fresh
+// Nomad lineage readback before acceptance.
+type WorkloadReleaseServingRoute struct {
+	IntentID     string
+	DeploymentID string
+	OperationID  string
+	Generation   uint64
+	RouteSHA256  string
+	JobDigest    string
+	SpecDigest   string
+	ImageTag     string
+	Process      string
+}
+
+// CurrentWorkloadReleaseServingRoute returns the active route only after the
+// ordinary scale-target resolver has verified its signed source and durable
+// route reservation.
+func (s *V3OperationStore) CurrentWorkloadReleaseServingRoute(ctx context.Context, app, environment, region string) (WorkloadReleaseServingRoute, error) {
+	target, err := s.ActiveFleetScaleTarget(ctx, app, environment, region)
+	if err != nil {
+		return WorkloadReleaseServingRoute{}, err
+	}
+	response, err := s.kv.Get(ctx, s.fleetActiveRouteKey(app, environment, region))
+	if err != nil || len(response.Kvs) != 1 {
+		return WorkloadReleaseServingRoute{}, fmt.Errorf("current workload release route changed during readback")
+	}
+	var active activeFleetRoute
+	if decodeV3Record(response.Kvs[0].Value, &active) != nil || active.DeploymentID != target.DeploymentID || active.JobDigest == "" || active.SpecDigest == "" || active.ImageTag == "" || active.Process == "" || active.OperationID == "" || active.Generation == 0 {
+		return WorkloadReleaseServingRoute{}, fmt.Errorf("current workload release route is incomplete")
+	}
+	return WorkloadReleaseServingRoute{IntentID: active.IntentID, DeploymentID: active.DeploymentID, OperationID: active.OperationID,
+		Generation: active.Generation, RouteSHA256: active.RouteSHA256, JobDigest: active.JobDigest, SpecDigest: active.SpecDigest,
+		ImageTag: active.ImageTag, Process: active.Process}, nil
+}
+
 // ActiveFleetScaleTarget resolves a managed Nomad job only from the published
 // route and its completed deployment. The logical app name is not a Nomad job
 // ID for normal Fleet deployments.
