@@ -112,6 +112,9 @@ deployment, provider mutation, or credential use.
   does not prove which upgrade procedure promoted it or provide a durable
   successful operation receipt. Preserve this as an evidence gap when we
   assess the direct controller lane.
+- The bundled `bin/platform-upgrade` SHA-256 matches the script at the exact
+  `d4dc88e0` source commit. The release directory has no `logs/` directory or
+  `postflight-version.json`, so it has no local post-promotion version record.
 
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
