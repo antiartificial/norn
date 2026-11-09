@@ -79,6 +79,7 @@ type workloadReleaseDriver interface {
 	PublishRouteStep(context.Context, store.OperationClaim, store.AppOperationLock, pipeline.WorkloadReleaseIntent, int) error
 	StopAndReadback(context.Context, store.OperationClaim, pipeline.WorkloadReleaseIntent) error
 	Complete(context.Context, store.OperationClaim, pipeline.WorkloadReleaseIntent) (store.WorkloadReleaseReceiptRecord, error)
+	DeleteCompletedPrivateInput(context.Context, store.OperationClaim, store.AppOperationLock, pipeline.WorkloadReleaseIntent, store.WorkloadReleaseReceiptRecord) error
 }
 
 func reconcileWorkloadRelease(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, driver workloadReleaseDriver) (*pipeline.OperationResult, error) {
@@ -111,6 +112,9 @@ func reconcileWorkloadRelease(ctx context.Context, claim store.OperationClaim, l
 			return nil, fmt.Errorf("claimed workload receipt is unavailable: %v", err)
 		}
 		if receipt.Phase == pipeline.WorkloadReleaseComplete {
+			if err := driver.DeleteCompletedPrivateInput(ctx, claim, lock, intent, *record); err != nil {
+				return nil, &effect.PendingError{Resource: workloadReleaseResource(intent), Reason: "completed release private-input cleanup is pending", Cause: err}
+			}
 			return &pipeline.OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: "workload release verified", Metadata: map[string]interface{}{"intentId": intent.ID, "receiptDigest": record.ReceiptDigest}}, nil
 		}
 		if receipt.Phase == pipeline.WorkloadReleaseHeld {
@@ -166,6 +170,9 @@ func reconcileWorkloadRelease(ctx context.Context, claim store.OperationClaim, l
 			completed, err := driver.Complete(ctx, claim, intent)
 			if err != nil {
 				return nil, err
+			}
+			if err := driver.DeleteCompletedPrivateInput(ctx, claim, lock, intent, completed); err != nil {
+				return nil, &effect.PendingError{Resource: workloadReleaseResource(intent), Reason: "completed release private-input cleanup is pending", Cause: err}
 			}
 			return &pipeline.OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: "workload release route, target health, and old allocation drain verified",
 				Metadata: map[string]interface{}{"intentId": intent.ID, "receiptDigest": completed.ReceiptDigest, "routeGeneration": receipt.RouteGeneration}}, nil
@@ -374,6 +381,14 @@ func (e *etcdWorkloadReleaseExecutor) StopAndReadback(ctx context.Context, claim
 
 func (e *etcdWorkloadReleaseExecutor) Complete(ctx context.Context, claim store.OperationClaim, intent pipeline.WorkloadReleaseIntent) (store.WorkloadReleaseReceiptRecord, error) {
 	return e.stop.MarkComplete(ctx, claim, intent)
+}
+
+func (e *etcdWorkloadReleaseExecutor) DeleteCompletedPrivateInput(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock,
+	intent pipeline.WorkloadReleaseIntent, completed store.WorkloadReleaseReceiptRecord) error {
+	if e == nil || e.operations == nil || lock == nil || lock.Context().Err() != nil {
+		return store.ErrOperationOwnershipLost
+	}
+	return e.operations.DeleteCompletedWorkloadReleasePrivateInput(ctx, claim, lock, intent, completed)
 }
 
 func (e *etcdWorkloadReleaseExecutor) loadReceipt(ctx context.Context, intent pipeline.WorkloadReleaseIntent) (*store.WorkloadReleaseReceiptRecord, pipeline.WorkloadReleaseReceipt, error) {

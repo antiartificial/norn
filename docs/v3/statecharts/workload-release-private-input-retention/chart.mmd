@@ -1,0 +1,13 @@
+---
+title: "Private workload input retention and recovery"
+---
+stateDiagram-v2
+  s0: Pending#59; inputs retained
+  s1: Release complete#59; inputs retained
+  s2: Held#59; inputs retained
+  s3: Completed#59; inputs deleted
+  [*] --> s0
+  s0 --> s1: validated terminal receipt stored
+  s0 --> s2: evidence unavailable#59; preserve inputs
+  s1 --> s3: delete encrypted inputs and write tombstone
+  s2 --> s0: successor resumes same release
