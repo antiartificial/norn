@@ -37,6 +37,36 @@ func TestBuildWorkloadReleaseTargetJobPlanIsExactCreateOnlySource(t *testing.T) 
 	}
 }
 
+func TestDeriveWorkloadReleaseTargetJobDigestMatchesExecutionBuilder(t *testing.T) {
+	plan, spec := workloadReleaseTargetPlanFixture(t)
+	intent := plan.Intent
+	intent.TargetJobDigest = ""
+	derived, err := pipeline.DeriveWorkloadReleaseTargetJobDigest(intent, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := pipeline.BuildWorkloadReleaseTargetJobPlan(plan, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := pipeline.BuildWorkloadReleaseTargetJobPlan(plan, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived != "sha256:"+first.Request.JobDigest || first.Request.JobDigest != second.Request.JobDigest {
+		t.Fatalf("admission digest=%q first=%q second=%q", derived, first.Request.JobDigest, second.Request.JobDigest)
+	}
+
+	if _, err := pipeline.DeriveWorkloadReleaseTargetJobDigest(plan.Intent, spec); err == nil {
+		t.Fatal("admission accepted a caller-supplied target job digest")
+	}
+	changed := *spec
+	changed.Processes = map[string]model.Process{"web": {Port: 8080, Command: "different"}}
+	if _, err := pipeline.DeriveWorkloadReleaseTargetJobDigest(intent, &changed); err == nil {
+		t.Fatal("admission derived a digest from source that differs from the accepted spec digest")
+	}
+}
+
 func TestBuildWorkloadReleaseTargetJobPlanRejectsSourceOrDataContractDrift(t *testing.T) {
 	plan, spec := workloadReleaseTargetPlanFixture(t)
 	changed := *spec
