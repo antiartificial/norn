@@ -66,8 +66,13 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   in `norn-fleet` PR #941. It calls production
   plan-manifest, account/backend, topology, inventory, recovery-guard, and
   local PKI functions with synthetic inputs; substitution and eight-of-nine
-  output hold before bootstrap. Its documented 81-test command passes
-  locally, and protected CI run `42477659325` passed. This helper-level slice stops
+  output hold before bootstrap. The documented 12-module command was rerun
+  against `norn-fleet` main `6335c667` on 2026-11-09 and passed 84 tests in
+  33 seconds. Protected CI run `42477659325` also passed. The local run emitted
+  three `find: -user: norn-phase: no such user` diagnostics from the macOS
+  fixture host, which lacks the Linux service account; these did not fail the
+  suite, but remain an environment-specific cleanup diagnostic to remove or
+  explain in the fixture. This helper-level slice stops
   before provider effects, SSH,
   Ansible, durable staging recovery, or terminal receipt. Protected helper
   tests separately cover controller-install pins and three-control SSH.
