@@ -44,6 +44,16 @@ recheck load balancers or managed databases and proves nothing about Norn API,
 Nomad/Consul, workloads, routes, or Genesis journal health. The protected
 Genesis readback remains unpassed.
 
+## DO staging provider recheck (2026-11-09 02:17 UTC)
+
+The explicit `work` account again matched the pinned staging account and was
+active. All nine NYC3 Droplets were active (3 control, 2 ingress, 4 app); the
+`tk-staging-nyc3-ingress` load balancer was active; both managed application
+databases were online (MySQL 3 nodes, PostgreSQL 2); and the staging VPC and
+`norn-staging` project were present. No provider mutation ran. These reads do
+not prove Norn API, Nomad/Consul, workloads, routes, or Genesis journal health;
+the protected Genesis readback remains unpassed.
+
 ## Latest Mini direct release (2026-11-08 09:20 UTC)
 
 The independent Mini advanced from signed V3 RC `bba290db041e9f497c7161543c679d9d348b742d`
