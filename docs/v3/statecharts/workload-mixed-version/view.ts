@@ -3,16 +3,7 @@ export const colors = { planning: "blue", rollout: "teal", held: "orange", done:
 export const state = (v: any) => {
   if (v.routeEvidenceRecorded && !v.routeReceipt &&
       ["mixed", "draining", "observing", "contracted", "held"].includes(v.phase)) {
-    if (v.route === "mixed") {
-      return v.phase === "draining"
-        ? "Canary route evidence stale, drain held"
-        : "Canary route evidence stale, rollout held";
-    }
-    if (v.phase === "draining") return "Target route evidence stale, drain held";
-    if (v.oldAlloc > 0) return "Target route evidence stale, old allocations remain";
-    if (v.schemaContracted) return "Target route evidence stale, schema contracted";
-    if (!v.oldWriters) return "Target route evidence stale, old writers fenced";
-    return "Target route evidence stale, writer state unresolved";
+    return "Route evidence stale, rollout held";
   }
   if (v.phase === "current") return "Old version serving";
   if (v.phase === "planned") return "Exact intent admitted";

@@ -190,8 +190,13 @@ Nomad allocation readback now binds through a validated receipt projection.
 The chart models route-proof-loss hold and fresh same-generation route confirmation; fallback
 to an older generation requires a separate intent. It also models loss of one
 canary allocation while the mixed route is serving; the resulting hold requires
-fresh current-route confirmation before same-intent recovery. The workload TLC
-run has 102 distinct states / 279 steps and no invariant violations. The new
+fresh current-route confirmation before same-intent recovery. The workload
+model now checks both capacity 3 (24 states / 52 steps) and capacity 4 (103
+states / 275 steps). All listed invariants and deadlock checks pass in both,
+but capacity 3 cannot reach target-only routing or terminal completion while
+the old cohort is retained. Capacity 4 reaches the terminal receipt. This is a
+progress requirement: live preflight must prove full target-cohort overlap
+capacity under actual Nomad placement and resource constraints. The new
 persistent-staging model passed ten invariants and the deadlock check across
 102 states / 210 transitions; its reader-facing chart has 17 states / 35 arrows.
 The workload route-publication model checks per-node partial publication,
