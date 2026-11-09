@@ -36,7 +36,8 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatal(err)
 	}
 	operation := model.Operation{ID: uuid.NewString(), Kind: "app.workload-release", App: app, Status: model.OperationQueued,
-		MaxAttempts: 3, Source: "operator-api", Payload: map[string]interface{}{"workloadReleasePlan": string(planBytes)}}
+		MaxAttempts: 3, Source: "operator-api", Payload: map[string]interface{}{"workloadReleasePlan": string(planBytes)},
+		Metadata: map[string]interface{}{"workloadReleaseRequestDigest": "sha256:" + strings.Repeat("1", 64)}}
 	input := store.OperationAcceptance{
 		Identity: store.OperationRequestIdentity{Authority: adapter.authority, Actor: store.OperationActor{Issuer: "https://operator.example.test", Subject: "operator-1"},
 			Kind: operation.Kind, Resource: "app/" + app, Key: uuid.NewString()},
@@ -177,21 +178,35 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatalf("opened private SOPS snapshot differs: equal=%v err=%v", bytes.Equal(opened, material), err)
 	}
 	priorLineageReads := lineageObserver.calls
-	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, nil, material, keys, lineageObserver)
+	if _, err := adapter.kv.Delete(ctx, adapter.deploymentKey(qualification.DeploymentID)); err != nil {
+		t.Fatalf("remove mutable source projection before exact replay: %v", err)
+	}
+	replayInput := input
+	replayInput.Operation.ID = uuid.NewString()
+	replayInput.Operation.Payload = map[string]interface{}{"malformedMutablePlan": true}
+	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, replayInput, model.ReleaseQualification{}, nil, material, keys, lineageObserver)
 	if err != nil || !replayed.Replayed || replayed.Operation.ID != accepted.Operation.ID || replayed.Intent.CanonicalDigest != accepted.Intent.CanonicalDigest {
 		t.Fatalf("same private workload request did not return original acceptance without current qualification trust: replay=%+v err=%v", replayed, err)
 	}
 	if lineageObserver.calls != priorLineageReads {
 		t.Fatalf("idempotent replay performed new mutable lineage reads: before=%d after=%d", priorLineageReads, lineageObserver.calls)
 	}
-	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, []byte("different-sops-snapshot"), keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
-		t.Fatalf("same idempotency key accepted different private inputs: %v", err)
+	replayedAfterSecretRotation, err := adapter.AcceptPrivateWorkloadRelease(ctx, replayInput, model.ReleaseQualification{}, nil, []byte("different-sops-snapshot"), keys, lineageObserver)
+	if err != nil || !replayedAfterSecretRotation.Replayed || replayedAfterSecretRotation.Operation.ID != accepted.Operation.ID {
+		t.Fatalf("same request did not replay original acceptance after current SOPS input changed: replay=%+v err=%v", replayedAfterSecretRotation, err)
 	}
 	differentQualification := qualification
 	differentQualification.ID += "-different"
 	resignPrivateInputQualification(t, &differentQualification)
-	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, differentQualification, []string{trustedQualificationKey}, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
+	changedRequest := input
+	changedRequest.Operation.Metadata = map[string]interface{}{"workloadReleaseRequestDigest": "sha256:" + strings.Repeat("2", 64)}
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, changedRequest, differentQualification, []string{trustedQualificationKey}, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
 		t.Fatalf("same idempotency key accepted different qualification evidence: %v", err)
+	}
+	changedReplicaRequest := input
+	changedReplicaRequest.Operation.Metadata = map[string]interface{}{"workloadReleaseRequestDigest": "sha256:" + strings.Repeat("3", 64)}
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, changedReplicaRequest, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
+		t.Fatalf("same idempotency key accepted a different target size: %v", err)
 	}
 	if accepted.Operation.Payload["workloadReleaseQualification"] == nil {
 		t.Fatal("signed operation omitted its release qualification evidence")

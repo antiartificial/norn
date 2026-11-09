@@ -131,8 +131,12 @@ remain open:
   envelope bound to authority, operation, app, and plan digest, with its own
   key namespace, rotation support, and retained-key preflight API. The V3
   acceptance now atomically retains the authenticated private record alongside
-  signed admission, and replay opens and compares the retained snapshot. The
-  retention lifetime and deletion policy still need an explicit contract.
+  signed admission. Replay binds the stable caller selection (qualification ID
+  and requested replica count) and returns the original acceptance before
+  reading current SOPS bytes, source files, or Nomad state. A changed
+  qualification or requested count conflicts; a secret rotation after
+  acceptance does not replace the snapshot the worker will use. The retention
+  lifetime and deletion policy still need an explicit contract.
 - Nomad job version, modify index, job digest, and observed allocation
   identities are scheduler observations. The current strict release intent
   requires them for execution, while the proposal correctly defers constructing
@@ -176,16 +180,15 @@ worker. Focused pipeline/worker tests and the full `go test ./...` API module
 suite passed on 2026-11-09. This closes the digest-construction cycle only; it
 does not add the authenticated operator producer or qualify live drivers.
 
-For a same-key retry, resolve the signed request identity and compare the full
-canonical acceptance, including the exact qualification, before rechecking
-current qualification trust/expiry or source deployment. The private store
-now returns an exact prior acceptance before those mutable qualification
-checks; changed qualification or request content remains a conflict. The
-authenticated HTTP/service producer must perform this replay lookup before
-resolving mutable source, encrypted inputs, or Nomad state. After concurrent
+For a same-key retry, resolve the signed request identity and compare a
+server-computed digest of stable caller-selected fields before reading mutable
+source, encrypted inputs, or Nomad state. The private store now requires that
+digest and returns the signed prior acceptance when it matches. Changed
+qualification or requested replica count conflicts; a changed current SOPS
+snapshot does not change an already accepted request. After concurrent
 requests race, resolve the signed identity again and return the first committed
-operation for the same selected qualification; a losing request may have
-generated different target IDs or captured newer encrypted bytes.
+operation when the stable request digest matches, even if the losing request
+observed newer target IDs or captured newer encrypted bytes.
 
 ### Secret input contract required before admission
 
