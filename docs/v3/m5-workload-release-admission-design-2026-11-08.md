@@ -146,6 +146,34 @@ revisions without copying secret values into the signed plan, and fail closed
 when a required input lacks a portable immutable reference. Do not silently
 treat a legacy PostgreSQL qualification row as an etcd/V3 record.
 
+The source audit on 2026-11-09 narrowed this gate: the normal V3 Fleet router
+does not mount the legacy `Handler.CreateReleaseQualification` route. The
+legacy `/v1/apps/{id}/qualifications` reader uses `h.db` (PostgreSQL), while
+`ResolveWorkloadReleaseQualification` reads a signed V3 etcd operation index.
+The store resolver and its integration fixtures therefore do not establish a
+production V3 qualification issuer. Before an operator can select a usable V3
+candidate, add a staging-only issuer that verifies and retains qualification
+evidence against the exact successful V3 staging deployment, or document an
+equivalent trusted import path. Candidate listing by itself cannot close this
+gap.
+
+Admission also needs to derive the target job digest before it can sign the
+complete `WorkloadReleasePlan`. The current worker target builder validates a
+complete plan, including that digest, before building the Nomad job. Extract a
+shared deterministic target builder from the worker path; admission should
+use it to derive the digest, and execution should use the same builder to
+recompute and verify the accepted plan. Do not duplicate the translator or
+accept a caller-provided digest.
+
+For a same-key retry, compare the exact qualification ID retained in the
+signed accepted operation before re-reading qualification expiry, current
+source, encrypted inputs, or Nomad. The existing private acceptance method
+validates qualification before resolving request identity, so the HTTP/service
+producer must return a verified prior acceptance itself. After concurrent
+requests race, resolve the signed identity again and return the first committed
+operation for the same selected qualification; a losing request may have
+generated different target IDs or captured newer encrypted bytes.
+
 ### Secret input contract required before admission
 
 The current workload SOPS manager reads and rewrites a mutable filesystem path.
