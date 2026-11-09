@@ -22,27 +22,30 @@ From the repository root, run:
 
 Use a new or empty output folder for each run.
 
-The separate admission replay model isolates the idempotency contract. Its
-stable request comprises a qualification ID and a target replica count bounded
-by an operator-approved app policy. The handler implements this request in
-PR #319; PR #321 verifies fresh selection and exact replay ordering. The model
-checks that an exact same-key retry
-returns the originally accepted receipt without rereading mutable
-qualification, source, or secret inputs, even after expiry or source loss.
-Changed qualification or target size conflicts; an out-of-policy size is
-rejected before acceptance:
+The separate admission replay model isolates the idempotency and process-recovery
+contract. Its stable request comprises a qualification ID and a target replica
+count bounded by an operator-approved app policy. The handler implements this
+request in PR #319; PR #321 verifies fresh selection and exact replay ordering.
+The model checks that acceptance may commit while its HTTP response is lost,
+the controller may stop and restart without local acceptance memory, and an
+exact same-key retry returns the durable original receipt without rereading
+mutable qualification, source, or secret inputs. It also checks replay after
+qualification expiry or source loss. Changed qualification or target size
+conflicts; an out-of-policy size is rejected before acceptance:
 
 ```sh
 ~/.agents/skills/statechart/scripts/statechart \
   docs/v3/statecharts/workload-release-admission/AdmissionReplay.tla \
   --config docs/v3/statecharts/workload-release-admission/AdmissionReplay.cfg \
   --view docs/v3/statecharts/workload-release-admission/replay-view.ts \
-  --out /tmp/norn-m5-admission-replay
+  --out /tmp/norn-admission-replay-process-restart
 ```
 
-The 27-state, 60-step check passes all six replay/admission invariants and
-deadlock checking. Its generated chart and report are stored in
-`qualification-replay/`.
+The updated 115-state, 365-step check passes ten replay/recovery invariants and
+deadlock checking. Its reader-facing chart includes the path from lost
+acceptance response through controller stop/restart to durable same-key replay.
+The generated chart and report are stored in `qualification-replay/`; use a
+new or empty output directory for each run.
 
 ## Check missing admission evidence
 
@@ -185,9 +188,11 @@ all retained IDs. Startup preflight checks configured keys against retained
 IDs; deletion/retention policy is not yet implemented. The authenticated
 request producer that computes this digest is implemented by PR #319. The
 model abstracts its HTTP identity and mutable evidence lookups; handler-level
-tests cover fresh acceptance and exact retry. Simultaneous HTTP-handler
-requests, worker/controller restart, and private-input deletion/retention
-remain open; store-level same-key concurrency is covered by the separate
+tests cover fresh acceptance and exact retry. PR #331 separately proves
+store-level receipt reload and successor-claim recovery after reconstructing
+the client and store. Combined HTTP-to-etcd replay, worker/controller runtime
+restart and response-loss behavior, and private-input deletion/retention
+remain open. Store-level same-key concurrency is covered by the separate
 concurrent-admission model and etcd regression test.
 
 The model also treats the workload envelope key as a recoverability input.
