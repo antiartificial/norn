@@ -23,9 +23,12 @@ the sole staging Fleet and remains a separate qualification target.
   repeat needs a fresh authorized intent and one-use runner; do not reuse the
   old authorization or claim runtime health from provider inventory.
 - **Workload release/resize:** implementation commit `94c6f590` is on open PR
-  #302; its exact-head CI was running at this update. The staged-target,
-  encrypted-input, and recovery changes are committed but not merged or
-  deployed. The authenticated operator/API producer, production-driver fault
+  #302; the current candidate head `c88a7f6` passed CI in runs
+  [42562702921](https://github.com/antiartificial/norn/actions/runs/42562702921)
+  and [42562702877](https://github.com/antiartificial/norn/actions/runs/42562702877).
+  The staged-target, encrypted-input, and recovery changes are committed but
+  not merged or deployed. The authenticated operator/API producer,
+  production-driver fault
   qualification, and DO mixed-version release remain open. The offline
   statechart separates signed staging qualification, current route predecessor,
   observed serving lineage, and durable encrypted input. TLC explored 458
