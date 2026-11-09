@@ -89,8 +89,11 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   grant-scoped cleanup/rotation, and secret-safe preflight receipts.
 - [x] Join mirror, scoped grant use, grant cleanup after interruption, retry,
   and secret-safe preflight receipt in one synthetic credential-lifecycle
-  fixture. Service-specific token rotation/revocation and per-file lifecycle
-  evidence remain open.
+  fixture. Merged `norn-fleet` [PR #947](https://github.com/antiartificial/norn-fleet/pull/947)
+  now source-maps producer, consumer, scope, and lifecycle fields for all 51
+  listed bootstrap credential paths. This inventory is not proof of an
+  end-to-end transformation or recoverable lifecycle: service-specific
+  rotation/revocation and transition procedures remain open.
 - [ ] Add synthetic valid fixtures for all other lane validators and
   serializers without production credentials.
 - [ ] Cover all-lane absent, malformed, stale, mismatched, substituted, replayed,
