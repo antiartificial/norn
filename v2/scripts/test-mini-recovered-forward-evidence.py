@@ -143,6 +143,55 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "verified")
 
+    def test_older_adoption_source_is_accepted_only_with_signed_ancestor_proof(self):
+        predecessor = "e" * 40
+        releases = self.home / "norn/releases"
+        for commit in (predecessor, SOURCE):
+            release = releases / commit
+            release.mkdir(parents=True)
+            (release / "release.env").write_text(f"NORN_RELEASE_SHA={commit}\n")
+            (release / "release.env").chmod(0o444)
+            (release / "release.json").write_text("{}\n")
+        repository = self.home / "projects/norn"
+        (repository / ".git").mkdir(parents=True)
+        verifier = self.home / "bin/verify-release"
+        verifier.parent.mkdir()
+        verifier.write_text("#!/bin/sh\nexit 0\n")
+        verifier.chmod(0o700)
+        config = self.home / ".config/norn/release.env"
+        config.write_text(f"NORN_RELEASE_VERIFY_HOOK={verifier}\n")
+        config.chmod(0o600)
+        git = self.home / "bin/git"
+        git.write_text("#!/bin/sh\nexit 0\n")
+        git.chmod(0o700)
+        self.env.update(NORN_PLATFORM_REPO=str(repository), NORN_RELEASE_VERIFY_HOOK=str(verifier),
+                        PATH=f"{git.parent}:{os.environ.get('PATH', '')}")
+
+        adoption = json.loads(self.adoption.read_bytes())
+        adoption.pop("signature")
+        adoption["sourceSHA"] = predecessor
+        canonical = json.dumps(adoption, sort_keys=True, separators=(",", ":")).encode()
+        adoption["signature"] = "hmac-sha256:" + hmac.new(
+            KEY, b"norn.recovered-baseline-adoption/v2\0" + canonical, hashlib.sha256).hexdigest()
+        adoption_raw = strict_dump(adoption)
+        self.adoption.write_bytes(adoption_raw)
+        evidence = json.loads(self.evidence.read_bytes())
+        evidence.pop("signature")
+        evidence["adoptionReceiptSHA256"] = sha(adoption_raw)
+        canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+        evidence["signature"] = "hmac-sha256:" + hmac.new(
+            KEY, b"norn.recovered-forward-evidence/v2\0" + canonical, hashlib.sha256).hexdigest()
+        self.evidence.write_bytes(strict_dump(evidence))
+
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "verified")
+
+        git.write_text("#!/bin/sh\nexit 1\n")
+        result = self.verify()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Git descendant", result.stderr)
+
     def test_v3_candidate_versioned_evidence_verifies_carried_forward_v2_baseline(self):
         prior_value = json.loads(self.evidence.read_text())
         prior_value["candidateSHA"] = "85fb2830ac18a711b2e3e20de45c1adcbbd4935d"

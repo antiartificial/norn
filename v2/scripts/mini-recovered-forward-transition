@@ -221,15 +221,11 @@ def digest(value: Any) -> str:
     return sha256(canonical(value))
 
 
-def verify_signed_release_ancestry(home: Path, predecessor_sha: str, source_sha: str) -> None:
+def verify_signed_release_lineage(home: Path, predecessor_sha: str, source_sha: str) -> None:
     """Require both endpoints to be signed releases on one exact Git lineage."""
     if not HEX40.fullmatch(predecessor_sha) or not HEX40.fullmatch(source_sha) or predecessor_sha == source_sha:
         fail("release catch-up identities must be distinct full commit SHAs")
     releases = home / "norn/releases"
-    current_link = home / "norn/current"
-    if (not current_link.is_symlink()
-            or os.path.realpath(current_link) != os.path.realpath(releases / source_sha)):
-        fail("release catch-up requires current to select the exact signed source release")
     config_path = home / ".config/norn/release.env"
     try:
         config_raw = secure_read(config_path, "signed release configuration")
@@ -278,6 +274,16 @@ def verify_signed_release_ancestry(home: Path, predecessor_sha: str, source_sha:
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     if ancestor.returncode != 0:
         fail("current signed source is not a Git descendant of its retained adoption source")
+
+
+def verify_signed_release_ancestry(home: Path, predecessor_sha: str, source_sha: str) -> None:
+    """Require the current Mini symlink to select the signed lineage endpoint."""
+    releases = home / "norn/releases"
+    current_link = home / "norn/current"
+    if (not current_link.is_symlink()
+            or os.path.realpath(current_link) != os.path.realpath(releases / source_sha)):
+        fail("release catch-up requires current to select the exact signed source release")
+    verify_signed_release_lineage(home, predecessor_sha, source_sha)
 
 
 def adoption_evidence(home: Path, key: bytes, source_sha: str) -> tuple[dict[str, Any], dict[str, bytes], bytes]:
