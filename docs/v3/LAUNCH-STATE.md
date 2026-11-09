@@ -2,31 +2,39 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 09:13 UTC)
+## Current V3 release readiness (2026-11-09 11:59 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
 the sole staging Fleet and remains a separate qualification target.
 
-- **Mini direct:** running the signed V3 adoption and repair releases; API and
-  host checks pass. Production readiness remains blocked (7 passed, 1 warning,
-  18 failed), with 25 incident groups and four retention warnings in the latest
-  18:12 UTC read-only inventory.
-- **DO staging:** a 2026-11-09 04:33 UTC `doctl --context work` inventory
-  reported all nine staging Droplets, both management Droplets, and the ingress
-  load balancer active. This proves provider resource state only; Norn API,
-  etcd quorum, Nomad workloads, and public route health were not read by that
-  command. Genesis readback remains unpassed: run 42418784411 used an installed
-  verifier whose pinned source objects were absent. The intent and one-use
-  runner are terminal. Fleet PR #946 merged the source-admission preflight, but
-  no protected installer or readback has run against that merged source. A
-  repeat needs a fresh authorized intent and one-use runner; do not reuse the
-  old authorization or claim runtime health from provider inventory.
+- **Mini direct:** the independent Mini reports API health and host status
+  `ok` on signed V3 repair release
+  `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+  (`v3.0.0-rc.1-platform-252-gd4dc88e0`). The 2026-11-09 11:59 UTC
+  authenticated read found 30 app records, 46 services (19 passing, 27
+  unknown), seven queued `fleet.github.apply-dispatch` receipts, 25 active
+  incident groups, and four snapshot-retention warnings. Production readiness
+  remains blocked (7 passed, 1 warning, 18 failed). The latest assurance
+  receipt says `succeeded` but is dated 2026-09-06; route assurance is not
+  fresh. Mini remains independent of Fleet.
+- **DO staging:** a fresh read-only `doctl --context work` query at about
+  12:00 UTC found all nine staging Droplets (3 control, 2 ingress, 4 app),
+  both management Droplets, and the ingress load balancer active. The query did
+  not inspect managed databases, Norn APIs, etcd quorum, Nomad/Consul workloads,
+  or public routes. DO runtime health remains unverified. Genesis readback
+  remains unpassed: run 42418784411 used an installed verifier whose pinned
+  source objects were absent. Its intent and one-use runner are terminal.
+  Fleet PR #946 merged the source-admission preflight, but no protected
+  installer or readback has run against that merged source. A repeat needs a
+  fresh authorized intent and one-use runner; do not reuse the old
+  authorization or claim runtime health from provider inventory.
 - **Workload release/resize:** PR #302 is merged to Norn `master` at
   `c792564c9440805a467a832a4fcb6b433a1f68c3`; PR #307 is merged at
   `1a254466cacf37b636efd50cdecfdd7d6cf5e75f`; PR #311 is merged at
   `4c90aecfc47d4687cc3f39d433d8d5d182d61a7`, PR #314 at
-  `db4623a1`, PR #315 at `fc7bb70f`, and PR #319 at `877ad4ba`.
+  `db4623a1`, PR #315 at `fc7bb70f`, PR #319 at `877ad4ba`, and PR #324 at
+  `3fcdc154e247d5b32a8ad025e4fb9690390b5022`.
   PR #311 returns the accepted operation before rereading mutable inputs;
   PR #314 binds the stable request digest to qualification and target size;
   PR #315 exposes replay-only lookup for admission producers; PR #319 adds an
@@ -44,9 +52,15 @@ the sole staging Fleet and remains a separate qualification target.
   PR #319 consumes the CAS-protected staging policy and binds its digest into
   the signed plan through private acceptance. Its request is limited to a
   qualification ID and replica count; exact retries resolve before mutable
-  reads. The admission path is opt-in and is not deployed or live-qualified.
-  Exact app-source recovery and private-input retention/deletion semantics,
-  production-driver crash qualification, and DO mixed-version release remain
+  reads.
+  PR #324 fixes a store-level race between two independent etcd clients
+  submitting the same request: the losing caller rechecks and returns the
+  winner's durable acceptance. Its two-client test passed ten consecutive
+  local-etcd runs, the race detector, and API suite; the bounded regression
+  model checks 14 states and 18 transitions. The admission path is opt-in and
+  is not deployed or live-qualified. Simultaneous HTTP-handler requests,
+  worker/controller restart, exact app-source recovery, private-input
+  retention/deletion, production drivers, and DO mixed-version release remain
   open. Stateful workloads still need separate writer/schema/data authorization.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected future application pool roles. Fleet PR #941 (offline war-game),
@@ -56,10 +70,11 @@ the sole staging Fleet and remains a separate qualification target.
   are also merged. The remaining protected ingress tailnet enrollment
   prerequisite is Fleet PR #837 at head
   `eef00505d23e37c66cdaed75c5f4c5504a1cd22b`; its required `contract` check is
-  failing during DigitalOcean provider installation after repeated checksum or
-  archive HTTP 504 responses. GitHub reports it blocked. Do not merge it until
-  that exact-head contract passes. No provider apply or Genesis readback was
-  run. Integrated controller recovery and credential lifecycle evidence remain
+  failing during DigitalOcean provider installation: run 42578247221 could not
+  download the pinned `digitalocean/digitalocean` v2.100.0 Linux provider ZIP
+  after three attempts. GitHub reports it blocked. Do not merge it until that
+  exact-head contract passes. No provider apply or Genesis readback was run.
+  Integrated controller recovery and credential lifecycle evidence remain
   gates before any provider mutation.
 
 The milestone table near the end of this file is a historical estimate; use

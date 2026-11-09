@@ -73,7 +73,8 @@ charts and TLC reports are under `admission-gates/`. These checks model the
 admission decisions abstractly; they do not individually exercise each
 missing-evidence rejection through the HTTP handler. The handler test covers a
 valid fresh admission, exact retry before mutable reads, and CI-principal
-rejection; concurrent requests and production drivers remain open.
+rejection. The concurrent store boundary is covered separately; simultaneous
+HTTP-handler requests and production drivers remain open.
 
 After adding the admission gate, the full release model reaches 458 states and
 1,663 steps; its 18 listed invariants and deadlock check pass. Its generated
@@ -172,8 +173,10 @@ all retained IDs. Startup preflight checks configured keys against retained
 IDs; deletion/retention policy is not yet implemented. The authenticated
 request producer that computes this digest is implemented by PR #319. The
 model abstracts its HTTP identity and mutable evidence lookups; handler-level
-tests cover fresh acceptance and exact retry, while concurrent admission,
-worker/controller restart, and private-input deletion/retention remain open.
+tests cover fresh acceptance and exact retry. Simultaneous HTTP-handler
+requests, worker/controller restart, and private-input deletion/retention
+remain open; store-level same-key concurrency is covered by the separate
+concurrent-admission model and etcd regression test.
 
 The model also treats the workload envelope key as a recoverability input.
 If a successor cannot load the historical key before exact target binding, it
