@@ -93,6 +93,16 @@ deployment, provider mutation, or credential use.
 - Norn PR #301 remains open. A new successful host assurance and route
   inventory remain required after the protected release.
 
+## Mini release-history recheck — 2026-11-09 01:30 UTC
+
+- The live `/api/version` and `/api/v1/releases` endpoints both report
+  `d4dc88e0c37003a1013caed444983b2eeb50fbcb` as current V3. The release list
+  marks that SHA current and records its release entry at 2026-11-07 14:14
+  local time.
+- This confirms that Mini currently serves the V3 artifact. The release list
+  does not identify a durable upgrade operation or prove the required fresh
+  host-assurance and route-reachability checks. Those gates remain open.
+
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
 recovery work, workload protocol refinement, and V2 caller migration planning.
