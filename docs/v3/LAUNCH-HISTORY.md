@@ -17,6 +17,20 @@ Nomad/Consul, workload, or public-route health. DO runtime health and Genesis
 readback remain unverified. No provider mutation, deployment, or host change
 was made.
 
+## DO staging provider and canary refresh (2026-11-09 13:09 UTC)
+
+Read-only `doctl --context work` queries found all nine staging Droplets
+active (3 control, 2 ingress, 4 app), both management Droplets active, the
+ingress load balancer active, and the management-authority PostgreSQL plus
+application PostgreSQL/MySQL databases online. Verified public HTTPS probes
+returned 200 from `/route-proof` with body `norn-fleet-canary`; five `/version`
+reads all reported source `be5ca5d969ccf3509e62ce04a833516bb5c204db` across
+two allocation IDs and two node IDs. `/api/health` on the canary host returned
+404. This confirms provider resources and the canary application route are
+serving, not Norn API health, etcd quorum, Nomad/Consul control-plane health,
+catalog state, or a terminal receipt for the earlier failed deployment. No
+provider mutation or deployment ran.
+
 ## Fresh release-readiness reconciliation (2026-11-09 12:25 UTC)
 
 Norn PR [#324](https://github.com/antiartificial/norn/pull/324) merged at
