@@ -11,11 +11,13 @@ import (
 	"io"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
@@ -41,7 +43,7 @@ func (s *V3OperationStore) workloadReleasePrivateInputPrefix() string {
 
 // AcceptPrivateWorkloadRelease atomically stores the signed plan, active-app
 // fence, control-owned Fleet target revision, and encrypted SOPS snapshot.
-func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, input store.OperationAcceptance, qualification model.ReleaseQualification, trustedQualificationKeys []string, material []byte, keys *store.WorkloadReleaseInputKeyRing) (store.AcceptedOperation, error) {
+func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, input store.OperationAcceptance, qualification model.ReleaseQualification, trustedQualificationKeys []string, material []byte, keys *store.WorkloadReleaseInputKeyRing, lineageObserver nomad.ActiveDeploymentLineageObserver) (store.AcceptedOperation, error) {
 	if s == nil || s.kv == nil || s.signer == nil || keys == nil || input.Identity.Kind != "app.workload-release" ||
 		input.Operation.Kind != "app.workload-release" || input.Operation.ID == "" || input.Operation.App == "" ||
 		input.Operation.Status != model.OperationQueued || input.Identity.Resource != "app/"+input.Operation.App ||
@@ -113,8 +115,11 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	if !workloadReleasePlanMatchesFleetTarget(acceptedPlan, target) {
 		return store.AcceptedOperation{}, fmt.Errorf("workload release plan differs from current control-owned Fleet target")
 	}
-	predecessorCompares, err := s.workloadReleasePredecessorCompares(ctx, acceptedPlan)
+	activePredecessor, predecessorCompares, err := s.workloadReleasePredecessorCompares(ctx, acceptedPlan)
 	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
+	if err := verifyWorkloadReleaseServingLineage(ctx, acceptedPlan, activePredecessor, lineageObserver); err != nil {
 		return store.AcceptedOperation{}, err
 	}
 	appAdmission, err := s.prepareAppAdmission(ctx, acceptance)
@@ -161,6 +166,9 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 		clientv3.OpPut(privateKey, string(privateBytes)),
 	}
 	puts = append(puts, appAdmission.puts...)
+	if err := verifyWorkloadReleaseServingLineage(ctx, acceptedPlan, activePredecessor, lineageObserver); err != nil {
+		return store.AcceptedOperation{}, err
+	}
 	txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
 	if err != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
@@ -207,15 +215,30 @@ func (s *V3OperationStore) verifyWorkloadReleaseQualificationSource(ctx context.
 	if err != nil {
 		return err
 	}
-	deployment := accepted.Deployment
-	if accepted.Operation.Kind != "app.deploy" || accepted.Operation.Status != model.OperationSucceeded || accepted.Operation.App != plan.Intent.App ||
-		accepted.Operation.Source != "release-control-api" || deployment == nil || deployment.ID != qualification.DeploymentID ||
-		deployment.App != qualification.App || deployment.Environment != "staging" || deployment.SourceKind != "release" ||
-		deployment.CommitSHA != plan.Intent.SourceRevision || deployment.ImageTag != plan.Intent.TargetImage ||
-		deployment.SpecDigest != plan.Intent.TargetSpecDigest || accepted.Operation.Payload["sourceSha"] != plan.Intent.SourceRevision ||
-		accepted.Operation.Payload["artifact"] != plan.Intent.TargetImage || accepted.Operation.Payload["specDigest"] != plan.Intent.TargetSpecDigest ||
-		len(deployment.Regions) == 0 {
-		return fmt.Errorf("qualified deployment does not match the signed workload release")
+	if accepted.Operation.Kind != "app.deploy" || accepted.Operation.Status != model.OperationSucceeded || accepted.Operation.App != plan.Intent.App || accepted.Operation.Source != "release-control-api" {
+		return fmt.Errorf("qualified deployment operation is not a successful release for the planned app")
+	}
+	deployment, err := s.GetDeployment(ctx, qualification.DeploymentID)
+	if err != nil {
+		return fmt.Errorf("load qualified deployment projection: %w", err)
+	}
+	if deployment == nil || deployment.ID != qualification.DeploymentID || deployment.App != qualification.App || deployment.Environment != "staging" || deployment.SourceKind != "release" {
+		return fmt.Errorf("qualified deployment identity or environment differs from the signed qualification")
+	}
+	if deployment.CommitSHA != plan.Intent.SourceRevision || qualification.SourceSHA != plan.Intent.SourceRevision {
+		return fmt.Errorf("qualified deployment source differs from the signed workload release")
+	}
+	if deployment.ImageTag != plan.Intent.TargetImage || qualification.Artifact != plan.Intent.TargetImage {
+		return fmt.Errorf("qualified deployment image differs from the signed workload release")
+	}
+	if deployment.SpecDigest != plan.Intent.TargetSpecDigest || accepted.Operation.Payload["specDigest"] != plan.Intent.TargetSpecDigest {
+		return fmt.Errorf("qualified deployment spec differs from the signed workload release")
+	}
+	if accepted.Operation.Payload["sourceSha"] != plan.Intent.SourceRevision || accepted.Operation.Payload["artifact"] != plan.Intent.TargetImage {
+		return fmt.Errorf("qualified deployment operation provenance differs from the signed workload release")
+	}
+	if len(deployment.Regions) == 0 {
+		return fmt.Errorf("qualified staging deployment has no completed region results")
 	}
 	for _, region := range deployment.Regions {
 		if region.Status != model.StatusDeployed || region.ActiveWeight != region.DesiredWeight {
@@ -229,32 +252,63 @@ func (s *V3OperationStore) verifyWorkloadReleaseQualificationSource(ctx context.
 // control-owned serving deployment and its immediate successor route
 // generation. Both revisions are checked by the acceptance transaction, so a
 // route handoff racing admission cannot leave a stale release queued.
-func (s *V3OperationStore) workloadReleasePredecessorCompares(ctx context.Context, plan pipeline.WorkloadReleasePlan) ([]clientv3.Cmp, error) {
+func (s *V3OperationStore) workloadReleasePredecessorCompares(ctx context.Context, plan pipeline.WorkloadReleasePlan) (activeFleetRoute, []clientv3.Cmp, error) {
 	intent := plan.Intent
 	activeKey := s.fleetActiveRouteKey(intent.App, intent.ControlEnvironment, intent.Region)
 	activeResponse, err := s.kv.Get(ctx, activeKey)
 	if err != nil || len(activeResponse.Kvs) != 1 {
-		return nil, fmt.Errorf("workload release requires a current active route predecessor")
+		return activeFleetRoute{}, nil, fmt.Errorf("workload release requires a current active route predecessor")
 	}
 	var active activeFleetRoute
 	if decodeV3Record(activeResponse.Kvs[0].Value, &active) != nil || active.IntentID == "" || active.DeploymentID == "" ||
-		active.Generation == 0 || active.Generation == ^uint64(0) || active.RouteSHA256 == "" ||
-		active.DeploymentID != intent.OldDeploymentID || intent.FirstRouteGeneration != active.Generation+1 {
-		return nil, fmt.Errorf("workload release plan differs from the current active route predecessor")
+		active.Generation == 0 || active.Generation == ^uint64(0) || active.RouteSHA256 == "" || active.JobDigest == "" ||
+		active.DeploymentID != intent.OldDeploymentID || active.JobDigest != intent.OldJobDigest || intent.FirstRouteGeneration != active.Generation+1 {
+		return activeFleetRoute{}, nil, fmt.Errorf("workload release plan differs from the current active route predecessor")
 	}
 	reservationKey := s.fleetRouteReservationKey(intent.App, intent.ControlEnvironment, intent.Region)
 	reservationResponse, err := s.kv.Get(ctx, reservationKey)
 	if err != nil || len(reservationResponse.Kvs) != 1 {
-		return nil, fmt.Errorf("workload release active route reservation is unavailable")
+		return activeFleetRoute{}, nil, fmt.Errorf("workload release active route reservation is unavailable")
 	}
 	var reservation initialFleetRouteReservation
 	if decodeV3Record(reservationResponse.Kvs[0].Value, &reservation) != nil || reservation.IntentID != active.IntentID || reservation.Generation != active.Generation {
-		return nil, fmt.Errorf("workload release active route differs from its current reservation")
+		return activeFleetRoute{}, nil, fmt.Errorf("workload release active route differs from its current reservation")
 	}
-	return []clientv3.Cmp{
+	return active, []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(activeKey), "=", activeResponse.Kvs[0].ModRevision),
 		clientv3.Compare(clientv3.ModRevision(reservationKey), "=", reservationResponse.Kvs[0].ModRevision),
 	}, nil
+}
+
+func verifyWorkloadReleaseServingLineage(ctx context.Context, plan pipeline.WorkloadReleasePlan, active activeFleetRoute,
+	observer nomad.ActiveDeploymentLineageObserver) error {
+	intent := plan.Intent
+	if observer == nil || active.OperationID == "" || active.Process != intent.Process || active.SpecDigest != intent.OldSpecDigest ||
+		active.ImageTag == "" || !model.IsContentAddressedImage(active.ImageTag) ||
+		active.JobDigest != intent.OldJobDigest || active.DeploymentID != intent.OldDeploymentID {
+		return fmt.Errorf("workload release requires a complete trusted serving-lineage observer")
+	}
+	separator := strings.LastIndex(active.ImageTag, "@sha256:")
+	if separator <= 0 || active.ImageTag[separator+1:] != intent.OldImageDigest {
+		return fmt.Errorf("workload release old image digest differs from active route lineage")
+	}
+	lineage, err := observer.ObserveActiveDeploymentLineage(ctx, intent.App, intent.Region, intent.NomadRegion, intent.Namespace,
+		active.DeploymentID, active.OperationID, active.SpecDigest, strings.TrimPrefix(active.JobDigest, "sha256:"), active.ImageTag, intent.Process)
+	if err != nil {
+		return fmt.Errorf("observe current workload serving lineage: %w", err)
+	}
+	wantAllocations := append([]string(nil), intent.OldAllocationIDs...)
+	gotAllocations := append([]string(nil), lineage.AllocationIDs...)
+	sort.Strings(wantAllocations)
+	sort.Strings(gotAllocations)
+	if lineage.App != intent.App || lineage.DeploymentID != active.DeploymentID || lineage.OperationID != active.OperationID ||
+		lineage.Region != intent.Region || lineage.NomadRegion != intent.NomadRegion || lineage.Namespace != intent.Namespace ||
+		lineage.SpecDigest != active.SpecDigest || lineage.ImageTag != active.ImageTag || lineage.JobDigest != strings.TrimPrefix(active.JobDigest, "sha256:") ||
+		lineage.JobID != intent.OldJobID || lineage.Process != intent.Process || lineage.JobVersion != intent.OldJobVersion ||
+		lineage.ModifyIndex != intent.OldJobModifyIndex || lineage.Replicas != len(intent.OldAllocationIDs) || !slices.Equal(gotAllocations, wantAllocations) {
+		return fmt.Errorf("workload release plan differs from freshly observed serving lineage")
+	}
+	return nil
 }
 
 func acceptedWorkloadReleasePlan(payload map[string]interface{}, app string) (pipeline.WorkloadReleasePlan, error) {

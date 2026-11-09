@@ -12,86 +12,85 @@ stateDiagram-v2
   class lg2 teal
   s0: Release request received
   s1: Accepted, old service active
-  s2: Held, old service remains
-  s3: Original acceptance replayed
-  s4: Held, release key unavailable with old service remaining
-  s5: Create permission recorded
-  s6: Target create in flight
-  s7: Private target created
-  s8: Held, key unavailable and delayed target may exist
-  s9: Held, late target may exist
-  s10: Exact target revision bound
-  s11: Held, target health lost with old route remaining
-  s12: Target warming, old route active
-  s13: Old route proven
-  s14: Traffic shifting, old task retained
-  s15: Target route active, old task retained
-  s16: Fresh target-only proof
-  s17: Target serving, old job stopped
+  s2: Held, release key unavailable with old service remaining
+  s3: Held, old service remains
+  s4: Target reserved, create not attempted
+  s5: Reservation recovered, create not attempted
+  s6: Create permission recorded
+  s7: Target create in flight
+  s8: Create response lost
+  s9: Private target created
+  s10: Held, key unavailable and delayed target may exist
+  s11: Held, late target may exist
+  s12: Exact target revision bound
+  s13: Held, target health lost with old route remaining
+  s14: Target warming, old route active
+  s15: Old route proven
+  s16: Traffic shifting, old task retained
+  s17: Target route active, old task retained
+  s18: Fresh target-only proof
+  s19: Target serving, old job stopped
   [*] --> s0
-  s0 --> s1: verify signed plan and reserve app and route
-  s0 --> s2: held while preserving the old service
-  s1 --> s3: same request key returns the original accepted operation
-  s1 --> s4: historical envelope key is missing on recovery, hold before binding
-  s1 --> s2: required private input is unavailable and release holds
-  s1 --> s5: record create permission
-  s4 --> s3: same request key returns the original accepted operation
-  s2 --> s3: same request key returns the original accepted operation
-  s5 --> s3: same request key returns the original accepted operation
-  s5 --> s4: historical envelope key is missing on recovery, hold before binding
-  s5 --> s2: required private input is unavailable and release holds
-  s5 --> s6: send create-only request
-  s6 --> s4: historical envelope key is missing on recovery, hold before binding
-  s6 --> s2: required private input is unavailable and release holds
-  s6 --> s7: scheduler accepts target
-  s6 --> s3: same request key returns the original accepted operation
-  s4 --> s8: delayed target registration arrives after hold
-  s2 --> s9: delayed target registration arrives after hold
-  s7 --> s8: historical envelope key is missing on recovery, hold before binding
-  s7 --> s9: required private input is unavailable and release holds
-  s7 --> s3: same request key returns the original accepted operation
-  s8 --> s3: same request key returns the original accepted operation
-  s9 --> s3: same request key returns the original accepted operation
-  s7 --> s10: successor binds exact target readback
-  s10 --> s3: same request key returns the original accepted operation
-  s10 --> s11: held while preserving the old service
-  s10 --> s12: target reaches full health
-  s11 --> s3: same request key returns the original accepted operation
-  s12 --> s11: target health or evidence is lost and release holds
-  s12 --> s2: target health or evidence is lost and release holds
-  s12 --> s13: prove current old-only route
-  s12 --> s3: same request key returns the original accepted operation
-  s13 --> s11: target health or evidence is lost and release holds
-  s13 --> s2: target health or evidence is lost and release holds
-  s13 --> s14: publish admitted mixed route
-  s13 --> s3: same request key returns the original accepted operation
-  s14 --> s11: target health or evidence is lost and release holds
-  s14 --> s2: target health or evidence is lost and release holds
-  s14 --> s3: same request key returns the original accepted operation
-  s14 --> s15: publish target-only route
-  s15 --> s16: refresh target health and route proof
-  s15 --> s11: target health or evidence is lost and release holds
-  s15 --> s2: target health or evidence is lost and release holds
-  s15 --> s3: same request key returns the original accepted operation
-  s16 --> s11: target health or evidence is lost and release holds
-  s16 --> s2: target health or evidence is lost and release holds
-  s16 --> s17: stop old job after fresh proof
-  s16 --> s3: same request key returns the original accepted operation
-  s17 --> s3: same request key returns the original accepted operation
+  s0 --> s1: verify qualification, serving lineage, route predecessor, and durable input#59; reserve app and route
+  s1 --> s2: historical envelope key is missing on recovery, hold before binding
+  s1 --> s3: required private input is unavailable and release holds
+  s1 --> s4: persist the stable stage reservation
+  s4 --> s5: worker restarts after reservation, before create
+  s4 --> s6: record create permission
+  s4 --> s2: historical envelope key is missing on recovery, hold before binding
+  s4 --> s3: required private input is unavailable and release holds
+  s5 --> s6: record create permission
+  s5 --> s2: historical envelope key is missing on recovery, hold before binding
+  s5 --> s3: required private input is unavailable and release holds
+  s6 --> s2: historical envelope key is missing on recovery, hold before binding
+  s6 --> s3: required private input is unavailable and release holds
+  s6 --> s7: send create-only request
+  s7 --> s8: create response is lost
+  s7 --> s2: historical envelope key is missing on recovery, hold before binding
+  s7 --> s3: required private input is unavailable and release holds
+  s7 --> s9: scheduler accepts target
+  s8 --> s10: historical envelope key is missing on recovery, hold before binding
+  s8 --> s11: required private input is unavailable and release holds
+  s2 --> s10: delayed target registration arrives after hold
+  s3 --> s11: delayed target registration arrives after hold
+  s9 --> s10: historical envelope key is missing on recovery, hold before binding
+  s9 --> s11: required private input is unavailable and release holds
+  s8 --> s12: successor binds exact target readback
+  s9 --> s12: successor binds exact target readback
+  s12 --> s13: held while preserving the old service
+  s12 --> s14: target reaches full health
+  s14 --> s13: target health or evidence is lost and release holds
+  s14 --> s3: target health or evidence is lost and release holds
+  s14 --> s15: prove current old-only route
+  s15 --> s13: target health or evidence is lost and release holds
+  s15 --> s3: target health or evidence is lost and release holds
+  s15 --> s16: publish admitted mixed route
+  s16 --> s13: target health or evidence is lost and release holds
+  s16 --> s3: target health or evidence is lost and release holds
+  s16 --> s17: publish target-only route
+  s17 --> s18: refresh target health and route proof
+  s17 --> s13: target health or evidence is lost and release holds
+  s17 --> s3: target health or evidence is lost and release holds
+  s18 --> s13: target health or evidence is lost and release holds
+  s18 --> s3: target health or evidence is lost and release holds
+  s18 --> s19: stop old job after fresh proof
   class s0 blue
   class s1 blue
   class s2 orange
-  class s4 orange
+  class s3 orange
+  class s4 blue
   class s5 blue
   class s6 blue
   class s7 blue
-  class s8 orange
-  class s9 orange
-  class s10 blue
+  class s8 blue
+  class s9 blue
+  class s10 orange
   class s11 orange
   class s12 blue
-  class s13 blue
+  class s13 orange
   class s14 blue
   class s15 blue
   class s16 blue
-  class s17 teal
+  class s17 blue
+  class s18 blue
+  class s19 teal

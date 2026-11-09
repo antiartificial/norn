@@ -68,14 +68,26 @@ For the first implementation, preserve the existing conservative recovery rule: 
 
 The pipeline now has a `WorkloadReleasePlan` → observed staged-target binding → strict `WorkloadReleaseIntent` resolver. The plan refuses scheduler version and modify-index values; the binding accepts only a successful plan-derived create-only Nomad job observation, binds it to target operation/execution/job digest and claim generation, and the resolver returns the existing strict intent for downstream health, route, and drain code. The etcd operation store can persist that binding once and reload it only while the signed plan, operation claim, app lock, and Fleet target generation still verify. Deterministic pipeline and etcd integration tests cover mismatch, overwrite, and lost-claim cases.
 
-The plan path is not yet a complete release lane: the API does not accept this shape, and no private Nomad staging controller builds or registers its target job. Existing accepted strict intents remain the only wired release path. Store-level candidate provenance and encrypted-input retention primitives now exist, but there is no operator admission API, automatic qualification discovery, managed catalog/secret revision resolution, or end-to-end stage/create recovery. Route-predecessor acceptance fences and startup retained-key preflight are implemented; key cleanup and lineage-reader migration remain open.
+The claimed release worker now accepts the signed plan shape, reserves the durable stage effect, rebuilds the exact database-free Nomad job from the local InfraSpec, decrypts only operation-bound encrypted managed inputs, stages those inputs, and records the one-use create marker before create-only CAS registration. It ignores the registration response and binds only after exact Nomad source/no-diff readback. Missing or unavailable readback returns pending and never repeats registration; retries and successor claims observe the same durable effect and binding. Deterministic worker tests cover private-input staging failure, claim loss after staging but before the attempt marker, marker transaction failure, and ambiguous registration followed by missing readback; an etcd integration test verifies successor-claim binding through the shared verifier and acceptance-derived stop authorization. Existing health, route, drain, and stop readers resolve the write-once binding to the same strict intent contract. The full API Go suite passes locally. This worker path is not yet an end-to-end release lane: authenticated API admission, automatic qualification discovery, managed catalog/secret revision resolution, and delayed-request/production-driver qualification remain open. Route-predecessor acceptance fences and startup retained-key preflight are implemented; key cleanup and lineage-reader migration remain open.
+
+The private etcd acceptance boundary now takes a configured `nomad.ActiveDeploymentLineageObserver`. Active route records retain operation ID, spec digest, image, process, and job digest from validated deployment effects; workload-release route commits advance those fields from the accepted staged target. Admission rejects an absent observer, compares these control-owned fields with the signed predecessor, then checks Nomad's job ID, version, modify index, replica count, and exact allocation ID set. It repeats the observation immediately before the atomic acceptance transaction, which also compares active-route and reservation revisions. Focused disposable-etcd coverage verifies exact match, stale modify-index rejection, missing-observer rejection, and idempotent replay without fresh mutable reads. The authenticated API/CLI producer still does not exist, so no operator request currently supplies the configured observer to this boundary. Production Nomad/ingress qualification is also open.
+
+Existing active-route records written before the job-digest field was introduced have no trusted digest and therefore fail workload-release admission closed. A verified route refresh/reconciliation must populate that field from its completed deployment effect before those apps can enter the release lane; do not backfill it from Nomad metadata alone.
+
+The API module was rerun with `go test ./... -count=1`; all packages passed. Since no etcd endpoint was configured for that suite, its endpoint-gated integration tests were skipped. Focused runs against disposable local etcd passed qualification source resolution, atomic encrypted-input acceptance/replay, receipt CAS, and staged-target write-once successor-claim binding. The latter was rerun on 2026-11-08 and exercised claim transfer, rejection of not-found readback, exact target adoption by the successor generation, and write-once binding. This is store-layer evidence only; it does not substitute for a production Nomad/ingress driver or an authenticated admission endpoint.
+
+Recovery constraint: after a lost Nomad create response, a successor claim uses the same durable stage effect and one-use attempt marker to observe and bind the exact target. A missing or ambiguous readback cannot authorize another create; the operation remains pending while the old route stays active. The etcd integration test exercises claim transfer, rejects a not-found target, and proves that a matching target binds under the successor generation. Worker orchestration is now connected locally; Nomad delayed-request and production-driver qualification remain open.
 
 ## Current input-provenance inventory
 
 The repository has useful candidate and deployment evidence. The etcd/V3
 admission seam now corroborates signed qualification data against its own
-deployment records, but it does not yet provide automatic candidate discovery
-or a complete operator-facing source authority:
+deployment records. The store can resolve one qualification by exact ID from
+its signed operation record, verify the trusted staging signature and expiry,
+and require its matching deployment and regions to be complete. No
+authenticated workload-release admission endpoint consumes that resolver yet;
+automatic candidate discovery and complete operator-facing source authority
+remain open:
 
 - `model.ReleaseQualification` binds app, staging deployment ID, source SHA,
   content-addressed artifact, expiry, candidate identity, and staging signer.
@@ -87,6 +99,12 @@ or a complete operator-facing source authority:
   succeeded staging deployment with matching app, source, immutable image,
   spec digest, and completed region results. No V3 route yet discovers and
   supplies a current qualification automatically.
+- Qualification source verification must use the verified `GetDeployment`
+  projection because the immutable accepted deployment record does not carry
+  mutable region-result state. An offline etcd integration test exposed and
+  fixed a prior check that read the immutable record directly and therefore
+  rejected every otherwise valid qualification as having no completed
+  regions.
 - The accepted deployment records `CommitSHA`, immutable image reference,
   `SpecDigest`, environment, and regions. `v2/api/etcdstore/v3_deployment_acceptance.go`
   retains the signed acceptance and immutable deployment projection. The
@@ -120,13 +138,13 @@ or a complete operator-facing source authority:
   requires them for execution, while the proposal correctly defers constructing
   it until a private target has been read back and write-once bound.
 
-Therefore M5-B is **partially implemented**. Signed qualification to V3
-deployment corroboration and encrypted SOPS snapshot retention are present at
-the store seam. The remaining admission adapter must discover qualification
-from trusted control state, resolve catalog and secret revisions without
-copying secret values into the signed plan, and fail closed when a required
-input lacks a portable immutable reference. Do not silently treat a legacy
-PostgreSQL qualification row as an etcd/V3 record.
+Therefore M5-B is **partially implemented**. Signed qualification lookup and
+V3 deployment corroboration, plus encrypted SOPS snapshot retention, are
+present at the store seam. The remaining admission adapter must obtain a
+qualification ID from trusted control state, resolve catalog and secret
+revisions without copying secret values into the signed plan, and fail closed
+when a required input lacks a portable immutable reference. Do not silently
+treat a legacy PostgreSQL qualification row as an etcd/V3 record.
 
 ### Secret input contract required before admission
 
@@ -178,10 +196,10 @@ The existing `PrivateInvocationStore` remains function-only: it accepts
 `function.invoke`, uses its own key-ring config, and scans its own records for
 key requirements. The workload-release envelope is a separate store-level
 primitive with an etcd record, signed-plan-bound atomic acceptance,
-same-material replay comparison, and retained-key inventory scan. It does not
-yet have startup preflight wiring or retention cleanup. These are explicit
-implementation items, not behavior inherited automatically from the function
-path.
+same-material replay comparison, and retained-key inventory scan. The etcd
+Fleet deploy runtime now checks that inventory against the configured release
+key ring before starting its worker. Retention cleanup remains unimplemented;
+this is explicit work, not behavior inherited from the function path.
 
 ## Open questions and risks
 
@@ -194,4 +212,4 @@ path.
 
 ## Next implementation step
 
-Implement an authenticated operator admission producer that obtains a qualified immutable candidate, resolves the exact source/spec/image and managed input revisions, and admits the signed plan through the private-input transaction. Add the route-predecessor fence, startup key preflight, and retention rules. Then wire the existing stage effect, exact Nomad readback, claim-fenced binding, and shared resolver into a worker before the existing reconciler can advance.
+The private-input materialization and validated create/readback path are now wired into the claimed worker locally; do not treat that as deployed qualification. The next implementation step is an authenticated operator admission producer that discovers a qualified immutable candidate, resolves source/spec/image and managed input revisions, and atomically admits the signed plan with its private-input envelope. In parallel, extend deterministic fixtures across marker, delayed Nomad acceptance, response loss, successor claim, target readback, and durable hold. Then run the same path against version-pinned disposable Nomad and ingress with the configured ACL policy. Keep route-predecessor fencing, startup key preflight, and explicit envelope retention; do not enable provider or workload mutation until those gates pass.

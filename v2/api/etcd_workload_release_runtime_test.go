@@ -18,6 +18,8 @@ type workloadReleaseTestDriver struct {
 	initialized  bool
 	stopWrites   int
 	stopChecks   int
+	targetChecks int
+	targetErr    error
 	routeWrites  map[int]int
 	loseAfter    string
 	lossInjected bool
@@ -42,11 +44,57 @@ func (d *workloadReleaseTestDriver) Verify(context.Context, store.OperationClaim
 	return d.intent, nil
 }
 
+func (d *workloadReleaseTestDriver) EnsureTargetBound(context.Context, store.OperationClaim, store.AppOperationLock, pipeline.WorkloadReleaseIntent) error {
+	d.targetChecks++
+	if d.targetErr != nil {
+		return &effect.PendingError{Resource: "workload-release-test", Reason: "exact target is not bound", Cause: d.targetErr}
+	}
+	return nil
+}
+
 func (d *workloadReleaseTestDriver) Load(context.Context, pipeline.WorkloadReleaseIntent) (*store.WorkloadReleaseReceiptRecord, pipeline.WorkloadReleaseReceipt, error) {
 	if !d.initialized {
 		return nil, pipeline.WorkloadReleaseReceipt{}, nil
 	}
 	return &store.WorkloadReleaseReceiptRecord{IntentID: d.intent.ID, OperationID: "operation-1", ReceiptDigest: "sha256:receipt"}, d.receipt, nil
+}
+
+func TestWorkloadReleaseRequiresTargetBindingBeforeReceiptInitialization(t *testing.T) {
+	claim, err := store.NewOperationClaim("operation-1", "worker-1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := newWorkloadReleaseTestDriver("")
+	driver.targetErr = errors.New("pinned target readback is unavailable")
+	lock := workloadReleaseTestLock{ctx: context.Background()}
+	result, err := reconcileWorkloadRelease(context.Background(), claim, lock, driver)
+	var pending *effect.PendingError
+	if !errors.As(err, &pending) || result != nil || driver.initialized || driver.targetChecks != 1 {
+		t.Fatalf("reconcile=(%#v,%v), initialized=%v targetChecks=%d; want pending before receipt initialization", result, err, driver.initialized, driver.targetChecks)
+	}
+	if driver.stopWrites != 0 || len(driver.routeWrites) != 0 {
+		t.Fatalf("unbound target caused side effects: stopWrites=%d routeWrites=%v", driver.stopWrites, driver.routeWrites)
+	}
+}
+
+func TestWorkloadReleaseRechecksTargetBindingBeforeLeavingPlanned(t *testing.T) {
+	claim, err := store.NewOperationClaim("operation-1", "worker-1", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := newWorkloadReleaseTestDriver("")
+	driver.initialized = true
+	driver.receipt = pipeline.WorkloadReleaseReceipt{IntentID: driver.intent.ID, Phase: pipeline.WorkloadReleasePlanned}
+	driver.targetErr = errors.New("pinned target revision changed during recovery")
+	lock := workloadReleaseTestLock{ctx: context.Background()}
+	result, err := reconcileWorkloadRelease(context.Background(), claim, lock, driver)
+	var pending *effect.PendingError
+	if !errors.As(err, &pending) || result != nil || driver.receipt.Phase != pipeline.WorkloadReleasePlanned || driver.targetChecks != 1 {
+		t.Fatalf("reconcile=(%#v,%v), receipt=%q targetChecks=%d; want held planned receipt with pending exact readback", result, err, driver.receipt.Phase, driver.targetChecks)
+	}
+	if driver.stopWrites != 0 || len(driver.routeWrites) != 0 || len(driver.receipt.TargetAllocations) != 0 {
+		t.Fatalf("unbound recovered target caused downstream effects: stopWrites=%d routeWrites=%v allocations=%v", driver.stopWrites, driver.routeWrites, driver.receipt.TargetAllocations)
+	}
 }
 
 func (d *workloadReleaseTestDriver) Initialize(context.Context, store.OperationClaim, pipeline.WorkloadReleaseIntent) error {

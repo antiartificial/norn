@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"norn/v2/api/effect"
 	"norn/v2/api/etcdstore"
@@ -16,17 +19,23 @@ import (
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
+	workerruntime "norn/v2/api/worker"
 )
 
 type etcdWorkloadReleaseExecutor struct {
-	operations *etcdstore.V3OperationStore
-	nomad      *nomad.Client
-	route      fleetdeploy.ClaimedFleetRouteTransport
-	target     *pipeline.WorkloadReleaseTargetHealthController
-	stop       *pipeline.WorkloadReleaseStopEffects
+	operations   *etcdstore.V3OperationStore
+	stageEffects *etcdstore.V3CanaryEffectReservations
+	nomad        *nomad.Client
+	route        fleetdeploy.ClaimedFleetRouteTransport
+	appsDir      string
+	inputKeys    *store.WorkloadReleaseInputKeyRing
+	runtimeID    string
+	target       *pipeline.WorkloadReleaseTargetHealthController
+	stop         *pipeline.WorkloadReleaseStopEffects
 }
 
-func newEtcdWorkloadReleaseExecutor(operations *etcdstore.V3OperationStore, nomadClient *nomad.Client, route fleetdeploy.ClaimedFleetRouteTransport) (*etcdWorkloadReleaseExecutor, error) {
+func newEtcdWorkloadReleaseExecutor(operations *etcdstore.V3OperationStore, nomadClient *nomad.Client, route fleetdeploy.ClaimedFleetRouteTransport,
+	appsDir string, inputKeys *store.WorkloadReleaseInputKeyRing) (*etcdWorkloadReleaseExecutor, error) {
 	if operations == nil || nomadClient == nil || route.Listen == nil {
 		return nil, fmt.Errorf("etcd workload release executor dependencies are incomplete")
 	}
@@ -42,7 +51,8 @@ func newEtcdWorkloadReleaseExecutor(operations *etcdstore.V3OperationStore, noma
 	if err != nil {
 		return nil, err
 	}
-	return &etcdWorkloadReleaseExecutor{operations: operations, nomad: nomadClient, route: route, target: target, stop: stop}, nil
+	return &etcdWorkloadReleaseExecutor{operations: operations, stageEffects: effects, nomad: nomadClient, route: route,
+		appsDir: appsDir, inputKeys: inputKeys, runtimeID: "workload-release-controller:" + uuid.NewString(), target: target, stop: stop}, nil
 }
 
 func (e *etcdWorkloadReleaseExecutor) ExecuteOperation(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error) {
@@ -62,6 +72,7 @@ func (e *etcdWorkloadReleaseExecutor) ExecuteOperationWithAppLock(ctx context.Co
 // reconciler used by the etcd worker.
 type workloadReleaseDriver interface {
 	Verify(context.Context, store.OperationClaim, store.AppOperationLock) (pipeline.WorkloadReleaseIntent, error)
+	EnsureTargetBound(context.Context, store.OperationClaim, store.AppOperationLock, pipeline.WorkloadReleaseIntent) error
 	Load(context.Context, pipeline.WorkloadReleaseIntent) (*store.WorkloadReleaseReceiptRecord, pipeline.WorkloadReleaseReceipt, error)
 	Initialize(context.Context, store.OperationClaim, pipeline.WorkloadReleaseIntent) error
 	Advance(context.Context, store.OperationClaim, pipeline.WorkloadReleaseIntent, string, pipeline.WorkloadReleaseReceipt) (store.WorkloadReleaseReceiptRecord, error)
@@ -81,6 +92,9 @@ func reconcileWorkloadRelease(ctx context.Context, claim store.OperationClaim, l
 		return nil, err
 	}
 	if record == nil {
+		if err := driver.EnsureTargetBound(ctx, claim, lock, intent); err != nil {
+			return nil, err
+		}
 		if err := driver.Initialize(ctx, claim, intent); err != nil {
 			return nil, err
 		}
@@ -105,6 +119,9 @@ func reconcileWorkloadRelease(ctx context.Context, claim store.OperationClaim, l
 				Metadata: map[string]interface{}{"manualRecoveryRequired": true, "workloadReleaseHeld": true, "intentId": intent.ID}}, nil
 		}
 		if receipt.Phase == pipeline.WorkloadReleasePlanned {
+			if err := driver.EnsureTargetBound(ctx, claim, lock, intent); err != nil {
+				return nil, err
+			}
 			warming := receipt
 			warming.Phase = pipeline.WorkloadReleaseWarming
 			if _, err := driver.Advance(ctx, claim, intent, record.ReceiptDigest, warming); err != nil {
@@ -159,8 +176,166 @@ func reconcileWorkloadRelease(ctx context.Context, claim store.OperationClaim, l
 }
 
 func (e *etcdWorkloadReleaseExecutor) Verify(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock) (pipeline.WorkloadReleaseIntent, error) {
+	operation, err := e.operations.GetOperation(ctx, claim.OperationID())
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, err
+	}
+	if _, planned := operation.Payload["workloadReleasePlan"]; planned {
+		return e.verifyAndStageWorkloadReleasePlan(ctx, *operation, claim, lock)
+	}
 	intent, _, err := e.operations.VerifyClaimedWorkloadRelease(ctx, claim, lock)
 	return intent, err
+}
+
+func (e *etcdWorkloadReleaseExecutor) verifyAndStageWorkloadReleasePlan(ctx context.Context, operation model.Operation, claim store.OperationClaim,
+	lock store.AppOperationLock) (pipeline.WorkloadReleaseIntent, error) {
+	plan, accepted, err := e.operations.LoadClaimedWorkloadReleasePlan(ctx, claim, lock)
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, err
+	}
+	if accepted.Operation.ID != operation.ID || accepted.Operation.App != operation.App || operation.ID != claim.OperationID() {
+		return pipeline.WorkloadReleaseIntent{}, store.ErrOperationOwnershipLost
+	}
+	reservation, err := e.operations.WorkloadReleaseStageTargetReservation(ctx, claim, lock)
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, err
+	}
+	reserved, err := e.stageEffects.Reserve(ctx, reservation)
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, err
+	}
+	if reserved.Record.Token.EffectID == "" || reserved.Record.Reservation.InputDigest != reservation.InputDigest ||
+		reserved.Record.Reservation.OperationClaim.OperationID != claim.OperationID() {
+		return pipeline.WorkloadReleaseIntent{}, fmt.Errorf("workload release target reservation differs from signed plan")
+	}
+	if reserved.Record.Lifecycle == effect.LifecycleCompleted {
+		intent, _, _, err := e.operations.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, reserved.Record.Token.EffectID)
+		return intent, err
+	}
+	if reserved.Record.Lifecycle != effect.LifecycleReserved && reserved.Record.Lifecycle != effect.LifecycleLaunched {
+		return pipeline.WorkloadReleaseIntent{}, fmt.Errorf("workload release target effect is not recoverable")
+	}
+	if e.appsDir == "" || e.inputKeys == nil {
+		return pipeline.WorkloadReleaseIntent{}, fmt.Errorf("workload release private input capability is disabled")
+	}
+	spec, err := workloadReleaseSourceSpec(e.appsDir, operation.App)
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, err
+	}
+	inputs, err := workerruntime.PrepareWorkloadReleaseTargetInputs(ctx, operation, plan, spec, e.operations, e.inputKeys)
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, err
+	}
+	if err := stageAndBindWorkloadReleaseTarget(ctx, e.nomad, e.operations, claim, lock, reserved.Record.Token.EffectID,
+		e.runtimeID, plan.Intent, &inputs); err != nil {
+		return pipeline.WorkloadReleaseIntent{}, err
+	}
+	intent, _, _, err := e.operations.ResolveClaimedWorkloadReleasePlan(ctx, claim, lock, reserved.Record.Token.EffectID)
+	return intent, err
+}
+
+type workloadReleaseTargetNomad interface {
+	StageManagedJobSecretInputs(string, nomad.ManagedJobInputRequirements, map[string]string) error
+	RegisterDeploymentJobCAS(context.Context, nomad.CASDeploymentJobRequest) (string, error)
+	LookupDeploymentJobRevision(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error)
+}
+
+type workloadReleaseTargetStageStore interface {
+	MarkWorkloadReleaseStageTargetAttempt(context.Context, store.OperationClaim, store.AppOperationLock, string, string) (bool, error)
+	BindClaimedWorkloadReleaseTarget(context.Context, store.OperationClaim, store.AppOperationLock, string, interface {
+		LookupDeploymentJobRevision(context.Context, nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error)
+	}) (pipeline.WorkloadReleaseStagedTarget, error)
+}
+
+func stageAndBindWorkloadReleaseTarget(ctx context.Context, scheduler workloadReleaseTargetNomad, operations workloadReleaseTargetStageStore,
+	claim store.OperationClaim, lock store.AppOperationLock, effectID, runtimeID string, intent pipeline.WorkloadReleaseIntent,
+	inputs *workerruntime.WorkloadReleaseTargetInputs) error {
+	if scheduler == nil || operations == nil || lock == nil || inputs == nil || inputs.JobPlan.Inputs == nil ||
+		strings.TrimSpace(effectID) == "" || strings.TrimSpace(runtimeID) == "" {
+		return fmt.Errorf("workload release target stage dependencies are incomplete")
+	}
+	if lock.Context().Err() != nil || ctx.Err() != nil {
+		clear(inputs.Secrets)
+		return store.ErrOperationOwnershipLost
+	}
+	if err := scheduler.StageManagedJobSecretInputs(intent.NomadRegion, *inputs.JobPlan.Inputs, inputs.Secrets); err != nil {
+		clear(inputs.Secrets)
+		return &effect.PendingError{Resource: workloadReleaseResource(intent), Reason: "private target inputs could not be staged", Cause: err}
+	}
+	clear(inputs.Secrets)
+	if lock.Context().Err() != nil || ctx.Err() != nil {
+		return store.ErrOperationOwnershipLost
+	}
+	allowed, err := operations.MarkWorkloadReleaseStageTargetAttempt(ctx, claim, lock, effectID, runtimeID)
+	if err != nil {
+		return err
+	}
+	if allowed {
+		if lock.Context().Err() != nil || ctx.Err() != nil {
+			return store.ErrOperationOwnershipLost
+		}
+		// A registration response, successful or ambiguous, is never evidence.
+		// Only the exact no-diff source readback below may bind the target.
+		_, _ = scheduler.RegisterDeploymentJobCAS(ctx, inputs.JobPlan.Request)
+	}
+	_, err = operations.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, effectID, scheduler)
+	if errors.Is(err, etcdstore.ErrWorkloadReleaseTargetNotFound) || errors.Is(err, etcdstore.ErrWorkloadReleaseTargetReadbackUnavailable) {
+		return &effect.PendingError{EffectID: effectID, Resource: workloadReleaseResource(intent),
+			Reason: "target registration requires exact Nomad readback before release", Cause: err}
+	}
+	return err
+}
+
+func workloadReleaseSourceSpec(appsDir, app string) (*model.InfraSpec, error) {
+	if strings.TrimSpace(appsDir) == "" || strings.TrimSpace(app) == "" {
+		return nil, fmt.Errorf("workload release source is unavailable")
+	}
+	specs, err := model.DiscoverApps(appsDir)
+	if err != nil {
+		return nil, fmt.Errorf("discover workload release source")
+	}
+	var match *model.InfraSpec
+	for _, spec := range specs {
+		if spec.App != app {
+			continue
+		}
+		if match != nil {
+			return nil, fmt.Errorf("workload release source is ambiguous")
+		}
+		match = spec
+	}
+	if match == nil {
+		return nil, fmt.Errorf("workload release source is unavailable")
+	}
+	return match, nil
+}
+
+// EnsureTargetBound re-reads the exact submitted revision before the durable
+// release receipt can enter warming. The strict intent supplies the pinned
+// scheduler coordinates; the observer verifies submission source and a
+// no-diff Nomad plan without mutating the target.
+func (e *etcdWorkloadReleaseExecutor) EnsureTargetBound(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, intent pipeline.WorkloadReleaseIntent) error {
+	if e == nil || e.nomad == nil || lock == nil || lock.Context().Err() != nil || claim.OperationID() == "" {
+		return store.ErrOperationOwnershipLost
+	}
+	if err := intent.Validate(); err != nil {
+		return fmt.Errorf("workload release target binding is invalid: %w", err)
+	}
+	request := nomad.CASDeploymentJobRequest{
+		App: intent.TargetJobID, Region: intent.NomadRegion, Namespace: intent.Namespace,
+		ExpectedJobModifyIndex: intent.TargetJobModifyIndex - 1,
+		DeploymentID:           intent.TargetDeploymentID, SpecDigest: intent.TargetSpecDigest,
+		OperationID: intent.TargetOperationID, ExecutionID: intent.TargetExecutionID,
+		JobDigest: strings.TrimPrefix(intent.TargetJobDigest, "sha256:"), ImageTag: intent.TargetImage,
+	}
+	observed, err := e.nomad.LookupDeploymentJobRevision(ctx, request)
+	if err != nil || observed.State != nomad.DeploymentJobFound || observed.Version != intent.TargetJobVersion || observed.JobModifyIndex != intent.TargetJobModifyIndex {
+		return &effect.PendingError{Resource: workloadReleaseResource(intent), Reason: "exact pinned target revision is not bound by Nomad readback", Cause: err}
+	}
+	if lock.Context().Err() != nil {
+		return store.ErrOperationOwnershipLost
+	}
+	return nil
 }
 
 func (e *etcdWorkloadReleaseExecutor) Load(ctx context.Context, intent pipeline.WorkloadReleaseIntent) (*store.WorkloadReleaseReceiptRecord, pipeline.WorkloadReleaseReceipt, error) {

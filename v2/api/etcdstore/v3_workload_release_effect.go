@@ -50,6 +50,53 @@ func workloadReleaseStageTargetExecutionID(operationID, planDigest string) strin
 
 func (s *V3CanaryEffectReservations) validateWorkloadReleaseEffectReservation(ctx context.Context, r effect.Reservation, op model.Operation) (string, error) {
 	if r.Stage != workloadReleaseStageTargetEffectStage {
+		if effectPayloadString(op.Payload, "workloadReleaseIntent") == "" {
+			index, err := s.operations.kv.Get(ctx, s.operations.operationAcceptanceIndexKey(op.ID))
+			if err != nil || len(index.Kvs) != 1 {
+				return "", fmt.Errorf("workload release effect has no signed plan acceptance")
+			}
+			acceptanceKey := string(index.Kvs[0].Value)
+			loaded, err := s.operations.loadAcceptance(ctx, acceptanceKey)
+			if err != nil || acceptanceKey != s.operations.acceptanceKey(loaded.record.Identity) ||
+				loaded.record.Identity.Kind != op.Kind || loaded.record.Identity.Resource != "app/"+op.App ||
+				loaded.record.Accepted.Operation.ID != op.ID {
+				return "", fmt.Errorf("workload release effect acceptance link is invalid")
+			}
+			accepted, err := s.operations.replay(ctx, acceptanceKey, loaded, loaded.record.Identity, loaded.record.Accepted.Intent.Fingerprint)
+			acceptedBytes, acceptedErr := json.Marshal(accepted.Operation.Payload)
+			currentBytes, currentErr := json.Marshal(op.Payload)
+			if err != nil || acceptedErr != nil || currentErr != nil || !bytes.Equal(acceptedBytes, currentBytes) {
+				return "", fmt.Errorf("workload release effect plan differs from signed acceptance")
+			}
+			planRaw := effectPayloadString(op.Payload, "workloadReleasePlan")
+			var plan pipeline.WorkloadReleasePlan
+			if planRaw == "" || json.Unmarshal([]byte(planRaw), &plan) != nil || plan.Validate() != nil {
+				return "", fmt.Errorf("workload release effect has no accepted intent or plan")
+			}
+			targetResponse, err := s.operations.kv.Get(ctx, s.operations.workloadReleaseStagedTargetKey(op.ID))
+			if err != nil || len(targetResponse.Kvs) != 1 {
+				return "", fmt.Errorf("workload release effect has no immutable staged target binding")
+			}
+			record, err := decodeWorkloadReleaseStagedTarget(targetResponse.Kvs[0].Value, op.ID, plan)
+			if err != nil {
+				return "", err
+			}
+			intent, err := plan.Resolve(record.Binding, record.Binding.EffectID, record.Binding.ClaimGeneration)
+			if err != nil {
+				return "", err
+			}
+			intentBytes, err := json.Marshal(intent)
+			if err != nil {
+				return "", err
+			}
+			copyOperation := op
+			copyOperation.Payload = make(map[string]any, len(op.Payload)+1)
+			for key, value := range op.Payload {
+				copyOperation.Payload[key] = value
+			}
+			copyOperation.Payload["workloadReleaseIntent"] = string(intentBytes)
+			return validateWorkloadReleaseEffectReservation(r, copyOperation, s.operations.authority)
+		}
 		return validateWorkloadReleaseEffectReservation(r, op, s.operations.authority)
 	}
 	if r.Authority != s.operations.authority || r.OperationClaim.OperationID != op.ID || r.OperationClaim.OwnerID == "" || r.OperationClaim.Generation <= 0 ||

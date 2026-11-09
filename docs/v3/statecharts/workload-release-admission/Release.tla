@@ -1,13 +1,15 @@
 ---------------- MODULE Release ----------------
 EXTENDS Naturals, TLC
 
-VARIABLES phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+CONSTANTS AdmissionEvidence, RequiredAdmissionEvidence
+
+VARIABLES phase, claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
           route, oldRunning, proofFresh, stopped, stopHadProof,
           planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable,
           inputsBound, boundSecretRevision, requestKeySeen, acceptedPlanDigest,
           replayReturnedOriginal, appFenceHeld, routeReserved, writerAttempted,
           competingWriter
-vars == <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+vars == <<phase, claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
           route, oldRunning, proofFresh, stopped, stopHadProof,
           planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable,
           inputsBound, boundSecretRevision, requestKeySeen, acceptedPlanDigest,
@@ -17,6 +19,7 @@ vars == <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
 Init ==
   /\ phase = "request"
   /\ claim = 1
+  /\ stageReserved = FALSE
   /\ attempt = FALSE
   /\ requestInFlight = FALSE
   /\ job = "absent"
@@ -43,22 +46,33 @@ Init ==
 
 AcceptSignedPlan ==
   /\ phase = "request"
+  /\ AdmissionEvidence = RequiredAdmissionEvidence
   /\ ~requestKeySeen
   /\ requestKeySeen' = TRUE
   /\ acceptedPlanDigest' = "sha256:accepted-plan"
   /\ appFenceHeld' = TRUE
   /\ routeReserved' = TRUE
   /\ phase' = "accepted"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
       boundSecretRevision, replayReturnedOriginal, writerAttempted, competingWriter>>
+
+RejectIncompleteAdmission ==
+  /\ phase = "request"
+  /\ AdmissionEvidence # RequiredAdmissionEvidence
+  /\ phase' = "rejected"
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
+      boundSecretRevision, requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
+      appFenceHeld, routeReserved, writerAttempted, competingWriter>>
 
 ReplaySameRequest ==
   /\ requestKeySeen
   /\ acceptedPlanDigest = "sha256:accepted-plan"
   /\ replayReturnedOriginal' = TRUE
-  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<phase, claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
       boundSecretRevision, requestKeySeen, acceptedPlanDigest, appFenceHeld,
@@ -69,7 +83,7 @@ CompetingWriterBlocked ==
   /\ ~writerAttempted
   /\ writerAttempted' = TRUE
   /\ competingWriter' = FALSE
-  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<phase, claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
       boundSecretRevision, requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
@@ -82,14 +96,14 @@ ResolvePinnedInputs ==
   /\ inputKeyAvailable
   /\ inputsBound = FALSE
   /\ inputsBound' = TRUE
-  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<phase, claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, secretSnapshotAvailable, boundSecretRevision>>
 
 RotateCurrentSecret ==
   /\ currentSecretRevision = "secret-revision-a"
   /\ currentSecretRevision' = "secret-revision-b"
-  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<phase, claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
       secretSnapshotAvailable, inputsBound, boundSecretRevision>>
 
@@ -98,7 +112,7 @@ LosePinnedSecretSnapshot ==
   /\ ~binding
   /\ secretSnapshotAvailable
   /\ secretSnapshotAvailable' = FALSE
-  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<phase, claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, inputsBound, boundSecretRevision>>
 
@@ -109,7 +123,7 @@ LosePinnedInputKey ==
   /\ inputKeyAvailable' = FALSE
   /\ phase' = "held"
   /\ proofFresh' = FALSE
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, secretSnapshotAvailable, inputsBound, boundSecretRevision>>
 
@@ -118,12 +132,13 @@ HoldOnMissingPinnedInputs ==
   /\ (~secretSnapshotAvailable \/ ~inputKeyAvailable)
   /\ phase' = "held"
   /\ proofFresh' = FALSE
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy,
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy,
       route, oldRunning, stopped, stopHadProof, planSecretRevision,
       currentSecretRevision, secretSnapshotAvailable, inputsBound, boundSecretRevision>>
 
 MarkAttempt ==
   /\ phase = "accepted"
+  /\ stageReserved
   /\ requestKeySeen
   /\ inputsBound
   /\ secretSnapshotAvailable
@@ -132,6 +147,17 @@ MarkAttempt ==
   /\ attempt' = TRUE
   /\ phase' = "attempt-marked"
   /\ UNCHANGED <<claim, requestInFlight, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+
+ReserveStageEffect ==
+  /\ phase = "accepted"
+  /\ inputsBound
+  /\ ~stageReserved
+  /\ stageReserved' = TRUE
+  /\ UNCHANGED <<phase, claim, attempt, requestInFlight, job, binding, targetHealthy,
+      route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision,
+      currentSecretRevision, secretSnapshotAvailable, inputKeyAvailable, inputsBound,
+      boundSecretRevision, requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
+      appFenceHeld, routeReserved, writerAttempted, competingWriter>>
 
 SendCreate ==
   /\ phase = "attempt-marked"
@@ -142,7 +168,7 @@ SendCreate ==
   /\ job = "absent"
   /\ requestInFlight' = TRUE
   /\ phase' = "submitting"
-  /\ UNCHANGED <<claim, attempt, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
 NomadAccepts ==
   /\ phase = "submitting"
@@ -151,17 +177,20 @@ NomadAccepts ==
   /\ job' = "matching"
   /\ requestInFlight' = FALSE
   /\ phase' = "submitted"
-  /\ UNCHANGED <<claim, attempt, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
 LoseResponse ==
+  /\ phase = "submitting"
   /\ requestInFlight
-  /\ job = "matching"
+  /\ job = "absent"
+  /\ job' = "matching"
   /\ requestInFlight' = FALSE
   /\ phase' = "ambiguous"
-  /\ UNCHANGED <<claim, attempt, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
 CrashAndReclaim ==
-  /\ phase \in {"attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining"}
+  /\ (phase \in {"attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining"}
+      \/ (phase = "accepted" /\ stageReserved))
   /\ claim < 2
   /\ claim' = claim + 1
   /\ UNCHANGED <<phase, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
@@ -171,7 +200,7 @@ ObserveMissingAfterAttempt ==
   /\ claim > 1
   /\ job = "absent"
   /\ phase' = "held"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
 ObserveMatchingJob ==
   /\ phase \in {"submitted", "ambiguous", "attempt-marked", "submitting"}
@@ -183,14 +212,14 @@ ObserveMatchingJob ==
   /\ binding' = TRUE
   /\ boundSecretRevision' = planSecretRevision
   /\ phase' = "bound"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputsBound>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof, planSecretRevision, currentSecretRevision, secretSnapshotAvailable, inputsBound>>
 
 ObserveMismatch ==
   /\ phase \in {"submitted", "ambiguous", "attempt-marked", "submitting"}
   /\ claim > 1
   /\ job = "foreign"
   /\ phase' = "held"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
 TargetBecomesHealthy ==
   /\ phase = "bound"
@@ -198,7 +227,7 @@ TargetBecomesHealthy ==
   /\ job = "matching"
   /\ targetHealthy' = TRUE
   /\ phase' = "warming"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
 ProveOldOnly ==
   /\ phase = "warming"
@@ -206,7 +235,7 @@ ProveOldOnly ==
   /\ route = "old-only"
   /\ proofFresh' = TRUE
   /\ phase' = "old-only"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, stopped, stopHadProof>>
 
 PublishMixed ==
   /\ phase = "old-only"
@@ -214,7 +243,7 @@ PublishMixed ==
   /\ route' = "mixed"
   /\ proofFresh' = FALSE
   /\ phase' = "mixed"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, oldRunning, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, oldRunning, stopped, stopHadProof>>
 
 PublishTargetOnly ==
   /\ phase = "mixed"
@@ -222,7 +251,7 @@ PublishTargetOnly ==
   /\ job = "matching"
   /\ route' = "target-only"
   /\ phase' = "target-only"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, oldRunning, proofFresh, stopped, stopHadProof>>
 
 RefreshTargetOnlyProof ==
   /\ phase = "target-only"
@@ -231,7 +260,7 @@ RefreshTargetOnlyProof ==
   /\ binding
   /\ proofFresh' = TRUE
   /\ phase' = "draining"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, stopped, stopHadProof>>
 
 TargetLosesHealth ==
   /\ phase \in {"bound", "warming", "old-only", "mixed", "target-only", "draining"}
@@ -239,7 +268,7 @@ TargetLosesHealth ==
   /\ targetHealthy' = FALSE
   /\ IF stopped THEN phase' = "held" ELSE phase' = "held"
   /\ proofFresh' = FALSE
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, route, oldRunning, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, route, oldRunning, stopped, stopHadProof>>
 
 StopOld ==
   /\ phase = "draining"
@@ -252,13 +281,13 @@ StopOld ==
   /\ stopped' = TRUE
   /\ stopHadProof' = TRUE
   /\ phase' = "complete"
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, route, proofFresh>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, route, proofFresh>>
 
 Hold ==
-  /\ phase \notin {"complete", "held"}
+  /\ phase \notin {"request", "complete", "held", "rejected"}
   /\ phase' = "held"
   /\ proofFresh' = FALSE
-  /\ UNCHANGED <<claim, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, stopped, stopHadProof>>
+  /\ UNCHANGED <<claim, stageReserved, attempt, requestInFlight, job, binding, targetHealthy, route, oldRunning, stopped, stopHadProof>>
 
 LateAcceptWhileHeld ==
   /\ phase = "held"
@@ -266,15 +295,21 @@ LateAcceptWhileHeld ==
   /\ job = "absent"
   /\ job' = "matching"
   /\ requestInFlight' = FALSE
-  /\ UNCHANGED <<phase, claim, attempt, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
+  /\ UNCHANGED <<phase, claim, stageReserved, attempt, binding, targetHealthy, route, oldRunning, proofFresh, stopped, stopHadProof>>
 
-Done == phase \in {"complete", "held"} /\ UNCHANGED vars
+Done == phase \in {"complete", "held", "rejected"} /\ UNCHANGED vars
 
-Next == ((AcceptSignedPlan \/ ReplaySameRequest \/ CompetingWriterBlocked)
-          /\ UNCHANGED <<inputKeyAvailable>>) \/
+Next == ((AcceptSignedPlan \/ RejectIncompleteAdmission \/ ReplaySameRequest \/ CompetingWriterBlocked)
+          /\ UNCHANGED <<inputKeyAvailable, stageReserved>>) \/
         (((ResolvePinnedInputs \/ RotateCurrentSecret \/ LosePinnedSecretSnapshot \/ HoldOnMissingPinnedInputs \/ ObserveMatchingJob)
           /\ UNCHANGED <<requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
                          appFenceHeld, routeReserved, writerAttempted, competingWriter>>)
+          /\ UNCHANGED <<inputKeyAvailable, stageReserved>>) \/
+        ((ReserveStageEffect
+          /\ UNCHANGED <<planSecretRevision, currentSecretRevision, secretSnapshotAvailable,
+                         inputsBound, boundSecretRevision>>)
+          /\ UNCHANGED <<requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
+                         appFenceHeld, routeReserved, writerAttempted, competingWriter>>
           /\ UNCHANGED <<inputKeyAvailable>>) \/
         (((MarkAttempt \/ SendCreate \/ NomadAccepts \/ LoseResponse \/ CrashAndReclaim \/
           ObserveMissingAfterAttempt \/ ObserveMismatch \/ TargetBecomesHealthy \/
@@ -284,13 +319,15 @@ Next == ((AcceptSignedPlan \/ ReplaySameRequest \/ CompetingWriterBlocked)
                          inputsBound, boundSecretRevision>>)
           /\ UNCHANGED <<requestKeySeen, acceptedPlanDigest, replayReturnedOriginal,
                          appFenceHeld, routeReserved, writerAttempted, competingWriter>>
-          /\ UNCHANGED <<inputKeyAvailable>>) \/
+          /\ UNCHANGED <<inputKeyAvailable, stageReserved>>) \/
         (LosePinnedInputKey /\ UNCHANGED <<requestKeySeen, acceptedPlanDigest,
-          replayReturnedOriginal, appFenceHeld, routeReserved, writerAttempted, competingWriter>>)
+          replayReturnedOriginal, appFenceHeld, routeReserved, writerAttempted, competingWriter,
+          stageReserved>>)
 
 TypeOK ==
-  /\ phase \in {"request", "accepted", "attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining", "complete", "held"}
+  /\ phase \in {"request", "rejected", "accepted", "attempt-marked", "submitting", "submitted", "ambiguous", "bound", "warming", "old-only", "mixed", "target-only", "draining", "complete", "held"}
   /\ claim \in Nat
+  /\ stageReserved \in BOOLEAN
   /\ attempt \in BOOLEAN
   /\ requestInFlight \in BOOLEAN
   /\ job \in {"absent", "matching", "foreign"}
@@ -321,11 +358,16 @@ RouteDoesNotMoveBeforeBinding == (route # "old-only") => binding
 OldWorkloadRemainsUntilSafeStop == ~stopped => oldRunning
 BindingRequiresMatchingTarget == binding => job = "matching"
 AttemptRequiresPinnedInputs == attempt => (inputsBound /\ requestKeySeen /\ appFenceHeld /\ routeReserved)
+AttemptRequiresStageReservation == attempt => stageReserved
 BindingMatchesPinnedSecret == binding => (inputsBound /\ boundSecretRevision = planSecretRevision)
 NoAttemptAfterSecretSnapshotLoss == ~secretSnapshotAvailable => ~attempt
 MissingKeyHoldsUnboundRelease == (~inputKeyAvailable /\ ~binding) => phase = "held"
 MissingKeyKeepsOldService == (~inputKeyAvailable /\ ~binding) => (route = "old-only" /\ oldRunning)
 AcceptedPlanHasFences == requestKeySeen => (appFenceHeld /\ routeReserved)
+IncompleteAdmissionIsRejected == AdmissionEvidence # RequiredAdmissionEvidence =>
+  (phase \in {"request", "rejected"} /\ (phase = "rejected" =>
+    (~requestKeySeen /\ ~appFenceHeld /\ ~routeReserved)))
+AcceptedPlanHasCompleteEvidence == requestKeySeen => AdmissionEvidence = RequiredAdmissionEvidence
 ReplayReturnsSameAcceptance == replayReturnedOriginal => (requestKeySeen /\ acceptedPlanDigest = "sha256:accepted-plan")
 NoConcurrentAppWriter == appFenceHeld => ~competingWriter
 WriterAttemptIsRecorded == writerAttempted => appFenceHeld

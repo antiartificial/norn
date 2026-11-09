@@ -65,7 +65,9 @@ func (s *V3OperationStore) commitClaimedWorkloadReleaseRouteStep(ctx context.Con
 		// response. Accept only the exact successor after fresh route proof.
 		activeKey := s.fleetActiveRouteKey(intent.App, intent.ControlEnvironment, intent.Region)
 		active, activeErr := s.kv.Get(ctx, activeKey)
-		wantRoute := activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.TargetDeploymentID, Generation: route.Generation, RouteSHA256: route.RenderedRoute.SHA256}
+		wantRoute := activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.TargetDeploymentID, OperationID: intent.TargetOperationID,
+			Generation: route.Generation, RouteSHA256: route.RenderedRoute.SHA256, JobDigest: intent.TargetJobDigest,
+			SpecDigest: intent.TargetSpecDigest, ImageTag: intent.TargetImage, Process: intent.Process}
 		var actualRoute activeFleetRoute
 		observation, observeErr := observe(ctx, route)
 		inventory, inventoryErr := s.CurrentActiveFleetIngressInventory(ctx, intent.FleetCluster, intent.FleetEnvironment, observerPort)
@@ -149,7 +151,9 @@ func (s *V3OperationStore) commitClaimedWorkloadReleaseRouteStep(ctx context.Con
 	if err != nil {
 		return nil, err
 	}
-	activeBytes, err := json.Marshal(activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.TargetDeploymentID, Generation: route.Generation, RouteSHA256: route.RenderedRoute.SHA256})
+	activeBytes, err := json.Marshal(activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.TargetDeploymentID, OperationID: intent.TargetOperationID,
+		Generation: route.Generation, RouteSHA256: route.RenderedRoute.SHA256, JobDigest: intent.TargetJobDigest,
+		SpecDigest: intent.TargetSpecDigest, ImageTag: intent.TargetImage, Process: intent.Process})
 	if err != nil {
 		return nil, err
 	}

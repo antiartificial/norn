@@ -23,6 +23,17 @@ func (s *V3OperationStore) VerifyClaimedWorkloadRelease(ctx context.Context, cla
 	if s == nil || s.kv == nil || s.signer == nil || claim.OperationID() == "" || claim.OwnerID() == "" || claim.Generation() <= 0 || lock == nil || lock.Fence() == "" || lock.Context().Err() != nil {
 		return invalid(fmt.Errorf("workload release signed acceptance is unavailable"))
 	}
+	currentOperation, _, err := s.load(ctx, claim.OperationID())
+	if err != nil {
+		return invalid(err)
+	}
+	if effectPayloadString(currentOperation.Operation.Payload, "workloadReleasePlan") != "" {
+		intent, _, accepted, err := s.ResolveClaimedWorkloadReleasePlanFromBinding(ctx, claim, lock)
+		if err != nil {
+			return invalid(err)
+		}
+		return intent, accepted, nil
+	}
 	current, operationRevision, err := s.load(ctx, claim.OperationID())
 	if err != nil || current.Operation.Kind != "app.workload-release" || current.Operation.Status != model.OperationRunning ||
 		current.Operation.LockedBy != claim.OwnerID() || current.Generation != claim.Generation() || current.Operation.App == "" {

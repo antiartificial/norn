@@ -9,6 +9,7 @@ import (
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
 const (
@@ -45,7 +46,7 @@ type PrivateInvocationStore interface {
 // PrivateWorkloadReleaseStore atomically accepts a signed workload release
 // plan with its separately encrypted, exact SOPS source snapshot.
 type PrivateWorkloadReleaseStore interface {
-	AcceptPrivateWorkloadRelease(context.Context, OperationAcceptance, model.ReleaseQualification, []string, []byte, *WorkloadReleaseInputKeyRing) (AcceptedOperation, error)
+	AcceptPrivateWorkloadRelease(context.Context, OperationAcceptance, model.ReleaseQualification, []string, []byte, *WorkloadReleaseInputKeyRing, nomad.ActiveDeploymentLineageObserver) (AcceptedOperation, error)
 	OpenPrivateWorkloadRelease(context.Context, model.Operation, *WorkloadReleaseInputKeyRing) ([]byte, error)
 	RequiredWorkloadReleaseInputKeys(context.Context) ([]string, error)
 }

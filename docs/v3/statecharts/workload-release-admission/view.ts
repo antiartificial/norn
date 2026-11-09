@@ -1,6 +1,7 @@
 export const title = "V3 workload release: private staging and crash recovery";
 export const state = (v: any) => {
-  if (v.replayReturnedOriginal) return "Original acceptance replayed";
+  if (v.phase === "accepted" && v.stageReserved)
+    return v.claim > 1 ? "Reservation recovered, create not attempted" : "Target reserved, create not attempted";
   if (v.phase === "held") {
     if (!v.inputKeyAvailable && !v.binding)
       return v.job === "matching"
@@ -13,6 +14,7 @@ export const state = (v: any) => {
   }
   const labels: Record<string, string> = {
     request: "Release request received",
+    rejected: "Admission rejected, service unchanged",
     accepted: "Accepted, old service active",
     "attempt-marked": "Create permission recorded",
     submitting: "Target create in flight",
@@ -29,15 +31,19 @@ export const state = (v: any) => {
   return labels[v.phase] ?? v.phase;
 };
 export const step = (action: string, from: any, to: any) => {
-  if (!from.replayReturnedOriginal && to.replayReturnedOriginal)
-    return "same request key returns the original accepted operation";
+  if (action === "ReplaySameRequest") return null;
   if (from.inputKeyAvailable && !to.inputKeyAvailable)
     return "historical envelope key is missing on recovery, hold before binding";
   if (from.secretSnapshotAvailable && !to.secretSnapshotAvailable)
     return "pinned encrypted input becomes unavailable";
   if (from.currentSecretRevision !== to.currentSecretRevision)
     return "current secret rotates while accepted release stays pinned";
-  if (from.claim !== to.claim) return "worker restarts under successor claim";
+  if (!from.stageReserved && to.stageReserved)
+    return "persist the stable stage reservation";
+  if (from.claim !== to.claim)
+    return from.stageReserved && !from.attempt
+      ? "worker restarts after reservation, before create"
+      : "worker restarts under successor claim";
   if (to.job === "foreign" && from.job !== to.job)
     return "successor finds a different target and holds";
   if (from.phase === "held" && to.phase === "held" && from.job !== to.job)
@@ -45,7 +51,8 @@ export const step = (action: string, from: any, to: any) => {
   if (from.phase !== to.phase) {
     const transitions: Record<string, string> = {
       "accepted:attempt-marked": "record create permission",
-      "request:accepted": "verify signed plan and reserve app and route",
+      "request:accepted": "verify qualification, serving lineage, route predecessor, and durable input; reserve app and route",
+      "request:rejected": "required qualification, serving lineage, route predecessor, or durable input is missing",
       "attempt-marked:submitting": "send create-only request",
       "submitting:submitted": "scheduler accepts target",
       "submitting:ambiguous": "create response is lost",

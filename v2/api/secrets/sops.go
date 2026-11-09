@@ -74,6 +74,31 @@ func (m *Manager) EnvMap(appID string) (map[string]string, error) {
 	return data, nil
 }
 
+// DecryptSOPSSnapshot decrypts the exact encrypted YAML bytes retained by a
+// workload release. It sends the ciphertext through stdin and keeps plaintext
+// in memory only; callers must clear the returned values after staging them.
+func DecryptSOPSSnapshot(ciphertext []byte) (map[string]string, error) {
+	return decryptSOPSSnapshotWithCommand(ciphertext, "sops")
+}
+
+func decryptSOPSSnapshotWithCommand(ciphertext []byte, command string) (map[string]string, error) {
+	if len(ciphertext) == 0 || command == "" {
+		return nil, fmt.Errorf("encrypted SOPS snapshot is unavailable")
+	}
+	cmd := exec.Command(command, "decrypt", "--filename-override", "secrets.enc.yaml", "--input-type", "yaml", "--output-type", "yaml")
+	cmd.Stdin = bytes.NewReader(ciphertext)
+	plain, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("decrypt retained SOPS snapshot")
+	}
+	defer clear(plain)
+	var values map[string]string
+	if err := yaml.Unmarshal(plain, &values); err != nil || values == nil {
+		return nil, fmt.Errorf("retained SOPS snapshot is not a string map")
+	}
+	return values, nil
+}
+
 func (m *Manager) decrypt(appID string) (map[string]string, error) {
 	path := m.SecretFile(appID)
 	if _, err := os.Stat(path); os.IsNotExist(err) {

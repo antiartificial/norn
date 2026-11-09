@@ -657,6 +657,12 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 		if err != nil || len(active.Kvs) != 1 {
 			t.Fatalf("terminal result omitted active route: entries=%d err=%v", len(active.Kvs), err)
 		}
+		var activeRoute activeFleetRoute
+		var acceptedJob deploymentEffectInput
+		if decodeV3Record(active.Kvs[0].Value, &activeRoute) != nil || json.Unmarshal(reserved.Record.Reservation.LaunchPayload, &acceptedJob) != nil ||
+			activeRoute.JobDigest != "sha256:"+acceptedJob.JobDigest {
+			t.Fatalf("active route did not retain its accepted Nomad job digest: route=%+v input=%+v", activeRoute, acceptedJob)
+		}
 		result, err := adapter.GetDeployment(ctx, terminal.ID)
 		if err != nil || result.Status != model.StatusDeployed || len(result.Regions) != 1 || result.Regions[0].ActiveWeight != 100 {
 			t.Fatalf("proof-bound deployment=%+v err=%v", result, err)

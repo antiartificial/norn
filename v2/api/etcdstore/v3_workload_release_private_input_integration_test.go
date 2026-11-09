@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
@@ -58,9 +59,10 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 			t.Fatal(err)
 		}
 	}
+	lineageObserver := newWorkloadReleaseLineageObserverFixture(intent, "old-operation")
 	accept := func(request store.OperationAcceptance) error {
 		t.Helper()
-		_, err := adapter.AcceptPrivateWorkloadRelease(ctx, request, qualification, []string{trustedQualificationKey}, material, keys)
+		_, err := adapter.AcceptPrivateWorkloadRelease(ctx, request, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver)
 		return err
 	}
 	if err := accept(input); err == nil {
@@ -68,10 +70,19 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	}
 	qualification.DeploymentID = acceptPrivateWorkloadReleaseSource(t, adapter, intent, target)
 	resignPrivateInputQualification(t, &qualification)
+	plan, err := acceptedWorkloadReleasePlan(input.Operation.Payload, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.verifyWorkloadReleaseQualificationSource(ctx, plan, qualification); err != nil {
+		t.Fatalf("completed source deployment did not satisfy qualification: %v", err)
+	}
 	if err := accept(input); err == nil {
 		t.Fatal("accepted a workload release without a control-owned active route predecessor")
 	}
-	active := activeFleetRoute{IntentID: "current-serving-route", DeploymentID: intent.OldDeploymentID, Generation: intent.FirstRouteGeneration - 1, RouteSHA256: "sha256:current-route"}
+	active := activeFleetRoute{IntentID: "current-serving-route", DeploymentID: intent.OldDeploymentID, Generation: intent.FirstRouteGeneration - 1,
+		RouteSHA256: "sha256:current-route", JobDigest: intent.OldJobDigest, OperationID: "old-operation",
+		SpecDigest: intent.OldSpecDigest, ImageTag: "registry.example.test/widgets@" + intent.OldImageDigest, Process: intent.Process}
 	write(adapter.fleetActiveRouteKey(app, target.ControlEnvironment, target.Region), active)
 	write(adapter.fleetRouteReservationKey(app, target.ControlEnvironment, target.Region), initialFleetRouteReservation{IntentID: active.IntentID, Generation: active.Generation})
 	stale := input
@@ -87,6 +98,20 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	stale.Operation.Payload = map[string]interface{}{"workloadReleasePlan": string(stalePlan)}
 	if err := accept(stale); err == nil {
 		t.Fatal("accepted a workload release whose predecessor differs from the active route")
+	}
+	staleDigest := input
+	staleDigest.Operation = operation
+	staleDigest.Operation.ID = uuid.NewString()
+	staleDigest.Identity.Key = uuid.NewString()
+	wrongDigestIntent := intent
+	wrongDigestIntent.OldJobDigest = "sha256:" + strings.Repeat("9", 64)
+	wrongDigestPlan, err := json.Marshal(pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: wrongDigestIntent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleDigest.Operation.Payload = map[string]interface{}{"workloadReleasePlan": string(wrongDigestPlan)}
+	if err := accept(staleDigest); err == nil {
+		t.Fatal("accepted a predecessor digest that differs from the controller-owned active route")
 	}
 	staleGeneration := input
 	staleGeneration.Operation = operation
@@ -111,9 +136,28 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatal("accepted a workload release while the active route reservation disagreed")
 	}
 	write(adapter.fleetRouteReservationKey(app, target.ControlEnvironment, target.Region), initialFleetRouteReservation{IntentID: active.IntentID, Generation: active.Generation})
-	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys)
+	missingObserver := input
+	missingObserver.Operation = operation
+	missingObserver.Operation.ID = uuid.NewString()
+	missingObserver.Identity.Key = uuid.NewString()
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, missingObserver, qualification, []string{trustedQualificationKey}, material, keys, nil); err == nil {
+		t.Fatal("accepted a release without a trusted serving-lineage observer")
+	}
+	wrongObservedLineage := *lineageObserver
+	wrongObservedLineage.lineage.ModifyIndex++
+	wrongObservedRequest := input
+	wrongObservedRequest.Operation = operation
+	wrongObservedRequest.Operation.ID = uuid.NewString()
+	wrongObservedRequest.Identity.Key = uuid.NewString()
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, wrongObservedRequest, qualification, []string{trustedQualificationKey}, material, keys, &wrongObservedLineage); err == nil {
+		t.Fatal("accepted a predecessor whose live Nomad modify index changed")
+	}
+	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if lineageObserver.calls != 2 {
+		t.Fatalf("fresh serving lineage was not rechecked immediately before acceptance: calls=%d", lineageObserver.calls)
 	}
 	if accepted.Operation.ID != operation.ID || accepted.Operation.Payload["workloadReleasePrivateRecordId"] != operation.ID || accepted.FleetAppTarget == nil || !sameFleetAppTarget(*accepted.FleetAppTarget, target) {
 		t.Fatalf("accepted private workload release lost signed plan or target binding: %+v", accepted)
@@ -122,24 +166,28 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	competing.Operation = operation
 	competing.Operation.ID = uuid.NewString()
 	competing.Identity.Key = uuid.NewString()
-	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, competing, qualification, []string{trustedQualificationKey}, material, keys); err == nil {
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, competing, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver); err == nil {
 		t.Fatal("second mutable workload release was accepted while the first app operation remained active")
 	}
 	opened, err := adapter.OpenPrivateWorkloadRelease(ctx, accepted.Operation, keys)
 	if err != nil || !bytes.Equal(opened, material) {
 		t.Fatalf("opened private SOPS snapshot differs: equal=%v err=%v", bytes.Equal(opened, material), err)
 	}
-	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys)
+	priorLineageReads := lineageObserver.calls
+	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver)
 	if err != nil || replayed.Operation.ID != accepted.Operation.ID || replayed.Intent.CanonicalDigest != accepted.Intent.CanonicalDigest {
 		t.Fatalf("same private workload request did not return original acceptance: replay=%+v err=%v", replayed, err)
 	}
-	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, []byte("different-sops-snapshot"), keys); !errors.Is(err, store.ErrAcceptanceConflict) {
+	if lineageObserver.calls != priorLineageReads {
+		t.Fatalf("idempotent replay performed new mutable lineage reads: before=%d after=%d", priorLineageReads, lineageObserver.calls)
+	}
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, []byte("different-sops-snapshot"), keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
 		t.Fatalf("same idempotency key accepted different private inputs: %v", err)
 	}
 	differentQualification := qualification
 	differentQualification.ID += "-different"
 	resignPrivateInputQualification(t, &differentQualification)
-	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, differentQualification, []string{trustedQualificationKey}, material, keys); !errors.Is(err, store.ErrAcceptanceConflict) {
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, differentQualification, []string{trustedQualificationKey}, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceConflict) {
 		t.Fatalf("same idempotency key accepted different qualification evidence: %v", err)
 	}
 	if accepted.Operation.Payload["workloadReleaseQualification"] == nil {
@@ -252,4 +300,32 @@ func resignPrivateInputQualification(t *testing.T, qualification *model.ReleaseQ
 		Payload:     base64.RawStdEncoding.EncodeToString(payload),
 		Signatures:  []model.DSSESignature{{KeyID: keyID, Sig: signature}},
 	}
+}
+
+type workloadReleaseLineageObserverFixture struct {
+	lineage nomad.ActiveDeploymentLineage
+	calls   int
+}
+
+func newWorkloadReleaseLineageObserverFixture(intent pipeline.WorkloadReleaseIntent, operationID string) *workloadReleaseLineageObserverFixture {
+	return &workloadReleaseLineageObserverFixture{lineage: nomad.ActiveDeploymentLineage{
+		App: intent.App, DeploymentID: intent.OldDeploymentID, OperationID: operationID,
+		Region: intent.Region, NomadRegion: intent.NomadRegion, Namespace: intent.Namespace,
+		SpecDigest: intent.OldSpecDigest, ImageTag: "registry.example.test/widgets@" + intent.OldImageDigest,
+		JobID: intent.OldJobID, JobDigest: strings.TrimPrefix(intent.OldJobDigest, "sha256:"),
+		JobVersion: intent.OldJobVersion, ModifyIndex: intent.OldJobModifyIndex,
+		Process: intent.Process, Replicas: len(intent.OldAllocationIDs), AllocationIDs: append([]string(nil), intent.OldAllocationIDs...),
+	}}
+}
+
+func (f *workloadReleaseLineageObserverFixture) ObserveActiveDeploymentLineage(_ context.Context, app, region, nomadRegion, namespace,
+	deploymentID, operationID, specDigest, expectedJobDigest, imageTag, process string) (nomad.ActiveDeploymentLineage, error) {
+	f.calls++
+	lineage := f.lineage
+	if app != lineage.App || region != lineage.Region || nomadRegion != lineage.NomadRegion || namespace != lineage.Namespace ||
+		deploymentID != lineage.DeploymentID || operationID != lineage.OperationID || specDigest != lineage.SpecDigest ||
+		expectedJobDigest != lineage.JobDigest || imageTag != lineage.ImageTag || process != lineage.Process {
+		return nomad.ActiveDeploymentLineage{}, errors.New("lineage request differs from active route fixture")
+	}
+	return lineage, nil
 }

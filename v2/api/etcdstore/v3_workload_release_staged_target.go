@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -19,6 +20,11 @@ import (
 )
 
 const workloadReleaseStagedTargetRecordSchema = "norn.workload-release-staged-target-record/v1"
+
+var (
+	ErrWorkloadReleaseTargetReadbackUnavailable = errors.New("workload release target readback is unavailable")
+	ErrWorkloadReleaseTargetNotFound            = errors.New("workload release target was not found after its one-use create attempt")
+)
 
 type v3WorkloadReleaseStagedTargetRecord struct {
 	SchemaVersion string                               `json:"schemaVersion"`
@@ -37,6 +43,47 @@ type claimedWorkloadReleasePlan struct {
 	App               string
 	Target            FleetAppTarget
 	TargetRevision    int64
+}
+
+// LoadClaimedWorkloadReleasePlan returns the immutable, signed plan and its
+// accepted operation only while the operation claim, app lock, and Fleet
+// target generation remain current. It is the pre-staging counterpart to
+// ResolveClaimedWorkloadReleasePlan.
+func (s *V3OperationStore) LoadClaimedWorkloadReleasePlan(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock) (pipeline.WorkloadReleasePlan, store.AcceptedOperation, error) {
+	verified, err := s.verifyClaimedWorkloadReleasePlan(ctx, claim, lock)
+	if err != nil {
+		return pipeline.WorkloadReleasePlan{}, store.AcceptedOperation{}, err
+	}
+	return verified.Plan, verified.Accepted, nil
+}
+
+// WorkloadReleaseStageTargetReservation derives the stable effect identity
+// from the signed desired plan while verifying the current claim and app lock.
+func (s *V3OperationStore) WorkloadReleaseStageTargetReservation(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock) (effect.Reservation, error) {
+	verified, err := s.verifyClaimedWorkloadReleasePlan(ctx, claim, lock)
+	if err != nil {
+		return effect.Reservation{}, err
+	}
+	digest, err := verified.Plan.Digest()
+	if err != nil {
+		return effect.Reservation{}, err
+	}
+	launch, err := json.Marshal(workloadReleaseStageTargetEffectInput{PlanDigest: digest,
+		TargetJobID: verified.Plan.Intent.TargetJobID, DeploymentID: verified.Plan.Intent.TargetDeploymentID,
+		SpecDigest: verified.Plan.Intent.TargetSpecDigest, Image: verified.Plan.Intent.TargetImage})
+	if err != nil {
+		return effect.Reservation{}, err
+	}
+	reservation := effect.Reservation{Authority: s.authority,
+		Resource:       "app/" + verified.Plan.Intent.App + "/workload-release/" + verified.Plan.Intent.Region,
+		OperationClaim: effect.OperationClaim{OperationID: claim.OperationID(), OwnerID: claim.OwnerID(), Generation: claim.Generation()},
+		Stage:          workloadReleaseStageTargetEffectStage, Supervisor: workloadReleaseStageTargetSupervisor,
+		SupervisorExecutionID: workloadReleaseStageTargetExecutionID(claim.OperationID(), digest), LaunchPayload: launch}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		return effect.Reservation{}, err
+	}
+	return reservation, nil
 }
 
 func (s *V3OperationStore) workloadReleaseStagedTargetKey(operationID string) string {
@@ -65,6 +112,8 @@ func (s *V3OperationStore) workloadReleaseStageTargetEffect(ctx context.Context,
 
 // MarkWorkloadReleaseStageTargetAttempt durably grants at most one Nomad
 // create attempt for the reserved stage effect under the live operation claim.
+// A successor may take this boundary only while the old reservation has no
+// attempt marker; an existing marker remains readback-only forever.
 func (s *V3OperationStore) MarkWorkloadReleaseStageTargetAttempt(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, effectID, runtimeInstanceID string) (bool, error) {
 	verified, err := s.verifyClaimedWorkloadReleasePlan(ctx, claim, lock)
 	if err != nil {
@@ -78,7 +127,7 @@ func (s *V3OperationStore) MarkWorkloadReleaseStageTargetAttempt(ctx context.Con
 		return false, err
 	}
 	digest, err := verified.Plan.Digest()
-	if err != nil || record.Reservation.OperationClaim.Generation != claim.Generation() || record.Reservation.SupervisorExecutionID != workloadReleaseStageTargetExecutionID(claim.OperationID(), digest) {
+	if err != nil || record.Reservation.OperationClaim.Generation > claim.Generation() || record.Reservation.SupervisorExecutionID != workloadReleaseStageTargetExecutionID(claim.OperationID(), digest) {
 		return false, fmt.Errorf("workload release stage effect differs from current claim or signed plan")
 	}
 	attemptKey := workloadReleaseStageTargetAttemptKey(s.prefix, record.Token)
@@ -238,18 +287,25 @@ func (s *V3OperationStore) BindClaimedWorkloadReleaseTarget(ctx context.Context,
 		return pipeline.WorkloadReleaseStagedTarget{}, err
 	}
 	request := nomad.CASDeploymentJobRequest{
-		App: verified.Plan.Intent.TargetJobID, JobID: verified.Plan.Intent.TargetJobID,
-		Region: verified.Plan.Intent.NomadRegion, Namespace: verified.Plan.Intent.Namespace,
+		App: verified.Plan.Intent.App, JobID: verified.Plan.Intent.TargetJobID,
+		PlacementRegion: verified.Plan.Intent.Region,
+		Region:          verified.Plan.Intent.NomadRegion, Namespace: verified.Plan.Intent.Namespace,
 		DeploymentID: verified.Plan.Intent.TargetDeploymentID, SpecDigest: verified.Plan.Intent.TargetSpecDigest,
 		OperationID: verified.Plan.Intent.TargetOperationID, ExecutionID: verified.Plan.Intent.TargetExecutionID,
 		JobDigest: strings.TrimPrefix(verified.Plan.Intent.TargetJobDigest, "sha256:"), ImageTag: verified.Plan.Intent.TargetImage,
 	}
 	observation, err := observer.LookupDeploymentJobRevision(ctx, request)
 	if err != nil {
-		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release exact Nomad target readback is unavailable: %w", err)
+		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("%w: %v", ErrWorkloadReleaseTargetReadbackUnavailable, err)
 	}
-	if observation.State != nomad.DeploymentJobFound {
-		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release exact Nomad target readback is not found")
+	switch observation.State {
+	case nomad.DeploymentJobNotFound:
+		return pipeline.WorkloadReleaseStagedTarget{}, ErrWorkloadReleaseTargetNotFound
+	case nomad.DeploymentJobIndeterminate:
+		return pipeline.WorkloadReleaseStagedTarget{}, ErrWorkloadReleaseTargetReadbackUnavailable
+	case nomad.DeploymentJobFound:
+	default:
+		return pipeline.WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release target observer returned an unknown state")
 	}
 	binding, err := verified.Plan.BindObservedTarget(effectID, claim.Generation(), request, observation)
 	if err != nil {
@@ -355,6 +411,33 @@ func (s *V3OperationStore) ResolveClaimedWorkloadReleasePlan(ctx context.Context
 		return pipeline.WorkloadReleaseIntent{}, pipeline.WorkloadReleaseStagedTarget{}, store.AcceptedOperation{}, err
 	}
 	intent, err := verified.Plan.Resolve(record.Binding, expectedEffectID, claim.Generation())
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, pipeline.WorkloadReleaseStagedTarget{}, store.AcceptedOperation{}, err
+	}
+	if lock.Context().Err() != nil {
+		return pipeline.WorkloadReleaseIntent{}, pipeline.WorkloadReleaseStagedTarget{}, store.AcceptedOperation{}, store.ErrOperationOwnershipLost
+	}
+	return intent, record.Binding, verified.Accepted, nil
+}
+
+// ResolveClaimedWorkloadReleasePlanFromBinding resolves the immutable binding's
+// own effect identity. It is used by downstream route and stop readers after
+// the binding has been durably written.
+func (s *V3OperationStore) ResolveClaimedWorkloadReleasePlanFromBinding(ctx context.Context, claim store.OperationClaim,
+	lock store.AppOperationLock) (pipeline.WorkloadReleaseIntent, pipeline.WorkloadReleaseStagedTarget, store.AcceptedOperation, error) {
+	verified, err := s.verifyClaimedWorkloadReleasePlan(ctx, claim, lock)
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, pipeline.WorkloadReleaseStagedTarget{}, store.AcceptedOperation{}, err
+	}
+	response, err := s.kv.Get(ctx, s.workloadReleaseStagedTargetKey(claim.OperationID()))
+	if err != nil || len(response.Kvs) != 1 {
+		return pipeline.WorkloadReleaseIntent{}, pipeline.WorkloadReleaseStagedTarget{}, store.AcceptedOperation{}, fmt.Errorf("workload release staged target binding is unavailable")
+	}
+	record, err := decodeWorkloadReleaseStagedTarget(response.Kvs[0].Value, claim.OperationID(), verified.Plan)
+	if err != nil {
+		return pipeline.WorkloadReleaseIntent{}, pipeline.WorkloadReleaseStagedTarget{}, store.AcceptedOperation{}, err
+	}
+	intent, err := verified.Plan.Resolve(record.Binding, record.Binding.EffectID, claim.Generation())
 	if err != nil {
 		return pipeline.WorkloadReleaseIntent{}, pipeline.WorkloadReleaseStagedTarget{}, store.AcceptedOperation{}, err
 	}

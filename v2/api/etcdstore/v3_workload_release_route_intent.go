@@ -138,7 +138,9 @@ func (s *V3OperationStore) intendClaimedWorkloadReleaseRouteStep(ctx context.Con
 		}
 		alreadyCommitted := receipt.RouteStep == step && receipt.RouteGeneration == generation && receipt.RouteSHA256 == "sha256:"+rendered.SHA256 &&
 			receipt.RouteOldWeight == workloadIntent.RouteSteps[step].OldWeight && receipt.RouteTargetWeight == workloadIntent.RouteSteps[step].TargetWeight &&
-			prior == (activeFleetRoute{IntentID: workloadIntent.ID, DeploymentID: workloadIntent.TargetDeploymentID, Generation: generation, RouteSHA256: rendered.SHA256})
+			prior == (activeFleetRoute{IntentID: workloadIntent.ID, DeploymentID: workloadIntent.TargetDeploymentID, OperationID: workloadIntent.TargetOperationID,
+				Generation: generation, RouteSHA256: rendered.SHA256, JobDigest: workloadIntent.TargetJobDigest,
+				SpecDigest: workloadIntent.TargetSpecDigest, ImageTag: workloadIntent.TargetImage, Process: workloadIntent.Process})
 		if !alreadyCommitted && (record.ReceiptDigest != receiptRecord.ReceiptDigest || record.PriorActiveRevision != activeResponse.Kvs[0].ModRevision || record.PriorActive != prior ||
 			!workloadRouteStepAllowed(workloadIntent, receipt, step) || !workloadRoutePredecessorMatches(workloadIntent, receipt, step, rendered, prior)) {
 			return nil, fmt.Errorf("existing workload route intent differs from same-intent recovery")
@@ -313,7 +315,9 @@ func (s *V3OperationStore) AuthorizeClaimedWorkloadReleaseRouteForNode(ctx conte
 	}
 	var prior activeFleetRoute
 	if decodeV3Record(active.Kvs[0].Value, &prior) != nil || (!alreadyCommitted && prior != record.PriorActive) ||
-		(alreadyCommitted && prior != (activeFleetRoute{IntentID: workloadIntent.ID, DeploymentID: workloadIntent.TargetDeploymentID, Generation: record.Generation, RouteSHA256: record.RenderedRoute.SHA256})) {
+		(alreadyCommitted && prior != (activeFleetRoute{IntentID: workloadIntent.ID, DeploymentID: workloadIntent.TargetDeploymentID, OperationID: workloadIntent.TargetOperationID,
+			Generation: record.Generation, RouteSHA256: record.RenderedRoute.SHA256, JobDigest: workloadIntent.TargetJobDigest,
+			SpecDigest: workloadIntent.TargetSpecDigest, ImageTag: workloadIntent.TargetImage, Process: workloadIntent.Process})) {
 		return nil, fmt.Errorf("workload route active predecessor differs from intent")
 	}
 	inventory, err := s.CurrentActiveFleetIngressInventory(ctx, workloadIntent.FleetCluster, workloadIntent.FleetEnvironment, observerPort)

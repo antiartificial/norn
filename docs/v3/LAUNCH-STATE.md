@@ -2,6 +2,45 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
+## Current V3 release readiness (2026-11-08)
+
+The Mini direct adoption is complete, but V3 is not yet ready for general
+release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
+the sole staging Fleet and remains a separate qualification target.
+
+- **Mini direct:** running the signed V3 adoption and repair releases; API and
+  host checks pass. Production readiness remains blocked (7 passed, 1 warning,
+  18 failed), with 25 incident groups and four retention warnings in the latest
+  18:12 UTC read-only inventory.
+- **DO staging:** the public canary route and provider inventory have recent
+  evidence, but DO control-plane/quorum/workload health is not established.
+  Genesis readback remains unpassed after the installed verifier used stale
+  source. Its prior one-use intent is terminal; another attempt requires a
+  fresh authorized intent and merged verifier.
+- **Workload release/resize:** local M5 worker and recovery code is uncommitted
+  and not deployed. PR #302 remains open. Admission, production-driver fault
+  qualification, and DO mixed-version release evidence remain open. The
+  offline statechart now separates four prerequisites: signed staging
+  qualification, current route predecessor, freshly observed serving lineage,
+  and durable encrypted input. Its full 458-state run passes 18 invariants and
+  deadlock checking; all four missing-evidence scenarios independently reject
+  in four states. The full API Go suite passes, and the successor-claim staged
+  target integration test was rerun against disposable local etcd. Active
+  routes retain accepted operation/spec/image/process/job lineage. The private
+  store admission boundary invokes an injected Nomad observer twice and checks
+  old job version, modify index, replicas, and exact allocation IDs before
+  atomic acceptance. Missing observers and changed lineage reject; replay
+  avoids mutable reads. Initial-route activation, admission, and route-recovery
+  tests pass against disposable etcd. The authenticated API/CLI producer does
+  not yet call this boundary, and production Nomad/ingress driver qualification
+  remains open.
+- **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
+  selected default application pool roles, but credential war-game and
+  controller recovery evidence must precede any provider mutation.
+
+The milestone table near the end of this file is a historical estimate; use
+the lane evidence above and the M5 protocol's dated status for current gates.
+
 The Mini has completed its controller-mediated direct upgrade as an independent
 node. It is not a Fleet member. The DigitalOcean deployment remains the only
 Fleet in this work and is a lower-resource staging testbed intended to resemble
@@ -148,7 +187,7 @@ The later protected DO staging Genesis readback
 ([run 42398114376](https://github.com/antiartificial/norn-fleet/actions/runs/42398114376))
 stopped in its local runner preflight before contacting the management host:
 `ansible-inventory` was absent from `PATH`. It did not change Fleet state. The
-did not change Fleet state. Replacement Fleet PR
+Replacement Fleet PR
 [#938](https://github.com/antiartificial/norn-fleet/pull/938) added the pinned
 Ansible virtualenv to `GITHUB_PATH` and was squash-merged at 21:10 UTC as
 `6f9b46886950f3109abe4c26eecead91f823965d` after its protected checks passed.
