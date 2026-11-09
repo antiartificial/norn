@@ -632,9 +632,15 @@ processes:
 	}
 	replayRequest := httptest.NewRequest(http.MethodPost, "/api/webhooks/deliveries/"+storedDeliveryID+"/replay", strings.NewReader(`{"mode":"deploy"}`))
 	replayRequest.Header.Set("Idempotency-Key", "webhook-manual-replay-1")
+	if err := db.ReserveMutationAudit(context.Background(), &store.MutationAuditEvent{
+		ID: "webhook-replay-receipt", RequestID: "webhook-replay-request", PrincipalSubject: "operator",
+		Method: http.MethodPost, Path: "/api/webhooks/deliveries/{id}/replay", StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	replayRequest = withOperationAcceptanceRequestContext(replayRequest, operationAcceptanceRequestContext{
 		ReceiptID: "webhook-replay-receipt", RequestID: "webhook-replay-request",
-		Actor: verifiedOperationActor{Issuer: "https://access.example.test", Subject: "operator"},
+		Actor: verifiedOperationActor{Issuer: "https://access.example.test", Subject: "operator", Source: string(AccessPrincipalSourceCloudflareAccess)},
 	})
 	replayRoute := chi.NewRouteContext()
 	replayRoute.URLParams.Add("id", storedDeliveryID)
