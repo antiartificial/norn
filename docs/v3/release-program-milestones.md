@@ -28,7 +28,7 @@ not happen.
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
 | Fresh-Fleet bootstrap | PRs #941 (offline war-game), #940 (controller release intent), #945 (provider-scope contract), #947 (bootstrap credential lifecycle), and #942 (module-owned test collection) are merged. General + Stateful remain the selected future app-pool roles. DO tailnet ingress enrollment remains blocked at Fleet PR #837: its required contract check fails during provider installation after repeated checksum/archive HTTP 504 responses. No provider apply or Genesis readback was run. | Rerun PR #837's exact-head contract when provider downloads recover. Complete integrated persistent apply/recovery, exact state/provider readback, per-service credential lifecycle, and terminal receipt before any protected apply. |
 | Offline models | Nine checked-in lane models and the additional workload capacity-3 configuration pass their listed invariants and deadlock checks. | Replay counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
-| Workload release | PR #302's stateless mixed-version protocol is extended by merged PR #311 (`4c90aecf`, 2026-11-09) for replay-before-mutable-read, PR #315 for replay preflight, PR #316 for the placement-bound approved overlap policy, and PR #317 for binding that policy into signed plans and atomically checking it at private acceptance. Exact-head API, Fleet pilot, durable replica, CLI, OpenAPI, UI, qualification, workflow, and security checks passed. The authenticated operator/API producer remains unconnected; no live workload release is qualified. | Implement the authenticated V3 admission producer. Then prove durable worker crash/restart, target-only public-route evidence, and a live canary only after M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
+| Workload release | PR #302's stateless mixed-version protocol is extended by merged PRs #311, #315, #316, and #317 for stable replay, replay preflight, placement-bound overlap policy, and signed policy binding. PR #319 (`877ad4ba`, 2026-11-09) adds the opt-in staging-only authenticated operator producer. Exact-head API, Fleet pilot, durable replica, CLI, OpenAPI, UI, qualification, workflow, and security checks passed. No live workload release is qualified. | Prove the producer's exact source and encrypted-input recovery contract, deterministic worker crash/restart behavior, and target-only public-route evidence. Live staging canary remains gated on DO M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
 
 Mini is an independent node, not a Fleet member. The DO staging environment is
 the only Fleet in this release work. Provider inventory, controller health,
@@ -227,8 +227,15 @@ claim mixed Norn control versions.
   workload release plan. Private acceptance checks replica/surge/route bounds
   against the current policy and compares its etcd revision in the acceptance
   transaction; exact replay still resolves before mutable policy reads.
-- [ ] Expose the authenticated admission producer. The store acceptance seam
-  remains internal, so this is not yet an operator-facing release lane.
+- [x] Expose an opt-in staging-only authenticated admission producer. PR #319
+  accepts a signed qualification ID and target replica count, resolves exact
+  replay before mutable reads, then derives policy, Fleet target, serving
+  route, Nomad lineage, app source and encrypted SOPS snapshot server-side.
+- [ ] Pin and durably recover the exact app source and prove private-input
+  retention/key lifecycle across worker and controller restart. The current
+  producer reads configured app source and SOPS ciphertext at admission;
+  merged code does not yet prove portable immutable source retrieval or a
+  bounded deletion/retention contract.
 
 **Exit:** data, routes, acknowledgements, and desired/observed capacity remain
 correct through restart, drain, failure, and retry.

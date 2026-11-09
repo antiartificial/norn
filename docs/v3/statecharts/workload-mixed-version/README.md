@@ -39,8 +39,8 @@ target-only route fence correctly prevents draining old allocations to make
 room. Do not read a green invariant report as proof that this capacity can
 complete a release.
 
-The checked-in [`chart.mmd`](chart.mmd) and [`report.md`](report.md) are the
-four-allocation run. [`chart-capacity3.mmd`](chart-capacity3.mmd) and
+The checked-in [chart source](https://github.com/antiartificial/norn/blob/877ad4ba/docs/v3/statecharts/workload-mixed-version/chart.mmd) and [`report.md`](report.md) are the
+four-allocation run. [Capacity-three chart source](https://github.com/antiartificial/norn/blob/877ad4ba/docs/v3/statecharts/workload-mixed-version/chart-capacity3.mmd) and
 [`report-capacity3.md`](report-capacity3.md) preserve the insufficient-capacity
 case for comparison.
 

@@ -37,5 +37,5 @@ bun /Users/arti/.agents/skills/statechart/scripts/statechart.ts \
   --out /tmp/norn-genesis-readback-source-gate
 ```
 
-The generated [chart](chart.mmd) and [TLC report](report.md) show the checked
+The generated [chart source](https://github.com/antiartificial/norn/blob/877ad4ba/docs/v3/statecharts/genesis-readback-source-gate/chart.mmd) and [TLC report](report.md) show the checked
 transition graph and result.
