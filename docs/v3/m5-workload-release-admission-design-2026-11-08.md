@@ -39,6 +39,15 @@ func ResolveClaimedRelease(ctx context.Context, claim Claim, appLock AppLock) (B
 
 The API admission resolves request replay before current-state reads, then atomically fences and records request identity, signed plan, operation, app mutation slot, active route predecessor/reservation, completed old lineage, candidate/catalog inputs, desired count, and Fleet target generation. Remote Nomad and ingress observations are rechecked at side-effect boundaries; they are not described as part of the etcd transaction.
 
+The stable request selection has a versioned canonical digest over the exact
+qualification ID and requested target replica count. The producer computes it
+from those caller selections before any mutable read so a retry can resolve
+first. On first acceptance, the store recomputes the digest from the resolved
+signed qualification and validated desired plan and rejects any mismatch.
+Source/spec/image, scheduler lineage, capacity observations, and encrypted
+input bytes are deliberately excluded: these are resolved and pinned by the
+first acceptance, then must not prevent exact replay if they later change.
+
 The claimed release worker stages one deployment-specific job with a stable job and execution identity. It uses exact source/image/input digests and secret-free, versioned input references. Public route state remains unchanged during staging. After exact marker/source/no-diff readback, the worker writes a write-once target binding under the current claim and derives the strict runtime intent from plan plus binding. All health, route, drain, scale-lineage, and completed-release readers use that same resolver. The current target-only route proof and full target health requirement before old-job drain remain intact.
 
 The initial admission is limited to an owner-approved stateless overlap policy. A generic stateless flag is not evidence of data compatibility. Stateful workloads require a separate compatibility authorization covering writers, schema, and acknowledged data.
