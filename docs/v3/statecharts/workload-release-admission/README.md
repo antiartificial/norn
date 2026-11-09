@@ -3,8 +3,10 @@
 This bounded TLA+ model describes the M5 release-owned staging and recovery
 protocol. The claimed worker now executes signed-plan target staging and
 resolves the observed binding to the existing strict
-`WorkloadReleaseIntent` downstream contract. Authenticated API admission and
-live production-driver qualification remain incomplete.
+`WorkloadReleaseIntent` downstream contract. The opt-in authenticated staging
+API is implemented in PR #319, and PR #321 covers fresh admission and exact
+replay through the HTTP handler with deterministic fakes. Production-driver
+and restart qualification remain incomplete.
 
 ## Regenerate the chart
 
@@ -21,9 +23,10 @@ From the repository root, run:
 Use a new or empty output folder for each run.
 
 The separate admission replay model isolates the idempotency contract. Its
-planned stable request comprises a qualification ID and a target replica count
-bounded by an operator-approved app policy. The authenticated producer is
-still open. The model checks that an exact same-key retry
+stable request comprises a qualification ID and a target replica count bounded
+by an operator-approved app policy. The handler implements this request in
+PR #319; PR #321 verifies fresh selection and exact replay ordering. The model
+checks that an exact same-key retry
 returns the originally accepted receipt without rereading mutable
 qualification, source, or secret inputs, even after expiry or source loss.
 Changed qualification or target size conflicts; an out-of-policy size is
@@ -67,9 +70,10 @@ The four bounded checks each reached four states and six steps. They all
 passed `TypeOK`, `IncompleteAdmissionIsRejected`,
 `AcceptedPlanHasCompleteEvidence`, and deadlock checking. Their two-state
 charts and TLC reports are under `admission-gates/`. These checks model the
-admission decisions abstractly; they do not prove that the current HTTP
-runtime resolves these four inputs, and authenticated admission remains
-unimplemented.
+admission decisions abstractly; they do not individually exercise each
+missing-evidence rejection through the HTTP handler. The handler test covers a
+valid fresh admission, exact retry before mutable reads, and CI-principal
+rejection; concurrent requests and production drivers remain open.
 
 After adding the admission gate, the full release model reaches 458 states and
 1,663 steps; its 18 listed invariants and deadlock check pass. Its generated
@@ -90,8 +94,9 @@ NORN_TEST_ETCD_ENDPOINTS=http://127.0.0.1:12379 go test ./etcdstore \
 
 This verifies the signed qualification lookup, atomic private-input acceptance
 and replay, receipt CAS, and successor-claim target binding against real etcd
-transactions. It does not exercise the Nomad HTTP API, ingress, authenticated
-admission route, or a production driver configuration.
+transactions. PR #321 separately exercises the authenticated admission route
+in-process using deterministic fakes. Neither test runs ingress or a
+production Nomad/ingress driver configuration.
 
 The updated private-input acceptance test also deletes the qualified source
 deployment projection, supplies an invalid current plan and a new operation
@@ -159,7 +164,10 @@ before opening current SOPS/source data or observing Nomad; the stored
 encrypted snapshot remains the input for recovery. A key inventory reports
 all retained IDs. Startup preflight checks configured keys against retained
 IDs; deletion/retention policy is not yet implemented. The authenticated
-request producer that computes this digest remains open.
+request producer that computes this digest is implemented by PR #319. The
+model abstracts its HTTP identity and mutable evidence lookups; handler-level
+tests cover fresh acceptance and exact retry, while concurrent admission,
+worker/controller restart, and private-input deletion/retention remain open.
 
 The model also treats the workload envelope key as a recoverability input.
 If a successor cannot load the historical key before exact target binding, it
