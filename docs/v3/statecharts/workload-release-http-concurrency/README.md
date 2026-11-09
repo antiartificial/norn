@@ -53,3 +53,11 @@ that boundary, and the etcd test does not pass through the HTTP handler. It
 also abstracts qualification freshness and concurrent reads, process restart,
 private-input rotation/deletion, worker recovery, Nomad/ingress drivers, and
 live workload behavior. Those gates remain open.
+
+An initial disposable-etcd HTTP harness was discarded because it tried to
+seed an already-succeeded qualification deployment directly. The real store
+requires that source to have completed signed deployment and ingress-route
+admission, so direct etcd writes would make the concurrency result misleading.
+The replacement needs to create that source through the real route-completion
+path; only the Nomad lineage observer may be substituted. See the dated
+fixture-boundary note in the M5 workload-release protocol.

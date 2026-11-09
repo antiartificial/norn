@@ -45,6 +45,27 @@ the same operation ID. That HTTP test uses a fake atomic store; an
 implementation-backed HTTP-to-etcd concurrency test, restart/response-loss
 recovery, and production-driver qualification remain open.
 
+### HTTP-to-etcd fixture boundary (2026-11-09)
+
+A local disposable-etcd integration harness was explored and rejected before
+being kept: a synthetic already-succeeded `app.deploy` cannot be admitted as
+the qualification source. The real store requires a signed Fleet target,
+exclusive app admission, a completed signed deployment with complete region
+results, and an active route whose initial-route intent and reservation match.
+The ordinary terminal deployment helper is package-private to `etcdstore`
+tests; the public initial-route completion path requires deployment-bound
+ingress proof. Directly writing a successful-looking operation or route would
+weaken the evidence this test is meant to provide.
+
+The next implementation-backed test must establish its qualified source via
+the real accepted deployment and route-completion path (or first extract a
+shared fixture seam that still drives that path), then run the production HTTP
+handler and real `V3OperationStore` against disposable etcd. It may fake the
+Nomad lineage observer, but it must not fake qualification lookup, target or
+policy reads, serving-route resolution, private-input persistence, or atomic
+acceptance. The abandoned harness was removed; no runtime or release behavior
+was changed by this investigation.
+
 Exact-head PR #311 checks passed for API Go tests, Fleet pilot workload,
 durable replicas on three Nomad clients, app catalog, CLI, OpenAPI, platform
 release qualification, workflow lint, Web UI, and Socket security. Path-filtered
