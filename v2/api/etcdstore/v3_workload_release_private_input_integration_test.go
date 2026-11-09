@@ -205,6 +205,10 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	if lineageObserver.calls != priorLineageReads {
 		t.Fatalf("idempotent replay performed new mutable lineage reads: before=%d after=%d", priorLineageReads, lineageObserver.calls)
 	}
+	resolvedReplay, err := adapter.ResolvePrivateWorkloadReleaseReplay(ctx, replayInput.Identity, replayInput.Operation)
+	if err != nil || !resolvedReplay.Replayed || resolvedReplay.Operation.ID != accepted.Operation.ID {
+		t.Fatalf("replay-only lookup did not return the prior acceptance: replay=%+v err=%v", resolvedReplay, err)
+	}
 	replayedAfterSecretRotation, err := adapter.AcceptPrivateWorkloadRelease(ctx, replayInput, model.ReleaseQualification{}, nil, []byte("different-sops-snapshot"), keys, lineageObserver)
 	if err != nil || !replayedAfterSecretRotation.Replayed || replayedAfterSecretRotation.Operation.ID != accepted.Operation.ID {
 		t.Fatalf("same request did not replay original acceptance after current SOPS input changed: replay=%+v err=%v", replayedAfterSecretRotation, err)
