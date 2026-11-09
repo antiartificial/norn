@@ -1,5 +1,35 @@
 # Norn v3 launch history
 
+## Fresh release-readiness reconciliation (2026-11-09 12:00 UTC)
+
+Norn PR [#324](https://github.com/antiartificial/norn/pull/324) merged at
+`3fcdc154e247d5b32a8ad025e4fb9690390b5022`. It fixes a race where two
+independent etcd clients submitted the same workload release request, both
+missed the initial replay read, and the fence loser returned an error instead
+of the winner's durable acceptance. The two-client integration test passed ten
+consecutive runs against local etcd, a focused race-detector run, and the full
+API module suite. The pre-fix five-step counterexample and fixed 14-state /
+18-transition model are checked in. This proves store-level same-key
+convergence only; concurrent HTTP handlers, worker/controller restart and
+response loss, and production drivers remain open. No live workload release
+was run.
+
+An authenticated Mini inventory at 11:59 UTC returned API and host status
+`ok`, source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`, 30 app records, 46
+services (19 passing, 27 unknown), seven queued Fleet GitHub dispatch receipts,
+25 incident groups, and four snapshot-retention warnings. Production
+readiness is blocked (7 passed, 1 warning, 18 failed). The `latestAssurance`
+receipt is still `succeeded` but dated 2026-09-06; this inventory did not run
+assurance, so public-route assurance is not fresh.
+
+At about 12:00 UTC, read-only `doctl --context work` queries found all nine
+staging Droplets, both management Droplets, and the staging ingress load
+balancer active. The queries did not inspect the managed databases or any Norn
+API, etcd, Nomad/Consul, workload, or route state. DO runtime health remains
+unverified. Fleet PR #837 remains blocked: exact-head contract run
+42578247221 failed downloading pinned DigitalOcean provider v2.100.0 after
+three attempts. No provider mutation or Genesis readback ran.
+
 ## Release merge and gate update (2026-11-09 05:35 UTC)
 
 Norn PR #300 (release lanes, milestones, and V3 API/client cleanup), #301 (Mini
