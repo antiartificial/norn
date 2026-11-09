@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-08)
+## Current V3 release readiness (2026-11-09)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -12,28 +12,33 @@ the sole staging Fleet and remains a separate qualification target.
   host checks pass. Production readiness remains blocked (7 passed, 1 warning,
   18 failed), with 25 incident groups and four retention warnings in the latest
   18:12 UTC read-only inventory.
-- **DO staging:** the public canary route and provider inventory have recent
-  evidence, but DO control-plane/quorum/workload health is not established.
-  Genesis readback remains unpassed after the installed verifier used stale
-  source. Its prior one-use intent is terminal; another attempt requires a
-  fresh authorized intent and merged verifier.
-- **Workload release/resize:** local M5 worker and recovery code is uncommitted
-  and not deployed. PR #302 remains open. Admission, production-driver fault
-  qualification, and DO mixed-version release evidence remain open. The
-  offline statechart now separates four prerequisites: signed staging
-  qualification, current route predecessor, freshly observed serving lineage,
-  and durable encrypted input. Its full 458-state run passes 18 invariants and
-  deadlock checking; all four missing-evidence scenarios independently reject
-  in four states. The full API Go suite passes, and the successor-claim staged
-  target integration test was rerun against disposable local etcd. Active
-  routes retain accepted operation/spec/image/process/job lineage. The private
-  store admission boundary invokes an injected Nomad observer twice and checks
-  old job version, modify index, replicas, and exact allocation IDs before
-  atomic acceptance. Missing observers and changed lineage reject; replay
-  avoids mutable reads. Initial-route activation, admission, and route-recovery
-  tests pass against disposable etcd. The authenticated API/CLI producer does
-  not yet call this boundary, and production Nomad/ingress driver qualification
-  remains open.
+- **DO staging:** a 2026-11-09 04:33 UTC `doctl --context work` inventory
+  reported all nine staging Droplets, both management Droplets, and the ingress
+  load balancer active. This proves provider resource state only; Norn API,
+  etcd quorum, Nomad workloads, and public route health were not read by that
+  command. Genesis readback remains unpassed: run 42418784411 used an installed
+  verifier whose pinned source objects were absent. The intent and one-use
+  runner are terminal. Fleet PR #946 merged the source-admission preflight, but
+  no protected installer or readback has run against that merged source. A
+  repeat needs a fresh authorized intent and one-use runner; do not reuse the
+  old authorization or claim runtime health from provider inventory.
+- **Workload release/resize:** implementation commit `94c6f590` is on open PR
+  #302; its exact-head CI was running at this update. The staged-target,
+  encrypted-input, and recovery changes are committed but not merged or
+  deployed. The authenticated operator/API producer, production-driver fault
+  qualification, and DO mixed-version release remain open. The offline
+  statechart separates signed staging qualification, current route predecessor,
+  observed serving lineage, and durable encrypted input. TLC explored 458
+  states and 1,663 steps: 18 safety invariants and deadlock checking passed.
+  Each of four missing-evidence scenarios explored 4 states and 6 steps and
+  rejected incomplete admission. Affected Go packages passed, including their
+  etcd-backed integration tests against a temporary loopback etcd 3.7.3. This
+  did not exercise a live Nomad/ingress driver or provider. Active routes retain
+  accepted operation/spec/image/process/job lineage. The private-store admission
+  boundary re-observes the serving deployment and checks its job version,
+  modify index, replicas, and exact allocation IDs before atomic acceptance;
+  missing or changed lineage rejects, while exact replay avoids mutable reads.
+  The authenticated API/CLI producer does not yet call this boundary.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected default application pool roles, but credential war-game and
   controller recovery evidence must precede any provider mutation.
