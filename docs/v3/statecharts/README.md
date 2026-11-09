@@ -9,7 +9,7 @@ provider state, host behavior, availability, or the implementation itself.
 | Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |
 | Mini direct V3 upgrade | 82 states, 164 steps; 7 invariants and deadlock check pass | Bounded model of backup/shadow, writer proof, fencing, migration, promotion, receipt, and same-target recovery | Abstracts real key custody, writer discovery, Launchd PID reuse, and host effects |
 | Existing Fleet Genesis | 69 states, 107 steps; 9 invariants and deadlock check pass | Dormant install, signed intent, staged controls, passive-first promotion, recovery; fresh-Fleet request is explicitly blocked | Inputs are modeled as one valid/invalid gate; provider create workflow is absent from this model |
-| Workload mixed-version resize | 24 states, 52 steps; 11 invariants and deadlock check pass | Proposed protocol, not current controller behavior | Abstracts Nomad, app processes, database semantics, route implementation, and timing |
+| Workload mixed-version resize | Capacity 3: 24 states / 52 steps; capacity 4: 103 / 275; 11 invariants and deadlock check pass in both | Proposed protocol, not current controller behavior; capacity 3 has no target-only route or terminal path under the target-only-before-drain rule, while capacity 4 reaches terminal receipt | Abstracts Nomad placement, app processes, database semantics, route implementation, and timing; live preflight must prove full overlap capacity |
 | Fresh DO Fleet create and recovery | 308 states, 813 steps; 8 invariants and deadlock check pass | Bounded protected plan/apply, partial create, readback, same-intent recovery, PKI/configuration, exact cleanup | Three abstract node groups; detailed provider resources and secret lifecycle are omitted |
 | Future fresh Fleet with two app pools | 45 states, 98 steps; 14 invariants and deadlock check pass | General + stateful pool create/recovery, role-correct workload placement/readiness, stateful recovery proof, then shared inventory/configuration/receipt | Abstract counts/identities, provider API, secret lifecycle, workload-specific data integrity, and implementation behavior |
 | Nine-node staging-topology create and recovery | 102 states, 210 steps; 10 invariants and deadlock check pass | 3+2+4 partial-create, fresh exact readback, same-intent forward recovery, then inventory/PKI/configuration; pool counts match protected `norn-fleet` main | Not wired to the protected provider workflow; node identities abstracted, inputs/credentials aggregate, no provider, GitHub Actions, SSH, Ansible, or teardown behavior |
@@ -38,6 +38,11 @@ provider state, host behavior, availability, or the implementation itself.
   mixed to target; switching back requires a separately admitted intent. Loss
   of one canary allocation invalidates route proof and holds old-version drain
   until fresh readback confirms the route and same-intent recovery reconciles.
+- In the mixed-version workload model, three simultaneous allocation slots
+  preserve safety but cannot complete the two-old/two-target rollout without
+  weakening the route/drain fence. Four slots provide the modeled full-overlap
+  path. Treat this as a preflighted scheduler-capacity requirement, not a
+  reason to drain old allocations before target-only route proof.
 - The workload route-publication model keeps partial node writes under the same
   intent and generation after a lost response. Inventory drift, target-health
   loss, or authority loss holds progress. An old-stop authorization needs fresh
