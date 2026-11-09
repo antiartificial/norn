@@ -157,13 +157,17 @@ evidence against the exact successful V3 staging deployment, or document an
 equivalent trusted import path. Candidate listing by itself cannot close this
 gap.
 
-Admission also needs to derive the target job digest before it can sign the
-complete `WorkloadReleasePlan`. The current worker target builder validates a
-complete plan, including that digest, before building the Nomad job. Extract a
-shared deterministic target builder from the worker path; admission should
-use it to derive the digest, and execution should use the same builder to
-recompute and verify the accepted plan. Do not duplicate the translator or
-accept a caller-provided digest.
+Admission must derive the target job digest before it can sign the complete
+`WorkloadReleasePlan`; it must not duplicate the translator or accept a
+caller-provided digest. This is now implemented: the shared target builder
+lives beside the release contract in
+`pipeline.BuildWorkloadReleaseTargetJobPlan`; the worker delegates to it, and
+admission can call `pipeline.DeriveWorkloadReleaseTargetJobDigest` with an
+intent that has no target digest. Derivation rejects a prefilled digest and
+reuses the exact translator and input-plan validation used again by the
+worker. Focused pipeline/worker tests and the full `go test ./...` API module
+suite passed on 2026-11-09. This closes the digest-construction cycle only; it
+does not add the authenticated operator producer or qualify live drivers.
 
 For a same-key retry, resolve the signed request identity and compare the full
 canonical acceptance, including the exact qualification, before rechecking
