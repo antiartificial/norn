@@ -4,8 +4,11 @@
 > admission API merged as Norn PR #319 (`877ad4ba`), and PR #324
 > (`3fcdc154`) fixes concurrent same-key replay at the etcd store boundary.
 > Two independent store clients now converge on one fresh acceptance and one
-> replay; its bounded model records the pre-fix counterexample. The older status text
-> below predates that producer and should be read as implementation history.
+> replay; its bounded model records the pre-fix counterexample. A separate
+> handler test and statechart force two initial replay misses and prove one
+> fresh response plus one replay through a fake atomic store. The older status
+> text below predates that producer and should be read as implementation
+> history.
 > The API remains opt-in, undeployed, and unqualified against live or
 > disposable Nomad/ingress drivers. Exact source recovery, private-input
 > retention/deletion semantics, and full recovery qualification remain open.
@@ -36,7 +39,10 @@ computes the stable request digest and submits it through private acceptance;
 PR #321 adds deterministic HTTP-handler coverage for fresh admission and exact
 same-key retry before mutable reads. PR #324 adds simultaneous same-key
 coverage across two independent etcd clients and records the repaired race in a
-separate statechart. Simultaneous HTTP-handler requests, restart/response-loss
+separate statechart. A deterministic HTTP test now forces two handlers to miss
+the initial replay lookup, then checks one fresh response and one replay with
+the same operation ID. That HTTP test uses a fake atomic store; an
+implementation-backed HTTP-to-etcd concurrency test, restart/response-loss
 recovery, and production-driver qualification remain open.
 
 Exact-head PR #311 checks passed for API Go tests, Fleet pilot workload,
@@ -67,8 +73,10 @@ matching completed staging deployment and region results. Both that lookup and
 private-input acceptance have passed against disposable local etcd. PR #319's
 API admission producer calls this resolver and private acceptance; PR #321
 exercises that path with a fake store and Nomad-lineage observer. PR #324 proves
-same-key concurrency at the store boundary, but not simultaneous HTTP-handler
-requests, restart recovery, or production driver behavior.
+same-key concurrency at the store boundary. The separate HTTP concurrency test
+exercises two real handler calls through a fake atomic store; the end-to-end
+HTTP-to-etcd path, restart recovery, and production driver behavior remain
+unqualified.
 
 ## Release-readiness milestones and order
 
@@ -81,7 +89,7 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 | --- | --- | --- | --- | --- |
 | M5-A: offline protocol | Partial: merged PR #311 now adds exact stable-request replay before mutable reads; expanded bounded statechart (458 states/1,663 transitions, 18 invariants plus deadlock), fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, one-use attempt marker, and stage-worker wiring pass locally. Offline tests cover secret-stage failure before marker/create, conservative hold while an ambiguous create remains absent, and exact-target adoption when it becomes visible without resubmission. Four independent missing-admission-evidence scenarios now reject. Production-driver failure matrix remains open. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, pre-attempt reservation recovery, exact-target adoption after response loss, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on absent or mismatched target. | M5-B, input-provenance inventory, M5-C design |
 | M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound SOPS snapshot capture, atomic etcd acceptance/input persistence, opt-in retained-key preflight, signed qualification lookup, and server-side Nomad lineage are implemented. PR #319 resolves an operator-selected qualification ID and checks configured app-source spec digest, but automatic candidate discovery is not provided; durable source retrieval after worker restart and private-envelope retention/deletion semantics remain open. | Make exact app source durably retrievable; define private envelope availability, rotation, retention and deletion; preserve qualification expiry and reject caller-supplied scheduler observations. | Deterministic tests bind app, trusted signer, validity window, completed staging deployment, source SHA, exact content-addressed artifact, and attestation subject digest; missing or rotated inputs fail closed across restart. | M5-A, M5-C design |
-| M5-C: atomic release admission | Implemented, not deployed: PR #319 adds an opt-in staging-only managed-operator endpoint. It accepts only qualification ID and target replica count, resolves exact replay before mutable reads, derives serving lineage/current Fleet target/approved policy/source/SOPS snapshot, and calls private acceptance with the Nomad observer. PR #321 covers fresh admission, exact retry, and CI-principal rejection with deterministic fakes. PR #324 covers simultaneous same-key acceptance across two independent etcd clients. | Add simultaneous HTTP-handler coverage, then install only after DO M3/M4 and finish exact-source/private-input recovery design. | Store-level concurrent same-key admission returns one fresh operation and one replay; changed selection conflicts; the app fence prevents a second mutable operation. Full end-to-end driver qualification and concurrent handler coverage remain required. | M5-A/B |
+| M5-C: atomic release admission | Implemented, not deployed: PR #319 adds an opt-in staging-only managed-operator endpoint. It accepts only qualification ID and target replica count, resolves exact replay before mutable reads, derives serving lineage/current Fleet target/approved policy/source/SOPS snapshot, and calls private acceptance with the Nomad observer. PR #321 covers fresh admission, exact retry, and CI-principal rejection with deterministic fakes. PR #324 covers simultaneous same-key acceptance across two independent etcd clients. The handler concurrency test forces two initial replay misses and checks one fresh result plus one same-ID replay using a fake atomic store. | Add one implementation-backed HTTP-to-etcd concurrency test; then install only after DO M3/M4 and finish exact-source/private-input recovery design. | Two simultaneous handler calls and two independent etcd clients each converge to one fresh acceptance and one replay at their respective boundaries; full end-to-end handler/store, restart recovery, and production-driver qualification remain required. | M5-A/B |
 | M5-D: private stage and binding | Partial: signed-plan-bound stage effect, shared app gate, one-use attempt marker, successor-claim recovery, exact database-free job builder, operation-bound SOPS input decryption, private Nomad secret staging, create-only CAS, exact readback, and strict-intent downstream wiring implemented locally. Retained input-key preflight now checks V3 etcd before its deploy worker starts. Offline orchestration tests prove secret-stage failure, claim loss after secret staging, and marker transaction failure all prevent create; absent readback holds, and a later exact readback is adopted without a second registration. Full API Go suite passes. Delayed-request/production-driver cases are not yet qualified. | Extend deterministic worker fault cases for every stage/create/readback/bind boundary, then run the same protocol against a version-pinned disposable Nomad/ingress stack with delayed acceptance and lost responses. | Fault matrix proves exact-target adoption after lost response or durable conservative hold, never a duplicate create; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
 | M5-F: DO staging workload release | Partial: historical 2→3→2 scale, sequential drain, and canary probes passed; the 2026-11-08 public route serves source `be5ca5d…` across two reported allocations. The durable second-release operation receipt has not been re-read, and mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; after M5-A–E, run fixed-image resize and mixed-version recovery through the release-owned admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |

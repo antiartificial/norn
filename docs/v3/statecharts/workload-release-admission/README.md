@@ -71,10 +71,10 @@ passed `TypeOK`, `IncompleteAdmissionIsRejected`,
 `AcceptedPlanHasCompleteEvidence`, and deadlock checking. Their two-state
 charts and TLC reports are under `admission-gates/`. These checks model the
 admission decisions abstractly; they do not individually exercise each
-missing-evidence rejection through the HTTP handler. The handler test covers a
-valid fresh admission, exact retry before mutable reads, and CI-principal
-rejection. The concurrent store boundary is covered separately; simultaneous
-HTTP-handler requests and production drivers remain open.
+missing-evidence rejection through the HTTP handler. Handler tests cover a
+valid fresh admission, exact retry before mutable reads, CI-principal
+rejection, and simultaneous same-key requests. Production drivers remain
+open.
 
 After adding the admission gate, the full release model reaches 458 states and
 1,663 steps; its 18 listed invariants and deadlock check pass. Its generated
@@ -84,9 +84,12 @@ chart and report were regenerated from the checked-in spec and view.
 
 The separate [concurrent admission model](../workload-release-concurrent-admission/README.md)
 and its two-client etcd regression test cover simultaneous same-key acceptance
-at the store boundary. This closes the earlier store-level concurrent request
-gap. Simultaneous HTTP handler requests, controller restart/response-loss
-qualification, production drivers, and private-input retention remain open.
+at the store boundary. The [HTTP concurrency model](../workload-release-http-concurrency/README.md)
+and handler test force both requests past an initial replay miss, then verify
+one fresh response and one replay with the same operation ID through a
+deterministic fake store. These adjacent proofs do not combine the handler with
+real etcd in one test. Controller restart/response-loss qualification,
+production drivers, and private-input retention remain open.
 
 The API module command `cd v2/api && go test ./... -count=1` passed. The
 environment did not have an etcd test endpoint, so endpoint-gated integration

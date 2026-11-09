@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 )
 
 type workloadReleaseAdmissionStoreFake struct {
+	mu                    sync.Mutex
 	authority             string
 	prior                 *store.AcceptedOperation
 	identity              store.OperationRequestIdentity
@@ -45,6 +47,11 @@ type workloadReleaseAdmissionStoreFake struct {
 	qualify               int
 	deploymentReads       int
 	accept                int
+	initialReplayBarrier  chan struct{}
+	initialReplayMisses   int
+	acceptedOperation     *store.AcceptedOperation
+	acceptedIdentity      store.OperationRequestIdentity
+	acceptedRequestDigest string
 }
 
 func (s *workloadReleaseAdmissionStoreFake) Authority(context.Context) (string, error) {
@@ -53,29 +60,61 @@ func (s *workloadReleaseAdmissionStoreFake) Authority(context.Context) (string, 
 
 func (s *workloadReleaseAdmissionStoreFake) ResolvePrivateWorkloadReleaseReplay(_ context.Context,
 	identity store.OperationRequestIdentity, operation model.Operation) (store.AcceptedOperation, error) {
+	s.mu.Lock()
 	s.resolve++
+	if s.prior == nil && s.initialReplayBarrier != nil {
+		s.initialReplayMisses++
+		barrier := s.initialReplayBarrier
+		if s.initialReplayMisses == 2 {
+			close(barrier)
+		}
+		s.mu.Unlock()
+		select {
+		case <-barrier:
+			return store.AcceptedOperation{}, store.ErrAcceptanceNotFound
+		case <-time.After(5 * time.Second):
+			return store.AcceptedOperation{}, errors.New("concurrent replay lookup barrier timed out")
+		}
+	}
 	if s.prior == nil {
+		s.mu.Unlock()
 		return store.AcceptedOperation{}, store.ErrAcceptanceNotFound
 	}
 	requestDigest, _ := operation.Metadata["workloadReleaseRequestDigest"].(string)
 	priorDigest, _ := s.prior.Operation.Metadata["workloadReleaseRequestDigest"].(string)
 	if identity != s.identity || operation.Kind != s.prior.Operation.Kind || operation.App != s.prior.Operation.App || requestDigest != priorDigest {
+		s.mu.Unlock()
 		return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: identity}
 	}
 	prior := *s.prior
 	prior.Replayed = true
+	s.mu.Unlock()
 	return prior, nil
 }
 
 func (s *workloadReleaseAdmissionStoreFake) AcceptPrivateWorkloadRelease(_ context.Context,
 	input store.OperationAcceptance, qualification model.ReleaseQualification, _ []string, privateInput []byte,
 	_ *store.WorkloadReleaseInputKeyRing, _ nomad.ActiveDeploymentLineageObserver) (store.AcceptedOperation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.accept++
+	requestDigest, _ := input.Semantics["workloadReleaseRequestDigest"].(string)
+	if s.acceptedOperation != nil {
+		if input.Identity != s.acceptedIdentity || requestDigest != s.acceptedRequestDigest {
+			return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: input.Identity}
+		}
+		accepted := *s.acceptedOperation
+		accepted.Replayed = true
+		return accepted, nil
+	}
 	s.acceptedInput = input
 	s.acceptedQualification = qualification
 	s.acceptedPrivateInput = append([]byte(nil), privateInput...)
 	accepted := store.AcceptedOperation{Operation: input.Operation, Intent: store.SignedAcceptanceIntent{CanonicalDigest: "sha256:accepted"}}
 	s.accepted = &accepted
+	s.acceptedOperation = &accepted
+	s.acceptedIdentity = input.Identity
+	s.acceptedRequestDigest = requestDigest
 	return accepted, nil
 }
 
@@ -88,6 +127,8 @@ func (*workloadReleaseAdmissionStoreFake) RequiredWorkloadReleaseInputKeys(conte
 }
 
 func (s *workloadReleaseAdmissionStoreFake) CurrentFleetAppTarget(context.Context, string, string) (etcdstore.FleetAppTarget, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.targetReads++
 	if s.targetInfo.App == "" {
 		return etcdstore.FleetAppTarget{}, 0, errors.New("not expected in replay test")
@@ -96,6 +137,8 @@ func (s *workloadReleaseAdmissionStoreFake) CurrentFleetAppTarget(context.Contex
 }
 
 func (s *workloadReleaseAdmissionStoreFake) CurrentWorkloadReleasePolicy(context.Context, string, string) (store.WorkloadReleasePolicy, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.policyReads++
 	if s.policyInfo.App == "" {
 		return store.WorkloadReleasePolicy{}, 0, errors.New("not expected in replay test")
@@ -104,6 +147,8 @@ func (s *workloadReleaseAdmissionStoreFake) CurrentWorkloadReleasePolicy(context
 }
 
 func (s *workloadReleaseAdmissionStoreFake) CurrentWorkloadReleaseServingRoute(context.Context, string, string, string) (etcdstore.WorkloadReleaseServingRoute, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.route++
 	if s.routeInfo.DeploymentID == "" {
 		return etcdstore.WorkloadReleaseServingRoute{}, errors.New("not expected in replay test")
@@ -112,6 +157,8 @@ func (s *workloadReleaseAdmissionStoreFake) CurrentWorkloadReleaseServingRoute(c
 }
 
 func (s *workloadReleaseAdmissionStoreFake) ResolveWorkloadReleaseQualification(context.Context, string, string, []string, time.Time) (model.ReleaseQualification, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.qualify++
 	if s.qualification.ID == "" {
 		return model.ReleaseQualification{}, errors.New("not expected in replay test")
@@ -120,6 +167,8 @@ func (s *workloadReleaseAdmissionStoreFake) ResolveWorkloadReleaseQualification(
 }
 
 func (s *workloadReleaseAdmissionStoreFake) GetDeployment(context.Context, string) (*model.Deployment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.deploymentReads++
 	if s.deployment == nil {
 		return nil, errors.New("not expected in replay test")
@@ -128,12 +177,15 @@ func (s *workloadReleaseAdmissionStoreFake) GetDeployment(context.Context, strin
 }
 
 type workloadReleaseAdmissionLineageFake struct {
+	mu      sync.Mutex
 	lineage nomad.ActiveDeploymentLineage
 	calls   int
 }
 
 func (f *workloadReleaseAdmissionLineageFake) ObserveActiveDeploymentLineage(context.Context, string, string, string, string,
 	string, string, string, string, string, string) (nomad.ActiveDeploymentLineage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if f.lineage.DeploymentID == "" {
 		return nomad.ActiveDeploymentLineage{}, errors.New("not expected in replay test")
@@ -167,7 +219,7 @@ func TestEtcdWorkloadReleaseAdmissionRejectsCIPrincipal(t *testing.T) {
 	}
 }
 
-func TestEtcdWorkloadReleaseAdmissionBuildsFreshOperationFromTrustedInputs(t *testing.T) {
+func TestEtcdWorkloadReleaseAdmissionConcurrentSameKeyConverges(t *testing.T) {
 	cfg, signingKey := qualificationTestConfig(t)
 	appsDir := t.TempDir()
 	if err := os.Chmod(appsDir, 0o750); err != nil {
@@ -260,20 +312,67 @@ endpoints:
 		JobDigest: strings.TrimPrefix(route.JobDigest, "sha256:"), JobVersion: 7, ModifyIndex: 55, Process: route.Process,
 		Replicas: 1, AllocationIDs: []string{"old-allocation"}}}
 	operations := &workloadReleaseAdmissionStoreFake{authority: "authority-1", qualification: qualification,
-		targetInfo: target, policyInfo: policy, routeInfo: route, deployment: deployment}
-	response := serveWorkloadReleaseAdmissionWithConfig(t, cfg, operations, lineage, trustedQualificationKeys,
-		`{"qualificationId":"qualification-1","targetReplicas":3}`, "fresh-key", false)
-	if response.Code != http.StatusCreated || operations.resolve != 1 || operations.qualify != 1 || operations.targetReads != 1 ||
-		operations.policyReads != 1 || operations.route != 1 || operations.deploymentReads != 1 || lineage.calls != 1 || operations.accept != 1 {
-		t.Fatalf("fresh admission did not traverse trusted inputs once: status=%d body=%s store=%+v lineage=%+v", response.Code, response.Body.String(), operations, lineage)
+		targetInfo: target, policyInfo: policy, routeInfo: route, deployment: deployment, initialReplayBarrier: make(chan struct{})}
+	type admissionResponse struct {
+		status int
+		body   string
 	}
-	var result map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
+	responses := make(chan admissionResponse, 2)
+	var requests sync.WaitGroup
+	for range 2 {
+		requests.Add(1)
+		go func() {
+			defer requests.Done()
+			response := serveWorkloadReleaseAdmissionWithConfig(t, cfg, operations, lineage, trustedQualificationKeys,
+				`{"qualificationId":"qualification-1","targetReplicas":3}`, "fresh-key", false)
+			responses <- admissionResponse{status: response.Code, body: response.Body.String()}
+		}()
 	}
-	if result["operationId"] != operations.accepted.Operation.ID || result["replayed"] != false ||
-		strings.Contains(response.Body.String(), encryptedInputs) || len(operations.acceptedPrivateInput) == 0 {
-		t.Fatalf("admission result leaked private inputs or lost acceptance: response=%s accepted=%+v", response.Body.String(), operations.accepted)
+	requests.Wait()
+	close(responses)
+	var responseBodies []string
+	var acceptedIDs []string
+	var freshResponses, replayResponses int
+	for response := range responses {
+		responseBodies = append(responseBodies, response.body)
+		if response.status != http.StatusCreated && response.status != http.StatusOK {
+			t.Fatalf("concurrent admission failed: status=%d body=%s", response.status, response.body)
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(response.body), &result); err != nil {
+			t.Fatal(err)
+		}
+		operationID, ok := result["operationId"].(string)
+		if !ok || operationID == "" {
+			t.Fatalf("concurrent admission omitted operation ID: %s", response.body)
+		}
+		acceptedIDs = append(acceptedIDs, operationID)
+		if result["replayed"] == true {
+			if response.status != http.StatusOK {
+				t.Fatalf("replay response status=%d, want %d: %s", response.status, http.StatusOK, response.body)
+			}
+			replayResponses++
+		} else {
+			if response.status != http.StatusCreated {
+				t.Fatalf("fresh response status=%d, want %d: %s", response.status, http.StatusCreated, response.body)
+			}
+			freshResponses++
+		}
+	}
+	if freshResponses != 1 || replayResponses != 1 || len(acceptedIDs) != 2 || acceptedIDs[0] != acceptedIDs[1] ||
+		operations.resolve != 2 || operations.qualify != 2 || operations.targetReads != 2 || operations.policyReads != 2 ||
+		operations.route != 2 || operations.deploymentReads != 2 || lineage.calls != 2 || operations.accept != 2 ||
+		operations.acceptedOperation == nil || operations.acceptedOperation.Operation.ID != acceptedIDs[0] {
+		t.Fatalf("simultaneous requests did not converge on one trusted acceptance: fresh=%d replay=%d ids=%v responses=%v store=%+v lineage=%+v",
+			freshResponses, replayResponses, acceptedIDs, responseBodies, operations, lineage)
+	}
+	for _, response := range responseBodies {
+		if strings.Contains(response, encryptedInputs) {
+			t.Fatalf("admission response leaked private inputs: %s", response)
+		}
+	}
+	if len(operations.acceptedPrivateInput) == 0 {
+		t.Fatal("private encrypted inputs were not persisted with the acceptance")
 	}
 	var plan pipeline.WorkloadReleasePlan
 	planJSON, ok := operations.acceptedInput.Operation.Payload["workloadReleasePlan"].(string)
