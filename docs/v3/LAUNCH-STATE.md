@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 05:35 UTC)
+## Current V3 release readiness (2026-11-09 08:07 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -23,7 +23,10 @@ the sole staging Fleet and remains a separate qualification target.
   repeat needs a fresh authorized intent and one-use runner; do not reuse the
   old authorization or claim runtime health from provider inventory.
 - **Workload release/resize:** PR #302 is merged to Norn `master` at
-  `c792564c9440805a467a832a4fcb6b433a1f68c3`. Its offline stateless controller,
+  `c792564c9440805a467a832a4fcb6b433a1f68c3`; PR #307 is merged at
+  `1a254466cacf37b636efd50cdecfdd7d6cf5e75f` and returns an exact accepted
+  retry before current qualification trust, expiry, and source checks. The
+  offline stateless controller,
   durable receipt/recovery path, and statechart are in source, but have not been
   deployed or live-qualified. TLC explored 458 states and 1,663 steps: 18
   safety invariants and deadlock checking passed. Four missing-evidence
@@ -38,13 +41,15 @@ the sole staging Fleet and remains a separate qualification target.
   selected future application pool roles. Fleet PR #941 (offline war-game),
   #940 (release intent controller), and #945 (provider scope contract) are
   merged. PR #943 closed when its stacked base merged; replacement PR #947
-  contains the bootstrap credential lifecycle work and remains a draft. PR
-  #942 (module-owned test collection) is also open. Their refreshed contract
-  runs are blocked at OpenTofu provider installation by repeated GitHub 504
-  responses for the DigitalOcean provider checksums/signature; earlier phases
-  passed. Branch policy blocks merging them while the required contract fails.
-  No provider apply or Genesis readback was run. Integrated controller recovery
-  and credential lifecycle evidence remain gates before any provider mutation.
+  (bootstrap credential lifecycle) and PR #942 (module-owned test collection)
+  are also merged. The remaining protected ingress tailnet enrollment
+  prerequisite is Fleet PR #837 at head
+  `eef00505d23e37c66cdaed75c5f4c5504a1cd22b`; its required `contract` check is
+  failing during DigitalOcean provider installation after repeated checksum or
+  archive HTTP 504 responses. GitHub reports it blocked. Do not merge it until
+  that exact-head contract passes. No provider apply or Genesis readback was
+  run. Integrated controller recovery and credential lifecycle evidence remain
+  gates before any provider mutation.
 
 The milestone table near the end of this file is a historical estimate; use
 the lane evidence above and the M5 protocol's dated status for current gates.
