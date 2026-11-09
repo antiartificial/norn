@@ -80,6 +80,18 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertIn("mini-signed-shadow", modes)
         self.assertIn('resolve_recovered_generation "$recovered_base_root"', selection)
 
+    def test_generation_successor_evidence_path_matches_controller_allowlist(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        validator = source.split("recovered_forward_evidence_path_valid() {", 1)[1].split("\n}\n", 1)[0]
+        wrapper = (SCRIPT_DIR / "mini-recovered-forward-transition").read_text(encoding="utf-8")
+        self.assertIn('".generation-inputs-"', wrapper)
+        self.assertIn('"transition.json.source-evidence.json"', wrapper)
+        self.assertIn('path.parent.parent==root', validator)
+        self.assertIn('generation_name=".generation-inputs-"+', validator)
+        self.assertIn('hashlib.sha256(f"{transition_id}\\0{source}\\0{candidate}".encode()).hexdigest()[:32]', validator)
+        self.assertIn('path.name=="transition.json.source-evidence.json"', validator)
+        self.assertIn("if path==versioned or generation_input:", validator)
+
     def test_recovery_validation_keeps_the_requested_upgrade_target_scoped(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         completed = source.split("recovered_forward_completed_candidate_validate() {", 1)[1].split("\n}", 1)[0]
@@ -110,10 +122,10 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         api_fencing = resume.split("    api-fencing|legacy-fenced)\n", 1)[1].split(" ;;", 1)[0]
 
         self.assertLess(
-            host_agent_fenced.index("legacy_baseline_require_drained"),
+            host_agent_fenced.index("recovered_forward_require_drained"),
             host_agent_fenced.index("recovered_forward_ensure_api_fenced"),
         )
-        self.assertNotIn("legacy_baseline_require_drained", api_fencing)
+        self.assertNotIn("recovered_forward_require_drained", api_fencing)
         self.assertIn("recovered_forward_ensure_host_agent_fenced", api_fencing)
         self.assertIn("recovered_forward_ensure_api_fenced", api_fencing)
 
@@ -156,6 +168,13 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(f"-u {inherited}", recovered)
         self.assertNotIn("NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH", remaining)
+        resume = source.split("recovered_forward_resume_or_start() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("recovered_forward_require_drained", resume)
+        self.assertNotIn("legacy_baseline_require_drained", resume)
+        drains = source.split("mini_require_operations_drained() {", 1)[1].split("\nlegacy_baseline_require_durable_startup_mode()", 1)[0]
+        self.assertIn('if [[ "$lane" == "legacy-baseline" ]]; then', drains)
+        self.assertIn("only recovered-forward can preserve them", drains)
+        self.assertIn("preserving $preserved_fleet_receipts queued Fleet GitHub dispatch receipt(s)", drains)
 
     def test_migrate_only_children_clear_stale_platform_maintenance_flags(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")

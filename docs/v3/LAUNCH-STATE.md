@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 21:44 UTC)
+## Current V3 release readiness (2026-11-09 22:08 UTC)
 
 The Mini direct adoption is complete, but V3 is not yet ready for general
 release or hands-free Fleet upgrades. The Mini is independent of Fleet; DO is
@@ -28,16 +28,40 @@ HTTP 409 `fleet_github_dispatch_binding_mismatch`: their stored bindings do not
 match the current Fleet lane. No receipt was changed, and no GitHub workflow
 dispatch or provider apply was requested.
 
-Review of the Mini legacy-baseline migration path found that it reported these
-queued Fleet receipts as preserved but did not pass the migrator's
-`NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true` option. That would have made
-schema migration reject the seven queued receipts after fencing. The local fix
-and a focused transition regression test pass; they are not merged, signed, or
-deployed. Publish a new exact-source release, complete the required Mini backup
-and private-restore proof, then repeat the signed preflight before scheduling
-the fenced schema transition. No Mini migration or release promotion has
-occurred. DO's latest provider inventory remains 18:58 UTC and its 19:01 UTC
-public canary probe is not proof of control-plane health.
+The 22:08 UTC inventory reports Mini API and host status `ok` on source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`, schema 51, and reader/writer
+floors 5/33. The signed `e9a21d20` candidate requires catalog migration 52 with
+the same floors. Its passive preflight stopped before DDL as expected. A
+protected backup created at 22:05 UTC matches its recorded SHA-256 and source
+`d4dc…`; the signed shadow receipt completed at 22:05:49 UTC for exact target
+`e9a21d20`, with private-restore and runtime claims passed.
+
+The ordinary controller `upgrade` attempt then stopped before migration or
+promotion because the retained recovery guard requires the current release to
+match the completed recovered-forward candidate. The signed active generation
+is complete for `bba290db` (source `e117d564`), while the live Mini is now on
+signed descendant `d4dc88e0`. The current release has not been changed by this
+refusal. The supported successor-generation path can bind this descendant only
+after the exact signed candidate wrapper and managed controller agree on the
+generation-input evidence path. Review found they do not in `e9a21d20`; a
+follow-up fix is in this worktree and remains unsigned. Focused Go tests, the
+21 controller integration tests, and the full `startup` package now pass. The
+correct lane is `recovered-forward`, which can preserve the seven queued DO
+receipts under signed transition evidence. Do not edit the prior generation
+or try the ordinary upgrade again.
+
+Keep the separate `legacy-baseline` lane distinct: only `recovered-forward`
+may preserve queued Fleet dispatch receipts, because it binds their
+preservation to signed transition evidence. Qualification run
+[42706816151](https://github.com/antiartificial/norn/actions/runs/42706816151)
+exposed an initial attempt to broaden that exception. The follow-up now refuses
+`legacy-baseline` before fencing when any queued Fleet dispatch exists. That
+guard is not yet merged or signed. Although reader/writer floors are
+compatible, the retained failed-transition sentinel means the Mini cannot use
+the ordinary `upgrade` path until a signed recovered-forward successor
+generation is completed. No Mini migration or release promotion has occurred.
+DO's latest provider inventory remains 18:58 UTC; its 19:01 UTC public canary
+probe is not proof of control-plane health.
 
 - **Mini direct (18:48 UTC inventory):** the independent Mini's completed Nov 7 controller-mediated
   direct adoption remains in place. At 18:48 UTC, authenticated reads reported API and host status `ok`,

@@ -6,9 +6,16 @@ For V3 release planning, use the current [platform release lanes and workload
 resizing guide](../../v3/release-lanes-and-workload-resizing.md). Mini is an
 independent node; the DO staging Fleet is a separate environment. The existing
 DO Norn release protocol is all-stop and forward-only. Mixed-version Norn
-control upgrades are not qualified. The Mini V3 transition remains gated on
-database writer compatibility and recovery proof; a preflight refusal is an
-intentional safety boundary.
+control upgrades are not qualified. The Mini's current active `norn.startup/v2`
+contract and signed `e9a21d20` candidate both support reader/writer floors
+5/33; the candidate adds catalog migration 52. Its passive preflight therefore
+stops for the expected migration. In a direct upgrade with no retained
+recovery fence, the standard `upgrade` lane is contract-compatible after
+protected backup and exact-candidate private-shadow proof. The Mini currently
+has a retained failed-transition sentinel, so the ordinary lane is blocked
+until a signed `recovered-forward` transition completes. Do not substitute
+`legacy-baseline`: that fenced lane requires zero queued Fleet dispatch
+receipts, while signed `recovered-forward` can preserve them.
 
 The safe upgrade path restarts only the Norn API process. Do not use `make down` for a production-ish local upgrade because it also stops Nomad and Consul, which can disrupt hosted apps.
 
@@ -79,6 +86,37 @@ before the database-changing upgrade. A schema migration requirement can be a
 valid reason for ordinary upgrade after those gates; it is not evidence that
 the live database was migrated. Smoke and host-assurance checks are still
 required afterward.
+
+If the retained failed-transition sentinel is present, ordinary `upgrade` is
+intentionally blocked until recovered-forward evidence and preservation
+receipts verify. Start that lane through the exact signed candidate's wrapper
+so it can bind a fresh backup, signed shadow, current workload baseline, and
+successor generation before calling the managed controller:
+
+For the current Mini recovery, do not run this with the published `e9a21d20`
+candidate: its controller rejects its own successor-generation evidence path,
+and its legacy-baseline drain does not distinguish the receipt-preserving
+recovered-forward lane. Use a replacement signed release after those fixes are
+qualified.
+
+```bash
+norn platform env -- \
+  /Users/0xadb/norn/releases/<candidate-sha>/bin/mini-recovered-forward-transition \
+  <candidate-sha> \
+  --source-sha <current-mini-release-sha> \
+  --transition-id <fresh-transition-id> \
+  --backup-proof /absolute/private/backup-proof.json \
+  --backup-artifact /absolute/private/control.dump \
+  --shadow-receipt /absolute/private/signed-shadow-receipt.json
+```
+
+The candidate SHA must be the exact signed release already installed under
+`~/norn/releases`. When the active recovery generation completed on an earlier
+signed release, the wrapper verifies signed Git ancestry from that promoted
+candidate to the current source before it creates a successor generation. Do
+not hand-edit the generation pointer or journal. The wrapper owns this
+roll-forward path; `platform-upgrade recovered-forward` is its internal
+controller handoff and requires the signed evidence that the wrapper creates.
 
 ## macOS and Homebrew Maintenance
 
