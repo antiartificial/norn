@@ -16,6 +16,7 @@ provider state, host behavior, availability, or the implementation itself.
 | Workload old-generation stop recovery | 10 states, 15 steps; 7 invariants and deadlock check pass | Bounded target-health and mixed-route gate, stop accepted/lost response, marker recovery, old allocation drain | Does not model effect-store crashes, signed admission, API dispatch, durable receipt loading, route publication, or live Nomad |
 | Workload route publication and recovery | 55 states, 111 steps; 8 invariants and deadlock check pass | Per-node mixed-route publication; atomic active-route/receipt CAS; same-generation recovery and fresh pre-stop route/inventory proof | Does not prove live workload authority, inventory source, route CAS store, ingress transport, or controller implementation |
 | Concurrent workload admission replay | 14 states, 18 transitions; 3 invariants pass | Two independent etcd clients contend for a stable request; the fence loser rechecks durable identity and returns the winner | Store-level only; does not exercise HTTP handling or process restart |
+| Workload admission replay after response loss and restart | 115 states, 365 steps; 10 invariants and deadlock check pass | Durable acceptance with a lost response, controller stop/restart without local acceptance memory, and exact same-key replay | Abstract protocol model; does not exercise the HTTP handler, etcd adapter, or runtime worker/controller |
 | Simultaneous workload release HTTP admission | 19 states, 28 steps; 6 invariants and deadlock check pass | Two handlers miss initial replay lookup, read current evidence, then converge at atomic acceptance | HTTP test uses a deterministic store fake; the independent etcd test covers the real store boundary, but no combined HTTP-to-etcd test yet |
 
 ## Model files
@@ -30,6 +31,7 @@ provider state, host behavior, availability, or the implementation itself.
 - [Workload old-generation stop recovery](workload-stop-recovery/README.md)
 - [Workload route publication and recovery](workload-route-publication/README.md)
 - [Concurrent workload admission replay](workload-release-concurrent-admission/README.md)
+- [Workload admission replay after response loss and restart](workload-release-admission/README.md)
 - [Simultaneous workload release HTTP admission](workload-release-http-concurrency/README.md)
 
 ## Findings to carry into implementation
