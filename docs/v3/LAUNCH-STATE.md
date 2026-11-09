@@ -25,10 +25,12 @@ the sole staging Fleet and remains a separate qualification target.
 - **Workload release/resize:** PR #302 is merged to Norn `master` at
   `c792564c9440805a467a832a4fcb6b433a1f68c3`; PR #307 is merged at
   `1a254466cacf37b636efd50cdecfdd7d6cf5e75f`; PR #311 is merged at
-  `4c90aecfc47d4687cc3f39d433d8d5d182d61a7d`. PR #311 binds replay to a
-  stable request digest and returns the accepted operation before rereading
-  mutable qualification, source, plan, scheduler lineage, or current encrypted
-  inputs. Its exact-head API, Fleet pilot, durable replica, CLI, OpenAPI, UI,
+  `4c90aecfc47d4687cc3f39d433d8d5d182d61a7`, PR #314 at
+  `db4623a1`, and PR #315 at `fc7bb70f`. PR #311 returns the accepted
+  operation before rereading mutable inputs; PR #314 binds the stable request
+  digest to qualification and target size; PR #315 exposes replay-only lookup
+  for admission producers. The exact-head API, Fleet pilot, durable replica,
+  CLI, OpenAPI, UI,
   qualification, workflow, and security checks passed. The offline stateless
   controller, durable receipt/recovery path, and statecharts are in source, but
   have not been deployed or live-qualified. TLC explored 458 states and 1,663
@@ -36,10 +38,12 @@ the sole staging Fleet and remains a separate qualification target.
   missing-evidence scenarios each explored 4 states and 6 steps and rejected
   incomplete admission. The API suite and focused etcd-backed integration
   coverage passed; they do not exercise a live Nomad/ingress driver or provider.
-  The authenticated operator/API producer and its explicit owner-approved
-  overlap policy, production-driver fault qualification, and DO mixed-version
-  release remain open. The API/CLI producer does not yet call the private-store
-  admission boundary.
+  The authenticated operator/API producer remains open. A separate
+  CAS-protected staging policy now records explicit owner-approved stateless
+  overlap bounds and route steps without changing placement identity; admission
+  does not yet consume or bind it into the signed release plan. Production
+  driver fault qualification and DO mixed-version release remain open. The
+  API/CLI producer does not yet call the private-store admission boundary.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected future application pool roles. Fleet PR #941 (offline war-game),
   #940 (release intent controller), and #945 (provider scope contract) are

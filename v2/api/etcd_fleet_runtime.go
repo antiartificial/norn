@@ -242,6 +242,8 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	catalogActivate := etcdManagedTokenAuth(cfg, identities, handler.ScopeCatalogActivate)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
 	router.With(read).Get("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetRead(cfg, operations))
+	router.With(read).Get("/api/v1/apps/{id}/workload-release-policy", etcdFleetWorkloadReleasePolicyRead(cfg, operations))
+	router.With(platformOperate).Put("/api/v1/apps/{id}/workload-release-policy", etcdFleetWorkloadReleasePolicyConfigure(cfg, operations))
 	if releaseHTTPEnabled {
 		releaseStage := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)
 		router.With(releaseStage).Post("/api/v1/apps/{id}/releases/deployments", etcdFleetReleaseDeployment(cfg, operations, releaseVerifier))

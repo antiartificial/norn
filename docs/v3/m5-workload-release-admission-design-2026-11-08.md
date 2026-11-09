@@ -52,6 +52,19 @@ The claimed release worker stages one deployment-specific job with a stable job 
 
 The initial admission is limited to an owner-approved stateless overlap policy. A generic stateless flag is not evidence of data compatibility. Stateful workloads require a separate compatibility authorization covering writers, schema, and acknowledged data.
 
+The controller now has a separate CAS-protected workload release policy tied
+to the current Fleet placement generation. A non-CI `platform:operate` update
+captures a server-generated approval UUID, the authenticated subject and
+timestamp, an explicit `stateless-overlap` mode, target replica bounds, surge
+limit, and an ordered route sequence with at least one mixed-version step.
+The staging Fleet control API exposes this record at
+`GET/PUT /api/v1/apps/{id}/workload-release-policy`; updates require a non-CI
+`platform:operate` identity and compare the policy's etcd revision. It does not
+modify Fleet placement identity or the active route. A placement generation
+change makes the policy stale until it is approved again. This is policy
+storage only: no authenticated workload-release producer consumes it yet,
+and configuring it does not enable a release.
+
 ## Synthesis decision
 
 The three independent sketches converge on one release operation with private staging, a signed desired plan, a write-once observed target binding, and a derived strict execution value. Use the shared shape. Take Astra's single resolver and reader-migration map, Sol's idempotency and failure matrix, and Terra's explicit capacity and policy limits. Reject public `app.stage`, `app.deploy --skip-route`, and optional/unset target indices in the existing intent because they expose internal sequencing or weaken downstream invariants.
@@ -79,7 +92,7 @@ The pipeline now has a `WorkloadReleasePlan` → observed staged-target binding 
 
 The claimed release worker now accepts the signed plan shape, reserves the durable stage effect, rebuilds the exact database-free Nomad job from the local InfraSpec, decrypts only operation-bound encrypted managed inputs, stages those inputs, and records the one-use create marker before create-only CAS registration. It ignores the registration response and binds only after exact Nomad source/no-diff readback. Missing or unavailable readback returns pending and never repeats registration; retries and successor claims observe the same durable effect and binding. Deterministic worker tests cover private-input staging failure, claim loss after staging but before the attempt marker, marker transaction failure, and ambiguous registration followed by missing readback; an etcd integration test verifies successor-claim binding through the shared verifier and acceptance-derived stop authorization. Existing health, route, drain, and stop readers resolve the write-once binding to the same strict intent contract. The full API Go suite passes locally. This worker path is not yet an end-to-end release lane: authenticated API admission, automatic qualification discovery, managed catalog/secret revision resolution, and delayed-request/production-driver qualification remain open. Route-predecessor acceptance fences and startup retained-key preflight are implemented; key cleanup and lineage-reader migration remain open.
 
-The private etcd acceptance boundary now takes a configured `nomad.ActiveDeploymentLineageObserver`. Active route records retain operation ID, spec digest, image, process, and job digest from validated deployment effects; workload-release route commits advance those fields from the accepted staged target. Admission rejects an absent observer, compares these control-owned fields with the signed predecessor, then checks Nomad's job ID, version, modify index, replica count, and exact allocation ID set. It repeats the observation immediately before the atomic acceptance transaction, which also compares active-route and reservation revisions. Focused disposable-etcd coverage verifies exact match, stale modify-index rejection, missing-observer rejection, and idempotent replay without fresh mutable reads. The authenticated API/CLI producer still does not exist, so no operator request currently supplies the configured observer to this boundary. Production Nomad/ingress qualification is also open.
+The private etcd acceptance boundary now takes a configured `nomad.ActiveDeploymentLineageObserver`. Active route records retain operation ID, spec digest, image, process, and job digest from validated deployment effects; workload-release route commits advance those fields from the accepted staged target. Admission rejects an absent observer, compares these control-owned fields with the signed predecessor, then checks Nomad's job ID, version, modify index, replica count, and exact allocation ID set. It repeats the observation immediately before the atomic acceptance transaction, which also compares active-route and reservation revisions. Focused disposable-etcd coverage verifies exact match, stale modify-index rejection, missing-observer rejection, and idempotent replay without fresh mutable reads. The authenticated API/CLI producer still does not exist, so no operator request currently supplies the configured observer to this boundary. The separate overlap policy is not yet bound into a signed plan or consumed at admission. Production Nomad/ingress qualification is also open.
 
 Existing active-route records written before the job-digest field was introduced have no trusted digest and therefore fail workload-release admission closed. A verified route refresh/reconciliation must populate that field from its completed deployment effect before those apps can enter the release lane; do not backfill it from Nomad metadata alone.
 

@@ -205,6 +205,36 @@ type SignedAcceptanceIntent struct {
 
 const FleetAppTargetSchema = "norn.fleet-app-target/v1"
 
+// WorkloadReleasePolicy is the operator-approved stateless overlap envelope
+// for one Fleet app. It is absent by default; workload-release admission must
+// not infer compatibility or choose route/capacity values without it.
+type WorkloadReleasePolicy struct {
+	App                   string                      `json:"app"`
+	ControlEnvironment    string                      `json:"controlEnvironment"`
+	FleetTargetGeneration uint64                      `json:"fleetTargetGeneration"`
+	SchemaVersion         string                      `json:"schemaVersion"`
+	ApprovalID            string                      `json:"approvalId"`
+	ApprovedBy            string                      `json:"approvedBy"`
+	ApprovedAt            time.Time                   `json:"approvedAt"`
+	Mode                  string                      `json:"mode"`
+	MinReplicas           int                         `json:"minReplicas"`
+	MaxReplicas           int                         `json:"maxReplicas"`
+	SurgeLimit            int                         `json:"surgeLimit"`
+	RouteSteps            []WorkloadReleasePolicyStep `json:"routeSteps"`
+}
+
+const (
+	WorkloadReleasePolicySchema           = "norn.workload-release-policy/v1"
+	WorkloadReleasePolicyStatelessOverlap = "stateless-overlap"
+)
+
+// WorkloadReleasePolicyStep gives the controller an explicit, approved
+// sequence for shifting traffic between the old and target versions.
+type WorkloadReleasePolicyStep struct {
+	OldWeight    int `json:"oldWeight"`
+	TargetWeight int `json:"targetWeight"`
+}
+
 // FleetAppTarget is an immutable snapshot of the control-owned target selected
 // at private etcd deployment admission. It is verified against the signed
 // request and can be consumed by a claimed deployment worker.

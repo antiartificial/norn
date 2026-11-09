@@ -70,7 +70,7 @@ func TestEtcdFleetAppTargetOperatorConfiguration(t *testing.T) {
 		router.ServeHTTP(response, request)
 		return response
 	}
-	operator := &handler.AccessPrincipal{TokenID: "operator-token", Scopes: []string{handler.ScopePlatformOperate}}
+	operator := &handler.AccessPrincipal{TokenID: "operator-token", Subject: "platform-operator", Scopes: []string{handler.ScopePlatformOperate}}
 	body := `{"expectedRevision":0,"region":"west","nomadRegion":"global","datacenters":["dc2","dc1"]}`
 	if response := put(body, nil); response.Code != http.StatusForbidden {
 		t.Fatalf("unauthenticated configure status=%d", response.Code)
