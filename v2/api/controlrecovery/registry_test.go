@@ -8,8 +8,8 @@ import (
 
 func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T) {
 	registry := InspectionRegistry()
-	if len(registry) != 63 {
-		t.Fatalf("registry has %d tables, want 63", len(registry))
+	if len(registry) != 64 {
+		t.Fatalf("registry has %d tables, want 64", len(registry))
 	}
 	if err := validateRegistry(registry); err != nil {
 		t.Fatalf("registry validation: %v", err)
@@ -41,6 +41,7 @@ func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T)
 		"mysql_source_snapshot_reconciliations": {"prior_intent", "checkpoint", "proof_canonical", "proof_signature"},
 		"runtime_mutation_fence":                {"owner", "reason"},
 		"snapshot_export_intents":               {"object_key", "bucket"},
+		"workload_release_receipts":             {"receipt"},
 	}
 	byTable := make(map[string]Table, len(registry))
 	for _, table := range registry {

@@ -912,6 +912,8 @@ func main() {
 		r.Post("/v1/audit/mutations/{id}/incident", h.AcknowledgeMutationAuditIncident)
 		r.Get("/v1/events/info", ws.HandleInfo)
 		r.Get("/v1/events", ws.HandleConnect)
+		r.Get("/v1/operations", h.ListOperations)
+		r.Get("/v1/operations/active", h.ActiveOperations)
 		r.Get("/v1/operations/{id}", h.GetOperation)
 		r.Get("/v1/operations/{id}/mysql-restore-inspection", h.GetMySQLRestoreInspection)
 		r.Post("/v1/operations/{id}/cancel", h.CancelOperation)
@@ -991,6 +993,19 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	srv.Shutdown(shutdownCtx)
+}
+
+func pairingOnlyHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		root := "/api/v1/fleet/platform-operator/enrollments"
+		allowed := r.Method == http.MethodPost && (r.URL.Path == root || r.URL.Path == root+"/approve" ||
+			(strings.HasPrefix(r.URL.Path, root+"/") && strings.HasSuffix(r.URL.Path, "/exchange")))
+		if !allowed {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type legacyBaselineFinalizeRequest struct {
@@ -2806,7 +2821,7 @@ func allowsFleetObservationIngest(principal *handler.AccessPrincipal, r *http.Re
 
 func exactOperationPath(path string) bool {
 	id := strings.TrimPrefix(path, "/api/v1/operations/")
-	return id != path && id != "" && !strings.Contains(id, "/")
+	return id != path && id != "" && id != "active" && !strings.Contains(id, "/")
 }
 
 func writeControlCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -2836,7 +2851,7 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 	if cfg != nil && cfg.IsFleetAuthorityOnly() {
 		features := []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "fleet-github-reconcile-v1", "github-actions-oidc-exchange-v1", "fleet-target-fence-v1", "fleet-resource-v1"}
 		endpoints := map[string]string{
-			"operationList": "/api/operations", "activeOperations": "/api/operations/active",
+			"operationList": "/api/v1/operations", "activeOperations": "/api/v1/operations/active",
 			"enrollments": "/api/v1/enrollments", "devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch", "fleetGitHubReconcile": "/api/v1/fleet/plans/{planID}/github/reconcile", "fleetTargets": "/api/v1/fleet/targets", "fleetResources": "/api/v1/fleet/resources",
 		}
@@ -2876,7 +2891,7 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		}
 	}
 	endpoints := map[string]string{
-		"events": "/api/v1/events", "operations": "/api/v1/operations/{id}", "mysqlRestoreInspection": "/api/v1/operations/{id}/mysql-restore-inspection",
+		"events": "/api/v1/events", "operationList": "/api/v1/operations", "activeOperations": "/api/v1/operations/active", "operations": "/api/v1/operations/{id}", "mysqlRestoreInspection": "/api/v1/operations/{id}/mysql-restore-inspection",
 		"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 		"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
 		"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment", "deployments": "/api/v1/deployments", "deployment": "/api/v1/deployments/{id}", "deploymentSteps": "/api/v1/deployments/{id}/steps", "serviceManifest": "/api/v1/services/manifest",
@@ -3095,6 +3110,8 @@ func fleetAuthorityOnlyRouterWithWatcher(cfg *config.Config, h *handler.Handler,
 		r.Post("/auth/rotate", h.RotateCurrentToken)
 		r.Post("/auth/revoke", h.RevokeCurrentToken)
 		r.Get("/audit/mutations", h.MutationAuditEvents)
+		r.Get("/operations", h.ListOperations)
+		r.Get("/operations/active", h.ActiveOperations)
 		r.Get("/operations/{id}", h.GetOperation)
 		r.Post("/operations/{id}/cancel", h.CancelOperation)
 		r.Post("/fleet/validate", h.ValidateFleetDocument)

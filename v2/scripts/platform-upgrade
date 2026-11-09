@@ -286,7 +286,7 @@ recovered_expected_current_sha=""
 recovered_accept_preservation_unproven=false
 recovered_reason_file=""
 case "$mode" in
-  upgrade|rebuild|rollback|recovered-forward|recovered-forward-finalize|preflight)
+  upgrade|rebuild|rollback|recovered-forward|recovered-forward-finalize|preflight|mini-protected-backup|mini-signed-shadow)
     if [[ -d "$recovered_base_root" && ! -L "$recovered_base_root" ]]; then
       resolve_recovered_generation "$recovered_base_root"
     elif [[ "$mode" == recovered-forward || "$mode" == recovered-forward-finalize ]]; then
@@ -428,12 +428,17 @@ PY
 recovered_baseline_receipt_validate() {
   local receipt_path="$HOME/.config/norn/.norn-recovered-baseline-adoption-v2.json"
   [[ -n "$receipt_path" ]] || return 1
-  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" "$current_link" "$releases" "$recovered_journal_path" <<'PY'
+  NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" python3 - "$receipt_path" "$current_link" "$releases" "$recovered_journal_path" "${NORN_RELEASE_MANIFEST_HELPER:-$script_dir/platform-release-manifest}" "${NORN_RELEASE_VERIFY_HOOK:-}" "${NORN_PLATFORM_REPO:-$repo}" "$mode" <<'PY'
 import hashlib, hmac, json, os, stat, sys
+import subprocess
 path = os.path.abspath(os.path.expanduser(sys.argv[1]))
 current_link = os.path.abspath(os.path.expanduser(sys.argv[2]))
 release_root = os.path.realpath(os.path.expanduser(sys.argv[3]))
 transition_path = os.path.abspath(os.path.expanduser(sys.argv[4]))
+manifest_helper = os.path.abspath(os.path.expanduser(sys.argv[5]))
+release_verifier = os.path.abspath(os.path.expanduser(sys.argv[6])) if sys.argv[6] else ""
+repository = os.path.abspath(os.path.expanduser(sys.argv[7]))
+mode = sys.argv[8]
 key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "").encode()
 if not key:
     raise SystemExit("audit signing key is unavailable")
@@ -477,24 +482,52 @@ except (OSError, ValueError):
 if current_values.get("NORN_RELEASE_SHA") != current_sha:
     raise SystemExit("Mini current release identity differs from its immutable directory")
 if current_sha != value["sourceSHA"]:
+    transition = None
     try:
         transition_info = os.lstat(transition_path)
         if (not stat.S_ISREG(transition_info.st_mode) or transition_info.st_uid != os.geteuid()
                 or stat.S_IMODE(transition_info.st_mode) != 0o600):
-            raise SystemExit("recovered-forward journal is unsafe")
+            raise ValueError("recovered-forward journal is unsafe")
         with open(transition_path, encoding="utf-8") as source:
-            transition = json.load(source)
+            candidate = json.load(source)
         phases = {"candidate-postflight-failed", "candidate-activation-started", "candidate-preservation-pending",
                   "candidate-finalize-requested", "candidate-normal-activation-pending",
                   "candidate-normal-active-pending-host-agent", "candidate-normal-active-pending-host-agent-restart",
                   "candidate-promoted"}
-        if (transition.get("schema") != "norn.recovered-forward-transition/v1"
-                or transition.get("sourceSHA") != value["sourceSHA"]
-                or transition.get("candidateReleaseSHA") != current_sha
-                or transition.get("state") not in phases):
+        if (candidate.get("schema") == "norn.recovered-forward-transition/v1"
+                and candidate.get("sourceSHA") == value["sourceSHA"]
+                and candidate.get("candidateReleaseSHA") == current_sha
+                and candidate.get("state") in phases):
+            transition = candidate
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    if transition is None:
+        descendant_modes = {"preflight", "mini-protected-backup", "mini-signed-shadow", "recovered-forward"}
+        if mode not in descendant_modes:
             raise SystemExit("current Mini release is not the source or exact journaled recovery candidate")
-    except (OSError, ValueError):
-        raise SystemExit("current Mini release is not the source or exact journaled recovery candidate")
+        if (not os.path.isfile(manifest_helper) or os.path.islink(manifest_helper)
+                or not os.path.isabs(release_verifier)
+                or not os.access(release_verifier, os.X_OK)):
+            raise SystemExit("signed descendant catch-up requires the trusted manifest helper and external release verifier")
+        for label, sha in (("adoption source", value["sourceSHA"]), ("current Mini", current_sha)):
+            release = os.path.join(release_root, sha)
+            manifest = subprocess.run(
+                [sys.executable, manifest_helper, "verify", "--release", release, "--expected-sha", sha],
+                capture_output=True, text=True, check=False,
+            )
+            if manifest.returncode or manifest.stdout.strip() != "signed":
+                raise SystemExit(f"{label} release is not internally verified as signed")
+            external = subprocess.run([release_verifier, release, os.path.join(release, "release.json")],
+                                      capture_output=True, text=True, check=False)
+            if external.returncode:
+                raise SystemExit(f"{label} release failed external signature verification")
+        if not os.path.isdir(repository):
+            raise SystemExit("configured Norn Git repository is unavailable for signed descendant verification")
+        ancestry = subprocess.run(["git", "-C", repository, "merge-base", "--is-ancestor",
+                                   value["sourceSHA"], current_sha],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if ancestry.returncode != 0:
+            raise SystemExit("current signed Mini release is not a Git descendant of the adopted source")
 if not isinstance(signature, str) or not signature.startswith("hmac-sha256:"):
     raise SystemExit("recovered baseline receipt signature is missing")
 canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
@@ -550,7 +583,11 @@ PY
           [[ "${#recovered_agent_args[@]}" -eq 4 && "${recovered_agent_args[0]}" == "--platform-script" && "${recovered_agent_args[1]}" == "${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}" && "${recovered_agent_args[2]}" == "--host-script" && "${recovered_agent_args[3]}" == "${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}" ]] || fail "recovered baseline rejects noncanonical host-agent startup"
         else
           [[ "${#recovered_early_args[@]}" -ge 2 ]] || fail "recovered baseline permits env-exec only for a canonical platform-upgrade child"
-          if [[ "$(basename "${recovered_early_args[0]}")" == "mini-recovered-forward-transition" ]]; then
+          if [[ "$(basename "${recovered_early_args[0]}")" == "host-runtime" && "${recovered_early_args[1]}" == "_assurance-forge" ]]; then
+            [[ "${recovered_early_args[0]}" == "$HOME/.config/norn/host/bin/host-runtime" && "${#recovered_early_args[@]}" -eq 3 ]] || fail "recovered baseline requires the canonical managed host-runtime assurance child"
+            [[ "${NORN_HOST_CONFIG_DIR:-$HOME/.config/norn/host}" == "$HOME/.config/norn/host" ]] || fail "recovered baseline assurance config directory is not canonical"
+            [[ "${NORN_PLATFORM_REPO:-}" == "$repo" && "${NORN_HOST_REPO:-}" == "$repo" ]] || fail "recovered baseline assurance repository binding is invalid"
+          elif [[ "$(basename "${recovered_early_args[0]}")" == "mini-recovered-forward-transition" ]]; then
             recovered_forward_transition_child_validate "${recovered_early_args[0]}" "${recovered_early_args[1]}" "${recovered_early_args[@]:2}"
           else
             case "${recovered_early_args[1]}" in
@@ -2155,12 +2192,27 @@ for pid, ppid in sorted(matches):
 PY
 }
 
+# PID alone is not a process identity: launchd may exit the wrapped child and
+# the kernel can reuse that PID before the operator's next observation. Include
+# the process start time and full command so a reused PID is never signalled or
+# mistaken for the original child during fencing.
+legacy_baseline_child_identity_matches() {
+  local pid="$1" expected="$2" observed
+  [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected" ]] || return 1
+  observed="$(ps -o lstart= -o command= -p "$pid" 2>/dev/null | sed -n '1p')"
+  [[ -n "$observed" && "$observed" == "$expected" ]]
+}
+
 legacy_baseline_quiesce_launchd_service() {
   local label="$1" plist="$2" managed_path="$3" launch_program="$4" service_name="$5" signal="$6"
-  local launch_state pid="" child_pid="" child_command=""
+  local launch_state pid="" pid_identity="" child_pid="" child_command="" child_identity="" child_alive wrapper_alive
   if launch_state="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)"; then
     legacy_baseline_validate_launchd_binding "$plist" "$label" "$managed_path" "$launch_program" "$service_name"
     pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      pid_identity="$(ps -o lstart= -o command= -p "$pid" 2>/dev/null | sed -n '1p')"
+      [[ -n "$pid_identity" ]] || fail "$service_name launchd process identity could not be captured"
+    fi
     if [[ "$label" == "$host_agent_label" && "$pid" =~ ^[1-9][0-9]*$ ]]; then
       require_cmd pgrep
       require_cmd ps
@@ -2168,24 +2220,42 @@ legacy_baseline_quiesce_launchd_service() {
       if [[ -n "$child_pid" ]]; then
         [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || fail "$service_name launchd wrapper has ambiguous children"
         child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+        child_identity="$(ps -o lstart= -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+        [[ -n "$child_identity" ]] || fail "$service_name child process identity could not be captured"
         [[ "$child_command" == *"$managed_path"* ]] || fail "$service_name launchd child does not execute the managed host-agent path"
       fi
     fi
     launchctl bootout "gui/$(id -u)/$label" || fail "could not boot out the fenced $service_name launchd job"
-    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1; then
-      /bin/kill -"$signal" "$pid" 2>/dev/null || ! kill -0 "$pid" >/dev/null 2>&1 || fail "could not terminate the booted-out $service_name PID"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$pid" "$pid_identity"; then
+      /bin/kill -"$signal" "$pid" 2>/dev/null || ! legacy_baseline_child_identity_matches "$pid" "$pid_identity" || fail "could not terminate the booted-out $service_name PID"
     fi
-    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1; then
-      [[ "$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')" == "$child_command" ]] || fail "$service_name child identity changed after launchd bootout"
-      /bin/kill -TERM "$child_pid" 2>/dev/null || ! kill -0 "$child_pid" >/dev/null 2>&1 || fail "could not terminate the booted-out $service_name child"
+    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$child_pid" "$child_identity"; then
+      /bin/kill -TERM "$child_pid" 2>/dev/null || ! legacy_baseline_child_identity_matches "$child_pid" "$child_identity" || fail "could not terminate the booted-out $service_name child"
     fi
     for _ in $(seq 1 30); do
-      if { [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; } \
-          && { [[ -z "$child_pid" ]] || ! kill -0 "$child_pid" >/dev/null 2>&1; }; then break; fi
+      child_alive=false
+      if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1 \
+          && legacy_baseline_child_identity_matches "$child_pid" "$child_identity"; then
+        child_alive=true
+      fi
+      wrapper_alive=false
+      if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1 \
+          && legacy_baseline_child_identity_matches "$pid" "$pid_identity"; then
+        wrapper_alive=true
+      fi
+      if [[ "$wrapper_alive" == false && "$child_alive" == false ]]; then break; fi
       sleep 1
     done
-    [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" >/dev/null 2>&1 || fail "booted-out $service_name PID remained running"
-    [[ -z "$child_pid" ]] || ! kill -0 "$child_pid" >/dev/null 2>&1 || fail "booted-out $service_name child remained running"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$pid" "$pid_identity"; then
+      fail "booted-out $service_name PID remained running"
+    fi
+    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1 \
+        && legacy_baseline_child_identity_matches "$child_pid" "$child_identity"; then
+      fail "booted-out $service_name child remained running"
+    fi
   fi
   launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && fail "$service_name launchd job remained loaded after bootout"
   legacy_baseline_is_fence_binary "$managed_path" || fail "$service_name launchd job is unloaded without the exact durable fence"
@@ -2267,13 +2337,18 @@ restart_fenced_host_agent() {
   legacy_baseline_bootstrap_launchd_service "$host_agent_label" "$host_agent_plist" "$host_agent_bin" "$platform_script_bin" "candidate host-agent"
   launchctl kickstart -k "gui/$(id -u)/$host_agent_label" || fail "candidate API is healthy but norn-host-agent did not restart"
   local launch_state agent_pid child_pid child_command stable_pid stable_child_pid stable_child_command
-  if ! launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
-    fail "candidate API is healthy but cannot inspect restarted norn-host-agent"
-  fi
-  agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-  [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || fail "candidate API is healthy but restarted norn-host-agent has no PID"
-  kill -0 "$agent_pid" >/dev/null 2>&1 || fail "candidate API is healthy but restarted norn-host-agent is not running"
-  child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+  child_pid=""
+  for _ in $(seq 1 30); do
+    if ! launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)"; then
+      fail "candidate API is healthy but cannot inspect restarted norn-host-agent"
+    fi
+    agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || fail "candidate API is healthy but restarted norn-host-agent has no PID"
+    kill -0 "$agent_pid" >/dev/null 2>&1 || fail "candidate API is healthy but restarted norn-host-agent is not running"
+    child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+    [[ -n "$child_pid" || "$host_agent_direct_exec" == "true" ]] && break
+    sleep 0.5
+  done
   if [[ -z "$child_pid" ]]; then
     [[ "$host_agent_direct_exec" == "true" ]] || fail "candidate API is healthy but norn-host-agent wrapper has no child"
   else
@@ -3976,6 +4051,10 @@ if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then
       recovered_env_command="${recovered_env_args[0]}"; recovered_env_mode="${recovered_env_args[1]}"
       if [[ "$(basename "$recovered_env_command")" == "mini-recovered-forward-transition" ]]; then
         recovered_forward_transition_child_validate "$recovered_env_command" "$recovered_env_mode" "${recovered_env_args[@]:2}"
+      elif [[ "$(basename "$recovered_env_command")" == "host-runtime" && "$recovered_env_mode" == "_assurance-forge" ]]; then
+        [[ "$recovered_env_command" == "$HOME/.config/norn/host/bin/host-runtime" && "${#recovered_env_args[@]}" -eq 3 ]] || fail "recovered baseline requires the canonical managed host-runtime assurance child"
+        [[ "${NORN_HOST_CONFIG_DIR:-$HOME/.config/norn/host}" == "$HOME/.config/norn/host" ]] || fail "recovered baseline assurance config directory is not canonical"
+        [[ "${NORN_PLATFORM_REPO:-}" == "$repo" && "${NORN_HOST_REPO:-}" == "$repo" ]] || fail "recovered baseline assurance repository binding is invalid"
       else
         [[ "$(basename "$recovered_env_command")" == "platform-upgrade" ]] || fail "recovered baseline permits env-exec only for platform-upgrade"
         case "$recovered_env_mode" in

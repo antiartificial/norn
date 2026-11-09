@@ -32,6 +32,7 @@ import (
 	"norn/v2/api/fleet"
 	"norn/v2/api/ingress"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
 
@@ -262,6 +263,12 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 	}
 	if current, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err != nil || current.ID != first.ID {
 		t.Fatalf("publishable route intent=%+v err=%v", current, err)
+	}
+	if err := adapter.RenewOperationClaim(ctx, claim, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err != nil || current.ID != first.ID {
+		t.Fatalf("renewed claim lost its reserved route intent=%+v err=%v", current, err)
 	}
 	effects, err := NewV3DeploymentEffectReservations(adapter)
 	if err != nil {
@@ -558,7 +565,11 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 			t.Fatalf("partial publication stored a traffic proof: entries=%d err=%v", len(stored.Kvs), err)
 		}
 		if successor {
-			if err := adapter.DeferClaimedOperationWithAppLock(ctx, claim, lock, "partial ingress publication", time.Now(), nil); err != nil {
+			if err := adapter.DeferClaimedOperationWithAppLock(ctx, claim, lock, "partial ingress publication", time.Now(), map[string]interface{}{
+				"externalEffectRecoveryPending": true,
+				"effectRecoveryReason":          "ingress node publication requires reconciliation",
+				"effectResource":                "app/demo/route/west",
+			}); err != nil {
 				t.Fatalf("defer partial publication: %v", err)
 			}
 			lock.Release()
@@ -604,6 +615,9 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 			if err != nil || completed == nil || completed.Proof == nil || completed.Proof.ClaimGeneration != nextClaim.Generation() {
 				t.Fatalf("successor route completion=%+v err=%v", completed, err)
 			}
+			if terminal, err := adapter.GetOperation(ctx, accepted.Operation.ID); err != nil || terminal.Status != model.OperationSucceeded || terminal.Metadata["externalEffectRecoveryPending"] != nil || terminal.Metadata["effectRecoveryReason"] != nil || terminal.Metadata["effectResource"] != nil {
+				t.Fatalf("reconciled route retained recovery hold: operation=%+v err=%v", terminal, err)
+			}
 			if active, err := client.Get(ctx, activeKey); err != nil || len(active.Kvs) != 1 {
 				t.Fatalf("successor did not activate proved route: entries=%d err=%v", len(active.Kvs), err)
 			}
@@ -642,6 +656,12 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 		active, err := client.Get(ctx, activeKey)
 		if err != nil || len(active.Kvs) != 1 {
 			t.Fatalf("terminal result omitted active route: entries=%d err=%v", len(active.Kvs), err)
+		}
+		var activeRoute activeFleetRoute
+		var acceptedJob deploymentEffectInput
+		if decodeV3Record(active.Kvs[0].Value, &activeRoute) != nil || json.Unmarshal(reserved.Record.Reservation.LaunchPayload, &acceptedJob) != nil ||
+			activeRoute.JobDigest != "sha256:"+acceptedJob.JobDigest {
+			t.Fatalf("active route did not retain its accepted Nomad job digest: route=%+v input=%+v", activeRoute, acceptedJob)
 		}
 		result, err := adapter.GetDeployment(ctx, terminal.ID)
 		if err != nil || result.Status != model.StatusDeployed || len(result.Regions) != 1 || result.Regions[0].ActiveWeight != 100 {
@@ -724,5 +744,166 @@ func runInitialFleetRouteIntentEtcd(t *testing.T, complete, successor bool, ingr
 	}
 	if _, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082); err == nil {
 		t.Fatal("corrupt route reservation was accepted")
+	}
+}
+
+func TestFleetRouteUpgradeFencesPriorActiveEtcd(t *testing.T) {
+	t.Run("changed prior revision", func(t *testing.T) { runFleetRouteUpgradeEtcd(t, true, false) })
+	t.Run("terminal handoff", func(t *testing.T) { runFleetRouteUpgradeEtcd(t, false, false) })
+}
+
+func TestHeldFleetDeploymentRecoveryCompletesRouteEtcd(t *testing.T) {
+	runFleetRouteUpgradeEtcd(t, false, true)
+}
+
+func runFleetRouteUpgradeEtcd(t *testing.T, changed, recovery bool) {
+	adapter, client, _ := deploymentEtcdStore(t)
+	ctx := context.Background()
+	activeFleetIngressForRouteIntent(t, adapter, 2)
+	spec := &model.InfraSpec{App: "demo", Regions: map[string]model.RegionTarget{"west": {NomadRegion: "global", Datacenters: []string{"dc1", "dc2"}}}, Processes: map[string]model.Process{"web": {Port: 8080, Health: &model.HealthSpec{Path: "/readyz"}}}, Endpoints: []model.Endpoint{{URL: "https://demo.example.test", Region: "west", Process: "web", TrafficProbe: &model.TrafficProbeSpec{Path: "/ready", BodySHA256: strings.Repeat("d", 64)}, RestrictedIngress: &model.RestrictedIngressSpec{PublicPaths: []string{"/ready"}, PrivateReadinessPath: "/readyz"}}}}
+	request := deploymentAdmissionRequest(t, adapter.authority)
+	if recovery {
+		request.Deployment.ImageTag = "registry.example.test/demo@sha256:" + strings.Repeat("a", 64)
+	}
+	var err error
+	request.Deployment.SpecDigest, err = model.InfraSpecDigest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := adapter.acceptDeploymentAggregate(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := adapter.ClaimNextOperation(ctx, "upgrade-worker", time.Minute, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, acquired, err := adapter.AcquireAppOperationLock(ctx, "demo")
+	if err != nil || !acquired {
+		t.Fatalf("lock: %v", err)
+	}
+	defer lock.Release()
+	prior := activeFleetRoute{IntentID: "previous-intent", DeploymentID: "previous-deployment", Generation: 1, RouteSHA256: strings.Repeat("a", 64)}
+	activeKey := adapter.fleetActiveRouteKey("demo", "staging", "west")
+	activeBytes, _ := json.Marshal(prior)
+	if _, err = client.Put(ctx, activeKey, string(activeBytes)); err != nil {
+		t.Fatal(err)
+	}
+	reservationBytes, _ := json.Marshal(initialFleetRouteReservation{IntentID: prior.IntentID, Generation: prior.Generation})
+	if _, err = client.Put(ctx, adapter.fleetRouteReservationKey("demo", "staging", "west"), string(reservationBytes)); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := adapter.IntendInitialFleetRoute(ctx, claim, lock, spec, 18082)
+	if err != nil || intent.Generation != 2 || intent.DeploymentID != accepted.Deployment.ID || intent.PriorActive == nil || *intent.PriorActive != prior {
+		t.Fatalf("upgrade intent=%+v err=%v", intent, err)
+	}
+	replay, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082)
+	if err != nil || replay.ID != intent.ID {
+		t.Fatalf("upgrade replay=%+v err=%v", replay, err)
+	}
+	if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err == nil {
+		t.Fatal("upgrade completed without health and traffic proof")
+	}
+	effects, err := NewV3DeploymentEffectReservations(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := deploymentEffectReservation(t, accepted, claim, adapter.authority)
+	var nomadClient *nomad.Client
+	if recovery {
+		reservation, nomadClient = recoveryNomadFixture(t, accepted, claim, adapter.authority)
+	}
+	reserved, err := effects.Reserve(ctx, reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := reserved.Record.Token
+	if _, err := effects.MarkSubmitAttempt(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: reserved.Record.Reservation.Supervisor, SupervisorExecutionID: reserved.Record.Reservation.SupervisorExecutionID, RuntimeInstanceID: "nomad-job:global:demo:7"}
+	if err := effects.MarkLaunched(ctx, token, identity); err != nil {
+		t.Fatal(err)
+	}
+	verification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: reserved.Record.Reservation.InputDigest, ResultDigest: "sha256:healthy-fixture", ResultReference: identity.RuntimeInstanceID, SupervisorExecutionID: identity.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "nomad-job-health", EvidenceReference: identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	if recovery {
+		failed := *accepted.Deployment
+		failed.Status = model.StatusFailed
+		regions := []model.DeploymentRegion{{DeploymentID: failed.ID, Region: "west", NomadRegion: "global", Status: model.StatusFailed, DesiredWeight: 100}}
+		if err := adapter.finishClaimedDeployment(ctx, claim, lock, failed, regions, model.OperationFailed, "held", map[string]interface{}{"manualRecoveryRequired": true, "externalEffectRecoveryPending": true, "effectId": token.EffectID}); err != nil {
+			t.Fatal(err)
+		}
+		if err := adapter.RequeueHeldFleetDeployment(ctx, claim.OperationID(), token); err != nil {
+			t.Fatal(err)
+		}
+		_, claim, err = adapter.ClaimNextOperation(ctx, "recovery-worker", time.Minute, []string{"app.deploy"})
+		if err != nil || claim.OperationID() == "" {
+			t.Fatalf("recovery claim: %v", err)
+		}
+		if _, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, token, intent.ID, "ingress-01"); err == nil {
+			t.Fatal("recovery authorized without fresh health")
+		}
+		if _, err := adapter.RecordClaimedFleetRecoveryHealth(ctx, claim, lock, nomadClient); err != nil {
+			t.Fatal(err)
+		}
+		active, err := client.Get(ctx, activeKey)
+		if err != nil || len(active.Kvs) != 1 || string(active.Kvs[0].Value) != string(activeBytes) {
+			t.Fatal("old route changed before proof")
+		}
+	}
+	decision, err := adapter.AuthorizeInitialFleetRouteForNode(ctx, claim, lock, spec, 18082, token, intent.ID, "ingress-01")
+	if err != nil || decision.Expected != (ingress.PublishedRouteRevision{Generation: 1, RouteSHA256: prior.RouteSHA256, Present: true}) {
+		t.Fatalf("upgrade authorization=%+v err=%v", decision, err)
+	}
+	observe := func(_ context.Context, i *InitialFleetRouteIntent) (*FleetIngressTrafficObservation, error) {
+		traffic := &FleetIngressTrafficObservation{Route: FleetIngressRouteObservation{Inventory: i.Inventory, RouteSHA256: i.RenderedRoute.SHA256, Generation: i.Generation}, ProbePath: "/ready", EndpointBodySHA256: strings.Repeat("d", 64), PublicMatched: true}
+		for _, node := range i.Inventory.Nodes {
+			traffic.Route.Nodes = append(traffic.Route.Nodes, ingress.NodeObservation{NodeID: node.ID, MatchedDesiredRouteSHA256: i.RenderedRoute.SHA256, PublishedGeneration: i.Generation})
+			traffic.NodeEndpoints = append(traffic.NodeEndpoints, ingress.NodeEndpointProbe{NodeID: node.ID, BodySHA256: traffic.EndpointBodySHA256})
+		}
+		return traffic, nil
+	}
+	if _, err := adapter.recordClaimedInitialFleetTrafficProof(ctx, claim, lock, spec, token, 18082, observe); err != nil {
+		t.Fatalf("upgrade proof: %v", err)
+	}
+	if changed {
+		if _, err := client.Put(ctx, activeKey, string(activeBytes)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adapter.CurrentInitialFleetRouteIntent(ctx, claim, lock, spec, 18082); err == nil {
+			t.Fatal("changed prior revision remained publishable")
+		}
+		if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err == nil {
+			t.Fatal("changed prior revision terminalized")
+		}
+		return
+	}
+	if err := adapter.CompleteClaimedInitialFleetDeployment(ctx, claim, lock, spec, 18082); err != nil {
+		t.Fatalf("upgrade completion: %v", err)
+	}
+	active, err := client.Get(ctx, activeKey)
+	if err != nil || len(active.Kvs) != 1 {
+		t.Fatalf("active route: %v", err)
+	}
+	if recovery {
+		operation, err := adapter.GetOperation(ctx, claim.OperationID())
+		if err != nil || operation.Status != model.OperationSucceeded || operation.Metadata["manualRecoveryRequired"] == true || operation.Metadata["externalEffectRecoveryPending"] == true {
+			t.Fatalf("recovery completion: %+v %v", operation, err)
+		}
+		results, err := adapter.loadDeploymentRegionResults(ctx, accepted.Deployment.ID)
+		if err != nil || len(results) != 1 || results[0].Status != model.StatusDeployed || results[0].ActiveWeight != 100 {
+			t.Fatalf("recovery results: %+v %v", results, err)
+		}
+	}
+	var final activeFleetRoute
+	if decodeV3Record(active.Kvs[0].Value, &final) != nil || final.IntentID != intent.ID || final.Generation != 2 {
+		t.Fatalf("active route=%+v", final)
 	}
 }

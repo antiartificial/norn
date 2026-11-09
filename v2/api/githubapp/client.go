@@ -277,7 +277,7 @@ func (c *Client) Status(ctx context.Context) Status {
 	return status
 }
 
-func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string, temporaryRunnerSSH *bool) (*PullRequest, error) {
+func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string, temporaryRunnerSSH *bool, capacityPlan *fleet.CapacityPlan) (*PullRequest, error) {
 	token, err := c.installationToken(ctx, map[string]string{"contents": "write", "pull_requests": "write"})
 	if err != nil {
 		return nil, err
@@ -304,12 +304,13 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	var updated []byte
 	var receiptPath string
 	var receipt []byte
-	if noDesiredChange {
-		receiptPath, receipt, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed, temporaryRunnerSSH)
+	if noDesiredChange || protectedPlanReviewReceipt(capacityPlan) {
+		receiptPath, receipt, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed, temporaryRunnerSSH, capacityPlan)
 		if err != nil {
 			return nil, err
 		}
-	} else {
+	}
+	if !noDesiredChange {
 		document.NodePools[poolName] = proposed
 		updated, err = yaml.Marshal(document)
 		if err != nil {
@@ -335,8 +336,15 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 			if err := c.putContentAt(ctx, token, receiptPath, branch, "", message, receipt); err != nil {
 				return nil, err
 			}
-		} else if err := c.putContent(ctx, token, branch, fileSHA, message, updated); err != nil {
-			return nil, err
+		} else {
+			if err := c.putContent(ctx, token, branch, fileSHA, message, updated); err != nil {
+				return nil, err
+			}
+			if receipt != nil {
+				if err := c.putContentAt(ctx, token, receiptPath, branch, "", fmt.Sprintf("fleet: record Norn plan %s review receipt", planID), receipt); err != nil {
+					return nil, err
+				}
+			}
 		}
 	} else {
 		var existing []byte
@@ -355,6 +363,12 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 		}
 		if !bytes.Equal(existing, expected) {
 			return nil, fmt.Errorf("%w: plan branch already exists with different content", ErrPermanentAfterMutation)
+		}
+		if !noDesiredChange && receipt != nil {
+			existingReceipt, _, receiptErr := c.getContentAt(ctx, token, receiptPath, branch)
+			if receiptErr != nil || !bytes.Equal(existingReceipt, receipt) {
+				return nil, fmt.Errorf("%w: plan branch is missing the protected review receipt", ErrPermanentAfterMutation)
+			}
 		}
 	}
 	if existing, _ := c.findPullRequest(ctx, token, branch); existing != nil {
@@ -1570,13 +1584,55 @@ func (c *Client) putContentAt(ctx context.Context, token, repoPath, branch, sha,
 	return c.request(ctx, token, http.MethodPut, c.repoPath("/contents/"+escapePath(repoPath)), payload, nil)
 }
 
-// planReviewReceipt creates the only alternate review diff a capacity plan may
-// write: a deterministic, plan-ID-addressed receipt. It exists solely when the
-// validated desired node pool already equals the proposal, so a first cold
-// create still has an honest, reviewable PR without formatting churn.
-func planReviewReceipt(planID, planDigest, sourceDigest, poolName, action string, proposed fleet.NodePool, temporaryRunnerSSH *bool) (string, []byte, error) {
+func protectedPlanReviewReceipt(plan *fleet.CapacityPlan) bool {
+	return plan != nil && (plan.ProtectedApplyPrestate != nil || plan.ProtectedApplyTransitionRule != nil)
+}
+
+// planReviewReceipt creates the deterministic, plan-ID-addressed review
+// receipt. It is the only diff for a no-op plan and accompanies a protected
+// plan's topology change so its provider/state transition contract is reviewed
+// with the signed capacity plan.
+func planReviewReceipt(planID, planDigest, sourceDigest, poolName, action string, proposed fleet.NodePool, temporaryRunnerSSH *bool, capacityPlan *fleet.CapacityPlan) (string, []byte, error) {
 	if !planIDRe.MatchString(planID) || !strings.HasPrefix(planDigest, "sha256:") || !strings.HasPrefix(sourceDigest, "sha256:") || !sha256Re.MatchString(strings.TrimPrefix(planDigest, "sha256:")) || !sha256Re.MatchString(strings.TrimPrefix(sourceDigest, "sha256:")) || poolName == "" || action == "" {
 		return "", nil, fmt.Errorf("plan review receipt inputs are invalid")
+	}
+	if capacityPlan != nil && (capacityPlan.ID != planID || capacityPlan.Digest != planDigest || capacityPlan.SourceDigest != sourceDigest || capacityPlan.Pool != poolName || capacityPlan.Action != action || !reflect.DeepEqual(capacityPlan.Proposed, proposed) || !reflect.DeepEqual(capacityPlan.TemporaryRunnerSSH, temporaryRunnerSSH)) {
+		return "", nil, fmt.Errorf("plan review receipt does not match capacity plan")
+	}
+	if capacityPlan != nil && (capacityPlan.ProtectedApplyPrestate != nil || capacityPlan.ProtectedApplyTransitionRule != nil) {
+		if capacityPlan.ProtectedApplyPrestate == nil || capacityPlan.ProtectedApplyTransitionRule == nil || !capacityPlan.ProtectedApplyPrestate.Valid() || !capacityPlan.ProtectedApplyTransitionRule.Valid() || !strings.HasPrefix(capacityPlan.Signature, "hmac-sha256:") || !sha256Re.MatchString(strings.TrimPrefix(capacityPlan.Signature, "hmac-sha256:")) {
+			return "", nil, fmt.Errorf("protected plan review receipt is invalid")
+		}
+		receipt := struct {
+			SchemaVersion                string                             `json:"schemaVersion"`
+			PlanID                       string                             `json:"planID"`
+			PlanDigest                   string                             `json:"planDigest"`
+			PlanSignature                string                             `json:"planSignature"`
+			SourceDigest                 string                             `json:"sourceDigest"`
+			NodePool                     string                             `json:"nodePool"`
+			Action                       string                             `json:"action"`
+			Proposed                     fleet.NodePool                     `json:"proposed"`
+			TemporaryRunnerSSH           bool                               `json:"temporaryRunnerSSH"`
+			ProtectedApplyPrestate       fleet.ProtectedApplyPrestate       `json:"protectedApplyPrestate"`
+			ProtectedApplyTransitionRule fleet.ProtectedApplyTransitionRule `json:"protectedApplyTransitionRule"`
+		}{
+			SchemaVersion:                "norn.fleet-plan-review-receipt/v2",
+			PlanID:                       strings.ToLower(planID),
+			PlanDigest:                   planDigest,
+			PlanSignature:                capacityPlan.Signature,
+			SourceDigest:                 sourceDigest,
+			NodePool:                     poolName,
+			Action:                       action,
+			Proposed:                     proposed,
+			TemporaryRunnerSSH:           temporaryRunnerSSH != nil && *temporaryRunnerSSH,
+			ProtectedApplyPrestate:       *capacityPlan.ProtectedApplyPrestate,
+			ProtectedApplyTransitionRule: *capacityPlan.ProtectedApplyTransitionRule,
+		}
+		encoded, err := json.MarshalIndent(receipt, "", "  ")
+		if err != nil {
+			return "", nil, fmt.Errorf("encode protected plan review receipt: %w", err)
+		}
+		return ".norn/fleet-plan-receipts/" + strings.ToLower(planID) + ".json", append(encoded, '\n'), nil
 	}
 	receipt := struct {
 		SchemaVersion      string         `json:"schemaVersion"`

@@ -134,6 +134,15 @@ func TestBuildCapacityPlanBindsExplicitTemporaryRunnerSSH(t *testing.T) {
 	}
 }
 
+func TestBuildCapacityPlanRefusesProtectedPrestateOutsideEtcdController(t *testing.T) {
+	pool := fleet.NodePool{Size: "small", Min: 1, Desired: 1, Max: 2}
+	inventory := &fleet.Inventory{Digest: "sha256:source", Document: &fleet.Document{Cluster: fleet.Cluster{Name: "staging"}}}
+	prestate := &fleet.ProtectedApplyPrestate{ProviderAccountUUID: "account", ProviderTargetID: "target", ProviderTargetState: "present", Spaces: fleet.ProtectedApplyStateSpaces{Bucket: "bucket", Key: "key", Lineage: "lineage", Serial: 1, VersionID: "version", RawSHA256: strings.Repeat("a", 64)}}
+	if _, err := buildCapacityPlan(inventory, "app", pool, fleet.PlanRequest{ProtectedApplyPrestate: prestate, ProtectedApplyTransitionRule: &fleet.ProtectedApplyTransitionRule{ProviderTargetState: "present", StateChange: "write"}}, "audit-key"); err == nil {
+		t.Fatal("legacy PostgreSQL plan accepted an etcd-only protected prestate contract")
+	}
+}
+
 func TestFleetGitHubRequiresAnAuthenticCapacityPlan(t *testing.T) {
 	pool := fleet.NodePool{Size: "small", Min: 2, Desired: 2, Max: 8}
 	inventory := &fleet.Inventory{Digest: "sha256:source", Document: &fleet.Document{Cluster: fleet.Cluster{Name: "production-nyc3"}}}

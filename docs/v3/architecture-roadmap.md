@@ -1,12 +1,32 @@
 # Norn v3 architecture and delivery roadmap
 
-Status: proposed implementation plan, 2026-09-22. No infrastructure changes or migrations authorized by this document. Baseline inspected: Norn `7304f39`, norn-fleet `56e0f7d`, including the current working trees. Existing local changes were preserved.
+Status: planning artifact, 2026-09-22. Its original planning-only authorization
+and baseline are historical; they do not describe later deployment work. The
+current Mini and DigitalOcean staging Fleet status is maintained in
+[LAUNCH-STATE.md](LAUNCH-STATE.md). The independent Mini direct v3 upgrade
+completed on 2026-11-07; the DO staging Fleet remains the only Fleet in this
+work and still has separate qualification gates.
 
 ## Planning boundary and release scope
 
-This roadmap is the review artifact before implementation. Current authorization covers planning and documentation only. No application changes, provider provisioning, production measurements, migrations, or deployments are part of this planning pass.
+This roadmap records the review artifact before implementation. Its original
+authorization covered planning and documentation only. Later implementation,
+protected release and direct Mini deployment evidence is recorded in the
+current launch-state page.
 
-Norn v3 has two independent initial release paths: upgrade the existing Mini from v2 to v3 on PostgreSQL while preserving its development workloads, and bootstrap a fresh HA DigitalOcean staging Fleet directly on three-member etcd with applications deployed to Fleet. A future production Fleet is a separate environment. Both paths use the same control contracts. PostgreSQL remains supported for the Mini; an upgrade does not force a backend switch or workload relocation. The target release includes independent observability retention, named database bindings, persistent app scaling, explicit placement and coordinated upgrades. Mini-to-Fleet application migration and general PG↔etcd conversion are deferred capabilities, not launch gates.
+Norn v3 has two deployment paths: upgrade Mini, an independent single-node
+Norn installation, from v2 to v3 on PostgreSQL while preserving its development
+workloads; and bootstrap/qualify the DigitalOcean staging Fleet, a lower-resource
+testbed intended to resemble production, directly on three-member etcd with
+applications deployed there. Mini is not a node in the staging Fleet topology;
+its API may separately hold configuration for the DO target. A future
+production Fleet is another distinct environment. Both v3 paths use the same
+control contracts. PostgreSQL remains supported for Mini; an upgrade does not
+force a backend switch or workload relocation. The target release includes
+independent observability retention, named database bindings, persistent app
+scaling, explicit placement and coordinated upgrades. Mini-to-Fleet application
+migration and general PG↔etcd conversion are deferred capabilities, not launch
+gates.
 
 Product, wire API, Fleet document, InfraSpec, object format and database schema versions are independent. Preserve supported `fleet/v1` documents; introduce a new document version only for incompatible semantics. Advertise optional capabilities instead of assuming a v3 client implies every backend/provider feature exists. A roadmap under `docs/v3` does not require duplicating the source tree into `v3/`.
 

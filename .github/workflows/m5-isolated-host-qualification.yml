@@ -1,0 +1,97 @@
+name: M5 isolated host qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m5-historical-copied-state
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.ref == 'refs/heads/master' && github.ref_protected
+    environment: m5-mini-release-rehearsal
+    runs-on: norn-m5-isolated
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Qualify dedicated GUI domain and effective isolation
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/master && "$RUNNER_NAME" == norn-m5-isolated-01 ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          window=/Library/PrivilegedHelperTools/norn-mini-m5-firewall-window
+          checker=/Library/PrivilegedHelperTools/norn-mini-m5-isolation-check
+          WINDOW="$window" CHECKER="$checker" python3 - <<'PY'
+          import hashlib, os, stat
+          expected = {
+              os.environ['WINDOW']: 'b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1',
+              os.environ['CHECKER']: '8caa3fa047ed4627a08b52f23c48906867782e6dad24df0f6c216611f2da76e0',
+          }
+          for parent in ('/', '/Library', '/Library/PrivilegedHelperTools'):
+              info = os.lstat(parent)
+              assert info.st_uid == 0 and stat.S_ISDIR(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o022
+          for path, digest in expected.items():
+              info = os.lstat(path)
+              assert info.st_uid == 0 and stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o022
+              with open(path, 'rb') as source:
+                  assert hashlib.sha256(source.read()).hexdigest() == digest
+          PY
+          sudo -n "$window" admit "$GITHUB_RUN_ID"
+          rehearsal_uid=$(id -u norn-m5-rehearsal)
+          sudo -n -u norn-m5-rehearsal -- /bin/launchctl print "gui/$rehearsal_uid" >/dev/null
+          window_enabled=false
+          cleanup() {
+            if [[ "$window_enabled" == true ]]; then
+              sudo -n "$window" disable "$GITHUB_RUN_ID"
+            fi
+          }
+          trap cleanup EXIT
+          sudo -n "$window" enable "$GITHUB_RUN_ID"
+          window_enabled=true
+          sudo -n "$checker" "$RUNNER_NAME" | tee "$RUNNER_TEMP/m5-host-attestation.json" >/dev/null
+          ATTESTATION="$RUNNER_TEMP/m5-host-attestation.json" EXPECTED_GUI="gui/$rehearsal_uid" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          attestation = json.loads(Path(os.environ['ATTESTATION']).read_text())
+          assert attestation['schema'] == 'norn.m5-isolated-runner-attestation/v1'
+          assert attestation['hostOutbound'] == 'loopback-only'
+          assert attestation['guiDomain'] == os.environ['EXPECTED_GUI']
+          assert attestation['credentialSurfacesAbsentOrUnreadable'] is True
+          assert attestation['preexistingNetworkSockets'] == 0
+          PY
+          sudo -n "$window" disable "$GITHUB_RUN_ID"
+          window_enabled=false
+          trap - EXIT
+          echo "Qualified isolated host at protected source $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m5-isolated-host-attestation-${{ github.run_id }}
+          path: ${{ runner.temp }}/m5-host-attestation.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Emit unsigned qualification candidate for owner review
+        env:
+          HARDENING_INTENT: ${{ vars.M5_LOCAL_GUEST_HARDENING_INTENT }}
+          HARDENING_SIGNATURE: ${{ vars.M5_LOCAL_GUEST_HARDENING_SIGNATURE }}
+          PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          for key in HARDENING_INTENT HARDENING_SIGNATURE PUBLIC_KEY; do
+            [[ -n "${!key}" ]]
+          done
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-guest-identity-candidate" \
+            --hardening-intent "$HARDENING_INTENT" --hardening-signature "$HARDENING_SIGNATURE" \
+            --public-key "$PUBLIC_KEY" --attestation "$RUNNER_TEMP/m5-host-attestation.json" \
+            --output "$RUNNER_TEMP/m5-guest-qualification-candidate.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m5-guest-qualification-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/m5-guest-qualification-candidate.json
+          if-no-files-found: error
+          retention-days: 30

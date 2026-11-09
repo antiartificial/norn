@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 
@@ -25,6 +26,21 @@ type DeploymentJobHealthObservation struct {
 	JobVersion     uint64
 	JobModifyIndex uint64
 	AllocationIDs  []string
+	Allocations    []DeploymentJobAllocationHealthObservation
+}
+
+// DeploymentJobAllocationHealthObservation is a redacted projection of one
+// exact allocation from a verified submitted job revision.
+type DeploymentJobAllocationHealthObservation struct {
+	AllocationID   string
+	NodeID         string
+	JobID          string
+	Namespace      string
+	TaskGroup      string
+	JobVersion     uint64
+	JobModifyIndex uint64
+	ImageDigest    string
+	Healthy        bool
 }
 
 // ObserveDeploymentJobHealth proves that every declared service group has
@@ -54,6 +70,7 @@ func (c *Client) ObserveDeploymentJobHealth(ctx context.Context, request CASDepl
 	}
 	counts := make(map[string]int, len(job.TaskGroups))
 	ids := make([]string, 0, len(stubs))
+	allocationObservations := make([]DeploymentJobAllocationHealthObservation, 0, len(stubs))
 	seenIDs := make(map[string]bool, len(stubs))
 	pending := false
 	expected := make(map[string]bool, len(job.TaskGroups))
@@ -71,20 +88,28 @@ func (c *Client) ObserveDeploymentJobHealth(ctx context.Context, request CASDepl
 		if !expected[stub.TaskGroup] {
 			return indeterminate()
 		}
-		if stub.JobVersion != identity.Version || stub.DesiredStatus != nomadapi.AllocDesiredStatusRun ||
-			stub.ClientStatus != nomadapi.AllocClientStatusRunning || stub.DeploymentStatus == nil ||
-			stub.DeploymentStatus.Healthy == nil || !*stub.DeploymentStatus.Healthy {
+		if stub.JobVersion != identity.Version {
 			pending = true
 			continue
 		}
 		allocation, _, err := c.api.Allocations().Info(stub.ID, query)
-		if err != nil || !runningAllocationImage(stub, allocation, job, request.ImageTag, expected) ||
-			!matchesDeploymentJobRevision(allocation.Job, request) || allocation.Job.JobModifyIndex == nil ||
-			*allocation.Job.JobModifyIndex != identity.JobModifyIndex {
+		if err != nil || !matchesDeploymentHealthAllocation(stub, allocation, request, identity, expected) {
 			return indeterminate()
 		}
-		counts[stub.TaskGroup]++
-		ids = append(ids, stub.ID)
+		healthy := stub.DesiredStatus == nomadapi.AllocDesiredStatusRun &&
+			stub.ClientStatus == nomadapi.AllocClientStatusRunning && stub.DeploymentStatus != nil &&
+			stub.DeploymentStatus.Healthy != nil && *stub.DeploymentStatus.Healthy &&
+			runningAllocationImage(stub, allocation, job, request.ImageTag, expected)
+		allocationObservations = append(allocationObservations, DeploymentJobAllocationHealthObservation{
+			AllocationID: stub.ID, NodeID: stub.NodeID, JobID: stub.JobID,
+			Namespace: effectiveNomadNamespace(request.Namespace), TaskGroup: stub.TaskGroup,
+			JobVersion: stub.JobVersion, JobModifyIndex: identity.JobModifyIndex,
+			ImageDigest: contentAddressedImageDigest(request.ImageTag), Healthy: healthy,
+		})
+		if healthy {
+			counts[stub.TaskGroup]++
+			ids = append(ids, stub.ID)
+		}
 	}
 	for _, group := range job.TaskGroups {
 		if counts[*group.Name] != *group.Count {
@@ -96,10 +121,34 @@ func (c *Client) ObserveDeploymentJobHealth(ctx context.Context, request CASDepl
 		return indeterminate()
 	}
 	if pending {
-		return DeploymentJobHealthObservation{State: DeploymentJobHealthPending, JobVersion: identity.Version, JobModifyIndex: identity.JobModifyIndex}, nil
+		sort.Strings(ids)
+		sort.Slice(allocationObservations, func(i, j int) bool {
+			return allocationObservations[i].AllocationID < allocationObservations[j].AllocationID
+		})
+		return DeploymentJobHealthObservation{State: DeploymentJobHealthPending, JobVersion: identity.Version, JobModifyIndex: identity.JobModifyIndex, AllocationIDs: ids, Allocations: allocationObservations}, nil
 	}
 	sort.Strings(ids)
-	return DeploymentJobHealthObservation{State: DeploymentJobHealthReady, JobVersion: identity.Version, JobModifyIndex: identity.JobModifyIndex, AllocationIDs: ids}, nil
+	sort.Slice(allocationObservations, func(i, j int) bool {
+		return allocationObservations[i].AllocationID < allocationObservations[j].AllocationID
+	})
+	return DeploymentJobHealthObservation{State: DeploymentJobHealthReady, JobVersion: identity.Version, JobModifyIndex: identity.JobModifyIndex, AllocationIDs: ids, Allocations: allocationObservations}, nil
+}
+
+func matchesDeploymentHealthAllocation(stub *nomadapi.AllocationListStub, allocation *nomadapi.Allocation, request CASDeploymentJobRequest, identity DeploymentJobObservation, expected map[string]bool) bool {
+	return stub != nil && allocation != nil && stub.ID != "" && stub.NodeID != "" && stub.JobID == request.EffectiveJobID() &&
+		stub.JobVersion == identity.Version && expected[stub.TaskGroup] && allocation.ID == stub.ID && allocation.NodeID == stub.NodeID &&
+		allocation.JobID == stub.JobID && allocation.TaskGroup == stub.TaskGroup &&
+		allocation.Namespace == effectiveNomadNamespace(request.Namespace) && allocation.Job != nil &&
+		allocation.Job.JobModifyIndex != nil && *allocation.Job.JobModifyIndex == identity.JobModifyIndex &&
+		exactDeploymentHealthJob(allocation.Job, request, identity)
+}
+
+func contentAddressedImageDigest(image string) string {
+	separator := strings.LastIndex(image, "@sha256:")
+	if separator < 0 {
+		return ""
+	}
+	return image[separator+1:]
 }
 
 func exactDeploymentHealthJob(job *nomadapi.Job, request CASDeploymentJobRequest, identity DeploymentJobObservation) bool {

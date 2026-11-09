@@ -22,8 +22,13 @@ type initialFleetCompletionSource struct {
 type activeFleetRoute struct {
 	IntentID     string `json:"intentId"`
 	DeploymentID string `json:"deploymentId"`
+	OperationID  string `json:"operationId"`
 	Generation   uint64 `json:"generation"`
 	RouteSHA256  string `json:"routeSha256"`
+	JobDigest    string `json:"jobDigest"`
+	SpecDigest   string `json:"specDigest"`
+	ImageTag     string `json:"imageTag"`
+	Process      string `json:"process"`
 }
 
 // CompleteClaimedInitialFleetDeployment is the only positive-traffic
@@ -62,7 +67,7 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 	if err != nil {
 		return nil, nil, fmt.Errorf("deployment-bound ingress intent is unavailable: %w", err)
 	}
-	if intent.OperationID != claim.OperationID() || intent.DeploymentID != accepted.Deployment.ID || intent.AcceptanceID != accepted.Intent.ID || intent.AcceptanceDigest != accepted.Intent.CanonicalDigest || intent.SpecDigest != accepted.Deployment.SpecDigest || intent.Generation != 1 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
+	if intent.OperationID != claim.OperationID() || intent.DeploymentID != accepted.Deployment.ID || intent.AcceptanceID != accepted.Intent.ID || intent.AcceptanceDigest != accepted.Intent.CanonicalDigest || intent.SpecDigest != accepted.Deployment.SpecDigest || intent.Generation == 0 || !sameFleetAppTarget(intent.FleetTarget, *accepted.FleetAppTarget) {
 		return nil, nil, fmt.Errorf("deployment-bound ingress intent differs from acceptance")
 	}
 	proofKey := s.initialFleetTrafficProofKey(intent.ID, claim.Generation())
@@ -81,9 +86,16 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 	if err != nil {
 		return nil, nil, err
 	}
-	_, effectKey, effectRevision, err := effects.loadToken(ctx, proof.HealthEffect)
+	healthEffect, effectKey, effectRevision, err := effects.loadToken(ctx, proof.HealthEffect)
 	if err != nil {
 		return nil, nil, err
+	}
+	if _, err := effects.validateDeploymentEffectReservation(ctx, healthEffect.Reservation, accepted.Operation); err != nil {
+		return nil, nil, fmt.Errorf("deployment route has no accepted job digest: %w", err)
+	}
+	var healthInput deploymentEffectInput
+	if json.Unmarshal(healthEffect.Reservation.LaunchPayload, &healthInput) != nil || healthInput.JobDigest == "" {
+		return nil, nil, fmt.Errorf("deployment route job digest is unavailable")
 	}
 	attemptKey := effects.submitAttemptKey(proof.HealthEffect)
 	attempt, err := s.kv.Get(ctx, attemptKey)
@@ -132,7 +144,9 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 		return nil, nil, err
 	}
 	activeKey := s.fleetActiveRouteKey(intent.App, intent.ControlEnvironment, intent.Region)
-	active, err := json.Marshal(activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.DeploymentID, Generation: intent.Generation, RouteSHA256: intent.RenderedRoute.SHA256})
+	active, err := json.Marshal(activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.DeploymentID, OperationID: intent.OperationID,
+		Generation: intent.Generation, RouteSHA256: intent.RenderedRoute.SHA256, JobDigest: "sha256:" + healthInput.JobDigest,
+		SpecDigest: healthInput.SpecDigest, ImageTag: healthInput.ImageTag, Process: intent.Endpoint.Process})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -146,7 +160,16 @@ func (s *V3OperationStore) initialFleetCompletionFences(ctx context.Context, cla
 		clientv3.Compare(clientv3.ModRevision(acceptanceKey), "=", loaded.revision),
 		clientv3.Compare(clientv3.ModRevision(effectKey), "=", effectRevision),
 		clientv3.Compare(clientv3.ModRevision(attemptKey), "=", attempt.Kvs[0].ModRevision),
-		clientv3.Compare(clientv3.CreateRevision(activeKey), "=", 0),
+		priorActiveCompare(activeKey, intent),
+	}
+	if current, _, err := s.load(ctx, claim.OperationID()); err != nil {
+		return nil, nil, err
+	} else if current.Operation.Metadata[fleetDeploymentRecoveryEffect] != nil {
+		healthCompare, err := s.requireFleetRecoveryHealth(ctx, claim, proof.HealthEffect)
+		if err != nil {
+			return nil, nil, err
+		}
+		compares = append(compares, healthCompare)
 	}
 	compares = append(compares, inventoryCompares...)
 	return compares, []clientv3.Op{clientv3.OpPut(activeKey, string(active))}, nil

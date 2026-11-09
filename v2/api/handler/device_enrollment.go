@@ -52,6 +52,12 @@ func NewEtcdFleetExecutorEnrollmentHandler(cfg *config.Config, identities store.
 	return &Handler{cfg: cfg, deviceIdentities: identities, executorEnrollOnly: true}
 }
 
+// NewEtcdPlatformOperatorEnrollmentHandler shares the durable etcd pairing
+// protocol but admits only the dedicated platform operator device and scope.
+func NewEtcdPlatformOperatorEnrollmentHandler(cfg *config.Config, identities store.AuthStore) *Handler {
+	return &Handler{cfg: cfg, deviceIdentities: identities, platformOperatorEnrollOnly: true}
+}
+
 func (h *Handler) deviceIdentityStore() store.AuthStore {
 	if h == nil {
 		return nil
@@ -79,6 +85,14 @@ func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) 
 	if req.DeviceName == "" || len(req.DeviceName) > 120 {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_device_name", "deviceName is required and must not exceed 120 characters")
 		return
+	}
+	if h.platformOperatorEnrollOnly {
+		operationID := strings.TrimPrefix(req.DeviceName, FleetDeploymentRecoverySubjectPrefix)
+		parsed, err := uuid.Parse(operationID)
+		if !strings.HasPrefix(req.DeviceName, FleetDeploymentRecoverySubjectPrefix) || err != nil || parsed.String() != operationID {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_device_name", "operator deviceName must bind a canonical recovery operation ID")
+			return
+		}
 	}
 	scopes, err := h.deviceEnrollmentScopesForPlatform(req.Platform, req.RequestedScopes)
 	if err != nil {
@@ -131,6 +145,9 @@ func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) 
 	if h.offlineEnrollmentOnly {
 		verificationPath, pollPath = "/api/v1/fleet/offline/enrollments/approve", "/api/v1/fleet/offline/enrollments/"+enrollment.ID+"/exchange"
 	}
+	if h.platformOperatorEnrollOnly {
+		verificationPath, pollPath = "/api/v1/fleet/platform-operator/enrollments/approve", "/api/v1/fleet/platform-operator/enrollments/"+enrollment.ID+"/exchange"
+	}
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"id": enrollment.ID, "userCode": code, "verifier": verifier,
 		"expiresAt": enrollment.ExpiresAt, "verificationPath": verificationPath,
@@ -164,6 +181,15 @@ func (h *Handler) ListDeviceEnrollments(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		enrollments = executorOnly
+	}
+	if h.platformOperatorEnrollOnly {
+		operatorOnly := make([]store.AccessEnrollment, 0, len(enrollments))
+		for _, enrollment := range enrollments {
+			if isPlatformOperatorPlatform(enrollment.Platform) {
+				operatorOnly = append(operatorOnly, enrollment)
+			}
+		}
+		enrollments = operatorOnly
 	}
 	writeJSON(w, map[string]interface{}{"enrollments": enrollments})
 }
@@ -300,6 +326,15 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		devices = executorOnly
 	}
+	if h.platformOperatorEnrollOnly {
+		operatorOnly := make([]store.AccessDevice, 0, len(devices))
+		for _, device := range devices {
+			if isPlatformOperatorPlatform(device.Platform) {
+				operatorOnly = append(operatorOnly, device)
+			}
+		}
+		devices = operatorOnly
+	}
 	writeJSON(w, map[string]interface{}{"devices": devices})
 }
 
@@ -318,6 +353,13 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 		device, err := h.deviceIdentityStore().ActiveAccessDevice(r.Context(), chi.URLParam(r, "id"))
 		if err != nil || device == nil || !isFleetExecutorPlatform(device.Platform) {
 			WriteControlProblem(w, r, http.StatusNotFound, "device_not_found", "fleet executor device was not found")
+			return
+		}
+	}
+	if h.platformOperatorEnrollOnly {
+		device, err := h.deviceIdentityStore().ActiveAccessDevice(r.Context(), chi.URLParam(r, "id"))
+		if err != nil || device == nil || !isPlatformOperatorPlatform(device.Platform) {
+			WriteControlProblem(w, r, http.StatusNotFound, "device_not_found", "platform operator device was not found")
 			return
 		}
 	}
@@ -368,6 +410,10 @@ func RotateManagedToken(cfg *config.Config, auth store.AuthStore, closeConnectio
 	device, err := auth.ActiveAccessDevice(r.Context(), principal.DeviceID)
 	if err != nil || device == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "device_lookup_failed", "device token lifetime could not be determined")
+		return
+	}
+	if isPlatformOperatorPlatform(device.Platform) {
+		WriteControlProblem(w, r, http.StatusForbidden, "operator_rotation_unsupported", "temporary platform operator tokens cannot be rotated")
 		return
 	}
 	token, record, err := issueDeviceTokenForPlatform(cfg, device.Platform, principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID, deviceTokenLifetimeForPlatform(device.Platform))
@@ -433,7 +479,17 @@ func issueDeviceTokenWithTTL(cfg *config.Config, deviceID, subject string, scope
 // issueDeviceTokenForPlatform is issueDeviceTokenWithTTL with the device's
 // persisted platform, which fleet:execute validation needs.
 func issueDeviceTokenForPlatform(cfg *config.Config, platform, deviceID, subject string, scopes []string, rotatedFrom string, lifetime time.Duration) (string, *store.AccessToken, error) {
-	if cfg != nil && cfg.IsFleetAuthorityOnly() || containsScope(scopes, ScopeFleetExecute) || containsScope(scopes, ScopeFleetOfflineAttempt) {
+	if isPlatformOperatorPlatform(platform) {
+		operationID := strings.TrimPrefix(subject, FleetDeploymentRecoverySubjectPrefix)
+		parsed, parseErr := uuid.Parse(operationID)
+		if cfg == nil || !cfg.FleetPlatformReleaseIntentEnabled || len(scopes) != 1 || scopes[0] != ScopeFleetDeploymentRecover || !strings.HasPrefix(subject, FleetDeploymentRecoverySubjectPrefix) || parseErr != nil || parsed.String() != operationID {
+			return "", nil, fmt.Errorf("platform operator token requires its dedicated enabled scope")
+		}
+		if lifetime <= 0 || lifetime > 30*time.Minute {
+			lifetime = 30 * time.Minute
+		}
+	}
+	if !isPlatformOperatorPlatform(platform) && (cfg != nil && cfg.IsFleetAuthorityOnly() || containsScope(scopes, ScopeFleetExecute) || containsScope(scopes, ScopeFleetDeploymentRecover) || containsScope(scopes, ScopeFleetOfflineAttempt)) {
 		var err error
 		scopes, err = (&Handler{cfg: cfg}).deviceEnrollmentScopesForPlatform(platform, scopes)
 		if err != nil {
@@ -455,6 +511,9 @@ func issueDeviceTokenForPlatform(cfg *config.Config, platform, deviceID, subject
 func deviceTokenLifetimeForPlatform(platform string) time.Duration {
 	if strings.EqualFold(strings.TrimSpace(platform), "web") {
 		return browserDeviceTokenTTL
+	}
+	if isPlatformOperatorPlatform(platform) {
+		return 30 * time.Minute
 	}
 	if isFleetExecutorPlatform(platform) {
 		return fleetExecutorTokenTTL

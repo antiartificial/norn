@@ -10,6 +10,7 @@ import (
 	"norn/v2/api/ingress"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
@@ -72,6 +73,8 @@ func TestV3ScaleTargetRequiresCompletedActiveManagedRoute(t *testing.T) {
 	}
 	activeKey := operations.fleetActiveRouteKey("demo", "staging", "west")
 	put(activeKey, activeFleetRoute{IntentID: intentID, DeploymentID: accepted.Deployment.ID, Generation: 1, RouteSHA256: "sha256:route"})
+	reservationKey := operations.fleetRouteReservationKey("demo", "staging", "west")
+	put(reservationKey, initialFleetRouteReservation{IntentID: intentID, Generation: 1})
 	want, err := nomad.ManagedDeploymentJobID("demo", "west", accepted.Deployment.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +83,11 @@ func TestV3ScaleTargetRequiresCompletedActiveManagedRoute(t *testing.T) {
 	if err != nil || got.JobID != want || got.DeploymentID != accepted.Deployment.ID || got.SpecDigest != accepted.Deployment.SpecDigest {
 		t.Fatalf("active scale target=%+v err=%v", got, err)
 	}
+	put(reservationKey, initialFleetRouteReservation{IntentID: uuid.NewString(), Generation: 1})
+	if _, err := operations.ActiveFleetScaleTarget(ctx, "demo", "staging", "west"); err == nil {
+		t.Fatal("accepted a scale target while another route intent held the reservation")
+	}
+	put(reservationKey, initialFleetRouteReservation{IntentID: intentID, Generation: 1})
 	put(activeKey, activeFleetRoute{IntentID: intentID, DeploymentID: uuid.NewString(), Generation: 1, RouteSHA256: "sha256:route"})
 	if _, err := operations.ActiveFleetScaleTarget(ctx, "demo", "staging", "west"); err == nil {
 		t.Fatal("accepted a route marker pointed at another deployment")
@@ -97,5 +105,106 @@ func TestDirectPilotIsNotANativeScaleTarget(t *testing.T) {
 	managedID, err := nomad.ManagedDeploymentJobID("hello-norn-mysql", "nyc3", "replacement-deployment")
 	if err != nil || managedID == "hello-norn-mysql" {
 		t.Fatalf("native replacement did not receive an independent job identity: %q, %v", managedID, err)
+	}
+}
+
+func TestV3ScaleTargetResolvesCompletedWorkloadRoute(t *testing.T) {
+	adapter, client, _ := functionInvocationEffectAttemptStore(t)
+	ctx := context.Background()
+	const app = "widgets"
+	target := FleetAppTarget{SchemaVersion: fleetAppTargetSchema, App: app, ControlEnvironment: "staging", Cluster: "norn-staging", FleetEnvironment: "staging/nyc3", Region: "nyc3", NomadRegion: "global", NomadNamespace: "default", Datacenters: []string{"nyc3"}, Generation: 1}
+	if _, err := adapter.ConfigureFleetAppTarget(ctx, target, 0); err != nil {
+		t.Fatal(err)
+	}
+	intent := pipeline.WorkloadReleaseIntent{
+		ID: "release-scale-target", App: app, Region: target.Region, NomadRegion: target.NomadRegion, Namespace: target.NomadNamespace,
+		ControlEnvironment: target.ControlEnvironment, FleetCluster: target.Cluster, FleetEnvironment: target.FleetEnvironment, FleetDatacenters: append([]string(nil), target.Datacenters...), FleetTargetGeneration: target.Generation,
+		Process: "web", Endpoint: "https://widgets.example.test", PublicPaths: []string{"/proof"}, RetryGETPaths: []string{"/proof"}, PrivateReadinessPath: "/ready", TrafficProbePath: "/proof", TrafficProbeBodySHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SpecDigest: functionInvocationEffectAttemptDigest, SourceRevision: "source-1", OldDeploymentID: "old-deploy", OldImageDigest: functionInvocationEffectAttemptDigest,
+		OldSpecDigest: functionInvocationEffectAttemptDigest, OldJobID: "widgets-web-old", OldJobDigest: functionInvocationEffectAttemptDigest, OldJobVersion: 1, OldJobModifyIndex: 2,
+		TargetDeploymentID: "target-deploy", TargetImage: "registry.example.test/widgets@" + functionInvocationEffectAttemptDigest, TargetImageDigest: functionInvocationEffectAttemptDigest,
+		TargetJobID: "widgets-web-target", TargetJobDigest: functionInvocationEffectAttemptDigest, TargetSpecDigest: functionInvocationEffectAttemptDigest,
+		TargetOperationID: "target-operation", TargetExecutionID: "target-execution", OldAllocationIDs: []string{"old-allocation"}, TargetJobVersion: 1, TargetJobModifyIndex: 3,
+		TargetReplicas: 1, SurgeLimit: 1, FirstRouteGeneration: 4,
+		RouteSteps: []pipeline.WorkloadReleaseRouteStep{{OldWeight: 100, TargetWeight: 0}, {OldWeight: 90, TargetWeight: 10}, {OldWeight: 0, TargetWeight: 100}},
+	}
+	intentBytes, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := model.Operation{ID: uuid.NewString(), Kind: "app.workload-release", App: app, Status: model.OperationQueued, MaxAttempts: 3, Source: "test", Payload: map[string]interface{}{"workloadReleaseIntent": string(intentBytes)}}
+	acceptance := store.OperationAcceptance{
+		Identity:  store.OperationRequestIdentity{Authority: adapter.authority, Actor: store.OperationActor{Issuer: "workload-release-test", Subject: "operator"}, Kind: operation.Kind, Resource: "app/" + app, Key: uuid.NewString()},
+		Operation: operation, Audit: store.AcceptanceAuditContext{Source: "workload-release-test"}, Semantics: map[string]interface{}{"intentId": intent.ID},
+	}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Accept(ctx, acceptance); err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := adapter.ClaimNextOperation(ctx, "workload-release-worker", time.Minute, []string{operation.Kind})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	lock, acquired, err := adapter.AcquireAppOperationLock(ctx, app)
+	if err != nil || !acquired {
+		t.Fatalf("lock=%t err=%v", acquired, err)
+	}
+	defer lock.Release()
+	rendered, err := intent.RenderRouteStep(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := pipeline.WorkloadReleaseReceipt{
+		IntentID: intent.ID, Phase: pipeline.WorkloadReleaseComplete, RouteStep: 2, RouteOldWeight: 0, RouteTargetWeight: 100,
+		RouteGeneration: 6, RouteSHA256: "sha256:" + rendered.SHA256, OldJobStoppedVersion: 2, OldJobStoppedModifyIndex: 3,
+		DrainedOldIDs: []string{"old-allocation"}, TargetAllocations: []pipeline.WorkloadReleaseAllocationObservation{{
+			AllocationID: "target-allocation", NodeID: "app-01", JobID: intent.TargetJobID, Namespace: intent.Namespace,
+			TaskGroup: intent.Process, JobVersion: intent.TargetJobVersion, JobModifyIndex: intent.TargetJobModifyIndex,
+			ImageDigest: intent.TargetImageDigest, Healthy: true,
+		}},
+	}
+	if err := receipt.ValidateAgainst(intent); err != nil {
+		t.Fatalf("complete receipt invalid: %v", err)
+	}
+	receiptBytes, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.CompareAndSwapWorkloadReleaseReceipt(ctx, claim, intent.ID, "", receiptBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FinishClaimedOperationWithAppLock(ctx, claim, lock, model.OperationSucceeded, "workload release complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	put := func(key string, value interface{}) {
+		t.Helper()
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Put(ctx, key, string(encoded)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(adapter.fleetRouteReservationKey(app, target.ControlEnvironment, target.Region), initialFleetRouteReservation{IntentID: intent.ID, Generation: receipt.RouteGeneration})
+	put(adapter.fleetActiveRouteKey(app, target.ControlEnvironment, target.Region), activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.TargetDeploymentID, Generation: receipt.RouteGeneration, RouteSHA256: rendered.SHA256})
+
+	got, err := adapter.ActiveFleetScaleTarget(ctx, app, target.ControlEnvironment, target.Region)
+	if err != nil || got.JobID != intent.TargetJobID || got.DeploymentID != intent.TargetDeploymentID || got.SpecDigest != intent.TargetSpecDigest || got.NomadNamespace != intent.Namespace {
+		t.Fatalf("workload active scale target=%+v err=%v", got, err)
+	}
+	put(adapter.fleetActiveRouteKey(app, target.ControlEnvironment, target.Region), activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.TargetDeploymentID, Generation: receipt.RouteGeneration + 1, RouteSHA256: receipt.RouteSHA256})
+	if _, err := adapter.ActiveFleetScaleTarget(ctx, app, target.ControlEnvironment, target.Region); err == nil {
+		t.Fatal("accepted a workload route generation that differs from its complete receipt")
+	}
+	put(adapter.fleetActiveRouteKey(app, target.ControlEnvironment, target.Region), activeFleetRoute{IntentID: intent.ID, DeploymentID: intent.TargetDeploymentID, Generation: receipt.RouteGeneration, RouteSHA256: rendered.SHA256})
+	changedTarget := target
+	changedTarget.Generation++
+	put(adapter.fleetAppTargetKey(app, target.ControlEnvironment), changedTarget)
+	if _, err := adapter.ActiveFleetScaleTarget(ctx, app, target.ControlEnvironment, target.Region); err == nil {
+		t.Fatal("accepted a workload route after Fleet target placement changed")
 	}
 }

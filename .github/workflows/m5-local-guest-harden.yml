@@ -1,0 +1,48 @@
+name: M5 local guest harden
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m5-local-guest-supervisor
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    if: github.ref == 'refs/heads/master' && github.ref_protected
+    environment: m5-mini-release-rehearsal
+    runs-on: [self-hosted, macOS, ARM64, norn-m5-supervisor]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Require exact protected supervisor
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_NAME" == norn-m5-supervisor-01 ]]
+          [[ "$GITHUB_REF" == refs/heads/master && "$GITHUB_REF_PROTECTED" == true ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+      - name: Launch signed guest and finish GUI hardening
+        env:
+          INTENT: ${{ vars.M5_LOCAL_GUEST_HARDENING_INTENT }}
+          SIGNATURE: ${{ vars.M5_LOCAL_GUEST_HARDENING_SIGNATURE }}
+          PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_PUBLIC_KEY }}
+          JOURNAL_ROOT: ${{ vars.M5_LOCAL_GUEST_JOURNAL_ROOT }}
+          TART: ${{ vars.M5_LOCAL_TART }}
+          SUPERVISOR_SSH_PUBLIC_KEY: ${{ vars.M5_LOCAL_GUEST_RUNNER_PUBLIC_KEY }}
+          SUPERVISOR_SSH_PRIVATE_KEY: ${{ vars.M5_LOCAL_GUEST_RUNNER_PRIVATE_KEY }}
+          NORN_M5_PROTECTED_CONTROLLER: '1'
+        run: |
+          set -euo pipefail
+          for key in INTENT SIGNATURE PUBLIC_KEY JOURNAL_ROOT TART SUPERVISOR_SSH_PUBLIC_KEY SUPERVISOR_SSH_PRIVATE_KEY; do
+            [[ -n "${!key}" ]]
+          done
+          python3 "$GITHUB_WORKSPACE/v2/scripts/mini-m5-local-guest-harden" \
+            --intent "$INTENT" --signature "$SIGNATURE" --public-key "$PUBLIC_KEY" \
+            --journal-root "$JOURNAL_ROOT" --tart "$TART" \
+            --supervisor-ssh-public-key "$SUPERVISOR_SSH_PUBLIC_KEY" \
+            --supervisor-ssh-private-key "$SUPERVISOR_SSH_PRIVATE_KEY"

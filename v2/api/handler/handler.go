@@ -47,29 +47,30 @@ const maxPrivateAttestationJSONBody = 3 << 20
 const maxReleaseEvidenceJSONBody = 12 << 20
 
 type Handler struct {
-	db                     *store.DB
-	deviceIdentities       store.AuthStore
-	offlineEnrollmentOnly  bool
-	executorEnrollOnly     bool
-	nomad                  *nomad.Client
-	consul                 *consul.Client
-	workloads              connector.Connector
-	localEngine            *engine.Engine
-	containerRuntime       *containerruntime.Runtime
-	ws                     *hub.Hub
-	cfg                    *config.Config
-	pipeline               *pipeline.Pipeline
-	beacon                 *beacon.Service
-	secrets                *secrets.Manager
-	sagaStore              saga.Store
-	s3                     *storage.Client
-	redpanda               *redpanda.Client
-	access                 *AccessLog
-	hostMetrics            *hostMetricsCache
-	fleetGitHub            *githubapp.Client
-	fleetGitHubConfigError error
-	githubJWKS             *githubJWKCache
-	privateReleaseSigner   privateattestation.Signer
+	db                         *store.DB
+	deviceIdentities           store.AuthStore
+	offlineEnrollmentOnly      bool
+	executorEnrollOnly         bool
+	platformOperatorEnrollOnly bool
+	nomad                      *nomad.Client
+	consul                     *consul.Client
+	workloads                  connector.Connector
+	localEngine                *engine.Engine
+	containerRuntime           *containerruntime.Runtime
+	ws                         *hub.Hub
+	cfg                        *config.Config
+	pipeline                   *pipeline.Pipeline
+	beacon                     *beacon.Service
+	secrets                    *secrets.Manager
+	sagaStore                  saga.Store
+	s3                         *storage.Client
+	redpanda                   *redpanda.Client
+	access                     *AccessLog
+	hostMetrics                *hostMetricsCache
+	fleetGitHub                *githubapp.Client
+	fleetGitHubConfigError     error
+	githubJWKS                 *githubJWKCache
+	privateReleaseSigner       privateattestation.Signer
 	// externalFleetDeploymentVerifier is intentionally unset by default. It is
 	// the only authority that can turn a direct Fleet runtime receipt into a
 	// Norn deployment record.
@@ -98,6 +99,17 @@ type Handler struct {
 	// executorStartVerifier re-verifies a plan's commit at executor attempt
 	// start (nil: no re-check).
 	executorStartVerifier FleetExecutorStartVerifier
+}
+
+// NewMetricsHandler builds the metrics handler for the etcd Fleet runtime,
+// which does not construct the PostgreSQL API Handler. It can still use the
+// configured read-only Nomad and Consul clients for live workload state.
+func NewMetricsHandler(cfg *config.Config, n *nomad.Client, c *consul.Client) http.Handler {
+	h := &Handler{cfg: cfg, nomad: n, consul: c}
+	if n != nil && c != nil {
+		h.workloads = connector.NewNomadConsul(n, c)
+	}
+	return http.HandlerFunc(h.Metrics)
 }
 
 // ConfigurePrivateReleaseSigner installs the staging-only signer after startup

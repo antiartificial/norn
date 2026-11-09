@@ -304,6 +304,11 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 				PortLabel: metricsLabel,
 				Provider:  "consul",
 				Tags:      metricsTags,
+				Meta: map[string]string{
+					"norn_app":          spec.App,
+					"norn_process":      procName,
+					"norn_metrics_path": metricsPath,
+				},
 				Checks: []nomadapi.ServiceCheck{
 					{
 						Type:     "http",

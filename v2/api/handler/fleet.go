@@ -572,11 +572,7 @@ func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) err
 	if request.SchemaVersion != fleet.ReconciliationSchemaVersion {
 		return fmt.Errorf("schemaVersion must be %q", fleet.ReconciliationSchemaVersion)
 	}
-	known := false
-	for _, phase := range fleetReconciliationPhases {
-		known = known || request.Phase == phase
-	}
-	if !known {
+	if !lifecycle.ValidPhase(request.Phase) {
 		return fmt.Errorf("phase is not supported")
 	}
 	if request.Status != "succeeded" && request.Status != "failed" {
@@ -608,6 +604,13 @@ func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) err
 	}
 	if len(request.Message) > 1000 {
 		return fmt.Errorf("message must not exceed 1000 characters")
+	}
+	if request.Phase == "postchange_verified" && request.Status == "succeeded" {
+		if !request.ObservedProtectedApplyPoststate.Valid() || !fleetEvidenceDigestRe.MatchString(request.ProtectedApplyTerminalDigest) {
+			return fmt.Errorf("successful postchange_verified evidence requires observed protected apply poststate and terminal digest")
+		}
+	} else if request.ObservedProtectedApplyPoststate != nil || request.ProtectedApplyTerminalDigest != "" {
+		return fmt.Errorf("observed protected apply poststate and terminal digest are valid only for successful postchange_verified evidence")
 	}
 	if request.AttemptID != "" {
 		if _, err := uuid.Parse(request.AttemptID); err != nil {
@@ -701,6 +704,9 @@ func matchesFleetReconciliationRequest(op *model.Operation, requestDigest string
 }
 
 func buildCapacityPlan(inventory *fleet.Inventory, poolName string, current fleet.NodePool, request fleet.PlanRequest, signingKey string) (*fleet.CapacityPlan, error) {
+	if request.ProtectedApplyPrestate != nil || request.ProtectedApplyTransitionRule != nil {
+		return nil, fmt.Errorf("protected apply prestate requires the etcd Fleet controller")
+	}
 	proposed := current
 	if request.Desired != nil {
 		proposed.Desired = *request.Desired

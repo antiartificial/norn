@@ -263,6 +263,11 @@ func TestGitHubActionsReleaseLaneMatrixRejectsCrossLaneIdentity(t *testing.T) {
 	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeReleaseRollback, App: "widgets", Environment: "production", Intent: "rollback"}); err != nil {
 		t.Fatalf("valid rollback lane rejected: %v", err)
 	}
+	claims.Environment = "staging"
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeReleaseRollback, App: "widgets", Environment: "staging", Intent: "rollback"}); err != nil {
+		t.Fatalf("valid staging rollback lane rejected: %v", err)
+	}
+	claims.Environment = "production"
 	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeReleasePromote, App: "widgets", Environment: "production", Intent: "promote"}); err == nil {
 		t.Fatal("rollback workflow exchanged as promotion lane")
 	}

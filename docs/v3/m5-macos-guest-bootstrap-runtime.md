@@ -1,0 +1,121 @@
+# M5 macOS guest bootstrap runtime
+
+The M5 rehearsal uses a disposable macOS VirtualMac because it exercises Mac-specific restore, `launchd`, firewall, Screen Sharing, and account behavior. The guest is created through the protected M5 executor; its creation is only an unqualified setup step.
+
+## Why the guest needs Command Line Tools
+
+A clean macOS install can leave `/usr/bin/git` and `/usr/bin/python3` as Apple developer-tool launch stubs. The first Packer helper needs Python, and later guest checkout, registration, launchd, and qualification steps need both Git and Python. Without Command Line Tools, macOS prompts to install them interactively, which cannot complete inside the unattended protected workflow.
+
+## Pinned bootstrap
+
+The guest bootstrap helper is checked by SHA-256 during protected host preflight and again through the source revision bound to the signed M5 intent. It checks for the exact VirtualMac/macOS 26.6.2 target, selects only the Apple Software Update label `Command Line Tools for Xcode 26.6-26.6`, and requires receipt `com.apple.pkg.CLTools_Executables` version `26.6.0.0.1781586589`. It rejects an unexpected existing developer directory or receipt, bounds discovery and installation, and verifies `/usr/bin/python3`, `/usr/bin/git`, the required Python standard library, and the selected developer directory before the existing guest helpers run.
+
+The current path relies on Apple's Software Update catalog and exact product label plus package receipt. The package bytes are not pinned locally; that is weaker artifact identity than an offline Apple-signed package pinned by digest. The receipt, source SHA, helper digest, signed run intent, and successful guest readback must all be retained with the protected rehearsal evidence.
+
+Apple documents that a fresh macOS install can prompt to install Command Line Tools when a tool such as `git` is first invoked, that `softwareupdate` lists compatible releases, and that `pkgutil --pkg-info=com.apple.pkg.CLTools_Executables` reports the installed package version: [Installing the Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/). Apple also documents selecting a developer directory with `xcode-select`: [Configuring command-line tools settings](https://developer.apple.com/documentation/xcode/configuring-command-line-tools-settings).
+
+## Qualification still required
+
+Source-level pins do not prove Apple's package is available or installs unattended on the exact restore image. The protected rehearsal must demonstrate clean guest discovery, accepted license handling, package receipt and developer-directory readback, Python and Git probes, and successful downstream guest workflow steps. If the pinned label or receipt differs, or installation requests interaction/restart or times out, the create fails and the executor must retire the guest before another signed create.
+
+## PF readback and failed-create recovery
+
+The guest helper validates the root PF configuration before installation and
+then reads the loaded filter rules back with `pfctl -sr`. Apple translation
+anchors (`scrub-anchor`, `nat-anchor`, `rdr-anchor`, and `dummynet-anchor`)
+may appear before the first filter rule; they are not filter rules and must not
+make the M5 filter-anchor check fail. The helper ignores only those four
+recognized translation-anchor forms during readback. Any other rule before
+`com.norn.m5.historical` remains a hard failure.
+
+A failed Packer create can run cleanup and leave Tart inventory empty while
+the durable create marker still records an ambiguous outcome. Do not infer
+success or start another create from the Packer exit status or empty inventory
+alone. Use the protected reconciliation and retirement workflows to bind the
+failed attempt to its marker, prove the exact guest absent, and retain the
+retirement receipt before issuing a fresh run-bound signed intent. Packer logs
+can contain bootstrap credentials and must not be copied into chat or routine
+diagnostics; report the specific sanitized failure classification instead.
+
+## Create failure record: Screen Sharing remained active
+
+Protected create run `42335187705` passed the 600-second guest SSH readiness
+window, transferred its pinned helpers, and reached the shell provisioners. It
+then failed because TCP port 5900 was still listening. The guest helper had
+disabled `system/com.apple.screensharing` and confirmed the disabled setting,
+but `launchctl disable` did not stop the service already loaded in the current
+guest boot. Packer cleanup left no Tart inventory entry; protected
+reconciliation classified the create outcome as ambiguous, so the attempt
+must be closed by the protected retirement workflow before another create.
+Protected retirement run `42337856240` completed successfully and wrote a
+receipt proving the exact guest was absent from Tart both before and after
+retirement. The credential-bearing Packer log and its one-use bootstrap secret
+were removed after recording the sanitized failure classification.
+
+Future bootstrap disables the service and explicitly boots out the loaded
+service before checking TCP/5900. An already-absent service is acceptable;
+other `launchctl bootout` errors fail closed. The helper digest is checked by
+protected preflight and must stay synchronized with the pinned digest in the
+local guest controller. Keep the port check: changing service state alone
+does not prove the listener is gone.
+
+The same run exposed an unsafe diagnostic pattern: Packer debug output was
+persisted to an owner-only log while `PACKER_LOG=1` was enabled. The debug
+stream included generated VNC credentials and typed bootstrap-password
+characters. Owner-only permissions do not make those values safe to retain.
+The controller now suppresses Packer stdout and stderr and records only a
+credential-free completion, exit-code, or timeout summary. Do not enable
+verbose Packer logging in a persistent file or upload raw Packer output as an
+artifact. If deeper diagnostics are required, add a reviewed redaction layer
+and prove it against VNC credentials and typed password events before enabling
+capture.
+
+Run `42328381249` failed after about 22 minutes with a guest SSH readiness
+timeout. The Packer recipe currently allows 180 seconds for SSH readiness.
+The host diagnostic's `guestIP` field is the default target address, not a
+readback of a Tart DHCP lease, and the outcome snapshot runs after Packer
+cleanup. Its route and TCC fields therefore do not establish whether the guest
+had an address or whether TCP/22 was reachable during the failure.
+
+Protected Fleet network verification run `42333798695` separately confirmed,
+after host restart, that both Ethernet and Wi-Fi allowlists still contain
+exactly `192.168.80.0/24`. That preference readback does not prove end-to-end
+guest SSH connectivity, and the available failure evidence does not establish
+why SSH never became ready. Preserve live guest-address and TCP/22 evidence
+before cleanup, but do not persist raw verbose Packer logs. Carry only the
+sanitized `guest-ssh-readiness-timeout` classification into routine status and
+the executor's failure record. Protected reconciliation
+returned `create-outcome-ambiguous` with an empty Tart inventory. The protected
+retirement run `42332291776` then wrote an absence receipt with empty inventory
+before and after. A fresh Tart readback also showed the inventory empty. Do not
+issue another create intent for this attempt; the next rehearsal must preserve
+live guest address and TCP/22 evidence before cleanup if SSH readiness fails.
+
+## Reuse a successfully created guest after Norn test failures
+
+Once protected create has produced a created receipt and exact Tart readback,
+a later Norn deployment or qualification failure should not delete the Tart
+guest. Preserve its OS image and signed creation evidence, remove the failed
+Norn installation through a protected guest cleanup action, prove that the
+installation and its services are absent, then issue a fresh signed install
+intent for the same guest identity. Retire the guest only when OS bootstrap,
+guest identity, or integrity checks fail, or protected cleanup cannot prove a
+safe reset.
+
+The existing `m5-local-guest-runner-revoke` action only deregisters the
+GitHub runner API identity. It does not uninstall runner files or services
+inside macOS, remove the Norn payload, or clear guest-side installation state.
+That action alone is not proof that the guest is clean or ready for another
+attempt. Until a protected in-guest cleanup and retry workflow is available,
+preserve the Tart VM after a Norn-level failure and stop for protected
+reconciliation; do not silently retire and recreate it.
+
+## Restore storage headroom observation
+
+During protected create run `42328381249`, the 80 GiB preflight passed when
+the host had 104 GiB free. While the 50 GiB guest was still being restored,
+Tart reported 27 GiB used and the host reported 77 GiB free. This is not a
+create failure, but it shows that 80 GiB is only an entry threshold, not a
+post-create reserve. Record the completed run's peak guest and host usage
+before setting the next minimum; future admission should reserve measured
+restore growth plus the agreed post-create free-space floor.

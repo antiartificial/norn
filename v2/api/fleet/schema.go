@@ -12,6 +12,8 @@ import (
 	"norn/v2/api/ingress"
 )
 
+const ProtectedApplyTerminalIntentSchemaVersion = "norn.fleet-protected-apply-terminal-intent/v1"
+
 const (
 	APIVersion = "norn.dev/fleet/v1"
 	Kind       = "Cluster"
@@ -104,11 +106,60 @@ type Inventory struct {
 }
 
 type PlanRequest struct {
-	Desired            *int   `json:"desired,omitempty"`
-	Size               string `json:"size,omitempty"`
-	Strategy           string `json:"strategy,omitempty"`
-	Reason             string `json:"reason,omitempty"`
-	TemporaryRunnerSSH *bool  `json:"temporaryRunnerSSH,omitempty"`
+	Desired                      *int                          `json:"desired,omitempty"`
+	Size                         string                        `json:"size,omitempty"`
+	Strategy                     string                        `json:"strategy,omitempty"`
+	Reason                       string                        `json:"reason,omitempty"`
+	TemporaryRunnerSSH           *bool                         `json:"temporaryRunnerSSH,omitempty"`
+	ProtectedApplyPrestate       *ProtectedApplyPrestate       `json:"protectedApplyPrestate,omitempty"`
+	ProtectedApplyTransitionRule *ProtectedApplyTransitionRule `json:"protectedApplyTransitionRule,omitempty"`
+}
+
+// ProtectedApplyPrestate is the reviewed provider and state snapshot before
+// apply. The runner supplies poststate only at the final checkpoint.
+type ProtectedApplyPrestate struct {
+	ProviderAccountUUID string                    `json:"providerAccountUUID"`
+	ProviderTargetID    string                    `json:"providerTargetId"`
+	ProviderTargetState string                    `json:"providerTargetState"`
+	Spaces              ProtectedApplyStateSpaces `json:"spaces"`
+}
+
+type ProtectedApplyStateSpaces struct {
+	Bucket    string `json:"bucket"`
+	Key       string `json:"key"`
+	Lineage   string `json:"lineage"`
+	Serial    int64  `json:"serial"`
+	VersionID string `json:"versionId"`
+	RawSHA256 string `json:"rawSHA256"`
+}
+
+// ProtectedApplyTransitionRule constrains the final observation without
+// allowing the runner to choose a target or silently turn a write into a no-op.
+type ProtectedApplyTransitionRule struct {
+	ProviderTargetState string `json:"providerTargetState"`
+	StateChange         string `json:"stateChange"`
+}
+
+type ObservedProtectedApplyPoststate struct {
+	ProviderAccountUUID string                    `json:"providerAccountUUID"`
+	ProviderTargetID    string                    `json:"providerTargetId"`
+	ProviderTargetState string                    `json:"providerTargetState"`
+	Spaces              ProtectedApplyStateSpaces `json:"spaces"`
+}
+
+// ProtectedApplyTerminalIntent is the server-derived terminal form consumed
+// by the independent verifier. CanonicalDigest hashes every field except
+// itself using canonical JSON.
+type ProtectedApplyTerminalIntent struct {
+	SchemaVersion          string                          `json:"schemaVersion"`
+	PlanID                 string                          `json:"planId"`
+	AttemptID              string                          `json:"attemptId"`
+	SourceCommit           string                          `json:"sourceCommit"`
+	PlanSHA256             string                          `json:"planSha256"`
+	ApprovedPrestate       ProtectedApplyPrestate          `json:"approvedPrestate"`
+	ApprovedTransitionRule ProtectedApplyTransitionRule    `json:"approvedTransitionRule"`
+	ObservedPoststate      ObservedProtectedApplyPoststate `json:"observedPoststate"`
+	CanonicalDigest        string                          `json:"canonicalDigest"`
 }
 
 type CapacityPlan struct {
@@ -125,10 +176,12 @@ type CapacityPlan struct {
 	WorkflowURL   string   `json:"workflowUrl,omitempty"`
 	// TemporaryRunnerSSH is an explicit, plan-digest-bound exception for the
 	// initial cold-start route. Nil preserves the protected workflow default.
-	TemporaryRunnerSSH *bool     `json:"temporaryRunnerSSH,omitempty"`
-	Findings           []Finding `json:"findings"`
-	Digest             string    `json:"digest"`
-	Signature          string    `json:"signature,omitempty"`
+	TemporaryRunnerSSH           *bool                         `json:"temporaryRunnerSSH,omitempty"`
+	ProtectedApplyPrestate       *ProtectedApplyPrestate       `json:"protectedApplyPrestate,omitempty"`
+	ProtectedApplyTransitionRule *ProtectedApplyTransitionRule `json:"protectedApplyTransitionRule,omitempty"`
+	Findings                     []Finding                     `json:"findings"`
+	Digest                       string                        `json:"digest"`
+	Signature                    string                        `json:"signature,omitempty"`
 }
 
 const ReconciliationSchemaVersion = "norn.fleet-reconciliation/v1"
@@ -137,14 +190,16 @@ const ReconciliationSchemaVersion = "norn.fleet-reconciliation/v1"
 // protected infrastructure runner. Checkpoints are append-only so a restarted
 // runner can discover the last proven phase without trusting its local disk.
 type ReconciliationRequest struct {
-	SchemaVersion  string `json:"schemaVersion"`
-	AttemptID      string `json:"attemptId,omitempty"`
-	Phase          string `json:"phase"`
-	Status         string `json:"status"`
-	CommitSHA      string `json:"commitSha"`
-	PlanSHA256     string `json:"planSha256"`
-	StateSerial    int64  `json:"stateSerial,omitempty"`
-	EvidenceDigest string `json:"evidenceDigest"`
+	SchemaVersion                   string                           `json:"schemaVersion"`
+	AttemptID                       string                           `json:"attemptId,omitempty"`
+	Phase                           string                           `json:"phase"`
+	Status                          string                           `json:"status"`
+	CommitSHA                       string                           `json:"commitSha"`
+	PlanSHA256                      string                           `json:"planSha256"`
+	StateSerial                     int64                            `json:"stateSerial,omitempty"`
+	EvidenceDigest                  string                           `json:"evidenceDigest"`
+	ObservedProtectedApplyPoststate *ObservedProtectedApplyPoststate `json:"observedProtectedApplyPoststate,omitempty"`
+	ProtectedApplyTerminalDigest    string                           `json:"protectedApplyTerminalDigest,omitempty"`
 	// IngressInventoryDigest binds a private Fleet hook snapshot to the
 	// successful nodes_configured checkpoint. Its host list is stored in the
 	// protected reconciliation payload for later route observation.

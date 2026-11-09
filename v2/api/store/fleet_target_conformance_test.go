@@ -162,9 +162,10 @@ func TestFleetTargetSchemaMigrationRaisesWriterFloor(t *testing.T) {
 	db := fleetTargetConformanceDB(t)
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	last := migrations[len(migrations)-1]
-	if last.Version != 51 || last.MinimumWriterVersion != FleetRunnerFenceBindingWriterVersion || FleetRunnerFenceBindingWriterVersion != 33 {
-		t.Fatalf("migration 51 contract = %+v, FleetRunnerFenceBindingWriterVersion=%d", last, FleetRunnerFenceBindingWriterVersion)
+	binding := migrations[50]
+	receipts := migrations[len(migrations)-1]
+	if binding.Version != 51 || binding.MinimumWriterVersion != FleetRunnerFenceBindingWriterVersion || FleetRunnerFenceBindingWriterVersion != 33 || receipts.Version != 52 || receipts.MinimumWriterVersion != FleetRunnerFenceBindingWriterVersion {
+		t.Fatalf("migration 51/52 contracts = %+v / %+v, FleetRunnerFenceBindingWriterVersion=%d", binding, receipts, FleetRunnerFenceBindingWriterVersion)
 	}
 	if ControlSchemaWriterVersion != FleetRunnerFenceBindingWriterVersion {
 		t.Fatalf("ControlSchemaWriterVersion = %d, want %d", ControlSchemaWriterVersion, FleetRunnerFenceBindingWriterVersion)

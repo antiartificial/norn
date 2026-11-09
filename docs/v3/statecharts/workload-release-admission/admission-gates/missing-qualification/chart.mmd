@@ -1,0 +1,14 @@
+---
+title: "V3 workload release: private staging and crash recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: active
+  }
+  class lg0 blue
+  s0: Release request received
+  s1: Admission rejected, service unchanged
+  [*] --> s0
+  s0 --> s1: required qualification, serving lineage, route predecessor, or durable input is missing
+  class s0 blue
+  class s1 blue

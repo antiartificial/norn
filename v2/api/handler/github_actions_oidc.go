@@ -466,7 +466,7 @@ func releaseExchangeLaneAllowed(scope, intent string, c *githubActionsClaims, de
 	case ScopeReleasePromote:
 		return intent == "promote" && c.Environment == "production" && c.EventName == "push" && c.RefType == "tag" && matchesAny(c.Ref, []string{"refs/tags/v*"})
 	case ScopeReleaseRollback:
-		return intent == "rollback" && c.Environment == "production" && c.Ref == protectedBranchRef && c.EventName == "workflow_dispatch"
+		return intent == "rollback" && (c.Environment == "production" || c.Environment == "staging") && c.Ref == protectedBranchRef && c.EventName == "workflow_dispatch"
 	default:
 		return false
 	}

@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Fence one M5 repository runner before a separately signed VM retirement."""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import urllib.parse
+import urllib.request
+
+
+OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
+RUNNER = "norn-m5-isolated-01"
+API = "https://api.github.com/repos/antiartificial/norn/actions/runners"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise ValueError("GitHub API redirect refused")
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def durable(path, value):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as target:
+        json.dump(value, target, sort_keys=True, separators=(",", ":"))
+        target.write("\n")
+        target.flush()
+        os.fsync(target.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def request(token, method, url):
+    req = urllib.request.Request(url, method=method, headers={
+        "Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2026-03-10",
+        "User-Agent": "norn-m5-protected-retire"})
+    with urllib.request.build_opener(NoRedirect).open(req, timeout=15) as response:
+        data = response.read(1024 * 1024)
+        if method == "DELETE":
+            if response.status != 204:
+                raise ValueError("runner deletion did not return 204")
+            return None
+        if response.status != 200:
+            raise ValueError("runner inventory did not return 200")
+        return json.loads(data)
+
+
+def inventory(token):
+    result = request(token, "GET", API + "?name=" + urllib.parse.quote(RUNNER) + "&per_page=100")
+    rows = result.get("runners")
+    if not isinstance(rows, list) or not isinstance(result.get("total_count"), int) or result["total_count"] != len(rows):
+        raise ValueError("runner inventory is incomplete")
+    return [row for row in rows if row.get("name") == RUNNER]
+
+
+def verify(intent, root):
+    expected = {"schema", "runId", "sourceSHA", "guestName", "createMarkerSHA256",
+                "runnerId", "runnerName", "expiresAt"}
+    if set(intent) != expected or intent["schema"] != "norn.m5-local-guest-runner-revoke-intent/v1":
+        raise ValueError("unexpected runner revoke intent")
+    if (not re.fullmatch(r"[0-9]{1,20}", intent["runId"]) or
+            not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]) or
+            not re.fullmatch(r"norn-m5-[0-9]{1,20}", intent["guestName"]) or
+            not re.fullmatch(r"[0-9a-f]{64}", intent["createMarkerSHA256"]) or
+            type(intent["runnerId"]) is not int or intent["runnerId"] < 1 or
+            intent["runnerName"] != RUNNER):
+        raise ValueError("invalid runner revoke identity")
+    expiry = datetime.fromisoformat(intent["expiresAt"].replace("Z", "+00:00"))
+    if expiry.tzinfo != timezone.utc or expiry <= datetime.now(timezone.utc):
+        raise ValueError("runner revoke intent expired")
+    protected = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/master",
+                 "GITHUB_REF_PROTECTED": "true", "RUNNER_NAME": "norn-m5-supervisor-01",
+                 "GITHUB_RUN_ID": intent["runId"], "GITHUB_SHA": intent["sourceSHA"],
+                 "NORN_M5_PROTECTED_CONTROLLER": "1"}
+    if any(os.environ.get(key) != value for key, value in protected.items()):
+        raise ValueError("runner revoke requires protected supervisor")
+    root = Path(root)
+    info = root.lstat()
+    if not root.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("journal root is unsafe")
+    name = intent["guestName"]
+    if digest(root / (name + ".create-started")) != intent["createMarkerSHA256"]:
+        raise ValueError("create marker mismatch")
+    marker = json.loads((root / (name + ".runner-registered")).read_bytes())
+    if marker != {"schema": "norn.m5-local-guest-runner-registered/v1", "guestName": name,
+                  "runnerId": intent["runnerId"], "runnerName": RUNNER}:
+        raise ValueError("registered runner marker differs")
+    return root
+
+
+def revoke(intent, root, token):
+    root = verify(intent, root)
+    rows = inventory(token)
+    if len(rows) != 1 or rows[0].get("id") != intent["runnerId"] or rows[0].get("busy") is not False:
+        raise ValueError("runner is absent, busy, or has changed identity")
+    name = intent["guestName"]
+    started = root / (name + ".runner-revoke-started")
+    durable(started, {"schema": "norn.m5-local-guest-runner-revoke-started/v1", "intent": intent,
+                      "before": rows[0]})
+    request(token, "DELETE", API + "/" + str(intent["runnerId"]))
+    if inventory(token):
+        raise RuntimeError("runner remains registered after delete")
+    receipt = root / (name + ".runner-revoked.json")
+    durable(receipt, {"schema": "norn.m5-local-guest-runner-revoked/v1", "guestName": name,
+                      "runnerId": intent["runnerId"], "runnerName": RUNNER,
+                      "createMarkerSHA256": intent["createMarkerSHA256"], "after": []})
+    return receipt
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("intent", "signature", "public-key", "journal-root"):
+        parser.add_argument("--" + name, required=True)
+    args = parser.parse_args()
+    if digest(args.public_key) != OWNER_PUBLIC_KEY_SHA256:
+        raise ValueError("unreviewed owner public key")
+    import subprocess
+    subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
+                    "-inkey", args.public_key, "-sigfile", args.signature,
+                    "-rawin", "-in", args.intent), check=True, capture_output=True, timeout=10)
+    token = os.environ.get("M5_GITHUB_ADMIN_TOKEN", "")
+    if not token:
+        raise ValueError("protected repository Administration token is absent")
+    intent = json.loads(Path(args.intent).read_bytes())
+    print(json.dumps({"runnerRevokedReceipt": str(revoke(intent, args.journal_root, token))},
+                     sort_keys=True, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()

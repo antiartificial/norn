@@ -23,6 +23,16 @@ type Config struct {
 	// FleetAppDeleteCoPermitEnabled mounts the one-use Norn co-permit route.
 	// It grants no provider authority and is disabled unless explicitly enabled.
 	FleetAppDeleteCoPermitEnabled bool
+	// FleetSavedPlanEffectEnabled mounts the default-off, attempt-bound
+	// saved-OpenTofu-plan contraction adapter. It is not the raw DELETE lane.
+	FleetSavedPlanEffectEnabled bool
+	// FleetSavedPlanProjection* is a separate service-owned Ed25519 signing key
+	// for the non-authorizing Fleet inbox projection. It must never reuse the
+	// audit HMAC or an Actions/provider credential; the configured service UID
+	// must own the key and the running Norn process.
+	FleetSavedPlanProjectionPrivateKeyFile  string
+	FleetSavedPlanProjectionPublicKeySHA256 string
+	FleetSavedPlanProjectionSignerUID       int
 	// FleetPlatformReleaseIntentEnabled exposes durable, effect-free platform
 	// release intent records. The platform release executor has a separate gate.
 	FleetPlatformReleaseIntentEnabled bool
@@ -40,12 +50,13 @@ type Config struct {
 	Environment string
 	// EnvironmentExplicit distinguishes an omitted variable (which defaults to
 	// development) from an intentional release-lane configuration.
-	EnvironmentExplicit bool
-	Port                string
-	BindAddr            string
-	DatabaseURL         string
-	UIDir               string
-	AppsDir             string
+	EnvironmentExplicit     bool
+	Port                    string
+	BindAddr                string
+	PairingLoopbackListener bool
+	DatabaseURL             string
+	UIDir                   string
+	AppsDir                 string
 	// AppCatalogReadOnly prevents API mutations of the checked-out app catalog.
 	// It is explicit because a root-owned catalog must not rely on permission
 	// errors to define the control-plane contract.
@@ -89,12 +100,16 @@ type Config struct {
 	// cannot accidentally enable provider deletion.
 	FleetOfflineEffectV2Enabled     bool
 	FleetOfflineVerifierReadEnabled bool
-	FleetOfflineEffectV2VerifierURL string
-	FleetOfflineEffectV2TokenFile   string
-	FleetGitHubAPIBaseURL           string
-	GitToken                        string
-	GitSSHKey                       string
-	APIToken                        string
+	// FleetProtectedTerminalVerifierReadEnabled exposes a read-only, narrowly
+	// scoped terminal-receipt projection for an independent verifier. It is
+	// disabled unless explicitly enabled.
+	FleetProtectedTerminalVerifierReadEnabled bool
+	FleetOfflineEffectV2VerifierURL           string
+	FleetOfflineEffectV2TokenFile             string
+	FleetGitHubAPIBaseURL                     string
+	GitToken                                  string
+	GitSSHKey                                 string
+	APIToken                                  string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
 	RequireExplicitAuth      bool
@@ -107,14 +122,17 @@ type Config struct {
 	// Zero OperationReplayTTL retains indefinite request-identity replay.
 	OperationReplayTTL time.Duration
 	// Private invocation is opt-in and uses a key ring separate from audit keys.
-	PrivateInvocationEnabled        bool
-	FunctionV3PreviewEnabled        bool
-	PrivateInvocationCurrentKeyID   string
-	PrivateInvocationKeys           string
-	QualificationSigningKey         string
-	TrustedQualificationSigningKeys []string
-	GitHubActionsOIDCAudience       string
-	GitHubActionsOIDCJWKSURL        string
+	PrivateInvocationEnabled         bool
+	FunctionV3PreviewEnabled         bool
+	PrivateInvocationCurrentKeyID    string
+	PrivateInvocationKeys            string
+	WorkloadReleaseInputsEnabled     bool
+	WorkloadReleaseInputCurrentKeyID string
+	WorkloadReleaseInputKeys         string
+	QualificationSigningKey          string
+	TrustedQualificationSigningKeys  []string
+	GitHubActionsOIDCAudience        string
+	GitHubActionsOIDCJWKSURL         string
 	// GitHubActionsAllowedRepositories is retained only to parse legacy
 	// configuration. It is not authorization for any release lane; use
 	// GitHubActionsReleaseBindings instead.
@@ -329,6 +347,10 @@ func Load() *Config {
 		FleetAuthorityOnly:                           envBoolOr("NORN_FLEET_AUTHORITY_ONLY", false),
 		FleetEtcdExecutorEnabled:                     envBoolOr("NORN_FLEET_ETCD_EXECUTOR_ENABLED", false),
 		FleetAppDeleteCoPermitEnabled:                envBoolOr("NORN_FLEET_APP_DELETE_CO_PERMIT_ENABLED", false),
+		FleetSavedPlanEffectEnabled:                  envBoolOr("NORN_FLEET_SAVED_PLAN_EFFECT_ENABLED", false),
+		FleetSavedPlanProjectionPrivateKeyFile:       strings.TrimSpace(os.Getenv("NORN_FLEET_SAVED_PLAN_PROJECTION_PRIVATE_KEY_FILE")),
+		FleetSavedPlanProjectionPublicKeySHA256:      strings.ToLower(strings.TrimSpace(os.Getenv("NORN_FLEET_SAVED_PLAN_PROJECTION_PUBLIC_KEY_SHA256"))),
+		FleetSavedPlanProjectionSignerUID:            envIntOr("NORN_FLEET_SAVED_PLAN_PROJECTION_SIGNER_UID", -1),
 		FleetPlatformReleaseIntentEnabled:            envBoolOr("NORN_FLEET_PLATFORM_RELEASE_INTENT_ENABLED", false),
 		FleetPlatformRecoveryEnabled:                 envBoolOr("NORN_FLEET_PLATFORM_RECOVERY_ENABLED", false),
 		FleetPlatformGenesisIntentPublicKeyFile:      strings.TrimSpace(os.Getenv("NORN_FLEET_PLATFORM_GENESIS_INTENT_PUBLIC_KEY_FILE")),
@@ -339,6 +361,7 @@ func Load() *Config {
 		EnvironmentExplicit:                          environmentExplicit,
 		Port:                                         envOr("NORN_PORT", "8800"),
 		BindAddr:                                     envOr("NORN_BIND_ADDR", "127.0.0.1"),
+		PairingLoopbackListener:                      envBoolOr("NORN_PAIRING_LOOPBACK_LISTENER", false),
 		DatabaseURL:                                  envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
 		UIDir:                                        uiDir(),
 		AppsDir:                                      envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
@@ -371,6 +394,9 @@ func Load() *Config {
 		FunctionV3PreviewEnabled:                     envBoolOr("NORN_FUNCTION_V3_PREVIEW_ENABLED", false),
 		PrivateInvocationCurrentKeyID:                strings.TrimSpace(os.Getenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID")),
 		PrivateInvocationKeys:                        os.Getenv("NORN_PRIVATE_INVOCATION_KEYS"),
+		WorkloadReleaseInputsEnabled:                 envBoolOr("NORN_WORKLOAD_RELEASE_INPUTS_ENABLED", false),
+		WorkloadReleaseInputCurrentKeyID:             strings.TrimSpace(os.Getenv("NORN_WORKLOAD_RELEASE_INPUT_CURRENT_KEY_ID")),
+		WorkloadReleaseInputKeys:                     os.Getenv("NORN_WORKLOAD_RELEASE_INPUT_KEYS"),
 		QualificationSigningKey:                      os.Getenv("NORN_QUALIFICATION_SIGNING_KEY"),
 		TrustedQualificationSigningKeys:              splitNonEmpty(os.Getenv("NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")),
 		GitHubActionsOIDCAudience:                    strings.TrimSpace(os.Getenv("NORN_GITHUB_ACTIONS_OIDC_AUDIENCE")),
@@ -396,6 +422,7 @@ func Load() *Config {
 		FleetOfflineEvidenceTokenFile:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EVIDENCE_TOKEN_FILE")),
 		FleetOfflineEffectV2Enabled:                  envBoolOr("NORN_FLEET_OFFLINE_EFFECT_V2_ENABLED", false),
 		FleetOfflineVerifierReadEnabled:              envBoolOr("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", false),
+		FleetProtectedTerminalVerifierReadEnabled:    envBoolOr("NORN_FLEET_PROTECTED_TERMINAL_VERIFIER_READ_ENABLED", false),
 		FleetOfflineEffectV2VerifierURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_VERIFIER_URL")), "/"),
 		FleetOfflineEffectV2TokenFile:                strings.TrimSpace(os.Getenv("NORN_FLEET_OFFLINE_EFFECT_V2_TOKEN_FILE")),
 

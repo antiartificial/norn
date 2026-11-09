@@ -27,11 +27,11 @@ class CanaryCatalogPublisherTest(unittest.TestCase):
         return result, root, output.read_text() if output.exists() else ""
 
     def enabled_source(self) -> str:
-        return SOURCE.read_text().replace("deploy: false", "deploy: true").replace(
-            "work-staging-canary.invalid", "canary.staging.slopistry.com")
+        return SOURCE.read_text()
 
     def test_disabled_source_publishes_nothing(self) -> None:
-        result, root, output = self.run_publisher(SOURCE.read_text())
+        result, root, output = self.run_publisher(
+            SOURCE.read_text().replace("deploy: true", "deploy: false"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, "publish=false\n")
         self.assertFalse((root / "catalog.tar.gz").exists())
@@ -50,7 +50,8 @@ class CanaryCatalogPublisherTest(unittest.TestCase):
         source = self.enabled_source()
         for changed in (source.replace("name: norn-fleet-canary", "name: other-app"),
                         source.replace("nodePool: app", "nodePool: ingress"),
-                        source.replace("canary.staging.slopistry.com", "canary.invalid"),
+                        source.replace("norn-fleet-canary.tkmkt-dev.com", "canary.invalid"),
+                        source.replace("norn-fleet-canary.tkmkt-dev.com", "other.tkmkt-dev.com"),
                         source.replace("  dockerfile:", "  image: ghcr.io/other/app:latest\n  dockerfile:")):
             with self.subTest(changed=changed[:80]):
                 result, root, output = self.run_publisher(changed)

@@ -84,12 +84,26 @@ func NextPhase(profile Profile, current string, requiresDrain bool) (next string
 
 // ValidPhase reports whether phase is one of the nine canonical phases.
 func ValidPhase(phase string) bool {
+	if phase == "postchange_verified" {
+		return true
+	}
 	for _, allowed := range canonicalPhases {
 		if phase == allowed {
 			return true
 		}
 	}
 	return false
+}
+
+// PhasesWithProtectedPoststate preserves the existing V3 lifecycle for
+// already-reviewed plans. New plans that carry a reviewed poststate snapshot
+// must prove it after drain/readiness and before complete.
+func PhasesWithProtectedPoststate(profile Profile, requiresDrain, poststate bool) []string {
+	phases := append([]string(nil), Phases(profile, requiresDrain)...)
+	if !poststate || len(phases) == 0 || phases[len(phases)-1] != "complete" {
+		return phases
+	}
+	return append(phases[:len(phases)-1], "postchange_verified", "complete")
 }
 
 // RequiresDrain reports whether a capacity-plan action requires drain.

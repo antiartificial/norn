@@ -42,6 +42,13 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
             config.chmod(0o644)
             with self.assertRaisesRegex(SystemExit, "owner-only"):
                 LAUNCHER.release_public_key(home)
+            config.unlink()
+            target = home / "release-target.env"
+            target.write_text("NORN_RELEASE_PUBLIC_KEY=/private/release-public.pem\n")
+            target.chmod(0o600)
+            config.symlink_to(target)
+            with self.assertRaisesRegex(SystemExit, "owner-only"):
+                LAUNCHER.release_public_key(home)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -65,6 +72,12 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_maintenance_plist_can_resume_candidate_activation(self):
+        allowed = REPAIR.ACTION_PHASES["plist-stage"]
+        self.assertIn("candidate-activation-started", allowed)
+        self.assertIn("candidate-postflight-failed", allowed)
+        self.assertNotIn("schema-migrated", allowed)
 
     def test_signed_launcher_uses_imported_read_only_mode(self):
         home = self.directory
@@ -222,6 +235,66 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
             REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-restore")
             self.assertEqual(plist.read_bytes(), original)
 
+    def test_plist_stage_rebinds_a_signed_record_to_new_controller(self):
+        home = self.directory
+        journal = home / "transition.json"
+        plist = home / "com.norn.api.plist"
+        original = plistlib.dumps({
+            "Label": "com.norn.api",
+            "ProgramArguments": [str(home / "bin/norn-api-sops-launcher")],
+        })
+        plist.write_bytes(original)
+        plist.chmod(0o644)
+        old_sha = "d" * 40
+        old_release = home / "norn/releases" / old_sha
+        old_launcher = old_release / "bin/mini-recovered-forward-api-launcher"
+        old_launcher.parent.mkdir(parents=True)
+        old_launcher.write_text("#!/usr/bin/python3\n# previous signed controller launcher\n")
+        old_launcher.chmod(0o555)
+        values = REPAIR.plist_maintenance_values(
+            self.expected, {"sourceEvidencePath": str(journal) + ".source-evidence.json",
+                            "sourceEvidenceSHA256": self.expected["evidenceSHA256"]})
+        with patch.object(Path, "home", return_value=home):
+            old_staged = REPAIR.plist_variant(original, values, clear_recovery=False,
+                                               signed_launcher=old_launcher)
+        plist.write_bytes(old_staged)
+        record = {
+            "schema": REPAIR.PLIST_SCHEMA, "controllerSHA": old_sha,
+            "candidateSHA": self.expected["candidateSHA"], "sourceSHA": self.expected["sourceSHA"],
+            "transitionID": self.expected["transitionID"], "generationID": self.expected["generationID"],
+            "evidenceSHA256": self.expected["evidenceSHA256"],
+            "originalPlistBase64": REPAIR.base64.b64encode(original).decode(),
+            "originalPlistSHA256": REPAIR.digest(original), "originalPlistMode": 0o644,
+            "maintenancePlistSHA256": REPAIR.digest(old_staged),
+            "originalLauncherSHA256": "a" * 64,
+            "signedLauncherSHA256": REPAIR.digest(old_launcher.read_bytes()),
+        }
+        sidecar = REPAIR.plist_record_path(journal)
+        sidecar.write_bytes(REPAIR.canonical(dict(
+            record, signature=REPAIR.plist_signature(record, self.key))))
+        sidecar.chmod(0o600)
+        new_launcher = SCRIPT.with_name("mini-recovered-forward-api-launcher")
+        new_launcher_sha = REPAIR.digest(new_launcher.read_bytes())
+        manifest = {"sourceEvidencePath": str(journal) + ".source-evidence.json",
+                    "sourceEvidenceSHA256": self.expected["evidenceSHA256"]}
+        with patch.object(Path, "home", return_value=home), patch.object(
+                REPAIR, "api_plist_path", return_value=plist), patch.object(
+                REPAIR, "verify_launchers", return_value=("a" * 64, new_launcher_sha)), patch.object(
+                REPAIR, "configured_verifier", return_value=home / "verify-release"), patch.object(
+                REPAIR, "release", return_value=old_release):
+            verified_launcher = REPAIR.verify_previous_api_launcher(
+                str(old_launcher), journal, home / "norn/releases", home / "verify-release", self.key,
+                candidate=self.expected["candidateSHA"], source=self.expected["sourceSHA"],
+                transition=self.expected["transitionID"], generation_id=self.expected["generationID"],
+                evidence_sha=self.expected["evidenceSHA256"], original_launcher_sha="a" * 64)
+            self.assertEqual(verified_launcher, old_launcher)
+            REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+        rebound = REPAIR.read_plist_record(sidecar, self.key)
+        self.assertEqual(rebound["controllerSHA"], self.expected["controllerSHA"])
+        self.assertEqual(rebound["signedLauncherSHA256"], new_launcher_sha)
+        self.assertEqual(REPAIR.digest(plist.read_bytes()), rebound["maintenancePlistSHA256"])
+        self.assertEqual(plistlib.loads(plist.read_bytes())["ProgramArguments"], [str(new_launcher)])
+
     def test_plist_tamper_or_changed_transition_fails_closed(self):
         plist = self.directory / "com.norn.api.plist"
         plist.write_bytes(plistlib.dumps({"Label": "com.norn.api",
@@ -361,6 +434,47 @@ recovered_forward_require_current_candidate
                       '    legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent"', tail)
         self.assertLess(tail.index('legacy_baseline_write_fence_state "candidate-normal-active-pending-host-agent-restart"'),
                         tail.index("restart_fenced_host_agent"))
+
+    def test_host_agent_restart_waits_for_wrapped_child_to_start(self):
+        platform = SCRIPT.with_name("platform-upgrade").read_text()
+        restart = platform.split("restart_fenced_host_agent() {\n", 1)[1].split("\n}\n", 1)[0]
+        candidate = self.directory / "release"
+        (candidate / "bin").mkdir(parents=True)
+        agent = candidate / "bin/norn-host-agent"
+        agent.write_text("candidate host agent")
+        agent.chmod(0o755)
+        managed = self.directory / "managed-host-agent"
+        managed.write_bytes(agent.read_bytes())
+        managed.chmod(0o755)
+        current = self.directory / "current"
+        current.symlink_to(candidate)
+        script = f'''set -euo pipefail
+current_link={str(current)!r}
+host_agent_bin={str(managed)!r}
+host_agent_label=com.norn.host-agent
+host_agent_plist={str(self.directory / "host-agent.plist")!r}
+platform_script_bin={str(self.directory / "platform-upgrade")!r}
+host_agent_direct_exec=false
+pgrep_state={str(self.directory / "pgrep-state")!r}
+require_cmd() {{ :; }}
+fail() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+log() {{ :; }}
+legacy_baseline_is_fence_binary() {{ return 0; }}
+atomic_install_file() {{ cp "$1" "$2"; }}
+legacy_baseline_bootstrap_launchd_service() {{ :; }}
+launchctl() {{ case "$1" in print) printf 'pid = 123\\n';; kickstart) :;; esac; }}
+kill() {{ return 0; }}
+pgrep() {{ printf 'x\\n' >> "$pgrep_state"; if [[ "$(wc -l < "$pgrep_state")" -ge 3 ]]; then printf '456\\n'; fi; }}
+ps() {{ printf '%s\\n' {str(managed)!r}; }}
+sleep() {{ :; }}
+restart_fenced_host_agent() {{
+{restart}
+}}
+restart_fenced_host_agent
+[[ "$(wc -l < "$pgrep_state")" -ge 3 ]]
+'''
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_candidate_host_binary_is_allowed_only_after_restart_intent(self):
         journal = self.directory / "transition.json"

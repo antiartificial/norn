@@ -277,7 +277,8 @@ func (s *service) record(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var stored string
-	err := s.db.QueryRowContext(ctx, "SELECT id FROM pilot_records WHERE id=?", id).Scan(&stored)
+	var createdAt []byte
+	err := s.db.QueryRowContext(ctx, "SELECT id, created_at FROM pilot_records WHERE id=?", id).Scan(&stored, &createdAt)
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", 404)
 		return
@@ -289,7 +290,7 @@ func (s *service) record(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(map[string]string{"id": stored, "version": version, "allocation": os.Getenv("NOMAD_ALLOC_ID")})
+	json.NewEncoder(w).Encode(map[string]string{"id": stored, "createdAt": string(createdAt), "version": version, "allocation": os.Getenv("NOMAD_ALLOC_ID")})
 }
 
 func (s *service) authorizedWrite(r *http.Request) bool {

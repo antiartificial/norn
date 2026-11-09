@@ -112,6 +112,10 @@ func TestV3PrivateDeploymentAggregateAtomicReplayEtcd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolvedAccepted, err := adapter.ResolveAcceptedOperationByID(ctx, accepted.Operation.ID)
+	if err != nil || resolvedAccepted.Operation.ID != accepted.Operation.ID || resolvedAccepted.Intent.CanonicalDigest != accepted.Intent.CanonicalDigest {
+		t.Fatalf("signed operation lookup=%+v err=%v", resolvedAccepted, err)
+	}
 	if accepted.Intent.DeploymentID != request.Deployment.ID || accepted.Deployment == nil || len(accepted.Regions) != 1 {
 		t.Fatalf("accepted deployment is incomplete: %+v", accepted)
 	}

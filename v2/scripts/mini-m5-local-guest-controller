@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Protected local M5 guest preflight and one-use create reservation."""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import secrets
+import shutil
+import stat
+import subprocess
+
+
+TART_SHA256 = "6d3a455456979c138387d0660af8e956a054018f7516bd0e8bcd175382973823"
+PACKER_SHA256 = "2cfe53258eccd61340b590012a072c483051d6d62d041ed1fd322db3fa2ac5aa"
+PLUGIN_SHA256 = "b04c94c02eaf29b2f6b26ab4baedf13f301deac591894b039661adb8d612395e"
+SOFTNET_SHA256 = "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534"
+GUEST_PREPARE_SHA256 = "02f373683a355728f5ac70be44f7125c1c4c466aeb36baacaf5bc201d097e58a"
+TOOLCHAIN_SETUP_SHA256 = "e4bdbd96d8288381b1fba848552f665d58503f632e6ece0dc09708376cd7c79a"
+TOOLCHAIN_RECEIPT_VERSION = "26.6.0.0.1781586589"
+GUEST_HARDENING_SHA256 = "d8dedc1c5c9028a0ab77937eb2e09103c07517badfa7442ad26d4fc60d65762e"
+HISTORICAL_BUNDLE_BUILDER_SHA256 = "b3147fd7116abf98c54cfa7d3db1e622323d11977355d343743c9bdbfd43c4b4"
+WINDOW_SHA256 = "b1661e155e0c1d069601275ad77bff3bbd5e9d155adee2f74ebeb0da137b38c1"
+CHECKER_SHA256 = "8caa3fa047ed4627a08b52f23c48906867782e6dad24df0f6c216611f2da76e0"
+BOOTSTRAP_CLEANUP_SHA256 = "8a02ac5a5806d569b334963a1b1ab09d85fcc1b503943b176c4d65ccf7587458"
+INTENT_VERIFIER_SHA256 = "2bc04575ed02e5240780cbe1f2e09e7cd695cf2197a1cbc6ba3d0c4594c46b8c"
+HISTORICAL_TOOLS = {
+    "mini-historical-copied-state-controller": "c88987d344b826743b05b5761a10f297ecb60ea4092fb7929a728a20ca95b371",
+    "mini-historical-shadow-evidence": "a0e0bf9815c8fc3a562555b686e0d56b2a82853ff09cf63e63a6711e698c9489",
+    "mini-signed-shadow-launchagent-rehearsal": "ecfebca5c57ae13de0e856b8ce6247d3a2f95569cb04289874cb9ccd287bd22c",
+    "platform-release-artifact": "709d3a9a97891dc5fc2e0c7198f7d0406fa50cf9f43cb4ffb3825021c158a0b6",
+    "platform-release-manifest": "e31fec53e51feb37c7616b78fb78677addd6477e31f7adc22b195c5ff8fda961",
+    "mini-private-copy-rehearsal": "2717ddb121145c801d77d2ed4cb301ca0d8ad11f48320ee443a0eb6952042a1c",
+}
+IPSW_SIZE = 19772231540
+IPSW_SHA256 = "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95"
+OWNER_PUBLIC_KEY_SHA256 = "ba038c8f9e5d43ff4b5c03ffb1ea7ca1e4e9127c98b5810ed0c6a5dbc1c67eeb"
+VM_PREFIX = "norn-m5-"
+SCHEMA = "norn.m5-local-guest-reservation/v1"
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def checked_file(path, expected_digest, expected_size=None, required_owner=None):
+    path = Path(path)
+    info = path.lstat()
+    owner = os.geteuid() if required_owner is None else required_owner
+    if not path.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022:
+        raise ValueError("tool or IPSW path is not an owner-controlled regular file")
+    if expected_size is not None and info.st_size != expected_size:
+        raise ValueError("IPSW size differs from official response")
+    if digest(path) != expected_digest:
+        raise ValueError("tool or IPSW digest mismatch")
+
+
+def tart_inventory(tart):
+    result = subprocess.run((str(tart), "list", "--source", "local", "--format", "json"),
+                            check=True, capture_output=True, text=True, timeout=15)
+    value = json.loads(result.stdout)
+    if not isinstance(value, list) or any(not isinstance(row, dict) or not isinstance(row.get("Name"), str)
+                                          for row in value):
+        raise ValueError("Tart inventory is ambiguous")
+    return value
+
+
+def preflight(intent, tart, packer, plugin, softnet, ipsw, volume, supervisor_key, intent_verifier):
+    required = {"schema", "runId", "sourceSHA", "guestName", "ipswSHA256", "tartSHA256",
+                "cpuCount", "memoryGiB", "diskGiB", "supervisorSSHPublicKeySHA256", "retireBy"}
+    if set(intent) != required or intent["schema"] != "norn.m5-local-guest-intent/v1":
+        raise ValueError("unexpected local guest intent")
+    run_id = intent["runId"]
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9]{1,20}", run_id):
+        raise ValueError("invalid run ID")
+    if intent["guestName"] != VM_PREFIX + run_id or not re.fullmatch(r"[0-9a-f]{40}", intent["sourceSHA"]):
+        raise ValueError("intent is not run/source bound")
+    if intent["tartSHA256"] != TART_SHA256 or intent["ipswSHA256"] != IPSW_SHA256:
+        raise ValueError("unreviewed tool or IPSW")
+    if not re.fullmatch(r"[0-9a-f]{64}", intent["supervisorSSHPublicKeySHA256"]):
+        raise ValueError("invalid supervisor guest SSH public key digest")
+    if (type(intent["cpuCount"]) is not int or intent["cpuCount"] != 4 or
+            type(intent["memoryGiB"]) is not int or intent["memoryGiB"] != 8 or
+            type(intent["diskGiB"]) is not int or intent["diskGiB"] != 50):
+        raise ValueError("unreviewed guest capacity")
+    expiry = datetime.fromisoformat(intent["retireBy"].replace("Z", "+00:00"))
+    if expiry.tzinfo != timezone.utc or expiry <= datetime.now(timezone.utc):
+        raise ValueError("guest intent expired")
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise ValueError("local supervisor must be macOS ARM64")
+    memory = int(subprocess.run(("/usr/sbin/sysctl", "-n", "hw.memsize"), check=True,
+                                capture_output=True, text=True, timeout=5).stdout)
+    if memory < 24 * 1024**3:
+        raise ValueError("insufficient host memory")
+    if shutil.disk_usage(volume).free < 80 * 1024**3:
+        raise ValueError("insufficient host disk headroom")
+    checked_file(tart, TART_SHA256)
+    checked_file(packer, PACKER_SHA256)
+    checked_file(plugin, PLUGIN_SHA256)
+    checked_file(softnet, SOFTNET_SHA256, required_owner=0)
+    if not Path(softnet).stat().st_mode & stat.S_ISUID:
+        raise ValueError("Softnet must be root installed with setuid")
+    checked_file(ipsw, intent["ipswSHA256"], IPSW_SIZE)
+    checked_file(supervisor_key, intent["supervisorSSHPublicKeySHA256"])
+    checked_file(intent_verifier, INTENT_VERIFIER_SHA256)
+    if not Path(supervisor_key).read_text().startswith("ssh-ed25519 "):
+        raise ValueError("supervisor guest SSH key must be ed25519")
+    checked_file(Path(__file__).with_name("mini-m5-guest-prepare"), GUEST_PREPARE_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-command-line-tools-install"), TOOLCHAIN_SETUP_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-guest-hardening"), GUEST_HARDENING_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-firewall-window"), WINDOW_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-isolation-check"), CHECKER_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-guest-bootstrap-cleanup"), BOOTSTRAP_CLEANUP_SHA256)
+    checked_file(Path(__file__).with_name("mini-m5-historical-bundle"), HISTORICAL_BUNDLE_BUILDER_SHA256)
+    for name, expected in HISTORICAL_TOOLS.items():
+        checked_file(Path(__file__).with_name(name), expected)
+    rows = tart_inventory(tart)
+    if any(row["Name"] == intent["guestName"] for row in rows):
+        raise ValueError("run guest already exists")
+    return {"schema": "norn.m5-local-guest-preflight/v1", "runId": run_id,
+            "guestName": intent["guestName"], "tartInventorySHA256": hashlib.sha256(
+                json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "ipswSHA256": intent["ipswSHA256"], "sourceSHA": intent["sourceSHA"],
+            "toolchainSetupSHA256": TOOLCHAIN_SETUP_SHA256,
+            "toolchainReceiptVersion": TOOLCHAIN_RECEIPT_VERSION}
+
+
+def reserve(journal_root, intent, evidence):
+    root = Path(journal_root)
+    info = root.lstat()
+    if not root.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("journal root must be owner-only")
+    if not isinstance(intent.get("guestName"), str) or not re.fullmatch(r"norn-m5-[0-9]{1,20}", intent["guestName"]):
+        raise ValueError("invalid reserved guest identity")
+    path = root / (intent["guestName"] + ".json")
+    record = {"schema": SCHEMA, "state": "create-reserved", "intent": intent, "preflight": evidence}
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(record, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return path
+
+
+def protected_run(intent):
+    expected = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/master",
+                "GITHUB_REF_PROTECTED": "true", "RUNNER_NAME": "norn-m5-supervisor-01",
+                "GITHUB_RUN_ID": intent["runId"], "GITHUB_SHA": intent["sourceSHA"],
+                "NORN_M5_PROTECTED_CONTROLLER": "1"}
+    if any(os.environ.get(key) != value for key, value in expected.items()):
+        raise ValueError("guest create requires the exact protected supervisor run")
+
+
+def softnet_command_directory(root, guest_name, softnet):
+    checked_file(softnet, SOFTNET_SHA256, required_owner=0)
+    if not Path(softnet).stat().st_mode & stat.S_ISUID:
+        raise ValueError("Softnet must be root installed with setuid")
+    directory = root / (guest_name + ".softnet-bin")
+    directory.mkdir(mode=0o700)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("guest Softnet command directory is unsafe")
+    command = directory / "softnet"
+    command.symlink_to(softnet)
+    if command.resolve(strict=True) != Path(softnet).resolve(strict=True) or shutil.which("softnet", path=str(directory)) != str(command):
+        raise ValueError("Tart Softnet command does not resolve to the pinned installer")
+    return directory
+
+
+def create(journal_root, intent, evidence, tart, packer, plugin, softnet, ipsw, supervisor_key, intent_verifier):
+    protected_run(intent)
+    root = Path(journal_root)
+    path = root / (intent["guestName"] + ".json")
+    record = json.loads(path.read_bytes())
+    if (record.get("schema") != SCHEMA or record.get("state") != "create-reserved" or
+            record.get("intent") != intent or record.get("preflight") != evidence):
+        raise ValueError("reservation does not match exact fresh admission")
+    plugin_home = root / (intent["guestName"] + ".packer-plugins")
+    plugin_home.mkdir(mode=0o700)
+    softnet_dir = softnet_command_directory(root, intent["guestName"], softnet)
+    plugin_env = {"PACKER_PLUGIN_PATH": str(plugin_home),
+                  "HOME": str(root), "TMPDIR": str(root), "USER": os.environ.get("USER", ""),
+                  "LANG": "en_US.UTF-8",
+                  "PATH": str(softnet_dir) + ":" + str(Path(tart).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"}
+    subprocess.run((str(packer), "plugins", "install", "-path", str(plugin),
+                    "github.com/cirruslabs/tart"), env=plugin_env,
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    template = root / (intent["guestName"] + ".pkr.hcl")
+    subprocess.run((str(Path(__file__).with_name("mini-m5-packer-template")),
+                    "--output", str(template)), check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    bundle = root / (intent["guestName"] + ".historical-bundle.tar")
+    subprocess.run((str(Path(__file__).with_name("mini-m5-historical-bundle")),
+                    "--source-root", str(Path(__file__).parent), "--output", str(bundle)),
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    env = {**plugin_env, "PKR_VAR_m5_ipsw_path": str(ipsw),
+           "PKR_VAR_m5_guest_name": intent["guestName"],
+           "PKR_VAR_m5_bootstrap_password": "validation-only",
+           "PKR_VAR_m5_guest_prepare_path": str(Path(__file__).with_name("mini-m5-guest-prepare")),
+           "PKR_VAR_m5_toolchain_helper_path": str(Path(__file__).with_name("mini-m5-command-line-tools-install")),
+           "PKR_VAR_m5_guest_hardening_path": str(Path(__file__).with_name("mini-m5-guest-hardening")),
+           "PKR_VAR_m5_supervisor_ssh_public_key_path": str(supervisor_key),
+           "PKR_VAR_m5_historical_bundle_path": str(bundle),
+           "PKR_VAR_m5_bootstrap_cleanup_path": str(Path(__file__).with_name("mini-m5-guest-bootstrap-cleanup")),
+           "PKR_VAR_m5_intent_verifier_path": str(intent_verifier),
+           "PKR_VAR_m5_window_helper_path": str(Path(__file__).with_name("mini-m5-firewall-window")),
+           "PKR_VAR_m5_checker_helper_path": str(Path(__file__).with_name("mini-m5-isolation-check"))}
+    subprocess.run((str(packer), "validate", str(template)), env=env, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    # The marker is the durable effect boundary. No retry is allowed after it.
+    marker = root / (intent["guestName"] + ".create-started")
+    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps({"runId": intent["runId"], "guestName": intent["guestName"],
+                                 "templateSHA256": digest(template)}, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    bootstrap = secrets.token_urlsafe(36)
+    credential = root / (intent["guestName"] + ".bootstrap-secret")
+    fd = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(bootstrap + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    env["PKR_VAR_m5_bootstrap_password"] = bootstrap
+    env["TART_NO_AUTO_PRUNE"] = ""
+    log_path = root / (intent["guestName"] + ".packer-output.log")
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            try:
+                subprocess.run((str(packer), "build", str(template)), env=env, check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=7200)
+                output.write(b"Packer build completed; verbose output was suppressed.\n")
+            except subprocess.CalledProcessError as exc:
+                output.write(("Packer build failed with exit code {}; verbose output was suppressed.\n"
+                              .format(exc.returncode)).encode("ascii"))
+                raise
+            except subprocess.TimeoutExpired:
+                output.write(b"Packer build timed out; verbose output was suppressed.\n")
+                raise
+            finally:
+                output.flush()
+                os.fsync(output.fileno())
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("guest create outcome requires protected reconciliation") from exc
+    rows = [row for row in tart_inventory(tart) if row["Name"] == intent["guestName"]]
+    if len(rows) != 1 or rows[0].get("Source") != "local" or rows[0].get("OS") != "darwin":
+        raise RuntimeError("created guest identity requires protected reconciliation")
+    config = subprocess.run((str(tart), "get", intent["guestName"], "--format", "json"),
+                            check=True, capture_output=True, timeout=15).stdout
+    config_sha = hashlib.sha256(config).hexdigest()
+    receipt = root / (intent["guestName"] + ".created.json")
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"schema": "norn.m5-local-guest-created-unqualified/v1", "runId": intent["runId"],
+                   "guestName": intent["guestName"], "templateSHA256": digest(template),
+                   "tartConfigSHA256": config_sha, "inventory": rows[0]}, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return receipt
+
+
+def reconcile(journal_root, intent, tart):
+    protected_run(intent)
+    root = Path(journal_root)
+    info = root.lstat()
+    if not root.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("journal root must be owner-only")
+    name = intent["guestName"]
+    record = json.loads((root / (name + ".json")).read_bytes())
+    if record.get("schema") != SCHEMA or record.get("intent") != intent:
+        raise ValueError("journal differs from signed intent")
+    marker = root / (name + ".create-started")
+    if not marker.is_file():
+        return {"schema": "norn.m5-local-guest-reconciliation/v1", "state": "reserved-no-effect",
+                "runId": intent["runId"], "guestName": name}
+    rows = [row for row in tart_inventory(tart) if row["Name"] == name]
+    if len(rows) > 1:
+        raise ValueError("duplicate guest inventory")
+    state = "created-unqualified" if len(rows) == 1 else "create-outcome-ambiguous"
+    return {"schema": "norn.m5-local-guest-reconciliation/v1", "state": state,
+            "runId": intent["runId"], "guestName": name, "inventory": rows}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=("preflight", "reserve", "create", "reconcile"))
+    for name in ("intent", "signature", "public-key", "tart", "packer", "plugin",
+                 "softnet", "ipsw", "volume", "supervisor-ssh-public-key", "intent-verifier"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--journal-root")
+    args = parser.parse_args()
+    checked_file(args.public_key, OWNER_PUBLIC_KEY_SHA256)
+    subprocess.run(("/opt/homebrew/opt/openssl@3/bin/openssl", "pkeyutl", "-verify", "-pubin",
+                    "-inkey", args.public_key, "-sigfile", args.signature, "-rawin", "-in", args.intent),
+                   check=True, capture_output=True, timeout=10)
+    intent = json.loads(Path(args.intent).read_bytes())
+    if args.mode == "reconcile":
+        if not args.journal_root:
+            parser.error("reconcile requires --journal-root")
+        checked_file(args.tart, TART_SHA256)
+        print(json.dumps(reconcile(args.journal_root, intent, args.tart), sort_keys=True,
+                         separators=(",", ":")))
+        return
+    evidence = preflight(intent, args.tart, args.packer, args.plugin, args.softnet,
+                         args.ipsw, args.volume, args.supervisor_ssh_public_key, args.intent_verifier)
+    evidence["intentSHA256"] = digest(args.intent)
+    evidence["signatureSHA256"] = digest(args.signature)
+    evidence["publicKeySHA256"] = digest(args.public_key)
+    if args.mode in ("reserve", "create"):
+        if not args.journal_root:
+            parser.error("reservation and create require --journal-root")
+        if args.mode == "reserve":
+            evidence["journal"] = str(reserve(args.journal_root, intent, evidence))
+        else:
+            evidence["createdUnqualifiedReceipt"] = str(create(
+                args.journal_root, intent, evidence, args.tart, args.packer, args.plugin,
+                args.softnet, args.ipsw, args.supervisor_ssh_public_key, args.intent_verifier))
+    print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()

@@ -30,23 +30,29 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"norn/v2/api/config"
+	"norn/v2/api/consul"
 	"norn/v2/api/database"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/controller"
+	"norn/v2/api/fleet/savedplaneffect"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/startup"
 	"norn/v2/api/store"
 	"norn/v2/api/worker"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
-	etcdCanaryWorkerEnv      = "NORN_ETCD_CANARY_WORKER"
-	etcdCanaryHTTPPreviewEnv = "NORN_ETCD_CANARY_HTTP_PREVIEW"
+	etcdCanaryWorkerEnv        = "NORN_ETCD_CANARY_WORKER"
+	etcdCanaryHTTPPreviewEnv   = "NORN_ETCD_CANARY_HTTP_PREVIEW"
+	etcdWorkloadReleaseHTTPEnv = "NORN_ETCD_WORKLOAD_RELEASE_HTTP"
 )
 
 func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfig) error {
@@ -56,6 +62,20 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if !cfg.RequireExplicitAuth || len(cfg.APIToken) < 32 || len(cfg.AuditSigningKey) < 32 || strings.TrimSpace(cfg.ControlAuthority) == "" {
 		return fmt.Errorf("etcd Fleet runtime requires explicit auth, a 32-byte API token and audit key, and control authority")
 	}
+	otelCtx, otelCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownOTEL, otelErr := observe.Setup(otelCtx, observe.ConfigFromEnv("norn-api"))
+	otelCancel()
+	if otelErr != nil {
+		log.Printf("WARNING: otel setup: %v", otelErr)
+	}
+	observe.ConfigureLogging("norn-api")
+	defer func() {
+		if shutdownOTEL != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdownOTEL(shutdownCtx)
+		}
+	}()
 	signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...)
 	if err != nil {
 		return fmt.Errorf("acceptance signer: %w", err)
@@ -80,6 +100,13 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return fmt.Errorf("private invocation startup preflight: %w", err)
 	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
+	var metricsToken string
+	if tokenPath := strings.TrimSpace(os.Getenv("NORN_METRICS_TOKEN_FILE")); tokenPath != "" {
+		metricsToken, err = handler.ReadMetricsToken(tokenPath)
+		if err != nil {
+			return fmt.Errorf("load Norn metrics credential: %w", err)
+		}
+	}
 	githubConfig := fleetGitHubConfig(cfg)
 	var fleetGitHub *githubapp.Client
 	if githubapp.Configured(githubConfig) {
@@ -129,6 +156,8 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}
 	}
 	releaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetReleaseHTTPEnv)), "true")
+	qualificationHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdFleetQualificationHTTPEnv)), "true")
+	workloadReleaseHTTPEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv(etcdWorkloadReleaseHTTPEnv)), "true")
 	var releaseVerifier *pipeline.Pipeline
 	if releaseHTTPEnabled {
 		if deployConfig == "" {
@@ -137,6 +166,24 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		releaseVerifier, err = newEtcdFleetReleaseVerifier(cfg)
 		if err != nil {
 			return fmt.Errorf("configure etcd Fleet release admission: %w", err)
+		}
+	}
+	if qualificationHTTPEnabled {
+		if !releaseHTTPEnabled || deployConfig == "" {
+			return fmt.Errorf("%s requires %s=true and %s", etcdFleetQualificationHTTPEnv, etcdFleetReleaseHTTPEnv, etcdFleetDeployWorkerConfigEnv)
+		}
+		if err := handler.ValidateReleaseQualificationSigningKey(cfg.QualificationSigningKey); err != nil {
+			return fmt.Errorf("configure V3 staging qualification issuer: %w", err)
+		}
+	}
+	var workloadQualificationKeys []string
+	if workloadReleaseHTTPEnabled {
+		if cfg.EnvironmentID() != "staging" || !qualificationHTTPEnabled || deploy == nil || deploy.workloadKeys == nil || deploy.lineage == nil {
+			return fmt.Errorf("%s requires staging, %s=true, private workload keys, and the configured Fleet deploy runtime", etcdWorkloadReleaseHTTPEnv, etcdFleetQualificationHTTPEnv)
+		}
+		workloadQualificationKeys, err = handler.ReleaseQualificationVerificationKeys(cfg.TrustedQualificationSigningKeys, cfg.QualificationSigningKey)
+		if err != nil {
+			return fmt.Errorf("configure workload release qualification trust: %w", err)
 		}
 	}
 	router := chi.NewRouter()
@@ -157,25 +204,70 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if executorLaneEnabled && reconciler == nil {
 		return fmt.Errorf("NORN_FLEET_ETCD_EXECUTOR_ENABLED requires %s=true", fleetReconcilerEnv)
 	}
+	if cfg.FleetSavedPlanEffectEnabled {
+		if !executorLaneEnabled {
+			return fmt.Errorf("NORN_FLEET_SAVED_PLAN_EFFECT_ENABLED requires NORN_FLEET_ETCD_EXECUTOR_ENABLED=true")
+		}
+		projectionSigner, signerErr := savedplaneffect.LoadProjectionSigner(cfg.FleetSavedPlanProjectionPrivateKeyFile, cfg.FleetSavedPlanProjectionPublicKeySHA256, cfg.FleetSavedPlanProjectionSignerUID)
+		if signerErr != nil {
+			return fmt.Errorf("configure service-owned pinned saved-plan projection signer: %w", signerErr)
+		}
+		if signerErr = operations.SetSavedPlanEffectProjectionSigner(projectionSigner); signerErr != nil {
+			return fmt.Errorf("configure saved-plan projection signer: %w", signerErr)
+		}
+	}
 	router.Get("/api/health", sourceValidationHealthHandler(client, backend.EtcdPrefix))
 	router.Get("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
 	})
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(cfg, canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled, scaleHTTPEnabled))
+		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(cfg, canaryHTTPEnabled, fleetGitHub != nil, releaseHTTPEnabled, scaleHTTPEnabled, workloadReleaseHTTPEnabled))
 	})
 	// Fleet runners carry fleet:operate only for their own attempts and
 	// reconciliation checkpoints. Inventory and general operation reads still
 	// require api:read.
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
+	if metricsToken != "" {
+		var metricsNomad *nomad.Client
+		if cfg.NomadAddr != "" {
+			metricsNomad, err = nomad.NewClient(cfg.NomadAddr)
+			if err != nil {
+				log.Printf("WARNING: metrics Nomad client unavailable: %v", err)
+				metricsNomad = nil
+			}
+		}
+		var metricsConsul *consul.Client
+		if cfg.ConsulAddr != "" {
+			metricsConsul, err = consul.NewClient(cfg.ConsulAddr)
+			if err != nil {
+				log.Printf("WARNING: metrics Consul client unavailable: %v", err)
+				metricsConsul = nil
+			}
+		}
+		metricsHandler := handler.NewMetricsHandler(cfg, metricsNomad, metricsConsul)
+		router.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			handler.MetricsTokenAuth(metricsToken, metricsHandler).ServeHTTP(w, r)
+		})
+	}
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
 	platformOperate := etcdManagedTokenAuth(cfg, identities, handler.ScopePlatformOperate)
 	catalogActivate := etcdManagedTokenAuth(cfg, identities, handler.ScopeCatalogActivate)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
 	router.With(read).Get("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetRead(cfg, operations))
+	router.With(read).Get("/api/v1/apps/{id}/workload-release-policy", etcdFleetWorkloadReleasePolicyRead(cfg, operations))
+	router.With(platformOperate).Put("/api/v1/apps/{id}/workload-release-policy", etcdFleetWorkloadReleasePolicyConfigure(cfg, operations))
 	if releaseHTTPEnabled {
 		releaseStage := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)
 		router.With(releaseStage).Post("/api/v1/apps/{id}/releases/deployments", etcdFleetReleaseDeployment(cfg, operations, releaseVerifier))
+	}
+	if qualificationHTTPEnabled {
+		qualificationAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseQualify, handler.ScopeAPIWrite)
+		router.With(qualificationAuth).Post("/api/v1/apps/{id}/qualifications", etcdFleetReleaseQualification(cfg, operations, identities))
+	}
+	if workloadReleaseHTTPEnabled {
+		releaseStage := etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)
+		router.With(releaseStage).Post("/api/v1/apps/{id}/workload-releases", etcdWorkloadReleaseAdmission(cfg, operations, identities,
+			deploy.workloadKeys, deploy.lineage, workloadQualificationKeys))
 	}
 	router.With(platformOperate).Put("/api/v1/apps/{id}/fleet-target", etcdFleetAppTargetConfigure(cfg, operations))
 	router.With(read).Get("/api/v1/database/catalog", etcdFleetDatabaseCatalog(operations))
@@ -201,6 +293,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	registerEtcdPlatformReleaseIntentRoutes(router, cfg, identities, operations)
 	registerEtcdPlatformGenesisImportRoutes(router, cfg, identities, operations)
 	registerEtcdPlatformReleaseRecoveryRoutes(router, cfg, identities, operations)
+	registerEtcdFleetDeploymentRecoveryRoutes(router, cfg, identities, operations)
 	offlineOwnerKey, offlineReservationVerifier, err := newOfflineReservationRuntime(cfg)
 	if err != nil {
 		return fmt.Errorf("configure offline Fleet reservation: %w", err)
@@ -211,6 +304,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	registerEtcdFleetOfflineRoutes(router, cfg, identities, operations, offlineOwnerKey, offlineReservationVerifier, offlineEffectSource)
 	registerEtcdFleetAppDeleteCoPermitRoute(router, cfg, identities, operations, executorLaneEnabled)
+	registerEtcdFleetSavedPlanEffectRoutes(router, cfg, identities, operations, executorLaneEnabled)
 	router.With(operationRead).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled, cfgIfFleetRelease(releaseHTTPEnabled, cfg)))
 	if fleetGitHub != nil {
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))
@@ -218,6 +312,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}
 	registerEtcdFleetCredentialRoutes(router, cfg, identities, executorLaneEnabled)
 	registerEtcdFleetExecutorEnrollmentRoutes(router, cfg, identities, executorLaneEnabled)
+	registerEtcdPlatformOperatorEnrollmentRoutes(router, cfg, identities)
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			handler.WriteControlProblem(w, r, http.StatusNotImplemented, "backend_route_unsupported", "route is not implemented by the etcd normal Fleet capability set")
@@ -225,12 +320,26 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}
 		http.NotFound(w, r)
 	})
-	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: router, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(router, "norn.api"), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("etcd Fleet runtime listen: %w", err)
 	}
 	defer listener.Close()
+	var pairingListener net.Listener
+	var pairingServer *http.Server
+	if cfg.PairingLoopbackListener {
+		bind := net.ParseIP(strings.TrimSpace(cfg.BindAddr))
+		if bind == nil || !bind.IsPrivate() {
+			return fmt.Errorf("pairing loopback listener requires a distinct private NORN_BIND_ADDR")
+		}
+		pairingListener, err = net.Listen("tcp4", net.JoinHostPort("127.0.0.1", cfg.Port))
+		if err != nil {
+			return fmt.Errorf("etcd Fleet pairing loopback listen: %w", err)
+		}
+		defer pairingListener.Close()
+		pairingServer = &http.Server{Handler: otelhttp.NewHandler(pairingOnlyHandler(router), "norn.pairing"), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(quit)
@@ -273,7 +382,15 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		}()
 		log.Print("etcd Fleet converge watcher enabled (records converge plans for controller-mode resources)")
 	}
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
+	if pairingServer != nil {
+		go func() {
+			log.Printf("norn etcd Fleet pairing listener on 127.0.0.1:%s", cfg.Port)
+			if e := pairingServer.Serve(pairingListener); e != nil && e != http.ErrServerClosed {
+				errCh <- e
+			}
+		}()
+	}
 	go func() {
 		log.Printf("norn %s etcd Fleet runtime listening on %s", Version, srv.Addr)
 		if e := srv.Serve(listener); e != nil && e != http.ErrServerClosed {
@@ -282,11 +399,21 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	}()
 	select {
 	case e := <-errCh:
+		stopWorker()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if pairingServer != nil {
+			_ = pairingServer.Shutdown(ctx)
+		}
+		_ = srv.Shutdown(ctx)
 		return e
 	case <-quit:
 		stopWorker()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if pairingServer != nil {
+			_ = pairingServer.Shutdown(ctx)
+		}
 		return srv.Shutdown(ctx)
 	}
 }
@@ -303,6 +430,10 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
 	features := []string{"etcd-normal-router-v1", "fleet-authority-only-v1", "fleet-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "fleet-app-target-configuration", "durable-fleet-capacity-plans", "database-catalog-inspection", "postgresql-catalog-activation", "fleet-target-fence-v1", "fleet-resource-v1", "fleet-offline-attempt-admission-v1", "fleet-offline-effect-grant-inert-v1", "fleet-offline-device-enrollment-v1"}
 	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetAppTarget": "/api/v1/apps/{id}/fleet-target", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange", "fleetTargets": "/api/v1/fleet/targets", "fleetResources": "/api/v1/fleet/resources", "fleetOfflineAttempt": "/api/v1/fleet/offline/plans/{planID}/attempt", "fleetOfflineEffectGrants": "/api/v1/fleet/offline/attempts/{planID}/{attemptID}/effect-grants", "fleetOfflineEnrollments": "/api/v1/fleet/offline/enrollments", "fleetOfflineEnrollmentApproval": "/api/v1/fleet/offline/enrollments/approve", "fleetOfflineEnrollmentExchange": "/api/v1/fleet/offline/enrollments/{id}/exchange", "fleetOfflineDevice": "/api/v1/fleet/offline/devices/{id}"}
+	if strings.TrimSpace(os.Getenv("NORN_METRICS_TOKEN_FILE")) != "" {
+		features = append(features, "prometheus-metrics-v1")
+		endpoints["metrics"] = "/metrics"
+	}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if cfg != nil && cfg.FleetPlatformReleaseIntentEnabled {
 		features = append(features, "fleet-platform-release-intent-v1")
@@ -319,6 +450,10 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 	if cfg != nil && cfg.FleetOfflineVerifierReadEnabled {
 		features = append(features, "fleet-offline-verifier-read-v1")
 		endpoints["fleetOfflineVerifierRead"] = "/api/v1/fleet/offline/verifier/plans/{planID}/attempts/{attemptID}"
+	}
+	if cfg != nil && cfg.FleetProtectedTerminalVerifierReadEnabled && cfg.FleetGitHubRepository == protectedTerminalVerifierRepository && len(githubEnabled) > 0 && githubEnabled[0] {
+		features = append(features, "fleet-protected-terminal-verifier-read-v1")
+		endpoints["fleetProtectedTerminalVerifierRead"] = "/api/v1/fleet/verifier/plans/{planID}/attempts/{attemptID}/terminal-receipt"
 	}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
 		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
@@ -345,6 +480,11 @@ func etcdFleetCapabilities(cfg *config.Config, canaryHTTPEnabled bool, githubEna
 		features = append(features, "durable-app-scale-etcd-preview")
 		endpoints["appScale"] = "/api/v1/apps/{id}/scale"
 		endpoints["appScaleStatus"] = "/api/v1/apps/{id}/scale-status"
+		unsupported[0] = "other-app-mutations"
+	}
+	if len(githubEnabled) > 3 && githubEnabled[3] {
+		features = append(features, "staging-workload-release-admission-v1")
+		endpoints["appWorkloadRelease"] = "/api/v1/apps/{id}/workload-releases"
 		unsupported[0] = "other-app-mutations"
 	}
 	auth := map[string]interface{}{
@@ -689,7 +829,10 @@ func buildEtcdCapacityPlan(inventory *fleet.Inventory, pool string, current flee
 	if action == "replace" {
 		findings = append(findings, fleet.Finding{Severity: "info", Code: "fleet.plan.blue-green.required", Field: "strategy", Message: "new nodes must enroll and pass readiness before old nodes drain"})
 	}
-	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: uuid.NewString(), Cluster: inventory.Document.Cluster.Name, Pool: pool, Current: current, Proposed: proposed, Action: action, Strategy: strategy, Reason: strings.TrimSpace(request.Reason), SourceDigest: inventory.Digest, WorkflowURL: inventory.Document.Metadata.WorkflowURL, TemporaryRunnerSSH: request.TemporaryRunnerSSH, Findings: findings}
+	if (request.ProtectedApplyPrestate != nil || request.ProtectedApplyTransitionRule != nil) && (!request.ProtectedApplyPrestate.Valid() || !request.ProtectedApplyTransitionRule.Valid()) {
+		return nil, fmt.Errorf("protected apply prestate must name an exact provider target and transition rule")
+	}
+	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: uuid.NewString(), Cluster: inventory.Document.Cluster.Name, Pool: pool, Current: current, Proposed: proposed, Action: action, Strategy: strategy, Reason: strings.TrimSpace(request.Reason), SourceDigest: inventory.Digest, WorkflowURL: inventory.Document.Metadata.WorkflowURL, TemporaryRunnerSSH: request.TemporaryRunnerSSH, ProtectedApplyPrestate: request.ProtectedApplyPrestate, ProtectedApplyTransitionRule: request.ProtectedApplyTransitionRule, Findings: findings}
 	sort.SliceStable(plan.Findings, func(i, j int) bool { return plan.Findings[i].Code < plan.Findings[j].Code })
 	canonical := *plan
 	canonical.Findings = append([]fleet.Finding(nil), plan.Findings...)
@@ -748,6 +891,7 @@ func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, id
 	if fleetGitHub == nil {
 		return watcher
 	}
+	registerEtcdFleetProtectedTerminalVerifierRoute(router, cfg, identities, operations)
 	fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations, fleetGitHub)
 	// fleet:operate for the GitHub lane. Gated off, the lane principals are
 	// refused by the exact-scope check, as before the executor lane existed.
@@ -763,6 +907,7 @@ func registerEtcdFleetControllerRoutes(router chi.Router, cfg *config.Config, id
 	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.List)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.Create)
 	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}", fleetRunner.Get)
+	router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/terminal-receipt", fleetRunner.TerminalReceipt)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/validate-fence", fleetRunner.ValidateFenceBinding)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", fleetRunner.Heartbeat)
 	router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", fleetRunner.Advance)
@@ -816,4 +961,21 @@ func registerEtcdFleetExecutorEnrollmentRoutes(router chi.Router, cfg *config.Co
 	router.Post("/api/v1/enrollments/{id}/exchange", enrollment.ExchangeDeviceEnrollment)
 	router.With(admin).Get("/api/v1/devices", enrollment.ListDevices)
 	router.With(admin).Delete("/api/v1/devices/{id}", enrollment.RevokeDevice)
+}
+
+// A separate pairing lane is present only with the established platform
+// release intent gate. It grants no Fleet executor scope.
+func registerEtcdPlatformOperatorEnrollmentRoutes(router chi.Router, cfg *config.Config, identities *etcdstore.AuthStore) {
+	if !cfg.FleetPlatformReleaseIntentEnabled {
+		return
+	}
+	enrollment := handler.NewEtcdPlatformOperatorEnrollmentHandler(cfg, identities)
+	admin := etcdManagedTokenAuth(cfg, identities, handler.ScopeAdmin)
+	root := "/api/v1/fleet/platform-operator"
+	router.Post(root+"/enrollments", enrollment.StartDeviceEnrollment)
+	router.With(admin).Get(root+"/enrollments", enrollment.ListDeviceEnrollments)
+	router.With(admin).Post(root+"/enrollments/approve", enrollment.ApproveDeviceEnrollment)
+	router.Post(root+"/enrollments/{id}/exchange", enrollment.ExchangeDeviceEnrollment)
+	router.With(admin).Get(root+"/devices", enrollment.ListDevices)
+	router.With(admin).Delete(root+"/devices/{id}", enrollment.RevokeDevice)
 }

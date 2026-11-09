@@ -18,6 +18,7 @@ import (
 
 	"norn/v2/api/effect"
 	"norn/v2/api/fleet"
+	"norn/v2/api/fleet/savedplaneffect"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -30,6 +31,7 @@ type V3OperationStore struct {
 	lease             clientv3.Lease
 	prefix, authority string
 	signer            store.AcceptanceSigner
+	projectionSigner  *savedplaneffect.ProjectionSigner
 	policy            store.AcceptancePolicy
 }
 
@@ -845,7 +847,7 @@ func (s *V3OperationStore) ClaimNextOperation(ctx context.Context, owner string,
 		if decodeV3Record(kv.Value, &v) != nil {
 			continue
 		}
-		if v.Operation.Status == model.OperationQueued && !v.Operation.NextAttemptAt.After(now) && v.Operation.Attempts < v.Operation.MaxAttempts && (len(allowed) == 0 || allowed[v.Operation.Kind]) {
+		if v.Operation.Status == model.OperationQueued && !v.Operation.NextAttemptAt.After(now) && (v.Operation.Attempts < v.Operation.MaxAttempts || v.Operation.Metadata[fleetDeploymentRecoveryEffect] != nil) && (len(allowed) == 0 || allowed[v.Operation.Kind]) {
 			all = append(all, candidate{v, kv.ModRevision})
 		}
 	}
@@ -990,6 +992,13 @@ func (s *V3OperationStore) DeferClaimedOperation(ctx context.Context, c store.Op
 	})
 }
 func (s *V3OperationStore) DeferClaimedOperationWithAppLock(ctx context.Context, c store.OperationClaim, lock store.AppOperationLock, msg string, next time.Time, m map[string]interface{}) error {
+	current, _, err := s.load(ctx, c.OperationID())
+	if err != nil {
+		return err
+	}
+	if current.Operation.Metadata[fleetDeploymentRecoveryEffect] != nil {
+		return s.StopClaimedFleetDeploymentRecovery(ctx, c, lock)
+	}
 	return s.mutateClaimWithAppLock(ctx, c, lock, func(o *model.Operation) {
 		o.Status = model.OperationQueued
 		o.Attempts--
@@ -1177,7 +1186,7 @@ func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 				op.NextAttemptAt = now
 				op.Message = "catalog activation owner lease expired; retrying signed intent"
 				op.Metadata["recoveredAfterLeaseExpiry"] = true
-			} else if op.Kind == "app.canary-promote" || op.Kind == "app.scale" {
+			} else if op.Kind == "app.canary-promote" || op.Kind == "app.scale" || op.Kind == "app.workload-release" {
 				op.Status = model.OperationQueued
 				if op.Attempts > 0 {
 					op.Attempts--

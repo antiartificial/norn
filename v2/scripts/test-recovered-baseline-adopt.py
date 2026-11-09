@@ -191,6 +191,44 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("adoption receipt is required", result.stderr)
 
+    def test_signed_descendant_of_adopted_source_can_enter_recovery_preflight(self):
+        self.assertEqual(self.adopt().returncode, 0)
+        base = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        base_release = self.releases / base
+        base_release.mkdir()
+        write(base_release / "release.env", f"NORN_RELEASE_SHA={base}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
+        write(base_release / "release.json", json.dumps({"sha": base, "version": VERSION}) + "\n", 0o644)
+
+        write(self.repo / "descendant.txt", "signed descendant\n", 0o644)
+        subprocess.run(["git", "-C", str(self.repo), "add", "descendant.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-q", "-m", "Signed descendant"], check=True)
+        descendant = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        descendant_release = self.releases / descendant
+        descendant_release.mkdir()
+        write(descendant_release / "release.env", f"NORN_RELEASE_SHA={descendant}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
+        write(descendant_release / "release.json", json.dumps({"sha": descendant, "version": VERSION}) + "\n", 0o644)
+
+        receipt = json.loads(self.receipt.read_text())
+        receipt.pop("signature")
+        receipt["sourceSHA"] = base
+        canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        receipt["signature"] = "hmac-sha256:" + hmac.new(
+            b"fixture-audit-signing-key-32-characters",
+            b"norn.recovered-baseline-adoption/v2\0" + canonical, hashlib.sha256).hexdigest()
+        write_json(self.receipt, receipt)
+        self.current_link.unlink()
+        self.current_link.symlink_to(descendant_release)
+
+        result = self.run_script("preflight", "f" * 40)
+        self.assertNotIn("current Mini release is not the source or exact journaled recovery candidate", result.stderr)
+        self.assertNotIn("adoption receipt is required", result.stderr)
+        self.assertIn("fatal: Needed a single revision", result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        direct_upgrade = self.run_script("upgrade", "HEAD")
+        self.assertNotEqual(direct_upgrade.returncode, 0)
+        self.assertIn("completed recovered-forward file bindings", direct_upgrade.stderr)
+
     def test_validly_signed_v2_receipt_cannot_rebind_failed_incident_identity(self):
         self.assertEqual(self.adopt().returncode, 0)
         receipt = json.loads(self.receipt.read_text())
@@ -261,8 +299,43 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         allowed_wrapper = self.run_script("env-exec", str(candidate_wrapper), *helper_args)
         self.assertNotIn("recovered baseline rejects env-exec child mode", allowed_wrapper.stderr)
         self.assertNotIn("invalid arguments", allowed_wrapper.stderr)
-        self.assertIn("recovered-forward generation resolver is unavailable", allowed_wrapper.stderr)
+        # The real wrapper checks live API identity/health before resolving the
+        # active generation. This fixture has no API listener, so fail closed at
+        # that earlier pre-dispatch gate rather than reaching resolver lookup.
+        self.assertIn("Mini API read failed at /api/version", allowed_wrapper.stderr)
         self.assertEqual(self.env["NORN_PLATFORM_SCRIPT_BIN"], str(self.managed_script))
+
+        # A single canonical host-runtime child is also allowed, solely for
+        # the allowlisted public-route assurance operation.
+        api_env.write_text("encrypted")
+        host_runtime = self.home / ".config" / "norn" / "host" / "bin" / "host-runtime"
+        call_log = self.root / "assurance-child-call"
+        write(self.shims / "sops", "#!/bin/sh\nprintf '{\"NORN_API_TOKEN\":\"fixture-api-token\",\"NORN_AUDIT_SIGNING_KEY\":\"fixture-audit-signing-key-32-characters\"}\\n'\n", 0o755)
+        write(host_runtime, f"#!/bin/sh\nprintf '%s|%s|%s\\n' \"$*\" \"${{NORN_API_TOKEN:+api-present}}\" \"${{NORN_TOKEN:+token-present}}\" > '{call_log}'\n", 0o755)
+        self.env["NORN_HOST_RUNTIME_BIN"] = str(host_runtime)
+        self.env["NORN_PLATFORM_REPO"] = str(self.repo)
+        self.env["NORN_HOST_REPO"] = str(self.repo)
+        self.env["NORN_HOST_CONFIG_DIR"] = str(self.home / ".config" / "norn" / "host")
+        allowed_assurance = self.run_script("env-exec", "--", str(host_runtime),
+                                            "_assurance-forge", "example-app")
+        self.assertEqual(allowed_assurance.returncode, 0, allowed_assurance.stderr)
+        self.assertEqual(call_log.read_text().strip(),
+                         "_assurance-forge example-app|api-present|")
+        denied_assurance = self.run_script("env-exec", "--", str(host_runtime), "assure")
+        self.assertNotEqual(denied_assurance.returncode, 0)
+        self.assertIn("rejects env-exec child mode", denied_assurance.stderr)
+        wrong_host_runtime = self.root / "outside" / "host-runtime"
+        write(wrong_host_runtime, "#!/bin/sh\nexit 0\n", 0o755)
+        rejected_assurance = self.run_script("env-exec", "--", str(wrong_host_runtime),
+                                              "_assurance-forge", "example-app")
+        self.assertNotEqual(rejected_assurance.returncode, 0)
+        self.assertIn("canonical managed host-runtime", rejected_assurance.stderr)
+        self.env["NORN_HOST_CONFIG_DIR"] = str(self.root / "attacker-controlled-config")
+        redirected_assurance = self.run_script("env-exec", "--", str(host_runtime),
+                                                "_assurance-forge", "example-app")
+        self.assertNotEqual(redirected_assurance.returncode, 0)
+        self.assertIn("config directory is not canonical", redirected_assurance.stderr)
+
         wrong_sha = self.run_script("env-exec", str(candidate_wrapper), "f" * 40, *helper_args[1:])
         self.assertNotEqual(wrong_sha.returncode, 0)
         self.assertIn("invalid arguments", wrong_sha.stderr)

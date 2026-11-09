@@ -1,0 +1,42 @@
+---
+title: "DO Genesis readback: source pin and one-use recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: pending
+    lg1: held
+    lg2: verified
+  }
+  class lg0 blue
+  class lg1 orange
+  class lg2 teal
+  s0: Readback not prepared
+  s1: Intent has mismatched bindings
+  s2: Fresh intent, old verifier
+  s3: Intent rejected
+  s4: Readback held on stale source
+  s5: Merged verifier installed, timers off
+  s6: Fresh intent, merged verifier
+  s7: Readback verified
+  [*] --> s0
+  s0 --> s1: an intent has mismatched state, host-key, or signature inputs
+  s0 --> s2: the owner signs a fresh intent for the verified state and host keys
+  s1 --> s3: the controller rejects invalid readback inputs
+  s2 --> s4: readback finds the installed source pin is stale
+  s3 --> s1: an intent has mismatched state, host-key, or signature inputs
+  s3 --> s2: the owner signs a fresh intent for the verified state and host keys
+  s4 --> s1: an intent has mismatched state, host-key, or signature inputs
+  s4 --> s2: the owner signs a fresh intent for the verified state and host keys
+  s4 --> s5: the protected installer updates the verifier and leaves timers off
+  s5 --> s1: an intent has mismatched state, host-key, or signature inputs
+  s5 --> s6: the owner signs a fresh intent for the verified state and host keys
+  s6 --> s7: a fresh one-use intent passes readback
+  s3 --> s6: the owner signs a fresh intent for the verified state and host keys
+  class s0 blue
+  class s1 blue
+  class s2 blue
+  class s3 orange
+  class s4 orange
+  class s5 blue
+  class s6 blue
+  class s7 teal

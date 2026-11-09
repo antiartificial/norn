@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Build the exact historical tool bundle for a disposable M5 guest."""
+
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import tarfile
+
+
+TOOLS = {
+    "mini-historical-copied-state-controller": "c88987d344b826743b05b5761a10f297ecb60ea4092fb7929a728a20ca95b371",
+    "mini-historical-shadow-evidence": "a0e0bf9815c8fc3a562555b686e0d56b2a82853ff09cf63e63a6711e698c9489",
+    "mini-signed-shadow-launchagent-rehearsal": "ecfebca5c57ae13de0e856b8ce6247d3a2f95569cb04289874cb9ccd287bd22c",
+    "platform-release-artifact": "709d3a9a97891dc5fc2e0c7198f7d0406fa50cf9f43cb4ffb3825021c158a0b6",
+    "platform-release-manifest": "e31fec53e51feb37c7616b78fb78677addd6477e31f7adc22b195c5ff8fda961",
+    "mini-private-copy-rehearsal": "2717ddb121145c801d77d2ed4cb301ca0d8ad11f48320ee443a0eb6952042a1c",
+}
+
+
+def verify_sources(source_root):
+    source_root = Path(source_root)
+    for name, expected in TOOLS.items():
+        path = source_root / name
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError("historical tool differs: " + name)
+
+
+def build(source_root, output):
+    verify_sources(source_root)
+    output = Path(output)
+    if not output.is_absolute():
+        raise ValueError("historical bundle output must be absolute")
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as target, tarfile.open(fileobj=target, mode="w") as archive:
+        for name in sorted(TOOLS):
+            source = Path(source_root) / name
+            info = tarfile.TarInfo(name)
+            info.size = source.stat().st_size
+            info.mode = 0o755
+            info.uid = info.gid = info.mtime = 0
+            with source.open("rb") as stream:
+                archive.addfile(info, stream)
+        target.flush()
+        os.fsync(target.fileno())
+    return hashlib.sha256(output.read_bytes()).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-root", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    print(build(args.source_root, args.output))
+
+
+if __name__ == "__main__":
+    main()

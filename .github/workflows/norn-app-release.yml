@@ -52,6 +52,11 @@ on:
         required: false
         default: ''
         type: string
+      runner_private:
+        description: Use the one-use protected Fleet effect runner and its pinned localhost TLS route for staging.
+        required: false
+        default: false
+        type: boolean
       required_checks:
         description: Newline-delimited exact GitHub check-run names that must succeed for the staging SHA.
         required: false
@@ -87,6 +92,31 @@ on:
         required: false
         default: ''
         type: string
+      rollback_environment:
+        description: Exact control-plane environment for rollback.
+        required: false
+        default: production
+        type: string
+      proof_record_id:
+        description: Existing database-backed record ID to read before and after staging rollback.
+        required: false
+        default: ''
+        type: string
+      expected_runner_name:
+        description: Exact one-use runner name registered for the staging effect dispatch.
+        required: false
+        default: ''
+        type: string
+      expected_route_proof_sha256:
+        description: Reviewed body hash for the app route proof before and after rollback.
+        required: false
+        default: ''
+        type: string
+      controller_intent_sha256:
+        description: Owner-signed controller intent hash authorizing this staging effect dispatch.
+        required: false
+        default: ''
+        type: string
 
 defaults:
   run:
@@ -117,11 +147,17 @@ jobs:
           ROLLBACK_DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
           ROLLBACK_ARTIFACT: ${{ inputs.rollback_artifact }}
           ROLLBACK_CONFIRMATION: ${{ inputs.rollback_confirmation }}
+          ROLLBACK_ENVIRONMENT: ${{ inputs.rollback_environment }}
+          PROOF_RECORD_ID: ${{ inputs.proof_record_id }}
+          EXPECTED_ROUTE_PROOF_SHA256: ${{ inputs.expected_route_proof_sha256 }}
           BUILD_CONTRACT: ${{ inputs.build_contract }}
           GO_IMAGE: ${{ inputs.go_image }}
           RUNTIME_IMAGE: ${{ inputs.runtime_image }}
           PRIVATE_NETWORK: ${{ inputs.private_network }}
           TAILSCALE_TARGET: ${{ inputs.tailscale_target }}
+          RUNNER_PRIVATE: ${{ inputs.runner_private }}
+          CONTROLLER_INTENT_SHA256: ${{ inputs.controller_intent_sha256 }}
+          EXPECTED_RUNNER_NAME: ${{ inputs.expected_runner_name }}
         run: |
           set -euo pipefail
           [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
@@ -147,7 +183,18 @@ jobs:
             public|private|internal) ;;
             *) echo "unsupported or missing GitHub repository visibility: $CALLER_REPOSITORY_VISIBILITY" >&2; exit 1 ;;
           esac
-          if [[ "$PRIVATE_NETWORK" == "true" ]]; then
+          if [[ "$RUNNER_PRIVATE" == "true" ]]; then
+            [[ "$LANE" == staging || "$LANE" == staging-rollback ]] || { echo "runner_private is valid only for staging and staging rollback" >&2; exit 1; }
+            [[ "$PRIVATE_NETWORK" == false && -z "$TAILSCALE_TARGET" ]] || {
+              echo "runner_private cannot join the Tailscale release route" >&2; exit 1
+            }
+            [[ "$CONTROLLER_INTENT_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "runner_private requires the exact signed controller intent hash" >&2; exit 1
+            }
+            [[ "$EXPECTED_RUNNER_NAME" == "norn-work-staging-work$GITHUB_RUN_ID-runner" ]] || {
+              echo "runner_private expected name must bind the exact workflow run" >&2; exit 1
+            }
+          elif [[ "$PRIVATE_NETWORK" == "true" ]]; then
             python3 - "$TAILSCALE_TARGET" <<'PY'
           import re
           import sys
@@ -167,12 +214,27 @@ jobs:
           printf 'repository_visibility=%s\n' "$CALLER_REPOSITORY_VISIBILITY" >> "$GITHUB_OUTPUT"
           case "$LANE" in
             staging)
-              [[ "$CALLER_EVENT_NAME" == "push" ]] || { echo "staging requires a push event" >&2; exit 1; }
-              [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "staging requires a protected ref" >&2; exit 1; }
-              [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
-                echo "staging requires a push to the protected default branch" >&2
-                exit 1
-              }
+              case "$CALLER_EVENT_NAME" in
+                push)
+                  [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "staging requires a protected ref" >&2; exit 1; }
+                  [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
+                    echo "staging requires a push to the protected default branch" >&2
+                    exit 1
+                  }
+                  ;;
+                workflow_dispatch)
+                  [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "controller staging dispatch requires a protected ref" >&2; exit 1; }
+                  [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
+                    echo "controller staging dispatch requires the protected default branch" >&2
+                    exit 1
+                  }
+                  [[ "$RUNNER_PRIVATE" == "true" && "$CONTROLLER_INTENT_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+                    echo "staging workflow_dispatch requires the private runner and exact controller intent hash" >&2
+                    exit 1
+                  }
+                  ;;
+                *) echo "staging requires a protected push or controller-bound workflow_dispatch" >&2; exit 1 ;;
+              esac
               [[ -n "$(tr -d '[:space:]' <<<"$REQUIRED_CHECKS")" ]] || {
                 echo "staging requires an explicit required_checks list" >&2
                 exit 1
@@ -197,6 +259,7 @@ jobs:
               }
               ;;
             rollback)
+              [[ "$ROLLBACK_ENVIRONMENT" == production ]] || { echo "production rollback requires the production environment" >&2; exit 1; }
               [[ "$CALLER_EVENT_NAME" == "workflow_dispatch" ]] || { echo "rollback requires workflow_dispatch" >&2; exit 1; }
               [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "rollback requires a protected ref" >&2; exit 1; }
               [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
@@ -213,6 +276,13 @@ jobs:
                 exit 1
               }
               [[ "$ROLLBACK_CONFIRMATION" == ROLLBACK ]] || { echo "rollback_confirmation must be ROLLBACK" >&2; exit 1; }
+              ;;
+            staging-rollback)
+              [[ "$CALLER_EVENT_NAME" == workflow_dispatch && "$CALLER_REF_PROTECTED" == true && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || { echo "staging rollback requires protected default-branch dispatch" >&2; exit 1; }
+              [[ "$ROLLBACK_ENVIRONMENT" == staging && '${{ inputs.runner_private }}' == true ]] || { echo "staging rollback requires the private one-use runner" >&2; exit 1; }
+              [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$ROLLBACK_DEPLOYMENT_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ && "$ROLLBACK_ARTIFACT" =~ ^.+@sha256:[0-9a-f]{64}$ && "$ROLLBACK_CONFIRMATION" == ROLLBACK ]] || { echo "staging rollback requires exact admitted release identity" >&2; exit 1; }
+              [[ "$PROOF_RECORD_ID" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo "staging rollback requires an existing database record ID" >&2; exit 1; }
+              [[ "$EXPECTED_ROUTE_PROOF_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "staging rollback requires the reviewed route-proof body hash" >&2; exit 1; }
               ;;
             *) echo "lane must be staging, production, requalify, or rollback" >&2; exit 1 ;;
           esac
@@ -231,6 +301,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUIRED_CHECKS: ${{ inputs.required_checks }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           source_sha="$GITHUB_SHA"
@@ -273,7 +344,23 @@ jobs:
             for check in "${required_checks[@]}"; do
               IFS=$'\t' read -r check_name check_app_id <<<"$check"
               matches="$(jq --arg name "$check_name" --arg appId "$check_app_id" "$check_filter" <<<"$checks")"
-              count="$(jq 'length' <<<"$matches")"
+              count=0
+              selected_status=''
+              selected_conclusion=''
+              while IFS=$'\t' read -r check_id suite_id; do
+                [[ "$check_id" =~ ^[0-9]+$ && "$suite_id" =~ ^[0-9]+$ ]] || {
+                  echo "required check has an invalid GitHub check suite identity" >&2
+                  exit 1
+                }
+                suite="$(gh api "repos/$GITHUB_REPOSITORY/check-suites/$suite_id")"
+                if jq -e --arg branch "$DEFAULT_BRANCH" --arg sha "$source_sha" --argjson appId "$check_app_id" --argjson suiteId "$suite_id" \
+                  ".id == \$suiteId and .head_branch == \$branch and .head_sha == \$sha and .app.id == \$appId" \
+                  >/dev/null <<<"$suite"; then
+                  count=$((count + 1))
+                  selected_status="$(jq -er ".[] | select(.id == $check_id) | .status" <<<"$matches")"
+                  selected_conclusion="$(jq -r ".[] | select(.id == $check_id) | .conclusion // \"\"" <<<"$matches")"
+                fi
+              done < <(jq -r '.[] | [.id, .check_suite.id] | @tsv' <<<"$matches")
               if [[ "$count" == 0 ]]; then
                 waiting=true
                 continue
@@ -282,8 +369,8 @@ jobs:
                 echo "required check '$check_name@$check_app_id' is ambiguous or missing for $source_sha (matches: $count)" >&2
                 exit 1
               }
-              status="$(jq -er '.[0].status' <<<"$matches")"
-              conclusion="$(jq -r '.[0].conclusion // ""' <<<"$matches")"
+              status="$selected_status"
+              conclusion="$selected_conclusion"
               if [[ "$status" != completed ]]; then
                 waiting=true
                 continue
@@ -318,6 +405,9 @@ jobs:
     env:
       APP_ID: ${{ inputs.app_id }}
       IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+    outputs:
+      source_sha: ${{ steps.inputs.outputs.source_sha }}
+      artifact: ${{ steps.artifact.outputs.artifact }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -332,13 +422,20 @@ jobs:
           RUNTIME_IMAGE: ${{ inputs.runtime_image }}
           PRIVATE_NETWORK: ${{ inputs.private_network }}
           TAILSCALE_TARGET: ${{ inputs.tailscale_target }}
+          RUNNER_PRIVATE: ${{ inputs.runner_private }}
+          RUNNER_API_CA_FILE: ${{ vars.NORN_FLEET_RUNNER_API_CA_FILE }}
+          RUNNER_API_CA_SHA256: ${{ vars.NORN_FLEET_RUNNER_API_CA_SHA256 }}
         run: |
           set -euo pipefail
           case "$NORN_API_URL" in
             https://*) ;;
             *) echo "NORN_API_URL must be an https URL" >&2; exit 1 ;;
           esac
-          if [[ "$PRIVATE_NETWORK" == "true" ]]; then
+          if [[ "$RUNNER_PRIVATE" == "true" ]]; then
+            [[ "$NORN_API_URL" == https://localhost:18443 ]] || {
+              echo "runner_private NORN_API_URL must be https://localhost:18443" >&2; exit 1
+            }
+          elif [[ "$PRIVATE_NETWORK" == "true" ]]; then
             python3 - "$NORN_API_URL" "$TAILSCALE_TARGET" <<'PY'
           import sys
           from urllib.parse import urlsplit
@@ -388,6 +485,11 @@ jobs:
           REPOSITORY_VISIBILITY: ${{ needs.validate.outputs.repository_visibility }}
         run: |
           set -euo pipefail
+          if [[ '${{ inputs.runner_private }}' == true ]]; then
+            [[ "$REPOSITORY_VISIBILITY" == public ]] || { echo "runner_private currently requires a public repository" >&2; exit 1; }
+            printf 'mode=github-public\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           api="${NORN_API_URL%/}"
           oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
           mode="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:attest","app":"'"$APP_ID"'","environment":"staging","intent":"attest"}' | jq -er '.attestationMode')"
@@ -439,6 +541,9 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign --yes -a "norn.git.sha=$SOURCE_SHA" "$ARTIFACT"
+
+      - name: Prepare SPDX output directory
+        run: mkdir -p norn-release
 
       - name: Generate an SPDX SBOM for the exact OCI digest
         uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
@@ -513,7 +618,17 @@ jobs:
             --arg workflowRef "$GITHUB_WORKFLOW_REF" --arg workflowSha "$GITHUB_WORKFLOW_SHA" --arg ref "$GITHUB_REF" \
             '{provider: "github-actions", repository: $repository, repositoryId: $repositoryId, ownerId: $ownerId, runId: $runId, runAttempt: $runAttempt, workflowRef: $workflowRef, workflowSha: $workflowSha, ref: $ref, attestation: {issuer: "https://token.actions.githubusercontent.com", subjectDigest: ($artifact | split("@")[1]), materialSha: $sourceSha}}' > .norn-release/candidate.json
 
+      - name: Export runner-private release evidence
+        if: inputs.runner_private
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: norn-runner-private-${{ inputs.app_id }}-${{ steps.inputs.outputs.source_sha }}
+          path: .norn-release/candidate.json
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Queue and wait for staging preflight
+        if: ${{ !inputs.runner_private }}
         env:
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
           ARTIFACT: ${{ steps.artifact.outputs.artifact }}
@@ -565,6 +680,7 @@ jobs:
           done
 
       - name: Queue and wait for staging deployment
+        if: ${{ !inputs.runner_private }}
         id: deploy
         env:
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
@@ -618,6 +734,7 @@ jobs:
           printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
 
       - name: Create the portable staging qualification
+        if: ${{ !inputs.runner_private }}
         env:
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
           ARTIFACT: ${{ steps.artifact.outputs.artifact }}
@@ -656,12 +773,14 @@ jobs:
           ' .norn-release/qualification.json >/dev/null
 
       - name: Prepare the portable staging qualification
+        if: ${{ !inputs.runner_private }}
         run: |
           set -euo pipefail
           mkdir -p norn-release
           cp .norn-release/qualification.json norn-release/qualification.json
 
       - name: Export the signed staging qualification
+        if: ${{ !inputs.runner_private }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: norn-qualification-${{ inputs.app_id }}-${{ steps.inputs.outputs.source_sha }}
@@ -670,6 +789,7 @@ jobs:
           retention-days: 7
 
       - name: Write staging release summary
+        if: ${{ !inputs.runner_private }}
         env:
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
           ARTIFACT: ${{ steps.artifact.outputs.artifact }}
@@ -684,6 +804,150 @@ jobs:
             echo "- Attestation mode: \`$ATTESTATION_MODE\`"
             echo '- The staging qualification carries the exact provenance and SBOM trust result used for production promotion.'
             echo '- A protected tag pointing at this commit can promote the exported signed qualification until it expires.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  staging-runner-private:
+    if: inputs.lane == 'staging' && inputs.runner_private
+    needs: [validate, required-checks, staging]
+    runs-on: [self-hosted, Linux, X64, norn-fleet-protected, norn-work-staging-fleet-effect, "norn-work-management-run-${{ github.run_id }}"]
+    environment: staging
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    concurrency:
+      group: norn-release-${{ inputs.app_id }}-staging-effect
+      cancel-in-progress: false
+    env:
+      APP_ID: ${{ inputs.app_id }}
+      IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+      CONTROLLER_INTENT_SHA256: ${{ inputs.controller_intent_sha256 }}
+      EXPECTED_RUNNER_NAME: ${{ inputs.expected_runner_name }}
+      CURL_CA_BUNDLE: /etc/norn-fleet-executor-api-route/ca.pem
+    steps:
+      - name: Bind one-use runner and controller intent
+        run: |
+          set -euo pipefail
+          [[ "$CONTROLLER_INTENT_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "controller intent hash is invalid" >&2; exit 1; }
+          [[ "$EXPECTED_RUNNER_NAME" == "norn-work-staging-work$GITHUB_RUN_ID-runner" && "$RUNNER_NAME" == "$EXPECTED_RUNNER_NAME" ]] || { echo "one-use runner name differs from dispatch" >&2; exit 1; }
+
+      - name: Download same-run release evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: norn-runner-private-${{ inputs.app_id }}-${{ needs.staging.outputs.source_sha }}
+          path: .norn-release
+
+      - name: Verify runner route and immutable release evidence
+        env:
+          SOURCE_SHA: ${{ needs.staging.outputs.source_sha }}
+          ARTIFACT: ${{ needs.staging.outputs.artifact }}
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          RUNNER_API_CA_FILE: ${{ vars.NORN_FLEET_RUNNER_API_CA_FILE }}
+          RUNNER_API_CA_SHA256: ${{ vars.NORN_FLEET_RUNNER_API_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$NORN_API_URL" == https://localhost:18443 ]] || { echo "runner_private NORN_API_URL must be https://localhost:18443" >&2; exit 1; }
+          [[ "$RUNNER_API_CA_FILE" == /etc/norn-fleet-executor-api-route/ca.pem ]] || { echo "runner_private CA must use the reviewed executor route path" >&2; exit 1; }
+          [[ "$RUNNER_API_CA_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "runner_private CA digest is invalid" >&2; exit 1; }
+          [[ -f "$RUNNER_API_CA_FILE" && ! -L "$RUNNER_API_CA_FILE" ]] || { echo "runner_private CA is unavailable" >&2; exit 1; }
+          [[ "$(sha256sum "$RUNNER_API_CA_FILE" | awk '{print $1}')" == "$RUNNER_API_CA_SHA256" ]] || { echo "runner_private CA digest differs from the reviewed value" >&2; exit 1; }
+          jq -e --arg source "$SOURCE_SHA" --arg artifact "$ARTIFACT" --arg repo "$GITHUB_REPOSITORY" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '
+            .provider == "github-actions" and .repository == $repo and .runId == $run and .runAttempt == $attempt and
+            .ref == "refs/heads/master" and .attestation.materialSha == $source and
+            .attestation.subjectDigest == ($artifact | split("@")[1])
+          ' .norn-release/candidate.json >/dev/null || { echo "same-run candidate binding is invalid" >&2; exit 1; }
+          health="$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/health")"
+          jq -e '.status == "ok" and .backend == "etcd"' <<<"$health" >/dev/null || { echo "runner_private route did not reach the etcd control API" >&2; exit 1; }
+          capabilities="$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/v1/capabilities")"
+          jq -e '(.features | index("fleet-github-oidc-exchange")) != null and (.features | index("staging-fleet-release-admission-v1")) != null and .endpoints.fleetOIDCExchange == "/api/v1/auth/github-actions/exchange" and .endpoints.appReleaseDeployment == "/api/v1/apps/{id}/releases/deployments" and .endpoints.operation == "/api/v1/operations/{id}"' <<<"$capabilities" >/dev/null || { echo "runner_private control API lacks Fleet staging release capabilities" >&2; exit 1; }
+
+      - name: Confirm server-owned attestation policy
+        id: trust
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+          mode="$(curl --fail-with-body --silent --show-error -X POST "$NORN_API_URL/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' --data '{"scope":"release:attest","app":"'"$APP_ID"'","environment":"staging","intent":"attest"}' | jq -er '.attestationMode')"
+          [[ "$mode" == github-public ]] || { echo "runner_private build trust mode differs from server policy" >&2; exit 1; }
+          printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT"
+
+      - name: Queue and wait for staging deployment
+        id: deploy
+        env:
+          SOURCE_SHA: ${{ needs.staging.outputs.source_sha }}
+          ARTIFACT: ${{ needs.staging.outputs.artifact }}
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          api="${NORN_API_URL%/}"
+          exchange_token() {
+            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+            response="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:stage","app":"'"$APP_ID"'","environment":"staging","intent":"stage"}')"
+            jq -er '.token' <<<"$response"
+          }
+          NORN_API_TOKEN="$(exchange_token)"
+          echo "::add-mask::$NORN_API_TOKEN"
+          token_issued=$SECONDS
+          jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile candidate .norn-release/candidate.json '{sourceSha: $sourceSha, artifact: $artifact, candidate: $candidate[0]}' > .norn-release/deployment-request.json
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
+            -X POST "$api/api/v1/apps/$APP_ID/releases/deployments" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-staging-deploy-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --data-binary @.norn-release/deployment-request.json > .norn-release/deployment.json
+          deployment_id="$(jq -er '.payload.deploymentId // .metadata.deploymentId' .norn-release/deployment.json)"
+          operation_id="$(jq -er '.id' .norn-release/deployment.json)"
+          deadline=$((SECONDS + 3600))
+          while :; do
+            if (( SECONDS - token_issued >= 600 )); then
+              NORN_API_TOKEN="$(exchange_token)"
+              echo "::add-mask::$NORN_API_TOKEN"
+              token_issued=$SECONDS
+            fi
+            operation="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $NORN_API_TOKEN" \
+              "$api/api/v1/operations/$operation_id")"
+            status="$(jq -er '.status' <<<"$operation")"
+            case "$status" in
+              succeeded) break ;;
+              failed|canceled)
+                jq -r '.lastError // .message // "operation did not succeed"' <<<"$operation" >&2
+                exit 1
+                ;;
+              queued|running) ;;
+              *) echo "unexpected deployment status: $status" >&2; exit 1 ;;
+            esac
+            (( SECONDS < deadline )) || { echo "timed out waiting for staging deployment" >&2; exit 1; }
+            sleep 10
+          done
+          printf '%s\n' "$operation" > .norn-release/fleet-operation.json
+          printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
+
+      - name: Record Fleet staging acceptance proof
+        env:
+          SOURCE_SHA: ${{ needs.staging.outputs.source_sha }}
+          ARTIFACT: ${{ needs.staging.outputs.artifact }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+        run: |
+          set -euo pipefail
+          jq -e '
+            .kind == "app.deploy" and .app == env.APP_ID and .ref == env.SOURCE_SHA and
+            .status == "succeeded" and .payload.artifact == env.ARTIFACT and
+            .payload.deploymentId == env.DEPLOYMENT_ID
+          ' .norn-release/fleet-operation.json >/dev/null || { echo "Fleet operation proof differs from accepted release" >&2; exit 1; }
+          {
+            echo '### Norn Fleet staging release'
+            echo
+            printf '%s: %s\n' '- App' "$APP_ID"
+            printf '%s: %s\n' '- Source' "$SOURCE_SHA"
+            printf '%s: %s\n' '- Artifact' "$ARTIFACT"
+            printf '%s: %s\n' '- Deployment' "$DEPLOYMENT_ID"
+            echo '- Fleet accepted the attested artifact and reported a succeeded deployment operation.'
+            echo '- This Fleet staging lane does not issue a production promotion qualification.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   production:
@@ -1094,3 +1358,121 @@ jobs:
             echo "- Norn operation: \`${{ steps.queue.outputs.operation_id }}\`"
             echo '- No checkout, build, tag, signing, or substitution ran.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  staging-rollback-runner-private:
+    name: norn-staging-rollback-effect
+    if: inputs.lane == 'staging-rollback'
+    needs: validate
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - norn-fleet-protected
+      - norn-work-staging-fleet-effect
+      - norn-work-staging-norn-rollback
+      - norn-work-management-run-${{ github.run_id }}
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: norn-release-${{ inputs.app_id }}-staging-effect
+      cancel-in-progress: false
+    env:
+      APP_ID: ${{ inputs.app_id }}
+      SOURCE_SHA: ${{ inputs.rollback_source_sha }}
+      DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
+      ARTIFACT: ${{ inputs.rollback_artifact }}
+      RECORD_ID: ${{ inputs.proof_record_id }}
+      ROUTE_PROOF_SHA256: ${{ inputs.expected_route_proof_sha256 }}
+      EXPECTED_RUNNER_NAME: ${{ inputs.expected_runner_name }}
+      NORN_API_URL: ${{ vars.NORN_API_URL }}
+      NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+      PUBLIC_APP_URL: ${{ vars.NORN_MANAGED_MYSQL_PUBLIC_URL }}
+      CURL_CA_BUNDLE: /etc/norn-fleet-executor-api-route/ca.pem
+    steps:
+      - name: Bind one-use runner and private control route
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_RUNNER_NAME" == "norn-work-staging-work$GITHUB_RUN_ID-runner" && "$RUNNER_NAME" == "$EXPECTED_RUNNER_NAME" ]] || { echo "one-use runner name differs from dispatch" >&2; exit 1; }
+          [[ "$NORN_API_URL" == https://localhost:18443 ]] || { echo "private control origin differs" >&2; exit 1; }
+          [[ -f "$CURL_CA_BUNDLE" && ! -L "$CURL_CA_BUNDLE" ]] || { echo "private control CA is missing" >&2; exit 1; }
+          [[ "$(sha256sum "$CURL_CA_BUNDLE" | cut -d' ' -f1)" == '${{ vars.NORN_FLEET_RUNNER_API_CA_SHA256 }}' ]] || { echo "private control CA differs" >&2; exit 1; }
+          [[ "$PUBLIC_APP_URL" == https://* && "$PUBLIC_APP_URL" != *'@'* && "$PUBLIC_APP_URL" != *'?'* && "$PUBLIC_APP_URL" != *'#'* ]] || { echo "public app origin is invalid" >&2; exit 1; }
+          jq -e '.status == "ok" and .backend == "etcd"' <<<"$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/health")" >/dev/null
+          jq -e '(.features | index("fleet-github-oidc-exchange")) != null and .endpoints.operation == "/api/v1/operations/{id}"' <<<"$(curl --fail-with-body --silent --show-error --noproxy '*' "$NORN_API_URL/api/v1/capabilities")" >/dev/null
+
+      - name: Roll back admitted staging deployment and measure continuity
+        run: |
+          set -euo pipefail
+          umask 077
+          api="${NORN_API_URL%/}"
+          public="${PUBLIC_APP_URL%/}"
+          before="$(curl --fail-with-body --silent --show-error "$public/records/$RECORD_ID")"
+          [[ "$(jq -er '.id' <<<"$before")" == "$RECORD_ID" && -n "$(jq -er '.createdAt' <<<"$before")" ]] || { echo "pre-rollback database-backed record differs" >&2; exit 1; }
+          record_hash="$(jq -cS '{id,createdAt}' <<<"$before" | sha256sum | cut -d' ' -f1)"
+          [[ "$(curl --fail-with-body --silent --show-error "$public/route-proof" | sha256sum | cut -d' ' -f1)" == "$ROUTE_PROOF_SHA256" ]] || { echo "pre-rollback public route proof differs" >&2; exit 1; }
+          sample_file="$RUNNER_TEMP/norn-m6-public-samples.tsv"
+          : > "$sample_file"
+          stop_file="$(mktemp)"
+          rm "$stop_file"
+          ( while [[ ! -e "$stop_file" ]]; do
+              now="$(date -u +%FT%TZ)"
+              code="$(curl --silent --show-error --max-time 5 -o /dev/null -w '%{http_code}' "$public/version" 2>/dev/null || printf 000)"
+              record_sample="$(curl --fail-with-body --silent --show-error --max-time 5 "$public/records/$RECORD_ID" 2>/dev/null || true)"
+              record_status=unavailable
+              if [[ -n "$record_sample" ]]; then
+                sampled_hash="$(jq -cS '{id,createdAt}' <<<"$record_sample" 2>/dev/null | sha256sum | cut -d' ' -f1 || true)"
+                if [[ "$sampled_hash" == "$record_hash" ]]; then record_status=ok; else record_status=changed; fi
+              fi
+              printf '%s %s %s\n' "$now" "$code" "$record_status" >> "$sample_file"
+              sleep 2
+            done ) &
+          monitor=$!
+          finish_monitor() { touch "$stop_file"; wait "$monitor" || true; }
+          trap finish_monitor EXIT
+          exchange_token() {
+            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+            curl --fail-with-body --silent --show-error --noproxy '*' -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' --data '{"scope":"release:rollback","app":"'"$APP_ID"'","environment":"staging","intent":"rollback"}' | jq -er '.token'
+          }
+          token="$(exchange_token)"
+          echo "::add-mask::$token"
+          token_issued=$SECONDS
+          request="$(jq -nc --arg deploymentId "$DEPLOYMENT_ID" --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" '{deploymentId:$deploymentId,sourceSha:$sourceSha,artifact:$artifact,confirm:true}')"
+          operation_id="$(curl --fail-with-body --silent --show-error --noproxy '*' -X POST "$api/api/v1/apps/$APP_ID/releases/rollbacks" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -H "Idempotency-Key: norn-m6-staging-rollback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --data "$request" | jq -er '.id')"
+          deadline=$((SECONDS + 3600))
+          while :; do
+            if (( SECONDS - token_issued >= 600 )); then
+              token="$(exchange_token)"
+              echo "::add-mask::$token"
+              token_issued=$SECONDS
+            fi
+            status="$(curl --fail-with-body --silent --show-error --noproxy '*' -H "Authorization: Bearer $token" "$api/api/v1/operations/$operation_id" | jq -er '.status')"
+            case "$status" in
+              succeeded) break ;;
+              failed|canceled) echo "Norn rollback operation $operation_id ended $status" >&2; exit 1 ;;
+              queued|running) ;;
+              *) echo "unexpected rollback operation status" >&2; exit 1 ;;
+            esac
+            (( SECONDS < deadline )) || { echo "rollback observation timed out; inspect durable operation $operation_id" >&2; exit 1; }
+            sleep 5
+          done
+          finish_monitor
+          trap - EXIT
+          after="$(curl --fail-with-body --silent --show-error "$public/records/$RECORD_ID")"
+          [[ "$(jq -er '.id' <<<"$after")" == "$RECORD_ID" && "$(jq -cS '{id,createdAt}' <<<"$after" | sha256sum | cut -d' ' -f1)" == "$record_hash" ]] || { echo "database-backed record content changed across rollback" >&2; exit 1; }
+          [[ "$(curl --fail-with-body --silent --show-error "$public/route-proof" | sha256sum | cut -d' ' -f1)" == "$ROUTE_PROOF_SHA256" ]] || { echo "post-rollback public route proof differs" >&2; exit 1; }
+          failures="$(awk '$2 != 200 {n++} END {print n+0}' "$sample_file")"
+          record_failures="$(awk '$3 != "ok" {n++} END {print n+0}' "$sample_file")"
+          samples="$(wc -l < "$sample_file" | tr -d ' ')"
+          (( samples > 0 )) || { echo "no public continuity samples" >&2; exit 1; }
+          { echo "### Norn staging app rollback"; echo "- Operation: \`$operation_id\`"; echo "- Exact source: \`$SOURCE_SHA\`"; echo "- Exact artifact: \`$ARTIFACT\`"; echo "- Public samples: $samples; non-200 samples: $failures; record unavailable/changed samples: $record_failures"; echo "- Database-backed immutable record ID and creation timestamp hash preserved: \`$record_hash\`"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve public continuity observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: norn-m6-public-continuity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/norn-m6-public-samples.tsv
+          if-no-files-found: ignore
+          retention-days: 7

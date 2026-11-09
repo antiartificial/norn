@@ -9,6 +9,7 @@ import (
 	"norn/v2/api/fleet"
 	"norn/v2/api/fleet/lifecycle"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
 const (
@@ -40,6 +41,22 @@ type PrivateInvocationStore interface {
 	AcceptPrivateInvocation(context.Context, OperationAcceptance, PrivateInvocationInput, *PrivateInvocationKeyRing) (AcceptedOperation, error)
 	OpenPrivateInvocation(context.Context, model.Operation, *PrivateInvocationKeyRing) (PrivateInvocationInput, error)
 	RequiredPrivateInvocationKeys(context.Context) ([]string, error)
+}
+
+// PrivateWorkloadReleaseStore atomically accepts a signed workload release
+// plan with its separately encrypted, exact SOPS source snapshot.
+type PrivateWorkloadReleaseStore interface {
+	ResolvePrivateWorkloadReleaseReplay(context.Context, OperationRequestIdentity, model.Operation) (AcceptedOperation, error)
+	AcceptPrivateWorkloadRelease(context.Context, OperationAcceptance, model.ReleaseQualification, []string, []byte, *WorkloadReleaseInputKeyRing, nomad.ActiveDeploymentLineageObserver) (AcceptedOperation, error)
+	OpenPrivateWorkloadRelease(context.Context, model.Operation, *WorkloadReleaseInputKeyRing) ([]byte, error)
+	RequiredWorkloadReleaseInputKeys(context.Context) ([]string, error)
+}
+
+// PrivateWorkloadReleaseKeyStore exposes only the retained key IDs needed to
+// restore accepted private release inputs. It is separate from admission so
+// startup can fail closed before enabling the release capability.
+type PrivateWorkloadReleaseKeyStore interface {
+	RequiredWorkloadReleaseInputKeys(context.Context) ([]string, error)
 }
 
 type OperationActor struct {
@@ -187,6 +204,36 @@ type SignedAcceptanceIntent struct {
 }
 
 const FleetAppTargetSchema = "norn.fleet-app-target/v1"
+
+// WorkloadReleasePolicy is the operator-approved stateless overlap envelope
+// for one Fleet app. It is absent by default; workload-release admission must
+// not infer compatibility or choose route/capacity values without it.
+type WorkloadReleasePolicy struct {
+	App                   string                      `json:"app"`
+	ControlEnvironment    string                      `json:"controlEnvironment"`
+	FleetTargetGeneration uint64                      `json:"fleetTargetGeneration"`
+	SchemaVersion         string                      `json:"schemaVersion"`
+	ApprovalID            string                      `json:"approvalId"`
+	ApprovedBy            string                      `json:"approvedBy"`
+	ApprovedAt            time.Time                   `json:"approvedAt"`
+	Mode                  string                      `json:"mode"`
+	MinReplicas           int                         `json:"minReplicas"`
+	MaxReplicas           int                         `json:"maxReplicas"`
+	SurgeLimit            int                         `json:"surgeLimit"`
+	RouteSteps            []WorkloadReleasePolicyStep `json:"routeSteps"`
+}
+
+const (
+	WorkloadReleasePolicySchema           = "norn.workload-release-policy/v1"
+	WorkloadReleasePolicyStatelessOverlap = "stateless-overlap"
+)
+
+// WorkloadReleasePolicyStep gives the controller an explicit, approved
+// sequence for shifting traffic between the old and target versions.
+type WorkloadReleasePolicyStep struct {
+	OldWeight    int `json:"oldWeight"`
+	TargetWeight int `json:"targetWeight"`
+}
 
 // FleetAppTarget is an immutable snapshot of the control-owned target selected
 // at private etcd deployment admission. It is verified against the signed

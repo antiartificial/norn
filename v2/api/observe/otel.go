@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log"
 	"log/slog"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -22,19 +24,29 @@ import (
 type Shutdown func(context.Context) error
 
 type Config struct {
-	Enabled     bool
-	ServiceName string
-	EndpointURL string
-	LogsEnabled bool
+	Enabled           bool
+	TracesEnabled     bool
+	ServiceName       string
+	EndpointURL       string
+	TracesEndpointURL string
+	LogsEndpointURL   string
+	LogsEnabled       bool
 }
 
 func ConfigFromEnv(service string) Config {
-	enabled := envBool("NORN_OTEL_ENABLED") || strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) != ""
+	endpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	tracesEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+	logsEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"))
+	tracesEnabled := envBool("NORN_OTEL_ENABLED") || endpoint != "" || tracesEndpoint != ""
+	logsEnabled := envBool("NORN_OTEL_LOGS") && (envBool("NORN_OTEL_ENABLED") || endpoint != "" || logsEndpoint != "")
 	return Config{
-		Enabled:     enabled,
-		ServiceName: envDefault("OTEL_SERVICE_NAME", service),
-		EndpointURL: strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
-		LogsEnabled: enabled && envDefault("NORN_OTEL_LOGS", "true") != "false",
+		Enabled:           tracesEnabled || logsEnabled,
+		TracesEnabled:     tracesEnabled,
+		ServiceName:       envDefault("OTEL_SERVICE_NAME", service),
+		EndpointURL:       endpoint,
+		TracesEndpointURL: tracesEndpoint,
+		LogsEndpointURL:   logsEndpoint,
+		LogsEnabled:       logsEnabled,
 	}
 }
 
@@ -45,27 +57,37 @@ func Setup(ctx context.Context, cfg Config) (Shutdown, error) {
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = "norn-api"
 	}
-	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)))
+	res, err := resource.New(ctx, resource.WithFromEnv(), resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)))
 	if err != nil {
 		return nil, err
 	}
 	var shutdowns []Shutdown
-	traceOpts := []otlptracehttp.Option{}
-	if cfg.EndpointURL != "" {
-		traceOpts = append(traceOpts, otlptracehttp.WithEndpointURL(cfg.EndpointURL))
+	if cfg.TracesEnabled {
+		traceOpts := []otlptracehttp.Option{}
+		traceEndpoint, err := signalEndpointURL(cfg.EndpointURL, cfg.TracesEndpointURL, "v1/traces")
+		if err != nil {
+			return nil, err
+		}
+		if traceEndpoint != "" {
+			traceOpts = append(traceOpts, otlptracehttp.WithEndpointURL(traceEndpoint))
+		}
+		traceExporter, err := otlptracehttp.New(ctx, traceOpts...)
+		if err != nil {
+			return nil, err
+		}
+		tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithResource(res), sdktrace.WithBatcher(traceExporter))
+		otel.SetTracerProvider(tracerProvider)
+		shutdowns = append(shutdowns, tracerProvider.Shutdown)
 	}
-	traceExporter, err := otlptracehttp.New(ctx, traceOpts...)
-	if err != nil {
-		return nil, err
-	}
-	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithResource(res), sdktrace.WithBatcher(traceExporter))
-	otel.SetTracerProvider(tracerProvider)
-	shutdowns = append(shutdowns, tracerProvider.Shutdown)
 
 	if cfg.LogsEnabled {
 		logOpts := []otlploghttp.Option{}
-		if cfg.EndpointURL != "" {
-			logOpts = append(logOpts, otlploghttp.WithEndpointURL(cfg.EndpointURL))
+		logsEndpoint, err := signalEndpointURL(cfg.EndpointURL, cfg.LogsEndpointURL, "v1/logs")
+		if err != nil {
+			return nil, err
+		}
+		if logsEndpoint != "" {
+			logOpts = append(logOpts, otlploghttp.WithEndpointURL(logsEndpoint))
 		}
 		logExporter, err := otlploghttp.New(ctx, logOpts...)
 		if err != nil {
@@ -90,6 +112,26 @@ func Setup(ctx context.Context, cfg Config) (Shutdown, error) {
 	}, nil
 }
 
+// signalEndpointURL follows the OTLP HTTP endpoint rules: a signal-specific
+// endpoint is already complete, while the generic endpoint is a base URL to
+// which the signal path must be appended.
+func signalEndpointURL(base, signalSpecific, signalPath string) (string, error) {
+	if endpoint := strings.TrimSpace(signalSpecific); endpoint != "" {
+		return endpoint, nil
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return "", nil
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", errors.New("invalid OTLP endpoint URL")
+	}
+	u.Path = path.Join(u.Path, signalPath)
+	u.RawPath = ""
+	return u.String(), nil
+}
+
 func ConfigureLogging(service string) {
 	level := slog.LevelInfo
 	format := strings.ToLower(strings.TrimSpace(envDefault("NORN_LOG_FORMAT", "text")))
@@ -100,7 +142,7 @@ func ConfigureLogging(service string) {
 		stdout = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
 	handler := stdout
-	if envBool("NORN_OTEL_ENABLED") || strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) != "" {
+	if ConfigFromEnv(service).LogsEnabled {
 		handler = fanoutHandler{handlers: []slog.Handler{stdout, otelslog.NewHandler(service)}}
 	}
 	logger := slog.New(handler)

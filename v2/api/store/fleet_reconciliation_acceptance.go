@@ -57,7 +57,7 @@ func normalizeFleetReconciliationAcceptance(acceptance *OperationAcceptance) err
 		return &AcceptanceValidationError{Reason: "fleet ingress inventory digest is invalid for this checkpoint"}
 	}
 	validPhase := false
-	for _, phase := range []string{"prechange_verified", "provider_applying", "infrastructure_applied", "inventory_generated", "nodes_configured", "nodes_enrolled", "readiness_verified", "old_nodes_drained", "complete"} {
+	for _, phase := range []string{"prechange_verified", "provider_applying", "infrastructure_applied", "inventory_generated", "nodes_configured", "nodes_enrolled", "readiness_verified", "old_nodes_drained", "postchange_verified", "complete"} {
 		validPhase = validPhase || request.Phase == phase
 	}
 	if !validPhase || (request.Status != "succeeded" && request.Status != "failed") {
@@ -216,6 +216,26 @@ func loadFleetReconciliationHistory(ctx context.Context, tx pgx.Tx, planID strin
 // ValidateFleetReconciliationAdmissionTransition enforces the append-only
 // checkpoint lineage. The caller supplies the complete durable history.
 func ValidateFleetReconciliationAdmissionTransition(plan *model.Operation, existing []model.Operation, request fleet.ReconciliationRequest) error {
+	var typedPlan fleet.CapacityPlan
+	encoded, err := json.Marshal(plan.Payload)
+	if err != nil || json.Unmarshal(encoded, &typedPlan) != nil {
+		return fmt.Errorf("fleet capacity plan payload is invalid")
+	}
+	poststate := typedPlan.ProtectedApplyPrestate != nil && typedPlan.ProtectedApplyTransitionRule != nil
+	if request.Phase == "postchange_verified" && !poststate {
+		return fmt.Errorf("postchange_verified requires a reviewed protected apply prestate and transition rule")
+	}
+	if request.Phase != "postchange_verified" || request.Status != "succeeded" {
+		if request.ObservedProtectedApplyPoststate != nil || request.ProtectedApplyTerminalDigest != "" {
+			return fmt.Errorf("observed protected apply poststate is valid only for successful postchange_verified")
+		}
+	}
+	if request.Phase == "postchange_verified" && request.Status == "succeeded" {
+		intent, intentErr := fleet.BuildProtectedApplyTerminalIntent(typedPlan.ProtectedApplyPrestate, typedPlan.ProtectedApplyTransitionRule, request.ObservedProtectedApplyPoststate, plan.ID, request.AttemptID, request.CommitSHA, request.PlanSHA256)
+		if intentErr != nil || request.ProtectedApplyTerminalDigest != intent.CanonicalDigest {
+			return fmt.Errorf("postchange_verified protected apply terminal intent differs from the reviewed plan")
+		}
+	}
 	succeeded := map[string]bool{}
 	for _, operation := range existing {
 		commit, _ := operation.Payload["commitSha"].(string)
@@ -241,6 +261,13 @@ func ValidateFleetReconciliationAdmissionTransition(plan *model.Operation, exist
 		if fleetAcceptancePlanRequiresDrain(plan) {
 			predecessor[request.Phase] = "old_nodes_drained"
 		}
+	}
+	if poststate {
+		predecessor["postchange_verified"] = "old_nodes_drained"
+		if !fleetAcceptancePlanRequiresDrain(plan) {
+			predecessor["postchange_verified"] = "readiness_verified"
+		}
+		predecessor["complete"] = "postchange_verified"
 	}
 	if required := predecessor[request.Phase]; required != "" && !succeeded[required] {
 		// Protected scale-up attempts created before signed acceptance begin at

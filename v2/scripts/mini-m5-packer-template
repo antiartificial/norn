@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Turn the pinned upstream Tahoe Packer recipe into a restricted M5 bootstrap."""
+
+import argparse
+import hashlib
+import os
+from pathlib import Path
+
+
+UPSTREAM_SHA256 = "2beef2f46e600e6f36ac1dc272077bb5154c1ae2ceea3cbacf1ea3462faa652c"
+SOURCE = Path(__file__).resolve().parents[1] / "infra/m5/upstream-vanilla-tahoe.pkr.hcl"
+
+
+def replace_once(text, old, new):
+    if text.count(old) != 1:
+        raise ValueError("upstream Packer template changed")
+    return text.replace(old, new)
+
+
+def transform(raw):
+    if hashlib.sha256(raw).hexdigest() != UPSTREAM_SHA256:
+        raise ValueError("unreviewed upstream Packer template")
+    text = raw.decode("utf-8")
+    text = replace_once(text, 'version = ">= 1.16.0"', 'version = "= 1.21.0"')
+    text = replace_once(text,
+                        '    ansible = {\n      version = "~> 1"\n      source  = "github.com/hashicorp/ansible"\n    }\n',
+                        '')
+    text = replace_once(text,
+                        'source "tart-cli" "tart" {',
+                        'variable "m5_ipsw_path" { type = string }\n'
+                        'variable "m5_guest_name" { type = string }\n'
+                        'variable "m5_bootstrap_password" {\n  type = string\n  sensitive = true\n}\n\n'
+                        'variable "m5_guest_prepare_path" { type = string }\n'
+                        'variable "m5_toolchain_helper_path" { type = string }\n'
+                        'variable "m5_window_helper_path" { type = string }\n'
+                        'variable "m5_checker_helper_path" { type = string }\n\n'
+                        'variable "m5_guest_hardening_path" { type = string }\n\n'
+                        'variable "m5_supervisor_ssh_public_key_path" { type = string }\n\n'
+                        'variable "m5_historical_bundle_path" { type = string }\n\n'
+                        'variable "m5_bootstrap_cleanup_path" { type = string }\n\n'
+                        'variable "m5_intent_verifier_path" { type = string }\n\n'
+                        'source "tart-cli" "tart" {')
+    text = replace_once(text,
+                        'from_ipsw    = "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw"',
+                        'from_ipsw    = var.m5_ipsw_path')
+    text = replace_once(text, 'vm_name      = "tahoe-vanilla"', 'vm_name      = var.m5_guest_name')
+    text = replace_once(text, 'ssh_password = "admin"', 'ssh_password = var.m5_bootstrap_password')
+    # Tahoe's first-boot UI must enable Remote Login before the SSH
+    # communicator can connect. Allow up to ten minutes for that transition.
+    text = replace_once(text, 'ssh_timeout  = "180s"', 'ssh_timeout  = "600s"')
+    text = replace_once(text, 'ssh_username = "admin"',
+                        'ssh_username = "admin"\n  run_extra_args = ["--net-softnet"]')
+    text = replace_once(text,
+                        'Managed via Tart<tab>admin<tab>admin<tab>admin<tab>',
+                        'Managed via Tart<tab>admin<tab>${var.m5_bootstrap_password}<tab>${var.m5_bootstrap_password}<tab>')
+    # OCR observed the Language page, but blind selection left it there. Require
+    # the exact visible English choice before attempting the country page.
+    text = replace_once(text,
+                        '"<wait30s>italiano<esc>english<enter>",',
+                        '"<wait30s><click \'English\'><enter>",')
+    text = replace_once(text,
+                        '    # Disable Gatekeeper (1/2)\n',
+                        '    # M5 retains Gatekeeper.\n')
+    start = text.index('    "<wait10s>sudo spctl --global-disable<enter>",')
+    end = text.index('  ]\n\n  // A (hopefully) temporary workaround', start)
+    text = text[:start] + text[end:]
+    # The Packer build establishes a VM and SSH bootstrap only. No broad sudo,
+    # auto-login, or Gatekeeper changes are inherited from the CI image recipe.
+    start = text.index('build {')
+    text = text[:start] + '''build {
+  sources = ["source.tart-cli.tart"]
+
+  provisioner "file" {
+    source      = var.m5_guest_prepare_path
+    destination = "/tmp/norn-m5-guest-prepare"
+  }
+  provisioner "file" {
+    source      = var.m5_toolchain_helper_path
+    destination = "/tmp/norn-m5-command-line-tools-install"
+  }
+  provisioner "file" {
+    source      = var.m5_window_helper_path
+    destination = "/tmp/norn-m5-firewall-window"
+  }
+  provisioner "file" {
+    source      = var.m5_checker_helper_path
+    destination = "/tmp/norn-m5-isolation-check"
+  }
+  provisioner "file" {
+    source      = var.m5_guest_hardening_path
+    destination = "/tmp/norn-m5-guest-hardening"
+  }
+  provisioner "file" {
+    source      = var.m5_supervisor_ssh_public_key_path
+    destination = "/tmp/norn-m5-supervisor.pub"
+  }
+  provisioner "file" {
+    source      = var.m5_historical_bundle_path
+    destination = "/tmp/norn-m5-historical-bundle.tar"
+  }
+  provisioner "file" {
+    source      = var.m5_bootstrap_cleanup_path
+    destination = "/tmp/norn-m5-bootstrap-cleanup"
+  }
+  provisioner "file" {
+    source      = var.m5_intent_verifier_path
+    destination = "/tmp/norn-m5-intent-verify"
+  }
+  provisioner "shell" {
+    inline = [
+      "mkdir -m 700 /Users/admin/.norn-m5-bootstrap /Users/admin/.ssh",
+      "install -m 600 /tmp/norn-m5-supervisor.pub /Users/admin/.ssh/authorized_keys",
+      "rm -f /tmp/norn-m5-supervisor.pub",
+    ]
+  }
+  provisioner "file" {
+    content     = var.m5_bootstrap_password
+    destination = "/Users/admin/.norn-m5-bootstrap/password"
+  }
+  provisioner "shell" {
+    inline = [
+      "trap 'rm -f /Users/admin/.norn-m5-bootstrap/password; rmdir /Users/admin/.norn-m5-bootstrap 2>/dev/null || true; rm -f /tmp/norn-m5-guest-prepare /tmp/norn-m5-command-line-tools-install /tmp/norn-m5-firewall-window /tmp/norn-m5-isolation-check /tmp/norn-m5-guest-hardening /tmp/norn-m5-historical-bundle.tar /tmp/norn-m5-bootstrap-cleanup /tmp/norn-m5-intent-verify' EXIT",
+      "chmod 600 /Users/admin/.norn-m5-bootstrap/password",
+      "sudo -S /bin/bash /tmp/norn-m5-command-line-tools-install < /Users/admin/.norn-m5-bootstrap/password",
+      "sudo -S /usr/bin/python3 /tmp/norn-m5-guest-prepare --window-helper /tmp/norn-m5-firewall-window --isolation-checker /tmp/norn-m5-isolation-check --hardening-helper /tmp/norn-m5-guest-hardening --historical-bundle /tmp/norn-m5-historical-bundle.tar --bootstrap-cleanup /tmp/norn-m5-bootstrap-cleanup --intent-verifier /tmp/norn-m5-intent-verify < /Users/admin/.norn-m5-bootstrap/password",
+      "sudo -S /usr/bin/python3 /tmp/norn-m5-guest-hardening start < /Users/admin/.norn-m5-bootstrap/password",
+    ]
+  }
+}
+'''
+    text = replace_once(text,
+                        '    "<wait10s>admin<enter>",',
+                        '    "<wait10s>${var.m5_bootstrap_password}<enter>",')
+    return text.encode("utf-8")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    raw = SOURCE.read_bytes()
+    transformed = transform(raw)
+    path = Path(args.output)
+    if not path.is_absolute():
+        parser.error("output must be absolute")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(transformed)
+        output.flush()
+        os.fsync(output.fileno())
+    print(hashlib.sha256(transformed).hexdigest())
+
+
+if __name__ == "__main__":
+    main()

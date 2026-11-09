@@ -51,7 +51,7 @@ type ApplyRunObservation struct {
 // ReconcilePullRequest observes the deterministic branch and PR after an
 // uncertain write. It requires the same exact content as CreatePullRequest,
 // including the immutable review receipt when desired topology is unchanged.
-func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string, temporaryRunnerSSH *bool) (*Reconciliation, error) {
+func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string, temporaryRunnerSSH *bool, capacityPlan *fleet.CapacityPlan) (*Reconciliation, error) {
 	token, err := c.installationToken(ctx, map[string]string{"contents": "read", "pull_requests": "read"})
 	if err != nil {
 		return nil, err
@@ -98,15 +98,22 @@ func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, p
 	}
 	unchanged := reflect.DeepEqual(current, proposed)
 	var expected []byte
+	var receipt []byte
+	var receiptPath string
 	var repoPath = c.cfg.ConfigPath
 	var title = fmt.Sprintf("Fleet: %s %s", action, poolName)
 	var body = fmt.Sprintf("Norn capacity plan `%s`\n\nDigest: `%s`\n\nThis pull request changes desired infrastructure only. Provider and state credentials remain in the protected runner.", planID, planDigest)
+	if unchanged || protectedPlanReviewReceipt(capacityPlan) {
+		receiptPath, receipt, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed, temporaryRunnerSSH, capacityPlan)
+	}
 	if unchanged {
-		repoPath, expected, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed, temporaryRunnerSSH)
+		repoPath, expected = receiptPath, receipt
 		body = fmt.Sprintf("Norn capacity plan `%s`\n\nDigest: `%s`\n\nDesired topology is already exactly the proposed configuration. This pull request adds the immutable Norn review receipt only; it does not manufacture a topology change. Provider and state credentials remain in the protected runner.", planID, planDigest)
 	} else {
 		document.NodePools[poolName] = proposed
-		expected, err = yaml.Marshal(document)
+		if err == nil {
+			expected, err = yaml.Marshal(document)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -115,6 +122,12 @@ func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, p
 	refSHA, refErr := c.getRef(ctx, token, branch)
 	if contentErr != nil || refErr != nil || !bytes.Equal(actual, expected) || pr.HeadSHA == "" || refSHA != pr.HeadSHA || pr.HeadBranch != branch || pr.BaseBranch != c.cfg.DefaultBranch || pr.Title != title || pr.Body != body || pr.State == "closed" && !pr.Merged {
 		return &Reconciliation{Outcome: "ambiguous"}, nil
+	}
+	if !unchanged && receipt != nil {
+		actualReceipt, _, receiptErr := c.getContentAt(ctx, token, receiptPath, branch)
+		if receiptErr != nil || !bytes.Equal(actualReceipt, receipt) {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
 	}
 	return &Reconciliation{Outcome: "remote-success", PullRequest: pr}, nil
 }

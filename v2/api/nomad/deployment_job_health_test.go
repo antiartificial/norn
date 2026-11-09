@@ -35,12 +35,12 @@ func TestObserveDeploymentJobHealthRequiresExactHealthyRevision(t *testing.T) {
 	version, index := uint64(3), uint64(43)
 	current.Version, current.JobModifyIndex = &version, &index
 	healthy := true
-	stub := &nomadapi.AllocationListStub{ID: "alloc-1", JobID: request.App, JobVersion: version, TaskGroup: groupName,
+	stub := &nomadapi.AllocationListStub{ID: "alloc-1", NodeID: "node-1", JobID: request.App, JobVersion: version, TaskGroup: groupName,
 		ClientStatus: nomadapi.AllocClientStatusRunning, DesiredStatus: nomadapi.AllocDesiredStatusRun,
 		DeploymentStatus: &nomadapi.AllocDeploymentStatus{Healthy: &healthy}}
 	old := &nomadapi.AllocationListStub{ID: "old-alloc", JobID: request.App, JobVersion: version - 1, TaskGroup: "removed-group",
 		ClientStatus: nomadapi.AllocClientStatusComplete, DesiredStatus: nomadapi.AllocDesiredStatusStop}
-	allocation := &nomadapi.Allocation{ID: stub.ID, JobID: request.App, TaskGroup: groupName, Job: &current,
+	allocation := &nomadapi.Allocation{ID: stub.ID, NodeID: stub.NodeID, JobID: request.App, Namespace: "default", TaskGroup: groupName, Job: &current,
 		ClientStatus: stub.ClientStatus, DesiredStatus: stub.DesiredStatus, TaskStates: map[string]*nomadapi.TaskState{groupName: {State: "running"}}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -64,7 +64,8 @@ func TestObserveDeploymentJobHealthRequiresExactHealthyRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	observation, err := client.ObserveDeploymentJobHealth(context.Background(), request)
-	if err != nil || observation.State != DeploymentJobHealthReady || len(observation.AllocationIDs) != 1 || observation.AllocationIDs[0] != stub.ID {
+	if err != nil || observation.State != DeploymentJobHealthReady || len(observation.AllocationIDs) != 1 || observation.AllocationIDs[0] != stub.ID || len(observation.Allocations) != 1 ||
+		observation.Allocations[0].AllocationID != stub.ID || observation.Allocations[0].NodeID != stub.NodeID || !observation.Allocations[0].Healthy || observation.Allocations[0].ImageDigest != request.ImageTag[strings.LastIndex(request.ImageTag, "@")+1:] {
 		t.Fatalf("healthy revision observation=%+v err=%v", observation, err)
 	}
 	old.ClientStatus = nomadapi.AllocClientStatusRunning
@@ -77,10 +78,22 @@ func TestObserveDeploymentJobHealthRequiresExactHealthyRevision(t *testing.T) {
 	old.DesiredStatus = nomadapi.AllocDesiredStatusStop
 	healthy = false
 	observation, err = client.ObserveDeploymentJobHealth(context.Background(), request)
-	if err != nil || observation.State != DeploymentJobHealthPending {
+	if err != nil || observation.State != DeploymentJobHealthPending || len(observation.Allocations) != 1 || observation.Allocations[0].Healthy {
 		t.Fatalf("unhealthy allocation observation=%+v err=%v", observation, err)
 	}
 	healthy = true
+	stub.NodeID = "substituted-node"
+	observation, err = client.ObserveDeploymentJobHealth(context.Background(), request)
+	if !errors.Is(err, ErrDeploymentJobHealthIndeterminate) || observation.State != DeploymentJobHealthIndeterminate {
+		t.Fatalf("substituted allocation node observation=%+v err=%v", observation, err)
+	}
+	stub.NodeID = "node-1"
+	allocation.Namespace = "substituted-namespace"
+	observation, err = client.ObserveDeploymentJobHealth(context.Background(), request)
+	if !errors.Is(err, ErrDeploymentJobHealthIndeterminate) || observation.State != DeploymentJobHealthIndeterminate {
+		t.Fatalf("substituted allocation namespace observation=%+v err=%v", observation, err)
+	}
+	allocation.Namespace = "default"
 	stub.JobVersion++
 	observation, err = client.ObserveDeploymentJobHealth(context.Background(), request)
 	if err != nil || observation.State != DeploymentJobHealthPending {

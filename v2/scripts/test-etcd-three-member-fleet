@@ -107,9 +107,9 @@ wait_for_health
 
 root_password="$(openssl rand -hex 24)"
 runtime_password="$(openssl rand -hex 24)"
-printf '%s\n' "$root_password" | etcdctl user add root --interactive=false >/dev/null
+etcdctl user add "root:$root_password" >/dev/null
 etcdctl user grant-role root root >/dev/null
-printf '%s\n' "$runtime_password" | etcdctl user add norn-qual --interactive=false >/dev/null
+etcdctl user add "norn-qual:$runtime_password" >/dev/null
 etcdctl role add norn-qual >/dev/null
 etcdctl role grant-permission --prefix=true norn-qual readwrite '/norn-test/tls-fleet-runtime/' >/dev/null
 etcdctl user grant-role norn-qual norn-qual >/dev/null

@@ -74,6 +74,7 @@ func Validate(config *Document) *ValidationReport {
 	}
 
 	names := make([]string, 0, len(config.NodePools))
+	applicationRoles := map[string][]string{}
 	for name := range config.NodePools {
 		names = append(names, name)
 	}
@@ -118,6 +119,9 @@ func Validate(config *Document) *ValidationReport {
 		}
 
 		role := strings.ToLower(pool.Labels["workload"])
+		if role == "app" || role == "worker" || role == "general" || role == "stateful" {
+			applicationRoles[role] = append(applicationRoles[role], name)
+		}
 		switch role {
 		case "control", "control-plane":
 			if pool.Desired < 3 || pool.Desired%2 == 0 {
@@ -131,6 +135,17 @@ func Validate(config *Document) *ValidationReport {
 			if pool.Min < 2 {
 				report.add("warning", "fleet.app.headroom.low", field+".min", "application pool cannot tolerate one node loss at minimum capacity", "Use at least two nodes for HA workloads.")
 			}
+		case "general", "stateful":
+			if pool.Min < 2 {
+				report.add("error", "fleet.app.redundancy.insufficient", field+".min", "general and stateful application pools require at least two nodes", "Set min to at least 2 so one application node can fail.")
+			}
+		}
+	}
+	if len(applicationRoles["general"]) > 0 || len(applicationRoles["stateful"]) > 0 {
+		validPair := len(applicationRoles["general"]) == 1 && len(applicationRoles["stateful"]) == 1 &&
+			len(applicationRoles["app"]) == 0 && len(applicationRoles["worker"]) == 0
+		if !validPair {
+			report.add("error", "fleet.node-pool.role.topology.unsupported", "nodePools", "General and Stateful application pools must be declared together exactly once", "Declare one pool labeled general and one labeled stateful; do not mix them with app or worker pools.")
 		}
 	}
 	validateManagedDatabases(config.ManagedDatabases, report)

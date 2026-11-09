@@ -94,6 +94,12 @@ response instead of duplicating the mutation.
 
 ## Upgrade The Platform Around Apps
 
+Platform releases have separate Mini direct, DO Fleet release, Fleet bootstrap,
+and workload-resizing lanes. The DO Norn control release currently uses an
+all-stop maintenance window; online mixed-version control upgrades are not
+qualified. See the [V3 release lane guide](/v3/release-lanes-and-workload-resizing)
+for current evidence, recovery boundaries, and the workload overlap protocol.
+
 Norn upgrades itself separately from the apps it runs. The platform lane builds a candidate release, checks it on an alternate port, promotes the release, and restarts only the Norn API process. Nomad, Consul, Postgres, Garage, Redpanda, and hosted app allocations keep running.
 
 ```bash
