@@ -142,6 +142,22 @@ deployment, provider mutation, or credential use.
   3+2+4 provider/runtime topology. Keep the independent Mini and DO Fleet
   evidence separate.
 
+## Mini route-assurance fix qualification — 2026-11-09 02:08 UTC
+
+- Norn PR #301 remains open at `fef0d6b5e2fa364c9327f733f513e5b0ec01912a`.
+  Its applicable PR checks pass; targeted shell tests were also run from a
+  clean worktree at that exact SHA: `test-host-assurance-route-fence.py` passed
+  2 tests and `test-recovered-baseline-adopt.py` passed 10.
+- The change admits only an allowlisted route-forge child through the managed
+  SOPS environment while preserving the runtime-mutation fence for other
+  children. This verifies the offline boundary, not live route recovery.
+- A successful `norn host assure` can publish or prune routes. After this fix
+  is merged and installed by the normal exact-SHA release lane, run assurance
+  deliberately and verify its fresh receipt, event, and route inventory. Keep
+  the Mini's current `require-signed` release policy intact.
+- Cross-repository worktrees can have the same PR number. Qualify every PR
+  status lookup with its repository before recording or reporting state.
+
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
 recovery work, workload protocol refinement, and V2 caller migration planning.
