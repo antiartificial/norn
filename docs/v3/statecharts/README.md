@@ -15,6 +15,8 @@ provider state, host behavior, availability, or the implementation itself.
 | Nine-node staging-topology create and recovery | 102 states, 210 steps; 10 invariants and deadlock check pass | 3+2+4 partial-create, fresh exact readback, same-intent forward recovery, then inventory/PKI/configuration; pool counts match protected `norn-fleet` main | Not wired to the protected provider workflow; node identities abstracted, inputs/credentials aggregate, no provider, GitHub Actions, SSH, Ansible, or teardown behavior |
 | Workload old-generation stop recovery | 10 states, 15 steps; 7 invariants and deadlock check pass | Bounded target-health and mixed-route gate, stop accepted/lost response, marker recovery, old allocation drain | Does not model effect-store crashes, signed admission, API dispatch, durable receipt loading, route publication, or live Nomad |
 | Workload route publication and recovery | 55 states, 111 steps; 8 invariants and deadlock check pass | Per-node mixed-route publication; atomic active-route/receipt CAS; same-generation recovery and fresh pre-stop route/inventory proof | Does not prove live workload authority, inventory source, route CAS store, ingress transport, or controller implementation |
+| Concurrent workload admission replay | 14 states, 18 transitions; 3 invariants pass | Two independent etcd clients contend for a stable request; the fence loser rechecks durable identity and returns the winner | Store-level only; does not exercise HTTP handling or process restart |
+| Simultaneous workload release HTTP admission | 19 states, 28 steps; 6 invariants and deadlock check pass | Two handlers miss initial replay lookup, read current evidence, then converge at atomic acceptance | HTTP test uses a deterministic store fake; the independent etcd test covers the real store boundary, but no combined HTTP-to-etcd test yet |
 
 ## Model files
 
@@ -28,6 +30,7 @@ provider state, host behavior, availability, or the implementation itself.
 - [Workload old-generation stop recovery](workload-stop-recovery/README.md)
 - [Workload route publication and recovery](workload-route-publication/README.md)
 - [Concurrent workload admission replay](workload-release-concurrent-admission/README.md)
+- [Simultaneous workload release HTTP admission](workload-release-http-concurrency/README.md)
 
 ## Findings to carry into implementation
 

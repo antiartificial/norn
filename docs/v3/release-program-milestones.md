@@ -27,8 +27,8 @@ not happen.
 | Release evidence | Fresh Mini API/host reads are `ok` on signed repair release `d4dc88e`; its latest assurance receipt is dated Sep 6, and 25 incidents remain. DO provider read confirms nine staging nodes and the ingress LB active; runtime health is unverified. | Use [launch state](LAUNCH-STATE.md) for current receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. |
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
 | Fresh-Fleet bootstrap | PRs #941 (offline war-game), #940 (controller release intent), #945 (provider-scope contract), #947 (bootstrap credential lifecycle), and #942 (module-owned test collection) are merged. General + Stateful remain the selected future app-pool roles. Fleet PR #837 (protected tailnet ingress enrollment prerequisite) merged at `6335c667` after its exact-head contract and both security checks passed (run 42578247221). This is source readiness only: no host enrollment, provider apply, or Genesis readback occurred. | Complete integrated persistent apply/recovery, exact state/provider identity readback, per-service credential lifecycle, and terminal receipt before any protected apply. The #837 enrollment lane still requires fresh owner-reviewed key/tag/host/digest inputs and a separately approved one-use dispatch; merge did not create those inputs or enroll ingress. |
-| Offline models | Ten reader-facing lane models are indexed, with focused admission and source-gate models linked from their parent lanes. The concurrent same-key counterexample is replayed against two independent etcd clients and the fixed model passes its invariants. | Replay remaining counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
-| Workload release | PR #302's stateless mixed-version protocol is extended by merged PRs #311, #315, #316, and #317 for stable replay, replay preflight, placement-bound overlap policy, and signed policy binding. PR #319 (`877ad4ba`) adds the opt-in staging-only authenticated producer; PR #324 (`3fcdc154`) fixes concurrent same-key store replay and adds its two-client etcd test and statechart. Exact-head checks passed. No live workload release is qualified. | Prove exact source and encrypted-input recovery, deterministic worker crash/restart behavior, simultaneous HTTP-handler requests, and target-only public-route evidence. Live staging canary remains gated on DO M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
+| Offline models | Eleven reader-facing lane models are indexed, with focused admission and source-gate models linked from their parent lanes. The same-key race now has separate store and HTTP interleaving models; both fixed models pass their invariants. | Replay remaining counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
+| Workload release | PR #302's stateless mixed-version protocol is extended by merged PRs #311, #315, #316, and #317 for stable replay, replay preflight, placement-bound overlap policy, and signed policy binding. PR #319 (`877ad4ba`) adds the opt-in staging-only authenticated producer; PR #324 (`3fcdc154`) fixes concurrent same-key store replay with its two-client etcd test and statechart. The new HTTP interleaving model and handler test force concurrent initial replay misses and prove one fresh response plus one same-ID replay through a fake atomic store. No live workload release is qualified. | Add an implementation-backed HTTP-to-etcd concurrency test; prove exact source and encrypted-input recovery, deterministic worker crash/restart behavior, and target-only public-route evidence. Live staging canary remains gated on DO M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
 
 Mini is an independent node, not a Fleet member. The DO staging environment is
 the only Fleet in this release work. Provider inventory, controller health,
@@ -111,9 +111,11 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
 - [x] Reproduce and fix the concurrent same-key app-fence race using two
   independent etcd clients. PR #324's integration test requires one fresh
   acceptance and one replay; its TLA+ model preserves the five-step pre-fix
-  counterexample and checks 14 fixed states / 18 transitions. This proves the
-  store boundary only; simultaneous HTTP handlers and restart/response-loss
-  qualification remain open.
+  counterexample and checks 14 fixed states / 18 transitions. A separate HTTP
+  interleaving model and deterministic handler test force two initial replay
+  misses and return one fresh result plus one same-ID replay through a fake
+  atomic store. End-to-end HTTP-to-etcd and restart/response-loss qualification
+  remain open.
 - [x] Model future fresh-Fleet bootstrap with two independent app pools,
   lost-create-response readback, same-intent recovery, full-inventory gating,
   and terminal receipt. Pool identities are abstract and no counts or capacity bounds are
@@ -127,7 +129,7 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
 **Exit:** each lane has a synthetic success case, a failure matrix, invariant
 results, and secret-safe output checks. No provider or SSH call occurs.
 
-Ten reader-facing lane statecharts and their specs, configs, views, reports,
+Eleven reader-facing lane statecharts and their specs, configs, views, reports,
 and TLC output are indexed in [the statechart bundle](statecharts/README.md);
 focused admission and source-gate models are linked from their parent lanes. The
 workload chart models the offline protocol; its active-route generation and

@@ -1,0 +1,30 @@
+---
+title: "Two simultaneous release requests with one stable key"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: admitting
+    lg1: accepted
+  }
+  class lg0 blue
+  class lg1 teal
+  s0: Both handlers begin replay lookup
+  s1: Replay missed#59; handlers read current evidence
+  s2: Both requests reach atomic acceptance
+  s3: One caller accepted#59; other still resolving
+  s4: One acceptance#59; second caller gets replay
+  s5: One acceptance#59; first caller gets replay
+  [*] --> s0
+  s0 --> s1: initial replay lookup finds no accepted request
+  s1 --> s2: handler reads qualification, policy, route, and source
+  s2 --> s1: initial replay lookup finds no accepted request
+  s2 --> s3: first atomic acceptance stores the operation
+  s1 --> s3: first atomic acceptance stores the operation
+  s3 --> s4: later replay lookup returns the stored operation or store returns the winner's stored acceptance
+  s3 --> s5: later replay lookup returns the stored operation or store returns the winner's stored acceptance
+  class s0 blue
+  class s1 blue
+  class s2 blue
+  class s3 teal
+  class s4 teal
+  class s5 teal
