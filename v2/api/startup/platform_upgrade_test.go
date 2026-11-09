@@ -135,6 +135,100 @@ func TestPlatformUpgradeQuiescenceRejectsAlreadyOrphanedManagedAgent(t *testing.
 	}
 }
 
+func TestPlatformUpgradeRecoveredForwardAcceptsBoundGenerationEvidencePath(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	start := strings.Index(text, "recovered_forward_evidence_path_valid() {")
+	if start < 0 {
+		t.Fatal("recovered-forward evidence-path validator is missing")
+	}
+	end := strings.Index(text[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("recovered-forward evidence-path validator is unterminated")
+	}
+	helper := text[start : start+end+2]
+	root := t.TempDir()
+	transitionID := "mini-v3-test-transition"
+	sourceSHA, candidateSHA := strings.Repeat("d", 40), strings.Repeat("e", 40)
+	generationDigest := sha256.Sum256([]byte(transitionID + "\x00" + sourceSHA + "\x00" + candidateSHA))
+	generationDir := filepath.Join(root, ".generation-inputs-"+fmt.Sprintf("%x", generationDigest)[:32])
+	if err := os.Mkdir(generationDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	evidencePath := filepath.Join(generationDir, "transition.json.source-evidence.json")
+	if err := os.WriteFile(evidencePath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := func(path string) error {
+		cmd := exec.Command("bash", "-c", helper+"\nrecovered_forward_evidence_path_valid \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"", "test", path, candidateSHA, root, transitionID, sourceSHA)
+		return cmd.Run()
+	}
+	if err := check(evidencePath); err != nil {
+		t.Fatalf("exact generation-input evidence path was rejected: %v", err)
+	}
+	wrongTransition := exec.Command("bash", "-c", helper+"\nrecovered_forward_evidence_path_valid \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"", "test", evidencePath, candidateSHA, root, transitionID+"-other", sourceSHA)
+	if err := wrongTransition.Run(); err == nil {
+		t.Fatal("generation-input path for a different transition was accepted")
+	}
+	if err := check(filepath.Join(generationDir, "other.json")); err == nil {
+		t.Fatal("unrecognized file in generation-input directory was accepted as evidence")
+	}
+	badDir := filepath.Join(root, ".generation-inputs-not-a-digest")
+	if err := os.Mkdir(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := check(filepath.Join(badDir, "transition.json.source-evidence.json")); err == nil {
+		t.Fatal("generation-input directory without the exact digest form was accepted")
+	}
+	if err := os.Chmod(generationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := check(evidencePath); err == nil {
+		t.Fatal("non-private generation-input directory was accepted")
+	}
+}
+
+func TestPlatformUpgradeRecoveredForwardPreservesFleetReceiptsWhileLegacyBaselineRejectsThem(t *testing.T) {
+	script, err := os.ReadFile(platformUpgradePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	start := strings.Index(text, "mini_require_operations_drained() {")
+	if start < 0 {
+		t.Fatal("operation-drain helpers are missing")
+	}
+	end := strings.Index(text[start:], "\nlegacy_baseline_require_durable_startup_mode()")
+	if end < 0 {
+		t.Fatal("operation-drain helper boundary is missing")
+	}
+	helper := text[start : start+end]
+	check := func(lane string) ([]byte, error) {
+		body := helper + `
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+log() { printf '%s\n' "$*"; }
+mini_active_operation_counts() { printf '%s\n' "${FAKE_OPERATION_COUNTS:-0 7}"; }
+drain_mode=fail
+NORN_TOKEN=test
+FAKE_OPERATION_COUNTS='0 7'
+` + lane + `_require_drained
+`
+		cmd := exec.Command("bash", "-c", body)
+		return cmd.CombinedOutput()
+	}
+	out, err := check("recovered_forward")
+	if err != nil || !strings.Contains(string(out), "preserving 7 queued Fleet GitHub dispatch receipt(s)") {
+		t.Fatalf("recovered-forward did not preserve queued Fleet dispatch receipts: err=%v\n%s", err, out)
+	}
+	out, err = check("legacy_baseline")
+	if err == nil || !strings.Contains(string(out), "only recovered-forward can preserve them") {
+		t.Fatalf("legacy-baseline accepted queued Fleet dispatch receipts: err=%v\n%s", err, out)
+	}
+}
+
 func TestPlatformUpgradeRecoveredForwardResumeQuiescesLaunchdBeforeContinuing(t *testing.T) {
 	script, err := os.ReadFile(platformUpgradePath(t))
 	if err != nil {
@@ -697,8 +791,7 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
 	cmd.Env = append(cmd.Env,
 		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
-		"FAKE_MIGRATION_PRESERVE_PATH="+filepath.Join(fixture.root, "migration-preserve-fleet-dispatch"),
-		"FAKE_ACTIVE_OPERATIONS_JSON="+queuedFleetDispatchReceiptsJSON(t, 7),
+		"FAKE_ACTIVE_OPERATIONS_JSON="+queuedFleetDispatchReceiptsJSON(t, 0),
 		"FAKE_REQUIRE_AUTH_AFTER_PROMOTION=1",
 		"FAKE_FENCED="+fenced,
 		"FAKE_AGENT_FENCED="+agentFenced,
@@ -728,10 +821,6 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	if _, err := os.Stat(fixture.migrationMarker); err != nil {
 		t.Fatalf("legacy baseline did not execute migration after fencing: %v\n%s", err, out)
 	}
-	preservation, err := os.ReadFile(filepath.Join(fixture.root, "migration-preserve-fleet-dispatch"))
-	if err != nil || strings.TrimSpace(string(preservation)) != "true" {
-		t.Fatalf("legacy baseline did not enable queued Fleet dispatch preservation: %v %q\n%s", err, preservation, out)
-	}
 	if err := exec.Command("kill", "-0", fmt.Sprintf("%d", legacyProcess.Process.Pid)).Run(); err == nil {
 		t.Fatalf("legacy service survived direct frozen-PID termination:\n%s", out)
 	}
@@ -743,8 +832,8 @@ if kill -0 "$FAKE_LEGACY_PID" >/dev/null 2>&1; then printf '%s\n' "$FAKE_LEGACY_
 	if err != nil || !strings.Contains(string(state), `"state":"candidate-promoted"`) {
 		t.Fatalf("legacy fence state was not retained as promoted: %v %s", err, state)
 	}
-	if !strings.Contains(string(out), "preserving 7 queued Fleet GitHub dispatch receipt(s)") {
-		t.Fatalf("Mini transition did not report the preserved Fleet receipts:\n%s", out)
+	if !strings.Contains(string(out), "no queued Fleet GitHub dispatch receipts require preservation") {
+		t.Fatalf("Mini transition did not verify the Fleet receipt drain:\n%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(fixture.root, "host-unloaded")); !os.IsNotExist(err) {
 		t.Fatalf("host-agent launchd job was not bootstrapped after candidate install: %v", err)
@@ -1114,6 +1203,7 @@ func TestPlatformUpgradeLegacyBaselineRejectsActiveOperationsBeforeFence(t *test
 		name, response, fakeCount, want string
 	}{
 		{name: "queued Mini operation", fakeCount: "1", want: "requires zero Mini-affecting active operations before fencing"},
+		{name: "queued Fleet dispatch", response: `{"count":1,"operations":[{"id":"fleet-dispatch-queued","kind":"fleet.github.apply-dispatch","status":"queued"}]}`, want: "requires zero queued Fleet GitHub dispatch receipts before fencing"},
 		{name: "running Fleet dispatch", response: `{"count":1,"operations":[{"id":"fleet-dispatch-running","kind":"fleet.github.apply-dispatch","status":"running"}]}`, want: "requires zero Mini-affecting active operations before fencing"},
 		{name: "malformed JSON", response: `{`, want: "cannot verify the legacy operation drain"},
 		{name: "inconsistent count", response: `{"count":2,"operations":[]}`, want: "cannot verify the legacy operation drain"},
@@ -1733,7 +1823,7 @@ exit 2
 func fakeSchemaContractBinary(version, contract string, migrates bool) string {
 	migrate := "exit 0"
 	if migrates {
-		migrate = `: > "$FAKE_MIGRATION_MARKER"; printf '%s\n' "${NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH:-}" > "${FAKE_MIGRATION_PRESERVE_PATH:-/dev/null}"; exit 0`
+		migrate = `: > "$FAKE_MIGRATION_MARKER"; exit 0`
 	}
 	return `#!/usr/bin/env bash
 set -euo pipefail

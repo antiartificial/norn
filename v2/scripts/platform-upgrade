@@ -80,16 +80,20 @@ fail() {
 }
 
 recovered_forward_evidence_path_valid() {
-  local evidence_path="$1" candidate_sha="$2" root="$3"
-  python3 - "$evidence_path" "$candidate_sha" "$root" <<'PY'
-import os,stat,sys
+  local evidence_path="$1" candidate_sha="$2" root="$3" transition_id="$4" source_sha="$5"
+  python3 - "$evidence_path" "$candidate_sha" "$root" "$transition_id" "$source_sha" <<'PY'
+import hashlib,os,re,stat,sys
 from pathlib import Path
 path=Path(sys.argv[1]); candidate=sys.argv[2]; root=Path(sys.argv[3])
+transition_id=sys.argv[4]; source=sys.argv[5]
 fixed=root/"transition.json.source-evidence.json"
 versioned=root/("retarget-"+candidate)/"source-evidence.json"
-if path not in (fixed,versioned): raise SystemExit("source-evidence path is outside exact candidate-versioned transition location")
+generation_name=".generation-inputs-"+hashlib.sha256(f"{transition_id}\0{source}\0{candidate}".encode()).hexdigest()[:32]
+generation_input=(path.parent.parent==root and path.name=="transition.json.source-evidence.json"
+                  and path.parent.name==generation_name)
+if path not in (fixed,versioned) and not generation_input: raise SystemExit("source-evidence path is outside exact candidate-versioned transition location")
 if root.is_symlink() or path.is_symlink() or (path.parent!=root and path.parent.is_symlink()): raise SystemExit("source-evidence path traverses a symlink")
-if path==versioned:
+if path==versioned or generation_input:
  info=path.parent.lstat()
  if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or stat.S_IMODE(info.st_mode)!=0o700: raise SystemExit("versioned evidence directory must be owner-only mode 0700")
 PY
@@ -354,7 +358,7 @@ if [[ "$mode" == "recovered-forward" ]]; then
   done
   [[ "$recovered_source_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-forward requires an exact source SHA"
   [[ "$recovered_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "recovered-forward requires a valid transition ID"
-  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$ref" "$recovered_transition_root" || fail "recovered-forward source evidence path is not fixed or exact-candidate-versioned"
+  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$ref" "$recovered_transition_root" "$recovered_transition_id" "$recovered_source_sha" || fail "recovered-forward source evidence path is not fixed or exact-candidate-versioned"
   [[ "$recovered_source_evidence_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "recovered-forward requires the exact source-evidence SHA-256"
   [[ -n "$recovered_backup_proof" && -n "$recovered_backup_artifact" && -n "$recovered_shadow_receipt" ]] || fail "recovered-forward requires backup proof, backup artifact, and signed shadow receipt"
 fi
@@ -1824,18 +1828,36 @@ PY
   fi
 }
 
-legacy_baseline_require_drained() {
-  [[ "$drain_mode" == "fail" ]] || fail "legacy-baseline requires NORN_DRAIN_MODE=fail"
-  [[ -n "${NORN_TOKEN:-${NORN_API_TOKEN:-}}" ]] || fail "legacy-baseline requires an authenticated operation-drain token"
+mini_require_operations_drained() {
+  local lane="$1"
+  [[ "$drain_mode" == "fail" ]] || fail "$lane requires NORN_DRAIN_MODE=fail"
+  [[ -n "${NORN_TOKEN:-${NORN_API_TOKEN:-}}" ]] || fail "$lane requires an authenticated operation-drain token"
   local evidence count preserved_fleet_receipts
   if ! evidence="$(mini_active_operation_counts)"; then
-    fail "legacy-baseline cannot verify the legacy operation drain"
+    if [[ "$lane" == "legacy-baseline" ]]; then
+      fail "legacy-baseline cannot verify the legacy operation drain"
+    else
+      fail "recovered-forward cannot verify the operation drain"
+    fi
   fi
   read -r count preserved_fleet_receipts <<<"$evidence"
-  [[ "$count" =~ ^[0-9]+$ ]] || fail "legacy-baseline received an invalid legacy operation count"
-  [[ "$preserved_fleet_receipts" =~ ^[0-9]+$ ]] || fail "legacy-baseline received an invalid Fleet receipt count"
-  [[ "$count" == "0" ]] || fail "legacy-baseline requires zero Mini-affecting active operations before fencing"
-  log "Mini operation drain clear; preserving $preserved_fleet_receipts queued Fleet GitHub dispatch receipt(s)"
+  [[ "$count" =~ ^[0-9]+$ ]] || fail "$lane received an invalid Mini-affecting operation count"
+  [[ "$preserved_fleet_receipts" =~ ^[0-9]+$ ]] || fail "$lane received an invalid Fleet receipt count"
+  [[ "$count" == "0" ]] || fail "$lane requires zero Mini-affecting active operations before fencing"
+  if [[ "$lane" == "legacy-baseline" ]]; then
+    [[ "$preserved_fleet_receipts" == "0" ]] || fail "legacy-baseline requires zero queued Fleet GitHub dispatch receipts before fencing; only recovered-forward can preserve them"
+    log "Mini operation drain clear; no queued Fleet GitHub dispatch receipts require preservation"
+  else
+    log "Mini operation drain clear; preserving $preserved_fleet_receipts queued Fleet GitHub dispatch receipt(s)"
+  fi
+}
+
+legacy_baseline_require_drained() {
+  mini_require_operations_drained "legacy-baseline"
+}
+
+recovered_forward_require_drained() {
+  mini_require_operations_drained "recovered-forward"
 }
 
 legacy_baseline_require_durable_startup_mode() {
@@ -1899,7 +1921,7 @@ PY
 recovered_forward_validate_preflight() {
   [[ "$ref" =~ ^[0-9a-f]{40}$ && "$recovered_source_sha" =~ ^[0-9a-f]{40}$ ]] || fail "recovered-forward requires exact source and candidate SHAs"
   [[ "$recovered_transition_id" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]] || fail "recovered-forward transition ID is invalid"
-  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$ref" "$recovered_transition_root" || fail "recovered-forward source evidence path is not fixed or exact-candidate-versioned"
+  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$ref" "$recovered_transition_root" "$recovered_transition_id" "$recovered_source_sha" || fail "recovered-forward source evidence path is not fixed or exact-candidate-versioned"
   [[ -f "$recovered_source_evidence" && -f "$recovered_backup_proof" && -f "$recovered_backup_artifact" && -f "$recovered_shadow_receipt" ]] || fail "recovered-forward requires signed evidence, protected backup, and signed shadow receipt"
   [[ -L "$current_link" ]] || fail "recovered-forward requires an exact current signed release"
   local source_release current_target current_sha verifier
@@ -2902,7 +2924,6 @@ run_schema_migration() {
       NORN_STARTUP_MODE=active \
       NORN_SCHEMA_MODE=migrate-only \
       NORN_REQUIRE_QUIESCENT_CONTROL_DB=true \
-      NORN_PRESERVE_QUEUED_FLEET_APPLY_DISPATCH=true \
       "$release/bin/norn-api"
   else
     env \
@@ -3198,7 +3219,7 @@ PY
   "$release_verify_hook" "$source_release" "$source_release/release.json" || fail "recovered-forward source release verification failed"
   "$release_verify_hook" "$release" "$release/release.json" || fail "recovered-forward candidate release verification failed"
   recovered_baseline_receipt_validate || fail "original failed-transition sentinel or adoption receipt changed"
-  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$sha" "$recovered_transition_root" || fail "journal source-evidence path is not fixed or exact-candidate-versioned"
+  recovered_forward_evidence_path_valid "$recovered_source_evidence" "$sha" "$recovered_transition_root" "$recovered_transition_id" "$recovered_source_sha" || fail "journal source-evidence path is not fixed or exact-candidate-versioned"
   [[ "$recovered_preservation_receipt" == "$recovered_transition_root/preservation-receipt.json" ]] || fail "preservation receipt path is not selected-transition-bound"
   local verifier="$script_dir/mini-recovered-forward-verify-evidence"
   [[ -x "$verifier" ]] || fail "recovered-forward evidence verifier is unavailable"
@@ -3361,7 +3382,7 @@ recovered_forward_resume_or_start() {
     log "resuming exact recovered-forward transition $recovered_transition_id from durable phase $phase"
   else
     [[ "$internal_recovered_forward_repair" != true ]] || fail "signed controller repair requires the existing exact journal"
-    legacy_baseline_require_drained
+    recovered_forward_require_drained
     legacy_baseline_require_durable_startup_mode
     legacy_baseline_write_fence_state "prepared"
     phase="prepared"
@@ -3377,7 +3398,7 @@ recovered_forward_resume_or_start() {
       phase="host-agent-fenced" ;;
     host-agent-fenced)
       recovered_forward_ensure_host_agent_fenced
-      legacy_baseline_require_drained
+      recovered_forward_require_drained
       recovered_forward_ensure_api_fenced
       phase="legacy-fenced" ;;
     api-fencing|legacy-fenced)
@@ -4002,7 +4023,7 @@ recovered_forward_completed_candidate_validate() {
   fi
   [[ "$legacy_record_state" == "candidate-postflight-failed" ]] || fail "completed recovery gate requires the retained failed-incident sentinel"
   recovered_baseline_receipt_validate || fail "completed recovery requires the exact signed adoption receipt"
-  recovered_forward_evidence_path_valid "$evidence" "$candidate" "$recovered_transition_root" || fail "recovered-forward source evidence path is not candidate-bound"
+  recovered_forward_evidence_path_valid "$evidence" "$candidate" "$recovered_transition_root" "$transition" "$source" || fail "recovered-forward source evidence path is not candidate-bound"
   recovered_transition_id="$transition"
   recovered_source_sha="$source"
   recovered_source_evidence="$evidence"

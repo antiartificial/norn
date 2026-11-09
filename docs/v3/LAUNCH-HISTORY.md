@@ -1,5 +1,40 @@
 # Norn v3 launch history
 
+## Mini recovered-forward gate refresh (2026-11-09 22:20 UTC)
+
+Fresh authenticated Mini inventory at 22:08 UTC reported API and host `ok`,
+source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`, schema 51, and reader/writer
+floors 5/33. The exact-source protected backup and signed `e9a21d20` shadow
+receipt were checked: the artifact digest/size match the proof, and the shadow
+receipt records the same backup and candidate plus passing private-restore and
+runtime claims. Passive preflight stopped before DDL because migration 52 is
+required, as expected.
+
+The standard `upgrade` invocation was refused before migration or promotion:
+the signed active recovery generation completed for candidate `bba290db`,
+while Mini currently serves its signed descendant `d4dc88e0`. The generation
+resolver and completed receipt verify; the current symlink still names d4dc.
+The successor preparation code verifies signed ancestry to bind that current
+source, so the old journal must remain unchanged.
+
+Source review found two release blockers in the recovered-forward path. The
+candidate wrapper stages successor evidence in a private `.generation-inputs`
+directory that the candidate controller's evidence-path allowlist rejected.
+The lane drain helper was also shared with `legacy-baseline`, so its queued
+Fleet-receipt refusal would block the recovered-forward lane that must preserve
+those receipts. This worktree now validates the exact hash-derived,
+mode-0700 generation-input path and separates recovered-forward preservation
+from legacy-baseline refusal. Focused Go tests, all 21 platform-upgrade
+integration tests (Node 24.19.0 via NVM), and the full `startup` package passed
+(62.5 seconds). An attempted direct internal controller invocation without
+wrapper-generated evidence was rejected at argument validation; no generation
+pointer, host fence, migration, or release changed. The runbook now specifies
+the signed candidate wrapper as the entrypoint. These local fixes are not
+merged or signed; publish a new exact-source candidate and repeat the fresh
+backup/shadow gates before running the wrapper. The Mini database and release
+remain unchanged, and the seven stale DO receipts remain queued after their
+lookup-only reconciliations returned 409.
+
 ## Mini release candidate and queued Fleet receipt review (2026-11-09 21:31 UTC)
 
 The protected `platform-release` approval published immutable signed
@@ -17,17 +52,24 @@ no longer matches current configuration. None was reconciled or modified, and
 no dispatch/apply was triggered. Preserve these receipts through Mini schema
 migration; do not rebind them to the present lane.
 
-Source review found the `legacy-baseline` migration path logged that queued
-Fleet receipts were preserved but omitted the migrator option that permits
-only queued `fleet.github.apply-dispatch` rows during strict database
-quiescence. The resulting migration would stop after the old API and host agent
-were fenced. The local controller now passes the preserve option, and its
-focused end-to-end transition regression confirms the migration process
-receives it; the full `startup` package and shell syntax check pass. This fix
-still requires merge, protected qualification, and a new signed release. The
-Mini has not migrated or promoted the candidate. A fresh protected backup,
-private restore proof, new-source artifact verification, and repeat preflight
-remain required before a scheduled transition.
+The live Mini `/api/schema` read reported active `norn.startup/v2`, schema 51,
+and reader/writer floors 5/33. The signed `e9a21d20` candidate requires schema
+52 with unchanged floors 5/33. The ordinary direct `upgrade` path is therefore
+contract-compatible after exact-candidate backup and private-shadow proof; its
+preflight migration-required result is an expected stop before DDL.
+
+An initial source fix attempted to broaden queued-dispatch preservation to
+`legacy-baseline`. Exact-SHA qualification run
+[42706816151](https://github.com/antiartificial/norn/actions/runs/42706816151)
+failed the `test_recovered_forward_alone_preserves_queued_fleet_apply_dispatches`
+contract, which deliberately binds that exception to signed recovered-forward
+evidence. Corrected behavior refuses legacy-baseline before fencing when any
+queued Fleet dispatch exists. The ordinary Mini upgrade does not use that
+quiescent migrator. The corrected guard passes the focused Go tests and the 20
+controller integration tests with Node 24.19.0 selected from the existing
+NVM install; it still needs merge and exact-SHA protected qualification. The
+Mini has not migrated or promoted the candidate. A fresh protected backup and
+private restore proof remain required before ordinary upgrade.
 
 ## DO token-scope admission (2026-11-09 20:27 UTC)
 
