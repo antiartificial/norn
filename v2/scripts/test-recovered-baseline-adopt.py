@@ -304,6 +304,38 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         # that earlier pre-dispatch gate rather than reaching resolver lookup.
         self.assertIn("Mini API read failed at /api/version", allowed_wrapper.stderr)
         self.assertEqual(self.env["NORN_PLATFORM_SCRIPT_BIN"], str(self.managed_script))
+
+        # A single canonical host-runtime child is also allowed, solely for
+        # the allowlisted public-route assurance operation.
+        api_env.write_text("encrypted")
+        host_runtime = self.home / ".config" / "norn" / "host" / "bin" / "host-runtime"
+        call_log = self.root / "assurance-child-call"
+        write(self.shims / "sops", "#!/bin/sh\nprintf '{\"NORN_API_TOKEN\":\"fixture-api-token\",\"NORN_AUDIT_SIGNING_KEY\":\"fixture-audit-signing-key-32-characters\"}\\n'\n", 0o755)
+        write(host_runtime, f"#!/bin/sh\nprintf '%s|%s|%s\\n' \"$*\" \"${{NORN_API_TOKEN:+api-present}}\" \"${{NORN_TOKEN:+token-present}}\" > '{call_log}'\n", 0o755)
+        self.env["NORN_HOST_RUNTIME_BIN"] = str(host_runtime)
+        self.env["NORN_PLATFORM_REPO"] = str(self.repo)
+        self.env["NORN_HOST_REPO"] = str(self.repo)
+        self.env["NORN_HOST_CONFIG_DIR"] = str(self.home / ".config" / "norn" / "host")
+        allowed_assurance = self.run_script("env-exec", "--", str(host_runtime),
+                                            "_assurance-forge", "example-app")
+        self.assertEqual(allowed_assurance.returncode, 0, allowed_assurance.stderr)
+        self.assertEqual(call_log.read_text().strip(),
+                         "_assurance-forge example-app|api-present|")
+        denied_assurance = self.run_script("env-exec", "--", str(host_runtime), "assure")
+        self.assertNotEqual(denied_assurance.returncode, 0)
+        self.assertIn("rejects env-exec child mode", denied_assurance.stderr)
+        wrong_host_runtime = self.root / "outside" / "host-runtime"
+        write(wrong_host_runtime, "#!/bin/sh\nexit 0\n", 0o755)
+        rejected_assurance = self.run_script("env-exec", "--", str(wrong_host_runtime),
+                                              "_assurance-forge", "example-app")
+        self.assertNotEqual(rejected_assurance.returncode, 0)
+        self.assertIn("canonical managed host-runtime", rejected_assurance.stderr)
+        self.env["NORN_HOST_CONFIG_DIR"] = str(self.root / "attacker-controlled-config")
+        redirected_assurance = self.run_script("env-exec", "--", str(host_runtime),
+                                                "_assurance-forge", "example-app")
+        self.assertNotEqual(redirected_assurance.returncode, 0)
+        self.assertIn("config directory is not canonical", redirected_assurance.stderr)
+
         wrong_sha = self.run_script("env-exec", str(candidate_wrapper), "f" * 40, *helper_args[1:])
         self.assertNotEqual(wrong_sha.returncode, 0)
         self.assertIn("invalid arguments", wrong_sha.stderr)
