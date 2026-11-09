@@ -2,55 +2,56 @@
 
 Status: the durable etcd worker, signed-acceptance verification, claim-bound
 route writer, old-stop recovery, and same-intent controller replay are wired
-as offline implementation seams. There is still no operator/API path to admit
-an `app.workload-release` operation. A production-driver crash matrix and
-live qualification remain open as of 2026-11-08. The private-input key
-inventory is now checked at startup when the dedicated workload-release input
-capability is enabled; the capability remains disabled by default.
-This note authorizes no live workload, route, or provider change.
+as offline implementation seams. There is still no authenticated operator/API
+path to admit an `app.workload-release` operation. A production-driver crash
+matrix and live qualification remain open as of 2026-11-09. The private-input
+key inventory is checked at startup when its dedicated capability is enabled;
+that capability remains disabled by default. This note authorizes no live
+workload, route, or provider change.
 
-## Current branch verification — 2026-11-08
+## Current verification — 2026-11-09
 
-PR [#302](https://github.com/antiartificial/norn/pull/302) is open. Commit
-`ac2dcc1825aef349625c17818ce4b521b39adb7e` adds the V3 deployment-source
-corroboration described below. The full API Go suite passed locally on that
-code. CI runs [42508471380](https://github.com/antiartificial/norn/actions/runs/42508471380)
-and [42508471431](https://github.com/antiartificial/norn/actions/runs/42508471431)
-were still in progress at the latest check. Checks on this PR validate branch
-code and disposable fixtures only; they do not qualify the deployed DO Fleet,
-Mini, or any live upgrade.
-The earlier offline statechart at `4703f5bcdd0c98943f86d1fc6cfc97ad3f027743`
-passed 86-state/203-transition TLC. The current expanded model in
-`docs/v3/statecharts/workload-release-admission/` was regenerated on
-2026-11-08: TLC checked 458 states and 1,663 transitions, all 18 listed
-safety invariants and deadlock, with no violations. The model now separates
-the active route predecessor from independently observed serving lineage, and
-each can be removed independently in a fail-closed admission scenario. It includes a
-crash after stage-effect reservation but before the create marker, and models
-scheduler acceptance plus a lost response as one transition. This remains a
+Norn PR [#311](https://github.com/antiartificial/norn/pull/311) merged at
+`4c90aecfc47d4687cc3f39d433d8d5d182d61a7d`. It adds durable replay keyed by
+a server-computed digest of stable request selection (qualification ID and
+target replica count). The store resolves the existing signed acceptance
+before validating the current plan, qualification trust/expiry, source
+projection, serving-lineage observer, or encrypted input snapshot. A focused
+loopback-etcd integration test accepts once, removes the current source
+projection, retries with a new proposed operation ID and changed plan and
+SOPS bytes, and verifies the original accepted operation returns without a
+fresh lineage read. Changed qualification or replica selection conflicts.
+This is a store-boundary guarantee; no authenticated API/CLI producer
+currently computes and submits that digest.
+
+Exact-head PR #311 checks passed for API Go tests, Fleet pilot workload,
+durable replicas on three Nomad clients, app catalog, CLI, OpenAPI, platform
+release qualification, workflow lint, Web UI, and Socket security. Path-filtered
+checks were skipped. This CI evidence validates code and disposable fixtures;
+it does not qualify the deployed DO Fleet, Mini, or any live workload release.
+
+The offline statechart in `docs/v3/statecharts/workload-release-admission/`
+checked 458 states and 1,663 transitions, with 18 safety invariants and
+deadlock checking passing. The expanded model separates the active-route
+predecessor from independently observed serving lineage, and includes a crash
+after stage-effect reservation but before the create marker. It remains a
 protocol model, not proof of the runtime driver.
 
-The current M5 working tree adds a deterministic, database-free target job
-builder, a private-input preparation helper, and claimed-worker wiring for
-secret staging, one-use create marking, create-only Nomad registration, and
-exact readback binding. The worker ignores the registration response; a
-missing or ambiguous readback stays pending and cannot trigger a second
-registration. Existing route, health, drain, and stop readers resolve the
-binding to the strict intent. Local tests cover the builder, SOPS/age input
-handling, etcd successor recovery, plan verification, and plan-derived stop
-effect acceptance; `go test ./... -count=1` passes for `v2/api`. This remains
-local implementation evidence, not live qualification. Delayed Nomad
-acceptance, production ACL behavior, and retention lifecycle remain open.
+The claimed worker stages exact operation-bound SOPS ciphertext, marks the
+one-use create attempt, uses create-only Nomad registration, ignores the
+registration response, and binds only exact target readback. Missing or
+ambiguous readback remains pending and cannot trigger a second registration.
+The runtime key preflight, deterministic worker tests, and focused etcd
+successor-recovery tests are offline evidence. Delayed Nomad acceptance,
+production ACL behavior, key-retention lifecycle, and version-pinned
+production-driver qualification remain open.
 
-The V3 store now resolves a qualification by exact ID from its signed operation
-record, checks the trusted staging signature and expiry, and requires a
-matching completed deployment and region results. The etcd integration test
-also caught a source-verification bug: the check read the immutable deployment
-record without its mutable region results and rejected the qualification.
-Qualification verification now reads the store's verified deployment
-projection; both this lookup and private-input acceptance pass against
-disposable local etcd. Authenticated operator admission still does not call
-this resolver.
+The V3 store resolves a qualification by exact ID from its signed operation
+record, verifies the trusted staging signature and expiry, and requires a
+matching completed staging deployment and region results. Both that lookup and
+private-input acceptance have passed against disposable local etcd. The API
+admission producer still does not call this resolver or the private store
+boundary.
 
 ## Release-readiness milestones and order
 
@@ -61,9 +62,9 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 
 | Milestone | Status | Work | Exit evidence | Can run alongside |
 | --- | --- | --- | --- | --- |
-| M5-A: offline protocol | Partial: expanded bounded statechart (458 states/1,663 transitions, 18 invariants plus deadlock), fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, one-use attempt marker, and stage-worker wiring pass locally. Offline tests cover secret-stage failure before marker/create, conservative hold while an ambiguous create remains absent, and exact-target adoption when it becomes visible without resubmission. Four independent missing-admission-evidence scenarios now reject. Production-driver failure matrix remains open. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, pre-attempt reservation recovery, exact-target adoption after response loss, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on absent or mismatched target. | M5-B, input-provenance inventory, M5-C design |
+| M5-A: offline protocol | Partial: merged PR #311 now adds exact stable-request replay before mutable reads; expanded bounded statechart (458 states/1,663 transitions, 18 invariants plus deadlock), fake-driver lost-response matrix, pure plan/binding resolver, claim-fenced write-once etcd binding, one-use attempt marker, and stage-worker wiring pass locally. Offline tests cover secret-stage failure before marker/create, conservative hold while an ambiguous create remains absent, and exact-target adoption when it becomes visible without resubmission. Four independent missing-admission-evidence scenarios now reject. Production-driver failure matrix remains open. | Keep the bounded admission/recovery statechart and Go contract fixtures aligned; enumerate crashes at every durable stage/create/bind/route/stop boundary. | Reproducible model report and deterministic fixtures prove exact replay, pre-attempt reservation recovery, exact-target adoption after response loss, no traffic before binding, no old stop before full target health plus target-only route proof, and hold on absent or mismatched target. | M5-B, input-provenance inventory, M5-C design |
 | M5-B: immutable input contract | Partial: purpose-separated encryption, signed-plan-bound exact SOPS snapshot capture, atomic etcd acceptance/input persistence, opt-in startup preflight for retained envelope keys, a signed-qualification-to-plan validator, and a V3 store lookup by exact qualification ID are implemented locally. A server-side Nomad lineage observer now binds the active route operation/spec/image/process/job digest to fresh version, modify-index, replica, and exact allocation readback at the private store boundary. Automatic qualification discovery and complete secret/catalog/database revision resolution are not yet joined to an authenticated producer. | Resolve a qualified candidate from trusted control state; bind exact source/spec/image digests, secret/catalog/database revisions, serving lineage, and qualification expiry. Reject caller-supplied scheduler observations. | Deterministic tests bind app, trusted signer, validity window, completed staging deployment, source SHA, exact content-addressed artifact, and attestation subject digest; unresolved/rotating inputs fail closed after restart. | M5-A, M5-C design |
-| M5-C: atomic release admission | Partial guard: private etcd acceptance requires an injected trusted Nomad observer, current active route/reservation, exact serving-lineage match, and immediate successor route generation; it repeats the lineage read before commit and compares route revisions in the acceptance transaction. Disposable-etcd tests cover missing observer, stale Nomad modify index, exact match, and idempotent replay without mutable reads. No authenticated operator/API acceptance path exists. | Add authenticated operator API/CLI admission using a server-resolved signed qualification, current serving lineage, exact plan, and private-input snapshot. Bind idempotency, signature, one-app mutation slot, desired count, and Fleet generation in one transaction. | Replay returns the same operation; key reuse with different candidate/input conflicts; concurrent deploy/scale/release races admit at most one; stale candidate or predecessor writes nothing. | M5-A/B |
+| M5-C: atomic release admission | Partial guard: private etcd acceptance requires an injected trusted Nomad observer, current active route/reservation, exact serving-lineage match, and immediate successor route generation; it repeats the lineage read before commit and compares route revisions in the acceptance transaction. Disposable-etcd tests cover missing observer, stale Nomad modify index, exact match, and exact request replay before mutable reads. No authenticated operator/API acceptance path exists. | Add authenticated operator API/CLI admission using a server-resolved signed qualification, current serving lineage, exact plan, and private-input snapshot. Bind idempotency, signature, one-app mutation slot, desired count, and Fleet generation in one transaction. | Replay returns the same operation; key reuse with different candidate/input conflicts; concurrent deploy/scale/release races admit at most one; stale candidate or predecessor writes nothing. | M5-A/B |
 | M5-D: private stage and binding | Partial: signed-plan-bound stage effect, shared app gate, one-use attempt marker, successor-claim recovery, exact database-free job builder, operation-bound SOPS input decryption, private Nomad secret staging, create-only CAS, exact readback, and strict-intent downstream wiring implemented locally. Retained input-key preflight now checks V3 etcd before its deploy worker starts. Offline orchestration tests prove secret-stage failure, claim loss after secret staging, and marker transaction failure all prevent create; absent readback holds, and a later exact readback is adopted without a second registration. Full API Go suite passes. Delayed-request/production-driver cases are not yet qualified. | Extend deterministic worker fault cases for every stage/create/readback/bind boundary, then run the same protocol against a version-pinned disposable Nomad/ingress stack with delayed acceptance and lost responses. | Fault matrix proves exact-target adoption after lost response or durable conservative hold, never a duplicate create; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
 | M5-F: DO staging workload release | Partial: historical 2→3→2 scale, sequential drain, and canary probes passed; the 2026-11-08 public route serves source `be5ca5d…` across two reported allocations. The durable second-release operation receipt has not been re-read, and mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; after M5-A–E, run fixed-image resize and mixed-version recovery through the release-owned admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |
