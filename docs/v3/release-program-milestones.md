@@ -103,6 +103,16 @@ deployment, provider mutation, or credential use.
   does not identify a durable upgrade operation or prove the required fresh
   host-assurance and route-reachability checks. Those gates remain open.
 
+## Mini operation-history recheck — 2026-11-09 01:33 UTC
+
+- `norn operations --limit 100` returned no successful `platform.upgrade`
+  operation for the current V3 release. The newest listed upgrade failed on
+  2026-10-10, and the newest listed preflight failed on 2026-10-13.
+- The current release catalog proves that the Mini serves the V3 artifact. It
+  does not prove which upgrade procedure promoted it or provide a durable
+  successful operation receipt. Preserve this as an evidence gap when we
+  assess the direct controller lane.
+
 These workstreams are independent until their findings need to merge into the
 lane manifest. The immediate parallel wave is M1/M2 offline contract and
 recovery work, workload protocol refinement, and V2 caller migration planning.
