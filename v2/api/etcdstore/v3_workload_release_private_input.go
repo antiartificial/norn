@@ -79,6 +79,10 @@ func (s *V3OperationStore) AcceptPrivateWorkloadRelease(ctx context.Context, inp
 	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
+	expectedRequestDigest, err := pipeline.WorkloadReleaseRequestDigest(qualification.ID, plan.Intent.TargetReplicas)
+	if err != nil || expectedRequestDigest != workloadReleaseRequestDigest(input.Operation) {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "workload release request digest differs from its stable selection"}
+	}
 	// Exact retries match the qualification in the signed acceptance even if
 	// its trust, validity window, or source deployment can no longer be verified.
 	payload["workloadReleaseQualification"] = qualification
