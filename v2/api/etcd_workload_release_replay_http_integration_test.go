@@ -42,20 +42,31 @@ func (t responseDropTransport) RoundTrip(request *http.Request) (*http.Response,
 	return nil, errors.New("simulated response loss after server completion")
 }
 
-func TestEtcdWorkloadReleaseAdmissionHTTPReplaysDurableAcceptance(t *testing.T) {
+func TestEtcdWorkloadReleaseAdmissionHTTPReplaysDurableAcceptanceAfterRestart(t *testing.T) {
 	endpoints := strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_ENDPOINTS"))
 	if endpoints == "" {
 		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatal(err)
+	var client *clientv3.Client
+	newClient := func() *clientv3.Client {
+		t.Helper()
+		current, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return current
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	client = newClient()
 	prefix := "/norn-tests/workload-release-http-replay/" + uuid.NewString()
-	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	t.Cleanup(func() {
+		if client != nil {
+			_, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix())
+			_ = client.Close()
+		}
+	})
+	firstClient := client
 	signer, err := store.NewHMACAcceptanceSigner("norn-workload-release-http-replay-signing-key-000")
 	if err != nil {
 		t.Fatal(err)
@@ -110,23 +121,27 @@ func TestEtcdWorkloadReleaseAdmissionHTTPReplaysDurableAcceptance(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := chi.NewRouter()
-	router.With(etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)).Post(
-		"/api/v1/apps/{id}/workload-releases",
-		etcdWorkloadReleaseAdmission(cfg, operations, identities, keys, &workloadReleaseAdmissionLineageFake{}, nil))
-	api := httptest.NewServer(router)
+	newAPI := func(operations *etcdstore.V3OperationStore, identities *etcdstore.AuthStore) *httptest.Server {
+		router := chi.NewRouter()
+		router.With(etcdManagedTokenAuth(cfg, identities, handler.ScopeReleaseStage)).Post(
+			"/api/v1/apps/{id}/workload-releases",
+			etcdWorkloadReleaseAdmission(cfg, operations, identities, keys, &workloadReleaseAdmissionLineageFake{}, nil))
+		return httptest.NewServer(router)
+	}
+	api := newAPI(operations, identities)
 	t.Cleanup(api.Close)
 	token, err := handler.SignManagedAccessToken(apiSecret, operator)
 	if err != nil {
 		t.Fatal(err)
 	}
+	apiURL := api.URL
 	newRequest := func(targetReplicas int) *http.Request {
 		t.Helper()
 		body, err := json.Marshal(map[string]interface{}{"qualificationId": qualificationID, "targetReplicas": targetReplicas})
 		if err != nil {
 			t.Fatal(err)
 		}
-		request, err := http.NewRequest(http.MethodPost, api.URL+"/api/v1/apps/"+app+"/workload-releases", strings.NewReader(string(body)))
+		request, err := http.NewRequest(http.MethodPost, apiURL+"/api/v1/apps/"+app+"/workload-releases", strings.NewReader(string(body)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,6 +161,25 @@ func TestEtcdWorkloadReleaseAdmissionHTTPReplaysDurableAcceptance(t *testing.T) 
 	stored, err := operations.GetOperation(ctx, operation.ID)
 	if err != nil || stored.Status != model.OperationQueued {
 		t.Fatalf("operation after dropped response=%+v err=%v", stored, err)
+	}
+	api.Close()
+	if err := firstClient.Close(); err != nil {
+		t.Fatalf("close first etcd client: %v", err)
+	}
+	// Rebuild both the HTTP handler and etcd adapters. The retry must recover
+	// the acceptance from durable etcd state without process-local replay state.
+	client = newClient()
+	operations, err = etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities = etcdstore.NewAuthStore(client, prefix)
+	api = newAPI(operations, identities)
+	t.Cleanup(api.Close)
+	apiURL = api.URL
+	stored, err = operations.GetOperation(ctx, operation.ID)
+	if err != nil || stored.Status != model.OperationQueued {
+		t.Fatalf("operation after handler and store restart=%+v err=%v", stored, err)
 	}
 
 	response, err := api.Client().Do(newRequest(2))
