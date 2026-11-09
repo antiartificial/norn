@@ -152,6 +152,9 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, wrongObservedRequest, qualification, []string{trustedQualificationKey}, material, keys, &wrongObservedLineage); err == nil {
 		t.Fatal("accepted a predecessor whose live Nomad modify index changed")
 	}
+	if _, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, nil, material, keys, lineageObserver); !errors.Is(err, store.ErrAcceptanceInvalid) {
+		t.Fatalf("fresh admission must require a trusted qualification: %v", err)
+	}
 	accepted, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver)
 	if err != nil {
 		t.Fatal(err)
@@ -174,9 +177,9 @@ func TestV3PrivateWorkloadReleaseAcceptanceIsAtomicReplaySafeAndKeyRecoverable(t
 		t.Fatalf("opened private SOPS snapshot differs: equal=%v err=%v", bytes.Equal(opened, material), err)
 	}
 	priorLineageReads := lineageObserver.calls
-	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, []string{trustedQualificationKey}, material, keys, lineageObserver)
-	if err != nil || replayed.Operation.ID != accepted.Operation.ID || replayed.Intent.CanonicalDigest != accepted.Intent.CanonicalDigest {
-		t.Fatalf("same private workload request did not return original acceptance: replay=%+v err=%v", replayed, err)
+	replayed, err := adapter.AcceptPrivateWorkloadRelease(ctx, input, qualification, nil, material, keys, lineageObserver)
+	if err != nil || !replayed.Replayed || replayed.Operation.ID != accepted.Operation.ID || replayed.Intent.CanonicalDigest != accepted.Intent.CanonicalDigest {
+		t.Fatalf("same private workload request did not return original acceptance without current qualification trust: replay=%+v err=%v", replayed, err)
 	}
 	if lineageObserver.calls != priorLineageReads {
 		t.Fatalf("idempotent replay performed new mutable lineage reads: before=%d after=%d", priorLineageReads, lineageObserver.calls)

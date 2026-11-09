@@ -165,11 +165,13 @@ use it to derive the digest, and execution should use the same builder to
 recompute and verify the accepted plan. Do not duplicate the translator or
 accept a caller-provided digest.
 
-For a same-key retry, compare the exact qualification ID retained in the
-signed accepted operation before re-reading qualification expiry, current
-source, encrypted inputs, or Nomad. The existing private acceptance method
-validates qualification before resolving request identity, so the HTTP/service
-producer must return a verified prior acceptance itself. After concurrent
+For a same-key retry, resolve the signed request identity and compare the full
+canonical acceptance, including the exact qualification, before rechecking
+current qualification trust/expiry or source deployment. The private store
+now returns an exact prior acceptance before those mutable qualification
+checks; changed qualification or request content remains a conflict. The
+authenticated HTTP/service producer must perform this replay lookup before
+resolving mutable source, encrypted inputs, or Nomad state. After concurrent
 requests race, resolve the signed identity again and return the first committed
 operation for the same selected qualification; a losing request may have
 generated different target IDs or captured newer encrypted bytes.
