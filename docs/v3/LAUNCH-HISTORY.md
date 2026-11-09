@@ -1,5 +1,25 @@
 # Norn v3 launch history
 
+## Release merge and gate update (2026-11-09 05:35 UTC)
+
+Norn PR #300 (release lanes, milestones, and V3 API/client cleanup), #301 (Mini
+route assurance), and #302 (offline workload release controller) are merged to
+`master`; #302 is at `c792564c9440805a467a832a4fcb6b433a1f68c3`. The Mini remains
+an independent node, and #301's code merge is not a fresh host readback or a
+claim that production route assurance is complete. #302 is source and offline
+evidence only; the operator API/CLI admission path and live workload
+qualification remain open.
+
+Fleet PRs #940 (release intent controller), #941 (fresh-Fleet offline
+war-game), and #945 (provider scope contract) are merged. Stacked PR #943 closed
+when #941's base merged; its credential-lifecycle changes were rebased as draft
+PR #947. PR #942 moves tests to module-owned collection. Both refreshed PR
+contracts failed at OpenTofu provider installation after GitHub returned 504
+responses fetching the DigitalOcean provider checksum or signature. Earlier
+contract phases passed. GitHub branch policy blocks merge until the required
+contract passes; it was not bypassed. No provider apply, deployment, or Genesis
+readback ran as part of these merges.
+
 This file preserves the dated observations and decision trail formerly
 collected in `LAUNCH-STATE.md`. Many entries are historical snapshots and
 must not be read as current status. For current gates and the next actions,
