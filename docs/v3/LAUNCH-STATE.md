@@ -54,6 +54,22 @@ databases were online (MySQL 3 nodes, PostgreSQL 2); and the staging VPC and
 not prove Norn API, Nomad/Consul, workloads, routes, or Genesis journal health;
 the protected Genesis readback remains unpassed.
 
+## DO staging provider recheck (2026-11-09 02:48 UTC)
+
+Read-only queries with explicit `doctl --context work` confirmed the pinned
+account remains active and again returned nine active NYC3 staging Droplets
+(3 control, 2 ingress, 4 app), an active ingress load balancer, online
+application MySQL (3 nodes) and PostgreSQL (2 nodes), and VPC
+`10.43.0.0/20`. No provider mutation ran. This is provider availability only;
+it does not establish Norn API, Nomad/Consul, workloads, or routes as healthy.
+The latest protected Genesis readback remains failed at
+[run 42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411)
+because the management source repository lacked pinned Git objects. The
+successful [run 42419030676](https://github.com/antiartificial/norn-fleet/actions/runs/42419030676)
+is a separate release-state handoff, not a Genesis or runtime readback. Do not
+describe the DO Norn runtime as online based on either provider status or that
+handoff.
+
 ## Latest Mini direct release (2026-11-08 09:20 UTC)
 
 The independent Mini advanced from signed V3 RC `bba290db041e9f497c7161543c679d9d348b742d`
