@@ -169,7 +169,7 @@ func newEtcdFleetDeployRuntime(ctx context.Context, cfg *config.Config, operatio
 	deployExecutor := &fleetdeploy.ClaimedFleetDeploymentExecutor{Store: operations, Nomad: nomadClient,
 		DatabaseSecrets: privateSecrets, JobSecrets: secrets.NewManager(cfg.AppsDir), AppsDir: cfg.AppsDir,
 		Authority: cfg.ControlAuthority, DatabaseProfile: cfg.DatabaseProfile, Route: transport}
-	workloadExecutor, err := newEtcdWorkloadReleaseExecutor(operations, nomadClient, transport, cfg.AppsDir, workloadReleaseKeys)
+	workloadExecutor, err := newEtcdWorkloadReleaseExecutor(operations, nomadClient, transport, workloadReleaseKeys)
 	if err != nil {
 		_ = privateSecrets.Close()
 		return nil, err

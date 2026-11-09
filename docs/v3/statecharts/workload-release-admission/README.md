@@ -193,14 +193,18 @@ holds before scheduler submission. The target binding records that same
 revision. The model assumes secret plaintext remains outside operation and
 plan data; it checks identity and availability, not cryptographic encryption.
 
-The etcd acceptance seam now seals the exact encrypted SOPS snapshot with a
-separate workload-release key ring and binds its AAD to authority, operation,
-app, and canonical plan digest. Signed acceptance, the encrypted record,
+The etcd acceptance seam seals the exact job-driving app spec together with
+the exact encrypted SOPS snapshot under a separate workload-release key ring
+and binds its AAD to authority, operation, app, and canonical plan digest.
+The worker rebuilds its target from this accepted pinned material, so recovery
+does not depend on the current app checkout. Signed acceptance, the encrypted record,
 one-active-app admission, and the current Fleet target revision commit
 atomically. A matching request digest returns the original signed acceptance
 before opening current SOPS/source data or observing Nomad; the stored
-encrypted snapshot remains the input for recovery. A key inventory reports
-all retained IDs. Startup preflight checks configured keys against retained
+encrypted source and snapshot remain the inputs for recovery. Repository
+history and artifact provenance still come from the signed qualification;
+this pin captures the job-driving spec, not a complete Git checkout. A key
+inventory reports all retained IDs. Startup preflight checks configured keys against retained
 IDs; deletion/retention policy is not yet implemented. The authenticated
 request producer that computes this digest is implemented by PR #319. The
 model abstracts its HTTP identity and mutable evidence lookups; handler-level

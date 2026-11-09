@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"norn/v2/api/model"
 )
 
 func TestWorkloadReleasePrivateInputEnvelopeRecoveryAndBinding(t *testing.T) {
@@ -118,5 +120,38 @@ func TestWorkloadReleasePrivateInputBoundsAndDistinctPurpose(t *testing.T) {
 	wrongPurpose := WorkloadReleaseInputEnvelope{Schema: PrivateInvocationEnvelopeSchema, KeyID: "release-one"}
 	if _, err := ring.Open(binding, wrongPurpose); err == nil {
 		t.Fatal("accepted an envelope from another private-data purpose")
+	}
+}
+
+func TestWorkloadReleasePinnedMaterialRoundTripsExactSpecAndCiphertext(t *testing.T) {
+	spec := &model.InfraSpec{App: "demo", Env: map[string]string{"PRIVATE_SETTING": "source-secret"},
+		Processes: map[string]model.Process{"web": {Port: 8080, Resources: &model.Resources{CPU: 100, Memory: 128},
+			Env: map[string]string{"PROCESS_SETTING": "process-secret"}}}}
+	digest, err := model.InfraSpecDigest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedSnapshot := []byte("encrypted-sops-snapshot")
+	encoded, err := EncodeWorkloadReleasePinnedMaterial(spec, digest, encryptedSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, encryptedSnapshot) {
+		t.Fatal("SOPS ciphertext was not encoded as part of pinned material")
+	}
+	opened, snapshot, err := DecodeWorkloadReleasePinnedMaterial(encoded, "demo", digest)
+	if err != nil || opened.Env["PRIVATE_SETTING"] != "source-secret" || opened.Processes["web"].Env["PROCESS_SETTING"] != "process-secret" ||
+		!bytes.Equal(snapshot, encryptedSnapshot) {
+		t.Fatalf("pinned material round trip spec=%+v snapshot=%q err=%v", opened, snapshot, err)
+	}
+	clear(snapshot)
+	if _, _, err := DecodeWorkloadReleasePinnedMaterial(encoded, "other", digest); err == nil {
+		t.Fatal("pinned source was accepted for another app")
+	}
+	if _, _, err := DecodeWorkloadReleasePinnedMaterial(encoded, "demo", "sha256:"+strings.Repeat("1", 64)); err == nil {
+		t.Fatal("pinned source was accepted with another target digest")
+	}
+	if _, err := EncodeWorkloadReleasePinnedMaterial(spec, "sha256:"+strings.Repeat("1", 64), encryptedSnapshot); err == nil {
+		t.Fatal("source spec was pinned under a digest that did not match its content")
 	}
 }

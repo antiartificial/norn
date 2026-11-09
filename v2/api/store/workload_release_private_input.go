@@ -12,18 +12,23 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+	"norn/v2/api/model"
 )
 
 const (
-	WorkloadReleasePrivateInputSchema = "norn.workload-release-private-input/v1"
-	maxWorkloadReleasePrivateInput    = 1 << 20
+	WorkloadReleasePrivateInputSchema   = "norn.workload-release-private-input/v1"
+	WorkloadReleasePinnedMaterialSchema = "norn.workload-release-pinned-material/v1"
+	maxWorkloadReleasePrivateInput      = 1 << 20
 )
 
 var workloadReleasePlanDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 var workloadReleaseInputKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-// WorkloadReleaseInputBinding keeps captured SOPS bytes private and binds them
-// to one accepted operation, app, authority, and immutable desired plan.
+// WorkloadReleaseInputBinding keeps pinned workload material private and
+// binds it to one accepted operation, app, authority, and immutable plan.
 type WorkloadReleaseInputBinding struct {
 	Authority  string `json:"authority"`
 	Operation  string `json:"operationId"`
@@ -31,9 +36,8 @@ type WorkloadReleaseInputBinding struct {
 	PlanDigest string `json:"planDigest"`
 }
 
-// WorkloadReleaseInputEnvelope uses a per-record data key. Only the exact
-// encrypted SOPS snapshot is sealed; decrypted application secrets never enter
-// this API or its public digest.
+// WorkloadReleaseInputEnvelope uses a per-record data key to seal the pinned
+// app spec and encrypted SOPS snapshot; neither enters the operation payload.
 type WorkloadReleaseInputEnvelope struct {
 	Schema         string `json:"schema"`
 	KeyID          string `json:"keyId"`
@@ -41,6 +45,84 @@ type WorkloadReleaseInputEnvelope struct {
 	WrappedDataKey []byte `json:"wrappedDataKey"`
 	DataNonce      []byte `json:"dataNonce"`
 	Ciphertext     []byte `json:"ciphertext"`
+}
+
+// WorkloadReleasePinnedMaterial contains only the job-driving app source and
+// the already-encrypted SOPS snapshot. The entire value is sealed by the
+// workload-release key ring before it enters durable storage; in particular,
+// source Env fields are never copied into the signed operation payload.
+type WorkloadReleasePinnedMaterial struct {
+	Schema                string `json:"schema"`
+	SourceSpecYAML        []byte `json:"sourceSpecYaml"`
+	EncryptedSOPSSnapshot []byte `json:"encryptedSopsSnapshot"`
+}
+
+// EncodeWorkloadReleasePinnedMaterial captures the exact spec used to derive
+// a workload target alongside its encrypted SOPS input. The expected digest
+// binds the source bytes to the signed workload plan before sealing.
+func EncodeWorkloadReleasePinnedMaterial(spec *model.InfraSpec, expectedSpecDigest string, encryptedSOPSSnapshot []byte) ([]byte, error) {
+	if spec == nil || strings.TrimSpace(spec.App) == "" || len(encryptedSOPSSnapshot) == 0 ||
+		!workloadReleasePlanDigestPattern.MatchString(expectedSpecDigest) {
+		return nil, errors.New("workload release pinned material is incomplete")
+	}
+	source, err := yaml.Marshal(spec)
+	if err != nil {
+		return nil, errors.New("workload release source spec could not be serialized")
+	}
+	digest, err := model.InfraSpecDigest(spec)
+	if err != nil || digest != expectedSpecDigest {
+		return nil, errors.New("workload release source spec differs from its accepted digest")
+	}
+	parsed, err := model.ParseInfraSpec(source)
+	if err != nil || parsed == nil || parsed.App != spec.App {
+		return nil, errors.New("workload release source spec cannot be restored")
+	}
+	parsedDigest, err := model.InfraSpecDigest(parsed)
+	if err != nil || parsedDigest != expectedSpecDigest {
+		return nil, errors.New("workload release source spec changes when restored")
+	}
+	material := WorkloadReleasePinnedMaterial{Schema: WorkloadReleasePinnedMaterialSchema,
+		SourceSpecYAML: source, EncryptedSOPSSnapshot: bytes.Clone(encryptedSOPSSnapshot)}
+	encoded, err := json.Marshal(material)
+	if err != nil || len(encoded) > maxWorkloadReleasePrivateInput {
+		clear(source)
+		clear(material.EncryptedSOPSSnapshot)
+		return nil, errors.New("workload release pinned material is invalid or exceeds its limit")
+	}
+	clear(source)
+	clear(material.EncryptedSOPSSnapshot)
+	return encoded, nil
+}
+
+// DecodeWorkloadReleasePinnedMaterial authenticates the source representation
+// against the accepted app and target spec digest after the outer key ring
+// envelope has been opened.
+func DecodeWorkloadReleasePinnedMaterial(encoded []byte, app, expectedSpecDigest string) (*model.InfraSpec, []byte, error) {
+	if len(encoded) == 0 || len(encoded) > maxWorkloadReleasePrivateInput || strings.TrimSpace(app) == "" ||
+		!workloadReleasePlanDigestPattern.MatchString(expectedSpecDigest) {
+		return nil, nil, errors.New("workload release pinned material is unavailable")
+	}
+	var material WorkloadReleasePinnedMaterial
+	if err := json.Unmarshal(encoded, &material); err != nil || material.Schema != WorkloadReleasePinnedMaterialSchema ||
+		len(material.SourceSpecYAML) == 0 || len(material.EncryptedSOPSSnapshot) == 0 {
+		clear(material.SourceSpecYAML)
+		clear(material.EncryptedSOPSSnapshot)
+		return nil, nil, errors.New("workload release pinned material is invalid")
+	}
+	encryptedSOPSSnapshot := bytes.Clone(material.EncryptedSOPSSnapshot)
+	clear(material.EncryptedSOPSSnapshot)
+	spec, err := model.ParseInfraSpec(material.SourceSpecYAML)
+	clear(material.SourceSpecYAML)
+	if err != nil || spec == nil || spec.App != app {
+		clear(encryptedSOPSSnapshot)
+		return nil, nil, errors.New("workload release pinned source spec is invalid")
+	}
+	digest, err := model.InfraSpecDigest(spec)
+	if err != nil || digest != expectedSpecDigest {
+		clear(encryptedSOPSSnapshot)
+		return nil, nil, errors.New("workload release pinned source spec digest differs from its accepted plan")
+	}
+	return spec, encryptedSOPSSnapshot, nil
 }
 
 // WorkloadReleaseInputKeyRing is intentionally a distinct key namespace from

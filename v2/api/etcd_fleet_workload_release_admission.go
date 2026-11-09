@@ -149,6 +149,13 @@ func etcdWorkloadReleaseAdmission(cfg *config.Config, operations workloadRelease
 			handler.WriteControlProblem(w, r, http.StatusConflict, "workload_release_secret_snapshot_unavailable", "the protected encrypted app input snapshot is unavailable")
 			return
 		}
+		defer clear(snapshot.Ciphertext)
+		pinnedMaterial, err := store.EncodeWorkloadReleasePinnedMaterial(spec, plan.Intent.TargetSpecDigest, snapshot.Ciphertext)
+		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "workload_release_source_snapshot_unavailable", "the exact job-driving app source could not be pinned")
+			return
+		}
+		defer clear(pinnedMaterial)
 		planBytes, err := json.Marshal(plan)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_workload_release_plan", "derived plan could not be canonicalized")
@@ -162,7 +169,7 @@ func etcdWorkloadReleaseAdmission(cfg *config.Config, operations workloadRelease
 				Source: "etcd-workload-release-api", Scopes: append([]string(nil), principal.Scopes...)},
 			Semantics: map[string]interface{}{"workloadReleaseRequestDigest": requestDigest}}
 		accepted, err := operations.AcceptPrivateWorkloadRelease(r.Context(), acceptance, qualification,
-			trustedQualificationKeys, snapshot.Ciphertext, keys, lineage)
+			trustedQualificationKeys, pinnedMaterial, keys, lineage)
 		if err != nil {
 			writeWorkloadReleaseAdmissionError(w, r, err)
 			return
