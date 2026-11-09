@@ -114,8 +114,9 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   counterexample and checks 14 fixed states / 18 transitions. A separate HTTP
   interleaving model and deterministic handler test force two initial replay
   misses and return one fresh result plus one same-ID replay through a fake
-  atomic store. End-to-end HTTP-to-etcd and restart/response-loss qualification
-  remain open.
+  atomic store. PR #335 exercises authenticated replay through the real HTTP
+  handler and etcd after a dropped response, using a seeded acceptance. Fresh
+  HTTP admission and runtime restart/response-loss qualification remain open.
 - [x] Reconstruct the etcd client and operation store after claim loss, reload
   the durable workload receipt, and recover the same intent under a successor
   claim. PR #331's full `etcdstore` suite and exact-head CI passed. This proves
