@@ -2,7 +2,7 @@
 
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
-## Current V3 release readiness (2026-11-10 00:55 UTC)
+## Current V3 release readiness (2026-11-10 01:16 UTC)
 
 Protected-master qualification for exact source
 `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
@@ -12,8 +12,12 @@ recovery path. Exact-source immutable release preparation is running as
 [42730463793](https://github.com/antiartificial/norn/actions/runs/42730463793).
 Authorization, pinned UI, and all four bundle jobs passed; the protected
 signing/publish job is waiting for environment approval. It is not signed or
-published. Publication still requires approval for this exact source. No new
-Mini operation has occurred since the 00:33 post-stop inventory. A new
+published. Publication still requires approval for this exact source. A fresh
+authenticated read-only Mini inventory at 01:16 UTC confirms the same source,
+health `ok`, and inactive runtime mutation fence. Host assurance succeeded at
+01:16 UTC. Nineteen of 30 app records are healthy; seven queued operations
+remain the stale DO dispatch reservations, 25 incident groups remain, and
+production readiness is blocked. This inventory performed no mutation. A new
 staging-only read-only DO plan completed at
 [run 42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
 on `norn-fleet` main `35e1c893198efbdc9e407d708e5096a32b485f7d`. Its private
@@ -67,9 +71,11 @@ ordinary restart. A plain
 retry was rejected because the resolver requires signed controller repair for
 this phase. The distinct source controller's repair helper rejected the new
 source-lineage evidence, so no repair authorization or database change was
-made. Current inventory had 19 of 30 app records running and healthy, seven
+made. The 00:33 inventory had 19 of 30 app records running and healthy, seven
 queued `fleet.github.apply-dispatch` operations, 25 open incident groups, and
-blocked production readiness. Latest host-assurance receipt remains stale.
+blocked production readiness. At that time, the latest host-assurance receipt
+was stale; the 01:16 UTC inventory later confirmed a successful fresh
+assurance pass.
 DO was not changed.
 
 The seven stale DO `fleet.github.apply-dispatch` receipts remain queued. A
