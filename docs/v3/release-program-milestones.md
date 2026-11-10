@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 19:42 UTC. No V3 launch date is
+Status: active work map, refreshed 2026-11-10 19:49 UTC. No V3 launch date is
 committed; release timing remains gate-based. This checklist orders the [release
 fitness and controller plan](release-fitness-and-controller-plan.md). It does not
 authorize deployment, provider mutation, or credential use.
@@ -21,7 +21,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 19:42 UTC): the independent Mini runs signed
+Current gate snapshot (2026-11-10 19:49 UTC): the independent Mini runs signed
 release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The owner-stated
 Mini success bar is met: the direct V3 release is active, API health returned
 HTTP 200, and the Norn-managed `vigil-gateway` workload allocation was running
@@ -357,6 +357,12 @@ qualifies a billable fresh-Fleet deployment.
   `a09847fc`; the missing module is installed locally at the exact source
   digest, the LaunchAgent imports successfully, and read-only queue checks find
   no candidate. The Linux effect runner remains inactive and disabled.
+- [ ] Make controller HTTPS trust repeatable. During the successful readback
+  admission, the local LaunchAgent needed `SSL_CERT_FILE` set to the pinned
+  Python's certifi bundle; that adjustment was made locally but the installer
+  did not persist it. Fleet PR #969 adds atomic plist configuration and a
+  regression test; merge and verify it before treating controller setup as
+  hands-free.
 - [ ] Provide a protected same-gate module-repair path. The current gate
   installer requires old and new Linux gate digests to differ, so it cannot
   repeat the Mac module copy when the remote gate already matches `main`. The
