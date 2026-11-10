@@ -1,6 +1,46 @@
 # Norn v3 launch state
 
-## Mini finalizer repair qualified; exact release awaiting protected publish (2026-11-10 06:07 UTC)
+## Mini direct V3 generation finalized (2026-11-10 06:30 UTC)
+
+The protected repair release for PR #391, exact SHA
+`5bb691de07c3eb865c5b7f636d07e668d824510c`, was signed and published after
+the user's exact-SHA approval, imported and verified on Mini, then used only as
+the controller for the already-existing recovered-forward generation. The
+signed repair runner validated the active pointer, generation manifest,
+journal, source evidence, signed source/candidate/controller releases, and
+prior API-launcher binding before action. It preserved the existing A4 target;
+it did not create a generation or rerun the database migration.
+
+The first finalizer attempt activated the normal candidate API but failed its
+host-agent-running check. The journal remained recoverable at
+`candidate-normal-active-pending-host-agent-restart`. After confirming the
+exact candidate API was healthy and the host-agent launch was retryable, the
+same signed runner resumed the same generation; the second attempt restarted
+the candidate host-agent, restored the original API LaunchAgent, and returned
+success. The active journal is now `candidate-promoted` for transition
+`mini-v3-20261110T0021Z-a4b9c3b3`; `/Users/0xadb/norn/current` selects
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`.
+
+Post-finalization checks at 06:29 UTC returned `/api/health=status: ok`,
+API version `v3.0.0-rc.1-platform-326-ga4b9c3b3` and the exact A4 source,
+authenticated `norn platform smoke` passed health, operation drain, releases,
+events, and platform checks, and host status was `ok`. The inventory returned
+30 apps and 46 services, but includes stopped/unhealthy apps, unknown cron or
+worker services, 25 active incidents, and conflicting active-operation counts
+(0 in platform smoke versus 7 in inventory). This proves the V3 platform is
+online and its controller smoke passed; it does not prove every workload is
+healthy. Mini remains independent of the DO Fleet.
+
+The same Mini control plane reports a configured staging Fleet with 3 control,
+2 ingress, and 4 app nodes and 24 historical read-only capacity plans (latest
+Oct 13). That is not fresh provider or DO API/workload evidence. The latest
+protected private DO state readback remains failed/held; do not claim DO staging
+is online until a fresh protected private inventory succeeds.
+
+## Historical: Mini finalizer repair qualified; exact release awaiting protected publish (2026-11-10 06:07 UTC)
+
+The following is the 06:07 snapshot, superseded by the completed finalization
+record above.
 
 PR [#391](https://github.com/antiartificial/norn/pull/391) merged to `master`
 as `5bb691de07c3eb865c5b7f636d07e668d824510c`. Full protected V3
