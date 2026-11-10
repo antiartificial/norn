@@ -646,6 +646,7 @@ host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-age
 host_agent_label="${NORN_HOST_AGENT_LABEL:-com.norn.host-agent}"
 host_agent_plist="${NORN_HOST_AGENT_PLIST:-$HOME/Library/LaunchAgents/$host_agent_label.plist}"
 host_agent_direct_exec="${NORN_HOST_AGENT_DIRECT_EXEC:-false}"
+host_agent_stability_detail="not checked"
 host_cli_bin="${NORN_HOST_CLI_BIN:-$HOME/.config/norn/host/bin/norn}"
 platform_script_bin="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
 host_runtime_bin="${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}"
@@ -2575,37 +2576,77 @@ legacy_baseline_verify_normal_candidate() {
 }
 
 legacy_baseline_host_agent_is_running_candidate() {
+  host_agent_stability_detail="current release link is missing"
   [[ -L "$current_link" ]] || return 1
-  local candidate_release candidate_agent launch_state agent_pid child_pid child_command stable_pid stable_child_pid stable_child_command
+  local candidate_release candidate_agent launch_state agent_pid child_pid child_command
+  local previous_pid="" previous_child_pid="" stable_samples=0 attempt
   candidate_release="$(readlink "$current_link")"
   candidate_agent="$candidate_release/bin/norn-host-agent"
-  [[ -x "$candidate_agent" && -x "$host_agent_bin" ]] || return 1
-  cmp -s "$candidate_agent" "$host_agent_bin" || return 1
+  if [[ ! -x "$candidate_agent" || ! -x "$host_agent_bin" ]]; then
+    host_agent_stability_detail="candidate or managed host-agent binary is unavailable"
+    return 1
+  fi
+  if ! cmp -s "$candidate_agent" "$host_agent_bin"; then
+    host_agent_stability_detail="managed host-agent bytes differ from the active signed release"
+    return 1
+  fi
   require_cmd launchctl
-  launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)" || return 1
-  agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-  [[ "$agent_pid" =~ ^[1-9][0-9]+$ ]] || return 1
-  kill -0 "$agent_pid" >/dev/null 2>&1 || return 1
-  child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
-  if [[ -z "$child_pid" ]]; then
-    [[ "$host_agent_direct_exec" == "true" ]] || return 1
-  else
-    [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || return 1
-    kill -0 "$child_pid" >/dev/null 2>&1 || return 1
-    child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
-    [[ "$child_command" == *"$host_agent_bin"* ]] || return 1
-  fi
-  sleep 1
-  launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)" || return 1
-  stable_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
-  [[ "$stable_pid" == "$agent_pid" ]] || return 1
-  stable_child_pid="$(pgrep -P "$stable_pid" | sort -u || true)"
-  [[ "$stable_child_pid" == "$child_pid" ]] || return 1
-  if [[ -n "$stable_child_pid" ]]; then
-    stable_child_command="$(ps -o command= -p "$stable_child_pid" 2>/dev/null | sed -n '1p')"
-    [[ "$stable_child_command" == *"$host_agent_bin"* ]] || return 1
-  fi
-  kill -0 "$stable_pid" >/dev/null 2>&1
+  host_agent_stability_detail="LaunchAgent did not remain stable for three consecutive samples"
+  # Launchd can replace the wrapper or child while a prior maintenance action
+  # is settling. Require three matching one-second observations in a bounded
+  # window so one restart race does not block every later upgrade.
+  for ((attempt = 0; attempt < 30; attempt++)); do
+    launch_state="$(launchctl print "gui/$(id -u)/$host_agent_label" 2>/dev/null)" || {
+      stable_samples=0; previous_pid=""; previous_child_pid=""
+      host_agent_stability_detail="LaunchAgent could not be inspected"
+      sleep 1
+      continue
+    }
+    agent_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+    if [[ ! "$agent_pid" =~ ^[1-9][0-9]+$ ]] || ! kill -0 "$agent_pid" >/dev/null 2>&1; then
+      stable_samples=0; previous_pid=""; previous_child_pid=""
+      host_agent_stability_detail="LaunchAgent has no live process"
+      sleep 1
+      continue
+    fi
+    child_pid="$(pgrep -P "$agent_pid" | sort -u || true)"
+    if [[ -z "$child_pid" ]]; then
+      if [[ "$host_agent_direct_exec" != "true" ]]; then
+        stable_samples=0; previous_pid=""; previous_child_pid=""
+        host_agent_stability_detail="LaunchAgent wrapper has no child process"
+        sleep 1
+        continue
+      fi
+      child_command=""
+    else
+      if [[ ! "$child_pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$child_pid" >/dev/null 2>&1; then
+        stable_samples=0; previous_pid=""; previous_child_pid=""
+        host_agent_stability_detail="LaunchAgent child process is missing or ambiguous"
+        sleep 1
+        continue
+      fi
+      child_command="$(ps -o command= -p "$child_pid" 2>/dev/null | sed -n '1p')"
+      if [[ "$child_command" != *"$host_agent_bin"* ]]; then
+        stable_samples=0; previous_pid=""; previous_child_pid=""
+        host_agent_stability_detail="LaunchAgent child does not execute the managed host-agent path"
+        sleep 1
+        continue
+      fi
+    fi
+    if [[ "$agent_pid" == "$previous_pid" && "$child_pid" == "$previous_child_pid" ]]; then
+      stable_samples=$((stable_samples + 1))
+    else
+      stable_samples=1
+    fi
+    if [[ "$stable_samples" -ge 3 ]] && kill -0 "$agent_pid" >/dev/null 2>&1; then
+      host_agent_stability_detail="stable"
+      return 0
+    fi
+    previous_pid="$agent_pid"
+    previous_child_pid="$child_pid"
+    sleep 1
+  done
+  return 1
 }
 
 validate_prospective_schema_transition() {
@@ -4086,7 +4127,7 @@ recovered_forward_completed_candidate_validate() {
     fail "Mini API version/schema do not match the exact promoted candidate"
   fi
   rm -f "$version_file" "$schema_file"
-  legacy_baseline_host_agent_is_running_candidate || fail "Mini host agent is not stably running from the exact promoted release"
+  legacy_baseline_host_agent_is_running_candidate || fail "Mini host agent is not stably running from the exact promoted release: $host_agent_stability_detail"
 }
 
 if [[ "$legacy_record_state" == "candidate-postflight-failed" ]]; then

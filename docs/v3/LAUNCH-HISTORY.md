@@ -1,5 +1,37 @@
 # Norn v3 launch history
 
+## Successor release qualified; queued Mini upgrade held before promotion (2026-11-10 11:26 UTC)
+
+PR #400 merged at `1b2dc22973ad22a6ea92ceb866273cab6300821b`. Protected exact-
+source qualification [42804580712](https://github.com/antiartificial/norn/actions/runs/42804580712)
+passed all 12 jobs, and protected release run
+[42805168466](https://github.com/antiartificial/norn/actions/runs/42805168466)
+published the immutable signed release. On Mini, its passive preflight passed.
+The fresh protected backup proof and signed shadow bound to this SHA passed:
+68 tables, 404,484 rows, 66 application tables fingerprinted, ledger 1–52,
+two migrate-only passes, passive health, and no source mutations.
+
+Queued operation `487811ae-03ea-428c-b108-ade3da070721` failed. After a new
+backup and shadow rehearsal, operation `c8e6b37b-6d07-438b-93ab-06a9534548a8`
+failed with the same generic host-agent stability diagnostic. Source inspection
+locates this check in `recovered_forward_completed_candidate_validate`, before
+the ordinary upgrade promotion path. Authenticated post-attempt readback
+confirmed `/Users/0xadb/norn/current` still selects `2a2d712a`, API health is
+`ok`, schema remains 52, the mutation fence is inactive, and host services are
+up. These failures did not promote the candidate, run a migration, or change
+workloads.
+
+An idle live sample later observed matching managed/active host-agent bytes and
+stable LaunchAgent parent/child PIDs for the sampled interval. That did not
+reproduce the failing controller-time condition. A follow-up implementation
+now waits for three matching one-second process observations within 30 seconds
+and records the specific failed predicate. Its dedicated offline stability
+regression and complete 24-test platform-upgrade integration suite passed;
+shell syntax and diff checks passed. The fix remains unmerged and unreleased,
+so it has not been installed on Mini. The two terminal operations must not be
+replayed; next live attempt requires the qualified signed follow-up plus fresh
+candidate-bound backup and shadow evidence.
+
 ## Mini same-generation finalization completed (2026-11-10 06:30 UTC)
 
 The user authorized the exact Mini immutable publication and all testing/staging
