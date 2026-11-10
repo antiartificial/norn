@@ -1,24 +1,26 @@
 # V3 platform release lanes and workload resizing
 
-Status: operator guidance reconciled 2026-11-10 06:30 UTC against Norn `master` at
-`1619b0c9`. The authenticated workload-release producer exists as an opt-in
+Status: operator guidance reconciled 2026-11-10 09:25 UTC against Norn `master` at
+`2a2d712a`. The authenticated workload-release producer exists as an opt-in
 staging API, but has not been deployed or live-qualified.
 The Mini is an independent node. The DigitalOcean (DO) work Fleet is the only
 Fleet and is a staging testbed intended to resemble production at lower scale.
 A successful soak or retained provider state is evidence for the run it covers;
 it does not prove that a service is healthy now.
 
-The Mini's A4 platform release is active after the existing recovered-forward
-generation reached `candidate-promoted` through the signed `5bb691de`
-controller. Authenticated platform smoke and host status pass. Workload
-inventory still has stopped/unhealthy apps and unknown background services;
-see the [latest launch evidence](LAUNCH-STATE.md#mini-direct-v3-generation-finalized-2026-11-10-0630-utc).
+The Mini now runs signed platform release `2a2d712a`; the existing A4
+recovered-forward generation remains `candidate-promoted`, catalog schema
+remains 52, and authenticated platform smoke passes. Two queued platform
+upgrade attempts stopped before promotion at the host-agent stability gate; the
+signed direct controller lane completed. The queue-upgrade issue remains open.
+Workload admission and resizing were not tested, and workload health remains a
+separate claim. See the [latest launch evidence](LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc).
 
 ## Choose the lane
 
 | Lane | Use | Current mechanism | Availability and recovery |
 |---|---|---|---|
-| Mini direct | Upgrade the independent Mini; deploy its app workloads from GitHub through Norn | Signed Norn release and installed Mini upgrade controller for the platform. The PostgreSQL-backed app API has GitHub/Gitea deploy webhooks. The Mini has GitHub hooks and recorded deliveries, but still runs a build before the exact-SHA fix; see [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 baseline transition completed at `bba290db041e9f497c7161543c679d9d348b742d` with schema 51 and writer floor 33; a signed repair recovered a PID-reuse race. In the Nov 10 recovery, signed controller release `5bb691de` finalized the existing A4 generation without creating a new transition or rerunning migration. The API serves exact A4 source, authenticated platform smoke passes, and host status is `ok`. Workload health is mixed: the inventory has stopped/unhealthy apps, unknown background services, and active incidents. See [latest launch evidence](LAUNCH-STATE.md#mini-direct-v3-generation-finalized-2026-11-10-0630-utc). Mini remains independent of the DO Fleet. |
+| Mini direct | Upgrade the independent Mini; deploy its app workloads from GitHub through Norn | Signed platform release and installed Mini upgrade controller. The active `2a2d712a` build includes push-commit-SHA pinning for GitHub/Gitea webhooks, but a fresh Mini push-to-deployment receipt and workload operation were not qualified. See [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 baseline transition completed with schema 51 and writer floor 33. On Nov 10, the signed direct controller lane promoted `2a2d712a`; schema stayed at 52, the earlier A4 recovery generation remained `candidate-promoted`, and platform plus queued smoke passed. Two queued upgrade attempts failed before promotion at the host-agent stability check. Workload health remains mixed and workload admission/resize remain separate gates. See [latest launch evidence](LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc). Mini remains independent of the DO Fleet. |
 | DO Fleet Norn release | Change Norn API/UI on the existing three-control DO Fleet | `work-staging-norn-release.yml`; exact publisher artifacts, fresh protected state readback, host key receipt, all-member staging, all-stop, target promotion, singleton verification, then durable pin update | Deliberate maintenance interruption. Forward-only recovery resumes the same target. Never restart old bytes after any target starts. |
 | Fleet bootstrap | Create or recreate a Fleet | Protected provider `plan.yml`/`apply.yml`, then post-create reconciliation and Ansible. Protected `norn-fleet` main at `35e1c893` declares the existing DO staging shape: 3 control, 2 ingress, 4 app Droplets; the 18:58 UTC provider readback matched that shape. The current staging config remains one app pool (`workload: app`). Main supports a future two-pool General + Stateful role pair with stable IDs `general` and `stateful`, but no fresh-Fleet config exists yet; sizing, capacity, cost envelope, placement, and stateful recovery remain open. Do not conflate this with staging or Genesis, which installs a dormant controller on an existing Fleet without creating provider resources. See the [topology source audit](staging-topology-source-audit-2026-11-08.md). | Infrastructure lifecycle work, separate from platform release. The provider apply is not live-qualified for the future profile: joined persistent apply/recovery, exact provider identities, per-service secret lifecycle, actual DO grant evidence, post-create bootstrap, and terminal receipt remain open. |
 | Workload resize/release | Add or remove application capacity or release a new application version | Fixed-image replica scaling and node-pool capacity are separate from the M5 mixed-version controller. The staging-only authenticated admission API accepts a signed V3 qualification ID and target replica count, then derives current policy, Fleet placement, active route, Nomad lineage, app source and encrypted SOPS snapshot. Accepted recovery input now pins the exact job-driving app spec plus encrypted SOPS bytes in a key-ring envelope; worker target construction no longer needs the current checkout. | The API is opt-in and not deployed or live-qualified. Offline acceptance/recovery evidence now includes store/worker tests and a real-etcd acceptance/open integration test. Full production executor/worker restart recovery, private-input retention/deletion, production-store process/lease crash matrix, and disposable Nomad/ingress qualification remain open. Live canary and stateful data-compatibility qualification are also open. Route-proof loss holds progress and requires fresh same-generation readback. Norn control binaries stay fixed unless separately released. |
@@ -36,18 +38,16 @@ The latest `work-staging-norn-release` run
 ([42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951))
 was cancelled before its release job ran; the last successful run is
 [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022)
-from Nov 2. The latest protected state readback
-([42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657))
-failed while comparing the current protected backend state with retained
-private bytes: the current backend state no longer matches the owner-reviewed
-retained digest, lineage and serial used by that one-use approval. Refresh the
-state, route, and host-key receipts together, then obtain a new exact-bound
-readback. The required work-staging variable
+from Nov 2. Protected raw backend-object readback
+([42783948949](https://github.com/antiartificial/norn-fleet/actions/runs/42783948949))
+passed for the exact retained state bytes and provider identity. It did not
+establish current Norn/API, host-key, workload, or route health. The required
+work-staging variable
 `NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` is absent. The Nov 10 provider plan
 ([42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397))
-was plan-only. These workflow results do not establish current Norn/API or
-workload health; obtain a fresh protected private inventory before claiming the
-DO staging Fleet is online.
+was plan-only, and the protected private service inventory remains failed/held.
+Refresh runner and controller pins, then obtain a fresh protected private
+inventory before claiming the DO staging Fleet is online.
 
 ## Mini Git-to-controller workload path
 
@@ -89,15 +89,14 @@ secret and treat rotation as a coordinated change across the hooks. Repository
 matching includes the Git host as well as owner/repository path, so an
 unrelated host with the same path cannot select the app.
 
-The webhook handler previously queued the branch ref. This can deploy a later
-commit if the branch advances before the worker fetches it. The current source
-change queues the push event's `after` SHA instead, ignores branch deletion,
-and uses the stored SHA for manual replay. The focused disposable-PostgreSQL
-integration test verifies the accepted operation and replay retain that SHA.
-PR #356 merged this change as `ccb49a5662a73a550274ce6d144bd5d6daf7491d`.
-It has not been deployed or live-qualified. Until the Mini runs this build and
-passes the webhook rehearsal below, do not treat its webhook path as an
-exact-push deployment trigger.
+The webhook handler previously queued the branch ref. The active Mini release
+includes PR #356 (`ccb49a5662a73a550274ce6d144bd5d6daf7491d`), which queues the
+push event's `after` SHA, ignores branch deletion, and uses the stored SHA for
+manual replay. Focused disposable-PostgreSQL tests prove the accepted operation
+and replay retain that SHA. This source fix is deployed on Mini, but a fresh
+push-to-Mini readback through receipt, durable operation, and workload
+postflight has not been run. Do not claim the webhook path is end-to-end
+qualified until that rehearsal succeeds.
 
 For personal toy and sample projects, keep GitHub as the canonical remote.
 Use one-way mirroring to Norn only when a local/private copy is useful; do not
@@ -147,12 +146,12 @@ conflicting payload rejection, missing commit SHA, branch deletion, and
 same-SHA manual replay. Keep the broader gates open until tests cover unknown
 repo/ref mappings, checkout changes after acceptance, controller restart, and
 lost scheduler or route responses. Then verify the Mini endpoint and webhook
-configuration in a private rehearsal. The Mini currently runs
-`d4dc88e0…`, before the source-pinning fix merged as `ccb49a56…`; existing hooks
-therefore do not yet have the exact-push-SHA guarantee. Do not claim live
-exact-SHA Mini webhook support until that build is installed and the private
-rehearsal passes. Do not claim mixed-version Mini availability
-without the separate overlap protocol and qualification.
+configuration in a private rehearsal. The Mini now runs a build containing the
+source-pinning fix merged as `ccb49a56…`, but the hook-to-receipt-to-operation
+path has not been exercised after the upgrade. Do not claim live exact-push
+Mini webhook support until that private rehearsal passes. Do not claim
+mixed-version Mini availability without the separate overlap protocol and
+qualification.
 
 ## DO Norn release protocol
 

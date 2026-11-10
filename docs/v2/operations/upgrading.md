@@ -6,22 +6,24 @@ For V3 release planning, use the current [platform release lanes and workload
 resizing guide](../../v3/release-lanes-and-workload-resizing.md). Mini is an
 independent node; the DO staging Fleet is a separate environment. The existing
 DO Norn release protocol is all-stop and forward-only. Mixed-version Norn
-control upgrades are not qualified. The Mini's active `norn.startup/v2`
-contract supports reader/writer floors 5/33. Signed API release `a4b9c3b3`
-adds catalog migration 52. Signed controller release `5bb691de` completed the
-existing recovered-forward generation `gen-1a769550b1051bc9358ce8e8758265e5`
-at `candidate-promoted` without changing its A4 candidate or rerunning
-migration. The API serves exact A4 source; authenticated platform smoke and
-host status pass. The inventory still contains stopped/unhealthy apps and
-unknown background services, so platform health is not a claim that every
-workload is healthy. See the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-direct-v3-generation-finalized-2026-11-10-0630-utc).
-In a direct upgrade with no retained
-recovery fence, the standard `upgrade` lane is contract-compatible after
-protected backup and exact-candidate private-shadow proof. The Mini currently
-has a retained failed-transition sentinel, so the ordinary lane is blocked
-until a signed `recovered-forward` transition completes. Do not substitute
-`legacy-baseline`: that fenced lane requires zero queued Fleet dispatch
-receipts, while signed `recovered-forward` can preserve them.
+control upgrades are not qualified. Mini is an independent node, not a Fleet
+member. Its API uses the `norn.startup/v2` contract with reader/writer floors
+5/33 and catalog schema 52. The signed platform release
+`2a2d712a7484b0d7ee82036ccc8d077d1ffc8697` is now active on Mini after a
+successful direct controller upgrade. The existing recovered-forward
+generation `gen-1a769550b1051bc9358ce8e8758265e5` remains `candidate-promoted`
+with its A4 recovery candidate; the forward upgrade preserved that evidence
+and did not advance the schema beyond 52. Authenticated platform smoke passes.
+The inventory still contains stopped/unhealthy apps and unknown background
+services, so platform health is not a claim that every workload is healthy.
+See the [Mini upgrade and recovery record](../../v3/LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc).
+
+The retained failed-transition sentinel means every later forward upgrade must
+verify the completed recovered-forward journal, its signed evidence, and the
+exact adoption receipt. The standard `upgrade` lane is available when those
+checks pass. Do not substitute `legacy-baseline`: that fenced lane requires
+zero queued Fleet dispatch receipts, while signed `recovered-forward` can
+preserve them.
 
 The safe upgrade path restarts only the Norn API process. Do not use `make down` for a production-ish local upgrade because it also stops Nomad and Consul, which can disrupt hosted apps.
 
@@ -57,6 +59,17 @@ norn platform queue-upgrade "$release_sha"
 norn platform queue-rollback <sha-prefix>
 norn platform queue-smoke
 ```
+
+The Mini's 2026-11-10 upgrade exposed a queue-specific gate: two queued upgrade
+attempts stopped before promotion with `Mini host agent is not stably running
+from the exact promoted release`, while the same signed platform controller
+completed from the direct `env-exec` lane and the durable queued smoke passed
+afterward. Treat this as an unresolved queued-upgrade controller issue. Before
+retrying a queued upgrade, inspect the terminal operation output and prove the
+current release and API health; never replay a failed operation's idempotency
+key. For a direct Mini upgrade, keep `NORN_DRAIN_MODE=fail`, use the exact
+signature-verified SHA, and invoke the managed controller through its
+authenticated environment wrapper. See the [incident and evidence record](../../v3/LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc).
 
 Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
 local development rehearsal but can move between review and upgrade.

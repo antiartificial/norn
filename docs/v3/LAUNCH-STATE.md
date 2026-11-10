@@ -1,5 +1,43 @@
 # Norn v3 launch state
 
+## Mini direct V3 platform upgrade completed (2026-11-10 09:25 UTC)
+
+PR [#396](https://github.com/antiartificial/norn/pull/396) fixed recovered-
+forward evidence verification when immutable predecessor evidence references
+an archived adoption receipt. It merged as
+`2a2d712a7484b0d7ee82036ccc8d077d1ffc8697`. Protected V3 qualification run
+[42787969413](https://github.com/antiartificial/norn/actions/runs/42787969413)
+passed all 12 jobs; protected release run
+[42788567933](https://github.com/antiartificial/norn/actions/runs/42788567933)
+published the immutable signed prerelease with all 16 expected assets.
+
+The exact Mini ARM64 release passed external signature verification and
+passive preflight on port 18800. The candidate reported schema 52, reader floor
+5, writer floor 33, and disabled recovery/operation workers. The corrected
+verifier resolved the archived receipt by its signed raw digest; the managed
+host copy was backed up and atomically synced from that already-verified
+release to break the first-upgrade helper cycle.
+
+Two durable `platform.upgrade` attempts stopped before promotion at
+`Mini host agent is not stably running from the exact promoted release`. After
+confirming the API still served A4, the operation drain was clear, the signed
+evidence verifier passed, and the host-agent passed its stability check while
+idle, the operator ran the standard signed `platform-upgrade upgrade` controller
+through the authenticated `env-exec` wrapper. It preserved the recovered-
+forward journal and promoted only the exact signed `2a2d712a` release. The
+schema remained at 52; the migration-only phase completed at that same version.
+The API returned healthy on the exact new source, and authenticated
+`norn platform smoke` passed health, drain, release, and event checks. The host
+agent binary exactly matches the active release. A subsequent durable queued
+`platform.smoke` also succeeded.
+
+This verifies the Mini direct platform-upgrade lane and a working durable smoke
+operation. It does **not** qualify queued platform upgrades: the two
+pre-promotion failures at the host-agent stability check remain an open
+controller issue. No Mini workload admission or workload-resize test was run.
+Mini remains independent of the DO staging Fleet; the protected Fleet
+readback limits recorded below are unchanged.
+
 ## Mini direct V3 generation finalized (2026-11-10 06:30 UTC)
 
 The protected repair release for PR #391, exact SHA
@@ -54,15 +92,15 @@ workloads, while also showing that not all are running. These Nomad job counts
 are separate from the Norn API's app and service inventory. They do not prove
 that a new workload manifest has been admitted through a release controller.
 
-The first smoke invocation from the thin SSH shell could not find the `norn`
+At the time of this snapshot, the first smoke invocation from the thin SSH shell could not find the `norn`
 child command because the wrapper omitted `$HOME/go/bin` from `PATH`. The
 read-only check passed after explicitly adding that directory. PR #395 merged
 as `df105b3ba81f81a8189b4e0ade15dbb52e568835`, passed all 12 protected V3
 qualification jobs, and its immutable signed release was published. The PATH
-fix is in that candidate, but Mini still runs A4; it has not yet received the
-candidate.
+fix was later included in the signed `2a2d712a` release and verified by the
+post-upgrade smoke recorded above.
 
-## Mini forward-upgrade attempt held by archived adoption receipt lookup (2026-11-10 08:59 UTC)
+## Historical: Mini forward-upgrade attempts exposed archived receipt lookup (2026-11-10 08:59 UTC)
 
 Exact signed candidate `df105b3ba81f81a8189b4e0ade15dbb52e568835` passed
 authenticated managed-script preflight on Mini (passive API on port 18800,
@@ -75,18 +113,14 @@ incident record. The second then exposed a verifier bug: it read only the
 current receipt although immutable predecessor evidence bound the archived
 receipt's digest. No API restart, schema migration, or release promotion
 occurred; Mini remains healthy on A4. The verifier fix and deterministic
-regression are being prepared. Retry only after that exact fix is qualified,
-signed, published, imported, and preflighted.
+regression were merged, qualified, signed, published, and successfully used in
+the later Mini upgrade documented above. Those two A4 operation attempts remain
+terminal failed history and did not change the active generation.
 
-The same Mini control plane reports a configured staging Fleet with 3 control,
-2 ingress, and 4 app nodes and 24 historical read-only capacity plans (latest
-Oct 13). That is not fresh provider or DO API/workload evidence. The protected
-raw backend-object readback in Norn Fleet run
-[42777258334](https://github.com/antiartificial/norn-fleet/actions/runs/42777258334)
-freshly verified the retained state bytes and provider identity for the three
-control Droplets. It did not establish Norn API or workload health, and the
-protected private service inventory/readback remains failed/held. Do not claim
-DO staging is online until that protected private inventory succeeds.
+The Mini control plane's configured staging topology and 24 historical
+read-only capacity plans (latest Oct 13) are not fresh provider or DO
+API/workload evidence. The later raw state-object result and remaining online
+health gates are recorded in the current DO evidence section below.
 
 ## Historical: Mini finalizer repair qualified; exact release awaiting protected publish (2026-11-10 06:07 UTC)
 
@@ -236,23 +270,28 @@ the recovered-forward directory. The authenticated Mini source and schema
 readbacks were performed through the existing controller; no DO Fleet changes
 were made.
 
-## Current DO staging Fleet evidence (2026-11-10 03:23 UTC)
+## Current DO staging Fleet evidence (2026-11-10 09:25 UTC)
 
-Current DO Norn/API and workload health are still unverified. In
-`antiartificial/norn-fleet`, the latest `work-staging-norn-release` run,
-[42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951),
-was cancelled before its release job ran any steps; the latest successful
-release run is [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022)
-from Nov 2. The latest protected state readback attempt,
-[42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657)
-on Nov 5, failed while pulling current protected backend state and comparing
-the privately retained bytes. The current one-use approval digest does not
-match the configured state input, and the required work-staging variable
-`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` is absent; no fresh intent or
-readback dispatch was created. The Nov 10 provider
-plan [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
-was plan-only and made no provider changes. The successful Nov 9 drift run
-also made no changes; neither proves current Norn service health.
+DO Norn/API, workload, route, and host-key health are still unverified. The
+protected raw backend-object readback in Norn Fleet run
+[42783948949](https://github.com/antiartificial/norn-fleet/actions/runs/42783948949)
+passed on merged `norn-fleet` source `bf5428f01e6c77e12a4f9844a5b454341d5e4dbd`.
+It verified retained state SHA-256
+`8cf77ae4f5ea5729a8aecde21fe05f82ca36066f66663f2bb5fe3ef14b19060c`, lineage
+`9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23, and provider identity for
+the three control Droplets. This is a read of retained backend bytes; it did
+not prove current provider instance health or private service state.
+
+The private Genesis/service inventory remains held: the protected
+`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` setting is absent, current route
+and host-key pins need refresh, and the only registered runner is the online
+Mac finalizer rather than the required protected Linux
+`norn-work-staging-fleet-effect` runner. Do not repurpose that Mac runner or
+claim the DO Fleet is online. The Nov 10 provider plan
+[42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
+was plan-only and made no provider changes. A fresh exact-bound private
+inventory of controls, workloads, routes, and provider identities is still the
+next live-health gate.
 
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
@@ -494,8 +533,10 @@ probe is not proof of control-plane health.
   delivery receipts (17 `deploying`, 8 `ignored`). Six active GitHub push hooks for
   mapped personal repositories target `norn-webhooks.slopistry.com`; their
   recent GitHub delivery lists were empty, and endpoint-to-Mini routing and
-  delivery-to-operation outcomes were not correlated. The Mini still runs
-  `d4dc88e0`, before the exact-push-SHA fix merged as `ccb49a56`. See the
+  delivery-to-operation outcomes were not correlated. At this Nov 9 read time,
+  the Mini ran `d4dc88e0`, before the exact-push-SHA fix merged as `ccb49a56`.
+  The later `2a2d712a` release includes that fix, but end-to-end webhook
+  deployment remains unqualified. See the
   [Mini Git-to-controller workload path](release-lanes-and-workload-resizing.md#mini-git-to-controller-workload-path).
   Mini remains independent of Fleet.
 - **DO staging:** read-only `doctl --context work` queries at 18:58 UTC found
