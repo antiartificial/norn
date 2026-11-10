@@ -220,6 +220,32 @@ documents the package/timer side effects; PR
 [#966](https://github.com/antiartificial/norn-fleet/pull/966) documents this
 same-gate recovery limit.
 
+## DO Genesis readback follow-up (2026-11-10 20:01 UTC)
+
+Fleet PR [#968](https://github.com/antiartificial/norn-fleet/pull/968)
+merged as `31c200f3a7653485c4a48511c1c8ce1623c18fe4`. A fresh signed,
+state- and host-key-bound readback intent was dispatched as run
+[42890599944](https://github.com/antiartificial/norn-fleet/actions/runs/42890599944).
+The exact-source checkout, derived private readback variables, pinned Ansible
+environment, original protected-input checks, and live private management and
+control SSH checks all passed. The playbook verified that the Genesis service
+and timer were inactive and the timer disabled, and verified the installed
+controller source pin. The final read-only journal task then failed closed:
+`genesis.sqlite` had SQLite WAL sidecars, and the helper refuses to inspect a
+journal with sidecars. No Genesis contents were reported, and the controller
+recorded the one-use run terminal.
+
+This is now the specific blocking issue, replacing the earlier private-variable
+mismatch report. Do not remove or checkpoint the journal sidecars to force a
+read. Fix the readback to inspect a stable copy of the database and any WAL
+data without mutating the source, add deterministic fixture coverage, then use
+a fresh one-use readback authorization. DO services, etcd quorum, Nomad,
+Consul, routes, and workload response remain unverified; provider inventory
+and SSH reachability are not service-health proof. Fleet PR #969's LaunchAgent
+CA persistence fix remains open with exact-head contract validation running.
+Norn PR #414's release checklist checks passed, but its draft still needs this
+updated readback outcome before merge.
+
 ## Release timing
 
 No V3 launch date is committed. Remaining program gates are controller
