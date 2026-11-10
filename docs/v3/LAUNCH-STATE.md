@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current Mini recovery status (2026-11-10 02:56 UTC)
+## Current Mini recovery status (2026-11-10 03:23 UTC)
 
 The protected A8 controller release
 [`platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`](https://github.com/antiartificial/norn/releases/tag/platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63)
@@ -21,7 +21,7 @@ verified the source and built the pinned UI plus all four platform bundles;
 its protected signing job is waiting for owner approval. The release is not
 yet signed or published, so no further Mini transition was run.
 
-A fresh read-only host inspection at 02:54 UTC confirmed the current symlink
+A fresh read-only host inspection at 03:23 UTC confirmed the current symlink
 still selects A4 and the exact generation journal remains at
 `candidate-preservation-pending`; its preservation receipt says
 `preservationMatched=true`, and no finalization receipt exists. The API
@@ -34,6 +34,17 @@ not restored. Do not report the Mini upgrade complete until the signed repair
 controller finalizes the same generation, restores the original API and host
 agent behavior, and authenticated API plus host/workload readback passes.
 
+A 03:23 read-only check confirms `active-generation.json` selects generation
+`gen-1a769550b1051bc9358ce8e8758265e5`, whose nested journal is the
+`candidate-preservation-pending` transition above. The root-level
+`recovered-forward/transition.json` still records an unrelated October
+transition; use the active-generation pointer and its journal, not that stale
+root-level record, to identify the current recovery state. The API LaunchAgent
+has PID 93463, the host-agent LaunchAgent label is absent, and the host
+supervisor has no running PID. The A4 current symlink is still selected and no
+finalization receipt exists. These process and journal reads do not establish
+authenticated API health or workload recovery.
+
 During this recovery, `NORN_PLATFORM_REPO` was also added to Mini's encrypted
 API environment so the GUI LaunchAgent can verify the adopted source lineage.
 The original encrypted environment was retained as a mode-0600 backup under
@@ -41,9 +52,27 @@ the recovered-forward directory. The authenticated Mini source and schema
 readbacks were performed through the existing controller; no DO Fleet changes
 were made.
 
+## Current DO staging Fleet evidence (2026-11-10 03:23 UTC)
+
+Current DO Norn/API and workload health are still unverified. In
+`antiartificial/norn-fleet`, the latest `work-staging-norn-release` run,
+[42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951),
+was cancelled before its release job ran any steps; the latest successful
+release run is [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022)
+from Nov 2. The latest protected state readback attempt,
+[42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657)
+on Nov 5, failed while pulling current protected backend state and comparing
+the privately retained bytes. The current one-use approval digest does not
+match the configured state input, and the required work-staging variable
+`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` is absent; no fresh intent or
+readback dispatch was created. The Nov 10 provider
+plan [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
+was plan-only and made no provider changes. The successful Nov 9 drift run
+also made no changes; neither proves current Norn service health.
+
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
-## Current V3 release readiness (2026-11-10 01:52 UTC)
+## Historical V3 release readiness snapshot (2026-11-10 01:52 UTC)
 
 Protected-master qualification for exact source
 `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
@@ -143,8 +172,8 @@ change occurred. PR #370 makes the recovered-forward Mini lane preserve these
 receipts under signed transition evidence while `legacy-baseline` continues
 to require them drained. See the [23:08 reconciliation finding](LAUNCH-HISTORY.md#seven-stale-fleet-dispatch-receipts-remain-unreconcilable-on-current-lane-2026-11-09-2308-utc).
 
-All 21 checked-in statechart configurations were rerun from current `master`;
-their configured rules passed, including four missing-evidence workload
+All 26 checked-in statechart configurations were rerun from current `master` on
+2026-11-10; their configured rules passed, including four missing-evidence workload
 admission cases and concurrent two-client admission. Deadlock checks passed
 where enabled; the concurrent-admission model intentionally disables them for
 terminal stutter states. Coverage includes Mini direct, existing DO release,
@@ -159,12 +188,15 @@ not runtime or controller-refinement evidence. See the dated
 [launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2256-utc)
 for per-model counts and limits.
 
-The 22:47 UTC snapshot below is historical. The 00:33 UTC post-stop inventory is
-recorded above. The current signed generation is halted at `host-agent-fenced`
-before live database mutation. Do not retry with a new transition ID or edit the
-journal. After exact-source release `a8aa2860` is signed and published, use its
-distinct signed controller-repair path to resume this exact generation. After
-recovery, verify migration 52, generation
+The 22:47 UTC snapshot and the 00:33 UTC post-stop inventory above are
+historical. The latest status is in the current Mini recovery section at the
+top of this document: the active generation is at
+`candidate-preservation-pending`, and the A8 release is already signed,
+published, imported, and verified. The ancestry-fix source `2e8bd545` passed
+qualification and bundle preparation, but its separate exact-source publish
+job still requires owner approval. Do not retry with a new transition ID or
+edit the journal. After the exact repair release is published, resume this same
+generation through the signed controller path and verify the generation
 receipt, API/schema, host-agent restoration, host assurance, and workload smoke.
 
 ## Historical Mini runtime evidence snapshot (2026-11-09 22:47 UTC)

@@ -33,6 +33,26 @@ API health is unverified by this check. The `com.norn.host-agent` LaunchAgent
 label is absent; host supervisor is not running. No write-fence release,
 normal activation, host-agent restoration, or workload readback occurred.
 
+A 03:12 UTC followup read showed that the top-level
+`recovered-forward/transition.json` is an older October record. The current
+authoritative pointer is `active-generation.json`, which selects
+`gen-1a769550b1051bc9358ce8e8758265e5`; that generation's nested journal is at
+`candidate-preservation-pending`. The root-level legacy record was not changed.
+Future status and recovery checks should resolve the active generation before
+reading a journal.
+
+## Mini active-generation readback confirms preservation-pending (2026-11-10 03:23 UTC)
+
+A 03:23 UTC read-only Mini inspection confirmed that
+`active-generation.json` still selects `gen-1a769550b1051bc9358ce8e8758265e5`
+and its nested journal remains at `candidate-preservation-pending`, with
+`preservationMatched=true` and no finalization receipt. The current symlink
+still selects A4. The API LaunchAgent has a process, the host-agent LaunchAgent
+label is absent, and the host supervisor has no running PID. This does not
+establish authenticated API health or workload recovery. The old root-level
+`recovered-forward/transition.json` remains unrelated October data; resolve the
+active-generation pointer before reading the current journal.
+
 ## A8 controller resumed Mini into preservation-pending; finalizer gate found (2026-11-10 02:25 UTC)
 
 After owner approval, protected release workflow
