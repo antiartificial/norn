@@ -611,6 +611,20 @@ def journal_receipt_path(manifest: dict) -> Path:
 def advance_plist(journal: Path, expected: dict, manifest: dict, key: bytes, action: str):
     path = plist_record_path(journal)
     record = read_plist_record(path, key)
+    receipt_sha = None
+    if record.get("controllerSHA") != expected["controllerSHA"]:
+        if action != "plist-normal":
+            fail("signed API plist controller can only be rebound at normal activation")
+        receipt_sha = verified_preservation_receipt(journal, expected, key)
+        # A finalizer release can differ from the signed controller that
+        # staged the maintenance launcher. Rebind through the existing
+        # signed-record migration before switching to the normal plist. The
+        # caller has already phase-checked candidate-normal-activation-pending
+        # and verified the finalized API response; stage_plist validates the
+        # old HMAC, previous release signature, launcher digest, original
+        # plist, and exact old/new maintenance variants.
+        stage_plist(journal, expected, manifest, key)
+        record = read_plist_record(path, key)
     if any(record.get(k) != expected[k] for k in ("controllerSHA", "candidateSHA", "sourceSHA", "transitionID", "generationID", "evidenceSHA256")):
         fail("signed API plist recovery record belongs to another transition")
     original_launcher_sha, signed_launcher_sha = verify_launchers(Path(__file__).with_name("platform-upgrade"))
@@ -628,7 +642,8 @@ def advance_plist(journal: Path, expected: dict, manifest: dict, key: bytes, act
                                 signed_launcher=launcher)
     if digest(maintenance) != record["maintenancePlistSHA256"]:
         fail("signed maintenance API plist changed")
-    receipt_sha = verified_preservation_receipt(journal, expected, key)
+    if receipt_sha is None:
+        receipt_sha = verified_preservation_receipt(journal, expected, key)
     normal = plist_variant(original, normal_plist_values(expected, manifest, receipt_sha), clear_recovery=True,
                            signed_launcher=launcher)
     if action == "plist-normal":
@@ -681,6 +696,51 @@ def preserve_candidate(journal: Path, expected: dict, manifest: dict, key: bytes
                                 expected["candidateSHA"], after_digest, key)
     wrapper.atomic_private_create(receipt_path, raw)
     verified_preservation_receipt(journal, expected, key)
+
+
+def verify_preservation_api_binding(args, expected: dict, manifest: dict, key: bytes) -> None:
+    """Require the pending API to match its HMAC-bound signed launcher."""
+    home = Path.home()
+    verifier = configured_verifier(home)
+    original_launcher_sha, _ = verify_launchers(args.controller)
+    plist = api_plist_path()
+    info = plist.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022):
+        fail("candidate API LaunchAgent plist is unsafe")
+    job = plistlib.loads(plist.read_bytes())
+    arguments = job.get("ProgramArguments")
+    if (job.get("Label") != "com.norn.api" or not isinstance(arguments, list)
+            or not arguments or not isinstance(arguments[0], str)):
+        fail("candidate API LaunchAgent is not the expected managed job")
+    record = read_plist_record(plist_record_path(args.journal), key)
+    bound_launcher = verify_previous_api_launcher(
+        arguments[0], args.journal, home / "norn/releases", verifier, key,
+        candidate=args.candidate, source=args.source, transition=args.transition,
+        generation_id=expected["generationID"], evidence_sha=expected["evidenceSHA256"],
+        original_launcher_sha=original_launcher_sha)
+    if Path(arguments[0]).resolve() != bound_launcher.resolve():
+        fail("candidate API LaunchAgent differs from its signed plist record")
+    original = base64.b64decode(record["originalPlistBase64"], validate=True)
+    if digest(original) != record["originalPlistSHA256"]:
+        fail("signed original API plist changed")
+    actual, mode = api_plist_bytes()
+    if mode != record["originalPlistMode"]:
+        fail("candidate API LaunchAgent mode differs from its signed original")
+    maintenance = plist_variant(
+        original, plist_maintenance_values(expected, manifest), clear_recovery=False,
+        signed_launcher=bound_launcher)
+    if actual != maintenance or digest(maintenance) != record["maintenancePlistSHA256"]:
+        fail("candidate API LaunchAgent differs from its signed maintenance plist")
+    loaded = subprocess.run(["launchctl", "print", f"gui/{os.geteuid()}/com.norn.api"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if loaded.returncode != 0:
+        fail("candidate API LaunchAgent is not loaded for preservation")
+    paths = re.findall(r"^\s*path\s*=\s*(.+?)\s*$", loaded.stdout, re.MULTILINE)
+    programs = re.findall(r"^\s*program\s*=\s*(.+?)\s*$", loaded.stdout, re.MULTILINE)
+    if (len(paths) != 1 or Path(paths[0]).resolve() != plist.resolve()
+            or len(programs) != 1 or Path(programs[0]).resolve() != bound_launcher.resolve()):
+        fail("loaded candidate API job differs from its signed launcher plist")
 
 
 def verify_launcher_runtime(journal: Path, expected: dict, manifest: dict, key: bytes):
@@ -826,9 +886,7 @@ def main():
         print("staged")
         return
     if args.action == "preserve":
-        record = read_plist_record(plist_record_path(args.journal), key)
-        if any(record.get(k) != expected[k] for k in ("controllerSHA", "candidateSHA", "sourceSHA", "transitionID", "generationID", "evidenceSHA256")):
-            fail("candidate preservation lacks the exact signed API plist recovery record")
+        verify_preservation_api_binding(args, expected, manifest, key)
         preserve_candidate(args.journal, expected, manifest, key)
         print("preserved")
         return

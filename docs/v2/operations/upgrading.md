@@ -17,7 +17,10 @@ LaunchAgent and host supervisor are not running. Finalization is incomplete;
 exact-source ancestry repair `2e8bd545547f4bfa375c68fac9be9667954276de` is
 published as an immutable signed release and imported with both artifact and
 external signature checks passed at 05:17 UTC; it has not been run on Mini.
-Follow the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-release-imported-same-generation-still-pending-2026-11-10-0517-utc).
+At 05:31, authenticated API/status reads were healthy, but the helper rejects
+the existing A8-bound API launcher record. Keep the generation fenced until a
+follow-on signed controller handles that exact prior-controller handoff. See
+the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-controller-mismatch-found-same-generation-still-pending-2026-11-10-0531-utc).
 Do not treat API health or catalog schema 52 as completion. In a direct upgrade with no retained
 recovery fence, the standard `upgrade` lane is contract-compatible after
 protected backup and exact-candidate private-shadow proof. The Mini currently
@@ -107,7 +110,7 @@ existing generation and reached preservation-pending. Do not invoke ordinary
 `upgrade`, create a new transition ID, restart the host agent by hand, or edit
 the journal. The signed-descendant finalization fix is exact source
 `2e8bd545547f4bfa375c68fac9be9667954276de`; its immutable release is published,
-imported, and verified but not run on Mini. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-release-imported-same-generation-still-pending-2026-11-10-0517-utc)
+imported, and verified but not run on Mini. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-controller-mismatch-found-same-generation-still-pending-2026-11-10-0531-utc)
 for publication and live-read receipts. Each repair authorization must bind
 the current generation and journal digest; refresh it after a journal phase
 change. Publication alone does not prove that Mini is ready.

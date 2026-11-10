@@ -1,5 +1,25 @@
 # Norn v3 launch history
 
+## Mini maintenance healthy; finalizer controller handoff blocked (2026-11-10 05:31 UTC)
+
+Authenticated read-only checks returned `/api/health=ok`, A4 source
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`, and the exact pending maintenance
+status for transition `mini-v3-20261110T0021Z-a4b9c3b3`. The active generation
+remains `gen-1a769550b1051bc9358ce8e8758265e5` at
+`candidate-preservation-pending`; the journal and pointer hashes match the
+05:17 read. The preservation receipt exists and the finalization receipt does
+not. API LaunchAgent and HMAC sidecar remain bound to signed A8 controller
+`a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`; host-agent LaunchAgent is unloaded.
+
+The imported and signature-verified 2e8 helper's read-only `launcher-verify`
+rejects the prior A8 controller binding. The A8 launcher itself verifies
+against the existing plist and serves authenticated health/version/status.
+This exposes a cross-release handoff gap: the finalizer needs to preserve the
+valid A8 binding through the state comparison, then rebind at the receipt-bound
+normal activation boundary. No live finalizer action or service restart ran.
+The 2e8 release remains imported and immutable; a follow-on signed repair is
+required before activation.
+
 ## Finalizer release imported and reverified; no activation (2026-11-10 05:17 UTC)
 
 The owner-approved immutable release for source
