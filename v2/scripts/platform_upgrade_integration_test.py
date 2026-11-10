@@ -104,6 +104,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertRegex(rollback, r"(?m)^\s*local .*\brelease\b.*\bsha\b.*\bversion\b")
         self.assertIn('release="$releases/$candidate"', completed)
         self.assertIn('recovered_forward_current_signed_descendant_sha "$candidate"', completed)
+        self.assertIn('"$recovered_preservation_receipt" --historical)', completed)
         self.assertIn('validate_active_responses "$expected_version" "$version_file" "$schema_file" "$active_sha"', completed)
         self.assertIn('release="$previous_release"', rollback)
 

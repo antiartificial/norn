@@ -4040,7 +4040,7 @@ recovered_forward_completed_candidate_validate() {
   # still needs its requested forward-upgrade release and SHA after this check.
   local fields transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha release
   local token health_json version_json schema_json expected_version version_file schema_file verifier active_sha active_release
-  fields="$("$script_dir/mini-recovered-forward-completed-gate" "$recovered_journal_path" "$current_link" "$releases" "$recovered_preservation_receipt")" || fail "completed recovered-forward file bindings do not verify"
+  fields="$("$script_dir/mini-recovered-forward-completed-gate" "$recovered_journal_path" "$current_link" "$releases" "$recovered_preservation_receipt" --historical)" || fail "completed recovered-forward file bindings do not verify"
   IFS=$'\t' read -r transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha <<<"$fields"
   if [[ "$recovered_selected_generation_kind" == generation ]]; then
     [[ "$transition" == "$recovered_selected_transition_id" && "$source" == "$recovered_selected_source_sha" && "$candidate" == "$recovered_selected_candidate_sha" ]] || fail "completed journal does not match the signed active-generation pointer"
