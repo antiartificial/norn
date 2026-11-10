@@ -1,5 +1,16 @@
 # Norn v3 launch history
 
+## Focused offline release models rerun (2026-11-10 01:05 UTC)
+
+TLC reruns on the current tree reproduced five relevant release protocols:
+Mini recovery (90 states / 179 transitions), workload resize capacity four
+(103 / 275) and capacity three (24 / 52), fresh General + Stateful pools
+(45 / 98), and nine-node staging create/recovery (102 / 210). All configured
+invariants and deadlock checks passed. Outputs were written under `/tmp` and
+no provider or host action occurred. These bounded checks do not prove
+implementation refinement, secret lifecycle, provider effects, runtime health,
+or live Nomad placement.
+
 ## DO staging plan refreshed without provider mutation (2026-11-10 00:55 UTC)
 
 Protected `norn-fleet` main `35e1c893198efbdc9e407d708e5096a32b485f7d`
