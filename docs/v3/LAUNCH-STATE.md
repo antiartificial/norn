@@ -1,14 +1,15 @@
 # Norn v3 launch state
 
-## Mini finalizer release published; same generation still pending (2026-11-10 05:10 UTC)
+## Mini finalizer release imported; same generation still pending (2026-11-10 05:17 UTC)
 
 Owner approval was applied to the exact `platform-release` environment gate for
 source `2e8bd545547f4bfa375c68fac9be9667954276de`. Protected release workflow
 [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675)
 completed successfully. GitHub reports the matching full-SHA tag as immutable
-and published, with signed manifests and four platform bundles. Publication
-did not install the repair release or resume the Mini; the exact repair release
-directory was absent on the Mini at the read below.
+and published, with signed manifests and four platform bundles. At 05:17 UTC,
+the Mini ARM64 bundle and installed release passed both the artifact verifier
+and configured external signature verifier. This imported the signed
+controller but did not activate it or resume the Mini.
 
 A fresh authenticated inventory at 05:10 UTC reports `/api/health` as `ok` and
 `/api/version` as A4 source
@@ -18,7 +19,7 @@ running and healthy, two pending, one dead, and eight without Nomad status) and
 Fleet, and production-readiness endpoints returned 404 and remain unknown.
 This does not prove full workload recovery.
 
-The 05:10 read resolved `active-generation.json` to
+The 05:17 read resolved `active-generation.json` to
 `gen-1a769550b1051bc9358ce8e8758265e5`. Its journal SHA-256 is
 `3eba3c4e83f025e96959604bf23215ab2434a2cf2b1434b58c44af7ba59e8749`; the
 pointer SHA-256 is

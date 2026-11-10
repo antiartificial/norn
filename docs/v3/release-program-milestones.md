@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 05:10 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 05:17 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,11 +20,12 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 05:10 UTC): A8 is signed, published, and
+Current gate snapshot (2026-11-10 05:17 UTC): A8 is signed, published, and
 verified on Mini. The exact-source finalizer repair `2e8bd545` was approved,
 signed, and published immutably by run
 [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675);
-it has not been imported or run on Mini. The active A4 generation remains
+its ARM64 bundle is imported and both verifiers passed, but it has not been run
+on Mini. The active A4 generation remains
 `candidate-preservation-pending`, with its preservation receipt present and no
 finalization receipt. The 05:10 authenticated inventory confirms API health
 `ok`, while app/service records include pending, dead, and unknown states and
@@ -39,8 +40,8 @@ coverage, not live qualification. See [launch state](LAUNCH-STATE.md) and
 
 | Workstream | Current evidence | Next proof |
 |---|---|---|
-| Protected platform release | A8 is signed, published, imported, and verified on Mini. Exact-source `2e8bd545` passed all 12 protected-master jobs and its pinned UI plus four bundles; owner-approved publish run [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675) produced an immutable release. It remains unimported on Mini. | Verify and import the immutable repair bundle on Mini, then invoke only the signed same-generation repair path after its live state checks pass. |
-| Mini direct | The 05:10 read confirms the same active A4 generation is `candidate-preservation-pending`; its journal and pointer hashes are recorded in [launch state](LAUNCH-STATE.md#mini-finalizer-release-published-same-generation-still-pending-2026-11-10-0510-utc). Authenticated API health is `ok`, but the partial inventory has 19 of 30 app records healthy, two pending, one dead, and eight without Nomad status; 19 of 46 services pass and 27 are unknown. Host, queue, incident, release, Fleet, and readiness endpoints remain unavailable. Full workload recovery and finalization are unverified. | Use the signed repair helper against the exact current generation/journal, then verify normal API activation, host-agent restoration, workload smoke, fresh host assurance, and terminal receipt. |
+| Protected platform release | A8 is signed, published, imported, and verified on Mini. Exact-source `2e8bd545` passed all 12 protected-master jobs and its pinned UI plus four bundles; owner-approved publish run [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675) produced an immutable release. Its ARM64 bundle is now imported and both artifact and external signature verification passed; it has not been activated. | Invoke only the signed same-generation repair path after its live state checks pass. |
+| Mini direct | The 05:17 read confirms the same active A4 generation is `candidate-preservation-pending`; its journal and pointer hashes are recorded in [launch state](LAUNCH-STATE.md#mini-finalizer-release-imported-same-generation-still-pending-2026-11-10-0517-utc). API health was `ok` at 05:10, but its partial inventory has 19 of 30 app records healthy, two pending, one dead, and eight without Nomad status; 19 of 46 services pass and 27 are unknown. Host, queue, incident, release, Fleet, and readiness endpoints remain unavailable. Full workload recovery and finalization are unverified. | Use the signed repair helper against the exact current generation/journal, then verify normal API activation, host-agent restoration, workload smoke, fresh host assurance, and terminal receipt. |
 | Existing DO Fleet | Latest platform release run [42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951) was cancelled before steps; last successful run [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022) is Nov 2. Protected state readback [42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657) failed; live Norn/API and workload health remain unverified. | Refresh and bind state, route, and host-key evidence; resolve the disabled readback gate, then obtain a current protected inventory before any release action. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | Workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending/held releases retain them. Store and replay recovery checks pass, but a fresh HTTP admission through real etcd with real signed qualification and owned serving-route evidence is not joined. There is no CLI command. Full executor/worker process recovery and live Nomad/ingress qualification remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, while capacity 4 reaches the modeled terminal receipt. | Join authenticated HTTP admission to real etcd, a real signed qualification, completed staging deployment, and control-owned active-route lineage. Then exercise lease/process loss and lost responses across stage/create/readback/bind/route/stop on a version-pinned disposable Nomad/ingress stack. Define recovery and retention for permanently held operations before live use; keep stateful compatibility separate. |

@@ -15,8 +15,9 @@ imported, and verified on Mini. The active generation
 catalog schema 52 present. The A4 API answers health, but the host-agent
 LaunchAgent and host supervisor are not running. Finalization is incomplete;
 exact-source ancestry repair `2e8bd545547f4bfa375c68fac9be9667954276de` is
-published as an immutable signed release but was not imported or run on Mini
-as of 05:10 UTC. Follow the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-release-published-same-generation-still-pending-2026-11-10-0510-utc).
+published as an immutable signed release and imported with both artifact and
+external signature checks passed at 05:17 UTC; it has not been run on Mini.
+Follow the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-release-imported-same-generation-still-pending-2026-11-10-0517-utc).
 Do not treat API health or catalog schema 52 as completion. In a direct upgrade with no retained
 recovery fence, the standard `upgrade` lane is contract-compatible after
 protected backup and exact-candidate private-shadow proof. The Mini currently
@@ -105,8 +106,8 @@ For the current Mini recovery, the published A8 controller release resumed the
 existing generation and reached preservation-pending. Do not invoke ordinary
 `upgrade`, create a new transition ID, restart the host agent by hand, or edit
 the journal. The signed-descendant finalization fix is exact source
-`2e8bd545547f4bfa375c68fac9be9667954276de`; its immutable release is published
-but is not imported or run on Mini. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-release-published-same-generation-still-pending-2026-11-10-0510-utc)
+`2e8bd545547f4bfa375c68fac9be9667954276de`; its immutable release is published,
+imported, and verified but not run on Mini. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-release-imported-same-generation-still-pending-2026-11-10-0517-utc)
 for publication and live-read receipts. Each repair authorization must bind
 the current generation and journal digest; refresh it after a journal phase
 change. Publication alone does not prove that Mini is ready.

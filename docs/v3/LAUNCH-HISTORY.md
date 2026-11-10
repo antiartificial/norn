@@ -1,5 +1,25 @@
 # Norn v3 launch history
 
+## Finalizer release imported and reverified; no activation (2026-11-10 05:17 UTC)
+
+The owner-approved immutable release for source
+`2e8bd545547f4bfa375c68fac9be9667954276de` was fetched by exact tag and
+signature-verified on Mini. The ARM64 bundle was imported into the retained
+release directory and passed the installed artifact verifier plus the
+configured external signature verifier. No service was restarted and no
+recovered-forward action was run.
+
+A new read-only state check confirmed that the current symlink still selects
+A4 source `a4b9c3b313d65c8a054fb869b18455fde33d3a70` and the active generation
+remains `gen-1a769550b1051bc9358ce8e8758265e5`, transition
+`mini-v3-20261110T0021Z-a4b9c3b3`, at `candidate-preservation-pending`. The
+journal and pointer digests remain
+`3eba3c4e83f025e96959604bf23215ab2434a2cf2b1434b58c44af7ba59e8749` and
+`84cbb71c138afd08b60b6e9a1c9ea14bf3d2ebccd0f7c6611a9c06d61e4d8e8a`.
+Preservation receipt exists, finalization receipt does not, and the host-agent
+LaunchAgent remains unloaded. The repair helper must revalidate these exact
+inputs and create authorization for this digest before any finalizer effect.
+
 ## Mini finalizer repair release published after exact-SHA approval (2026-11-10 05:10 UTC)
 
 The owner approved the protected `platform-release` environment for exact
