@@ -1,14 +1,22 @@
 # Norn v3 launch state
 
-## Current Mini status (2026-11-10 12:40 UTC)
+## Current Mini status (2026-11-10 15:26 UTC)
 
-The independent Mini now runs immutable signed release
+The independent Mini runs immutable signed release
 `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The direct controller
-upgrade completed with no schema change. Authenticated platform smoke, host
-status, and host doctor pass; the smoke reported operation drain clear. Seven
-queued Fleet dispatch receipts were preserved. Workload health remains mixed,
-with historic stopped/unhealthy app records and incidents still requiring a
-separate inventory review.
+upgrade completed with no schema change. The Mini meets the owner-stated direct
+success criterion: V3 is active, the local API health endpoint returned HTTP
+200, and one Norn-managed workload responded. At 15:26 UTC, `vigil-gateway` was
+running in Nomad and its `/health` endpoint returned HTTP 200. Read-only host
+status showed the API, host agent, Nomad, Consul, supervisor, and Cloudflare
+agent up; the bundled V3 CLI reported `api ok` and its required services up.
+
+This verifies that the Mini can host and serve a workload after the V3 direct
+upgrade. It does not qualify every app or the Git push-to-deploy path. The
+inventory still has mixed app health and seven old queued Fleet dispatch
+receipts. Three queued platform-upgrade attempts also stopped before
+promotion; diagnose that recovery path separately. Those broader conditions do
+not negate the direct Mini success under the stated criterion.
 
 PR #401 merged at `34178b8b`; exact-source qualification run
 [42809544343](https://github.com/antiartificial/norn/actions/runs/42809544343)
@@ -56,6 +64,45 @@ rebind them outside the supported current-lane reconciliation path.
 Queue-based upgrade, controller-mediated new workload admission, and workload
 resize remain open gates. See [launch history](LAUNCH-HISTORY.md) for direct
 upgrade evidence and the dated failure sequence.
+
+## Current DO staging Fleet status (2026-11-10 14:58 UTC)
+
+A read-only `doctl --context work` inventory at 14:53 UTC reported all eleven
+staging Droplets active in `nyc3`: two management nodes, three controls, two
+ingress nodes, and four app nodes. The `norn-pilot` context is a different DO
+account and does not contain this Fleet. These checks prove provider instance
+state only. They do not prove Norn API, etcd, Nomad, Consul, route, or workload
+health.
+
+Genesis readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
+and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
+verified exact backend bytes, the serial-22-to-23 route continuity, and
+effective Ansible transport, then failed installed-source verification before
+reading Genesis data. The management controller is still pinned to
+`2de3cbd832688a06fc549ec68172145dca4404fc`; PR #957's bounded retry did not
+fix the installed-source failure. Genesis units remain disabled. The protected
+Genesis readback variable is `true`, but it does not bypass source verification.
+
+Fleet PR [#959](https://github.com/antiartificial/norn-fleet/pull/959) merged
+as `7f6433b06030d87726aa4055b7ff7b5bfa963f2b`. It adds exact route-continuity
+proof and deterministic generation of the controller source archive and
+private install vars. Bootstrap run
+[42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029)
+was canceled while queued, before its first step, because no matching protected
+Linux effect runner was registered. The controller's signed-effect allowlist
+does not admit this bootstrap workflow yet. The bootstrap enable flag is
+`false`; no host installation occurred.
+
+## Release timing
+
+No V3 launch date is committed. Remaining program gates are controller
+admission and source verification for DO Genesis, an end-to-end DO platform
+release and postflight, DO-only workload admission and resize qualification,
+and fresh-Fleet provider recovery. The Mini direct deployment is successful by
+the owner-stated criterion: the V3 API and `vigil-gateway` both responded.
+Queued-upgrade recovery and Git-driven workload admission remain Mini follow-up
+work, tracked separately from that success. Do not treat provider-active
+Droplets or the historical soak as current service-health evidence.
 
 ## Historical snapshot (2026-11-10 10:50 UTC; superseded)
 

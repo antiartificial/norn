@@ -25,8 +25,10 @@ rationale and historical state.
 The Mini's first direct V3 upgrade completed on 2026-11-07; on 2026-11-10 it
 advanced to signed release `34178b8b` through the direct controller lane. The
 API, platform smoke, host status, and host doctor pass; the separate queued
-upgrade path remains unresolved. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc).
-DO staging Fleet qualification remains separate and incomplete.
+upgrade path remains unresolved. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1526-utc).
+DO staging Droplets were provider-active at the latest readback, but current
+Fleet service health is unverified. No V3 launch date is committed; see the
+current launch state and release milestones for open gates.
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 

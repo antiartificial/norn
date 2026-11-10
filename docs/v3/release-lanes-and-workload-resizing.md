@@ -1,6 +1,6 @@
 # V3 platform release lanes and workload resizing
 
-Status: operator guidance reconciled 2026-11-10 12:01 UTC against Norn `master` at
+Status: operator guidance reconciled 2026-11-10 15:26 UTC against Norn `master` at
 `34178b8b`. The authenticated workload-release producer exists as an opt-in
 staging API, but has not been deployed or live-qualified.
 The Mini is an independent node. The DigitalOcean (DO) work Fleet is the only
@@ -8,50 +8,46 @@ Fleet and is a staging testbed intended to resemble production at lower scale.
 A successful soak or retained provider state is evidence for the run it covers;
 it does not prove that a service is healthy now.
 
-The Mini now runs signed platform release `34178b8b`; the existing A4
-recovered-forward generation remains `candidate-promoted`, catalog schema
-remains 52, and authenticated platform smoke plus host status/doctor pass. The
-direct controller upgrade completed. Three queued upgrade attempts stopped
-before promotion at the completed-recovery host-agent stability gate. Its exact
-operation-window cause remains unexplained. The offline statechart includes an
-absent-agent sample that resets the stability window; the current implementation
-still requires the LaunchAgent wrapper's direct child. The queue-upgrade lane
-remains open.
-Workload admission and resizing were not tested, and workload health remains a
-separate claim. See the [latest launch evidence](LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc).
+The Mini runs signed platform release `34178b8b`; the existing A4
+recovered-forward generation remains `candidate-promoted`, and catalog schema
+remains 52. At 15:26 UTC, its API health returned HTTP 200 and its
+Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. This
+meets the owner's criterion for a successful Mini direct deployment: V3 is
+active and at least one workload responds. Three queued upgrade attempts
+stopped before promotion at the host-agent stability gate; diagnose that
+recovery path separately. Git-to-Norn workload admission remains unqualified,
+and workload resizing is not a Mini lane. See the
+[current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1526-utc).
 
 ## Choose the lane
 
 | Lane | Use | Current mechanism | Availability and recovery |
 |---|---|---|---|
-| Mini direct | Upgrade the independent Mini; deploy its app workloads from GitHub through Norn | Signed platform release and installed Mini upgrade controller. The active `34178b8b` build includes push-commit-SHA pinning for GitHub/Gitea webhooks, but a fresh Mini push-to-deployment receipt and workload operation were not qualified. See [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 baseline transition completed with schema 51 and writer floor 33. On Nov 10, the direct controller lane promoted `2a2d712a`, then advanced to signed `34178b8b`; schema stayed at 52 and platform smoke, host status, and doctor passed. Three queued upgrades stopped before promotion at the completed-recovery host-agent stability check; the latest receipt reported no child under the LaunchAgent wrapper. The direct success does not qualify queued upgrades. The cause remains unexplained; the offline model now covers an absent-agent stability reset. Workload health remains mixed and admission/resize remain separate gates. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc). Mini remains independent of the DO Fleet. |
+| Mini direct | Upgrade the independent Mini; deploy its app workloads from GitHub through Norn | Signed platform release and installed Mini upgrade controller. The active `34178b8b` build includes push-commit-SHA pinning for GitHub/Gitea webhooks, but a fresh Mini push-to-deployment receipt and workload operation were not qualified. See [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 baseline transition completed with schema 51 and writer floor 33. On Nov 10, the direct controller lane promoted `2a2d712a`, then advanced to signed `34178b8b`; schema stayed at 52 and platform smoke, host status, and doctor passed. Three queued upgrades stopped before promotion at the completed-recovery host-agent stability check; the latest receipt reported no child under the LaunchAgent wrapper. The direct success does not qualify queued upgrades. The cause remains unexplained; the offline model now covers an absent-agent stability reset. The direct Mini deployment meets the stated success criterion: its V3 API and a Norn-managed workload both respond. Broader app health and Git-driven admission remain separate follow-ups. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1526-utc). Mini remains independent of the DO Fleet and has no Fleet resize lane. |
 | DO Fleet Norn release | Change Norn API/UI on the existing three-control DO Fleet | `work-staging-norn-release.yml`; exact publisher artifacts, fresh protected state readback, host key receipt, all-member staging, all-stop, target promotion, singleton verification, then durable pin update | Deliberate maintenance interruption. Forward-only recovery resumes the same target. Never restart old bytes after any target starts. |
-| Fleet bootstrap | Create or recreate a Fleet | Protected provider `plan.yml`/`apply.yml`, then post-create reconciliation and Ansible. Protected `norn-fleet` main at `35e1c893` declares the existing DO staging shape: 3 control, 2 ingress, 4 app Droplets; the 18:58 UTC provider readback matched that shape. The current staging config remains one app pool (`workload: app`). Main supports a future two-pool General + Stateful role pair with stable IDs `general` and `stateful`, but no fresh-Fleet config exists yet; sizing, capacity, cost envelope, placement, and stateful recovery remain open. Do not conflate this with staging or Genesis, which installs a dormant controller on an existing Fleet without creating provider resources. See the [topology source audit](staging-topology-source-audit-2026-11-08.md). | Infrastructure lifecycle work, separate from platform release. The provider apply is not live-qualified for the future profile: joined persistent apply/recovery, exact provider identities, per-service secret lifecycle, actual DO grant evidence, post-create bootstrap, and terminal receipt remain open. |
-| Workload resize/release | Add or remove application capacity or release a new application version | Fixed-image replica scaling and node-pool capacity are separate from the M5 mixed-version controller. The staging-only authenticated admission API accepts a signed V3 qualification ID and target replica count, then derives current policy, Fleet placement, active route, Nomad lineage, app source and encrypted SOPS snapshot. Accepted recovery input now pins the exact job-driving app spec plus encrypted SOPS bytes in a key-ring envelope; worker target construction no longer needs the current checkout. | The API is opt-in and not deployed or live-qualified. Offline acceptance/recovery evidence now includes store/worker tests and a real-etcd acceptance/open integration test. Full production executor/worker restart recovery, private-input retention/deletion, production-store process/lease crash matrix, and disposable Nomad/ingress qualification remain open. Live canary and stateful data-compatibility qualification are also open. Route-proof loss holds progress and requires fresh same-generation readback. Norn control binaries stay fixed unless separately released. |
+| Fleet bootstrap | Create or recreate a Fleet | Protected provider `plan.yml`/`apply.yml`, then post-create reconciliation and Ansible. Protected `norn-fleet` main at `35e1c893` declares the DO staging shape: 3 control, 2 ingress, 4 app Droplets, plus two management nodes. The 14:53 UTC provider inventory found all eleven active. The current staging config remains one app pool (`workload: app`). Main supports a future two-pool General + Stateful role pair with stable IDs `general` and `stateful`, but no fresh-Fleet config exists yet; sizing, capacity, cost envelope, placement, and stateful recovery remain open. Do not conflate this with Genesis, which installs a dormant controller on an existing Fleet without creating provider resources. See the [topology source audit](staging-topology-source-audit-2026-11-08.md). | Infrastructure lifecycle work, separate from platform release. The provider apply is not live-qualified for the future profile: joined persistent apply/recovery, exact provider identities, per-service secret lifecycle, actual DO grant evidence, post-create bootstrap, and terminal receipt remain open. |
+| DO workload resize/release | Add or remove application capacity or release a new application version on the DO staging Fleet | Fixed-image replica scaling and node-pool capacity are separate from the M5 mixed-version controller. The staging-only authenticated admission API accepts a signed V3 qualification ID and target replica count, then derives current policy, Fleet placement, active route, Nomad lineage, app source and encrypted SOPS snapshot. Accepted recovery input now pins the exact job-driving app spec plus encrypted SOPS bytes in a key-ring envelope; worker target construction no longer needs the current checkout. | The API is opt-in and not deployed or live-qualified. Offline acceptance/recovery evidence now includes store/worker tests and a real-etcd acceptance/open integration test. Full production executor/worker restart recovery, private-input retention/deletion, production-store process/lease crash matrix, and disposable Nomad/ingress qualification remain open. Live canary and stateful data-compatibility qualification are also open. Route-proof loss holds progress and requires fresh same-generation readback. Norn control binaries stay fixed unless separately released. This lane applies to DO only. |
 
-The DO fleet's last confirmed Norn source inventory in the retained release
-record was `31db2de8dafe14d234ac9e2f29c8480245dae7b4` on all three controls
-(Nov 2). Protected state and host identity readback passed on Nov 7. A
-read-only probe from the pinned management host to `/api/health` and
-`/api/version` on each state-pinned private control address timed out the same
-day. The timeout does not prove the droplets are down; it means current Norn
-service health is unconfirmed. Public ingress does not route the private Fleet
-API, so use the protected private inventory for a live health claim.
+At 14:53 UTC on Nov 10, a read-only `doctl --context work` inventory reported
+all eleven DO staging Droplets active in `nyc3`. This is provider instance
+state, not current Norn or workload health. The DO Fleet remains unconfirmed
+online until a protected private health readback succeeds. Public ingress does
+not route the private Fleet API, so use the protected private inventory for a
+live health claim.
 
-The latest `work-staging-norn-release` run
-([42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951))
-was cancelled before its release job ran; the last successful run is
-[41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022)
-from Nov 2. Protected raw backend-object readback
-([42783948949](https://github.com/antiartificial/norn-fleet/actions/runs/42783948949))
-passed for the exact retained state bytes and provider identity. It did not
-establish current Norn/API, host-key, workload, or route health. The required
-work-staging variable
-`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` is absent. The Nov 10 provider plan
-([42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397))
-was plan-only, and the protected private service inventory remains failed/held.
-Refresh runner and controller pins, then obtain a fresh protected private
-inventory before claiming the DO staging Fleet is online.
+Genesis readbacks [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
+and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
+passed backend-byte, route-continuity, and Ansible transport checks, then failed
+installed-source verification before reading Genesis data. The protected
+`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` flag is true; it does not bypass
+source verification. Bootstrap run
+[42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029)
+was canceled while queued before its first step because no matching protected
+Linux effect runner was registered. The signed effect controller also does not
+admit the bootstrap workflow, and its enable flag remains false. No host install
+occurred. Resolve controller admission and source installation, then obtain a
+fresh protected private inventory before claiming the DO staging Fleet is
+online.
 
 ## Mini Git-to-controller workload path
 

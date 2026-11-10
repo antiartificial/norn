@@ -1,5 +1,48 @@
 # Norn v3 launch history
 
+## Mini direct success confirmed against the owner-set workload bar (2026-11-10 15:26 UTC)
+
+Read-only checks were run over the Mini's verified SSH host key. The active
+`~/norn/current` symlink selects signed release
+`34178b8b90d52a2fa3f138ffae2dfc63744197e1`. Local `/api/health` returned HTTP
+200, the bundled V3 CLI reported `api ok` and required services up, and
+`host-runtime status` reported the API, host agent, Nomad, Consul, supervisor,
+and Cloudflare agent up.
+
+Nomad reported the Norn-managed `vigil-gateway` job and allocation running. A
+read-only HTTP GET to that allocation's declared `/health` endpoint returned
+HTTP 200. This satisfies the owner's Mini success criterion: V3 deployed and
+at least one workload responds. It does not claim all applications are healthy
+or qualify Git-driven admission. The three queued-upgrade failures remain a
+separate controller-recovery follow-up. No workload, platform, or provider
+mutation was performed during these checks.
+
+## DO provider inventory refreshed; dormant bootstrap did not start (2026-11-10 14:58 UTC)
+
+A read-only `doctl --context work` inventory at 14:53 UTC found all eleven
+staging Droplets active in `nyc3`: two management nodes, three controls, two
+ingress nodes, and four app nodes. This confirms provider instance state only.
+It does not confirm Norn, etcd, Nomad, Consul, route, or workload health. The
+`norn-pilot` context belongs to a different DO account.
+
+Fleet PR [#959](https://github.com/antiartificial/norn-fleet/pull/959) merged
+as `7f6433b06030d87726aa4055b7ff7b5bfa963f2b`, adding exact route-continuity
+proof and deterministic source-archive and private-vars generation. Protected
+bootstrap run [42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029)
+was canceled before its first step because no protected Linux effect runner was
+registered. The signed effect controller does not yet admit the bootstrap
+workflow. The bootstrap gate is off and no host changed.
+
+The two latest Genesis readbacks,
+[42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
+and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445),
+proved backend-byte identity, serial-22-to-23 route continuity, and effective
+Ansible transport. Both failed installed-source verification before reading
+Genesis data. The management-host controller remains pinned to
+`2de3cbd832688a06fc549ec68172145dca4404fc`; Genesis units remain disabled.
+Do not repeat the readback until the approved controller source is installed
+and verified and a fresh state- and host-key-bound intent is available.
+
 ## Successor release published; direct Mini upgrade completed, queued path unresolved (2026-11-10 12:01 UTC)
 
 PR #401 merged as `34178b8b90d52a2fa3f138ffae2dfc63744197e1`. Exact-source
