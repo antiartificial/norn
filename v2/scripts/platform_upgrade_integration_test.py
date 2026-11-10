@@ -103,7 +103,69 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertRegex(completed, r"(?m)^\s*local .*\brelease\b")
         self.assertRegex(rollback, r"(?m)^\s*local .*\brelease\b.*\bsha\b.*\bversion\b")
         self.assertIn('release="$releases/$candidate"', completed)
+        self.assertIn('recovered_forward_current_signed_descendant_sha "$candidate"', completed)
+        self.assertIn('validate_active_responses "$expected_version" "$version_file" "$schema_file" "$active_sha"', completed)
         self.assertIn('release="$previous_release"', rollback)
+
+    def test_recovery_gate_accepts_only_the_current_signed_recovery_descendant(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        helper = source.split("recovered_forward_current_signed_descendant_sha() {\n", 1)[1].split("\n}\n", 1)[0]
+        candidate = self.sha
+        self.git("checkout", "-b", "signed-descendant", candidate)
+        self.write("descendant.txt", "signed descendant\n")
+        self.git("add", ".")
+        self.git("-c", self.fixture_author[0], "-c", self.fixture_author[1], "commit", "-m", "signed descendant")
+        descendant = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("checkout", "--orphan", "unrelated")
+        self.git("rm", "-rf", ".")
+        self.write("unrelated.txt", "unrelated signed release\n")
+        self.git("add", ".")
+        self.git("-c", self.fixture_author[0], "-c", self.fixture_author[1], "commit", "-m", "unrelated release")
+        unrelated = self.git("rev-parse", "HEAD").stdout.strip()
+
+        for sha in (candidate, descendant, unrelated):
+            release = self.releases / sha
+            release.mkdir(parents=True)
+            (release / "release.env").write_text(f"NORN_RELEASE_SHA={sha}\n", encoding="utf-8")
+            (release / "release.json").write_text('{"signed":true}\n', encoding="utf-8")
+        verifier = self.root / "verify-release"
+        verifier.write_text(
+            "#!/usr/bin/env python3\nimport json,sys\n"
+            "ok = json.load(open(sys.argv[2])).get('signed') is True\n"
+            "print('signed verifier ran')\nraise SystemExit(0 if ok else 1)\n",
+            encoding="utf-8",
+        )
+        verifier.chmod(0o755)
+        current = self.root / "current"
+
+        def check(active: str, expected_pass: bool) -> None:
+            if current.is_symlink():
+                current.unlink()
+            current.symlink_to(self.releases / active)
+            script = f'''set -euo pipefail
+current_link={str(current)!r}
+releases={str(self.releases)!r}
+repo={str(self.repo)!r}
+release_verify_hook={str(verifier)!r}
+release_sha() {{ sed -n 's/^NORN_RELEASE_SHA=//p' "$1/release.env"; }}
+verify_release() {{ echo 'manifest verification ran'; [[ "$(basename "$1")" == "$2" && "$(release_sha "$1")" == "$2" ]]; }}
+recovered_forward_current_signed_descendant_sha() {{
+{helper}
+}}
+recovered_forward_current_signed_descendant_sha {candidate!r}
+'''
+            result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+            if expected_pass:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), active)
+            else:
+                self.assertNotEqual(result.returncode, 0, "unrelated signed release must be rejected")
+
+        check(candidate, True)
+        check(descendant, True)
+        (self.releases / descendant / "release.json").write_text('{"signed":false}\n', encoding="utf-8")
+        check(descendant, False)
+        check(unrelated, False)
 
     def test_env_exec_runtime_recovery_bindings_override_stale_sops_values(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")

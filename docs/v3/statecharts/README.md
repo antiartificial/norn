@@ -34,11 +34,19 @@ configured invariants and deadlock checks passed. The model starts from
 preservation-pending and abstracts signed Git verification and live
 implementation behavior; see its README for limits and reproduction commands.
 
+At 09:50 UTC, the post-recovery forward-upgrade gate was modeled in two
+configurations. The signed-descendant path passed five invariants and deadlock
+checking at 6 states / 7 steps. The legacy exact-recovery-runtime assumption
+reproduced a later-upgrade hold after the first signed descendant in a 3-step
+counterexample. The actual shell helper now has a Git-backed integration test
+for candidate, signed-descendant, and unrelated-release cases.
+
 | Lane | Result | Model status | Main limit |
 |---|---:|---|---|
 | Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass (rerun 2026-11-10) | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |
 | Mini direct V3 upgrade and recovered-forward repair | 90 states, 179 steps; 8 invariants and deadlock check pass (rerun 2026-11-10) | Includes the observed host-agent-fenced halt; ordinary same-intent retry is blocked until a distinct signed repair-controller action verifies lineage and resumes the exact generation | The model abstracts adoption-source ancestry, GUI LaunchAgent environment, repair authorization refresh, Launchd timing, SQL/filesystem durability, and key custody. The signed-ancestor finalization gate has a separate controller integration test. |
 | Mini recovered-forward finalization | Valid: 52 states / 96 transitions; invalid adoption and candidate ancestry: 3 / 5 each; unavailable normal API health: 25 / 45; six invariants and deadlock pass in all (2026-11-10) | Exact preservation receipt and signed-lineage gate, database-fence release, normal API activation/readback, host-agent restart and terminal receipt; failed lineage holds before fence release, failed API health keeps the agent fenced | Ranks and health/evidence flags abstract signature/Git verification, generation authorization, SQL/Launchd durability, and workload behavior; a controller integration regression covers signed-ancestor acceptance. |
+| Mini recovered-forward later upgrades | Signed-descendant rule: 6 states / 7 steps; legacy exact-release gate breaks `VerifiedLaterReleaseRemainsUpgradeable` after 3 transitions; five invariants and deadlock pass in the corrected model (2026-11-10) | Retained recovery evidence gates future upgrades while allowing a verified signed descendant; unrelated signed release is held | Model abstracts signature checks as a boolean and Git ancestry as a finite relation; a Git-backed shell integration regression exercises the implementation boundary. |
 | Proposed online Norn platform upgrade | 97 states, 251 steps; 12 invariants and deadlock check pass (rerun 2026-11-10) | Old release serves through additive schema expansion and passive candidate verification; writer/traffic handoff is fenced, crash recovery keeps the same intent, and schema contraction waits until old-writer retirement | Proposed protocol only; assumes binary/schema compatibility and post-handoff health; abstracts real migrations, writer discovery, fencing, supervision, workload/data integrity, and availability measurements |
 | Existing Fleet Genesis | 69 states, 107 steps; 9 invariants and deadlock check pass (rerun 2026-11-10) | Dormant install, signed intent, staged controls, passive-first promotion, recovery; fresh-Fleet request is explicitly blocked | Inputs are modeled as one valid/invalid gate; provider create workflow is absent from this model |
 | DO Genesis readback source and input gate | Normal recovery: 18 states / 52 steps; closed/stale gate: 2 / 2; 6 invariants and deadlock check pass in both (rerun 2026-11-10) | Models closed protected workflow or stale exact state binding holding before intent/runner dispatch; normal recovery requires a fresh one-use intent after source update | Digests, signatures, protected installer, journal, and provider/runtime are abstract; no live dispatch or Genesis state change |
@@ -57,6 +65,7 @@ implementation behavior; see its README for limits and reproduction commands.
 - [Existing DO platform release](fleet-platform-release/README.md)
 - [Mini direct upgrade](mini-direct/README.md)
 - [Mini recovered-forward finalization](mini-recovered-forward-finalize/README.md)
+- [Mini recovered-forward later upgrades](mini-recovered-forward-descendant/README.md)
 - [Proposed online Norn platform upgrade](online-norn-upgrade/README.md)
 - [Genesis on existing DO controls](genesis-existing-fleet/README.md)
 - [Proposed workload mixed-version resize](workload-mixed-version/README.md)
@@ -78,6 +87,12 @@ implementation behavior; see its README for limits and reproduction commands.
   migration. Normal retry cannot resume that phase; the modeled repair action
   requires the exact journal target and preserved observed state. Its signature
   and source-lineage checks remain an implementation-refinement task.
+- The completed recovery receipt remains the authority for later upgrades, but
+  the current API and host agent must be checked against the active signed
+  descendant. Requiring them to remain at the original recovery SHA blocks the
+  second upgrade; accepting any signed descendant without a Git ancestry check
+  would admit unrelated releases. The new model and integration regression
+  cover both boundaries.
 - The workload proposal stops effects while held, waits for healthy target
   capacity before draining old allocations, and requires fresh proof of the
   exact current route after recovery. Route publications move only from old to

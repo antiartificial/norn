@@ -1,5 +1,27 @@
 # Norn v3 launch state
 
+## Subsequent Mini upgrade guard is being corrected (2026-11-10 09:55 UTC)
+
+The Mini remains on signed release `2a2d712a` with schema 52. A read-only live
+inventory still reports API health and host status `ok`; the exact current
+LaunchAgent/managed-agent stability predicate also passed when evaluated from
+the live process tree. The two earlier queued-upgrade operations remain failed
+before promotion with a generic host-agent stability error; their historical
+subcondition was not retained, so do not claim its root cause is known.
+
+Review of the next-upgrade path exposed a separate deterministic compatibility
+gap: after one forward release, the retained recovery guard still compared the
+API to the original recovery candidate. That would block a later upgrade even
+when the active API and host agent exactly match a signed descendant. The
+guard now verifies current-release signature and Git ancestry from the recovery
+candidate, then checks API version/schema against that active SHA. A bounded
+statechart reproduces the old hold and the corrected path, and a Git-backed
+offline integration test covers the recovery candidate, signed descendant,
+unsigned descendant, and unrelated release. This change is not yet merged,
+published, or installed on Mini. The queued upgrade lane remains unqualified;
+next prove this change in a signed release, then run a queued upgrade to a
+different exact successor SHA before calling that lane hands-free.
+
 ## Mini direct V3 platform upgrade completed (2026-11-10 09:25 UTC)
 
 PR [#396](https://github.com/antiartificial/norn/pull/396) fixed recovered-
