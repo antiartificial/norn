@@ -1,5 +1,38 @@
 # Norn v3 launch history
 
+## A8 controller resumed Mini into preservation-pending; finalizer gate found (2026-11-10 02:25 UTC)
+
+After owner approval, protected release workflow
+[42730463793](https://github.com/antiartificial/norn/actions/runs/42730463793)
+signed and published immutable controller release
+[`platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`](https://github.com/antiartificial/norn/releases/tag/platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63).
+The release was imported to Mini and both the external signature verifier and
+release manifest verifier returned `signed`.
+
+The controller resumed the existing A4 generation and preserved all seven
+queued DO-only `fleet.github.apply-dispatch` receipts. The first API fence
+attempt observed launchd's asynchronous unload before it completed; the durable
+journal recorded `api-fencing`, the listener was later absent, and the same
+signed controller resumed from that exact phase. Migration 52 then completed,
+and A4 passed passive preflight. Controller repair authorizations bind the
+journal digest, so each later phase required a fresh authorization.
+
+The A4 maintenance API initially failed launcher validation because its GUI
+LaunchAgent did not receive `NORN_PLATFORM_REPO` from the SSH shell. The
+canonical Mini checkout path was added to the encrypted API environment, with
+the original encrypted file retained owner-only. The signed API then passed
+postflight in recovered-forward preservation mode, and the preservation
+receipt recorded an unchanged baseline. The API remains fenced in maintenance
+mode while the host agent remains stopped.
+
+Finalization exposed a separate guard defect: the adoption receipt names an
+older signed ancestor than the current transition source, while the journal
+names the current source and A4 candidate. Forward recovery accepts this exact
+signed ancestry, but `recovered-forward-finalize` rejected it. No write-fence
+release or normal API/host-agent activation occurred. The correction and
+regression test are being prepared before finalization resumes. No DO Fleet
+change occurred.
+
 ## Mini read-only inventory refreshed; assurance is still stale (2026-11-10 01:52 UTC)
 
 Authenticated inventory of the independent Mini reports API/host status `ok`

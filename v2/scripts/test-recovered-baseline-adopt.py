@@ -229,6 +229,67 @@ class RecoveredBaselineAdoptionTest(unittest.TestCase):
         self.assertNotEqual(direct_upgrade.returncode, 0)
         self.assertIn("completed recovered-forward file bindings", direct_upgrade.stderr)
 
+    def test_signed_descendant_can_finalize_when_journal_source_is_a_later_ancestor(self):
+        self.assertEqual(self.adopt().returncode, 0)
+        adopted_source = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        adopted_release = self.releases / adopted_source
+        (adopted_release / "bin").mkdir(parents=True)
+        write(adopted_release / "release.env", f"NORN_RELEASE_SHA={adopted_source}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
+        write(adopted_release / "release.json", json.dumps({"sha": adopted_source, "version": VERSION}) + "\n", 0o644)
+        write(self.repo / "first-descendant.txt", "intermediate signed source\n", 0o644)
+        subprocess.run(["git", "-C", str(self.repo), "add", "first-descendant.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-q", "-m",
+                        "Intermediate signed source"], check=True)
+        journal_source = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        write(self.repo / "final-candidate.txt", "final signed candidate\n", 0o644)
+        subprocess.run(["git", "-C", str(self.repo), "add", "final-candidate.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-q", "-m",
+                        "Final signed candidate"], check=True)
+        candidate = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+
+        for sha in (journal_source, candidate):
+            release = self.releases / sha
+            (release / "bin").mkdir(parents=True)
+            write(release / "release.env", f"NORN_RELEASE_SHA={sha}\nNORN_RELEASE_VERSION={VERSION}\n", 0o644)
+            write(release / "release.json", json.dumps({"sha": sha, "version": VERSION}) + "\n", 0o644)
+            write(release / "bin" / "norn-api", "api-binary", 0o755)
+            write(release / "bin" / "norn-host-agent", "host-agent-binary", 0o755)
+
+        receipt = json.loads(self.receipt.read_text())
+        receipt.pop("signature")
+        receipt["sourceSHA"] = adopted_source
+        canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        receipt["signature"] = "hmac-sha256:" + hmac.new(
+            b"fixture-audit-signing-key-32-characters",
+            b"norn.recovered-baseline-adoption/v2\0" + canonical, hashlib.sha256).hexdigest()
+        write_json(self.receipt, receipt)
+
+        transition_root = self.home / ".config" / "norn" / "recovered-forward"
+        transition_root.mkdir(mode=0o700)
+        transition_id = "mini-v3-descendant-finalize"
+        write_json(transition_root / "transition.json", {
+            "schema": "norn.recovered-forward-transition/v1",
+            "state": "candidate-preservation-pending",
+            "transitionID": transition_id,
+            "sourceSHA": journal_source,
+            "candidateReleaseSHA": candidate,
+        })
+        self.current_link.unlink()
+        self.current_link.symlink_to(self.releases / candidate)
+
+        result = self.run_script(
+            "recovered-forward-finalize", "--transition-id", transition_id,
+            "--preservation-receipt", str(transition_root / "preservation-receipt.json"),
+        )
+        self.assertIn("recovered-forward-finalize requires an authenticated Mini API token", result.stderr)
+        self.assertNotIn("current Mini release is not the source or exact journaled recovery candidate", result.stderr)
+        self.assertNotIn("recovered-forward requires the exact valid adoption receipt", result.stderr)
+
     def test_validly_signed_v2_receipt_cannot_rebind_failed_incident_identity(self):
         self.assertEqual(self.adopt().returncode, 0)
         receipt = json.loads(self.receipt.read_text())

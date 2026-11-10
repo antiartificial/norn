@@ -109,6 +109,20 @@ fixed only in the target candidate. Do not restart the fenced host agent or edit
 the journal by hand. Publication alone is not transition authorization or
 proof that the Mini is ready to migrate.
 
+The signed recovery API launcher also checks the adopted baseline's Git
+ancestry. Set `NORN_PLATFORM_REPO` in the encrypted API environment to the
+canonical Mini checkout; an SSH shell variable does not reach the GUI
+LaunchAgent. After a repair step changes the journal, create a fresh repair
+authorization for its new digest. If `launchctl bootout` returns while the job
+still appears loaded, inspect the durable phase, process, and listener before
+resuming the same signed transition. Do not reuse an authorization for an older
+journal digest.
+
+The adopted baseline may be an older signed ancestor of the transition source.
+The finalizer must verify that same source-to-candidate lineage before it
+releases the write fence; it must not require the transition source SHA to equal
+the adoption receipt SHA.
+
 ```bash
 norn platform env -- \
   /Users/0xadb/norn/releases/<candidate-sha>/bin/mini-recovered-forward-transition \

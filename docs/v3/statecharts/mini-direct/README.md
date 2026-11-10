@@ -26,5 +26,8 @@ journal binding or host effects. Its forward migration advances to schema 52.
 The repair
 controller action abstracts its signature, distinct source identity,
 source-lineage verification, Launchd PID reuse, SQL and filesystem durability,
-timing, and key custody; those implementation checks still require separate
-verification. See the Mini launch record for actual transition evidence.
+timing, and key custody. It also abstracts the adopted-source to journal-source
+relationship and the GUI LaunchAgent environment used by the API launcher. The
+recovered-baseline integration tests cover the signed-ancestor finalization
+gate; the model does not prove that implementation detail. See the Mini launch
+record for actual transition evidence.
