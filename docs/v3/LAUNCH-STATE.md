@@ -50,7 +50,7 @@ were made.
 
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
-## Current V3 release readiness (2026-11-10 01:52 UTC)
+## Historical V3 release readiness snapshot (2026-11-10 01:52 UTC)
 
 Protected-master qualification for exact source
 `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
@@ -166,12 +166,15 @@ not runtime or controller-refinement evidence. See the dated
 [launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2256-utc)
 for per-model counts and limits.
 
-The 22:47 UTC snapshot below is historical. The 00:33 UTC post-stop inventory is
-recorded above. The current signed generation is halted at `host-agent-fenced`
-before live database mutation. Do not retry with a new transition ID or edit the
-journal. After exact-source release `a8aa2860` is signed and published, use its
-distinct signed controller-repair path to resume this exact generation. After
-recovery, verify migration 52, generation
+The 22:47 UTC snapshot and the 00:33 UTC post-stop inventory above are
+historical. The latest status is in the current Mini recovery section at the
+top of this document: the active generation is at
+`candidate-preservation-pending`, and the A8 release is already signed,
+published, imported, and verified. The ancestry-fix source `2e8bd545` passed
+qualification and bundle preparation, but its separate exact-source publish
+job still requires owner approval. Do not retry with a new transition ID or
+edit the journal. After the exact repair release is published, resume this same
+generation through the signed controller path and verify the generation
 receipt, API/schema, host-agent restoration, host assurance, and workload smoke.
 
 ## Historical Mini runtime evidence snapshot (2026-11-09 22:47 UTC)
