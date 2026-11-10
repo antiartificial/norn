@@ -1,5 +1,21 @@
 # Norn v3 launch history
 
+## Mini read-only inventory refreshed (2026-11-10 01:16 UTC)
+
+The authenticated inventory confirms the independent Mini still serves
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`), with API health and host status `ok`
+and runtime mutation fence `inactive`. Nineteen of 30 app records are
+healthy. The latest `host.assure` receipt succeeded at 01:16 UTC and checked
+the required IPv4 services and public-route reconciliation; this is not a
+claim that all app records are healthy or that the V3 transition completed.
+Seven queued operations remain, all known DO `fleet.github.apply-dispatch`
+reservations. There are 25 active incident groups, four snapshot-retention
+warnings, and production readiness remains blocked. The current release has
+not changed, and the halted recovered-forward generation remains unresolved.
+No mutation was requested or performed by this inventory. DO staging was not
+read, so its current runtime health remains unverified.
+
 ## Focused offline release models rerun (2026-11-10 01:05 UTC)
 
 Nine TLC configurations across eight protocols reproduced on the current tree:
