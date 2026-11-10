@@ -1,11 +1,12 @@
 -------------------- MODULE RecoveryDescendant --------------------
 EXTENDS Naturals, FiniteSets, TLC
 
-CONSTANTS Recovery, Descendant, Unrelated, GateMode
+CONSTANTS Recovery, Descendant, Unrelated, GateMode, UpgradeModeAllowed
 ASSUME Recovery # Descendant
 ASSUME Recovery # Unrelated
 ASSUME Descendant # Unrelated
 ASSUME GateMode \in {"signed-descendants", "recovery-only"}
+ASSUME UpgradeModeAllowed \in BOOLEAN
 
 Phases == {"recovery-ready", "descendant-running", "unrelated-running",
            "upgrade-authorized", "held"}
@@ -13,11 +14,11 @@ Releases == {Recovery, Descendant, Unrelated}
 
 VARIABLES phase, activeRelease, apiRelease, hostAgentRelease,
           recoveryEvidenceValid, activeReleaseSigned, activeReleaseDescends,
-          gatePassed
+          gatePassed, modeAccepted
 
 vars == <<phase, activeRelease, apiRelease, hostAgentRelease,
           recoveryEvidenceValid, activeReleaseSigned, activeReleaseDescends,
-          gatePassed>>
+          gatePassed, modeAccepted>>
 
 Init ==
   /\ phase = "recovery-ready"
@@ -28,6 +29,7 @@ Init ==
   /\ activeReleaseSigned = TRUE
   /\ activeReleaseDescends = TRUE
   /\ gatePassed = FALSE
+  /\ modeAccepted = UpgradeModeAllowed
 
 GateAccepts ==
   /\ recoveryEvidenceValid
@@ -36,6 +38,7 @@ GateAccepts ==
   /\ apiRelease = activeRelease
   /\ hostAgentRelease = activeRelease
   /\ activeRelease \in {Recovery, Descendant}
+  /\ (activeRelease = Recovery \/ modeAccepted)
   /\ (GateMode = "signed-descendants" \/ activeRelease = Recovery)
 
 CheckUpgradeGate ==
@@ -44,7 +47,7 @@ CheckUpgradeGate ==
   /\ gatePassed' = GateAccepts
   /\ UNCHANGED <<activeRelease, apiRelease, hostAgentRelease,
                   recoveryEvidenceValid, activeReleaseSigned,
-                  activeReleaseDescends>>
+                  activeReleaseDescends, modeAccepted>>
 
 PromoteFirstSignedDescendant ==
   /\ phase = "upgrade-authorized"
@@ -57,7 +60,7 @@ PromoteFirstSignedDescendant ==
   /\ activeReleaseDescends' = TRUE
   /\ phase' = "descendant-running"
   /\ gatePassed' = FALSE
-  /\ UNCHANGED recoveryEvidenceValid
+  /\ UNCHANGED <<recoveryEvidenceValid, modeAccepted>>
 
 RunUnrelatedSignedRelease ==
   /\ phase = "recovery-ready"
@@ -68,7 +71,7 @@ RunUnrelatedSignedRelease ==
   /\ activeReleaseDescends' = FALSE
   /\ phase' = "unrelated-running"
   /\ gatePassed' = FALSE
-  /\ UNCHANGED recoveryEvidenceValid
+  /\ UNCHANGED <<recoveryEvidenceValid, modeAccepted>>
 
 HeldWait == /\ phase = "held" /\ UNCHANGED vars
 AuthorizedWait ==
@@ -89,6 +92,7 @@ TypeOK ==
   /\ activeReleaseSigned \in BOOLEAN
   /\ activeReleaseDescends \in BOOLEAN
   /\ gatePassed \in BOOLEAN
+  /\ modeAccepted \in BOOLEAN
 
 GateBindsRuntimeToSignedDescendant ==
   gatePassed =>
@@ -96,6 +100,7 @@ GateBindsRuntimeToSignedDescendant ==
      /\ activeReleaseSigned
      /\ activeReleaseDescends
      /\ activeRelease \in {Recovery, Descendant}
+     /\ (activeRelease = Recovery \/ modeAccepted)
      /\ apiRelease = activeRelease
      /\ hostAgentRelease = activeRelease)
 

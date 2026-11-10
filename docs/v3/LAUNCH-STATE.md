@@ -1,26 +1,35 @@
 # Norn v3 launch state
 
-## Mini queued upgrade recovery-gate correction (2026-11-10 11:00 UTC)
+## Mini queued upgrade recovery-gate correction (2026-11-10 10:50 UTC)
 
 Mini remains on signed release `2a2d712a` with schema 52. The read-only
-inventory before the attempt reported API health and host status `ok`; workload
-health remains mixed. Immutable signed release `d414b3ab` was published after
-PR #398 passed exact-source qualification, but the first durable queued upgrade
-stopped before promotion. Its diagnostic was `completed recovered-forward file
-bindings do not verify`; the release pointer and schema did not change.
+inventory reports API health and host status `ok`; workload health remains
+mixed. Signed release `d414b3ab` was published after PR #398 passed exact-source
+qualification, but its first durable queued upgrade stopped before promotion
+because the completed recovered-forward helper still required the current link
+to equal the original recovery candidate. The release pointer and schema did
+not change.
 
-The cause was a caller mismatch: the completed-journal helper defaults to
-requiring `current` to point exactly at the original recovery candidate, while
-the new caller separately verifies the current signed release as a Git
-descendant and validates API/schema against that release. The helper already
-supports `--historical`, which keeps journal, signature, receipt, and file
-binding checks while skipping only the obsolete current-pointer equality check.
-A follow-up change now passes that mode and adds an integration assertion. The
-full platform-upgrade integration suite passes under the repository-pinned Node
-24.19.0. This follow-up still needs merge, exact-SHA qualification, signing,
-fresh Mini backup and shadow rehearsal, and a new queued upgrade attempt before
-the queued upgrade lane is qualified. The failed operation is terminal; do not
-replay it. Workload admission and resize remain separate qualification gates.
+PR #399 corrected that helper call and passed full exact-SHA qualification. Its
+signed successor `640b8b89` passed passive preflight and a fresh protected
+backup plus signed-shadow rehearsal: 68 tables, 404,434 rows, migration ledger
+1–52, full row fingerprints matched, two migrate-only passes, passive health,
+and no source mutations. The next durable queued upgrade still stopped before
+promotion. Its terminal diagnostic was `current Mini release is not the source
+or exact journaled recovery candidate`, followed by `completed recovery
+requires the exact signed adoption receipt`. Inspection found the signed-
+descendant verifier’s mode allowlist omitted `upgrade`, although it already
+allowed preflight, backup, and shadow. A follow-up adds `upgrade` plus a
+regression assertion; a second offline statechart configuration now reproduces
+the missing-mode hold in three transitions while keeping the valid configuration
+green. The correction is not yet merged, qualified, or signed.
+
+Both failed operations are terminal and must not be replayed. No promotion,
+schema change, or workload mutation occurred. The next attempt needs a fresh
+exact-candidate backup and shadow rehearsal after the follow-up is merged and
+signed. Queue-based platform upgrade remains unqualified until a new durable
+operation completes postflight and smoke. Workload admission and resizing are
+separate qualification gates.
 
 ## Mini direct V3 platform upgrade completed (2026-11-10 09:25 UTC)
 

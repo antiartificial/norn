@@ -92,6 +92,12 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertIn('path.name=="transition.json.source-evidence.json"', validator)
         self.assertIn("if path==versioned or generation_input:", validator)
 
+    def test_recovered_baseline_gate_allows_signed_descendants_for_upgrade(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        validator = source.split("recovered_baseline_receipt_validate() {", 1)[1].split("\n}", 1)[0]
+        self.assertRegex(validator, r'descendant_modes = \{[^}]*"upgrade"')
+        self.assertIn("if mode not in descendant_modes:", validator)
+
     def test_recovery_validation_keeps_the_requested_upgrade_target_scoped(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         completed = source.split("recovered_forward_completed_candidate_validate() {", 1)[1].split("\n}", 1)[0]
