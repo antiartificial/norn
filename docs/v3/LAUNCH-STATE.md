@@ -1,5 +1,25 @@
 # Norn v3 launch state
 
+## Mini finalizer repair qualified; exact release awaiting protected publish (2026-11-10 06:07 UTC)
+
+PR [#391](https://github.com/antiartificial/norn/pull/391) merged to `master`
+as `5bb691de07c3eb865c5b7f636d07e668d824510c`. Full protected V3
+qualification run
+[42765513323](https://github.com/antiartificial/norn/actions/runs/42765513323)
+passed. Protected release run
+[42765955784](https://github.com/antiartificial/norn/actions/runs/42765955784)
+passed source authorization, pinned UI build, and all four platform bundle
+builds, then stopped at the `platform-release` environment approval gate. The
+exact SHA has not been signed or published; the run is waiting. The earlier
+approval for source `2e8bd545` does not apply to this candidate.
+
+The code change verifies the existing signed A8 API launcher record and loaded
+LaunchAgent before preserving the current Mini generation, then stages the
+finalizer controller binding at receipt-bound normal activation. It does not
+change the A4 target or create another generation. This candidate has not been
+imported to or activated on Mini. The latest Mini runtime observation remains
+the authenticated 05:31 UTC read below; no later Mini action was performed.
+
 ## Mini finalizer controller mismatch found; same generation still pending (2026-11-10 05:31 UTC)
 
 Owner approval was applied to the exact `platform-release` environment gate for
@@ -40,12 +60,13 @@ The API LaunchAgent and its HMAC-signed maintenance record still name A8
 is that release's signed API launcher. The imported finalizer helper from 2e8
 rejects this record when asked to verify its own launcher because its
 `controllerSHA` is A8. The ordinary `run` entry also checks the record before
-preservation. Do not invoke the imported helper's `run` until a follow-on
-signed repair supports this exact prior-controller binding. The follow-on fix
-under review keeps the verified A8 launcher through preservation, then rebinds
-the sidecar and plist to the finalizer controller only at receipt-bound
-normal activation;
-it does not change A4, rerun migration, or create another generation.
+preservation. Do not invoke the imported helper's `run` until the follow-on
+signed repair is published and imported. PR #391 later merged and passed full
+V3 qualification. Its protected publish job remains paused for exact-SHA
+approval. It keeps the verified A8 launcher through preservation, then
+rebinds the sidecar and plist to the finalizer controller only at receipt-bound
+normal activation; it does not change A4, rerun migration, or create another
+generation.
 
 At 05:31 UTC the A8 API was authenticated and responsive, the API LaunchAgent
 was loaded, and the host-agent LaunchAgent was not loaded. The active generation
@@ -244,8 +265,9 @@ change occurred. PR #370 makes the recovered-forward Mini lane preserve these
 receipts under signed transition evidence while `legacy-baseline` continues
 to require them drained. See the [23:08 reconciliation finding](LAUNCH-HISTORY.md#seven-stale-fleet-dispatch-receipts-remain-unreconcilable-on-current-lane-2026-11-09-2308-utc).
 
-All 26 checked-in statechart configurations were rerun from current `master` on
-2026-11-10; their configured rules passed, including four missing-evidence workload
+All 27 checked-in statechart configurations were rerun from the release branch
+and then merged to current `master` on 2026-11-10; their configured rules
+passed, including four missing-evidence workload
 admission cases and concurrent two-client admission. Deadlock checks passed
 where enabled; the concurrent-admission model intentionally disables them for
 terminal stutter states. Coverage includes Mini direct, existing DO release,

@@ -1,5 +1,18 @@
 # Norn v3 launch history
 
+## Prior-controller finalizer repair merged and qualified; publish awaiting approval (2026-11-10 06:07 UTC)
+
+PR #391 merged to `master` as
+`5bb691de07c3eb865c5b7f636d07e668d824510c`. Full protected V3 qualification
+run [42765513323](https://github.com/antiartificial/norn/actions/runs/42765513323)
+passed. Protected release run
+[42765955784](https://github.com/antiartificial/norn/actions/runs/42765955784)
+passed source authorization, pinned UI, and four platform bundle builds, then
+entered the protected `platform-release` approval wait. This exact SHA remains
+unsigned and unpublished. It has not been imported to Mini or activated. The
+last Mini runtime read remains the 05:31 authenticated check; the protected
+release build did not contact or mutate Mini.
+
 ## Mini maintenance healthy; finalizer controller handoff blocked (2026-11-10 05:31 UTC)
 
 Authenticated read-only checks returned `/api/health=ok`, A4 source
