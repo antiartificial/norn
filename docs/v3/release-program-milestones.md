@@ -39,7 +39,9 @@ records a repeated read-only staging plan proposing one management ingress
 firewall rule and confirming it is absent from versioned state. Staging-only
 plan [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
 completed at 00:55 UTC: one firewall create, 28 no-ops, zero node creation, and
-no apply. Earlier staging drift [42702422189](https://github.com/antiartificial/norn-fleet/actions/runs/42702422189)
+no apply. The firewall attaches to the two ingress Droplets and allows TCP
+18082/18083 from the management runner's private `/32`. Earlier staging drift
+[42702422189](https://github.com/antiartificial/norn-fleet/actions/runs/42702422189)
 also completed without mutation on Nov 9. These are not fresh Norn/API,
 control-store, or workload health receipts, so current DO runtime readiness
 remains unverified.

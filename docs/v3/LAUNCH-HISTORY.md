@@ -7,10 +7,12 @@ completed staging-only read-only plan
 [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397).
 The private plan summary reported one create for
 `digitalocean_firewall.management_ingress_runtime[0]`, 28 no-op resources,
-and zero newly created nodes. No provider apply ran. This repeats the ingress
-firewall proposal recorded in PR #949; it does not prove live Norn API, etcd,
-Nomad/Consul, or workload health. Staging remains the DO testbed and is
-separate from the independent Mini. No production environment was selected.
+and zero newly created nodes. The firewall attaches to two ingress Droplets
+and allows TCP 18082 and 18083 from the management runner's private `/32`. No
+provider apply ran. This repeats the ingress firewall proposal recorded in
+PR #949; it does not prove live Norn API, etcd, Nomad/Consul, or workload
+health. Staging remains the DO testbed and is separate from the independent
+Mini. No production environment was selected.
 
 ## Mini recovery statechart aligned to observed fence and schema (2026-11-10 00:46 UTC)
 
