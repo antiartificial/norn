@@ -1,13 +1,13 @@
 ---------------- MODULE GenesisReadbackGate ----------------
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS OldSource, CurrentSource
+CONSTANTS OldSource, CurrentSource, ReadbackEnabled, StateBindingMatches
 ASSUME OldSource # CurrentSource
 
 Bindings == {"valid", "wrong-state", "wrong-host-keys", "bad-signature"}
-Phases == {"start", "intent-staged", "readback-held", "verifier-installed", "readback-complete", "intent-rejected"}
+Phases == {"start", "intent-staged", "readback-held", "verifier-installed", "readback-complete", "intent-rejected", "gate-disabled"}
 IntentStates == {"none", "fresh", "spent"}
-ReadbackStates == {"not-run", "source-mismatch", "input-rejected", "verified"}
+ReadbackStates == {"not-run", "source-mismatch", "input-rejected", "verified", "gate-disabled"}
 
 VARIABLES phase, installedSource, intentState,
           binding, readback, genesisUnits, providerMutation
@@ -26,12 +26,22 @@ Init ==
 StageReadbackIntent(chosenBinding) ==
     /\ phase \in {"start", "readback-held", "verifier-installed", "intent-rejected"}
     /\ intentState # "fresh"
+    /\ ReadbackEnabled
+    /\ StateBindingMatches
     /\ chosenBinding \in Bindings
     /\ phase' = "intent-staged"
     /\ intentState' = "fresh"
     /\ binding' = chosenBinding
     /\ readback' = "not-run"
     /\ UNCHANGED <<installedSource, genesisUnits, providerMutation>>
+
+HoldWhenReadbackGateClosed ==
+    /\ phase = "start"
+    /\ (~ReadbackEnabled \/ ~StateBindingMatches)
+    /\ phase' = "gate-disabled"
+    /\ intentState' = "none"
+    /\ readback' = "gate-disabled"
+    /\ UNCHANGED <<installedSource, binding, genesisUnits, providerMutation>>
 
 RejectInvalidReadbackInputs ==
     /\ phase = "intent-staged"
@@ -74,11 +84,12 @@ ReadbackWithCurrentSource ==
     /\ UNCHANGED <<installedSource, binding, genesisUnits, providerMutation>>
 
 Done ==
-    /\ phase \in {"readback-complete", "intent-rejected"}
+    /\ phase \in {"readback-complete", "intent-rejected", "gate-disabled"}
     /\ UNCHANGED vars
 
 Next ==
     \/ \E b \in Bindings: StageReadbackIntent(b)
+    \/ HoldWhenReadbackGateClosed
     \/ RejectInvalidReadbackInputs
     \/ ReadbackWithStaleSource
     \/ InstallReviewedVerifier
@@ -102,6 +113,9 @@ ReadbackConsumesOneUseIntent ==
 
 NoFleetProviderMutation == providerMutation = FALSE
 GenesisRemainsDormant == genesisUnits = "off"
+
+ClosedGateDoesNotStageOrRead ==
+    phase = "gate-disabled" => intentState = "none" /\ readback = "gate-disabled"
 
 Spec == Init /\ [][Next]_vars
 

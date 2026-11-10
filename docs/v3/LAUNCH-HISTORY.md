@@ -1,5 +1,16 @@
 # Norn v3 launch history
 
+## Genesis readback pre-dispatch hold modeled offline (2026-11-10 01:35 UTC)
+
+Added a second deterministic config for the currently observed pre-dispatch
+condition: the protected Genesis readback-enable variable is absent and the
+prior approved state binding no longer matches the configured digest. The
+workflow must hold before staging an intent or starting a runner. TLC checked
+the normal recovery path (18 states / 52 steps) and closed/stale gate (2 / 2);
+all six invariants and deadlock checks passed in both. Charts, reports, and
+reproduction commands are checked in. This is bounded offline evidence only;
+no fresh intent, runner dispatch, host action, or provider mutation occurred.
+
 ## DO Genesis readback binding must be refreshed (2026-11-10 01:29 UTC)
 
 Read-only inspection of the protected `work-staging` GitHub Environment found
