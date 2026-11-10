@@ -28,8 +28,8 @@ API, so use the protected private inventory for a live health claim.
 
 ## Mini Git-to-controller workload path
 
-The documented operator path for a configured app is `norn deploy <app>
-<commit-sha>`. Norn records the deployment operation and its worker runs the
+The documented operator path for a configured app is `norn deploy APP COMMIT_SHA`.
+Norn records the deployment operation and its worker runs the
 deployment stages. Git supplies the source revision, and the configured app
 name selects the workload. Older lab scripts that call `nomad job run`
 directly bypass Norn admission and its operation recovery.
