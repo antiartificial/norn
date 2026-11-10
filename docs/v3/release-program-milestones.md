@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 19:32 UTC. No V3 launch date is
+Status: active work map, refreshed 2026-11-10 19:42 UTC. No V3 launch date is
 committed; release timing remains gate-based. This checklist orders the [release
 fitness and controller plan](release-fitness-and-controller-plan.md). It does not
 authorize deployment, provider mutation, or credential use.
@@ -21,7 +21,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 19:32 UTC): the independent Mini runs signed
+Current gate snapshot (2026-11-10 19:42 UTC): the independent Mini runs signed
 release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The owner-stated
 Mini success bar is met: the direct V3 release is active, API health returned
 HTTP 200, and the Norn-managed `vigil-gateway` workload allocation was running
@@ -91,7 +91,7 @@ live service or workload qualification.
 |---|---|---|
 | Protected platform release | The `2a2d712a` platform release passed protected qualification and immutable publication (run `42788567933`). The follow-up `1b2dc229` also passed all 12 jobs and immutable publication (runs `42804580712`, `42805168466`). | Keep publish separate from deployment; use exact-SHA qualification and protected publication for each future release. |
 | Mini direct | Successful under the owner-stated bar: signed `34178b8b` is active at schema 52, API health returned HTTP 200, and the running Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. Other app health remains mixed. | Keep queued-upgrade recovery and Git-driven workload admission as separate follow-ups. Do not include Fleet workload resizing in the Mini lane. |
-| Existing DO Fleet | The 18:49 UTC `work`-context inventory found all eleven management, control, ingress, and app Droplets active. Gate installation, state readback, and dormant controller bootstrap passed. Genesis remains dormant and unverified. Readback run #42883390770 failed before SSH because original private vars still pinned the prior source; no Genesis read occurred. PR #968 derives exact-source vars from the digest-pinned template; validation is pending. | Pass and merge PR #968, then create a fresh owner-signed readback intent. Verify Genesis and directly prove API, etcd, Nomad, Consul, route, and workload health. Only then qualify controller-mediated online platform updates and workload release/resize. Keep bootstrap disabled unless a new install is required. |
+| Existing DO Fleet | The 19:42 UTC `work`-context inventory found all eleven management, control, ingress, and app Droplets active. Gate installation, state readback, and dormant controller bootstrap passed. Genesis remains dormant and unverified. Readback run #42883390770 failed before SSH because original private vars still pinned the prior source; no Genesis read occurred. PR #968 derives exact-source vars from the digest-pinned template and is based on current `main`; its exact-head contract check is running. | Pass and merge PR #968, then create a fresh owner-signed readback intent. Verify Genesis and directly prove API, etcd, Nomad, Consul, route, and workload health. Only then qualify controller-mediated online platform updates and workload release/resize. Keep bootstrap disabled unless a new install is required. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | DO workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending or held releases retain them. Replay checks pass, but one fresh HTTP admission joined to real etcd, signed qualification, and owned serving-route evidence is still missing. Full executor/worker process recovery and live Nomad/ingress qualification remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, and capacity 4 reaches the modeled terminal receipt. | Join HTTP admission to real etcd, a signed qualification, a completed staging deployment, and control-owned active-route lineage. Exercise process/lease loss and lost responses across stage/create/readback/bind/route/stop on disposable Nomad/ingress. Keep stateful compatibility separate. This resize lane applies to the DO staging Fleet, not the Mini. |
 | Offline state models | All 30 checked-in configurations were rerun on Nov 10 with each config mapped to its owning TLA spec. Twenty-eight passed; the two intentionally buggy Mini descendant configs each reproduced the expected three-transition later-upgrade hold. The corrected Mini config passed five invariants and deadlock. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
@@ -321,28 +321,38 @@ qualifies a billable fresh-Fleet deployment.
 
 ### M3. Re-establish DO controller readiness and prove live state
 
-- [ ] Obtain fresh protected state and provider receipts. The 17:02 UTC
-  `doctl --context work` inventory found eleven staging Droplets active, but
-  did not prove current control-plane or workload health.
-- [ ] Resolve the stale Genesis platform-controller source. Genesis readbacks
-  [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
-  and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
-  passed backend-byte, serial-22-to-23 route-continuity, and effective transport
-  checks, then failed installed-source verification before reading Genesis.
-  The management controller still reports source `2de3cbd8`.
+- [x] Refresh provider inventory and protected state handoff. The 19:42 UTC
+  read-only `doctl --context work` inventory found all eleven staging Droplets
+  active (two management, three control, two ingress, four app). Protected
+  state readback
+  [42871361099](https://github.com/antiartificial/norn-fleet/actions/runs/42871361099)
+  matched lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23. These
+  establish provider presence and state handoff, not service or workload health.
+- [ ] Complete Genesis readback with exact source-derived private vars. Older
+  Genesis reads failed installed-source verification. Dormant bootstrap run
+  [42881334515](https://github.com/antiartificial/norn-fleet/actions/runs/42881334515)
+  later succeeded with controller and Genesis units verified installed but
+  stopped. The next readback
+  [42883390770](https://github.com/antiartificial/norn-fleet/actions/runs/42883390770)
+  failed local preflight before SSH because the original private vars still
+  pinned the previous source; it did not read Genesis or contact the Fleet.
+  Fleet PR #968 derives a temporary vars file from the digest-pinned template
+  and exact controller source. Its current-head contract run
+  [42887264074](https://github.com/antiartificial/norn-fleet/actions/runs/42887264074)
+  is in progress. After merge, use a fresh signed readback intent; the prior
+  intent is spent.
 - [x] Admit the exact protected gate-install job through the signed one-use
   management Mac runner; verify terminal retirement. Run
   [42861703620](https://github.com/antiartificial/norn-fleet/actions/runs/42861703620)
-  succeeded. The distinct bootstrap job remains unrun and its flag remains
-  `false`.
-- [ ] Admit dormant Genesis bootstrap only through the signed one-use runner
-  controller. PR [#959](https://github.com/antiartificial/norn-fleet/pull/959)
-  added the route-continuity preflight and deterministic source archive/private-
-  vars generation. Bootstrap run
-  [42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029)
-  was canceled before its first step because no protected Linux effect runner
-  was registered. PR #962 merged signed intent admission and the remote gate;
-  bootstrap remains disabled and no install or dispatch occurred.
+  succeeded. The gate-install and state-readback jobs are complete.
+- [x] Admit dormant Genesis bootstrap through the signed one-use runner
+  controller. After PRs #959 and #962 added route-continuity preflight,
+  deterministic source archive/private-vars generation, and signed intent
+  admission, bootstrap run
+  [42881334515](https://github.com/antiartificial/norn-fleet/actions/runs/42881334515)
+  succeeded. It installed the controller and verified Genesis units/timers
+  remained stopped; the one-use runner retired. The bootstrap flag was reset
+  to `false`. This is not Genesis activation or live service health.
 - [x] Correct the Mac gate-installer dependency list. Fleet PR #964 merged at
   `a09847fc`; the missing module is installed locally at the exact source
   digest, the LaunchAgent imports successfully, and read-only queue checks find
@@ -357,9 +367,9 @@ qualifies a billable fresh-Fleet deployment.
   [42871361099](https://github.com/antiartificial/norn-fleet/actions/runs/42871361099)
   passed at lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23, and the
   one-use runner retired. This does not include a Genesis journal readback.
-- [ ] Refresh state, route, and host-key evidence, or use only the exact reviewed
-  serial-22-to-23 continuity proof. Prepare a new signed, state- and host-key-
-  bound readback intent only after every preflight passes.
+- [ ] After PR #968 passes and merges, prepare a fresh signed readback intent
+  bound to the current reviewed state and host-key evidence. Do not reuse the
+  spent intent from run #42883390770.
 
 **Exit:** the protected controller install and readback complete with fresh
 receipts, and private control services are observed directly. Otherwise record
