@@ -1,5 +1,33 @@
 # Norn v3 launch state
 
+## Current Mini recovery status (2026-11-10 02:25 UTC)
+
+The protected A8 controller release
+[`platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`](https://github.com/antiartificial/norn/releases/tag/platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63)
+is signed, published, imported on Mini, and verified. It resumed the existing
+transition `mini-v3-20261110T0021Z-a4b9c3b3` without changing its target A4
+release or generation. The database is at catalog schema 52, and the A4 API
+serves the exact recovered-forward maintenance status with `finalized=false`,
+`runtimeTopology=single-node-mini`, and no Fleet API or etcd consultation. The
+preservation receipt records `preservationMatched=true`.
+
+Normal activation is still incomplete. The journal is at
+`candidate-preservation-pending`; the finalizer rejected the adopted baseline's
+older source SHA because that lane did not apply the same signed-descendant
+check as forward recovery. The Mini remains under the recovered-forward write
+fence, and its host-agent LaunchAgent has not been restored. Norn PR work is
+adding the missing finalizer ancestry gate and a regression test. Do not report
+the Mini upgrade complete until the finalizer succeeds, the original API job
+and host agent are restored, and authenticated API plus host/workload readback
+passes.
+
+During this recovery, `NORN_PLATFORM_REPO` was also added to Mini's encrypted
+API environment so the GUI LaunchAgent can verify the adopted source lineage.
+The original encrypted environment was retained as a mode-0600 backup under
+the recovered-forward directory. The authenticated Mini source and schema
+readbacks were performed through the existing controller; no DO Fleet changes
+were made.
+
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
 ## Current V3 release readiness (2026-11-10 01:52 UTC)
