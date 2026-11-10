@@ -89,6 +89,23 @@ This refresh confirms provider-reported VM state only. It does not check the
 Norn API, etcd, Nomad, Consul, routes, or application response. Genesis
 readback, platform release/postflight, and workload qualification remain open.
 
+## DO bootstrap controller admission merged (2026-11-10 16:16 UTC)
+
+Fleet PR [#962](https://github.com/antiartificial/norn-fleet/pull/962) merged
+as `5400fd8a973266f6e211ce85ee6b3e0d7798cb16`. It adds owner-signed,
+state-bound bootstrap intent admission through the one-use Linux runner
+controller and remote job gate, with exact run-scoped runner labels. The
+contract passed; focused local verification covered 54 tests and the
+deterministic statechart passed nine safety invariants.
+
+This advances code and offline protocol evidence only. The bootstrap feature
+flag remains `false`; the merged controller has not been installed on the DO
+management runner, and no bootstrap dispatch, Fleet install, or provider
+mutation occurred. Next: stop the persistent effect runner, install and verify
+the reviewed remote gate, verify fresh protected Linux runner readiness, and
+then prepare a fresh reviewed intent. Do not replay canceled run
+`42838769029`.
+
 Genesis readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
 and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
 verified exact backend bytes, the serial-22-to-23 route continuity, and

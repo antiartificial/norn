@@ -25,6 +25,22 @@ ingress nodes, and four app nodes. This confirms provider instance state only.
 It does not confirm Norn, etcd, Nomad, Consul, route, or workload health. The
 `norn-pilot` context belongs to a different DO account.
 
+## Signed DO bootstrap admission merged (2026-11-10 16:16 UTC)
+
+Fleet PR [#962](https://github.com/antiartificial/norn-fleet/pull/962) merged
+as `5400fd8a973266f6e211ce85ee6b3e0d7798cb16`. It admits the dormant bootstrap
+workflow through owner-signed, state-bound intent, the one-use Linux runner
+controller, and remote job gate. Exact run-scoped runner labels are part of
+the admission binding. The exact-head contract passed; focused local
+verification covered 54 tests and the statechart checked 37 states / 53
+transitions with nine safety invariants.
+
+The bootstrap feature flag remains `false`. The merged remote job gate has not
+been installed on the DO management runner, and no bootstrap dispatch, Fleet
+install, or provider mutation occurred. The next gate is a reviewed install
+with the persistent effect runner stopped, followed by fresh runner readiness
+and a new reviewed intent. Do not replay canceled run `42838769029`.
+
 ## DO staging provider refresh (2026-11-10 16:02 UTC)
 
 A fresh read-only `doctl --context work compute droplet list` returned all
