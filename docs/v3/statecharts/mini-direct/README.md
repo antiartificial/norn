@@ -15,12 +15,16 @@ bun /Users/arti/.agents/skills/statechart/scripts/statechart.ts \
   --out "$PWD/reproduced-output"
 ```
 
-TLC explored 82 states and 164 transitions. All configured invariants and the
-deadlock check passed. The compact chart draws 13 states and 15 arrows; omitted
-crash and recovery transitions remain in the TLC check.
+The model includes the observed halt after host-agent fencing: an ordinary
+same-intent retry cannot cross that gate; a distinct signed repair controller
+must verify source lineage and resume the exact generation. TLC output and
+counts are recorded in `report.md` after reproduction.
 
-The model follows protected backup and exact-target signed shadow preparation,
-then proves the writer set before journal binding or host effects. It abstracts
-cryptographic verification, real writer discovery, Launchd PID reuse, SQL and
-filesystem durability, timing, and key custody. See the Mini launch record for
-actual transition evidence.
+The model starts at the Mini's observed schema 51 and follows protected backup
+and exact-target signed shadow preparation, then proves the writer set before
+journal binding or host effects. Its forward migration advances to schema 52.
+The repair
+controller action abstracts its signature, distinct source identity,
+source-lineage verification, Launchd PID reuse, SQL and filesystem durability,
+timing, and key custody; those implementation checks still require separate
+verification. See the Mini launch record for actual transition evidence.

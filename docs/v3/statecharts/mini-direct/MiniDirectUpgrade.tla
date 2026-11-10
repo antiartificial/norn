@@ -7,7 +7,7 @@ ASSUME None \notin {Old, Target}
 ASSUME UnknownTarget \notin {Old, Target, None}
 
 Phases == {"plan", "backup", "prepared", "host-agent-fencing",
-           "api-fencing", "legacy-fenced", "migration-started",
+           "host-agent-fenced", "repair-controller-required", "legacy-fenced", "migration-started",
            "schema-migrated", "candidate-started", "candidate-healthy",
            "done", "held"}
 
@@ -25,7 +25,7 @@ Init ==
   /\ intentTarget = Target
   /\ journalTarget = None
   /\ writerProof = "unknown"
-  /\ schema = 49
+  /\ schema = 51
   /\ api = Old
   /\ hostAgent = Old
   /\ backupOK = FALSE
@@ -86,13 +86,13 @@ FenceHostAgent ==
   /\ phase = "host-agent-fencing"
   /\ journalTarget = intentTarget
   /\ hostAgent' = None
-  /\ phase' = "api-fencing"
+  /\ phase' = "host-agent-fenced"
   /\ UNCHANGED <<heldPhase, intentTarget, journalTarget, writerProof,
                   schema, api, backupOK, shadowOK, writeFence, healthy,
                   preservation, receipt>>
 
 FenceAPI ==
-  /\ phase = "api-fencing"
+  /\ phase = "host-agent-fenced"
   /\ hostAgent = None
   /\ api' = None
   /\ writeFence' = TRUE
@@ -112,7 +112,7 @@ BeginMigration ==
 FinishMigration ==
   /\ phase = "migration-started"
   /\ writeFence /\ api = None /\ hostAgent = None
-  /\ schema' = 51
+  /\ schema' = 52
   /\ phase' = "schema-migrated"
   /\ UNCHANGED <<heldPhase, intentTarget, journalTarget, writerProof,
                   api, hostAgent, backupOK, shadowOK, writeFence, healthy,
@@ -120,7 +120,7 @@ FinishMigration ==
 
 StartCandidate ==
   /\ phase = "schema-migrated"
-  /\ schema = 51 /\ shadowOK /\ journalTarget = Target
+  /\ schema = 52 /\ shadowOK /\ journalTarget = Target
   /\ api' = Target
   /\ hostAgent' = Target
   /\ phase' = "candidate-started"
@@ -130,7 +130,7 @@ StartCandidate ==
 
 VerifyCandidateAndPreservation ==
   /\ phase = "candidate-started"
-  /\ api = Target /\ hostAgent = Target /\ schema = 51
+  /\ api = Target /\ hostAgent = Target /\ schema = 52
   /\ healthy' = TRUE
   /\ preservation' = TRUE
   /\ phase' = "candidate-healthy"
@@ -150,7 +150,9 @@ Finalize ==
 
 CrashOrAmbiguousOutcome ==
   /\ phase \in Phases \ {"done", "held"}
-  /\ phase' = "held"
+  /\ phase' = IF phase = "host-agent-fenced"
+                 THEN "repair-controller-required"
+                 ELSE "held"
   /\ heldPhase' = phase
   /\ UNCHANGED <<intentTarget, journalTarget, writerProof, schema, api,
                   hostAgent, backupOK, shadowOK, writeFence, healthy,
@@ -160,6 +162,7 @@ ResumeSameIntent ==
   /\ phase = "held"
   /\ intentTarget = Target
   /\ journalTarget \in {None, Target}
+  /\ heldPhase \notin {"host-agent-fenced", "repair-controller-required"}
   /\ phase' = heldPhase
   /\ UNCHANGED <<heldPhase, intentTarget, journalTarget, writerProof,
                   schema, api, hostAgent, backupOK, shadowOK, writeFence,
@@ -174,6 +177,19 @@ TryDifferentTarget ==
                   hostAgent, backupOK, shadowOK, writeFence, healthy,
                   preservation, receipt>>
 
+SignedRepairControllerResumes ==
+  /\ ((phase = "repair-controller-required" /\ heldPhase = "host-agent-fenced")
+     \/ (phase = "held" /\ heldPhase = "repair-controller-required"))
+  /\ journalTarget = Target
+  /\ intentTarget = Target
+  /\ hostAgent = None
+  /\ api = Old
+  /\ ~writeFence
+  /\ phase' = "host-agent-fenced"
+  /\ UNCHANGED <<heldPhase, intentTarget, journalTarget, writerProof, schema,
+                  api, hostAgent, backupOK, shadowOK, writeFence, healthy,
+                  preservation, receipt>>
+
 HeldWait == /\ phase = "held" /\ UNCHANGED vars
 DoneWait == /\ phase = "done" /\ UNCHANGED vars
 
@@ -181,7 +197,7 @@ Next == ProveWriters \/ HoldUnknownWriters \/ RefreshWriterProof \/
         TakeBackupAndShadow \/ BindJournal \/ FenceHostAgent \/ FenceAPI \/
         BeginMigration \/ FinishMigration \/ StartCandidate \/
         VerifyCandidateAndPreservation \/ Finalize \/ CrashOrAmbiguousOutcome \/
-        ResumeSameIntent \/ TryDifferentTarget \/ HeldWait \/ DoneWait
+        ResumeSameIntent \/ SignedRepairControllerResumes \/ TryDifferentTarget \/ HeldWait \/ DoneWait
 
 Spec == Init /\ [][Next]_vars
 
@@ -191,7 +207,7 @@ TypeOK ==
   /\ intentTarget \in {Target, UnknownTarget}
   /\ journalTarget \in {None, Target}
   /\ writerProof \in {"unknown", "all-known-and-compatible-or-fenceable"}
-  /\ schema \in {49, 51}
+  /\ schema \in {51, 52}
   /\ api \in {Old, Target, None}
   /\ hostAgent \in {Old, Target, None}
   /\ backupOK \in BOOLEAN /\ shadowOK \in BOOLEAN
@@ -203,15 +219,21 @@ MigrationRequiresFencedWriters ==
     (api = None /\ hostAgent = None /\ writeFence)
 
 NoOldWriterAfterSchemaChange ==
-  schema = 51 => (api # Old /\ hostAgent # Old)
+  schema = 52 => (api # Old /\ hostAgent # Old)
 
 TargetRequiresBoundVerifiedCandidate ==
-  api = Target => (shadowOK /\ journalTarget = Target /\ schema = 51)
+  api = Target => (shadowOK /\ journalTarget = Target /\ schema = 52)
 
 ReceiptRequiresSuccessfulPostflight ==
   receipt => (phase = "done" /\ healthy /\ preservation /\ api = Target /\ hostAgent = Target)
 
 ChangedIntentStaysHeld ==
   journalTarget = Target /\ intentTarget # journalTarget => phase = "held"
+
+RepairGatePreservesObservedMiniState ==
+  phase = "repair-controller-required" =>
+    (heldPhase = "host-agent-fenced" /\ journalTarget = Target /\
+     intentTarget = Target /\ schema = 51 /\ hostAgent = None /\
+     api = Old /\ ~writeFence)
 
 =============================================================================

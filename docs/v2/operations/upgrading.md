@@ -6,9 +6,13 @@ For V3 release planning, use the current [platform release lanes and workload
 resizing guide](../../v3/release-lanes-and-workload-resizing.md). Mini is an
 independent node; the DO staging Fleet is a separate environment. The existing
 DO Norn release protocol is all-stop and forward-only. Mixed-version Norn
-control upgrades are not qualified. The Mini's current active `norn.startup/v2`
-contract and signed `e9a21d20` candidate both support reader/writer floors
-5/33; the candidate adds catalog migration 52. Its passive preflight therefore
+control upgrades are not qualified. The Mini's active `norn.startup/v2`
+contract and signed replacement `a4b9c3b3` both support reader/writer floors
+5/33; the replacement adds catalog migration 52 and has been imported and
+verified on Mini. The previous `e9a21d20` candidate is historical. The current
+transition is halted before API fencing and migration at journal phase
+`host-agent-fenced`; the host-agent LaunchAgent is held behind the durable
+sentinel, while the source API remains healthy on schema 51. Its passive preflight therefore
 stops for the expected migration. In a direct upgrade with no retained
 recovery fence, the standard `upgrade` lane is contract-compatible after
 protected backup and exact-candidate private-shadow proof. The Mini currently
@@ -96,8 +100,14 @@ successor generation before calling the managed controller:
 For the current Mini recovery, do not run this with the published `e9a21d20`
 candidate: its controller rejects its own successor-generation evidence path,
 and its legacy-baseline drain does not distinguish the receipt-preserving
-recovered-forward lane. Use a replacement signed release after those fixes are
-qualified.
+recovered-forward lane. The signed replacement `a4b9c3b3` contains those fixes
+and is published. If the transition stops at `host-agent-fenced`, preserve the
+exact generation and transition ID. A normal retry is rejected by the resolver;
+use a distinct later signed controller through the signed controller-repair
+procedure. The previous source controller may reject source-lineage evidence
+fixed only in the target candidate. Do not restart the fenced host agent or edit
+the journal by hand. Publication alone is not transition authorization or
+proof that the Mini is ready to migrate.
 
 ```bash
 norn platform env -- \
