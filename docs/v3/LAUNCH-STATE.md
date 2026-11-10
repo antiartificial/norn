@@ -1,8 +1,19 @@
 # Norn v3 launch state
 
-## Mini direct v3 upgrade completed (2026-11-07)
+## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
-## Current V3 release readiness (2026-11-10 00:01 UTC)
+## Current V3 release readiness (2026-11-10 00:46 UTC)
+
+Protected-master qualification for exact source
+`a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
+[run 42729857751](https://github.com/antiartificial/norn/actions/runs/42729857751).
+It includes the source-lineage verifier fix needed for the Mini's signed
+recovery path. Exact-source immutable release preparation is running as
+[42730463793](https://github.com/antiartificial/norn/actions/runs/42730463793).
+Authorization, pinned UI, and all four bundle jobs passed; the protected
+signing/publish job is waiting for environment approval. It is not signed or
+published. Publication still requires approval for this exact source. No new
+Mini or DO operation has occurred.
 
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
 source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
@@ -19,9 +30,12 @@ current source. PR #373 fixed that verifier and merged at
 qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745)
 passed all 12 jobs. Exact-source release workflow
 [42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811)
-passed authorization, pinned UI, and all four platform bundles; its protected
-`publish` job is waiting for owner approval. It has not been signed or
-published. This fix is not in the already published `9d9d6208` release.
+completed successfully after exact-SHA owner approval. Immutable signed
+release
+[`platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70`](https://github.com/antiartificial/norn/releases/tag/platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70)
+is published and has been imported and verified on Mini. It has not been
+promoted or deployed to DO. It supersedes `9d9d6208` for the recovered-forward
+Mini attempt because it includes the verified source-lineage correction.
 
 Norn PR #375 merged afterward at `66690f93` and narrows hash-bound dispatch
 recovery to the GitHub App `actions:read` permission. Its full PR checks passed.
@@ -30,12 +44,25 @@ receipts' current-lane binding mismatch, which still stops reconciliation
 before GitHub lookup. The receipts remain queued. See the 00:01 UTC
 [launch-history entry](LAUNCH-HISTORY.md#dispatch-recovery-now-requests-read-only-github-actions-access-2026-11-10-0001-utc).
 
-The Mini remains on `d4dc88e0c37003a1013caed444983b2eeb50fbcb`, health `ok`,
-runtime mutation fence `inactive`. No migration or candidate promotion
-occurred. The exact replacement release is ready at the protected approval
-gate. The earlier publish approval applied only to `9d9d6208`; a separate
-approval is required for `a4b9c3b313d65c8a054fb869b18455fde33d3a70`. DO was
-not changed.
+At 00:33 UTC, a post-stop authenticated read-only inventory confirmed the Mini on
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`, API health and host status `ok`,
+and runtime mutation fence `inactive`. The exact release `a4b9c3b3` was then
+imported and verified signed. A fresh protected backup and signed shadow both
+passed for that candidate. The recovered-forward transition
+`mini-v3-20261110T0021Z-a4b9c3b3` created generation
+`gen-1a769550b1051bc9358ce8e8758265e5` and stopped at journal phase
+`host-agent-fenced`, before API fencing or migration. The API still serves
+source `d4dc88e0`, schema last observed at 51, health `ok`, and runtime
+mutation fence `inactive`; candidate `a4b9c3b3` is not promoted. The host-agent
+LaunchAgent is loaded but unable to start because its durable fence blocks
+ordinary restart. A plain
+retry was rejected because the resolver requires signed controller repair for
+this phase. The distinct source controller's repair helper rejected the new
+source-lineage evidence, so no repair authorization or database change was
+made. Current inventory had 19 of 30 app records running and healthy, seven
+queued `fleet.github.apply-dispatch` operations, 25 open incident groups, and
+blocked production readiness. Latest host-assurance receipt remains stale.
+DO was not changed.
 
 The seven stale DO `fleet.github.apply-dispatch` receipts remain queued. A
 fresh authenticated inventory confirmed the count. The current handler rejects
@@ -62,16 +89,15 @@ not runtime or controller-refinement evidence. See the dated
 [launch-history entry](LAUNCH-HISTORY.md#recovered-forward-repair-merged-exact-source-release-prepared-2026-11-09-2256-utc)
 for per-model counts and limits.
 
-The latest authenticated Mini runtime evidence is the 22:47 UTC snapshot below;
-it is historical and must be refreshed before the next live step.
-Refresh Mini API/host/schema/generation state and the protected DO read-only
-status before any live step. After owner approval and publication,
-import and verify the exact signed replacement on Mini, then create a fresh
-source-bound backup and shadow receipt, rerun preflight, and invoke only the
-signed `mini-recovered-forward-transition` wrapper. Verify migration 52,
-generation receipt, API/schema, host assurance, and workload smoke afterward.
+The 22:47 UTC snapshot below is historical. The 00:33 UTC post-stop inventory is
+recorded above. The current signed generation is halted at `host-agent-fenced`
+before live database mutation. Do not retry with a new transition ID or edit the
+journal. After exact-source release `a8aa2860` is signed and published, use its
+distinct signed controller-repair path to resume this exact generation. After
+recovery, verify migration 52, generation
+receipt, API/schema, host-agent restoration, host assurance, and workload smoke.
 
-## Mini runtime evidence snapshot (2026-11-09 22:47 UTC)
+## Historical Mini runtime evidence snapshot (2026-11-09 22:47 UTC)
 
 The read-only inventory at 22:47 UTC reports `/api/health` and host status
 `ok`, runtime mutation fence `inactive`, and exact current release/source

@@ -18,7 +18,7 @@ the bounds and omissions for each model.
 | Lane | Result | Model status | Main limit |
 |---|---:|---|---|
 | Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |
-| Mini direct V3 upgrade | 82 states, 164 steps; 7 invariants and deadlock check pass | Bounded model of backup/shadow, writer proof, fencing, migration, promotion, receipt, and same-target recovery | Abstracts real key custody, writer discovery, Launchd PID reuse, and host effects |
+| Mini direct V3 upgrade and recovered-forward repair | 90 states, 179 steps; 8 invariants and deadlock check pass (rerun 2026-11-10) | Includes the observed host-agent-fenced halt; ordinary same-intent retry is blocked until a distinct signed repair-controller action verifies lineage and resumes the exact generation | The repair action abstracts signature, source identity, lineage verification, Launchd, SQL/filesystem durability, timing, and key custody; not yet refined to implementation tests |
 | Proposed online Norn platform upgrade | 97 states, 251 steps; 12 invariants and deadlock check pass | Old release serves through additive schema expansion and passive candidate verification; writer/traffic handoff is fenced, crash recovery keeps the same intent, and schema contraction waits until old-writer retirement | Proposed protocol only; assumes binary/schema compatibility and post-handoff health; abstracts real migrations, writer discovery, fencing, supervision, workload/data integrity, and availability measurements |
 | Existing Fleet Genesis | 69 states, 107 steps; 9 invariants and deadlock check pass | Dormant install, signed intent, staged controls, passive-first promotion, recovery; fresh-Fleet request is explicitly blocked | Inputs are modeled as one valid/invalid gate; provider create workflow is absent from this model |
 | Workload mixed-version resize | Capacity 3: 24 states / 52 steps; capacity 4: 103 / 275; 11 invariants and deadlock check pass in both | Proposed protocol, not current controller behavior; capacity 3 has no target-only route or terminal path under the target-only-before-drain rule, while capacity 4 reaches terminal receipt | Abstracts Nomad placement, app processes, database semantics, route implementation, and timing; live preflight must prove full overlap capacity |
@@ -51,6 +51,11 @@ the bounds and omissions for each model.
 
 - The Mini model's writer gate follows protected backup and signed shadow
   preparation, and precedes journal binding and live host effects.
+- The Mini recovery model now represents the actual halt after host-agent
+  fencing: the API remains on the old source, before write fencing or schema
+  migration. Normal retry cannot resume that phase; the modeled repair action
+  requires the exact journal target and preserved observed state. Its signature
+  and source-lineage checks remain an implementation-refinement task.
 - The workload proposal stops effects while held, waits for healthy target
   capacity before draining old allocations, and requires fresh proof of the
   exact current route after recovery. Route publications move only from old to

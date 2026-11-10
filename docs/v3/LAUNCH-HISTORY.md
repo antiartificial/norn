@@ -1,5 +1,110 @@
 # Norn v3 launch history
 
+## Mini recovery statechart aligned to observed fence and schema (2026-11-10 00:46 UTC)
+
+The Mini direct model previously advanced from schema 49 to 51 and allowed a
+generic same-intent retry after any held phase. The live Mini was at schema 51
+and stopped at `host-agent-fenced`, before API fencing or migration; ordinary
+retry is rejected there. Updated the model to cover schema 51 to 52 and require
+a distinct signed repair-controller action after this exact halt. TLC explored
+90 states and 179 transitions; eight invariants and deadlock checking passed.
+The chart keeps the observed recovery path visible with 18 arrows. The modeled
+signature, controller identity, source-lineage verification, Launchd, SQL and
+filesystem durability still need implementation-refinement evidence. No live
+Mini or DO action was performed.
+
+## Mini post-stop runtime inventory (2026-11-10 00:33 UTC)
+
+The authenticated post-stop inventory confirms the Mini API remains on source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`, schema 51, and health `ok`; Consul,
+Nomad, PostgreSQL, S3, SOPS, and the Nomad/Consul workload connector are up.
+The runtime mutation fence remains inactive and the exact signed `a4b9c3b3`
+release is installed but not current. Nineteen of 30 app records remain running
+and healthy. The host-agent LaunchAgent is loaded but repeatedly exits at the
+durable fence, so host operations are unavailable even though current API and
+workload processes remain online. Seven queued DO Fleet dispatch receipts and
+25 incident groups remain. The latest host-assurance receipt is still dated
+Sep 6; this readback is not a fresh host assurance. Production readiness is
+blocked. No Mini database migration, candidate promotion, DO readback, Fleet
+dispatch, or provider apply occurred.
+
+## Mini recovered-forward stopped before API fence and migration (2026-11-10 00:27 UTC)
+
+The exact published release `a4b9c3b313d65c8a054fb869b18455fde33d3a70` was
+imported into Mini and passed local manifest plus external signature
+verification. Passive preflight stopped before database mutation because
+schema 52 is required. A fresh protected backup was created at
+`/Users/0xadb/.config/norn/m5-v3-rc1/backup/control-20261110T001956Z-39515a89.dump`
+with proof and SHA-256 `2ff131df39ac532cc59112aaa890f0d7480adac0d2c7c8f14bbd937681ed1911`.
+The candidate-specific signed shadow passed private restore, two migrate-only
+runs, complete ledger through 52, passive health, and exact backup verification.
+
+Transition `mini-v3-20261110T0021Z-a4b9c3b3` created generation
+`gen-1a769550b1051bc9358ce8e8758265e5` and acquired the promotion lock. The
+managed controller fenced and stopped the legacy `norn-host-agent`, then
+stopped at durable phase `host-agent-fenced`. It made no API fence, schema
+migration, or candidate promotion. The source API remains healthy on `d4dc88e0`,
+schema last observed at 51, with runtime mutation fence inactive.
+
+The wrapper then received 404 from `/api/v1/platform/recovered-forward/status`
+because the source API is not serving the candidate's recovery-maintenance
+status surface yet. The exact same transition retry was rejected because the
+normal generation resolver does not permit the `host-agent-fenced` phase. A
+read-only launchctl bootstrap attempt did not restart the host agent; its
+managed wrapper correctly refused while the durable fence was active. The
+source release's signed controller-repair helper then rejected the new
+source-lineage evidence before creating a repair authorization. No journal,
+active-generation pointer, backup, or shadow evidence was edited or removed.
+
+Do not use a new transition ID, bypass the fence, or edit the journal. Resume
+with a distinct later signed controller that contains the lineage verifier
+fix, using the generation's signed controller-repair path. After promotion,
+verify schema 52, exact API source, workload preservation, host-agent
+restoration, smoke, host assurance, and terminal receipt. No DO readback, Fleet
+dispatch, or provider apply occurred.
+
+## Mini authenticated read-only inventory refreshed (2026-11-10 00:15 UTC)
+
+The machine-specific `norn_inventory.sh --remote mini` read completed
+authenticated API reads for health, version, host status, platform rollup,
+active operations, events, releases, and workload inventory. The Mini is still
+on source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`), API health and host status are `ok`,
+and the runtime mutation fence is inactive. The exact replacement release
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70` is not in the installed release
+list. Nineteen of 30 app records are running and healthy. Seven active
+operations remain queued `fleet.github.apply-dispatch` receipts; all are the
+known DO Fleet reservations. The inventory reports 25 open incident groups,
+including old allocation-loss events, and production readiness is blocked. The
+most recent host-assurance receipt shown by the host-status endpoint is from
+Sep 6, so it is not current assurance evidence. This read did not obtain fresh
+schema or recovered-forward generation state.
+
+No release import, backup, shadow, preflight, transition, Mini mutation, DO
+readback, GitHub dispatch, or provider apply occurred. The next safe step is
+exact signed release import and verification, followed by fresh candidate-bound
+backup, shadow, and preflight receipts. Keep the migration gate closed until
+the recovered-forward controller proves its current prerequisites.
+
+## Recovered-forward replacement release published (2026-11-10 00:10 UTC)
+
+After exact-SHA owner approval, protected release run
+[42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811)
+completed signing, verification, and publication for source
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. GitHub exposes the immutable
+signed prerelease as
+[`platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70`](https://github.com/antiartificial/norn/releases/tag/platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70).
+The run had passed its 12-job protected-master qualification and built the
+pinned UI plus Linux and macOS bundles for amd64 and arm64.
+
+This was artifact publication only. No Mini import, Mini transition, DO
+readback, Fleet dispatch, or provider apply occurred. The last recorded Mini
+runtime snapshot is still the 22:47 UTC Nov 9 inventory; refresh Mini state
+before importing the release. The seven stale DO dispatch receipts remain
+queued because the current-lane binding guard stops reconciliation before
+GitHub lookup. PR #375's later `actions:read` permission correction is not in
+this immutable release.
+
 ## Dispatch recovery now requests read-only GitHub Actions access (2026-11-10 00:01 UTC)
 
 Norn PR #375 merged at `66690f93`. `RecoverBoundPlan` now requests only the
@@ -16,7 +121,7 @@ release candidate. Keep the current lane guard on ordinary dispatch and replay
 paths. Any historical lookup path must validate the durable saved binding and
 the exact external run before it writes a terminal receipt.
 
-## Verifier fix fully qualified; replacement release awaits owner approval (2026-11-09 23:42 UTC)
+## Verifier fix fully qualified; replacement release awaits owner approval (historical, 2026-11-09 23:42 UTC)
 
 Norn PR #373 merged at exact source
 `a4b9c3b313d65c8a054fb869b18455fde33d3a70`. Its full protected-master

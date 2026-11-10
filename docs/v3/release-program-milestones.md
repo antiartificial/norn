@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 00:01 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 00:46 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,24 +20,44 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Latest gate update (2026-11-10 00:01 UTC): Norn PR #373 fixed the recovered-
-forward source-lineage verifier and merged at exact source
+Latest gate update (2026-11-10 00:46 UTC): protected-master qualification for
+exact source `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
+[run 42729857751](https://github.com/antiartificial/norn/actions/runs/42729857751).
+The exact-source immutable release workflow
+[42730463793](https://github.com/antiartificial/norn/actions/runs/42730463793)
+passed authorization, pinned UI, and all four bundle builds; its protected
+signing/publish job is waiting for approval. Signing and publication have not
+occurred and require approval for this SHA. The expanded Mini recovery statechart now checks the observed
+`host-agent-fenced` halt and rejects ordinary retry until a distinct signed
+repair-controller action resumes the exact generation (90 states, 179
+transitions, eight invariants and deadlock check passed). This model remains
+abstract and does not replace implementation refinement.
+
+The DO staging Fleet remains a separate test environment. Current protected
+`norn-fleet` main is `35e1c893198efbdc9e407d708e5096a32b485f7d`; merged PR #949
+records a repeated read-only staging plan proposing one management ingress
+firewall rule and confirming it is absent from versioned state. The latest
+staging drift workflow [42702422189](https://github.com/antiartificial/norn-fleet/actions/runs/42702422189)
+passed without mutation on Nov 9. These are not fresh Norn/API, control-store,
+or workload health receipts, so current DO runtime readiness remains unverified.
+
+Norn PR #373 fixed the recovered-forward source-lineage verifier and merged at exact source
 `a4b9c3b313d65c8a054fb869b18455fde33d3a70`. Full protected-master
 qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745)
 passed all 12 jobs. Exact-source release run
 [42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811)
-passed authorization, pinned UI, and all four platform bundle builds; its
-protected publish job is waiting for owner approval. The replacement is not
-signed or published. Earlier approval was specific to the already-published
-`9d9d6208` release and does not approve `a4b9c3b3`. Norn PR #375 merged at
+completed authorization, pinned UI, all four platform bundles, signing,
+verification, and immutable publication. The release is
+[`platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70`](https://github.com/antiartificial/norn/releases/tag/platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70).
+It has not been promoted on Mini or deployed to DO. Norn PR #375 merged at
 `66690f93` and limits hash-bound dispatch recovery to `actions:read`; its PR
 checks passed. The stale DO receipts still fail the current-lane binding guard
 before lookup, so they remain queued. PR #375 is not deployed to Mini or DO,
-and does not change the `a4b9c3b3` candidate. Neither Mini nor DO was changed
-by this work. The latest authenticated Mini runtime inventory remains
-the 22:47 UTC readback in [launch state](LAUNCH-STATE.md): API/host `ok`, schema
-51, 19 of 30 app records running and healthy, and seven queued Fleet receipts.
-Refresh it before any live upgrade step. DO has not been freshly read; its last
+and is not included in the immutable `a4b9c3b3` release. Neither Mini nor DO
+was changed by publication. The 00:33 UTC post-stop Mini inventory and transition stop
+are recorded in [launch state](LAUNCH-STATE.md): source API `ok` on schema 51,
+19 of 30 app records running and healthy, and the active generation halted at
+`host-agent-fenced`; no database migration or candidate promotion occurred. DO has not been freshly read; its last
 provider/runtime evidence is dated 18:58–19:01 UTC, so use a new protected
 readback before claiming current Fleet health.
 All 21 checked-in TLC configurations were rerun from current master, including
@@ -51,10 +71,10 @@ and the latest [launch-history entry](LAUNCH-HISTORY.md).
 
 | Workstream | Current evidence | Next proof |
 |---|---|---|
-| Protected release qualification | Protected-master qualification [42700530242](https://github.com/antiartificial/norn/actions/runs/42700530242) passed at `e9a21d20`; immutable signed prerelease `platform-e9a21d2095d60c8a96c1440e35e045dd0b6a7637` was published and its Darwin/arm64 signature, manifest, inventory, SBOM, and source verified. PR #370's `9d9d6208` release was qualified, signed, and published after exact-SHA approval. PR #373 then merged the verifier lineage fix at `a4b9c3b3`; full protected-master qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745) passed all 12 jobs. Exact-source release run [42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811) built the pinned UI and all four bundles; the protected publish job is waiting for exact-SHA owner approval. PR #375 later narrowed recovery to the GitHub App's `actions:read` permission, but is not in the `a4b9c3b3` candidate. | Approve and publish the exact `a4b9c3b3` release. Then import and verify it on Mini and refresh source-bound backup, shadow, and preflight evidence before recovered-forward admission. |
-| Mini direct release evidence | Latest recorded authenticated inventory at 22:47 UTC reported API/host `ok` on `d4dc88e0`, schema 51, floors 5/33, host assurance succeeded, and 19 of 30 app records running and healthy. Candidate `e9a21d20` backup and private-shadow checks passed, but preflight stopped before DDL. The signed `9d9d6208` recovered-forward attempt stopped before fencing or migration because the verifier incorrectly required source equality. PR #373 fixes this through externally signed ancestry verification; its replacement release is awaiting approval. Seven stale DO dispatch receipts remain queued after lookup-only reconciliation returned `fleet_github_dispatch_binding_mismatch`; no dispatch or apply occurred. Production readiness remains separately blocked. | After replacement publication, refresh authenticated Mini source/state, backup, shadow and preflight proofs. Invoke only the exact signed candidate's `mini-recovered-forward-transition` wrapper with a fresh transition ID; preserve the seven queued receipts, then verify migration 52, API/schema, smoke, host assurance, and generation receipt. |
+| Protected release qualification | Protected-master qualification [42700530242](https://github.com/antiartificial/norn/actions/runs/42700530242) passed at `e9a21d20`; immutable signed prerelease `platform-e9a21d2095d60c8a96c1440e35e045dd0b6a7637` was published and its Darwin/arm64 signature, manifest, inventory, SBOM, and source verified. PR #370's `9d9d6208` release was qualified, signed, and published after exact-SHA approval. PR #373 merged the verifier lineage fix at `a4b9c3b3`; full protected-master qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745) passed all 12 jobs. Exact-source release [42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811) passed the pinned UI and four bundles, was signed, verified, and immutably published at `platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70`; it is imported and signature-verified on Mini. PR #375 later narrowed recovery to the GitHub App's `actions:read` permission, but is not in this immutable candidate. | Build and qualify a distinct signed controller release that can repair the halted `a4b9c3b3` generation, then complete and verify that exact Mini transition. |
+| Mini direct release evidence | The 00:33 UTC post-stop inventory reports API/host `ok` on `d4dc88e0`, schema 51, runtime fence inactive, and 19 of 30 app records running and healthy. Fresh backup and candidate `a4b9c3b3` signed shadow passed. The recovered-forward transition is durably stopped at `host-agent-fenced`, before API fencing or migration; the host-agent LaunchAgent remains blocked by the durable fence. Candidate is not promoted. A plain retry was rejected by the generation resolver; source-controller repair failed its signed evidence verifier before authorization. No live database mutation occurred. Seven DO Fleet dispatch receipts remain queued. | Use a later distinct signed controller release containing the corrected lineage verifier to repair and resume this exact generation. Do not alter its journal or use a new transition ID. Then verify migration 52, API/schema, host-agent restoration, workload preservation, smoke, host assurance, and the terminal generation receipt. |
 | Release evidence | The 18:48 UTC Mini inventory confirms API/host `ok` on signed repair release `d4dc88e`, inactive runtime fence, 19 app records running, and successful host assurance at 18:48:53 UTC. Open incident groups and snapshot-retention warnings remain for review; production readiness fails its separate production-admission contract. Nov 9 18:58 UTC DO inventory confirms nine staging nodes, both management nodes, the ingress LB, and three managed databases active/online. The 19:01 UTC public canary probe served `be5ca5d9` across two allocations on two nodes; this does not prove Norn API/control-plane health or the failed operation's terminal receipt. | Use [launch state](LAUNCH-STATE.md) for exact receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. Obtain protected control-plane runtime and receipt evidence before declaring DO fully healthy. |
-| Mini Git workload admission | Nov 9 read-only inventory confirms the Mini API is healthy, its running process has a webhook secret, 12 app records have `repo.autoDeploy`, and its latest 25 webhook receipts are GitHub. Six mapped personal GitHub repositories have active push hooks to the Norn webhook hostname; endpoint-to-Mini routing and hook-to-terminal-operation outcomes remain unverified. The Mini runs `d4dc88e`, before merged exact-SHA fix `ccb49a56` and host-bound matching `765d7550`. The API uses one shared `NORN_WEBHOOK_SECRET` across configured GitHub and Gitea hooks; it does not isolate credentials per repository. Published signed release `9d9d6208` contains the recovered-forward admission and drain-path repair, but its transition attempt stopped at the separately fixed evidence-verifier lineage check. That verifier fix is in `a4b9c3b3`, whose signed release is awaiting exact-SHA approval. | After the corrected Mini transition, reconcile webhook-host ingress and app mapping, confirm each hook uses the shared secret, and rehearse one push through terminal operation and app smoke. Keep GitHub canonical; make any Norn Git copy one-way. |
+| Mini Git workload admission | Nov 9 read-only inventory confirms the Mini API is healthy, its running process has a webhook secret, 12 app records have `repo.autoDeploy`, and its latest 25 webhook receipts are GitHub. Six mapped personal GitHub repositories have active push hooks to the Norn webhook hostname; endpoint-to-Mini routing and hook-to-terminal-operation outcomes remain unverified. The Mini runs `d4dc88e`, before merged exact-SHA fix `ccb49a56` and host-bound matching `765d7550`. The API uses one shared `NORN_WEBHOOK_SECRET` across configured GitHub and Gitea hooks; it does not isolate credentials per repository. Signed release `a4b9c3b3` is now imported, but the Mini transition stopped at `host-agent-fenced` before API fencing or migration; workload admission and hook-to-terminal outcomes remain unverified. | Complete the Mini transition using a later signed repair controller, then reconcile webhook-host ingress and app mapping, confirm each hook uses the shared secret, and rehearse one push through terminal operation and app smoke. Keep GitHub canonical; make any Norn Git copy one-way. |
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
 | Fresh-Fleet bootstrap | PRs #941 (offline war-game), #940 (release intent controller), #945 (provider-scope contract), #947 (bootstrap credential lifecycle), #942 (module-owned test collection), and `norn-fleet` #948 (attested DO token-scope admission) are merged. Protected `norn-fleet` main is now `35e1c893`; the General + Stateful role pair is accepted by its topology validator, generated inventory, and Ansible/Nomad bootstrap. Three focused tests for those boundaries passed at that exact source. Existing staging remains a single `workload: app` pool; no two-pool fresh-Fleet config or provider action was added. The selected stable pool IDs are `general` and `stateful`; provider sizes, min/desired/max, cost envelope, stateful storage, and workload policy remain open. PR #948's owner-supplied token-scope evidence is bound to the token fingerprint and account but does not query DO to prove actual grants. Merged-main plan run `42693143436` proposed one management-runner-only ingress firewall with ports 18082/18083; no apply occurred. PR #837 merged at `6335c667`; no host enrollment or Genesis readback occurred. | Join persistent apply/recovery, exact state/provider identities, per-service credential lifecycle, live DO-grant review, and terminal receipt before any protected apply. The #837 enrollment lane still needs fresh owner-reviewed key/tag/host/digest inputs and a separately approved one-use dispatch. |
 | Offline models | Checked-in Mini, DO release, existing Genesis/readback, fresh Fleet (including both two-pool and current 3+2+4 shapes), online upgrade, mixed-version resize at capacities 3/4, and workload admission/route/stop recovery models were rerun from current master; every configured invariant and deadlock check passed. Capacity 3 still cannot complete mixed-version resize without violating the old-cohort drain fence; capacity 4 reaches the modeled terminal receipt. | Replay remaining counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
