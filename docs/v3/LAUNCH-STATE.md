@@ -106,6 +106,23 @@ the reviewed remote gate, verify fresh protected Linux runner readiness, and
 then prepare a fresh reviewed intent. Do not replay canceled run
 `42838769029`.
 
+## DO management runner readiness (2026-11-10 16:20 UTC)
+
+A read-only GitHub runner inventory for `antiartificial/norn-fleet` returned
+one online self-hosted runner: `norn-external-mac-finalizer-xenon`, labeled
+`norn-external-mac-finalizer`. No runner was registered with the required
+`norn-work-management-bootstrap` label or the protected Linux
+`norn-fleet-protected` effect-runner label. The external-Mac finalizer is a
+separate purpose and must not be substituted.
+
+The merged `work-staging-fleet-gate-install` workflow requires the protected
+macOS management-bootstrap runner. That install lane is therefore not currently
+dispatchable. Restore the intended management-runner route through its approved
+bootstrap lifecycle; then install and verify the remote job gate while the
+persistent Linux effect runner is stopped. Keep the platform-bootstrap flag
+false; no runner registration, install workflow, or provider mutation occurred
+in this read.
+
 Genesis readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
 and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
 verified exact backend bytes, the serial-22-to-23 route continuity, and

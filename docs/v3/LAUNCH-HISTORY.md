@@ -41,6 +41,20 @@ install, or provider mutation occurred. The next gate is a reviewed install
 with the persistent effect runner stopped, followed by fresh runner readiness
 and a new reviewed intent. Do not replay canceled run `42838769029`.
 
+## DO runner inventory identified install hold (2026-11-10 16:20 UTC)
+
+A read-only GitHub runner inventory for `antiartificial/norn-fleet` returned
+one online self-hosted runner: `norn-external-mac-finalizer-xenon`, labeled
+`norn-external-mac-finalizer`. No registered runner had the required
+`norn-work-management-bootstrap` label or the protected Linux
+`norn-fleet-protected` effect-runner label. The external-Mac finalizer is a
+separate purpose and must not be substituted.
+
+The merged `work-staging-fleet-gate-install` workflow requires the protected
+macOS management-bootstrap runner, so the remote job-gate install cannot yet
+be dispatched. No runner registration, install workflow, or provider mutation
+occurred in this read.
+
 ## DO staging provider refresh (2026-11-10 16:02 UTC)
 
 A fresh read-only `doctl --context work compute droplet list` returned all
