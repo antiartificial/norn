@@ -1,5 +1,23 @@
 # Norn v3 launch history
 
+## DO Genesis readback binding must be refreshed (2026-11-10 01:29 UTC)
+
+Read-only inspection of the protected `work-staging` GitHub Environment found
+that the configured release-state snapshot digest is now
+`8cf77ae4f5ea5729a8aecde21fe05f82ca36066f66663f2bb5fe3ef14b19060c`; the
+configured management member known-hosts digest remains
+`dac5276e2e4970d19fa270433c405e4522bdb104a1507761f641c2fdae4edccd`. The
+earlier owner-approved readback was bound to state digest
+`4c43bae56dc9e6c9d624f729dc4398d810043c7f4344df0975637a268c1a00cd`, so it
+cannot authorize a dispatch against the changed configured binding. The
+matching saved intents are expired. The readback workflow also requires
+`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED=true`, but that environment
+variable is currently absent, so the protected job fails closed. No fresh
+intent or runner dispatch was created. These environment hashes describe
+configured input bindings, not a new DigitalOcean state/runtime observation;
+no provider mutation occurred. Obtain current owner-reviewed state/host-key
+evidence and enable the exact readback gate before a new one-use dispatch.
+
 ## Mini read-only inventory refreshed (2026-11-10 01:16 UTC)
 
 The authenticated inventory confirms the independent Mini still serves
