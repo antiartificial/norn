@@ -1,26 +1,26 @@
 # Norn v3 launch state
 
-## Subsequent Mini upgrade guard is being corrected (2026-11-10 09:55 UTC)
+## Mini queued upgrade recovery-gate correction (2026-11-10 11:00 UTC)
 
-The Mini remains on signed release `2a2d712a` with schema 52. A read-only live
-inventory still reports API health and host status `ok`; the exact current
-LaunchAgent/managed-agent stability predicate also passed when evaluated from
-the live process tree. The two earlier queued-upgrade operations remain failed
-before promotion with a generic host-agent stability error; their historical
-subcondition was not retained, so do not claim its root cause is known.
+Mini remains on signed release `2a2d712a` with schema 52. The read-only
+inventory before the attempt reported API health and host status `ok`; workload
+health remains mixed. Immutable signed release `d414b3ab` was published after
+PR #398 passed exact-source qualification, but the first durable queued upgrade
+stopped before promotion. Its diagnostic was `completed recovered-forward file
+bindings do not verify`; the release pointer and schema did not change.
 
-Review of the next-upgrade path exposed a separate deterministic compatibility
-gap: after one forward release, the retained recovery guard still compared the
-API to the original recovery candidate. That would block a later upgrade even
-when the active API and host agent exactly match a signed descendant. The
-guard now verifies current-release signature and Git ancestry from the recovery
-candidate, then checks API version/schema against that active SHA. A bounded
-statechart reproduces the old hold and the corrected path, and a Git-backed
-offline integration test covers the recovery candidate, signed descendant,
-unsigned descendant, and unrelated release. This change is not yet merged,
-published, or installed on Mini. The queued upgrade lane remains unqualified;
-next prove this change in a signed release, then run a queued upgrade to a
-different exact successor SHA before calling that lane hands-free.
+The cause was a caller mismatch: the completed-journal helper defaults to
+requiring `current` to point exactly at the original recovery candidate, while
+the new caller separately verifies the current signed release as a Git
+descendant and validates API/schema against that release. The helper already
+supports `--historical`, which keeps journal, signature, receipt, and file
+binding checks while skipping only the obsolete current-pointer equality check.
+A follow-up change now passes that mode and adds an integration assertion. The
+full platform-upgrade integration suite passes under the repository-pinned Node
+24.19.0. This follow-up still needs merge, exact-SHA qualification, signing,
+fresh Mini backup and shadow rehearsal, and a new queued upgrade attempt before
+the queued upgrade lane is qualified. The failed operation is terminal; do not
+replay it. Workload admission and resize remain separate qualification gates.
 
 ## Mini direct V3 platform upgrade completed (2026-11-10 09:25 UTC)
 
