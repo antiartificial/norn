@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current Mini recovery status (2026-11-10 03:23 UTC)
+## Current Mini recovery status (2026-11-10 03:48 UTC)
 
 The protected A8 controller release
 [`platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`](https://github.com/antiartificial/norn/releases/tag/platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63)
@@ -21,29 +21,31 @@ verified the source and built the pinned UI plus all four platform bundles;
 its protected signing job is waiting for owner approval. The release is not
 yet signed or published, so no further Mini transition was run.
 
-A fresh read-only host inspection at 03:23 UTC confirmed the current symlink
-still selects A4 and the exact generation journal remains at
+A fresh authenticated inventory at 03:47 UTC reported `/api/health` as `ok`
+and `/api/version` source `a4b9c3b313d65c8a054fb869b18455fde33d3a70`; the
+A8 controller API is answering on Mini. The inventory returned 30 app records
+and a 46-service manifest, but it also contains unhealthy or unknown entries;
+this is not proof that every workload is healthy or recovered. The inventory
+client's unsupported endpoint probes returned 404, so use the available
+health/version/apps/manifest evidence only.
+
+A 03:48 read-only host inspection confirmed that the active generation remains
+`gen-1a769550b1051bc9358ce8e8758265e5` at
 `candidate-preservation-pending`; its preservation receipt says
 `preservationMatched=true`, and no finalization receipt exists. The API
-LaunchAgent is loaded with a process listening on loopback port 8800. An
-unauthenticated `/api/health` request returned 401, which proves only that the
-server answered and is not an authenticated health result. The host-agent
-LaunchAgent label was absent and the host supervisor was not running. Thus the
-Mini remains under the recovered-forward write fence and host-agent service is
-not restored. Do not report the Mini upgrade complete until the signed repair
+LaunchAgent is running with PID 93463. The `com.norn.host-agent` LaunchAgent
+label is absent and the host supervisor has no running PID. Thus the Mini
+remains under the recovered-forward write fence and host-agent service is not
+restored. Do not report the Mini upgrade complete until the signed repair
 controller finalizes the same generation, restores the original API and host
 agent behavior, and authenticated API plus host/workload readback passes.
 
-A 03:23 read-only check confirms `active-generation.json` selects generation
-`gen-1a769550b1051bc9358ce8e8758265e5`, whose nested journal is the
-`candidate-preservation-pending` transition above. The root-level
-`recovered-forward/transition.json` still records an unrelated October
-transition; use the active-generation pointer and its journal, not that stale
-root-level record, to identify the current recovery state. The API LaunchAgent
-has PID 93463, the host-agent LaunchAgent label is absent, and the host
-supervisor has no running PID. The A4 current symlink is still selected and no
-finalization receipt exists. These process and journal reads do not establish
-authenticated API health or workload recovery.
+The `active-generation.json` pointer selects the generation above, whose
+nested journal remains the `candidate-preservation-pending` transition. The
+root-level `recovered-forward/transition.json` still records an unrelated
+October transition; use the active-generation pointer and its journal, not
+that stale root-level record. These process and journal reads do not establish
+workload recovery or finalization.
 
 During this recovery, `NORN_PLATFORM_REPO` was also added to Mini's encrypted
 API environment so the GUI LaunchAgent can verify the adopted source lineage.

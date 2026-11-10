@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 03:23 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 03:48 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,7 +20,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 03:23 UTC): A8 is signed, published, and
+Current gate snapshot (2026-11-10 03:48 UTC): A8 is signed, published, and
 verified on Mini; its active A4 generation remains at
 `candidate-preservation-pending`. Exact-source repair `2e8bd545` passed
 qualification and bundle preparation, but its protected publish job still
@@ -37,7 +37,7 @@ coverage, not live qualification. See [launch state](LAUNCH-STATE.md) and
 | Workstream | Current evidence | Next proof |
 |---|---|---|
 | Protected platform release | A8 is signed, published, imported, and verified on Mini. Exact-source `2e8bd545` passed all 12 protected-master jobs and its pinned UI plus four bundles; publish run [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675) awaits exact-SHA owner approval. | Publish that immutable SHA after approval, then use its signed repair path on the existing Mini generation. Publication does not deploy it. |
-| Mini direct | The 03:23 read confirms the active generation is `candidate-preservation-pending`, preservation matched, and A4 remains selected. API PID 93463 is present; the host-agent label is absent and the supervisor has no running PID. Authenticated API and workload recovery are unverified. | Resume the same generation, then verify migration/schema, normal API, host-agent, workload smoke, fresh host assurance, and terminal receipt. |
+| Mini direct | The 03:48 read confirms the active generation is `candidate-preservation-pending` and preservation matched. Authenticated `/api/health` reports `ok` and `/api/version` reports A4 source SHA. API PID 93463 is present; the host-agent label is absent and supervisor has no running PID. Workload recovery and finalization remain unverified. | After exact-source owner approval, publish the finalizer repair, resume the same generation, then verify migration/schema, normal API, host-agent, workload smoke, fresh host assurance, and terminal receipt. |
 | Existing DO Fleet | Latest platform release run [42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951) was cancelled before steps; last successful run [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022) is Nov 2. Protected state readback [42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657) failed; live Norn/API and workload health remain unverified. | Refresh and bind state, route, and host-key evidence; resolve the disabled readback gate, then obtain a current protected inventory before any release action. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | Workload resize/release | The authenticated staging producer is opt-in and not deployed or live-qualified. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, while capacity 4 reaches the modeled terminal receipt. Production executor/worker recovery and live Nomad/ingress proof remain open. | Join real-etcd admission to qualification and private-input persistence, then qualify worker restart and route/drain recovery on a disposable Fleet. Treat stateful compatibility separately. |

@@ -53,6 +53,22 @@ establish authenticated API health or workload recovery. The old root-level
 `recovered-forward/transition.json` remains unrelated October data; resolve the
 active-generation pointer before reading the current journal.
 
+## Authenticated Mini API responds; generation still awaits finalization (2026-11-10 03:48 UTC)
+
+The read-only inventory authenticated successfully. `/api/health` returned
+`ok`, and `/api/version` reported source
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. The inventory included 30 app
+records and a 46-service manifest with unhealthy or unknown entries; it does
+not establish complete workload recovery. Unsupported endpoint probes from
+the inventory client returned 404 and were not used as health evidence.
+
+The active-generation pointer still selects
+`gen-1a769550b1051bc9358ce8e8758265e5`, whose journal remains at
+`candidate-preservation-pending` with `preservationMatched=true` and no
+finalization receipt. The A8 API LaunchAgent is running as PID 93463. The
+`com.norn.host-agent` LaunchAgent label remains absent and the host supervisor
+is not running. No write-fence release or workload mutation occurred.
+
 ## A8 controller resumed Mini into preservation-pending; finalizer gate found (2026-11-10 02:25 UTC)
 
 After owner approval, protected release workflow
