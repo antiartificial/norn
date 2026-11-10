@@ -267,12 +267,28 @@ postflight and workload qualification remain open; do not call the staging
 Fleet online until those live checks pass. The Mini remains an independent
 direct lane and is not part of this Fleet status.
 
+## DO Norn release state revalidated (2026-11-10 20:53 UTC)
+
+The protected Norn release state readback
+[42899611733](https://github.com/antiartificial/norn-fleet/actions/runs/42899611733)
+passed against the retained raw state at lineage
+`9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23. The backend object matched
+the owner-retained bytes and reviewed SHA. A new private release-input
+candidate was assembled and validated offline from that exact snapshot and
+the reviewed one-hop host-key continuity receipt. This proves input
+consistency only: the release workflow's live host-continuity and installed
+source/health preflight have not run. The precise currently installed Norn
+release remains unverified, so no upgrade was dispatched. Next, perform a
+read-only, controller-mediated live release preflight; proceed to the protected
+forward-only release only after it identifies the exact installed source and
+healthy transition state.
+
 ## Release timing
 
-No V3 launch date is committed. Remaining program gates are controller
-admission and source verification for DO Genesis, an end-to-end DO platform
-release and postflight, DO-only workload admission and resize qualification,
-and fresh-Fleet provider recovery. The Mini direct deployment is successful by
+No V3 launch date is committed. Remaining program gates are live DO Norn
+source/health preflight, a protected platform release and postflight, DO-only
+workload admission and resize qualification, and fresh-Fleet provider
+recovery. The Mini direct deployment is successful by
 the owner-stated criterion: the V3 API and `vigil-gateway` both responded.
 Queued-upgrade recovery and Git-driven workload admission remain Mini follow-up
 work, tracked separately from that success. Do not treat provider-active
