@@ -1,0 +1,38 @@
+---
+title: "Mini recovered-forward finalization and recovery (offline model)"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: maintenance
+    lg1: activate
+    lg2: verify
+    lg3: held
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 purple
+  class lg3 orange
+  s0: A4 maintenance API preserves workloads#59; host agent fenced
+  s1: Exact finalization request bound to preservation receipt
+  s2: Interrupted#59; same transition journal preserved
+  s3: Mini accepted finalization#59; database fence released
+  s4: Maintenance API stopped#59; normal API restart pending
+  s5: Normal API started#59; host agent remains fenced
+  s6: Normal API health failed#59; host agent stays fenced
+  [*] --> s0
+  s0 --> s1: submit exact preservation receipt after signed ancestry verifies
+  s0 --> s2: process stops or effect result is uncertain
+  s1 --> s3: Mini confirms finalization and releases its write fence
+  s2 --> s0: reconcile the same journaled transition
+  s3 --> s2: process stops or effect result is uncertain
+  s3 --> s4: stop maintenance API for normal activation
+  s2 --> s3: reconcile the same journaled transition
+  s4 --> s5: start the exact candidate in normal mode
+  s5 --> s6: hold host-agent restart when API health fails
+  class s0 blue
+  class s1 blue
+  class s2 orange
+  class s3 teal
+  class s4 teal
+  class s5 purple
+  class s6 orange
