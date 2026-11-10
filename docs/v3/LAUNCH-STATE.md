@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current Mini recovery status (2026-11-10 02:25 UTC)
+## Current Mini recovery status (2026-11-10 02:56 UTC)
 
 The protected A8 controller release
 [`platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`](https://github.com/antiartificial/norn/releases/tag/platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63)
@@ -11,15 +11,28 @@ serves the exact recovered-forward maintenance status with `finalized=false`,
 `runtimeTopology=single-node-mini`, and no Fleet API or etcd consultation. The
 preservation receipt records `preservationMatched=true`.
 
-Normal activation is still incomplete. The journal is at
-`candidate-preservation-pending`; the finalizer rejected the adopted baseline's
-older source SHA because that lane did not apply the same signed-descendant
-check as forward recovery. The Mini remains under the recovered-forward write
-fence, and its host-agent LaunchAgent has not been restored. Norn PR work is
-adding the missing finalizer ancestry gate and a regression test. Do not report
-the Mini upgrade complete until the finalizer succeeds, the original API job
-and host agent are restored, and authenticated API plus host/workload readback
-passes.
+Normal activation is still incomplete. Norn PR #385 merged the finalizer's
+signed-descendant ancestry fix as exact source
+`2e8bd545547f4bfa375c68fac9be9667954276de`. Protected-master run
+[42744444370](https://github.com/antiartificial/norn/actions/runs/42744444370)
+passed all 12 qualification jobs. Release workflow
+[42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675)
+verified the source and built the pinned UI plus all four platform bundles;
+its protected signing job is waiting for owner approval. The release is not
+yet signed or published, so no further Mini transition was run.
+
+A fresh read-only host inspection at 02:54 UTC confirmed the current symlink
+still selects A4 and the exact generation journal remains at
+`candidate-preservation-pending`; its preservation receipt says
+`preservationMatched=true`, and no finalization receipt exists. The API
+LaunchAgent is loaded with a process listening on loopback port 8800. An
+unauthenticated `/api/health` request returned 401, which proves only that the
+server answered and is not an authenticated health result. The host-agent
+LaunchAgent label was absent and the host supervisor was not running. Thus the
+Mini remains under the recovered-forward write fence and host-agent service is
+not restored. Do not report the Mini upgrade complete until the signed repair
+controller finalizes the same generation, restores the original API and host
+agent behavior, and authenticated API plus host/workload readback passes.
 
 During this recovery, `NORN_PLATFORM_REPO` was also added to Mini's encrypted
 API environment so the GUI LaunchAgent can verify the adopted source lineage.

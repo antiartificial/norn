@@ -1,0 +1,20 @@
+---
+title: "Mini recovered-forward finalization and recovery (offline model)"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: maintenance
+    lg1: held
+  }
+  class lg0 blue
+  class lg1 orange
+  s0: A4 maintenance API preserves workloads#59; host agent fenced
+  s1: Signed lineage unproven#59; database write fence remains held
+  s2: Interrupted#59; same transition journal preserved
+  [*] --> s0
+  s0 --> s1: refuse finalization#59; keep maintenance API and write fence
+  s0 --> s2: process stops or effect result is uncertain
+  s2 --> s0: reconcile the same journaled transition
+  class s0 blue
+  class s1 orange
+  class s2 orange

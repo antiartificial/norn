@@ -1,5 +1,38 @@
 # Norn v3 launch history
 
+## Finalizer ancestry correction merged; exact release awaits owner approval (2026-11-10 02:56 UTC)
+
+Norn PR #385 merged as
+[`2e8bd545547f4bfa375c68fac9be9667954276de`](https://github.com/antiartificial/norn/commit/2e8bd545547f4bfa375c68fac9be9667954276de).
+It applies signed-descendant verification to `recovered-forward-finalize` and
+adds a regression for an adoption receipt whose source is an ancestor of the
+transition source and candidate. All PR checks passed. Full protected-master
+qualification [42744444370](https://github.com/antiartificial/norn/actions/runs/42744444370)
+then passed all 12 jobs. Exact-source release workflow
+[42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675)
+verified the merged SHA and built the pinned UI and four platform bundles; its
+protected signing job is waiting for owner approval. Nothing in this workflow
+deployed to Mini or changed DO staging.
+
+Added a focused recovered-forward finalization statechart. It models the
+preservation receipt and signed-lineage gate, write-fence release, normal API
+restart and readback, host-agent restart intent, and terminal receipt. TLC
+checked the valid path at 52 states / 96 transitions; invalid adoption and
+candidate ancestry at 3 / 5 each; and unavailable normal API health at 25 / 45.
+All six configured invariants and deadlock checks passed. Numeric ranks
+abstract Git ancestry, while booleans abstract candidate evidence and health;
+the model does not prove signatures, runtime effects, or implementation
+refinement. Charts and reproduction commands are in the statechart directory.
+
+Read-only host inspection at 02:54 UTC confirmed the Mini current symlink is
+A4, transition `mini-v3-20261110T0021Z-a4b9c3b3` remains at
+`candidate-preservation-pending`, and its preservation receipt matches. No
+finalization receipt exists. The API LaunchAgent is loaded and has a loopback
+listener, but an unauthenticated health request returned 401, so authenticated
+API health is unverified by this check. The `com.norn.host-agent` LaunchAgent
+label is absent; host supervisor is not running. No write-fence release,
+normal activation, host-agent restoration, or workload readback occurred.
+
 ## A8 controller resumed Mini into preservation-pending; finalizer gate found (2026-11-10 02:25 UTC)
 
 After owner approval, protected release workflow
