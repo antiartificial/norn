@@ -1,9 +1,9 @@
 # Fresh Fleet with two app pools: create and recover
 
-This is an offline protocol model for a future fresh-Fleet default with two
-independent application pools. Current `staging/nyc3` has one app pool of four
-Droplets; this model does not change or describe that current pool. Pool A and
-pool B are fixed as general and stateful, respectively; provider sizes or
+This is an offline protocol model for the optional two-pool application
+profile on a future fresh Fleet. Current `staging/nyc3` has one app pool of
+four Droplets; this model does not change or describe that current pool. When
+the optional split is selected, Pool A and Pool B are general and stateful, respectively; provider sizes or
 capacity bounds remain unselected. See the [input contract](../../fresh-fleet-two-app-pool-contract.md)
 and [staging source audit](../../staging-topology-source-audit-2026-11-08.md).
 

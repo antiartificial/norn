@@ -9,13 +9,16 @@ Status: contract under definition. This does not change current
   from one `workload: app` pool in protected `norn-fleet` main. Its topology
   source and provider inventory agree, but runtime health is unverified. See
   the [source audit](staging-topology-source-audit-2026-11-08.md).
-- A future fresh-Fleet default must declare two distinct application node
-  pools. This contract is separate from Genesis, which installs a controller
-  on an already-created Fleet, and from app replica scaling.
-- The requested future roles are **general** and **stateful**, one per pool.
-  This records the operator's choice; it does not imply workload placement,
-  VM sizes, or capacity bounds from the current single-app-pool staging source
-  or the abstract nine-node recovery model.
+- A future fresh-Fleet profile may use one app pool or two distinct app pools.
+  Earlier planning selected a General + Stateful split for future fresh Fleets;
+  after the 2026-11-10 review, whether that split is the default remains open.
+  This contract models only the optional split and is separate from Genesis,
+  which installs a controller on an already-created Fleet, and from app replica
+  scaling.
+- When the split is chosen, its roles are **general** and **stateful**, one per
+  pool. This does not imply workload placement, VM sizes, or capacity bounds
+  from the current single-app-pool staging source or the abstract nine-node
+  recovery model.
 
 ## Required intent fields
 
