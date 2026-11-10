@@ -1,5 +1,45 @@
 # Norn v3 launch state
 
+## Current Mini queued-upgrade gate (2026-11-10 11:26 UTC)
+
+Mini remains on signed release `2a2d712a7484b0d7ee82036ccc8d077d1ffc8697`,
+schema 52. Authenticated live readback after the latest attempts reports API
+health `ok`, mutation fence inactive, current source `2a2d712a`, and host
+services up. Workload health remains mixed.
+
+PR #400 merged as `1b2dc22973ad22a6ea92ceb866273cab6300821b`. Exact-source
+qualification run [42804580712](https://github.com/antiartificial/norn/actions/runs/42804580712)
+passed all 12 jobs. Protected release run
+[42805168466](https://github.com/antiartificial/norn/actions/runs/42805168466)
+published the immutable signed candidate with the UI and four platform bundles.
+On Mini, the exact release passed passive preflight. A fresh protected backup
+and signed shadow also passed: 68 tables, 404,484 rows, migration ledger 1–52,
+66 application tables fingerprinted, two migrate-only passes, passive health,
+verified backup proof, and no source mutations.
+
+Two new durable queued upgrades, `487811ae-03ea-428c-b108-ade3da070721` and
+`c8e6b37b-6d07-438b-93ab-06a9534548a8`, both terminated at the same
+`Mini host agent is not stably running from the exact promoted release` guard.
+The code path is the completed-recovery precondition, before the normal upgrade
+promotion path. The current symlink, API source, and schema remain unchanged;
+the attempts did not promote `1b2dc229` or run a migration. The generic receipt
+did not retain which process predicate failed. A later idle readback found the
+managed host-agent bytes equal to the active signed release and the LaunchAgent
+parent/child PIDs stable across the sampled interval; that does not prove the
+same at controller execution time.
+
+A follow-up branch now requires three matching one-second observations within
+a bounded 30-second window and includes a specific stability failure reason.
+Its offline host-agent stability regression and all 24 platform-upgrade
+integration tests pass; `bash -n` and `git diff --check` pass. This follow-up
+is not yet merged, qualified, signed, or installed. Do not replay either failed
+operation. The next live attempt must use a fresh operation and fresh
+candidate-bound backup and shadow evidence after the follow-up release is
+qualified and published. Queued platform upgrade, workload admission, and
+workload resize remain separate open gates.
+
+## Historical snapshot (2026-11-10 10:50 UTC; superseded)
+
 ## Mini queued upgrade recovery-gate correction (2026-11-10 10:50 UTC)
 
 Mini remains on signed release `2a2d712a` with schema 52. The read-only

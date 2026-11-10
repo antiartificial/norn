@@ -114,6 +114,59 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertIn('validate_active_responses "$expected_version" "$version_file" "$schema_file" "$active_sha"', completed)
         self.assertIn('release="$previous_release"', rollback)
 
+    def test_host_agent_stability_gate_waits_for_a_bounded_stable_window(self) -> None:
+        source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
+        marker = "legacy_baseline_host_agent_is_running_candidate() {"
+        function = marker + source.split(marker, 1)[1].split("\n}\n", 1)[0] + "\n}"
+        release = self.root / "active-release"
+        (release / "bin").mkdir(parents=True)
+        candidate_agent = release / "bin" / "norn-host-agent"
+        managed_agent = self.root / "managed-host-agent"
+        candidate_agent.write_bytes(b"signed host agent fixture")
+        managed_agent.write_bytes(b"signed host agent fixture")
+        candidate_agent.chmod(0o755)
+        managed_agent.chmod(0o755)
+        current = self.root / "current"
+        current.symlink_to(release)
+
+        harness = f'''\
+current_link={shlex.quote(str(current))}
+host_agent_bin={shlex.quote(str(managed_agent))}
+host_agent_label=com.norn.host-agent
+host_agent_direct_exec=false
+host_agent_stability_detail="not checked"
+sample_file={shlex.quote(str(self.root / 'launchctl-samples'))}
+printf '0\\n' >"$sample_file"
+require_cmd() {{ :; }}
+id() {{ echo 501; }}
+kill() {{ return 0; }}
+sleep() {{ :; }}
+launchctl() {{
+  sample=$(cat "$sample_file")
+  sample=$((sample + 1))
+  printf '%s\\n' "$sample" >"$sample_file"
+  if [[ "$sample" -lt 3 ]]; then pid=100; else pid=101; fi
+  printf 'pid = %s\\n' "$pid"
+}}
+pgrep() {{ echo "$(( $2 + 1000 ))"; }}
+ps() {{ printf '%s\\n' {shlex.quote(str(managed_agent))}; }}
+{function}
+legacy_baseline_host_agent_is_running_candidate
+'''
+        result = subprocess.run(["bash", "-c", harness], text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        unstable_harness = harness.replace(
+            'if [[ "$sample" -lt 3 ]]; then pid=100; else pid=101; fi',
+            'pid=$((100 + sample))',
+        ).replace(
+            "legacy_baseline_host_agent_is_running_candidate\n",
+            'if legacy_baseline_host_agent_is_running_candidate; then exit 9; fi\nprintf "%s\\n" "$host_agent_stability_detail"\n',
+        )
+        unstable = subprocess.run(["bash", "-c", unstable_harness], text=True, capture_output=True, check=False)
+        self.assertEqual(unstable.returncode, 0, unstable.stderr)
+        self.assertIn("three consecutive samples", unstable.stdout)
+
     def test_recovery_gate_accepts_only_the_current_signed_recovery_descendant(self) -> None:
         source = (SCRIPT_DIR / "platform-upgrade").read_text(encoding="utf-8")
         helper = source.split("recovered_forward_current_signed_descendant_sha() {\n", 1)[1].split("\n}\n", 1)[0]

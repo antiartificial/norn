@@ -1,0 +1,32 @@
+---
+title: "Mini queued-upgrade host-agent stability gate (offline model)"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: checking
+    lg1: held
+    lg2: done
+  }
+  class lg0 blue
+  class lg1 orange
+  class lg2 purple
+  s0: Checking LaunchAgent stability (0/3 stable samples)
+  s1: Checking LaunchAgent stability (1/3 stable samples)
+  s2: Checking LaunchAgent stability (2/3 stable samples)
+  s3: Exact host agent stable#59; upgrade gate admitted
+  s4: Promotion may proceed after stable proof
+  s5: Stability window exhausted#59; source left untouched
+  [*] --> s0
+  s0 --> s1: sample the same LaunchAgent process
+  s1 --> s2: sample the same LaunchAgent process
+  s2 --> s3: sample the same LaunchAgent process
+  s3 --> s4: allow the upgrade path after three stable samples
+  s2 --> s1: sample the same LaunchAgent process
+  s1 --> s5: sample the same LaunchAgent process
+  s2 --> s5: sample the same LaunchAgent process
+  class s0 blue
+  class s1 blue
+  class s2 blue
+  class s3 blue
+  class s4 purple
+  class s5 orange
