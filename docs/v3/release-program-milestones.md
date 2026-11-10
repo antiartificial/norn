@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 01:35 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 01:52 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,7 +20,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Latest gate update (2026-11-10 01:29 UTC): protected-master qualification for
+Latest gate update (2026-11-10 01:52 UTC): protected-master qualification for
 exact source `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
 [run 42729857751](https://github.com/antiartificial/norn/actions/runs/42729857751).
 The exact-source immutable release workflow
@@ -28,11 +28,13 @@ The exact-source immutable release workflow
 passed authorization, pinned UI, and all four bundle builds; its protected
 signing/publish job is waiting for approval. Signing and publication have not
 occurred and require approval for this SHA. A fresh authenticated read-only Mini
-inventory at 01:16 UTC confirms API/host health `ok`, runtime mutation fence
+inventory at 01:52 UTC confirms API/host health `ok`, runtime mutation fence
 inactive, current source `d4dc88e0`, 19/30 healthy app records, seven queued DO
-dispatch receipts, 25 incidents, and blocked production readiness. The latest
-host-assurance receipt succeeded at 01:16 UTC. This does not prove the halted
-transition recovered. The expanded Mini recovery statechart now checks the observed
+dispatch receipts, 25 incidents, and blocked production readiness (18 failed,
+seven passed, one warning). The host-status endpoint still reports the latest
+durable host-assurance receipt as Sep 6; the 01:16 claim of fresh assurance is
+not corroborated. This does not prove the halted transition recovered. The
+expanded Mini recovery statechart now checks the observed
 `host-agent-fenced` halt and rejects ordinary retry until a distinct signed
 repair-controller action resumes the exact generation (90 states, 179
 transitions, eight invariants and deadlock check passed). This model remains
@@ -86,7 +88,7 @@ and the latest [launch-history entry](LAUNCH-HISTORY.md).
 | Workstream | Current evidence | Next proof |
 |---|---|---|
 | Protected release qualification | Protected-master qualification [42700530242](https://github.com/antiartificial/norn/actions/runs/42700530242) passed at `e9a21d20`; immutable signed prerelease `platform-e9a21d2095d60c8a96c1440e35e045dd0b6a7637` was published and its Darwin/arm64 signature, manifest, inventory, SBOM, and source verified. PR #370's `9d9d6208` release was qualified, signed, and published after exact-SHA approval. PR #373 merged the verifier lineage fix at `a4b9c3b3`; full protected-master qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745) passed all 12 jobs. Exact-source release [42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811) passed the pinned UI and four bundles, was signed, verified, and immutably published at `platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70`; it is imported and signature-verified on Mini. PR #375 later narrowed recovery to the GitHub App's `actions:read` permission, but is not in this immutable candidate. | Build and qualify a distinct signed controller release that can repair the halted `a4b9c3b3` generation, then complete and verify that exact Mini transition. |
-| Mini direct release evidence | The 01:16 UTC authenticated read-only inventory reports API/host `ok` on `d4dc88e0`, runtime fence inactive, and 19 of 30 app records healthy; a fresh `host.assure` succeeded. Schema was last observed at 51 in the 00:33 post-stop inventory. Fresh backup and candidate `a4b9c3b3` signed shadow passed. The recovered-forward transition is durably stopped at `host-agent-fenced`, before API fencing or migration; the host-agent LaunchAgent remains blocked by the durable fence. Candidate is not promoted. A plain retry was rejected by the generation resolver; source-controller repair failed its signed evidence verifier before authorization. No live database mutation occurred. Seven DO Fleet dispatch receipts remain queued. | Publish the distinct signed controller release containing the corrected lineage verifier, then use its signed repair path to resume this exact generation. Do not alter its journal or use a new transition ID. Then verify migration 52, API/schema, host-agent restoration, workload preservation, smoke, host assurance, and the terminal generation receipt. |
+| Mini direct release evidence | The 01:52 UTC authenticated read-only inventory reports API/host `ok` on `d4dc88e0`, runtime fence inactive, and 19 of 30 app records healthy; however, the latest durable `host.assure` receipt reported by the endpoint is Sep 6, so assurance is stale. Schema was last observed at 51 in the 00:33 post-stop inventory. Fresh backup and candidate `a4b9c3b3` signed shadow passed. The recovered-forward transition is durably stopped at `host-agent-fenced`, before API fencing or migration; the host-agent LaunchAgent remains blocked by the durable fence. Candidate is not promoted. A plain retry was rejected by the generation resolver; source-controller repair failed its signed evidence verifier before authorization. No live database mutation occurred. Seven DO Fleet dispatch receipts remain queued. | Publish the distinct signed controller release containing the corrected lineage verifier, then use its signed repair path to resume this exact generation. Do not alter its journal or use a new transition ID. Then verify migration 52, API/schema, host-agent restoration, workload preservation, smoke, fresh host assurance, and the terminal generation receipt. |
 | Release evidence | The 18:48 UTC Mini inventory confirms API/host `ok` on signed repair release `d4dc88e`, inactive runtime fence, 19 app records running, and successful host assurance at 18:48:53 UTC. Open incident groups and snapshot-retention warnings remain for review; production readiness fails its separate production-admission contract. Nov 9 18:58 UTC DO inventory confirms nine staging nodes, both management nodes, the ingress LB, and three managed databases active/online. The 19:01 UTC public canary probe served `be5ca5d9` across two allocations on two nodes; this does not prove Norn API/control-plane health or the failed operation's terminal receipt. | Use [launch state](LAUNCH-STATE.md) for exact receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. Obtain protected control-plane runtime and receipt evidence before declaring DO fully healthy. |
 | Mini Git workload admission | Nov 9 read-only inventory confirms the Mini API is healthy, its running process has a webhook secret, 12 app records have `repo.autoDeploy`, and its latest 25 webhook receipts are GitHub. Six mapped personal GitHub repositories have active push hooks to the Norn webhook hostname; endpoint-to-Mini routing and hook-to-terminal-operation outcomes remain unverified. The Mini runs `d4dc88e`, before merged exact-SHA fix `ccb49a56` and host-bound matching `765d7550`. The API uses one shared `NORN_WEBHOOK_SECRET` across configured GitHub and Gitea hooks; it does not isolate credentials per repository. Signed release `a4b9c3b3` is now imported, but the Mini transition stopped at `host-agent-fenced` before API fencing or migration; workload admission and hook-to-terminal outcomes remain unverified. | Complete the Mini transition using a later signed repair controller, then reconcile webhook-host ingress and app mapping, confirm each hook uses the shared secret, and rehearse one push through terminal operation and app smoke. Keep GitHub canonical; make any Norn Git copy one-way. |
 | Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |

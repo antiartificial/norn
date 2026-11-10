@@ -2,7 +2,7 @@
 
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
-## Current V3 release readiness (2026-11-10 01:16 UTC)
+## Current V3 release readiness (2026-11-10 01:52 UTC)
 
 Protected-master qualification for exact source
 `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
@@ -12,13 +12,17 @@ recovery path. Exact-source immutable release preparation is running as
 [42730463793](https://github.com/antiartificial/norn/actions/runs/42730463793).
 Authorization, pinned UI, and all four bundle jobs passed; the protected
 signing/publish job is waiting for environment approval. It is not signed or
-published. Publication still requires approval for this exact source. A fresh
-authenticated read-only Mini inventory at 01:16 UTC confirms the same source,
-health `ok`, and inactive runtime mutation fence. Host assurance succeeded at
-01:16 UTC. Nineteen of 30 app records are healthy; seven queued operations
-remain the stale DO dispatch reservations, 25 incident groups remain, and
-production readiness is blocked. This inventory performed no mutation. A new
-staging-only read-only DO plan completed at
+published. Publication still requires approval for this exact source. The
+01:52 UTC authenticated read-only Mini inventory confirms the same current
+source (`d4dc88e0c37003a1013caed444983b2eeb50fbcb`), API/host status `ok`,
+runtime mutation fence `inactive`, and Consul, Nomad, PostgreSQL, S3, SOPS, and
+the Nomad/Consul workload connector up. Nineteen of 30 app records are healthy;
+seven queued operations remain the stale DO dispatch reservations, 25 incident
+groups remain, and production readiness is blocked (18 failed, seven passed,
+one warning). The host-status endpoint's latest assurance receipt is still
+dated Sep 6, 2026, so the previous 01:16 statement that assurance had freshly
+succeeded is not corroborated and must not be treated as current assurance.
+This inventory performed no mutation. A new staging-only read-only DO plan completed at
 [run 42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
 on `norn-fleet` main `35e1c893198efbdc9e407d708e5096a32b485f7d`. Its private
 summary reports one create (`digitalocean_firewall.management_ingress_runtime[0]`),
@@ -83,8 +87,10 @@ source-lineage evidence, so no repair authorization or database change was
 made. The 00:33 inventory had 19 of 30 app records running and healthy, seven
 queued `fleet.github.apply-dispatch` operations, 25 open incident groups, and
 blocked production readiness. At that time, the latest host-assurance receipt
-was stale; the 01:16 UTC inventory later confirmed a successful fresh
-assurance pass.
+was stale. The 01:16 UTC inventory entry claimed a fresh assurance pass, but
+the 01:52 UTC response still reports the latest durable `host.assure` receipt
+dated Sep 6, 2026; that fresh-pass claim is uncorroborated. No new assurance
+command was run.
 DO was not changed.
 
 The seven stale DO `fleet.github.apply-dispatch` receipts remain queued. A
