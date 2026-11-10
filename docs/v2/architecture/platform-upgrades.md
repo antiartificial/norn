@@ -157,13 +157,13 @@ drain, activation, restart or proxy cutover, postflight, and automatic rollback.
 The kernel drops the lock when a process exits or crashes, so a later invocation
 can recover without deleting stale lock state.
 
-Direct platform subcommands enrich their child-process `PATH` with existing
+Direct platform subcommands enrich their child-process `PATH` with the Norn
+CLI directory (`NORN_BIN_DIR`, defaulting to `$HOME/go/bin`) and existing
 `/opt/homebrew/bin` and `/usr/local/bin` directories before running the managed
-script. This makes preflight, upgrade, rollback, smoke, proxy, and environment
-commands reliable through thin non-interactive SSH shells without requiring an
-operator-specific `PATH` prefix. It does not change the parent shell or provide
-missing dependencies; `norn platform env -- <command>` receives the same
-bounded tool-path behavior.
+script. This lets the authenticated smoke invoke the installed `norn` command
+through a thin non-interactive SSH shell. It does not change the parent shell
+or provide missing dependencies; `norn platform env -- <command>` receives the
+same bounded tool-path behavior.
 
 This is low-invasive: active dashboard sessions and websocket streams reconnect, but hosted apps continue running.
 

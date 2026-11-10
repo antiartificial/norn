@@ -212,7 +212,13 @@ func runPlatformUpgradeScriptEnv(extraEnv []string, args ...string) error {
 }
 
 func platformExecutionPath(current string) string {
-	candidates := []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	nornBinDir := strings.TrimSpace(os.Getenv("NORN_BIN_DIR"))
+	if nornBinDir == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			nornBinDir = filepath.Join(home, "go", "bin")
+		}
+	}
+	candidates := []string{nornBinDir, "/opt/homebrew/bin", "/usr/local/bin"}
 	if strings.TrimSpace(current) == "" {
 		current = "/usr/bin:/bin:/usr/sbin:/sbin"
 	}
