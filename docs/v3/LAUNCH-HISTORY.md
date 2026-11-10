@@ -1,5 +1,21 @@
 # Norn v3 launch history
 
+## Dispatch recovery now requests read-only GitHub Actions access (2026-11-10 00:01 UTC)
+
+Norn PR #375 merged at `66690f93`. `RecoverBoundPlan` now requests only the
+GitHub App `actions:read` permission. The recovery tests require that scope
+and verify that recovery never sends another workflow dispatch. Full PR CI
+passed, including API tests, Fleet pilot workload, and the three-client
+durability check.
+
+This does not resolve the seven stale dispatch receipts. The reconcile handler
+still rejects their saved bindings against the current lane before it calls
+GitHub. The records remain queued, no GitHub lookup ran, and no receipt,
+Mini, or DO state changed. PR #375 is code only and is not in the `a4b9c3b3`
+release candidate. Keep the current lane guard on ordinary dispatch and replay
+paths. Any historical lookup path must validate the durable saved binding and
+the exact external run before it writes a terminal receipt.
+
 ## Verifier fix fully qualified; replacement release awaits owner approval (2026-11-09 23:42 UTC)
 
 Norn PR #373 merged at exact source
