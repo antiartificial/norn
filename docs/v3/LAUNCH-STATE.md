@@ -47,6 +47,24 @@ October transition; use the active-generation pointer and its journal, not
 that stale root-level record. These process and journal reads do not establish
 workload recovery or finalization.
 
+## Mini partial authenticated inventory refresh (2026-11-10 04:56 UTC)
+
+The authenticated read-only inventory rechecked `/api/health` as `ok` and
+`/api/version` as source
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. `/api/apps` returned 30 records:
+19 report running and healthy, two pending, one dead, and eight with no Nomad
+status. `/api/services/manifest` returned 46 services, 19 passing and 27
+unknown. This supports that the Mini API is serving and some workloads are
+running; it does not prove full workload recovery.
+
+The capabilities, active-operations, active-incidents, host-status, release,
+Fleet, and production-readiness probes returned 404. Their state is unknown,
+not empty or healthy; no current queue, incident, host-assurance, or Fleet
+status claim follows from this inventory. The local inventory helper was fixed
+to report missing endpoints as `unavailable` rather than zero. The active
+generation and host-process state were last directly read at 03:48 UTC above;
+this refresh did not reread those files or processes.
+
 During this recovery, `NORN_PLATFORM_REPO` was also added to Mini's encrypted
 API environment so the GUI LaunchAgent can verify the adopted source lineage.
 The original encrypted environment was retained as a mode-0600 backup under
@@ -371,11 +389,13 @@ probe is not proof of control-plane health.
   and encrypted SOPS snapshot in the release key-ring envelope. Worker tests
   reconstruct target inputs without a current checkout, and a real-etcd
   acceptance/open integration test verifies persisted source and ciphertext.
-  Fresh HTTP admission with real qualification and private-input persistence,
-  whole production executor/worker restart recovery, private-input
-  retention/deletion, and DO mixed-version release remain open. Stateful
-  workloads still need separate writer/schema/data
-  authorization.
+  Fresh HTTP admission with real qualification, owned active-route lineage,
+  and etcd private-input persistence in one joined fixture; whole production
+  executor/worker restart recovery; retention/abandonment for permanently held
+  operations; and DO mixed-version release remain open. PR #351's
+  receipt-bound encrypted-input deletion and pending/held retention are
+  implemented and store-tested, but not live-qualified. Stateful workloads
+  still need separate writer/schema/data authorization.
 - **Fresh Fleet:** separate from upgrading DO. General + Stateful are the
   selected future application pool roles, with stable pool IDs `general` and
   `stateful`. Protected `norn-fleet` main `35e1c893` now accepts that pair in
