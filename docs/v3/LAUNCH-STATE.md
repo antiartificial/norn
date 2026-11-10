@@ -1,5 +1,37 @@
 # Norn v3 launch state
 
+## Mini finalizer release published; same generation still pending (2026-11-10 05:10 UTC)
+
+Owner approval was applied to the exact `platform-release` environment gate for
+source `2e8bd545547f4bfa375c68fac9be9667954276de`. Protected release workflow
+[42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675)
+completed successfully. GitHub reports the matching full-SHA tag as immutable
+and published, with signed manifests and four platform bundles. Publication
+did not install the repair release or resume the Mini; the exact repair release
+directory was absent on the Mini at the read below.
+
+A fresh authenticated inventory at 05:10 UTC reports `/api/health` as `ok` and
+`/api/version` as A4 source
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. It returned 30 app records (19
+running and healthy, two pending, one dead, and eight without Nomad status) and
+46 services (19 passing, 27 unknown). Host, operation, incident, release,
+Fleet, and production-readiness endpoints returned 404 and remain unknown.
+This does not prove full workload recovery.
+
+The 05:10 read resolved `active-generation.json` to
+`gen-1a769550b1051bc9358ce8e8758265e5`. Its journal SHA-256 is
+`3eba3c4e83f025e96959604bf23215ab2434a2cf2b1434b58c44af7ba59e8749`; the
+pointer SHA-256 is
+`84cbb71c138afd08b60b6e9a1c9ea14bf3d2ebccd0f7c6611a9c06d61e4d8e8a`. The
+journal remains `candidate-preservation-pending` for transition
+`mini-v3-20261110T0021Z-a4b9c3b3`, source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`, and candidate
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`; the current symlink still selects
+that candidate. The preservation receipt exists and no finalization receipt
+exists. These hashes identify the state observed; the signed helper must
+revalidate the journal, pointer, releases, and evidence before authorizing any
+repair. Do not reuse an authorization after a journal change.
+
 ## Current Mini recovery status (2026-11-10 03:48 UTC)
 
 The protected A8 controller release

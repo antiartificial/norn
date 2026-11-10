@@ -1,5 +1,34 @@
 # Norn v3 launch history
 
+## Mini finalizer repair release published after exact-SHA approval (2026-11-10 05:10 UTC)
+
+The owner approved the protected `platform-release` environment for exact
+source `2e8bd545547f4bfa375c68fac9be9667954276de`. Run
+[42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675)
+completed successfully. GitHub reports immutable tag
+[`platform-2e8bd545547f4bfa375c68fac9be9667954276de`](https://github.com/antiartificial/norn/releases/tag/platform-2e8bd545547f4bfa375c68fac9be9667954276de)
+published at 05:08 UTC with platform bundles, manifests, SBOMs, and detached
+signatures. The approval covered publication only; the repair release was not
+imported or run on Mini, and no DO Fleet change occurred.
+
+A fresh authenticated Mini inventory at 05:10 UTC returned `/api/health=ok`
+and A4 source `a4b9c3b313d65c8a054fb869b18455fde33d3a70`. It reported 19 of 30
+app records running and healthy, two pending, one dead, and eight without
+Nomad status; 19 of 46 service records passed and 27 were unknown. Several
+control, host, incident, release, and readiness endpoints returned 404 and
+remain unknown.
+
+The same 05:10 read resolved the active-generation pointer to
+`gen-1a769550b1051bc9358ce8e8758265e5`, transition
+`mini-v3-20261110T0021Z-a4b9c3b3`, source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`,
+and candidate `a4b9c3b313d65c8a054fb869b18455fde33d3a70`. The current symlink
+still selects A4, phase is `candidate-preservation-pending`, preservation
+receipt exists, and finalization receipt does not. The journal digest is
+`3eba3c4e83f025e96959604bf23215ab2434a2cf2b1434b58c44af7ba59e8749`; the
+pointer digest is `84cbb71c138afd08b60b6e9a1c9ea14bf3d2ebccd0f7c6611a9c06d61e4d8e8a`.
+The signed helper must revalidate this state before authorizing same-generation
+repair; these observations are not a reusable authorization.
+
 ## Finalizer ancestry correction merged; exact release awaits owner approval (2026-11-10 02:56 UTC)
 
 Norn PR #385 merged as
