@@ -113,15 +113,32 @@ one online self-hosted runner: `norn-external-mac-finalizer-xenon`, labeled
 `norn-external-mac-finalizer`. No runner was registered with the required
 `norn-work-management-bootstrap` label or the protected Linux
 `norn-fleet-protected` effect-runner label. The external-Mac finalizer is a
-separate purpose and must not be substituted.
+separate purpose and must not be substituted. This inventory is an idle-time
+snapshot: the management Mac runner is registered just in time for an exact
+queued protected job, so its absence from the persistent runner list does not
+by itself show that the install workflow is undispatchable.
 
-The merged `work-staging-fleet-gate-install` workflow requires the protected
-macOS management-bootstrap runner. That install lane is therefore not currently
-dispatchable. Restore the intended management-runner route through its approved
-bootstrap lifecycle; then install and verify the remote job gate while the
-persistent Linux effect runner is stopped. Keep the platform-bootstrap flag
-false; no runner registration, install workflow, or provider mutation occurred
-in this read.
+The `work-staging-fleet-gate-install` workflow requires the protected macOS
+management-bootstrap runner. Its local controller admits only exact protected
+workflow jobs and creates a run-scoped ephemeral runner after one-use local
+authorization. Readiness therefore depends on the controller, its protected
+inputs, and a matching queued job; do not manually register the runner or reuse
+the finalizer. Keep the platform-bootstrap flag false until the install
+preflight passes.
+
+## DO management Mac controller check (2026-11-10 16:41 UTC)
+
+The owner-local `com.norn.work-management-mac-runner-controller` LaunchAgent
+was running (PID 17405). Its protected registration metadata names ephemeral
+runner ID 236 and records it offline; the one-use `allowed-job.json` and
+controller state file were absent, consistent with an idle controller. The
+controller source allowlists `work-staging-fleet-gate-install.yml` and uses a
+run-scoped JIT registration after it finds an exact queued job. This confirms
+the intended route exists locally; it does not prove that the controller's
+GitHub credentials and all protected install inputs are currently usable. The
+next gate is a read-only readiness check of those inputs and the remote gate
+digest, followed by the reviewed gate install while the Linux effect runner is
+stopped. No workflow was dispatched and no host or provider state was changed.
 
 Genesis readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
 and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
@@ -138,9 +155,10 @@ proof and deterministic generation of the controller source archive and
 private install vars. Bootstrap run
 [42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029)
 was canceled while queued, before its first step, because no matching protected
-Linux effect runner was registered. The controller's signed-effect allowlist
-does not admit this bootstrap workflow yet. The bootstrap enable flag is
-`false`; no host installation occurred.
+Linux effect runner was registered. At that time the controller's
+signed-effect allowlist did not admit the bootstrap workflow; Fleet PR #962
+has since merged that admission path. The bootstrap enable flag is `false`; no
+host installation occurred.
 
 ## Release timing
 
