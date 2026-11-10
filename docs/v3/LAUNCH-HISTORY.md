@@ -1,5 +1,20 @@
 # Norn v3 launch history
 
+## Mini read-only inventory refreshed; assurance is still stale (2026-11-10 01:52 UTC)
+
+Authenticated inventory of the independent Mini reports API/host status `ok`
+on source `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
+(`v3.0.0-rc.1-platform-252-gd4dc88e0`), with Consul, Nomad, PostgreSQL,
+S3, SOPS, and the Nomad/Consul connector up; runtime mutation fence `inactive`;
+and 19 of 30 app records healthy. Seven active operations remain queued
+`fleet.github.apply-dispatch` reservations. There are 25 active incident groups,
+and production readiness remains blocked (18 failed, seven passed, one warning).
+The endpoint's `latestAssurance` receipt is still dated Sep 6, 2026, despite its
+current `observedAt`; therefore host status `ok` is not fresh host-assurance
+evidence. This readback does not corroborate the 01:16 entry's claim of a fresh
+assurance pass, so treat that claim as superseded unless a newer durable receipt
+is produced. No assurance command, runtime mutation, or DO readback was run.
+
 ## Genesis readback pre-dispatch hold modeled offline (2026-11-10 01:35 UTC)
 
 Added a second deterministic config for the currently observed pre-dispatch
@@ -35,9 +50,11 @@ The authenticated inventory confirms the independent Mini still serves
 `d4dc88e0c37003a1013caed444983b2eeb50fbcb`
 (`v3.0.0-rc.1-platform-252-gd4dc88e0`), with API health and host status `ok`
 and runtime mutation fence `inactive`. Nineteen of 30 app records are
-healthy. The latest `host.assure` receipt succeeded at 01:16 UTC and checked
-the required IPv4 services and public-route reconciliation; this is not a
-claim that all app records are healthy or that the V3 transition completed.
+healthy. At the time of that inventory, the host-status endpoint's latest
+`host.assure` receipt was dated Sep 6; a later 01:52 UTC inventory did not
+corroborate a fresh 01:16 assurance pass. See the latest entry above. This is
+not a claim that all app records are healthy or that the V3 transition
+completed.
 Seven queued operations remain, all known DO `fleet.github.apply-dispatch`
 reservations. There are 25 active incident groups, four snapshot-retention
 warnings, and production readiness remains blocked. The current release has
