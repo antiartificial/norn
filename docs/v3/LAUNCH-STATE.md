@@ -31,11 +31,45 @@ worker services, 25 active incidents, and conflicting active-operation counts
 online and its controller smoke passed; it does not prove every workload is
 healthy. Mini remains independent of the DO Fleet.
 
+## Fresh Mini read-only postflight (2026-11-10 08:00–08:09 UTC)
+
+From the operator workstation, a strict-host-key-checked Tailnet SSH session
+read the Mini's loopback API and ran authenticated `norn platform smoke` via
+its encrypted runtime environment. `/api/health` returned `status=ok` with
+Consul, Nomad, Postgres, S3, SOPS, and the Nomad/Consul workload connector up;
+the runtime mutation fence was inactive. `/api/version` still selected the
+exact A4 source above. The smoke passed health, operation drain (`activeOps=0`),
+release, and event queries, reporting 46 services, 161 releases, and ten
+critical plus ten warning events in the queried recent-event window. These are
+event-query results, not a count of active incidents or proof every workload
+is healthy. At 08:08 UTC, the Tailnet HTTPS route returned 200 for `/`,
+`/api/health`, and `/api/version`, resolving to the Mini's Tailnet address;
+this verifies the Tailnet route, not public Internet ingress or app-specific
+routes. The API listener itself remains loopback-bound. The Mini remains
+separate from the DO Fleet.
+
+At 08:09 UTC, a read-only Nomad status query found 21 service-type jobs: 18
+running, two pending, and one dead. This confirms the Mini is hosting service
+workloads, while also showing that not all are running. These Nomad job counts
+are separate from the Norn API's app and service inventory. They do not prove
+that a new workload manifest has been admitted through a release controller.
+
+The first smoke invocation from the thin SSH shell could not find the `norn`
+child command because the wrapper omitted `$HOME/go/bin` from `PATH`. The
+read-only check passed after explicitly adding that directory. A follow-up
+platform CLI change is in review to add the configured/default Norn bin
+directory to child `PATH`, removing this operator workaround in a later
+release.
+
 The same Mini control plane reports a configured staging Fleet with 3 control,
 2 ingress, and 4 app nodes and 24 historical read-only capacity plans (latest
-Oct 13). That is not fresh provider or DO API/workload evidence. The latest
-protected private DO state readback remains failed/held; do not claim DO staging
-is online until a fresh protected private inventory succeeds.
+Oct 13). That is not fresh provider or DO API/workload evidence. The protected
+raw backend-object readback in Norn Fleet run
+[42777258334](https://github.com/antiartificial/norn-fleet/actions/runs/42777258334)
+freshly verified the retained state bytes and provider identity for the three
+control Droplets. It did not establish Norn API or workload health, and the
+protected private service inventory/readback remains failed/held. Do not claim
+DO staging is online until that protected private inventory succeeds.
 
 ## Historical: Mini finalizer repair qualified; exact release awaiting protected publish (2026-11-10 06:07 UTC)
 

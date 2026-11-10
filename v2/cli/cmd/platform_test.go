@@ -8,6 +8,12 @@ import (
 )
 
 func TestPlatformExecutionPathPreservesCallerAndAddsInstalledToolDirectories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("NORN_BIN_DIR", "")
+	if err := os.MkdirAll(filepath.Join(home, "go", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	got := filepath.SplitList(platformExecutionPath("/custom/bin:/usr/bin:/custom/bin"))
 	joined := ":" + strings.Join(got, ":") + ":"
 	if !strings.Contains(joined, ":/custom/bin:") || !strings.Contains(joined, ":/usr/bin:") {
@@ -16,10 +22,23 @@ func TestPlatformExecutionPathPreservesCallerAndAddsInstalledToolDirectories(t *
 	if strings.Count(joined, ":/custom/bin:") != 1 {
 		t.Fatalf("path was not deduplicated: %v", got)
 	}
+	if !strings.Contains(joined, ":"+filepath.Join(home, "go", "bin")+":") {
+		t.Fatalf("default Norn CLI directory was not added: %v", got)
+	}
 	for _, candidate := range []string{"/opt/homebrew/bin", "/usr/local/bin"} {
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() && !strings.Contains(joined, ":"+candidate+":") {
 			t.Fatalf("installed tool directory %s was not added: %v", candidate, got)
 		}
+	}
+}
+
+func TestPlatformExecutionPathIncludesConfiguredNornBinDirectory(t *testing.T) {
+	configured := filepath.Join(t.TempDir(), "norn-tools")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("NORN_BIN_DIR", configured)
+	got := filepath.SplitList(platformExecutionPath("/usr/bin"))
+	if len(got) == 0 || got[0] != configured {
+		t.Fatalf("configured Norn CLI directory should lead child PATH: %v", got)
 	}
 }
 
