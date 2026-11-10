@@ -25,7 +25,7 @@ rationale and historical state.
 The Mini's first direct V3 upgrade completed on 2026-11-07; on 2026-11-10 it
 advanced to signed release `34178b8b` through the direct controller lane. The
 API, platform smoke, host status, and host doctor pass; the separate queued
-upgrade path remains unresolved. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1240-utc).
+upgrade path remains unresolved. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1526-utc).
 DO staging Droplets were provider-active at the latest readback, but current
 Fleet service health is unverified. No V3 launch date is committed; see the
 current launch state and release milestones for open gates.

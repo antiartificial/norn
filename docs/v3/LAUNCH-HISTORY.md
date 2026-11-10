@@ -1,5 +1,22 @@
 # Norn v3 launch history
 
+## Mini direct success confirmed against the owner-set workload bar (2026-11-10 15:26 UTC)
+
+Read-only checks were run over the Mini's verified SSH host key. The active
+`~/norn/current` symlink selects signed release
+`34178b8b90d52a2fa3f138ffae2dfc63744197e1`. Local `/api/health` returned HTTP
+200, the bundled V3 CLI reported `api ok` and required services up, and
+`host-runtime status` reported the API, host agent, Nomad, Consul, supervisor,
+and Cloudflare agent up.
+
+Nomad reported the Norn-managed `vigil-gateway` job and allocation running. A
+read-only HTTP GET to that allocation's declared `/health` endpoint returned
+HTTP 200. This satisfies the owner's Mini success criterion: V3 deployed and
+at least one workload responds. It does not claim all applications are healthy
+or qualify Git-driven admission. The three queued-upgrade failures remain a
+separate controller-recovery follow-up. No workload, platform, or provider
+mutation was performed during these checks.
+
 ## DO provider inventory refreshed; dormant bootstrap did not start (2026-11-10 14:58 UTC)
 
 A read-only `doctl --context work` inventory at 14:53 UTC found all eleven

@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 14:58 UTC. No V3 launch date is
+Status: active work map, refreshed 2026-11-10 15:26 UTC. No V3 launch date is
 committed; release timing remains gate-based. This checklist orders the [release
 fitness and controller plan](release-fitness-and-controller-plan.md). It does not
 authorize deployment, provider mutation, or credential use.
@@ -21,16 +21,17 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 14:58 UTC): the independent Mini runs signed
-release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. Its direct
-controller upgrade and current authenticated platform, API, host-status, and
-host-doctor checks passed at the last Mini readback. Three queued upgrades
-stopped before promotion, most recently with `LaunchAgent wrapper has no child
-process`. The cause remains unknown. Seven old Fleet dispatch receipts remain
-queued; the first supported reconciliation lookup failed closed with a binding
-mismatch. Mini workload health is mixed, and its separate Git-to-Norn workload
-admission path is not end-to-end qualified. Mini is not part of a Fleet and has
-no Fleet workload-resize lane.
+Current gate snapshot (2026-11-10 15:26 UTC): the independent Mini runs signed
+release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The owner-stated
+Mini success bar is met: the direct V3 release is active, API health returned
+HTTP 200, and the Norn-managed `vigil-gateway` workload allocation was running
+with its `/health` endpoint returning HTTP 200. Other app health remains mixed;
+three queued platform upgrades stopped before promotion, and the Git-to-Norn
+workload admission path is not end-to-end qualified. Track those as separate
+reliability and admission follow-ups, not as failure of the completed Mini
+direct deployment. Seven old Fleet dispatch receipts remain queued after a
+supported reconciliation lookup failed closed with a binding mismatch. Mini
+is not part of a Fleet and has no Fleet workload-resize lane.
 
 At 14:53 UTC, a read-only `doctl --context work` inventory found all eleven DO
 staging Droplets active: two management, three controls, two ingress, and four
@@ -56,7 +57,7 @@ live service or workload qualification.
 | Workstream | Current evidence | Next proof |
 |---|---|---|
 | Protected platform release | The `2a2d712a` platform release passed protected qualification and immutable publication (run `42788567933`). The follow-up `1b2dc229` also passed all 12 jobs and immutable publication (runs `42804580712`, `42805168466`). | Keep publish separate from deployment; use exact-SHA qualification and protected publication for each future release. |
-| Mini direct | Signed `34178b8b` is active at schema 52. The direct upgrade, platform smoke, host status, and host doctor passed at the last readback. Three queued upgrades failed before promotion; the latest reported the missing LaunchAgent child. Workload health is mixed, and the separate Git-to-Norn admission path remains unqualified. | Diagnose queued-upgrade recovery and qualify Mini Git-driven workload admission. Do not include Fleet workload resizing in the Mini lane. |
+| Mini direct | Successful under the owner-stated bar: signed `34178b8b` is active at schema 52, API health returned HTTP 200, and the running Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. Other app health remains mixed. | Keep queued-upgrade recovery and Git-driven workload admission as separate follow-ups. Do not include Fleet workload resizing in the Mini lane. |
 | Existing DO Fleet | The 14:53 UTC `work`-context inventory found two management nodes, three controls, two ingress nodes, and four app nodes active. Genesis readback passed state-byte, route-continuity, and transport checks, then failed installed-source verification before reading Genesis data. Bootstrap run [42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029) was canceled before its first step because the one-use Linux runner was not registered. | Add signed bootstrap-intent admission to the effect controller and remote job gate; install and verify the current controller with services dormant; obtain fresh Genesis readback; then prove API, etcd, Nomad/Consul, route, and workload health before any DO release. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | DO workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending or held releases retain them. Replay checks pass, but one fresh HTTP admission joined to real etcd, signed qualification, and owned serving-route evidence is still missing. Full executor/worker process recovery and live Nomad/ingress qualification remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, and capacity 4 reaches the modeled terminal receipt. | Join HTTP admission to real etcd, a signed qualification, a completed staging deployment, and control-owned active-route lineage. Exercise process/lease loss and lost responses across stage/create/readback/bind/route/stop on disposable Nomad/ingress. Keep stateful compatibility separate. This resize lane applies to the DO staging Fleet, not the Mini. |
@@ -64,7 +65,9 @@ live service or workload qualification.
 
 Mini is an independent node, not a Fleet member. DO staging is the only Fleet
 in this release program. Replica and app-pool resizing belong to the DO
-staging Fleet. Mini workload admission is a separate Git-to-Norn path.
+staging Fleet. Mini workload admission is a separate Git-to-Norn path; mixed
+health and the unqualified webhook path do not negate the direct deployment
+success criterion.
 Provider inventory, controller health, workload health, route assurance, and
 release publication are separate claims. Keep this map procedural; use the
 linked launch records for the dated detail.
