@@ -8,20 +8,14 @@ independent node; the DO staging Fleet is a separate environment. The existing
 DO Norn release protocol is all-stop and forward-only. Mixed-version Norn
 control upgrades are not qualified. The Mini's active `norn.startup/v2`
 contract supports reader/writer floors 5/33. Signed API release `a4b9c3b3`
-adds catalog migration 52; signed controller release `a8aa2860` is published,
-imported, and verified on Mini. The active generation
-`gen-1a769550b1051bc9358ce8e8758265e5` is at
-`candidate-preservation-pending`, with its preservation receipt matched and
-catalog schema 52 present. The A4 API answers health, but the host-agent
-LaunchAgent and host supervisor are not running. Finalization is incomplete;
-exact-source ancestry repair `2e8bd545547f4bfa375c68fac9be9667954276de` is
-published as an immutable signed release and imported with both artifact and
-external signature checks passed at 05:17 UTC; it has not been run on Mini.
-At 05:31, authenticated API/status reads were healthy, but the helper rejects
-the existing A8-bound API launcher record. Keep the generation fenced until a
-follow-on signed controller handles that exact prior-controller handoff. See
-the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-controller-mismatch-found-same-generation-still-pending-2026-11-10-0531-utc).
-Do not treat API health or catalog schema 52 as completion. In a direct upgrade with no retained
+adds catalog migration 52. Signed controller release `5bb691de` completed the
+existing recovered-forward generation `gen-1a769550b1051bc9358ce8e8758265e5`
+at `candidate-promoted` without changing its A4 candidate or rerunning
+migration. The API serves exact A4 source; authenticated platform smoke and
+host status pass. The inventory still contains stopped/unhealthy apps and
+unknown background services, so platform health is not a claim that every
+workload is healthy. See the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-direct-v3-generation-finalized-2026-11-10-0630-utc).
+In a direct upgrade with no retained
 recovery fence, the standard `upgrade` lane is contract-compatible after
 protected backup and exact-candidate private-shadow proof. The Mini currently
 has a retained failed-transition sentinel, so the ordinary lane is blocked
@@ -105,15 +99,14 @@ receipts verify. Start that lane through the exact signed candidate's wrapper
 so it can bind a fresh backup, signed shadow, current workload baseline, and
 successor generation before calling the managed controller:
 
-For the current Mini recovery, the published A8 controller release resumed the
-existing generation and reached preservation-pending. Do not invoke ordinary
-`upgrade`, create a new transition ID, restart the host agent by hand, or edit
-the journal. The signed-descendant finalization fix is exact source
-`2e8bd545547f4bfa375c68fac9be9667954276de`; its immutable release is published,
-imported, and verified but not run on Mini. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-controller-mismatch-found-same-generation-still-pending-2026-11-10-0531-utc)
-for publication and live-read receipts. Each repair authorization must bind
-the current generation and journal digest; refresh it after a journal phase
-change. Publication alone does not prove that Mini is ready.
+The Nov 10 Mini recovery is complete and recorded in the
+[current recovery record](../../v3/LAUNCH-STATE.md#mini-direct-v3-generation-finalized-2026-11-10-0630-utc).
+For any future interrupted transition, preserve its durable phase and resume
+only through the signed controller repair path that binds the exact active
+generation, journal digest, source evidence, and release. Refresh authorization
+after each journal phase change. Do not hand-edit the journal or restart a
+fenced host agent by hand. Publication alone does not prove that a node is
+ready.
 
 The signed recovery API launcher also checks the adopted baseline's Git
 ancestry. Set `NORN_PLATFORM_REPO` in the encrypted API environment to the
