@@ -1,0 +1,16 @@
+---
+title: "DO Genesis readback: source pin, exact binding, and one-use recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: pending
+    lg1: held
+  }
+  class lg0 blue
+  class lg1 orange
+  s0: Readback not prepared
+  s1: Readback held: gate disabled or binding stale
+  [*] --> s0
+  s0 --> s1: the workflow holds before staging an intent or starting a runner
+  class s0 blue
+  class s1 orange
