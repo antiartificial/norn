@@ -150,8 +150,8 @@ change occurred. PR #370 makes the recovered-forward Mini lane preserve these
 receipts under signed transition evidence while `legacy-baseline` continues
 to require them drained. See the [23:08 reconciliation finding](LAUNCH-HISTORY.md#seven-stale-fleet-dispatch-receipts-remain-unreconcilable-on-current-lane-2026-11-09-2308-utc).
 
-All 21 checked-in statechart configurations were rerun from current `master`;
-their configured rules passed, including four missing-evidence workload
+All 26 checked-in statechart configurations were rerun from current `master` on
+2026-11-10; their configured rules passed, including four missing-evidence workload
 admission cases and concurrent two-client admission. Deadlock checks passed
 where enabled; the concurrent-admission model intentionally disables them for
 terminal stutter states. Coverage includes Mini direct, existing DO release,
