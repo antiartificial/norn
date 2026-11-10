@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current Mini recovery status (2026-11-10 03:12 UTC)
+## Current Mini recovery status (2026-11-10 03:23 UTC)
 
 The protected A8 controller release
 [`platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`](https://github.com/antiartificial/norn/releases/tag/platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63)
@@ -21,7 +21,7 @@ verified the source and built the pinned UI plus all four platform bundles;
 its protected signing job is waiting for owner approval. The release is not
 yet signed or published, so no further Mini transition was run.
 
-A fresh read-only host inspection at 02:54 UTC confirmed the current symlink
+A fresh read-only host inspection at 03:23 UTC confirmed the current symlink
 still selects A4 and the exact generation journal remains at
 `candidate-preservation-pending`; its preservation receipt says
 `preservationMatched=true`, and no finalization receipt exists. The API
@@ -34,12 +34,16 @@ not restored. Do not report the Mini upgrade complete until the signed repair
 controller finalizes the same generation, restores the original API and host
 agent behavior, and authenticated API plus host/workload readback passes.
 
-A 03:12 read-only check confirms `active-generation.json` selects generation
+A 03:23 read-only check confirms `active-generation.json` selects generation
 `gen-1a769550b1051bc9358ce8e8758265e5`, whose nested journal is the
 `candidate-preservation-pending` transition above. The root-level
 `recovered-forward/transition.json` still records an unrelated October
 transition; use the active-generation pointer and its journal, not that stale
-root-level record, to identify the current recovery state.
+root-level record, to identify the current recovery state. The API LaunchAgent
+has PID 93463, the host-agent LaunchAgent label is absent, and the host
+supervisor has no running PID. The A4 current symlink is still selected and no
+finalization receipt exists. These process and journal reads do not establish
+authenticated API health or workload recovery.
 
 During this recovery, `NORN_PLATFORM_REPO` was also added to Mini's encrypted
 API environment so the GUI LaunchAgent can verify the adopted source lineage.

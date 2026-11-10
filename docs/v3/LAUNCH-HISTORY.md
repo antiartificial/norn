@@ -41,6 +41,18 @@ authoritative pointer is `active-generation.json`, which selects
 Future status and recovery checks should resolve the active generation before
 reading a journal.
 
+## Mini active-generation readback confirms preservation-pending (2026-11-10 03:23 UTC)
+
+A 03:23 UTC read-only Mini inspection confirmed that
+`active-generation.json` still selects `gen-1a769550b1051bc9358ce8e8758265e5`
+and its nested journal remains at `candidate-preservation-pending`, with
+`preservationMatched=true` and no finalization receipt. The current symlink
+still selects A4. The API LaunchAgent has a process, the host-agent LaunchAgent
+label is absent, and the host supervisor has no running PID. This does not
+establish authenticated API health or workload recovery. The old root-level
+`recovered-forward/transition.json` remains unrelated October data; resolve the
+active-generation pointer before reading the current journal.
+
 ## A8 controller resumed Mini into preservation-pending; finalizer gate found (2026-11-10 02:25 UTC)
 
 After owner approval, protected release workflow
