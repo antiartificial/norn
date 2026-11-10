@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current Mini recovery status (2026-11-10 02:56 UTC)
+## Current Mini recovery status (2026-11-10 03:12 UTC)
 
 The protected A8 controller release
 [`platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`](https://github.com/antiartificial/norn/releases/tag/platform-a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63)
@@ -33,6 +33,13 @@ Mini remains under the recovered-forward write fence and host-agent service is
 not restored. Do not report the Mini upgrade complete until the signed repair
 controller finalizes the same generation, restores the original API and host
 agent behavior, and authenticated API plus host/workload readback passes.
+
+A 03:12 read-only check confirms `active-generation.json` selects generation
+`gen-1a769550b1051bc9358ce8e8758265e5`, whose nested journal is the
+`candidate-preservation-pending` transition above. The root-level
+`recovered-forward/transition.json` still records an unrelated October
+transition; use the active-generation pointer and its journal, not that stale
+root-level record, to identify the current recovery state.
 
 During this recovery, `NORN_PLATFORM_REPO` was also added to Mini's encrypted
 API environment so the GUI LaunchAgent can verify the adopted source lineage.
