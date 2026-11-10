@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 15:26 UTC. No V3 launch date is
+Status: active work map, refreshed 2026-11-10 16:02 UTC. No V3 launch date is
 committed; release timing remains gate-based. This checklist orders the [release
 fitness and controller plan](release-fitness-and-controller-plan.md). It does not
 authorize deployment, provider mutation, or credential use.
@@ -21,7 +21,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 15:26 UTC): the independent Mini runs signed
+Current gate snapshot (2026-11-10 16:02 UTC): the independent Mini runs signed
 release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The owner-stated
 Mini success bar is met: the direct V3 release is active, API health returned
 HTTP 200, and the Norn-managed `vigil-gateway` workload allocation was running
@@ -33,9 +33,11 @@ direct deployment. Seven old Fleet dispatch receipts remain queued after a
 supported reconciliation lookup failed closed with a binding mismatch. Mini
 is not part of a Fleet and has no Fleet workload-resize lane.
 
-At 14:53 UTC, a read-only `doctl --context work` inventory found all eleven DO
-staging Droplets active: two management, three controls, two ingress, and four
-app nodes. This is provider-instance evidence, not service health. Genesis
+At 16:02 UTC, a fresh read-only `doctl --context work` inventory found all
+eleven DO staging Droplets active: two management, three controls, two
+ingress, and four app nodes. The `work` context is Turnkey Marketing
+(`webdev@tkmkt.com`); `norn-pilot` is a separate personal account. This is
+provider-instance evidence, not service health. Genesis
 readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
 and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
 passed backend-byte, route-continuity, and effective transport checks, then

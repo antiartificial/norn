@@ -74,6 +74,21 @@ account and does not contain this Fleet. These checks prove provider instance
 state only. They do not prove Norn API, etcd, Nomad, Consul, route, or workload
 health.
 
+## DO staging provider refresh (2026-11-10 16:02 UTC)
+
+A fresh read-only `doctl --context work compute droplet list` returned all
+eleven Norn staging Droplets active in `nyc3`: two management nodes, three
+controls, two ingress nodes, and four app nodes. The `work` account is Turnkey
+Marketing (`webdev@tkmkt.com`, team `Webdev`, account UUID
+`17f40050233d1cd4962b44050e82a0dd01f8dff7`). The separate default
+`norn-pilot` account is `theartificial@hotmail.com` (`theartificial`, team
+`My Team`, UUID `05fe610a42b6d50c65344dd87bd842ce35ab036d`); it is not the
+staging account.
+
+This refresh confirms provider-reported VM state only. It does not check the
+Norn API, etcd, Nomad, Consul, routes, or application response. Genesis
+readback, platform release/postflight, and workload qualification remain open.
+
 Genesis readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
 and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
 verified exact backend bytes, the serial-22-to-23 route continuity, and

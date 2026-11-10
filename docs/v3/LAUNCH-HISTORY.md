@@ -25,6 +25,21 @@ ingress nodes, and four app nodes. This confirms provider instance state only.
 It does not confirm Norn, etcd, Nomad, Consul, route, or workload health. The
 `norn-pilot` context belongs to a different DO account.
 
+## DO staging provider refresh (2026-11-10 16:02 UTC)
+
+A fresh read-only `doctl --context work compute droplet list` returned all
+eleven Norn staging Droplets active in `nyc3`: two management nodes, three
+controls, two ingress nodes, and four app nodes. The `work` account is Turnkey
+Marketing (`webdev@tkmkt.com`, team `Webdev`, account UUID
+`17f40050233d1cd4962b44050e82a0dd01f8dff7`). The separate default
+`norn-pilot` account is `theartificial@hotmail.com` (`theartificial`, team
+`My Team`, UUID `05fe610a42b6d50c65344dd87bd842ce35ab036d`); it is not the
+staging account.
+
+This refresh confirms provider-reported VM state only. It does not check the
+Norn API, etcd, Nomad, Consul, routes, or application response. Genesis
+readback, platform release/postflight, and workload qualification remain open.
+
 Fleet PR [#959](https://github.com/antiartificial/norn-fleet/pull/959) merged
 as `7f6433b06030d87726aa4055b7ff7b5bfa963f2b`, adding exact route-continuity
 proof and deterministic source-archive and private-vars generation. Protected
