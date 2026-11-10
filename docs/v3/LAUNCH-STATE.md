@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current Mini status (2026-11-10 12:01 UTC)
+## Current Mini status (2026-11-10 12:40 UTC)
 
 The independent Mini now runs immutable signed release
 `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The direct controller
@@ -31,11 +31,31 @@ integration suite passes all 24 tests. Neither result explains or fixes the
 operation-window disappearance. The current implementation still requires the
 LaunchAgent wrapper's direct child. Do not replay terminal operation IDs.
 
-The queued smoke lane was not verified: an unauthenticated CLI call was rejected
-before creating an operation, and the managed env-exec wrapper refused a nested
-platform command under the retained recovery policy. No workaround was
-used. Queue-based upgrade, workload admission, and workload resize remain open
-gates. See [launch history](LAUNCH-HISTORY.md) for the direct upgrade evidence.
+Fresh read-only checks at 12:29–12:40 UTC confirmed API health `ok`, exact
+source `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52, reader/writer
+floors 5/33, and managed host-agent bytes matching the active release. A new
+durable `platform.smoke` operation (`ead999e5-b0ac-4de8-ac61-14989e7760d6`)
+succeeded through the host agent; its receipt says `platform.smoke complete`.
+The direct smoke reported health, operation drain, releases, events, and
+platform all `ok` with `activeOps=0`. A fresh `norn host doctor/status` passed.
+Three one-second process observations also found the same live LaunchAgent
+wrapper and exact managed host-agent child. This verifies queued smoke and
+current host stability, but does not explain the earlier operation-window
+disappearance or qualify queued upgrades.
+
+The authenticated inventory still reports 30 app records and 46 services with
+mixed workload health. It also shows seven old queued
+`fleet.github.apply-dispatch` receipts (last updated October 8–10). The first
+approved reconciliation lookup returned HTTP 409
+`fleet_github_dispatch_binding_mismatch`; it made no Fleet change and left the
+receipt queued. The other six were not submitted after that lane-binding
+rejection. The platform smoke's `activeOps=0` shows these receipts were not
+counted in the platform maintenance drain at this readback. Do not cancel or
+rebind them outside the supported current-lane reconciliation path.
+
+Queue-based upgrade, controller-mediated new workload admission, and workload
+resize remain open gates. See [launch history](LAUNCH-HISTORY.md) for direct
+upgrade evidence and the dated failure sequence.
 
 ## Historical snapshot (2026-11-10 10:50 UTC; superseded)
 

@@ -21,7 +21,7 @@ host-agent disappearance remains unexplained. Queued upgrades
 remain unqualified even though the direct lane now runs `34178b8b`.
 The inventory still contains stopped/unhealthy apps and unknown background
 services, so platform health is not a claim that every workload is healthy.
-See the [current Mini status](../../v3/LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc).
+See the [current Mini status](../../v3/LAUNCH-STATE.md#current-mini-status-2026-11-10-1240-utc).
 
 The retained failed-transition sentinel means every later forward upgrade must
 verify the completed recovered-forward journal, its signed evidence, and the
@@ -69,7 +69,7 @@ norn platform queue-rollback <sha-prefix>
 norn platform queue-smoke
 ```
 
-The Mini's 2026-11-10 later-upgrade attempts exposed successive recovered-state gate mismatches. The `d414b3ab` and `640b8b89` attempts stopped before promotion at evidence-verification checks. The `1b2dc229` follow-up passed exact-source qualification and fresh backup/shadow rehearsal, but two queued operations failed before promotion at the host-agent stability check. A later signed release `34178b8b` passed those preflight/backup/shadow gates; its queued operation reported `LaunchAgent wrapper has no child process`. The Mini was then upgraded successfully to `34178b8b` through the direct controller lane, with schema unchanged at 52. This does not resolve or qualify the queued upgrade path. The offline statechart covers absent-agent reset behavior, but neither a code fix nor a root cause is established. Before another queued attempt, use a fresh signed release and exact-candidate backup/shadow, then inspect the terminal receipt; never replay a failed operation's idempotency key. See the [current incident and evidence record](../../v3/LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc).
+The Mini's 2026-11-10 later-upgrade attempts exposed successive recovered-state gate mismatches. The `d414b3ab` and `640b8b89` attempts stopped before promotion at evidence-verification checks. The `1b2dc229` follow-up passed exact-source qualification and fresh backup/shadow rehearsal, but two queued operations failed before promotion at the host-agent stability check. A later signed release `34178b8b` passed those preflight/backup/shadow gates; its queued operation reported `LaunchAgent wrapper has no child process`. The Mini was then upgraded successfully to `34178b8b` through the direct controller lane, with schema unchanged at 52. A new durable queued `platform.smoke` has since passed, and the current LaunchAgent wrapper plus exact managed host-agent child remained stable for three one-second observations. This does not resolve or qualify the queued upgrade path: the earlier failed receipt has no process-state trace, and no root cause is established. Before another queued attempt, use a fresh signed release and exact-candidate backup/shadow, then inspect the terminal receipt; never replay a failed operation's idempotency key. See the [current incident and evidence record](../../v3/LAUNCH-STATE.md#current-mini-status-2026-11-10-1240-utc).
 
 Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
 local development rehearsal but can move between review and upgrade.

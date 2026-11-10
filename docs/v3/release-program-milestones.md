@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 12:01 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 12:40 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,19 +20,22 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 12:01 UTC): the independent Mini direct lane
-runs signed release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52.
-PR #401's exact-source SHA passed all 12 qualification jobs, immutable
-publication, Mini passive preflight, fresh protected backup, and signed shadow.
-The direct controller upgrade completed, followed by authenticated platform
-smoke, host status, and host doctor. Three earlier queued upgrades stopped
-before promotion; the latest reported `LaunchAgent wrapper has no child
-process`. The offline statechart now includes an absent-agent sample and passes
-at 56 states / 138 steps; the checked-in platform-upgrade integration suite
-passes all 24 tests. The operation-window cause remains unexplained, and queued
-upgrade is still unqualified. Mini workload admission and resize were not
-tested; workload health remains mixed. See [launch state](LAUNCH-STATE.md) and
-[launch history](LAUNCH-HISTORY.md).
+Current gate snapshot (2026-11-10 12:40 UTC): the independent Mini direct lane
+runs signed release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52,
+reader/writer floors 5/33. PR #401's exact-source SHA passed all 12
+qualification jobs, immutable publication, Mini passive preflight, fresh
+protected backup, and signed shadow. The direct controller upgrade completed.
+Fresh authenticated API checks, `norn host doctor/status`, direct platform
+smoke, and a durable queued `platform.smoke` all pass; three one-second samples
+show the same exact managed host-agent process. Three earlier queued upgrades
+stopped before promotion; the latest reported `LaunchAgent wrapper has no child
+process`. That earlier operation has no process-state trace, so its cause is
+still unknown and queued upgrade is unqualified. Seven old Fleet dispatch
+receipts remain queued; their platform drain contribution is zero, but a
+current-lane GitHub reconciliation attempt failed closed with a binding
+mismatch. Do not clear them through a different lane. Mini workload admission
+and resize were not tested; workload health remains mixed. See [launch
+state](LAUNCH-STATE.md) and [launch history](LAUNCH-HISTORY.md).
 
 DO staging is still not confirmed online. Protected raw backend-object readback
 run [42783948949](https://github.com/antiartificial/norn-fleet/actions/runs/42783948949)
@@ -50,7 +53,7 @@ coverage, not live qualification.
 | Workstream | Current evidence | Next proof |
 |---|---|---|
 | Protected platform release | The `2a2d712a` platform release passed protected qualification and immutable publication (run `42788567933`). The follow-up `1b2dc229` also passed all 12 jobs and immutable publication (runs `42804580712`, `42805168466`). | Keep publish separate from deployment; use exact-SHA qualification and protected publication for each future release. |
-| Mini direct | Signed `34178b8b` is active at schema 52; direct upgrade, platform smoke, host status, and host doctor passed. Three queued upgrades failed before promotion at the completed-recovery host-agent stability check. | Diagnose the operation-window host-agent disappearance before changing the gate; then prove a fresh queued operation completes. Keep workload admission and resize as separate gates. |
+| Mini direct | Signed `34178b8b` is active at schema 52; direct upgrade, direct and queued platform smoke, host status, and host doctor passed. Three queued upgrades failed before promotion at the completed-recovery host-agent stability check. Seven Fleet dispatch receipts remain queued; current-lane reconciliation rejected the first with a binding mismatch. | Diagnose the operation-window host-agent disappearance before changing the gate; repair or properly rebind stale receipts through the supported lane; then prove a fresh queued upgrade completes. Keep workload admission and resize as separate gates. |
 | Existing DO Fleet | Retained staging shape is control=3, ingress=2, app=4, but the historical 24 capacity plans are not provider health. Protected raw backend readback [42783948949](https://github.com/antiartificial/norn-fleet/actions/runs/42783948949) passed exact retained state/provider identity; private service inventory and current API/workload/route health remain unconfirmed. | Refresh runner, readback enablement, state/route/host-key pins; then run a fresh protected inventory of controls, workloads, routes, and provider identities before any release. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | Workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending/held releases retain them. Store and replay recovery checks pass, but a fresh HTTP admission through real etcd with real signed qualification and owned serving-route evidence is not joined. There is no CLI command. Full executor/worker process recovery and live Nomad/ingress qualification remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, while capacity 4 reaches the modeled terminal receipt. | Join authenticated HTTP admission to real etcd, a real signed qualification, completed staging deployment, and control-owned active-route lineage. Then exercise lease/process loss and lost responses across stage/create/readback/bind/route/stop on a version-pinned disposable Nomad/ingress stack. Define recovery and retention for permanently held operations before live use; keep stateful compatibility separate. |
