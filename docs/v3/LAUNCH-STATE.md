@@ -1,5 +1,57 @@
 # Norn v3 launch state
 
+## Mini finalizer controller mismatch found; same generation still pending (2026-11-10 05:31 UTC)
+
+Owner approval was applied to the exact `platform-release` environment gate for
+source `2e8bd545547f4bfa375c68fac9be9667954276de`. Protected release workflow
+[42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675)
+completed successfully. GitHub reports the matching full-SHA tag as immutable
+and published, with signed manifests and four platform bundles. At 05:17 UTC,
+the Mini ARM64 bundle and installed release passed both the artifact verifier
+and configured external signature verifier. This imported the signed
+controller but did not activate it or resume the Mini.
+
+At 05:31 UTC, authenticated read-only checks returned `/api/health=ok`, A4
+source `a4b9c3b313d65c8a054fb869b18455fde33d3a70` from `/api/version`, and the
+exact recovered-forward status for this generation with `finalized=false`,
+`runtimeTopology=single-node-mini`, and no Fleet API or etcd consultation. The
+05:10 inventory returned 30 app records (19 running and healthy, two pending,
+one dead, and eight without Nomad status) and 46 services (19 passing, 27
+unknown). Host, operation, incident, release, Fleet, and production-readiness
+endpoints returned 404 in that inventory and remain unknown. None of this
+proves full workload recovery.
+
+The 05:17 read resolved `active-generation.json` to
+`gen-1a769550b1051bc9358ce8e8758265e5`. Its journal SHA-256 is
+`3eba3c4e83f025e96959604bf23215ab2434a2cf2b1434b58c44af7ba59e8749`; the
+pointer SHA-256 is
+`84cbb71c138afd08b60b6e9a1c9ea14bf3d2ebccd0f7c6611a9c06d61e4d8e8a`. The
+journal remains `candidate-preservation-pending` for transition
+`mini-v3-20261110T0021Z-a4b9c3b3`, source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb`, and candidate
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`; the current symlink still selects
+that candidate. The preservation receipt exists and no finalization receipt
+exists. These hashes identify the state observed; the signed helper must
+revalidate the journal, pointer, releases, and evidence before authorizing any
+repair. Do not reuse an authorization after a journal change.
+
+The API LaunchAgent and its HMAC-signed maintenance record still name A8
+`a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63`, and the loaded LaunchAgent program
+is that release's signed API launcher. The imported finalizer helper from 2e8
+rejects this record when asked to verify its own launcher because its
+`controllerSHA` is A8. The ordinary `run` entry also checks the record before
+preservation. Do not invoke the imported helper's `run` until a follow-on
+signed repair supports this exact prior-controller binding. The follow-on fix
+under review keeps the verified A8 launcher through preservation, then rebinds
+the sidecar and plist to the finalizer controller only at receipt-bound
+normal activation;
+it does not change A4, rerun migration, or create another generation.
+
+At 05:31 UTC the A8 API was authenticated and responsive, the API LaunchAgent
+was loaded, and the host-agent LaunchAgent was not loaded. The active generation
+remained `candidate-preservation-pending` with its preservation receipt present
+and no finalization receipt. No live finalizer action was run.
+
 ## Current Mini recovery status (2026-11-10 03:48 UTC)
 
 The protected A8 controller release

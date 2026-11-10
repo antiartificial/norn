@@ -273,10 +273,25 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
         sidecar.write_bytes(REPAIR.canonical(dict(
             record, signature=REPAIR.plist_signature(record, self.key))))
         sidecar.chmod(0o600)
+        old_sidecar = sidecar.read_bytes()
         new_launcher = SCRIPT.with_name("mini-recovered-forward-api-launcher")
         new_launcher_sha = REPAIR.digest(new_launcher.read_bytes())
         manifest = {"sourceEvidencePath": str(journal) + ".source-evidence.json",
                     "sourceEvidenceSHA256": self.expected["evidenceSHA256"]}
+        journal.write_text('{"state":"candidate-normal-activation-pending"}')
+        journal.chmod(0o600)
+        receipt_payload = {"schema": "norn.recovered-forward-preservation/v1",
+                           "transitionId": self.expected["transitionID"],
+                           "candidateSHA": self.expected["candidateSHA"],
+                           "sourceEvidenceSHA256": self.expected["evidenceSHA256"],
+                           "beforeDigest": "f" * 64, "afterDigest": "f" * 64,
+                           "preservationMatched": True, "finalizedAt": "2026-10-13T21:00:00Z"}
+        receipt_signature = "hmac-sha256:" + hmac.new(
+            self.key, receipt_payload["schema"].encode() + b"\0"
+            + REPAIR.canonical(receipt_payload), hashlib.sha256).hexdigest()
+        receipt = journal.parent / "preservation-receipt.json"
+        receipt.write_bytes(REPAIR.canonical(dict(receipt_payload, signature=receipt_signature)))
+        receipt.chmod(0o600)
         with patch.object(Path, "home", return_value=home), patch.object(
                 REPAIR, "api_plist_path", return_value=plist), patch.object(
                 REPAIR, "verify_launchers", return_value=("a" * 64, new_launcher_sha)), patch.object(
@@ -288,12 +303,89 @@ class ControllerRepairAuthorizationTest(unittest.TestCase):
                 transition=self.expected["transitionID"], generation_id=self.expected["generationID"],
                 evidence_sha=self.expected["evidenceSHA256"], original_launcher_sha="a" * 64)
             self.assertEqual(verified_launcher, old_launcher)
-            REPAIR.stage_plist(journal, self.expected, manifest, self.key)
+            args = Namespace(controller=home / "norn/releases" / self.expected["controllerSHA"]
+                             / "bin/platform-upgrade", candidate=self.expected["candidateSHA"],
+                             source=self.expected["sourceSHA"], transition=self.expected["transitionID"],
+                             journal=journal)
+            launch_state = f"path = {plist}\nprogram = {old_launcher}\n"
+            with patch.object(REPAIR.subprocess, "run",
+                              return_value=CompletedProcess([], 0, launch_state, "")):
+                REPAIR.verify_preservation_api_binding(args, self.expected, manifest, self.key)
+            with patch.object(REPAIR.subprocess, "run",
+                              return_value=CompletedProcess([], 0, "path = /foreign/job.plist\n"
+                                                                  f"program = {old_launcher}\n", "")):
+                with self.assertRaisesRegex(ValueError, "loaded candidate API job"):
+                    REPAIR.verify_preservation_api_binding(args, self.expected, manifest, self.key)
+            with patch.object(REPAIR.subprocess, "run",
+                              return_value=CompletedProcess([], 0, f"path = {plist}\n"
+                                                                  "program = /foreign/launcher\n", "")):
+                with self.assertRaisesRegex(ValueError, "loaded candidate API job"):
+                    REPAIR.verify_preservation_api_binding(args, self.expected, manifest, self.key)
+            changed_plist = plistlib.loads(old_staged)
+            changed_plist["EnvironmentVariables"]["UNEXPECTED"] = "value"
+            plist.write_bytes(plistlib.dumps(changed_plist))
+            with patch.object(REPAIR.subprocess, "run",
+                              return_value=CompletedProcess([], 0, launch_state, "")):
+                with self.assertRaisesRegex(ValueError, "signed maintenance plist"):
+                    REPAIR.verify_preservation_api_binding(args, self.expected, manifest, self.key)
+            plist.write_bytes(old_staged)
+            plist.chmod(0o666)
+            with patch.object(REPAIR.subprocess, "run",
+                              return_value=CompletedProcess([], 0, launch_state, "")):
+                with self.assertRaisesRegex(ValueError, "unsafe"):
+                    REPAIR.verify_preservation_api_binding(args, self.expected, manifest, self.key)
+            plist.chmod(0o644)
+            with patch.object(REPAIR.subprocess, "run",
+                              return_value=CompletedProcess([], 1, "", "")):
+                with self.assertRaisesRegex(ValueError, "not loaded"):
+                    REPAIR.verify_preservation_api_binding(args, self.expected, manifest, self.key)
+            new_maintenance = REPAIR.plist_variant(original, values, clear_recovery=False,
+                                                   signed_launcher=new_launcher)
+            plist.write_bytes(new_maintenance)
+            with patch.object(REPAIR.subprocess, "run",
+                              return_value=CompletedProcess([], 0, launch_state, "")):
+                with self.assertRaisesRegex(ValueError, "candidate API LaunchAgent does not match"):
+                    REPAIR.verify_preservation_api_binding(args, self.expected, manifest, self.key)
+            plist.write_bytes(old_staged)
+            REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-normal")
         rebound = REPAIR.read_plist_record(sidecar, self.key)
         self.assertEqual(rebound["controllerSHA"], self.expected["controllerSHA"])
         self.assertEqual(rebound["signedLauncherSHA256"], new_launcher_sha)
-        self.assertEqual(REPAIR.digest(plist.read_bytes()), rebound["maintenancePlistSHA256"])
+        with patch.object(Path, "home", return_value=home):
+            rebound_maintenance = REPAIR.plist_variant(original, values, clear_recovery=False,
+                                                        signed_launcher=new_launcher)
+        self.assertEqual(rebound["maintenancePlistSHA256"], REPAIR.digest(rebound_maintenance))
         self.assertEqual(plistlib.loads(plist.read_bytes())["ProgramArguments"], [str(new_launcher)])
+        self.assertEqual(plistlib.loads(plist.read_bytes())["EnvironmentVariables"][
+            "NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID"], self.expected["transitionID"])
+
+        original_atomic_replace = REPAIR.atomic_replace
+        for fail_at in (2, 3):
+            with self.subTest(crash_after_atomic_replace=fail_at):
+                sidecar.write_bytes(old_sidecar)
+                plist.write_bytes(old_staged)
+                calls = [0]
+
+                def crash_at_boundary(path, raw, mode):
+                    calls[0] += 1
+                    if calls[0] == fail_at:
+                        raise OSError("simulated crash at plist handoff boundary")
+                    original_atomic_replace(path, raw, mode)
+
+                with patch.object(Path, "home", return_value=home), patch.object(
+                        REPAIR, "api_plist_path", return_value=plist), patch.object(
+                        REPAIR, "verify_launchers", return_value=("a" * 64, new_launcher_sha)), patch.object(
+                        REPAIR, "configured_verifier", return_value=home / "verify-release"), patch.object(
+                        REPAIR, "release", return_value=old_release), patch.object(
+                        REPAIR, "atomic_replace", side_effect=crash_at_boundary):
+                    with self.assertRaisesRegex(OSError, "simulated crash"):
+                        REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-normal")
+                    REPAIR.advance_plist(journal, self.expected, manifest, self.key, "plist-normal")
+                self.assertEqual(REPAIR.read_plist_record(sidecar, self.key)["controllerSHA"],
+                                 self.expected["controllerSHA"])
+                self.assertEqual(plistlib.loads(plist.read_bytes())["ProgramArguments"], [str(new_launcher)])
+                self.assertEqual(plistlib.loads(plist.read_bytes())["EnvironmentVariables"][
+                    "NORN_RECOVERED_FORWARD_ACTIVATE_TRANSITION_ID"], self.expected["transitionID"])
 
     def test_plist_tamper_or_changed_transition_fails_closed(self):
         plist = self.directory / "com.norn.api.plist"

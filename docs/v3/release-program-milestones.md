@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 04:56 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 05:31 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,31 +20,33 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 04:56 UTC): A8 is signed, published, and
-verified on Mini. Its active A4 generation was last read at 03:48 UTC in
-`candidate-preservation-pending`; the 04:56 authenticated inventory confirms
-the API still answers and some workloads run, but queue, incidents, host, and
-Fleet surfaces returned 404 and remain unknown. Exact-source repair
-`2e8bd545` passed qualification and bundle preparation; protected run
-[42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675)
-still waits for owner approval. DO Norn/API and workload health are unverified:
-the latest platform release run was cancelled before steps, the latest
-protected state readback failed, and the current one-use approval is stale
-while the required readback enable variable is absent. All 26 checked-in
-offline statechart configurations pass their configured rules; this is
-protocol coverage, not live qualification. See [launch state](LAUNCH-STATE.md)
-and [launch history](LAUNCH-HISTORY.md) for exact receipts and timestamps.
+Current gate snapshot (2026-11-10 05:31 UTC): A8 is signed, published, and
+verified on Mini. The exact-source finalizer repair `2e8bd545` was approved,
+signed, and published immutably by run
+[42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675);
+its ARM64 bundle is imported and verified, but the helper rejects the existing
+A8-bound API launcher record. The active A4 generation remains
+`candidate-preservation-pending`, with its preservation receipt present and no
+finalization receipt. Authenticated health, version, and exact maintenance
+status passed at 05:31; the partial 05:10 inventory still has pending, dead,
+and unknown app/service records, with host, queue, incident, Fleet, release,
+and readiness endpoints unknown.
+DO Norn/API and workload health are unverified; the latest protected state
+readback failed its current-state/enablement gate. All 27 checked-in offline
+statechart configurations pass their configured rules; that is protocol
+coverage, not live qualification. See [launch state](LAUNCH-STATE.md) and
+[launch history](LAUNCH-HISTORY.md) for exact receipts and timestamps.
 
 ## Parallel workstreams
 
 | Workstream | Current evidence | Next proof |
 |---|---|---|
-| Protected platform release | A8 is signed, published, imported, and verified on Mini. Exact-source `2e8bd545` passed all 12 protected-master jobs and its pinned UI plus four bundles; publish run [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675) awaits exact-SHA owner approval. | Publish that immutable SHA after approval, then use its signed repair path on the existing Mini generation. Publication does not deploy it. |
-| Mini direct | The 03:48 read confirms the active generation is `candidate-preservation-pending` and preservation matched. At 04:56, authenticated `/api/health` still reports `ok`; `/api/version` reports A4 source SHA. The partial inventory has 19 of 30 app records running and healthy and 19 of 46 services passing; 27 service statuses are unknown. Capabilities, queue, incident, host, release, Fleet, and production-readiness routes returned 404 and remain unknown. API PID 93463 was present at 03:48; the host-agent label was absent and supervisor had no running PID. Workload recovery and finalization remain unverified. | After exact-source owner approval, publish the finalizer repair, resume the same generation, then verify migration/schema, normal API, host-agent, workload smoke, fresh host assurance, and terminal receipt. |
+| Protected platform release | A8 is signed, published, imported, and verified on Mini. Exact-source `2e8bd545` passed all 12 protected-master jobs and its pinned UI plus four bundles; owner-approved publish run [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675) produced an immutable release. Its ARM64 bundle is imported and verified; it has not been activated. The helper cannot consume the current A8-bound API record yet. | Merge and qualify the prior-controller handoff fix, then use its exact-generation finalizer path after rechecking live state. |
+| Mini direct | The 05:31 read confirms the same active A4 generation is `candidate-preservation-pending`; its journal and pointer hashes are recorded in [launch state](LAUNCH-STATE.md#mini-finalizer-controller-mismatch-found-same-generation-still-pending-2026-11-10-0531-utc). Authenticated health/version/maintenance status pass, but the imported 2e8 helper rejects the existing A8-bound launcher record. The 05:10 partial inventory has 19 of 30 app records healthy, two pending, one dead, and eight without Nomad status; 19 of 46 services pass and 27 are unknown. Host, queue, incident, release, Fleet, and readiness endpoints remain unavailable. Full workload recovery and finalization are unverified. | Merge and qualify the signed prior-controller rebind fix; then use the exact-generation finalizer and verify normal API activation, host-agent restoration, workload smoke, fresh host assurance, and terminal receipt. |
 | Existing DO Fleet | Latest platform release run [42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951) was cancelled before steps; last successful run [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022) is Nov 2. Protected state readback [42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657) failed; live Norn/API and workload health remain unverified. | Refresh and bind state, route, and host-key evidence; resolve the disabled readback gate, then obtain a current protected inventory before any release action. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | Workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending/held releases retain them. Store and replay recovery checks pass, but a fresh HTTP admission through real etcd with real signed qualification and owned serving-route evidence is not joined. There is no CLI command. Full executor/worker process recovery and live Nomad/ingress qualification remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, while capacity 4 reaches the modeled terminal receipt. | Join authenticated HTTP admission to real etcd, a real signed qualification, completed staging deployment, and control-owned active-route lineage. Then exercise lease/process loss and lost responses across stage/create/readback/bind/route/stop on a version-pinned disposable Nomad/ingress stack. Define recovery and retention for permanently held operations before live use; keep stateful compatibility separate. |
-| Offline state models | All 26 checked-in configurations were rerun on Nov 10. Every configured invariant passed; deadlock passed where enabled. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
+| Offline state models | All 27 checked-in configurations were rerun on Nov 10 with each config mapped to its owning TLA spec; every configured invariant passed and deadlock passed where enabled. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
 
 Mini is an independent node, not a Fleet member. DO staging is the only Fleet
 in this release program. Provider inventory, controller health, workload health,

@@ -2,10 +2,13 @@
 
 This bounded TLA+ model starts from the Mini's observed
 `candidate-preservation-pending` phase. It covers the separate finalization
-controller path: signed ancestry and candidate evidence gates, exact
-preservation receipt, Mini database-fence release, normal API restart and
-authenticated health/source/schema readback, host-agent restart intent and
-restart, and terminal receipt.
+controller path: verification of the prior signed API launcher binding,
+signed ancestry and candidate evidence gates, exact preservation receipt,
+Mini database-fence release, receipt-bound API plist and sidecar rebind,
+normal API restart and authenticated health/source/schema readback,
+host-agent restart intent and restart, and terminal receipt. The A8 launcher
+may remain bound while preservation runs; the finalizer controller replaces
+that binding only after the write fence is released and before normal restart.
 
 The source ranks abstract a signed Git ancestry proof:
 `AdoptionRank <= TransitionSourceRank <= CandidateRank`. The positive case uses
@@ -18,19 +21,25 @@ does not pass health verification.
 
 TLC results:
 
-- Valid lineage and healthy normal API: 52 states / 96 transitions.
-- Invalid adoption ancestry: 3 states / 5 transitions.
-- Invalid transition-to-candidate ancestry: 3 states / 5 transitions.
-- Normal API health unavailable: 25 states / 45 transitions.
+- Valid lineage, trusted prior controller and healthy normal API: 69 states / 151 transitions.
+- Invalid adoption ancestry: 6 states / 12 transitions.
+- Invalid transition-to-candidate ancestry: 6 states / 12 transitions.
+- Normal API health unavailable: 42 states / 100 transitions.
+- Untrusted prior controller binding: 3 states / 5 transitions.
 
-All six configured invariants and deadlock checks passed in all four cases.
+All seven configured invariants and deadlock checks passed in all five cases.
 Charts and reports are checked in beside each configuration. The chart keeps
 one representative process-stop/recovery path; TLC checks the other crash
-points too. The same journaled transition resumes from each durable phase.
+points too, including the plist-written/sidecar-old and rebound-sidecar/old
+maintenance-process seams. The same journaled transition resumes from each
+durable phase.
 
-The model abstracts signature verification, API token custody, the generation
-digest and one-use controller authorization, launchd process identity, SQL
-transaction durability, workload processes, and exact HTTP response schemas.
+The model abstracts signature cryptography and concrete release SHAs, API token
+custody, the generation digest and one-use controller authorization, exact
+launchd path/process identities, SQL transaction durability, workload
+processes, and exact HTTP response schemas. It distinguishes prior versus
+finalizer controller ownership and requires the verified pair before normal
+activation.
 The code regression
 `test_signed_descendant_can_finalize_when_journal_source_is_a_later_ancestor`
 checks the real signed-ancestor finalizer gate. The model does not establish
@@ -48,6 +57,6 @@ bun /Users/arti/.agents/skills/statechart/scripts/statechart.ts \
   --out "$PWD/reproduced-valid"
 ```
 
-Run the same command with `InvalidAdoption.cfg`, `InvalidCandidate.cfg`, or
-`NormalHealthUnavailable.cfg` to reproduce each hold scenario. Choose a new
-empty output directory for each run.
+Run the same command with `InvalidAdoption.cfg`, `InvalidCandidate.cfg`,
+`NormalHealthUnavailable.cfg`, or `UntrustedPriorController.cfg` to reproduce
+each hold scenario. Choose a new empty output directory for each run.

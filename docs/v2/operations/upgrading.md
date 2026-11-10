@@ -14,9 +14,13 @@ imported, and verified on Mini. The active generation
 `candidate-preservation-pending`, with its preservation receipt matched and
 catalog schema 52 present. The A4 API answers health, but the host-agent
 LaunchAgent and host supervisor are not running. Finalization is incomplete;
-exact-source ancestry repair `2e8bd545` has passed qualification and bundle
-builds, while protected signing/publication is awaiting owner approval. Follow
-the [current Mini recovery record](../../v3/LAUNCH-STATE.md#current-mini-recovery-status-2026-11-10-0348-utc).
+exact-source ancestry repair `2e8bd545547f4bfa375c68fac9be9667954276de` is
+published as an immutable signed release and imported with both artifact and
+external signature checks passed at 05:17 UTC; it has not been run on Mini.
+At 05:31, authenticated API/status reads were healthy, but the helper rejects
+the existing A8-bound API launcher record. Keep the generation fenced until a
+follow-on signed controller handles that exact prior-controller handoff. See
+the [current Mini recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-controller-mismatch-found-same-generation-still-pending-2026-11-10-0531-utc).
 Do not treat API health or catalog schema 52 as completion. In a direct upgrade with no retained
 recovery fence, the standard `upgrade` lane is contract-compatible after
 protected backup and exact-candidate private-shadow proof. The Mini currently
@@ -105,12 +109,11 @@ For the current Mini recovery, the published A8 controller release resumed the
 existing generation and reached preservation-pending. Do not invoke ordinary
 `upgrade`, create a new transition ID, restart the host agent by hand, or edit
 the journal. The signed-descendant finalization fix is exact source
-`2e8bd545547f4bfa375c68fac9be9667954276de`; its protected publish job must
-complete before the installed signed controller-repair path can resume the
-same generation. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#current-mini-recovery-status-2026-11-10-0348-utc)
-for approval and readback receipts. Each repair authorization must bind the
-current generation and journal digest; refresh it after a journal phase change.
-Publication alone does not authorize a transition or prove that Mini is ready.
+`2e8bd545547f4bfa375c68fac9be9667954276de`; its immutable release is published,
+imported, and verified but not run on Mini. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#mini-finalizer-controller-mismatch-found-same-generation-still-pending-2026-11-10-0531-utc)
+for publication and live-read receipts. Each repair authorization must bind
+the current generation and journal digest; refresh it after a journal phase
+change. Publication alone does not prove that Mini is ready.
 
 The signed recovery API launcher also checks the adopted baseline's Git
 ancestry. Set `NORN_PLATFORM_REPO` in the encrypted API environment to the

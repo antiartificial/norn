@@ -1,7 +1,8 @@
 # RecoveredForwardFinalize
 
-TLC reached 52 states and 96 steps. The chart draws 10 states and 12 arrows.
-The view hides 54 steps, so the chart does not draw them.
+TLC reached 69 states and 151 steps. The chart draws 10 states and 12 arrows.
+The chart does not draw 34 steps that stay in one chart state.
+The view hides 73 steps, so the chart does not draw them.
 
 ## Rules that hold
-TypeOK, WriteFenceReleaseRequiresSignedEvidence, FinalizationHoldKeepsOriginalFences, CandidateEvidenceHoldKeepsAgentFenced, AgentActivationRequiresVerifiedNormalAPI, TerminalReceiptRequiresFullReadback, NoDeadlock
+TypeOK, WriteFenceReleaseRequiresSignedEvidence, FinalizationHoldKeepsOriginalFences, CandidateEvidenceHoldKeepsAgentFenced, AgentActivationRequiresVerifiedNormalAPI, TerminalReceiptRequiresFullReadback, NormalAPIRequiresReboundController, NoDeadlock
