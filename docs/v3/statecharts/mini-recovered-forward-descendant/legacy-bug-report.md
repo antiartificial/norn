@@ -8,7 +8,7 @@ The shortest path has 3 steps:
 0. Recovery receipt verified; recovery release active
 1. check retained evidence and current signed lineage: First forward upgrade allowed
 2. promote the first signed descendant through the controller: Signed descendant active; recovery receipt retained
-3. check retained evidence and current signed lineage; upgrade held: Upgrade held by recovery lineage gate
+3. check retained evidence and current signed lineage; upgrade held: Upgrade held by operation-mode or recovery-lineage gate
 
 ## Rules that hold
 TypeOK, GateBindsRuntimeToSignedDescendant, UnrelatedReleaseCannotPassGate, RecoveryEvidenceIsNeverDiscarded, NoDeadlock

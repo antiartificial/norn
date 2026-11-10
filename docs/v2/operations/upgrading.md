@@ -64,16 +64,17 @@ norn platform queue-rollback <sha-prefix>
 norn platform queue-smoke
 ```
 
-The Mini's 2026-11-10 upgrade exposed a queue-specific gate: two queued upgrade
-attempts stopped before promotion with `Mini host agent is not stably running
-from the exact promoted release`, while the same signed platform controller
-completed from the direct `env-exec` lane and the durable queued smoke passed
-afterward. Treat this as an unresolved queued-upgrade controller issue. Before
-retrying a queued upgrade, inspect the terminal operation output and prove the
-current release and API health; never replay a failed operation's idempotency
-key. For a direct Mini upgrade, keep `NORN_DRAIN_MODE=fail`, use the exact
-signature-verified SHA, and invoke the managed controller through its
-authenticated environment wrapper. See the [incident and evidence record](../../v3/LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc).
+The Mini's 2026-11-10 later-upgrade attempts exposed two successive recovered-
+state gate mismatches. The `d414b3ab` attempt stopped because the completed
+journal helper still required the current link to equal the original recovery
+candidate. After that call was corrected, the `640b8b89` attempt passed fresh
+backup and shadow rehearsal but stopped because baseline validation's signed-
+descendant mode allowlist omitted `upgrade`. Both operations failed before
+promotion; the active release remains `2a2d712a`. The follow-up correction is
+not yet merged or qualified. Before retrying, require its exact signed release,
+take fresh backup and shadow evidence, and inspect the terminal operation;
+never replay a failed operation's idempotency key. See the [incident and
+evidence record](../../v3/LAUNCH-STATE.md#mini-queued-upgrade-recovery-gate-correction-2026-11-10-1050-utc).
 
 Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
 local development rehearsal but can move between review and upgrade.

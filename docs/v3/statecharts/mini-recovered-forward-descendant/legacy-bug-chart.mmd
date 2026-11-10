@@ -20,7 +20,7 @@ stateDiagram-v2
   s1: Signed but unrelated release active
   s2: First forward upgrade allowed
   s3: Signed descendant active#59; recovery receipt retained
-  s4: Upgrade held by recovery lineage gate
+  s4: Upgrade held by operation-mode or recovery-lineage gate
   [*] --> s0
   s0 --> s1: observe a signed release outside the recovery candidate's lineage
   s0 --> s2: check retained evidence and current signed lineage

@@ -8,7 +8,7 @@ export const state = (v: any) => {
     "upgrade-authorized": v.activeRelease === "descendant"
       ? "Later upgrade allowed from signed descendant"
       : "First forward upgrade allowed",
-    held: "Upgrade held by recovery lineage gate",
+    held: "Upgrade held by operation-mode or recovery-lineage gate",
   };
   return labels[v.phase] ?? String(v.phase);
 };
@@ -16,7 +16,9 @@ export const state = (v: any) => {
 export const step = (action: string, from: any, to: any) => {
   const labels: Record<string, string> = {
     CheckUpgradeGate: to.phase === "held"
-      ? "check retained evidence and current signed lineage; upgrade held"
+      ? (!from.modeAccepted && from.activeRelease === "descendant"
+          ? "request upgrade while the operation mode is not admitted"
+          : "check retained evidence and current signed lineage; upgrade held")
       : "check retained evidence and current signed lineage",
     PromoteFirstSignedDescendant: "promote the first signed descendant through the controller",
     RunUnrelatedSignedRelease: "observe a signed release outside the recovery candidate's lineage",
