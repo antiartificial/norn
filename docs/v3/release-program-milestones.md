@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 00:46 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 00:55 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,7 +20,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Latest gate update (2026-11-10 00:46 UTC): protected-master qualification for
+Latest gate update (2026-11-10 00:55 UTC): protected-master qualification for
 exact source `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
 [run 42729857751](https://github.com/antiartificial/norn/actions/runs/42729857751).
 The exact-source immutable release workflow
@@ -36,10 +36,13 @@ abstract and does not replace implementation refinement.
 The DO staging Fleet remains a separate test environment. Current protected
 `norn-fleet` main is `35e1c893198efbdc9e407d708e5096a32b485f7d`; merged PR #949
 records a repeated read-only staging plan proposing one management ingress
-firewall rule and confirming it is absent from versioned state. The latest
-staging drift workflow [42702422189](https://github.com/antiartificial/norn-fleet/actions/runs/42702422189)
-passed without mutation on Nov 9. These are not fresh Norn/API, control-store,
-or workload health receipts, so current DO runtime readiness remains unverified.
+firewall rule and confirming it is absent from versioned state. Staging-only
+plan [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
+completed at 00:55 UTC: one firewall create, 28 no-ops, zero node creation, and
+no apply. Earlier staging drift [42702422189](https://github.com/antiartificial/norn-fleet/actions/runs/42702422189)
+also completed without mutation on Nov 9. These are not fresh Norn/API,
+control-store, or workload health receipts, so current DO runtime readiness
+remains unverified.
 
 Norn PR #373 fixed the recovered-forward source-lineage verifier and merged at exact source
 `a4b9c3b313d65c8a054fb869b18455fde33d3a70`. Full protected-master
