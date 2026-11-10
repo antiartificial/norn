@@ -40,6 +40,16 @@ ObserveCurrent ==
                     ELSE IF nextSamples >= 5 THEN "held" ELSE "checking"
   /\ UNCHANGED <<source, schema, agentPID, childPID, candidateBytesMatch, promoted>>
 
+ObserveMissingAgent ==
+  /\ phase = "checking"
+  /\ samples < 5
+  /\ samples' = samples + 1
+  /\ stableSamples' = 0
+  /\ previousPID' = 0
+  /\ previousChildPID' = 0
+  /\ phase' = IF samples + 1 >= 5 THEN "held" ELSE "checking"
+  /\ UNCHANGED <<source, schema, agentPID, childPID, candidateBytesMatch, promoted>>
+
 LaunchdRestarts ==
   /\ phase = "checking"
   /\ agentPID' = IF agentPID = 1 THEN 2 ELSE 1
@@ -60,7 +70,7 @@ HeldWait == /\ phase = "held" /\ UNCHANGED vars
 AdmittedWait == /\ phase = "admitted" /\ UNCHANGED vars
 PromotedWait == /\ phase = "promoted" /\ UNCHANGED vars
 
-Next == ObserveCurrent \/ LaunchdRestarts \/ Promote \/ HeldWait \/ AdmittedWait \/ PromotedWait
+Next == ObserveCurrent \/ ObserveMissingAgent \/ LaunchdRestarts \/ Promote \/ HeldWait \/ AdmittedWait \/ PromotedWait
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==

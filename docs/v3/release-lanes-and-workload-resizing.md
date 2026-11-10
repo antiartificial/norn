@@ -1,22 +1,22 @@
 # V3 platform release lanes and workload resizing
 
-Status: operator guidance reconciled 2026-11-10 09:25 UTC against Norn `master` at
-`2a2d712a`. The authenticated workload-release producer exists as an opt-in
+Status: operator guidance reconciled 2026-11-10 12:01 UTC against Norn `master` at
+`34178b8b`. The authenticated workload-release producer exists as an opt-in
 staging API, but has not been deployed or live-qualified.
 The Mini is an independent node. The DigitalOcean (DO) work Fleet is the only
 Fleet and is a staging testbed intended to resemble production at lower scale.
 A successful soak or retained provider state is evidence for the run it covers;
 it does not prove that a service is healthy now.
 
-The Mini now runs signed platform release `2a2d712a`; the existing A4
+The Mini now runs signed platform release `34178b8b`; the existing A4
 recovered-forward generation remains `candidate-promoted`, catalog schema
-remains 52, and authenticated platform smoke passes. Two queued platform
-upgrade attempts stopped before promotion at the host-agent stability gate; the
-signed direct controller lane completed. A separate future-upgrade guard gap
-was found: later releases must be checked as signed Git descendants while API
-and host agent match the active SHA. Its code, offline regression, and
-statechart are prepared but not yet qualified or deployed; the queue-upgrade
-lane remains open.
+remains 52, and authenticated platform smoke plus host status/doctor pass. The
+direct controller upgrade completed. Three queued upgrade attempts stopped
+before promotion at the completed-recovery host-agent stability gate. Its exact
+operation-window cause remains unexplained. The offline statechart includes an
+absent-agent sample that resets the stability window; the current implementation
+still requires the LaunchAgent wrapper's direct child. The queue-upgrade lane
+remains open.
 Workload admission and resizing were not tested, and workload health remains a
 separate claim. See the [latest launch evidence](LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc).
 
@@ -24,7 +24,7 @@ separate claim. See the [latest launch evidence](LAUNCH-STATE.md#mini-direct-v3-
 
 | Lane | Use | Current mechanism | Availability and recovery |
 |---|---|---|---|
-| Mini direct | Upgrade the independent Mini; deploy its app workloads from GitHub through Norn | Signed platform release and installed Mini upgrade controller. The active `2a2d712a` build includes push-commit-SHA pinning for GitHub/Gitea webhooks, but a fresh Mini push-to-deployment receipt and workload operation were not qualified. See [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 baseline transition completed with schema 51 and writer floor 33. On Nov 10, the signed direct controller lane promoted `2a2d712a`; schema stayed at 52, the earlier A4 recovery generation remained `candidate-promoted`, and platform plus queued smoke passed. Signed `d414b3ab` and `640b8b89` were published, but two queued attempts stopped before promotion on separate recovered-state guards. The second candidate passed a fresh exact-source backup and signed-shadow rehearsal; its operation exposed that baseline validation omitted `upgrade` from the signed-descendant mode allowlist. A follow-up regression fix is in review; it needs exact-SHA qualification/signing, another fresh backup/shadow, and a successful new queued operation. Workload health remains mixed and workload admission/resize remain separate gates. See [latest launch evidence](LAUNCH-STATE.md#mini-subsequent-upgrade-guard-is-being-corrected-2026-11-10-0955-utc). Mini remains independent of the DO Fleet. |
+| Mini direct | Upgrade the independent Mini; deploy its app workloads from GitHub through Norn | Signed platform release and installed Mini upgrade controller. The active `34178b8b` build includes push-commit-SHA pinning for GitHub/Gitea webhooks, but a fresh Mini push-to-deployment receipt and workload operation were not qualified. See [Mini Git-to-controller workload path](#mini-git-to-controller-workload-path). | The Nov 7 baseline transition completed with schema 51 and writer floor 33. On Nov 10, the direct controller lane promoted `2a2d712a`, then advanced to signed `34178b8b`; schema stayed at 52 and platform smoke, host status, and doctor passed. Three queued upgrades stopped before promotion at the completed-recovery host-agent stability check; the latest receipt reported no child under the LaunchAgent wrapper. The direct success does not qualify queued upgrades. The cause remains unexplained; the offline model now covers an absent-agent stability reset. Workload health remains mixed and admission/resize remain separate gates. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc). Mini remains independent of the DO Fleet. |
 | DO Fleet Norn release | Change Norn API/UI on the existing three-control DO Fleet | `work-staging-norn-release.yml`; exact publisher artifacts, fresh protected state readback, host key receipt, all-member staging, all-stop, target promotion, singleton verification, then durable pin update | Deliberate maintenance interruption. Forward-only recovery resumes the same target. Never restart old bytes after any target starts. |
 | Fleet bootstrap | Create or recreate a Fleet | Protected provider `plan.yml`/`apply.yml`, then post-create reconciliation and Ansible. Protected `norn-fleet` main at `35e1c893` declares the existing DO staging shape: 3 control, 2 ingress, 4 app Droplets; the 18:58 UTC provider readback matched that shape. The current staging config remains one app pool (`workload: app`). Main supports a future two-pool General + Stateful role pair with stable IDs `general` and `stateful`, but no fresh-Fleet config exists yet; sizing, capacity, cost envelope, placement, and stateful recovery remain open. Do not conflate this with staging or Genesis, which installs a dormant controller on an existing Fleet without creating provider resources. See the [topology source audit](staging-topology-source-audit-2026-11-08.md). | Infrastructure lifecycle work, separate from platform release. The provider apply is not live-qualified for the future profile: joined persistent apply/recovery, exact provider identities, per-service secret lifecycle, actual DO grant evidence, post-create bootstrap, and terminal receipt remain open. |
 | Workload resize/release | Add or remove application capacity or release a new application version | Fixed-image replica scaling and node-pool capacity are separate from the M5 mixed-version controller. The staging-only authenticated admission API accepts a signed V3 qualification ID and target replica count, then derives current policy, Fleet placement, active route, Nomad lineage, app source and encrypted SOPS snapshot. Accepted recovery input now pins the exact job-driving app spec plus encrypted SOPS bytes in a key-ring envelope; worker target construction no longer needs the current checkout. | The API is opt-in and not deployed or live-qualified. Offline acceptance/recovery evidence now includes store/worker tests and a real-etcd acceptance/open integration test. Full production executor/worker restart recovery, private-input retention/deletion, production-store process/lease crash matrix, and disposable Nomad/ingress qualification remain open. Live canary and stateful data-compatibility qualification are also open. Route-proof loss holds progress and requires fresh same-generation readback. Norn control binaries stay fixed unless separately released. |

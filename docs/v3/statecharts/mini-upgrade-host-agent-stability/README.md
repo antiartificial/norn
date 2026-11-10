@@ -17,11 +17,15 @@ bun /Users/arti/.codex/skills/statechart/scripts/statechart.ts \
   --out "$PWD/reproduced-output"
 ```
 
-The model checks that admission requires three stable parent/child process
-samples and that exhausting the sample budget leaves the active source and
-schema untouched. It abstracts the candidate byte comparison as successful,
-signature and Git ancestry checks, actual launchd behavior, process IDs, host
-API evidence, and all work after admission. The chart hides some launchd
+The model checks that admission requires three stable launchd/agent process
+samples, a missing agent resets the stability window, and exhausting the sample
+budget leaves the active source and schema untouched. The current implementation
+checks the LaunchAgent wrapper's direct child. The latest queued operation
+reported no child for its bounded stability window, while a later idle readback
+found the managed agent running. The model represents the missing-agent case
+but abstracts the process-tree lookup, candidate byte comparison, signature
+and Git ancestry checks, actual launchd behavior, host API evidence, and all
+work after admission. The chart hides some launchd
 restart and repeated-sample transitions that do not change the reader-visible
 sample count. TLC checks safety invariants and deadlock; the model does not
 prove eventual admission or controller/runtime refinement.

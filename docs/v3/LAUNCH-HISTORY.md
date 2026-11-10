@@ -1,5 +1,33 @@
 # Norn v3 launch history
 
+## Successor release published; direct Mini upgrade completed, queued path unresolved (2026-11-10 12:01 UTC)
+
+PR #401 merged as `34178b8b90d52a2fa3f138ffae2dfc63744197e1`. Exact-source
+qualification [42809544343](https://github.com/antiartificial/norn/actions/runs/42809544343)
+passed all 12 jobs, and protected release run
+[42810147654](https://github.com/antiartificial/norn/actions/runs/42810147654)
+published the immutable signed release with 16 assets. On Mini, passive
+preflight passed. A fresh protected backup and signed shadow passed with 68
+tables, 404,527 rows, ledger 1–52, 66 fingerprinted application tables, and no
+source mutations.
+
+Fresh queued operation `e41badb6-b178-451c-a450-86f367864dc7` failed before
+promotion at the completed-recovery host-agent check. Its receipt identified
+`LaunchAgent wrapper has no child process`; the Mini remained on
+`2a2d712a`, schema 52, with API health `ok` and mutation fence inactive. An
+idle process readback subsequently found the managed agent under its wrapper.
+The operation-window disappearance remains unexplained. The offline statechart
+now models an absent-agent sample resetting the stability window, but this
+does not identify or repair the runtime cause.
+
+The same exact release was then promoted through the documented direct
+controller lane. It preserved 7 queued Fleet dispatch receipts, kept schema 52
+unchanged, and reported successful API activation. Authenticated platform
+smoke passed health, operation drain, releases, events, and platform checks;
+host status showed API, host-agent, Nomad, Consul, and supervisor up; host
+doctor passed. This demonstrates the Mini direct lane only. The queued upgrade
+failure remains open.
+
 ## Successor release qualified; queued Mini upgrade held before promotion (2026-11-10 11:26 UTC)
 
 PR #400 merged at `1b2dc22973ad22a6ea92ceb866273cab6300821b`. Protected exact-

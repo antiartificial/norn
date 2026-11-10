@@ -9,14 +9,19 @@ DO Norn release protocol is all-stop and forward-only. Mixed-version Norn
 control upgrades are not qualified. Mini is an independent node, not a Fleet
 member. Its API uses the `norn.startup/v2` contract with reader/writer floors
 5/33 and catalog schema 52. The signed platform release
-`2a2d712a7484b0d7ee82036ccc8d077d1ffc8697` is now active on Mini after a
+`34178b8b90d52a2fa3f138ffae2dfc63744197e1` is now active on Mini after a
 successful direct controller upgrade. The existing recovered-forward
 generation `gen-1a769550b1051bc9358ce8e8758265e5` remains `candidate-promoted`
 with its A4 recovery candidate; the forward upgrade preserved that evidence
 and did not advance the schema beyond 52. Authenticated platform smoke passes.
+Host status and host doctor also pass. Three durable queued upgrades stopped
+before promotion at the completed-recovery host-agent stability check. The
+offline model now covers an absent-agent sample, but the operation-window
+host-agent disappearance remains unexplained. Queued upgrades
+remain unqualified even though the direct lane now runs `34178b8b`.
 The inventory still contains stopped/unhealthy apps and unknown background
 services, so platform health is not a claim that every workload is healthy.
-See the [Mini upgrade and recovery record](../../v3/LAUNCH-STATE.md#mini-direct-v3-platform-upgrade-completed-2026-11-10-0925-utc).
+See the [current Mini status](../../v3/LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc).
 
 The retained failed-transition sentinel means every later forward upgrade must
 verify the completed recovered-forward journal, its signed evidence, and the
@@ -64,17 +69,7 @@ norn platform queue-rollback <sha-prefix>
 norn platform queue-smoke
 ```
 
-The Mini's 2026-11-10 later-upgrade attempts exposed two successive recovered-
-state gate mismatches. The `d414b3ab` attempt stopped because the completed
-journal helper still required the current link to equal the original recovery
-candidate. After that call was corrected, the `640b8b89` attempt passed fresh
-backup and shadow rehearsal but stopped because baseline validation's signed-
-descendant mode allowlist omitted `upgrade`. Both operations failed before
-promotion; the active release remains `2a2d712a`. The follow-up correction is
-not yet merged or qualified. Before retrying, require its exact signed release,
-take fresh backup and shadow evidence, and inspect the terminal operation;
-never replay a failed operation's idempotency key. See the [incident and
-evidence record](../../v3/LAUNCH-STATE.md#mini-queued-upgrade-recovery-gate-correction-2026-11-10-1050-utc).
+The Mini's 2026-11-10 later-upgrade attempts exposed successive recovered-state gate mismatches. The `d414b3ab` and `640b8b89` attempts stopped before promotion at evidence-verification checks. The `1b2dc229` follow-up passed exact-source qualification and fresh backup/shadow rehearsal, but two queued operations failed before promotion at the host-agent stability check. A later signed release `34178b8b` passed those preflight/backup/shadow gates; its queued operation reported `LaunchAgent wrapper has no child process`. The Mini was then upgraded successfully to `34178b8b` through the direct controller lane, with schema unchanged at 52. This does not resolve or qualify the queued upgrade path. The offline statechart covers absent-agent reset behavior, but neither a code fix nor a root cause is established. Before another queued attempt, use a fresh signed release and exact-candidate backup/shadow, then inspect the terminal receipt; never replay a failed operation's idempotency key. See the [current incident and evidence record](../../v3/LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc).
 
 Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
 local development rehearsal but can move between review and upgrade.
