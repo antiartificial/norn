@@ -22,9 +22,11 @@ program milestones for current gate disposition; [execution milestones](executio
 retain the earlier M0–M9 plan and are historical context unless a current gate
 explicitly links to them. The proposal and older dated handoffs preserve
 rationale and historical state.
-The direct Mini v3 upgrade completed on 2026-11-07; PR [#298](https://github.com/antiartificial/norn/pull/298)
-fixed a PID-reuse race found during controller recovery. DO staging Fleet
-qualification remains separate and incomplete.
+The Mini's first direct V3 upgrade completed on 2026-11-07; on 2026-11-10 it
+advanced to signed release `34178b8b` through the direct controller lane. The
+API, platform smoke, host status, and host doctor pass; the separate queued
+upgrade path remains unresolved. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc).
+DO staging Fleet qualification remains separate and incomplete.
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 

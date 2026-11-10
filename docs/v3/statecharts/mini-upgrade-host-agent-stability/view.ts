@@ -13,6 +13,7 @@ export const state = (v: any) => {
 export const step = (action: string) => {
   const labels: Record<string, string> = {
     ObserveCurrent: "sample the same LaunchAgent process",
+    ObserveMissingAgent: "agent is absent; reset the stability window",
     LaunchdRestarts: "Launchd replaces the process between samples",
     Promote: "allow the upgrade path after three stable samples",
   };
