@@ -2,7 +2,7 @@
 
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
-## Current V3 release readiness (2026-11-10 00:46 UTC)
+## Current V3 release readiness (2026-11-10 00:55 UTC)
 
 Protected-master qualification for exact source
 `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
@@ -13,7 +13,14 @@ recovery path. Exact-source immutable release preparation is running as
 Authorization, pinned UI, and all four bundle jobs passed; the protected
 signing/publish job is waiting for environment approval. It is not signed or
 published. Publication still requires approval for this exact source. No new
-Mini or DO operation has occurred.
+Mini operation has occurred since the 00:33 post-stop inventory. A new
+staging-only read-only DO plan completed at
+[run 42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
+on `norn-fleet` main `35e1c893198efbdc9e407d708e5096a32b485f7d`. Its private
+summary reports one create (`digitalocean_firewall.management_ingress_runtime[0]`),
+28 no-op resources, and zero new nodes. It was plan-only; no provider apply or
+Fleet change occurred. This does not establish current DO Norn/API, control-
+store, or workload health.
 
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
 source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
