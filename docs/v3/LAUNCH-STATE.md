@@ -242,10 +242,30 @@ data without mutating the source, add deterministic fixture coverage, then use
 a fresh one-use readback authorization. DO services, etcd quorum, Nomad,
 Consul, routes, and workload response remain unverified; provider inventory
 and SSH reachability are not service-health proof. Fleet PR #969's LaunchAgent
-CA persistence fix passed its original exact-head validation; after GitHub
-required its branch to catch up with `main`, its updated exact-head contract
-run is in progress. Fleet PR #970 contains the stable-copy fix for this
-readback failure; its exact-head contract run is in progress.
+CA persistence fix passed exact-head validation and merged. Fleet PR #970's
+stable-copy fix passed exact-head contract validation and merged; the
+successful protected Genesis readback is recorded below.
+
+## DO Genesis readback completed (2026-11-10 20:48 UTC)
+
+Fleet PR [#970](https://github.com/antiartificial/norn-fleet/pull/970)
+merged as `17ce50edeef75d0d2330bfd79ff6ed90786bc440`. Its protected,
+state- and host-key-bound readback run
+[42898054171](https://github.com/antiartificial/norn-fleet/actions/runs/42898054171)
+passed. The controller checked out the exact merged source, validated the
+original private inputs and management/control SSH transport, then read the
+Genesis intent and dormant journal from a stable private SQLite copy including
+the committed WAL sidecar. The Ansible recap was `changed=0`, with no failed or
+unreachable hosts; the one-use runner was retired and the controller receipt
+reconciled to terminal.
+
+This closes the Genesis journal readback gate and confirms the journal records
+an approved signed release intent. It is readback evidence only: it does not
+prove the Genesis service is installed/active, the V3 platform API or cluster
+services are healthy, or an application workload responds. DO platform release
+postflight and workload qualification remain open; do not call the staging
+Fleet online until those live checks pass. The Mini remains an independent
+direct lane and is not part of this Fleet status.
 
 ## Release timing
 
