@@ -1,5 +1,17 @@
 # Norn v3 launch history
 
+## Focused offline release models rerun (2026-11-10 01:05 UTC)
+
+Nine TLC configurations across eight protocols reproduced on the current tree:
+Mini recovery (90 states / 179 transitions), workload capacity four (103 / 275)
+and three (24 / 52), General + Stateful fresh pools (45 / 98), nine-node
+staging recovery (102 / 210), existing DO release (299 / 1,036), proposed
+online Norn upgrade (97 / 251), existing-Fleet Genesis (69 / 107), and Genesis
+source-readback gate (18 / 52). All configured invariants and deadlock checks
+passed. Outputs stayed under `/tmp`; no provider or host action occurred. These
+bounded checks do not prove implementation refinement, secret lifecycle,
+provider effects, runtime health, or live Nomad placement.
+
 ## DO staging plan refreshed without provider mutation (2026-11-10 00:55 UTC)
 
 Protected `norn-fleet` main `35e1c893198efbdc9e407d708e5096a32b485f7d`
@@ -7,10 +19,12 @@ completed staging-only read-only plan
 [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397).
 The private plan summary reported one create for
 `digitalocean_firewall.management_ingress_runtime[0]`, 28 no-op resources,
-and zero newly created nodes. No provider apply ran. This repeats the ingress
-firewall proposal recorded in PR #949; it does not prove live Norn API, etcd,
-Nomad/Consul, or workload health. Staging remains the DO testbed and is
-separate from the independent Mini. No production environment was selected.
+and zero newly created nodes. The firewall attaches to two ingress Droplets
+and allows TCP 18082 for the observer and 18083 for the publisher from the
+management runner's private `/32`. No provider apply ran. This repeats the ingress firewall proposal recorded in
+PR #949; it does not prove live Norn API, etcd, Nomad/Consul, or workload
+health. Staging remains the DO testbed and is separate from the independent
+Mini. No production environment was selected.
 
 ## Mini recovery statechart aligned to observed fence and schema (2026-11-10 00:46 UTC)
 
