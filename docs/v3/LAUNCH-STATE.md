@@ -19,8 +19,8 @@ staging-only read-only DO plan completed at
 on `norn-fleet` main `35e1c893198efbdc9e407d708e5096a32b485f7d`. Its private
 summary reports one create (`digitalocean_firewall.management_ingress_runtime[0]`),
 28 no-op resources, and zero new nodes. The firewall attaches to the two
-ingress Droplets and allows TCP 18082 and 18083 from the management runner's
-private `/32`. It was plan-only; no provider apply or Fleet change occurred.
+ingress Droplets and allows TCP 18082 (observer) and 18083 (publisher) from
+the management runner's private `/32`. It was plan-only; no provider apply or Fleet change occurred.
 This does not establish current DO Norn/API, control-store, or workload health.
 
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
