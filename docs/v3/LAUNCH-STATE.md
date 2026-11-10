@@ -27,6 +27,15 @@ ingress Droplets and allows TCP 18082 (observer) and 18083 (publisher) from
 the management runner's private `/32`. It was plan-only; no provider apply or Fleet change occurred.
 This does not establish current DO Norn/API, control-store, or workload health.
 
+The protected Genesis readback cannot use the earlier owner approval: the
+current `work-staging` state snapshot input digest is
+`8cf77ae4f5ea5729a8aecde21fe05f82ca36066f66663f2bb5fe3ef14b19060c`, while
+that approval named `4c43bae56dc9e6c9d624f729dc4398d810043c7f4344df0975637a268c1a00cd`.
+The member known-hosts digest is unchanged, but the Genesis readback enable
+variable is absent and its workflow fails closed. No new intent or dispatch
+was created. The configured input digest is not a live provider-state readback;
+refresh and review the exact inputs before another one-use protected request.
+
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
 source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
 qualification [42713422353](https://github.com/antiartificial/norn/actions/runs/42713422353)
