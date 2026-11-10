@@ -1,8 +1,8 @@
 # V3 release fitness and controller plan
 
 Status: proposed execution order, reconciled against repository, provider-source,
-and authenticated Mini evidence on 2026-11-10 12:01 UTC. This plan authorizes no
-deployment or provider mutation.
+and authenticated Mini and DO provider evidence on 2026-11-10 14:58 UTC. This
+plan authorizes no deployment or provider mutation.
 
 The goal is to release Norn V3 through repeatable controllers with a small,
 reviewable operator decision, complete input accounting, deterministic offline
@@ -21,9 +21,9 @@ into a pass. Do not dispatch a write workflow until its preceding gate passes.
 
 | Area | Reconciled status | What remains unproven |
 |---|---|---|
-| Mini direct V3 | The independent Mini now runs signed release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52, after a successful direct controller upgrade. Authenticated platform smoke, host status, and host doctor pass; the completed recovery generation remains preserved. | Workload health remains mixed. Three queued upgrades failed before promotion at the host-agent stability gate; its operation-window cause is unexplained. An offline model covers absent-agent reset behavior, but does not prove or repair the runtime issue. Direct success does not prove queued upgrade, online mixed-version upgrade, workload admission, resize, or production readiness. See [current Mini status](LAUNCH-STATE.md#current-mini-status-2026-11-10-1201-utc). |
-| DO staging Fleet | Historical evidence includes the completed 72h35m soak and provider inventory of the nine-node staging topology. The latest DO evidence recorded in the launch ledger is a plan-only run and a protected state readback hold; neither changed infrastructure. | Current DO Norn/API, etcd, Nomad/Consul, route, and workload health remain unverified. The latest readback is not bound to current state and its enable gate is absent. Historical provider state and soak are not runtime proof. See [current DO staging evidence](LAUNCH-STATE.md#current-do-staging-fleet-evidence-2026-11-10-0323-utc). |
-| DO Genesis/readback | The protected path remains fail-closed. Readback run [42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657) fetched current protected backend state but failed because its bytes differed from the owner-reviewed digest. The latest Mini-reported Fleet API view contains only configured topology and historical read-only plans, not current provider or node health. | Refresh and bind exact state digest, lineage/serial, route, and host-key receipts; restore the protected readback enablement; then obtain current read-only evidence under a fresh one-use intent. Do not treat a successful connection to pinned addresses as current provider identity. |
+| Mini direct V3 | The independent Mini now runs signed release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52, after a successful direct controller upgrade. Authenticated platform smoke, host status, and host doctor pass; the completed recovery generation remains preserved. | Workload health remains mixed. Three queued upgrades failed before promotion at the host-agent stability gate; its operation-window cause is unexplained. An offline model covers absent-agent reset behavior, but does not prove or repair the runtime issue. Direct success does not prove queued-upgrade recovery or Mini Git-driven workload admission. Workload resize is not a Mini lane. See [current Mini status](LAUNCH-STATE.md#current-mini-status-2026-11-10-1240-utc). |
+| DO staging Fleet | A 14:53 UTC `doctl --context work` inventory found all eleven staging Droplets active: two management, three control, two ingress, four app. The completed 72h35m soak remains historical qualification evidence. | Current DO Norn/API, etcd, Nomad/Consul, route, and workload health remain unverified. Provider-active state and historical soak are not runtime proof. See [current DO staging evidence](LAUNCH-STATE.md#current-do-staging-fleet-status-2026-11-10-1458-utc). |
+| DO Genesis/readback | The protected readback is enabled but remains fail-closed. Runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033) and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445) verified backend bytes, serial-22-to-23 route continuity, and effective Ansible transport, then failed installed-source verification before reading Genesis data. | Install and verify the reviewed controller source with services dormant, admit the bootstrap through the signed effect controller, and obtain fresh state/route/host-key-bound receipts before new readback. Bootstrap is disabled; do not bypass either gate. |
 | Fresh DO Fleet | The last recorded protected source check supports General and Stateful as future fresh-Fleet app-pool roles (`general`, `stateful`). Current DO staging remains one app pool; no fresh two-pool provider profile is configured. | Sizing, capacity, cost, placement, stateful recovery, exact provider identity, integrated persistent apply/recovery, bootstrap, and terminal receipt remain open. The owner-attested scope contract is offline evidence and does not prove actual grants on the runner token. Per-service credential lifecycle is incomplete; persistent staging has no whole-Fleet destroy lane. Genesis installs on existing infrastructure and does not create provider resources. |
 | DO Norn release | The protected release runbook defines an all-stop, forward-only platform release path with exact artifacts, state, host keys, and a one-use runner. The latest recorded release run was cancelled before executing release steps. | Current health, fresh Genesis readback, a current end-to-end release receipt, and mixed Norn control-version operation remain unqualified. |
 | Workload changes | Replica scale 2→3→2, app-node drain, and the 72h35m soak are historical evidence. Admission replay, successor-claim recovery, accepted-source/SOPS pinning, and receipt-bound encrypted-input cleanup have offline and real-etcd coverage at separate boundaries. All 30 checked-in statechart configurations were rerun on 2026-11-10: 28 passed; the two intentionally buggy Mini descendant configs reproduced their expected hold. The corrected Mini model passed its configured rules, including the new operation-mode gate. | Fresh authenticated HTTP admission joined to real etcd, real signed qualification and active-route lineage is open, as are full worker/controller process recovery, delayed production-driver behavior, live Nomad/ingress qualification, and mixed-version rollout on DO. Stateful writer/schema/data compatibility remains separate. |
@@ -58,12 +58,12 @@ does not identify whether the capability commit or target commit is missing.
 receipts or `held` with exact failing probes and no mutation. The soak is shown
 as completed qualification evidence, not as present-tense health.
 
-Current state: the soak is complete and explicit-context provider inventory
-matches current main topology, but protected state identity and DO API/runtime
-health are unconfirmed. The local `norn-pilot` `doctl` context belongs to a
-different account; read-only inventory used explicit `work` context. Post-fix
-Genesis readback is held on source-object availability. The latest run used
-Oct 21 state/route files and failed read-only before any Genesis effect.
+Current state: the soak is complete. A fresh explicit-context provider
+inventory found eleven active staging Droplets, but protected DO API/runtime
+health remains unconfirmed. The local `norn-pilot` `doctl` context belongs to a
+different account; read-only inventory used explicit `work` context. The latest
+Genesis readbacks failed installed-source verification before reading Genesis
+data; see the launch ledger for exact runs and the current bootstrap hold.
 
 The local Fleet source now distinguishes “target commit absent” from
 “capability commit absent” in this pre-effect check, with synthetic regression

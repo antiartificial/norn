@@ -57,6 +57,44 @@ Queue-based upgrade, controller-mediated new workload admission, and workload
 resize remain open gates. See [launch history](LAUNCH-HISTORY.md) for direct
 upgrade evidence and the dated failure sequence.
 
+## Current DO staging Fleet status (2026-11-10 14:58 UTC)
+
+A read-only `doctl --context work` inventory at 14:53 UTC reported all eleven
+staging Droplets active in `nyc3`: two management nodes, three controls, two
+ingress nodes, and four app nodes. The `norn-pilot` context is a different DO
+account and does not contain this Fleet. These checks prove provider instance
+state only. They do not prove Norn API, etcd, Nomad, Consul, route, or workload
+health.
+
+Genesis readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
+and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
+verified exact backend bytes, the serial-22-to-23 route continuity, and
+effective Ansible transport, then failed installed-source verification before
+reading Genesis data. The management controller is still pinned to
+`2de3cbd832688a06fc549ec68172145dca4404fc`; PR #957's bounded retry did not
+fix the installed-source failure. Genesis units remain disabled. The protected
+Genesis readback variable is `true`, but it does not bypass source verification.
+
+Fleet PR [#959](https://github.com/antiartificial/norn-fleet/pull/959) merged
+as `7f6433b06030d87726aa4055b7ff7b5bfa963f2b`. It adds exact route-continuity
+proof and deterministic generation of the controller source archive and
+private install vars. Bootstrap run
+[42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029)
+was canceled while queued, before its first step, because no matching protected
+Linux effect runner was registered. The controller's signed-effect allowlist
+does not admit this bootstrap workflow yet. The bootstrap enable flag is
+`false`; no host installation occurred.
+
+## Release timing
+
+No V3 launch date is committed. The remaining launch gates are controller
+admission and source verification for DO Genesis, an end-to-end DO platform
+release and postflight, DO-only workload admission and resize qualification,
+fresh-Fleet provider recovery, and Mini queued-upgrade recovery. The Mini direct
+platform upgrade is complete, but its workload health and Git-driven workload
+admission remain separate open items. Do not treat provider-active Droplets or
+the historical soak as a release date or a current service-health claim.
+
 ## Historical snapshot (2026-11-10 10:50 UTC; superseded)
 
 ## Mini queued upgrade recovery-gate correction (2026-11-10 10:50 UTC)
