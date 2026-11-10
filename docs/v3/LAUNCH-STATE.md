@@ -52,6 +52,23 @@ the recovered-forward directory. The authenticated Mini source and schema
 readbacks were performed through the existing controller; no DO Fleet changes
 were made.
 
+## Current DO staging Fleet evidence (2026-11-10 03:23 UTC)
+
+Current DO Norn/API and workload health are still unverified. In
+`antiartificial/norn-fleet`, the latest `work-staging-norn-release` run,
+[42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951),
+was cancelled before its release job ran any steps; the latest successful
+release run is [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022)
+from Nov 2. The latest protected state readback attempt,
+[42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657)
+on Nov 5, failed while pulling current protected backend state and comparing
+the privately retained bytes. The current one-use approval digest does not
+match the configured state input, and the Genesis readback enable gate is
+absent; no fresh intent or readback dispatch was created. The Nov 10 provider
+plan [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
+was plan-only and made no provider changes. The successful Nov 9 drift run
+also made no changes; neither proves current Norn service health.
+
 ## Mini direct V3 upgrade status (baseline launched 2026-11-07)
 
 ## Historical V3 release readiness snapshot (2026-11-10 01:52 UTC)

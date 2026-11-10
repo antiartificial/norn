@@ -26,6 +26,19 @@ day. The timeout does not prove the droplets are down; it means current Norn
 service health is unconfirmed. Public ingress does not route the private Fleet
 API, so use the protected private inventory for a live health claim.
 
+As of 03:23 UTC on Nov 10, the latest `work-staging-norn-release` run
+([42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951))
+was cancelled before its release job ran; the last successful run is
+[41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022)
+from Nov 2. The latest protected state readback
+([42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657))
+failed while comparing the current protected backend state with retained
+private bytes. The Nov 10 provider plan
+([42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397))
+was plan-only. These workflow results do not establish current Norn/API or
+workload health; obtain a fresh protected private inventory before claiming the
+DO staging Fleet is online.
+
 ## Mini Git-to-controller workload path
 
 The documented operator path for a configured app is `norn deploy APP COMMIT_SHA`.
