@@ -4012,11 +4012,34 @@ PY
   log "recovered baseline adoption receipt recorded; preservation remains unproven"
 }
 
+recovered_forward_current_signed_descendant_sha() {
+  local recovery_candidate="$1" active_release active_sha
+  [[ "$recovery_candidate" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ -L "$current_link" ]] || return 1
+  active_release="$(python3 - "$current_link" "$releases" <<'PY'
+import os, re, sys
+current, root = map(os.path.realpath, sys.argv[1:])
+sha = os.path.basename(current)
+if (not re.fullmatch(r"[0-9a-f]{40}", sha)
+        or current != os.path.join(root, sha)):
+    raise SystemExit(1)
+print(current)
+PY
+)" || return 1
+  active_sha="$(release_sha "$active_release")" || return 1
+  [[ "$active_sha" =~ ^[0-9a-f]{40}$ && "$(basename "$active_release")" == "$active_sha" ]] || return 1
+  verify_release "$active_release" "$active_sha" >/dev/null || return 1
+  [[ -n "$release_verify_hook" && -x "$release_verify_hook" ]] || return 1
+  "$release_verify_hook" "$active_release" "$active_release/release.json" >/dev/null || return 1
+  git -C "$repo" merge-base --is-ancestor "$recovery_candidate" "$active_sha" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$active_sha"
+}
+
 recovered_forward_completed_candidate_validate() {
   # The validator inspects the journaled recovery candidate, while the caller
   # still needs its requested forward-upgrade release and SHA after this check.
   local fields transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha release
-  local token health_json version_json schema_json expected_version version_file schema_file verifier
+  local token health_json version_json schema_json expected_version version_file schema_file verifier active_sha active_release
   fields="$("$script_dir/mini-recovered-forward-completed-gate" "$recovered_journal_path" "$current_link" "$releases" "$recovered_preservation_receipt")" || fail "completed recovered-forward file bindings do not verify"
   IFS=$'\t' read -r transition source candidate evidence evidence_sha backup_proof backup_artifact shadow_receipt preservation_sha <<<"$fields"
   if [[ "$recovered_selected_generation_kind" == generation ]]; then
@@ -4040,23 +4063,25 @@ recovered_forward_completed_candidate_validate() {
   [[ -n "$release_verify_hook" && -x "$release_verify_hook" ]] || fail "signed external release verification is required for completed recovery"
   "$release_verify_hook" "$releases/$source" "$releases/$source/release.json" || fail "recovered-forward source signature verification failed"
   "$release_verify_hook" "$release" "$release/release.json" || fail "recovered-forward candidate signature verification failed"
+  active_sha="$(recovered_forward_current_signed_descendant_sha "$candidate")" || fail "current Mini release is not a signed Git descendant of the completed recovered-forward candidate"
+  active_release="$(cd -P "$current_link" >/dev/null 2>&1 && pwd -P)" || fail "current signed Mini release path is unavailable"
   verifier="$script_dir/mini-recovered-forward-verify-evidence"
   [[ -x "$verifier" ]] || fail "recovered-forward signed evidence verifier is unavailable"
   [[ "$(NORN_AUDIT_SIGNING_KEY="${NORN_AUDIT_SIGNING_KEY:-}" "$verifier" "$evidence" "$evidence_sha" "$transition" "$source" "$candidate" "$backup_proof" "$backup_artifact" "$shadow_receipt")" == "verified" ]] || fail "recovered-forward signed source evidence no longer verifies"
   token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
   [[ -n "$token" ]] || fail "completed-recovery upgrade authorization requires an authenticated API environment"
-  wait_health "$api_base" 10 "" "$token" || fail "Mini API is not healthy under the completed recovered-forward candidate"
+  wait_health "$api_base" 10 "" "$token" || fail "Mini API is not healthy under the current signed recovered-forward descendant"
   health_json="$(curl -fsS -H "Authorization: Bearer $token" "$api_base/api/health")" || fail "Mini API health evidence is unavailable"
   version_json="$(curl -fsS -H "Authorization: Bearer $token" "$api_base/api/version")" || fail "Mini API version evidence is unavailable"
   schema_json="$(curl -fsS -H "Authorization: Bearer $token" "$api_base/api/schema")" || fail "Mini API schema evidence is unavailable"
   printf '%s\n' "$health_json" | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v.get("status")=="ok", "Mini health is not ok"; assert v.get("runtimeMutationFence")=="inactive", "Mini mutation fence is active"' || fail "Mini API is not in a normal active state"
-  expected_version="$(release_version "$release")"
+  expected_version="$(release_version "$active_release")"
   version_file="$(mktemp "${TMPDIR:-/tmp}/norn-forward-version.XXXXXX")"
   schema_file="$(mktemp "${TMPDIR:-/tmp}/norn-forward-schema.XXXXXX")"
   chmod 0600 "$version_file" "$schema_file"
   printf '%s\n' "$version_json" >"$version_file"
   printf '%s\n' "$schema_json" >"$schema_file"
-  if ! validate_active_responses "$expected_version" "$version_file" "$schema_file" "$candidate"; then
+  if ! validate_active_responses "$expected_version" "$version_file" "$schema_file" "$active_sha"; then
     rm -f "$version_file" "$schema_file"
     fail "Mini API version/schema do not match the exact promoted candidate"
   fi

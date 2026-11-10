@@ -25,11 +25,15 @@ now runs signed platform release `2a2d712a7484b0d7ee82036ccc8d077d1ffc8697`.
 Its schema stayed at 52, the recovered-forward A4 generation remains
 `candidate-promoted`, and authenticated platform smoke plus a durable queued
 smoke pass. Two queued upgrade attempts stopped safely before promotion at the
-host-agent stability check; the direct signed controller path completed. The
-queued-upgrade gate remains an open controller issue. Mini workload admission
-and resize were not tested; existing inventory still contains unhealthy or
-stopped apps and unknown services. See [launch state](LAUNCH-STATE.md) and
-[launch history](LAUNCH-HISTORY.md).
+host-agent stability check; their historical subcondition was not retained.
+The direct signed controller path completed. A source-level follow-on fix and
+offline model now allow later upgrades only when the current API and host agent
+match a signed release in the recovery candidate's Git ancestry; this candidate
+is not merged, published, or live-qualified. The queued-upgrade gate remains
+open until a different successor SHA completes through that lane. Mini workload
+admission and resize were not tested; existing inventory still contains
+unhealthy or stopped apps and unknown services. See [launch state](LAUNCH-STATE.md)
+and [launch history](LAUNCH-HISTORY.md).
 
 DO staging is still not confirmed online. Protected raw backend-object readback
 run [42783948949](https://github.com/antiartificial/norn-fleet/actions/runs/42783948949)
@@ -46,7 +50,7 @@ qualification.
 | Workstream | Current evidence | Next proof |
 |---|---|---|
 | Protected platform release | Mini platform fix `2a2d712a` passed the full protected qualification and was published as an immutable signed prerelease (run `42788567933`). | Keep publish separate from deployment; use exact-SHA qualification and protected publication for each future release. |
-| Mini direct | Signed release `2a2d712a` is active; schema 52 is unchanged, the prior recovered-forward generation remains `candidate-promoted`, and direct-controller postflight smoke plus durable queued smoke pass. The queued upgrade lane still fails its host-agent stability gate before promotion. | Fix and deterministically qualify queued self-upgrade before claiming hands-free queued platform upgrade. Separately qualify controller-mediated workload admission and resize; don't infer them from existing Nomad jobs. |
+| Mini direct | Signed release `2a2d712a` is active; schema 52 is unchanged, the prior recovered-forward generation remains `candidate-promoted`, and direct-controller postflight smoke plus durable queued smoke pass. Two earlier queued upgrades failed before promotion at the host-agent stability gate; their exact subcondition is unavailable. Offline analysis also found the old next-upgrade guard would reject a signed descendant because it compared API state to the original recovery SHA. | Merge, qualify, sign, and install the descendant-aware guard; then upgrade Mini to a different exact successor SHA through the queued lane. Keep workload admission and resize as separate qualification gates. |
 | Existing DO Fleet | Retained staging shape is control=3, ingress=2, app=4, but the historical 24 capacity plans are not provider health. Protected raw backend readback [42783948949](https://github.com/antiartificial/norn-fleet/actions/runs/42783948949) passed exact retained state/provider identity; private service inventory and current API/workload/route health remain unconfirmed. | Refresh runner, readback enablement, state/route/host-key pins; then run a fresh protected inventory of controls, workloads, routes, and provider identities before any release. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | Workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending/held releases retain them. Store and replay recovery checks pass, but a fresh HTTP admission through real etcd with real signed qualification and owned serving-route evidence is not joined. There is no CLI command. Full executor/worker process recovery and live Nomad/ingress qualification remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, while capacity 4 reaches the modeled terminal receipt. | Join authenticated HTTP admission to real etcd, a real signed qualification, completed staging deployment, and control-owned active-route lineage. Then exercise lease/process loss and lost responses across stage/create/readback/bind/route/stop on a version-pinned disposable Nomad/ingress stack. Define recovery and retention for permanently held operations before live use; keep stateful compatibility separate. |

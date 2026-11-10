@@ -20,10 +20,14 @@ See the [Mini upgrade and recovery record](../../v3/LAUNCH-STATE.md#mini-direct-
 
 The retained failed-transition sentinel means every later forward upgrade must
 verify the completed recovered-forward journal, its signed evidence, and the
-exact adoption receipt. The standard `upgrade` lane is available when those
-checks pass. Do not substitute `legacy-baseline`: that fenced lane requires
-zero queued Fleet dispatch receipts, while signed `recovered-forward` can
-preserve them.
+exact adoption receipt. After the first forward release, bind health, API
+version/schema, and the managed host agent to the current active release, then
+verify that exact release is signed and descends from the journaled recovery
+candidate. Do not require the API to keep reporting the original recovery SHA;
+that would block the next upgrade. The standard `upgrade` lane is available
+when those checks pass. Do not substitute `legacy-baseline`: that fenced lane
+requires zero queued Fleet dispatch receipts, while signed `recovered-forward`
+can preserve them.
 
 The safe upgrade path restarts only the Norn API process. Do not use `make down` for a production-ish local upgrade because it also stops Nomad and Consul, which can disrupt hosted apps.
 
