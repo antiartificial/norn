@@ -2,7 +2,7 @@
 
 ## Mini direct v3 upgrade completed (2026-11-07)
 
-## Current V3 release readiness (2026-11-09 23:42 UTC)
+## Current V3 release readiness (2026-11-10 00:01 UTC)
 
 The Mini recovered-forward controller repair merged as Norn PR #370 at exact
 source `9d9d6208654b995cddc8b76e13d089c665c52fd6`. Full protected-master
@@ -22,6 +22,13 @@ passed all 12 jobs. Exact-source release workflow
 passed authorization, pinned UI, and all four platform bundles; its protected
 `publish` job is waiting for owner approval. It has not been signed or
 published. This fix is not in the already published `9d9d6208` release.
+
+Norn PR #375 merged afterward at `66690f93` and narrows hash-bound dispatch
+recovery to the GitHub App `actions:read` permission. Its full PR checks passed.
+The Mini and DO do not run this new code yet. It does not fix the seven stale
+receipts' current-lane binding mismatch, which still stops reconciliation
+before GitHub lookup. The receipts remain queued. See the 00:01 UTC
+[launch-history entry](LAUNCH-HISTORY.md#dispatch-recovery-now-requests-read-only-github-actions-access-2026-11-10-0001-utc).
 
 The Mini remains on `d4dc88e0c37003a1013caed444983b2eeb50fbcb`, health `ok`,
 runtime mutation fence `inactive`. No migration or candidate promotion
