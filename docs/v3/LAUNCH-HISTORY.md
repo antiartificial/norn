@@ -1,5 +1,36 @@
 # Norn v3 launch history
 
+## Mini same-generation finalization completed (2026-11-10 06:30 UTC)
+
+The user authorized the exact Mini immutable publication and all testing/staging
+work. Protected release run
+[42765955784](https://github.com/antiartificial/norn/actions/runs/42765955784)
+published signed immutable source
+`5bb691de07c3eb865c5b7f636d07e668d824510c`. The exact Mini bundle was imported
+and signature-verified. The signed repair controller resumed the existing
+generation `gen-1a769550b1051bc9358ce8e8758265e5`, transition
+`mini-v3-20261110T0021Z-a4b9c3b3`, with source
+`d4dc88e0c37003a1013caed444983b2eeb50fbcb` and candidate
+`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. It reused the durable preservation
+receipt and made no new generation or migration.
+
+The first run reached normal API activation and stopped when the host-agent
+process was not yet stable. The journal preserved the exact retry point. A
+second run through the same signed controller succeeded: the candidate
+host-agent remained running, the original API LaunchAgent was restored, and
+the journal reached `candidate-promoted`. The API serves the exact A4 source;
+authenticated platform smoke passed health, operation drain, releases, events,
+and overall platform checks. Host status returned `ok`.
+
+The 06:29 inventory returned 30 apps and 46 services but still shows stopped or
+unhealthy app records, unknown cron/worker services, 25 active incidents, and
+an inconsistency between active-operation readings (0 in smoke, 7 in inventory).
+Treat the Mini as having a live V3 platform, not fully healthy workloads.
+The Mini control plane's staging configuration and historical read-only
+capacity plans do not prove DO provider or workload health; the last protected
+DO private state readback remains failed/held. No DO provider/Fleet mutation was
+made during this Mini finalization.
+
 ## Prior-controller finalizer repair merged and qualified; publish awaiting approval (2026-11-10 06:07 UTC)
 
 PR #391 merged to `master` as
