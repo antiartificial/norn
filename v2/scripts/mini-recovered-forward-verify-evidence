@@ -303,6 +303,28 @@ def main() -> int:
             raise ValueError("explicit adoption receipt must be an archived owner config receipt")
         adoption_path = explicit_adoption_path
         adoption_key = evidence_key
+    else:
+        # A later accepted baseline may replace the fixed receipt while
+        # immutable predecessor evidence still binds the archived bytes.
+        # Resolve only an exact digest match from the narrowly named archive
+        # set, in lexical order, and verify it with the predecessor key.
+        current_matches = False
+        if adoption_path.exists() or adoption_path.is_symlink():
+            current_matches = digest(private(adoption_path, "recovered-baseline adoption receipt")) == value["adoptionReceiptSHA256"]
+        if not current_matches:
+            config = adoption_path.parent
+            prefix = ".norn-recovered-baseline-adoption-v2.json."
+            matches = []
+            for candidate_path in sorted(config.glob(prefix + "*"), key=lambda item: item.name):
+                if not re.fullmatch(r"\.norn-recovered-baseline-adoption-v2\.json\.[A-Za-z0-9._-]{1,128}", candidate_path.name):
+                    continue
+                archived_raw = private(candidate_path, "archived recovered-baseline adoption receipt")
+                if digest(archived_raw) == value["adoptionReceiptSHA256"]:
+                    matches.append(candidate_path)
+            if not matches:
+                raise ValueError("no exact archived adoption receipt matches source evidence digest")
+            adoption_path = matches[0]
+            adoption_key = evidence_key
     adoption_raw = private(adoption_path, "recovered-baseline adoption receipt")
     adoption = strict_json(adoption_raw, "adoption receipt")
     adoption_fields = {"schema", "sourceSHA", "incidentCandidateSHA", "adopterSHA", "incidentBindingSHA256", "preservationUnprovenReasonSHA256", "legacyFence", "ledger", "reconciliation", "preservationProven", "signature"}

@@ -302,7 +302,7 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         self.adoption.write_bytes(self.adoption.read_bytes() + b" ")
         result = self.verify()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("adoption receipt digest mismatch", result.stderr)
+        self.assertIn("no exact archived adoption receipt matches", result.stderr)
 
     def test_explicit_archived_adoption_receipt_uses_predecessor_key_and_exact_digest(self):
         adoption = json.loads(self.adoption.read_bytes())
@@ -329,6 +329,11 @@ class RecoveredForwardEvidenceTest(unittest.TestCase):
         self.evidence.write_bytes(strict_dump(evidence))
         self.env["NORN_AUDIT_HISTORICAL_SIGNING_KEY"] = HISTORICAL_KEY.decode()
         result = self.verify(str(archived))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "verified")
+        # The normal platform-upgrade caller does not know the archived path;
+        # the verifier must resolve the unique digest-bound archive itself.
+        result = self.verify()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "verified")
 

@@ -56,10 +56,27 @@ that a new workload manifest has been admitted through a release controller.
 
 The first smoke invocation from the thin SSH shell could not find the `norn`
 child command because the wrapper omitted `$HOME/go/bin` from `PATH`. The
-read-only check passed after explicitly adding that directory. A follow-up
-platform CLI change is in review to add the configured/default Norn bin
-directory to child `PATH`, removing this operator workaround in a later
-release.
+read-only check passed after explicitly adding that directory. PR #395 merged
+as `df105b3ba81f81a8189b4e0ade15dbb52e568835`, passed all 12 protected V3
+qualification jobs, and its immutable signed release was published. The PATH
+fix is in that candidate, but Mini still runs A4; it has not yet received the
+candidate.
+
+## Mini forward-upgrade attempt held by archived adoption receipt lookup (2026-11-10 08:59 UTC)
+
+Exact signed candidate `df105b3ba81f81a8189b4e0ade15dbb52e568835` passed
+authenticated managed-script preflight on Mini (passive API on port 18800,
+schema 52, reader floor 5, writer floor 33; no migration was run). Two
+controller-queued upgrade attempts failed before promotion. The first reported
+the accepted A4 baseline was not represented by the exact signed adoption
+receipt. The operator preserved the old receipt byte-for-byte and created the
+fresh A4-bound receipt while retaining the earlier preservation-unproven
+incident record. The second then exposed a verifier bug: it read only the
+current receipt although immutable predecessor evidence bound the archived
+receipt's digest. No API restart, schema migration, or release promotion
+occurred; Mini remains healthy on A4. The verifier fix and deterministic
+regression are being prepared. Retry only after that exact fix is qualified,
+signed, published, imported, and preflighted.
 
 The same Mini control plane reports a configured staging Fleet with 3 control,
 2 ingress, and 4 app nodes and 24 historical read-only capacity plans (latest
