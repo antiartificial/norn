@@ -25,6 +25,36 @@ ingress nodes, and four app nodes. This confirms provider instance state only.
 It does not confirm Norn, etcd, Nomad, Consul, route, or workload health. The
 `norn-pilot` context belongs to a different DO account.
 
+## Signed DO bootstrap admission merged (2026-11-10 16:16 UTC)
+
+Fleet PR [#962](https://github.com/antiartificial/norn-fleet/pull/962) merged
+as `5400fd8a973266f6e211ce85ee6b3e0d7798cb16`. It admits the dormant bootstrap
+workflow through owner-signed, state-bound intent, the one-use Linux runner
+controller, and remote job gate. Exact run-scoped runner labels are part of
+the admission binding. The exact-head contract passed; focused local
+verification covered 54 tests and the statechart checked 37 states / 53
+transitions with nine safety invariants.
+
+The bootstrap feature flag remains `false`. The merged remote job gate has not
+been installed on the DO management runner, and no bootstrap dispatch, Fleet
+install, or provider mutation occurred. The next gate is a reviewed install
+with the persistent effect runner stopped, followed by fresh runner readiness
+and a new reviewed intent. Do not replay canceled run `42838769029`.
+
+## DO runner inventory identified install hold (2026-11-10 16:20 UTC)
+
+A read-only GitHub runner inventory for `antiartificial/norn-fleet` returned
+one online self-hosted runner: `norn-external-mac-finalizer-xenon`, labeled
+`norn-external-mac-finalizer`. No registered runner had the required
+`norn-work-management-bootstrap` label or the protected Linux
+`norn-fleet-protected` effect-runner label. The external-Mac finalizer is a
+separate purpose and must not be substituted.
+
+The merged `work-staging-fleet-gate-install` workflow requires the protected
+macOS management-bootstrap runner, so the remote job-gate install cannot yet
+be dispatched. No runner registration, install workflow, or provider mutation
+occurred in this read.
+
 ## DO staging provider refresh (2026-11-10 16:02 UTC)
 
 A fresh read-only `doctl --context work compute droplet list` returned all

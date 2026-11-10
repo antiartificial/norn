@@ -89,6 +89,40 @@ This refresh confirms provider-reported VM state only. It does not check the
 Norn API, etcd, Nomad, Consul, routes, or application response. Genesis
 readback, platform release/postflight, and workload qualification remain open.
 
+## DO bootstrap controller admission merged (2026-11-10 16:16 UTC)
+
+Fleet PR [#962](https://github.com/antiartificial/norn-fleet/pull/962) merged
+as `5400fd8a973266f6e211ce85ee6b3e0d7798cb16`. It adds owner-signed,
+state-bound bootstrap intent admission through the one-use Linux runner
+controller and remote job gate, with exact run-scoped runner labels. The
+contract passed; focused local verification covered 54 tests and the
+deterministic statechart passed nine safety invariants.
+
+This advances code and offline protocol evidence only. The bootstrap feature
+flag remains `false`; the merged controller has not been installed on the DO
+management runner, and no bootstrap dispatch, Fleet install, or provider
+mutation occurred. Next: stop the persistent effect runner, install and verify
+the reviewed remote gate, verify fresh protected Linux runner readiness, and
+then prepare a fresh reviewed intent. Do not replay canceled run
+`42838769029`.
+
+## DO management runner readiness (2026-11-10 16:20 UTC)
+
+A read-only GitHub runner inventory for `antiartificial/norn-fleet` returned
+one online self-hosted runner: `norn-external-mac-finalizer-xenon`, labeled
+`norn-external-mac-finalizer`. No runner was registered with the required
+`norn-work-management-bootstrap` label or the protected Linux
+`norn-fleet-protected` effect-runner label. The external-Mac finalizer is a
+separate purpose and must not be substituted.
+
+The merged `work-staging-fleet-gate-install` workflow requires the protected
+macOS management-bootstrap runner. That install lane is therefore not currently
+dispatchable. Restore the intended management-runner route through its approved
+bootstrap lifecycle; then install and verify the remote job gate while the
+persistent Linux effect runner is stopped. Keep the platform-bootstrap flag
+false; no runner registration, install workflow, or provider mutation occurred
+in this read.
+
 Genesis readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
 and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
 verified exact backend bytes, the serial-22-to-23 route continuity, and
