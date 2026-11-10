@@ -1,7 +1,8 @@
 # V2 surface retirement inventory
 
 Status: source audit with app-list and operation-list caller migrations,
-refreshed 2026-11-08. No legacy handler or compatibility test was deleted.
+revalidated 2026-11-10 against Norn source `e8c9c08d`. No legacy handler or
+compatibility test was deleted.
 
 ## Findings
 
@@ -59,12 +60,16 @@ than `/api/v1`. Deleting the old router wholesale would break current CLI/UI
 features. Migrate consumers route-by-route, and preserve parity for idempotency,
 response bodies, auth scopes, websocket/log behavior, and recovery semantics.
 
-Test review found no safe V2-only test deletions in this pass. Tests mentioning
-`v2` commonly cover the Go module path, current V2 data/schema protocols such as
-release qualifications and offline effect grants, or compatibility/recovery
-behavior still used by the V3 branch. Keep those until the owning surface is
-retired with consumer and persisted-data evidence; do not prune by filename or
-test name alone.
+The 2026-11-10 recheck found no safe V2-only test deletions. The Mini's
+recovered-forward migration from its supported V2 baseline is not at a terminal
+receipt yet, so its legacy-baseline transition, doctor, and recovery tests still
+protect the active upgrade boundary. The protected `norn-fleet` main branch
+still calls `/effect-grants/v2` for grant creation and readback, so the Norn
+route, durable store, and recovery tests still protect a live caller. Tests
+mentioning `v2` also cover the Go module path and versioned stored-data
+protocols such as release qualifications. Retire tests only after their route
+or persisted-data contract has been replaced and its migration/recovery window
+has closed; do not prune by filename or test name alone.
 
 ## Separate protocol: offline effect grants
 

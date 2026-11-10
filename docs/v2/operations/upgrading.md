@@ -7,13 +7,17 @@ resizing guide](../../v3/release-lanes-and-workload-resizing.md). Mini is an
 independent node; the DO staging Fleet is a separate environment. The existing
 DO Norn release protocol is all-stop and forward-only. Mixed-version Norn
 control upgrades are not qualified. The Mini's active `norn.startup/v2`
-contract and signed replacement `a4b9c3b3` both support reader/writer floors
-5/33; the replacement adds catalog migration 52 and has been imported and
-verified on Mini. The previous `e9a21d20` candidate is historical. The current
-transition is halted before API fencing and migration at journal phase
-`host-agent-fenced`; the host-agent LaunchAgent is held behind the durable
-sentinel, while the source API remains healthy on schema 51. Its passive preflight therefore
-stops for the expected migration. In a direct upgrade with no retained
+contract supports reader/writer floors 5/33. Signed API release `a4b9c3b3`
+adds catalog migration 52; signed controller release `a8aa2860` is published,
+imported, and verified on Mini. The active generation
+`gen-1a769550b1051bc9358ce8e8758265e5` is at
+`candidate-preservation-pending`, with its preservation receipt matched and
+catalog schema 52 present. The A4 API answers health, but the host-agent
+LaunchAgent and host supervisor are not running. Finalization is incomplete;
+exact-source ancestry repair `2e8bd545` has passed qualification and bundle
+builds, while protected signing/publication is awaiting owner approval. Follow
+the [current Mini recovery record](../../v3/LAUNCH-STATE.md#current-mini-recovery-status-2026-11-10-0348-utc).
+Do not treat API health or catalog schema 52 as completion. In a direct upgrade with no retained
 recovery fence, the standard `upgrade` lane is contract-compatible after
 protected backup and exact-candidate private-shadow proof. The Mini currently
 has a retained failed-transition sentinel, so the ordinary lane is blocked
@@ -97,17 +101,16 @@ receipts verify. Start that lane through the exact signed candidate's wrapper
 so it can bind a fresh backup, signed shadow, current workload baseline, and
 successor generation before calling the managed controller:
 
-For the current Mini recovery, do not run this with the published `e9a21d20`
-candidate: its controller rejects its own successor-generation evidence path,
-and its legacy-baseline drain does not distinguish the receipt-preserving
-recovered-forward lane. The signed replacement `a4b9c3b3` contains those fixes
-and is published. If the transition stops at `host-agent-fenced`, preserve the
-exact generation and transition ID. A normal retry is rejected by the resolver;
-use a distinct later signed controller through the signed controller-repair
-procedure. The previous source controller may reject source-lineage evidence
-fixed only in the target candidate. Do not restart the fenced host agent or edit
-the journal by hand. Publication alone is not transition authorization or
-proof that the Mini is ready to migrate.
+For the current Mini recovery, the published A8 controller release resumed the
+existing generation and reached preservation-pending. Do not invoke ordinary
+`upgrade`, create a new transition ID, restart the host agent by hand, or edit
+the journal. The signed-descendant finalization fix is exact source
+`2e8bd545547f4bfa375c68fac9be9667954276de`; its protected publish job must
+complete before the installed signed controller-repair path can resume the
+same generation. Follow the [current recovery record](../../v3/LAUNCH-STATE.md#current-mini-recovery-status-2026-11-10-0348-utc)
+for approval and readback receipts. Each repair authorization must bind the
+current generation and journal digest; refresh it after a journal phase change.
+Publication alone does not authorize a transition or prove that Mini is ready.
 
 The signed recovery API launcher also checks the adopted baseline's Git
 ancestry. Set `NORN_PLATFORM_REPO` in the encrypted API environment to the

@@ -1772,14 +1772,15 @@ Spaces buckets/object versions, DNS, GitHub runners, Tailscale devices, and
 provider resources without these names were not proven absent. No mutation was
 made.
 
-## Current release gates (reconciled 2026-11-07)
+## Historical release-gate snapshot (reconciled 2026-11-07)
 
-This replaces the preceding percentage estimates, which predate the completed
-Mini transition and latest DO Genesis attempt. The detailed ordered plan and
-exit criteria are in [release program milestones](release-program-milestones.md)
-and [release fitness plan](release-fitness-and-controller-plan.md).
+This table preserves the program status as recorded on 2026-11-07; it is not
+the current release status. The latest Mini recovery and DO staging evidence
+is at the top of [launch state](LAUNCH-STATE.md), and the current work queue is
+in [release program milestones](release-program-milestones.md). The detailed
+exit criteria remain in the [release fitness plan](release-fitness-and-controller-plan.md).
 
-| Lane/gate | Current state | Next proof |
+| Lane/gate | State at 2026-11-07 | Next proof as known then |
 | --- | --- | --- |
 | Mini direct | V3 transition and recovery completed; independent node, not Fleet. | Keep this as the direct-lane reference. Measure interruption on future changes; do not claim uninterrupted or generally online migration. |
 | DO staging Fleet / soak | 72h35m soak completed with 4,254 valid hash-chained samples and no recorded alarms/gaps. Fresh provider readback at 09:36 UTC confirms all nine expected Droplets active, the staging load balancer active, and the two staging managed databases online. | Fresh control-plane/node health, etcd diagnosis, service-route proof, host identity, and exact control roster. Provider status does not prove runtime or application health. |
