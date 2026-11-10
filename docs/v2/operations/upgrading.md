@@ -122,6 +122,15 @@ The finalizer must verify that same source-to-candidate lineage before it
 releases the write fence; it must not require the transition source SHA to equal
 the adoption receipt SHA.
 
+Keep replaced adoption receipts as owner-only archived files named
+`.norn-recovered-baseline-adoption-v2.json.<suffix>` in `~/.config/norn`.
+Immutable predecessor evidence binds the receipt's raw SHA-256, so changing the
+current receipt for a newly accepted baseline must not invalidate the earlier
+generation. The evidence verifier resolves only an archive with the exact
+signed digest (in deterministic name order) and verifies it with the historical
+audit key. If no exact archive is present, stop and recover the evidence; do not
+rewrite predecessor evidence or copy a different receipt into place.
+
 ```bash
 norn platform env -- \
   /Users/0xadb/norn/releases/<candidate-sha>/bin/mini-recovered-forward-transition \
