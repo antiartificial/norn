@@ -194,6 +194,32 @@ The DO Fleet is not confirmed online by this management-host install. Obtain a
 fresh protected private health and Genesis readback before making a service
 health claim.
 
+## DO protected state-object readback (2026-11-10 18:08 UTC)
+
+Protected state-handoff workflow run
+[42871361099](https://github.com/antiartificial/norn-fleet/actions/runs/42871361099)
+passed in `readback` mode on merged Fleet `main`
+`a09847fcd34d1f1df48355d6f07c2304e11b59bf`. The protected Spaces object
+matched the owner-retained state byte for byte at lineage
+`9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23. The exact JIT Mac runner
+retired successfully; GitHub returned only the separate persistent Mac
+finalizer runner afterward, with no active authorization or run journal.
+
+This confirms the remote state object still matches the reviewed owner copy.
+It does not inspect the Genesis journal or prove current API, etcd, Nomad,
+Consul, route, or workload health. The bootstrap flag remains `false`; no
+Genesis install/readback, platform release, workload deployment, or provider
+apply occurred. A fresh protected service and Genesis readback is still needed
+before calling the DO Fleet online.
+
+Fleet PR #964 fixed the Mac module copy list, and the exact-source dependency
+is now present locally with imports and read-only queue checks passing. A
+repeat gate install was not dispatched: the remote gate already matches
+`main`, and the workflow rejects identical old/new gate digests. Fleet PR #965
+documents the package/timer side effects; PR
+[#966](https://github.com/antiartificial/norn-fleet/pull/966) documents this
+same-gate recovery limit.
+
 ## Release timing
 
 No V3 launch date is committed. Remaining program gates are controller
