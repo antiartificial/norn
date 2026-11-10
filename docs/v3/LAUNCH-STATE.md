@@ -63,8 +63,9 @@ from Nov 2. The latest protected state readback attempt,
 [42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657)
 on Nov 5, failed while pulling current protected backend state and comparing
 the privately retained bytes. The current one-use approval digest does not
-match the configured state input, and the Genesis readback enable gate is
-absent; no fresh intent or readback dispatch was created. The Nov 10 provider
+match the configured state input, and the required work-staging variable
+`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` is absent; no fresh intent or
+readback dispatch was created. The Nov 10 provider
 plan [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
 was plan-only and made no provider changes. The successful Nov 9 drift run
 also made no changes; neither proves current Norn service health.

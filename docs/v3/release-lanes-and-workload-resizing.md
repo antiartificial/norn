@@ -33,7 +33,9 @@ was cancelled before its release job ran; the last successful run is
 from Nov 2. The latest protected state readback
 ([42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657))
 failed while comparing the current protected backend state with retained
-private bytes. The Nov 10 provider plan
+private bytes. The configured state digest differs from the earlier one-use
+approval, and the required work-staging variable
+`NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` is absent. The Nov 10 provider plan
 ([42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397))
 was plan-only. These workflow results do not establish current Norn/API or
 workload health; obtain a fresh protected private inventory before claiming the
