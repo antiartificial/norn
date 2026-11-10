@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-10 01:52 UTC. This checklist orders the [release fitness
+Status: active work map, refreshed 2026-11-10 03:23 UTC. This checklist orders the [release fitness
 and controller plan](release-fitness-and-controller-plan.md). It authorizes no
 deployment, provider mutation, or credential use.
 
@@ -20,87 +20,33 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Latest gate update (2026-11-10 01:52 UTC): protected-master qualification for
-exact source `a8aa2860c0ecc9ac76b2d852b46cd1ccfb634d63` passed all 12 jobs in
-[run 42729857751](https://github.com/antiartificial/norn/actions/runs/42729857751).
-The exact-source immutable release workflow
-[42730463793](https://github.com/antiartificial/norn/actions/runs/42730463793)
-passed authorization, pinned UI, and all four bundle builds; its protected
-signing/publish job is waiting for approval. Signing and publication have not
-occurred and require approval for this SHA. A fresh authenticated read-only Mini
-inventory at 01:52 UTC confirms API/host health `ok`, runtime mutation fence
-inactive, current source `d4dc88e0`, 19/30 healthy app records, seven queued DO
-dispatch receipts, 25 incidents, and blocked production readiness (18 failed,
-seven passed, one warning). The host-status endpoint still reports the latest
-durable host-assurance receipt as Sep 6; the 01:16 claim of fresh assurance is
-not corroborated. This does not prove the halted transition recovered. The
-expanded Mini recovery statechart now checks the observed
-`host-agent-fenced` halt and rejects ordinary retry until a distinct signed
-repair-controller action resumes the exact generation (90 states, 179
-transitions, eight invariants and deadlock check passed). This model remains
-abstract and does not replace implementation refinement.
-
-The DO staging Fleet remains a separate test environment. Current protected
-`norn-fleet` main is `35e1c893198efbdc9e407d708e5096a32b485f7d`; merged PR #949
-records a repeated read-only staging plan proposing one management ingress
-firewall rule and confirming it is absent from versioned state. Staging-only
-plan [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397)
-completed at 00:55 UTC: one firewall create, 28 no-ops, zero node creation, and
-no apply. The firewall attaches to the two ingress Droplets and allows TCP
-18082 (observer) and 18083 (publisher) from the management runner's private
-`/32`. Earlier staging drift
-[42702422189](https://github.com/antiartificial/norn-fleet/actions/runs/42702422189)
-also completed without mutation on Nov 9. These are not fresh Norn/API,
-control-store, or workload health receipts, so current DO runtime readiness
-remains unverified. The protected Genesis readback also remains gated: the
-current `work-staging` state input digest is `8cf77ae4`; prior owner approval
-named `4c43bae5`, and the readback enable variable is absent. No new intent or
-runner dispatch was created.
-
-Norn PR #373 fixed the recovered-forward source-lineage verifier and merged at exact source
-`a4b9c3b313d65c8a054fb869b18455fde33d3a70`. Full protected-master
-qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745)
-passed all 12 jobs. Exact-source release run
-[42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811)
-completed authorization, pinned UI, all four platform bundles, signing,
-verification, and immutable publication. The release is
-[`platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70`](https://github.com/antiartificial/norn/releases/tag/platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70).
-It has not been promoted on Mini or deployed to DO. Norn PR #375 merged at
-`66690f93` and limits hash-bound dispatch recovery to `actions:read`; its PR
-checks passed. The stale DO receipts still fail the current-lane binding guard
-before lookup, so they remain queued. PR #375 is not deployed to Mini or DO,
-and is not included in the immutable `a4b9c3b3` release. Neither Mini nor DO
-was changed by publication. The 00:33 UTC post-stop Mini inventory and transition stop
-are recorded in [launch state](LAUNCH-STATE.md): source API `ok` on schema 51,
-19 of 30 app records running and healthy, and the active generation halted at
-`host-agent-fenced`; no database migration or candidate promotion occurred. DO has not been freshly read; its last
-provider/runtime evidence is dated 18:58–19:01 UTC, so use a new protected
-readback before claiming current Fleet health.
-All 21 checked-in TLC configurations were rerun from current master, including
-the four missing-evidence workload-admission scenarios and concurrent
-two-client store admission. Configured rules passed; the concurrent-admission
-config intentionally disables deadlock checking for terminal stutter states.
-Per-model bounds are recorded in the [statechart index](statecharts/README.md)
-and the latest [launch-history entry](LAUNCH-HISTORY.md).
+Current gate snapshot (2026-11-10 03:23 UTC): A8 is signed, published, and
+verified on Mini; its active A4 generation remains at
+`candidate-preservation-pending`. Exact-source repair `2e8bd545` passed
+qualification and bundle preparation, but its protected publish job still
+requires owner approval. DO Norn/API and workload health are unverified: the
+latest platform release run was cancelled before steps, the latest protected
+state readback failed, and the current one-use approval is stale while the
+required readback enable variable is absent. The 26 checked-in offline
+statechart configurations pass their configured rules; this is protocol
+coverage, not live qualification. See [launch state](LAUNCH-STATE.md) and
+[launch history](LAUNCH-HISTORY.md) for exact receipts and timestamps.
 
 ## Parallel workstreams
 
 | Workstream | Current evidence | Next proof |
 |---|---|---|
-| Protected release qualification | Protected-master qualification [42700530242](https://github.com/antiartificial/norn/actions/runs/42700530242) passed at `e9a21d20`; immutable signed prerelease `platform-e9a21d2095d60c8a96c1440e35e045dd0b6a7637` was published and its Darwin/arm64 signature, manifest, inventory, SBOM, and source verified. PR #370's `9d9d6208` release was qualified, signed, and published after exact-SHA approval. PR #373 merged the verifier lineage fix at `a4b9c3b3`; full protected-master qualification [42721291745](https://github.com/antiartificial/norn/actions/runs/42721291745) passed all 12 jobs. Exact-source release [42721807811](https://github.com/antiartificial/norn/actions/runs/42721807811) passed the pinned UI and four bundles, was signed, verified, and immutably published at `platform-a4b9c3b313d65c8a054fb869b18455fde33d3a70`; it is imported and signature-verified on Mini. PR #375 later narrowed recovery to the GitHub App's `actions:read` permission, but is not in this immutable candidate. | Build and qualify a distinct signed controller release that can repair the halted `a4b9c3b3` generation, then complete and verify that exact Mini transition. |
-| Mini direct release evidence | The 01:52 UTC authenticated read-only inventory reports API/host `ok` on `d4dc88e0`, runtime fence inactive, and 19 of 30 app records healthy; however, the latest durable `host.assure` receipt reported by the endpoint is Sep 6, so assurance is stale. Schema was last observed at 51 in the 00:33 post-stop inventory. Fresh backup and candidate `a4b9c3b3` signed shadow passed. The recovered-forward transition is durably stopped at `host-agent-fenced`, before API fencing or migration; the host-agent LaunchAgent remains blocked by the durable fence. Candidate is not promoted. A plain retry was rejected by the generation resolver; source-controller repair failed its signed evidence verifier before authorization. No live database mutation occurred. Seven DO Fleet dispatch receipts remain queued. | Publish the distinct signed controller release containing the corrected lineage verifier, then use its signed repair path to resume this exact generation. Do not alter its journal or use a new transition ID. Then verify migration 52, API/schema, host-agent restoration, workload preservation, smoke, fresh host assurance, and the terminal generation receipt. |
-| Release evidence | The 18:48 UTC Mini inventory confirms API/host `ok` on signed repair release `d4dc88e`, inactive runtime fence, 19 app records running, and successful host assurance at 18:48:53 UTC. Open incident groups and snapshot-retention warnings remain for review; production readiness fails its separate production-admission contract. Nov 9 18:58 UTC DO inventory confirms nine staging nodes, both management nodes, the ingress LB, and three managed databases active/online. The 19:01 UTC public canary probe served `be5ca5d9` across two allocations on two nodes; this does not prove Norn API/control-plane health or the failed operation's terminal receipt. | Use [launch state](LAUNCH-STATE.md) for exact receipts and [launch history](LAUNCH-HISTORY.md) before repeating a read. Obtain protected control-plane runtime and receipt evidence before declaring DO fully healthy. |
-| Mini Git workload admission | Nov 9 read-only inventory confirms the Mini API is healthy, its running process has a webhook secret, 12 app records have `repo.autoDeploy`, and its latest 25 webhook receipts are GitHub. Six mapped personal GitHub repositories have active push hooks to the Norn webhook hostname; endpoint-to-Mini routing and hook-to-terminal-operation outcomes remain unverified. The Mini runs `d4dc88e`, before merged exact-SHA fix `ccb49a56` and host-bound matching `765d7550`. The API uses one shared `NORN_WEBHOOK_SECRET` across configured GitHub and Gitea hooks; it does not isolate credentials per repository. Signed release `a4b9c3b3` is now imported, but the Mini transition stopped at `host-agent-fenced` before API fencing or migration; workload admission and hook-to-terminal outcomes remain unverified. | Complete the Mini transition using a later signed repair controller, then reconcile webhook-host ingress and app mapping, confirm each hook uses the shared secret, and rehearse one push through terminal operation and app smoke. Keep GitHub canonical; make any Norn Git copy one-way. |
-| Existing DO controller | PR #946 merged the pre-effect source-object admission fix. Exact-head PR #944 and merged-main contract validation passed. Staging plan run 42555418513 proposes one private ingress firewall and no other changes; it was not applied. | Review the plan effect, then install reviewed source with timers disabled and verify it before fresh Genesis readback. |
-| Fresh-Fleet bootstrap | PRs #941 (offline war-game), #940 (release intent controller), #945 (provider-scope contract), #947 (bootstrap credential lifecycle), #942 (module-owned test collection), and `norn-fleet` #948 (attested DO token-scope admission) are merged. Protected `norn-fleet` main is now `35e1c893`; the General + Stateful role pair is accepted by its topology validator, generated inventory, and Ansible/Nomad bootstrap. Three focused tests for those boundaries passed at that exact source. Existing staging remains a single `workload: app` pool; no two-pool fresh-Fleet config or provider action was added. The selected stable pool IDs are `general` and `stateful`; provider sizes, min/desired/max, cost envelope, stateful storage, and workload policy remain open. PR #948's owner-supplied token-scope evidence is bound to the token fingerprint and account but does not query DO to prove actual grants. Merged-main plan run `42693143436` proposed one management-runner-only ingress firewall with ports 18082/18083; no apply occurred. PR #837 merged at `6335c667`; no host enrollment or Genesis readback occurred. The earlier readback approval is stale against the current configured state digest (`8cf77ae4` vs. approved `4c43bae5`), and the protected readback enable variable is absent. | Join persistent apply/recovery, exact state/provider identities, per-service credential lifecycle, live DO-grant review, and terminal receipt before any protected apply. The #837 enrollment lane still needs fresh owner-reviewed key/tag/host/digest inputs and a separately approved one-use dispatch. For Genesis readback, refresh and review the exact current state and host keys, intentionally enable the protected workflow, and obtain authorization bound to those inputs. |
-| Offline models | Checked-in Mini, DO release, existing Genesis/readback (including the disabled/stale exact-binding pre-dispatch hold), fresh Fleet (including both two-pool and current 3+2+4 shapes), online upgrade, mixed-version resize at capacities 3/4, and workload admission/route/stop recovery models pass their configured invariants and deadlock checks. Capacity 3 still cannot complete mixed-version resize without violating the old-cohort drain fence; capacity 4 reaches the modeled terminal receipt. | Replay remaining counterexamples against controller tests and prove each modeled boundary against implementation; see the [statechart index](statecharts/README.md). |
-| Workload release | PR #302's stateless mixed-version protocol is extended by merged PRs #311, #315, #316, and #317 for stable replay, replay preflight, placement-bound overlap policy, and signed policy binding. PR #319 (`877ad4ba`) adds the opt-in staging-only authenticated producer; PR #324 (`3fcdc154`) fixes concurrent same-key store replay; PR #331 (`c58df6aa`) proves receipt reload and successor-claim recovery after rebuilding the etcd client and store. PR #333 (`443ca840`) adds a bounded TLA+ model for acceptance commit with a lost response, controller crash/restart, and durable same-key replay (115 states / 365 steps; ten invariants and deadlock check pass). PR #335 (`0eb10852`) exercises authenticated HTTP replay against real etcd after a dropped response, using a previously seeded durable acceptance. PR #337 (`15a8d2d4`) tears down and rebuilds the handler and etcd adapters before that replay. PR #339 (`0cb28c5b`) restarts the shared release reconciler around a lost route-effect response with real etcd claims/receipts and controlled fake scheduler, route, health, and drain effects; it proves same-intent receipt recovery and no duplicate route write. PR #351 (`ed296c17`) pins the exact job-driving app spec with the accepted encrypted SOPS snapshot, so worker target reconstruction does not depend on a current checkout. PR #353 (`f3b4aea8`) records the reproducible real-etcd route-response-loss/restart test; it passed against disposable etcd 3.7.3 on Nov 9. The restart test uses controlled fake scheduler, route, health, and drain effects: it does not qualify the production `etcdWorkloadReleaseExecutor`, full worker runtime, or fresh HTTP admission. The admission and release statecharts were rerun Nov 9 with all listed invariants and deadlock checks passing. No live workload release is qualified. | Prove fresh HTTP admission through real qualification and private-input persistence; prove exact source and encrypted-input recovery, full production worker/controller runtime crash and lost-response behavior, and target-only public-route evidence. Live staging canary remains gated on DO M3/M4; stateful workloads require separate writer/schema/data compatibility authorization. |
+| Protected platform release | A8 is signed, published, imported, and verified on Mini. Exact-source `2e8bd545` passed all 12 protected-master jobs and its pinned UI plus four bundles; publish run [42744929675](https://github.com/antiartificial/norn/actions/runs/42744929675) awaits exact-SHA owner approval. | Publish that immutable SHA after approval, then use its signed repair path on the existing Mini generation. Publication does not deploy it. |
+| Mini direct | The 03:23 read confirms the active generation is `candidate-preservation-pending`, preservation matched, and A4 remains selected. API PID 93463 is present; the host-agent label is absent and the supervisor has no running PID. Authenticated API and workload recovery are unverified. | Resume the same generation, then verify migration/schema, normal API, host-agent, workload smoke, fresh host assurance, and terminal receipt. |
+| Existing DO Fleet | Latest platform release run [42419247951](https://github.com/antiartificial/norn-fleet/actions/runs/42419247951) was cancelled before steps; last successful run [41507907022](https://github.com/antiartificial/norn-fleet/actions/runs/41507907022) is Nov 2. Protected state readback [42119779657](https://github.com/antiartificial/norn-fleet/actions/runs/42119779657) failed; live Norn/API and workload health remain unverified. | Refresh and bind state, route, and host-key evidence; resolve the disabled readback gate, then obtain a current protected inventory before any release action. |
+| Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
+| Workload resize/release | The authenticated staging producer is opt-in and not deployed or live-qualified. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, while capacity 4 reaches the modeled terminal receipt. Production executor/worker recovery and live Nomad/ingress proof remain open. | Join real-etcd admission to qualification and private-input persistence, then qualify worker restart and route/drain recovery on a disposable Fleet. Treat stateful compatibility separately. |
+| Offline state models | All 26 checked-in configurations were rerun on Nov 10. Every configured invariant passed; deadlock passed where enabled. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
 
-Mini is an independent node, not a Fleet member. The DO staging environment is
-the only Fleet in this release work. Provider inventory, controller health,
-workload health, route assurance, and release publication are separate claims.
-The full dated evidence stays out of this milestone map; consult the linked
-history and lane-specific records before repeating work.
+Mini is an independent node, not a Fleet member. DO staging is the only Fleet
+in this release program. Provider inventory, controller health, workload health,
+route assurance, and release publication are separate claims. Keep this map
+procedural; use the linked launch records for the dated detail.
 
 ## Ordered gates
 
@@ -325,29 +271,25 @@ qualifies a billable fresh-Fleet deployment.
   nodes. These reads do not establish Norn/API, etcd, Nomad/Consul, full
   workload, or terminal operation-receipt health.
 - [ ] Diagnose source availability on the management host without mutation.
-  Fleet PR #946 merged the pre-effect missing-source check; current protected
-  main is `6335c667693d0333d4239f91edf2efb9772ab63a`, and merged-main
-  contract validation
-  [42555418496](https://github.com/antiartificial/norn-fleet/actions/runs/42555418496)
-  passed. Installation on the management host remains unverified; install the
-  exact reviewed source only after separately reviewing the provider-plan
-  effect below.
-- [ ] Review the staging plan from run
-  [42555418513](https://github.com/antiartificial/norn-fleet/actions/runs/42555418513):
-  it proposes `management_ingress_runtime[0]` (ports 18082/18083 from the
-  management runner's private `/32` to ingress nodes), with 1 add, 0 change,
-  and 0 destroy. A read-only provider list at 03:24 UTC found no firewall with
-  the proposed `tk-staging-nyc3-management-ingress-runtime` name. Confirm the
-  intended scope before a separately authorized apply; the plan run performed
-  no apply.
+  Protected `norn-fleet` main is `35e1c893198efbdc9e407d708e5096a32b485f7d`;
+  the latest staging plan used this exact source. Installation on the
+  management host remains unverified. Install the exact reviewed source only
+  after separately reviewing the provider-plan effect below.
+- [ ] Review the latest staging plan,
+  [42731843397](https://github.com/antiartificial/norn-fleet/actions/runs/42731843397):
+  it proposes one management ingress firewall rule for ports 18082/18083 from
+  the runner's private `/32`, with 28 no-ops and zero node creation. The run is
+  plan-only; no apply occurred.
 - [ ] Install reviewed source with controller services and timers disabled.
   Verify installed source, private inputs, digests, and dormant units before
   preparing any fresh readback.
 - [ ] Refresh state, route, and host-key evidence, then request a new signed
-  one-use Genesis readback intent only after every preflight passes. The failed
-  intent and runner authorization cannot be reused. At 19:09 UTC the protected
-  `NORN_WORK_PLATFORM_CONTROLLER_BOOTSTRAP_ENABLED` setting was `false`, so
-  reviewed source installation is not currently enabled.
+  one-use Genesis readback intent only after every preflight passes. The prior
+  intent and runner authorization cannot be reused. As of 03:23 UTC,
+  `NORN_WORK_PLATFORM_CONTROLLER_BOOTSTRAP_ENABLED` and
+  `NORN_WORK_PLATFORM_GENESIS_READBACK_ENABLED` are absent from the
+  `work-staging` environment; keep those workflow gates closed until their
+  exact inputs are reviewed and separately approved.
 
 **Exit:** all identities and services have fresh read-only receipts. Otherwise
 publish the exact hold and keep write workflows disabled. See the
@@ -451,7 +393,7 @@ work must wait:
 |---|---|---|
 | Fresh-Fleet topology and integrated replay | Five-node disposable profile and credential fixture | General + Stateful role validation/inventory/Nomad bootstrap now exist in protected `norn-fleet` main; current DO remains 3+2+4 with one app pool. The two-pool model captures the workflow contract but not provider handlers or a fresh profile; join protected apply/recovery, exact state/provider identities, and post-recovery bootstrap. |
 | Credential lifecycle follow-up | Fresh-Fleet integrated replay | Joined executor fixture covers mirror, scoped grant, interruption cleanup, retry, and redaction; reconcile exact per-service rotation/expiry/revocation and path-level owner/mode evidence. |
-| M3 read-only input preparation | All offline M1/M2 work | Explicit `work` context confirmed provider resources at 02:48 UTC Nov 9; main plan run 42555418513 completed read-only with one ingress firewall addition. Runtime health, state identity, route, and host-key receipts remain unverified. No new intent until those inputs are refreshed and reviewed. |
+| M3 read-only input preparation | All offline M1/M2 work | The latest plan-only run is 42731843397 on protected `norn-fleet` main `35e1c893`; runtime health, current state identity, route, and host-key receipts remain unverified. The exact Genesis readback approval is stale and its enable variable is absent. No new intent until inputs are refreshed and reviewed. |
 | M5 workload contract and model replay | M2 harness and workload protocol | Offline compatibility work can continue; live qualification waits for M3 and M4 and must serialize on the DO testbed. |
 | V2 caller migration plan | Offline controller and docs work | Map each caller to its replacement contract; retain fixtures until supported V2 baseline migration and recovery are covered. |
 
