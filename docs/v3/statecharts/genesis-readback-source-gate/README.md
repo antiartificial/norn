@@ -53,7 +53,8 @@ bun /Users/arti/.agents/skills/statechart/scripts/statechart.ts \
   --out /tmp/norn-genesis-readback-disabled
 ```
 
-The checked-in [normal chart](chart.mmd) and [TLC report](report.md) show the
-recovery path. The [closed-gate chart](GenesisReadbackGateDisabled.chart.mmd)
+The checked-in [normal chart source](https://github.com/antiartificial/norn/blob/master/docs/v3/statecharts/genesis-readback-source-gate/chart.mmd)
+and [TLC report](report.md) show the recovery path. The
+[closed-gate chart source](https://github.com/antiartificial/norn/blob/master/docs/v3/statecharts/genesis-readback-source-gate/GenesisReadbackGateDisabled.chart.mmd)
 and [closed-gate TLC report](GenesisReadbackGateDisabled.report.md) show the
 pre-dispatch hold.
