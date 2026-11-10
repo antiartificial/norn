@@ -2,14 +2,15 @@
 
 ## Focused offline release models rerun (2026-11-10 01:05 UTC)
 
-TLC reruns on the current tree reproduced five relevant release protocols:
-Mini recovery (90 states / 179 transitions), workload resize capacity four
-(103 / 275) and capacity three (24 / 52), fresh General + Stateful pools
-(45 / 98), and nine-node staging create/recovery (102 / 210). All configured
-invariants and deadlock checks passed. Outputs were written under `/tmp` and
-no provider or host action occurred. These bounded checks do not prove
-implementation refinement, secret lifecycle, provider effects, runtime health,
-or live Nomad placement.
+Nine TLC configurations across eight protocols reproduced on the current tree:
+Mini recovery (90 states / 179 transitions), workload capacity four (103 / 275)
+and three (24 / 52), General + Stateful fresh pools (45 / 98), nine-node
+staging recovery (102 / 210), existing DO release (299 / 1,036), proposed
+online Norn upgrade (97 / 251), existing-Fleet Genesis (69 / 107), and Genesis
+source-readback gate (18 / 52). All configured invariants and deadlock checks
+passed. Outputs stayed under `/tmp`; no provider or host action occurred. These
+bounded checks do not prove implementation refinement, secret lifecycle,
+provider effects, runtime health, or live Nomad placement.
 
 ## DO staging plan refreshed without provider mutation (2026-11-10 00:55 UTC)
 

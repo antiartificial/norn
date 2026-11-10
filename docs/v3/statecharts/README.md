@@ -15,20 +15,22 @@ Outputs were written under `/tmp/norn-*-check`; no generated outputs or
 provider effects were added to the repository. The statechart reports record
 the bounds and omissions for each model.
 
-On 2026-11-10, focused TLC reruns against the current tree reproduced the Mini
-recovery model (90 states / 179 steps), workload capacity four (103 / 275) and
-capacity three (24 / 52), fresh General + Stateful pools (45 / 98), and
-nine-node staging recovery (102 / 210). All configured invariants and
-deadlock checks passed. Outputs stayed under `/tmp`; no provider or host action
-occurred. This focused pass does not replace a complete 21-configuration
-rerun when model sources or shared semantics change.
+On 2026-11-10, nine focused TLC configurations across eight protocols were
+rerun against the current tree: Mini recovery (90 states / 179 steps), workload
+capacity four (103 / 275) and three (24 / 52), future General + Stateful pools
+(45 / 98), nine-node staging recovery (102 / 210), existing DO release
+(299 / 1,036), proposed online Norn upgrade (97 / 251), existing-Fleet Genesis
+(69 / 107), and the Genesis source-readback gate (18 / 52). All configured
+invariants and deadlock checks passed. Outputs stayed under `/tmp`; no provider
+or host action occurred. This focused pass does not replace a complete
+21-configuration rerun when model sources or shared semantics change.
 
 | Lane | Result | Model status | Main limit |
 |---|---:|---|---|
-| Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |
+| Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass (rerun 2026-11-10) | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |
 | Mini direct V3 upgrade and recovered-forward repair | 90 states, 179 steps; 8 invariants and deadlock check pass (rerun 2026-11-10) | Includes the observed host-agent-fenced halt; ordinary same-intent retry is blocked until a distinct signed repair-controller action verifies lineage and resumes the exact generation | The repair action abstracts signature, source identity, lineage verification, Launchd, SQL/filesystem durability, timing, and key custody; not yet refined to implementation tests |
-| Proposed online Norn platform upgrade | 97 states, 251 steps; 12 invariants and deadlock check pass | Old release serves through additive schema expansion and passive candidate verification; writer/traffic handoff is fenced, crash recovery keeps the same intent, and schema contraction waits until old-writer retirement | Proposed protocol only; assumes binary/schema compatibility and post-handoff health; abstracts real migrations, writer discovery, fencing, supervision, workload/data integrity, and availability measurements |
-| Existing Fleet Genesis | 69 states, 107 steps; 9 invariants and deadlock check pass | Dormant install, signed intent, staged controls, passive-first promotion, recovery; fresh-Fleet request is explicitly blocked | Inputs are modeled as one valid/invalid gate; provider create workflow is absent from this model |
+| Proposed online Norn platform upgrade | 97 states, 251 steps; 12 invariants and deadlock check pass (rerun 2026-11-10) | Old release serves through additive schema expansion and passive candidate verification; writer/traffic handoff is fenced, crash recovery keeps the same intent, and schema contraction waits until old-writer retirement | Proposed protocol only; assumes binary/schema compatibility and post-handoff health; abstracts real migrations, writer discovery, fencing, supervision, workload/data integrity, and availability measurements |
+| Existing Fleet Genesis | 69 states, 107 steps; 9 invariants and deadlock check pass (rerun 2026-11-10) | Dormant install, signed intent, staged controls, passive-first promotion, recovery; fresh-Fleet request is explicitly blocked | Inputs are modeled as one valid/invalid gate; provider create workflow is absent from this model |
 | Workload mixed-version resize | Capacity 3: 24 states / 52 steps; capacity 4: 103 / 275; 11 invariants and deadlock check pass in both (rerun 2026-11-10) | Proposed protocol, not current controller behavior; capacity 3 has no target-only route or terminal path under the target-only-before-drain rule, while capacity 4 reaches terminal receipt | Abstracts Nomad placement, app processes, database semantics, route implementation, and timing; live preflight must prove full overlap capacity |
 | Fresh DO Fleet create and recovery | 308 states, 813 steps; 8 invariants and deadlock check pass | Bounded protected plan/apply, partial create, readback, same-intent recovery, PKI/configuration, exact cleanup | Three abstract node groups; detailed provider resources and secret lifecycle are omitted |
 | Future fresh Fleet with two app pools | 45 states, 98 steps; 14 invariants and deadlock check pass (rerun 2026-11-10) | General + stateful pool create/recovery, role-correct workload placement/readiness, stateful recovery proof, then shared inventory/configuration/receipt | Abstract counts/identities, provider API, secret lifecycle, workload-specific data integrity, and implementation behavior |
