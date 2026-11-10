@@ -242,9 +242,10 @@ data without mutating the source, add deterministic fixture coverage, then use
 a fresh one-use readback authorization. DO services, etcd quorum, Nomad,
 Consul, routes, and workload response remain unverified; provider inventory
 and SSH reachability are not service-health proof. Fleet PR #969's LaunchAgent
-CA persistence fix remains open with exact-head contract validation running.
-Norn PR #414's release checklist checks passed, but its draft still needs this
-updated readback outcome before merge.
+CA persistence fix passed its original exact-head validation; after GitHub
+required its branch to catch up with `main`, its updated exact-head contract
+run is in progress. Fleet PR #970 contains the stable-copy fix for this
+readback failure; its exact-head contract run is in progress.
 
 ## Release timing
 
