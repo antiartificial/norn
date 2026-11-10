@@ -160,6 +160,40 @@ signed-effect allowlist did not admit the bootstrap workflow; Fleet PR #962
 has since merged that admission path. The bootstrap enable flag is `false`; no
 host installation occurred.
 
+## DO gate install and controller postflight (2026-11-10 17:20 UTC)
+
+Protected gate-install run
+[42861703620](https://github.com/antiartificial/norn-fleet/actions/runs/42861703620)
+completed successfully at 17:10 UTC. Its exact-source preflight passed; the
+workflow installed the reviewed Linux gate and modules, installed and verified
+the pinned Certbot 2.9.0 package set, masked and stopped `certbot.timer`, and
+replaced the reviewed Mac hook/modules and owner public key. Postflight found
+the persistent effect-runner service inactive and disabled, no `.runner`
+registration or active job, and the expected installed file/package digests.
+This changes management-host tooling only; it did not apply provider
+infrastructure, bootstrap Norn, or read Genesis data.
+
+The run created and retired its exact run-scoped Mac JIT runner. After
+confirming the run and its resources were terminal, the local LaunchAgent was
+restarted; at 17:20 UTC it was running as PID 85572. Fresh Python imports and
+read-only GitHub queue-candidate checks for both management and effect
+controllers succeeded and found no queued candidate. Post-install review found
+the installer's Mac copy list omitted
+`work_staging_norn_release_job_gate.py`; the exact source module was repaired
+locally. Fleet PR
+[#964](https://github.com/antiartificial/norn-fleet/pull/964) adds it to the
+repeatable installer with a regression assertion, and its exact-head CI is
+still running. Do not treat the repair as repeatable until that PR merges.
+Fleet PR #963 merged the JIT install and controller runbook. Fleet PR
+[#965](https://github.com/antiartificial/norn-fleet/pull/965) documents the
+persistent Certbot package and timer effects; it remains open.
+
+The bootstrap feature flag remains `false`. No fresh Genesis intent or
+readback, platform release, workload deployment, or provider apply occurred.
+The DO Fleet is not confirmed online by this management-host install. Obtain a
+fresh protected private health and Genesis readback before making a service
+health claim.
+
 ## Release timing
 
 No V3 launch date is committed. Remaining program gates are controller

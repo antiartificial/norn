@@ -21,7 +21,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-Current gate snapshot (2026-11-10 16:20 UTC): the independent Mini runs signed
+Current gate snapshot (2026-11-10 17:20 UTC): the independent Mini runs signed
 release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The owner-stated
 Mini success bar is met: the direct V3 release is active, API health returned
 HTTP 200, and the Norn-managed `vigil-gateway` workload allocation was running
@@ -33,11 +33,11 @@ direct deployment. Seven old Fleet dispatch receipts remain queued after a
 supported reconciliation lookup failed closed with a binding mismatch. Mini
 is not part of a Fleet and has no Fleet workload-resize lane.
 
-At 16:02 UTC, a fresh read-only `doctl --context work` inventory found all
+At 17:02 UTC, a fresh read-only `doctl --context work` inventory found all
 eleven DO staging Droplets active: two management, three controls, two
-ingress, and four app nodes. The `work` context is Turnkey Marketing
-(`webdev@tkmkt.com`); `norn-pilot` is a separate personal account. This is
-provider-instance evidence, not service health. Genesis
+ingress, and four app nodes. The `work` context is Turnkey Marketing; the
+separate `norn-pilot` context is a personal account. This is provider-instance
+evidence, not service health. Genesis
 readback runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033)
 and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445)
 passed backend-byte, route-continuity, and effective transport checks, then
@@ -50,15 +50,31 @@ was canceled before its first step because no protected Linux effect runner was
 registered. PR [#962](https://github.com/antiartificial/norn-fleet/pull/962)
 has since merged owner-signed bootstrap admission as `5400fd8a`; its exact-head
 contract passed, and the offline model covers intent binding, the run-scoped
-runner, and effect gating. The bootstrap flag remains `false`; the merged
-controller has not been installed and no bootstrap dispatch occurred.
+runner, and effect gating. The bootstrap flag remains `false`; no Genesis
+bootstrap dispatch or provider apply occurred.
 
-A read-only GitHub runner inventory at 16:20 UTC found only the separate
-`norn-external-mac-finalizer-xenon` runner online in `antiartificial/norn-fleet`;
-neither the required management-bootstrap Mac runner nor a protected Linux
-effect runner is registered. Do not repurpose the finalizer runner. The signed
-job-gate install cannot proceed until the approved management-runner route is
-restored; no runner registration or install was attempted.
+The approved management-runner route was exercised by gate-install run
+[42861703620](https://github.com/antiartificial/norn-fleet/actions/runs/42861703620),
+which completed successfully at 17:10 UTC. Its JIT Mac runner was retired
+after the exact job. Postflight verified the reviewed Linux gate/modules,
+inactive management runner service, and pinned Certbot 2.9.0 package set; the
+workflow also masks and stops `certbot.timer`. The local management controller
+was restarted only after the run and its JIT resources were terminal. At 17:20
+UTC, its LaunchAgent was running (PID 85572); fresh Python imports and
+read-only management/effect candidate checks succeeded and found no queued
+candidate. These checks establish controller readiness, not DO service health
+or Genesis completion.
+
+Post-install review found the gate installer omitted one Python dependency from
+the Mac module-copy list. The exact missing module was repaired locally and
+imports now pass. Fleet PR
+[#964](https://github.com/antiartificial/norn-fleet/pull/964) adds that
+dependency and a regression assertion; its exact-head contract is still
+running. Fleet PR #963 merged the JIT procedure. The bootstrap flag remains
+`false`; no Genesis readback, provider apply, Fleet installation, or platform
+release occurred. The separate runbook correction for the gate install's
+persistent Certbot effects is Fleet PR
+[#965](https://github.com/antiartificial/norn-fleet/pull/965).
 
 The latest full offline state-model sweep checked 30 configurations. Twenty-
 eight passed their configured rules; the two deliberately buggy Mini
@@ -70,7 +86,7 @@ live service or workload qualification.
 |---|---|---|
 | Protected platform release | The `2a2d712a` platform release passed protected qualification and immutable publication (run `42788567933`). The follow-up `1b2dc229` also passed all 12 jobs and immutable publication (runs `42804580712`, `42805168466`). | Keep publish separate from deployment; use exact-SHA qualification and protected publication for each future release. |
 | Mini direct | Successful under the owner-stated bar: signed `34178b8b` is active at schema 52, API health returned HTTP 200, and the running Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. Other app health remains mixed. | Keep queued-upgrade recovery and Git-driven workload admission as separate follow-ups. Do not include Fleet workload resizing in the Mini lane. |
-| Existing DO Fleet | The 16:02 UTC `work`-context inventory found all eleven management/control/ingress/app nodes active. Genesis readback passed state-byte, route-continuity, and transport checks, then failed installed-source verification before reading Genesis data. Bootstrap run [42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029) was canceled before its first step because the one-use Linux runner was not registered. PR #962 now admits signed bootstrap intent through the controller and remote gate; its contract and offline statechart passed. The 16:20 UTC runner inventory found only the separate external-Mac finalizer online; required management and protected Linux runners are absent. | Restore the approved management-runner route (do not substitute the finalizer); install and verify the merged gate while the persistent Linux effect runner is stopped; verify fresh protected Linux runner readiness; obtain fresh Genesis readback; then prove API, etcd, Nomad/Consul, route, and workload health before any DO release. Keep the bootstrap flag false until the fresh intent passes review. |
+| Existing DO Fleet | All eleven `work`-account staging Droplets were active at 17:02 UTC. Protected gate-install run 42861703620 succeeded at 17:10; its JIT Mac runner retired and the local controller imports and read-only queue checks pass. Installer dependency fix PR #964 is pending exact-head CI; Certbot side-effect docs PR #965 is open. Earlier Genesis readbacks still failed before reading Genesis data. | Finish exact-head CI and merge the installer fix; apply the corrected installer through its protected lane when needed; obtain a fresh Genesis readback and prove API, etcd, Nomad/Consul, route, and workload health before any DO release. Keep bootstrap disabled until the fresh intent passes review. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | DO workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending or held releases retain them. Replay checks pass, but one fresh HTTP admission joined to real etcd, signed qualification, and owned serving-route evidence is still missing. Full executor/worker process recovery and live Nomad/ingress qualification remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, and capacity 4 reaches the modeled terminal receipt. | Join HTTP admission to real etcd, a signed qualification, a completed staging deployment, and control-owned active-route lineage. Exercise process/lease loss and lost responses across stage/create/readback/bind/route/stop on disposable Nomad/ingress. Keep stateful compatibility separate. This resize lane applies to the DO staging Fleet, not the Mini. |
 | Offline state models | All 30 checked-in configurations were rerun on Nov 10 with each config mapped to its owning TLA spec. Twenty-eight passed; the two intentionally buggy Mini descendant configs each reproduced the expected three-transition later-upgrade hold. The corrected Mini config passed five invariants and deadlock. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
@@ -298,9 +314,9 @@ run [42470557489](https://github.com/antiartificial/norn/actions/runs/4247055748
 qualified the disposable etcd TLS/RBAC harness only. None of these results
 qualifies a billable fresh-Fleet deployment.
 
-### M3. Re-establish DO readiness without writes
+### M3. Re-establish DO controller readiness and prove live state
 
-- [ ] Obtain fresh protected state and provider receipts. The 14:53 UTC
+- [ ] Obtain fresh protected state and provider receipts. The 17:02 UTC
   `doctl --context work` inventory found eleven staging Droplets active, but
   did not prove current control-plane or workload health.
 - [ ] Resolve the stale installed controller source. Genesis readbacks
@@ -309,22 +325,26 @@ qualifies a billable fresh-Fleet deployment.
   passed backend-byte, serial-22-to-23 route-continuity, and effective transport
   checks, then failed installed-source verification before reading Genesis.
   The management controller still reports source `2de3cbd8`.
-- [ ] Admit dormant bootstrap through the signed one-use runner controller.
-  PR [#959](https://github.com/antiartificial/norn-fleet/pull/959) added the
-  route-continuity preflight and deterministic source archive/private-vars
-  generation. Bootstrap run
+- [x] Admit the exact protected gate-install job through the signed one-use
+  management Mac runner; verify terminal retirement. Run
+  [42861703620](https://github.com/antiartificial/norn-fleet/actions/runs/42861703620)
+  succeeded. The distinct bootstrap job remains unrun and its flag remains
+  `false`.
+- [ ] Admit dormant Genesis bootstrap only through the signed one-use runner
+  controller. PR [#959](https://github.com/antiartificial/norn-fleet/pull/959)
+  added the route-continuity preflight and deterministic source archive/private-
+  vars generation. Bootstrap run
   [42838769029](https://github.com/antiartificial/norn-fleet/actions/runs/42838769029)
   was canceled before its first step because no protected Linux effect runner
-  was registered. PR #962 has since merged the signed intent admission and
-  remote gate; the bootstrap flag remains `false` and no installation or
-  dispatch occurred.
-- [ ] Install the reviewed source with controller services and timers disabled.
-  Verify installed source, private inputs, digests, and dormant units before a
-  new readback intent. The Genesis readback enable flag is `true`, but no Genesis
-  data was read and the prior one-use intent expired. The 16:20 UTC repository
-  runner inventory found no protected management-bootstrap Mac runner; do not
-  substitute the separately labeled external-Mac finalizer. No current local
-  Genesis owner private key was found.
+  was registered. PR #962 merged signed intent admission and the remote gate;
+  bootstrap remains disabled and no install or dispatch occurred.
+- [ ] Finish correcting and verifying the installed management-controller
+  source. The protected install succeeded, but post-install review found one
+  omitted Mac module dependency. The local missing module was repaired and
+  read-only imports/candidate checks pass; Fleet PR #964 adds the dependency to
+  the repeatable installer and remains in CI. The DO effect runner service is
+  inactive and disabled. Genesis readback remains enabled, but no Genesis data
+  was read and the prior one-use intent expired.
 - [ ] Refresh state, route, and host-key evidence, or use only the exact reviewed
   serial-22-to-23 continuity proof. Prepare a new signed, state- and host-key-
   bound readback intent only after every preflight passes.
