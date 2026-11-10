@@ -1,12 +1,17 @@
 # V3 platform release lanes and workload resizing
 
-Status: operator guidance reconciled 2026-11-10 05:31 UTC against Norn `master` at
-`8e2c3c44`. The authenticated workload-release producer exists as an opt-in
+Status: operator guidance reconciled 2026-11-10 06:07 UTC against Norn `master` at
+`5bb691de`. The authenticated workload-release producer exists as an opt-in
 staging API, but has not been deployed or live-qualified.
 The Mini is an independent node. The DigitalOcean (DO) work Fleet is the only
 Fleet and is a staging testbed intended to resemble production at lower scale.
 A successful soak or retained provider state is evidence for the run it covers;
 it does not prove that a service is healthy now.
+
+Mini runtime evidence remains dated 05:31 UTC. The prior-controller finalizer
+repair merged and passed full V3 qualification, but its exact-SHA protected
+signing/publish job is still awaiting approval. The candidate has not been
+imported or activated; the active Mini transition must be re-read before use.
 
 ## Choose the lane
 
