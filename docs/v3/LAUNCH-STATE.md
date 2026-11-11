@@ -1,5 +1,31 @@
 # Norn v3 launch state
 
+## Current DO Fleet status (2026-11-11 05:21 UTC)
+
+The existing DigitalOcean staging Fleet is running the signed V3 platform at
+source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. Exact-source qualification
+run [42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596)
+passed all 12 jobs; immutable publisher run
+[42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936)
+published the signed UI and four platform bundles. Fresh protected state
+readback [42964119843](https://github.com/antiartificial/norn-fleet/actions/runs/42964119843)
+matched lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23, and all three
+control identities. Controller-mediated Fleet run
+[42964798605](https://github.com/antiartificial/norn-fleet/actions/runs/42964798605)
+completed the all-stop upgrade from `34178b8b`. Postflight verified the target,
+exactly one healthy private API backed by etcd, and durable signed API/UI pins
+on all three controls. Controller receipt state is
+`terminal-and-runner-retired`. The promotion interrupted service.
+
+The last read-only provider inventory, at 04:49 UTC, found all eleven
+work-context staging Droplets active. The release postflight is the freshest
+API/control-health proof; it did not probe a responding Nomad workload or
+qualify online upgrade. Controller-mediated workload admission and resize,
+same-target/unknown-identity recovery cases, and online platform upgrade remain
+open. No overall V3 launch date is set. The platform release itself was
+deployed on 2026-11-11. Mini remains an independent direct lane; new-Fleet
+Genesis/bootstrap is separate from this existing Fleet update.
+
 ## Current Mini status (2026-11-10 15:26 UTC)
 
 The independent Mini runs immutable signed release
@@ -65,7 +91,7 @@ Queue-based upgrade, controller-mediated new workload admission, and workload
 resize remain open gates. See [launch history](LAUNCH-HISTORY.md) for direct
 upgrade evidence and the dated failure sequence.
 
-## DO V3 platform release and controller recovery (2026-11-11 03:16 UTC)
+## Prior DO V3 platform release and controller recovery (2026-11-11 03:16 UTC)
 
 The protected state readback
 [42943628535](https://github.com/antiartificial/norn-fleet/actions/runs/42943628535)

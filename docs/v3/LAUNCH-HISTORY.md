@@ -1,5 +1,35 @@
 # Norn v3 launch history
 
+## DO V3 platform updated through the release controller (2026-11-11 05:21 UTC)
+
+Norn source `fa301fa5f881b847a26f61a501092f9a9dd090fd` passed full protected
+qualification run
+[42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596)
+with all 12 jobs successful. Publisher run
+[42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936)
+published an immutable signed release with the pinned UI and four platform
+bundles. Protected state readback
+[42964119843](https://github.com/antiartificial/norn-fleet/actions/runs/42964119843)
+passed at lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23, and checked
+the three control identities.
+
+The signed one-use controller intent dispatched Fleet run
+[42964798605](https://github.com/antiartificial/norn-fleet/actions/runs/42964798605)
+from Fleet `main` `9db8195ec49def208550a8c98f17537403c3182d`. It upgraded the
+existing Fleet from `34178b8b90d52a2fa3f138ffae2dfc63744197e1` to
+`fa301fa5f881b847a26f61a501092f9a9dd090fd` through the all-stop lane. The
+postflight verified exactly one healthy private API with etcd backend and
+durable API/UI pins on all three controls. Controller receipt
+`42964798605.json` records `terminal-and-runner-retired`. Service was
+interrupted during promotion.
+
+This completes the existing-Fleet V3 platform deployment through a controller.
+It does not establish a responding application workload, controller-mediated
+application admission/resize, same-target recovery, or an online platform
+upgrade. The last provider inventory found all eleven staging Droplets active
+at 04:49 UTC; no newer provider inventory was taken. No overall V3 launch date
+is set. The deployment date of this platform release is 2026-11-11.
+
 ## Mini direct success confirmed against the owner-set workload bar (2026-11-10 15:26 UTC)
 
 Read-only checks were run over the Mini's verified SSH host key. The active
