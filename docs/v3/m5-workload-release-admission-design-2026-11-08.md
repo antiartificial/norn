@@ -1,6 +1,6 @@
 # M5 workload release admission
 
-> **Current status (2026-11-09):** This design note records the proposal and
+> **Current status (2026-11-11):** This design note records the proposal and
 > implementation evidence available before PR #319. The authenticated,
 > staging-only HTTP producer is now merged at Norn `master` commit
 > `877ad4ba`. It accepts only `qualificationId` and `targetReplicas`, checks
@@ -11,9 +11,13 @@
 > worker recovery need not reread the current checkout. It is opt-in and has
 > not been deployed or live-qualified. Completed releases now atomically remove
 > encrypted private inputs and record a minimal deletion tombstone; pending and
-> held releases retain inputs for recovery. Deterministic etcd coverage and a
-> bounded retention statechart pass, while full worker recovery and disposable
-> Nomad/ingress qualification remain open. Historical passages
+> held releases retain inputs for recovery. The bounded target-stage restart
+> model in [workload-stage-recovery](statecharts/workload-stage-recovery/README.md)
+> passes its eight safety/deadlock checks (26 states, 31 transitions). Existing
+> integration tests cover durable stage binding and route recovery separately;
+> they do not yet compose a real worker restart through Nomad target staging.
+> Full worker recovery and disposable Nomad/ingress qualification remain open.
+> Historical passages
 > below that say the producer is absent describe the pre-#319 state.
 
 ## Problem
@@ -303,13 +307,15 @@ this is explicit work, not behavior inherited from the function path.
 
 ## Next implementation step
 
-The private-input materialization, authenticated staging admission route and
-validated create/readback path are implemented behind explicit runtime gates;
-do not treat this as deployed qualification. Next, pin and durably retrieve the
-exact app source across worker restart, define private-envelope
-retention/deletion semantics, and extend deterministic fixtures across marker,
-delayed Nomad acceptance, response loss, successor claim, target readback, and
-durable hold. Then run the same path against version-pinned disposable Nomad
-and ingress with the configured ACL policy. Keep route-predecessor fencing and
-startup key preflight; do not enable provider or workload mutation until those
-gates pass.
+The exact app spec and encrypted SOPS snapshot are pinned, retention and
+terminal cleanup semantics are implemented, and the staging admission route
+and create/readback path remain behind explicit runtime gates. The new
+[target-stage recovery model](statecharts/workload-stage-recovery/README.md)
+shows that the current safety rules hold across one successor claim, including
+a delayed create after restart. Existing etcd tests cover target binding and
+route reconciliation separately. The next offline gate is to compose those
+boundaries through a restarted worker: accepted private input, target effect,
+one-use marker, delayed/lost create result, exact successor readback, and
+terminal receipt/cleanup. Then qualify that same path against version-pinned
+disposable Nomad and ingress with the configured ACL policy. No live workload
+mutation is qualified until those gates pass.

@@ -1,0 +1,38 @@
+---
+title: "Recovering a workload target after an uncertain create"
+---
+stateDiagram-v2
+  s0: Intent accepted
+  s1: Operation claimed
+  s2: Target effect reserved
+  s3: Private inputs staged
+  s4: Create attempt durably recorded
+  s5: Create response uncertain
+  s6: Controller stopped
+  s7: Target not yet visible
+  s8: Target created#59; readback pending
+  s9: Target read back
+  s10: Exact target bound
+  s11: Target healthy#59; old route serving
+  s12: Target serving, old workload retained
+  s13: Old workload drained#59; receipt pending
+  s14: Release complete
+  [*] --> s0
+  s0 --> s1: controller claims the accepted intent
+  s1 --> s2: controller reserves the target effect
+  s2 --> s3: controller stages the exact encrypted inputs
+  s3 --> s4: controller records the one-use create marker
+  s4 --> s5: controller submits one create-only request
+  s4 --> s6: controller process stops
+  s5 --> s6: controller process stops
+  s5 --> s8: Nomad accepts the delayed create
+  s6 --> s7: successor claims the same intent
+  s8 --> s6: controller process stops
+  s8 --> s9: successor reads the exact target
+  s6 --> s8: successor claims the same intent
+  s7 --> s8: Nomad accepts the delayed create
+  s9 --> s10: successor binds the exact readback
+  s10 --> s11: controller verifies target health
+  s11 --> s12: controller publishes the target route
+  s12 --> s13: controller drains the old workload after target-only proof
+  s13 --> s14: controller records completion
