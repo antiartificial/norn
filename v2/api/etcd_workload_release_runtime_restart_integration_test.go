@@ -15,6 +15,7 @@ import (
 	"norn/v2/api/effect"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
@@ -140,6 +141,209 @@ func TestWorkloadReleaseReconcilerRecoversRouteLostResponseAfterRestartEtcd(t *t
 	if state.routeCalls[1] != 2 || state.stopWrites != 1 {
 		t.Fatalf("recovery did not adopt same route effect: route-1 calls=%d stop writes=%d", state.routeCalls[1], state.stopWrites)
 	}
+}
+
+// This composes the durable target-create boundary with route/drain recovery:
+// a successor must adopt the same ambiguous target create, bind its exact
+// readback, and then finish the same release intent after another restart.
+func TestWorkloadReleaseStageAndRouteRecoverSameIntentAcrossEtcdRestarts(t *testing.T) {
+	endpoints := strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_ENDPOINTS"))
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	newClient := func() *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+	client := newClient()
+	prefix := "/norn-tests/workload-release-stage-route-restart/" + uuid.NewString()
+	t.Cleanup(func() {
+		if client != nil {
+			_, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix())
+			_ = client.Close()
+		}
+	})
+	signer, err := store.NewHMACAcceptanceSigner("norn-workload-release-stage-route-restart-signing-key-000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := uuid.NewString()
+	operations, err := etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := workloadReleaseRuntimeRestartIntent()
+	intent.TargetJobVersion, intent.TargetJobModifyIndex = 0, 0
+	intent.FleetTargetGeneration = 1
+	target := store.FleetAppTarget{SchemaVersion: store.FleetAppTargetSchema, App: intent.App,
+		ControlEnvironment: intent.ControlEnvironment, Cluster: intent.FleetCluster, FleetEnvironment: intent.FleetEnvironment,
+		Region: intent.Region, NomadRegion: intent.NomadRegion, NomadNamespace: intent.Namespace,
+		Datacenters: append([]string(nil), intent.FleetDatacenters...), Generation: intent.FleetTargetGeneration}
+	if _, err := operations.ConfigureFleetAppTarget(ctx, target, 0); err != nil {
+		t.Fatal(err)
+	}
+	plan := pipeline.WorkloadReleasePlan{SchemaVersion: pipeline.WorkloadReleasePlanSchema, Intent: intent}
+	planBytes, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := model.Operation{ID: uuid.NewString(), Kind: "app.workload-release", App: intent.App,
+		Status: model.OperationQueued, Source: "stage-route-restart-integration", StartedAt: time.Now().UTC(), MaxAttempts: 4,
+		Payload: map[string]interface{}{"workloadReleasePlan": string(planBytes)}}
+	acceptance := store.OperationAcceptance{
+		Identity: store.OperationRequestIdentity{Authority: authority,
+			Actor: store.OperationActor{Issuer: "stage-route-restart-integration", Subject: "operator"},
+			Kind:  operation.Kind, Resource: "app/" + operation.App, Key: uuid.NewString()},
+		Operation: operation, Admission: store.OperationAdmissionPolicy{OneActiveMutablePerApp: true},
+		Audit:     store.AcceptanceAuditContext{Source: "stage-route-restart-integration"},
+		Semantics: map[string]interface{}{"planId": intent.ID},
+	}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operations.Accept(ctx, acceptance); err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := operations.ClaimNextOperation(ctx, "stage-route-controller-before-crash", time.Minute, []string{operation.Kind})
+	if err != nil || claim.OperationID() != operation.ID {
+		t.Fatalf("initial claim=%+v err=%v", claim, err)
+	}
+	lock, acquired, err := operations.AcquireAppOperationLock(ctx, operation.App)
+	if err != nil || !acquired {
+		t.Fatalf("initial app lock acquired=%v err=%v", acquired, err)
+	}
+	stageEffects, err := etcdstore.NewV3WorkloadReleaseEffectReservations(operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := operations.WorkloadReleaseStageTargetReservation(ctx, claim, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := stageEffects.Reserve(ctx, reservation)
+	if err != nil || !reserved.Created {
+		t.Fatalf("stage reservation=%+v err=%v", reserved, err)
+	}
+	allowed, err := operations.MarkWorkloadReleaseStageTargetAttempt(ctx, claim, lock, reserved.Record.Token.EffectID, "controller-before-crash")
+	if err != nil || !allowed {
+		t.Fatalf("first create marker allowed=%t err=%v", allowed, err)
+	}
+	createAttempts := 0
+	if allowed { // the controller may submit only after the durable one-use marker
+		createAttempts++
+	}
+	observer := &stageRouteRestartObserver{state: nomad.DeploymentJobNotFound}
+	if _, err := operations.BindClaimedWorkloadReleaseTarget(ctx, claim, lock, reserved.Record.Token.EffectID, observer); !errors.Is(err, etcdstore.ErrWorkloadReleaseTargetNotFound) {
+		t.Fatalf("initial absent readback err=%v", err)
+	}
+	owner, err := client.Get(ctx, prefix+"/v3/owners/"+operation.ID)
+	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 {
+		t.Fatalf("owner lease=%+v err=%v", owner.Kvs, err)
+	}
+	if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
+		t.Fatal(err)
+	}
+	lock.Release()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client = newClient()
+	operations, err = etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, successor, err := operations.ClaimNextOperation(ctx, "stage-route-controller-after-crash", time.Minute, []string{operation.Kind})
+	if err != nil || successor.OperationID() != operation.ID || successor.Generation() <= claim.Generation() {
+		t.Fatalf("successor claim=%+v err=%v", successor, err)
+	}
+	lock, acquired, err = operations.AcquireAppOperationLock(ctx, operation.App)
+	if err != nil || !acquired {
+		t.Fatalf("successor app lock acquired=%v err=%v", acquired, err)
+	}
+	allowed, err = operations.MarkWorkloadReleaseStageTargetAttempt(ctx, successor, lock, reserved.Record.Token.EffectID, "controller-after-crash")
+	if err != nil || allowed {
+		t.Fatalf("successor reissued create marker allowed=%t err=%v", allowed, err)
+	}
+	if allowed { // a replayed marker must never authorize another external create
+		createAttempts++
+	}
+	observer.state = nomad.DeploymentJobFound
+	observer.version, observer.modifyIndex = 9, 47
+	if _, err := operations.BindClaimedWorkloadReleaseTarget(ctx, successor, lock, reserved.Record.Token.EffectID, observer); err != nil {
+		t.Fatalf("successor exact target binding: %v", err)
+	}
+	resolved, _, _, err := operations.ResolveClaimedWorkloadReleasePlan(ctx, successor, lock, reserved.Record.Token.EffectID)
+	if err != nil || resolved.TargetJobVersion != observer.version || resolved.TargetJobModifyIndex != observer.modifyIndex {
+		t.Fatalf("resolved intent=%+v err=%v", resolved, err)
+	}
+	if createAttempts != 1 {
+		t.Fatalf("ambiguous create attempts=%d, want exactly one", createAttempts)
+	}
+
+	state := &workloadReleaseRuntimeRestartState{routeWrites: make(map[int]int), routeCalls: make(map[int]int),
+		routeDigests: make(map[int]string), loseAfterStep: 1}
+	firstRouteProcess := workloadReleaseEtcdReceiptDriver{operations: operations, state: state, intent: resolved, operationID: operation.ID}
+	result, err := reconcileWorkloadRelease(ctx, successor, lock, firstRouteProcess)
+	var pending *effect.PendingError
+	if !errors.As(err, &pending) || result != nil {
+		t.Fatalf("first route reconcile=(%+v,%v), want pending lost response", result, err)
+	}
+	owner, err = client.Get(ctx, prefix+"/v3/owners/"+operation.ID)
+	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 {
+		t.Fatalf("route owner lease=%+v err=%v", owner.Kvs, err)
+	}
+	if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
+		t.Fatal(err)
+	}
+	lock.Release()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client = newClient()
+	operations, err = etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, finalClaim, err := operations.ClaimNextOperation(ctx, "stage-route-controller-recovered", time.Minute, []string{operation.Kind})
+	if err != nil || finalClaim.OperationID() != operation.ID {
+		t.Fatalf("final claim=%+v err=%v", finalClaim, err)
+	}
+	lock, acquired, err = operations.AcquireAppOperationLock(ctx, operation.App)
+	if err != nil || !acquired {
+		t.Fatalf("final app lock acquired=%v err=%v", acquired, err)
+	}
+	finalProcess := workloadReleaseEtcdReceiptDriver{operations: operations, state: state, intent: resolved, operationID: operation.ID}
+	result, err = reconcileWorkloadRelease(ctx, finalClaim, lock, finalProcess)
+	if err != nil || result == nil || result.Status != model.OperationSucceeded {
+		t.Fatalf("final reconcile=(%+v,%v)", result, err)
+	}
+	if observer.calls != 2 || state.routeWrites[1] != 1 || state.routeCalls[1] != 2 || state.stopWrites != 1 {
+		t.Fatalf("recovery effects: target readbacks=%d route writes=%v calls=%v stops=%d", observer.calls, state.routeWrites, state.routeCalls, state.stopWrites)
+	}
+}
+
+type stageRouteRestartObserver struct {
+	state                nomad.DeploymentJobObservationState
+	version, modifyIndex uint64
+	calls                int
+}
+
+func (o *stageRouteRestartObserver) LookupDeploymentJobRevision(_ context.Context, _ nomad.CASDeploymentJobRequest) (nomad.DeploymentJobObservation, error) {
+	o.calls++
+	return nomad.DeploymentJobObservation{State: o.state, Version: o.version, JobModifyIndex: o.modifyIndex}, nil
 }
 
 type workloadReleaseRuntimeRestartState struct {
