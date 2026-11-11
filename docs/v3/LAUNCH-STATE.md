@@ -1,32 +1,39 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-11 05:21 UTC)
+## Current DO Fleet status (evidence refreshed 2026-11-11 20:46 UTC)
 
-The existing DigitalOcean staging Fleet is running the signed V3 platform at
-source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. Exact-source qualification
-run [42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596)
-passed all 12 jobs; immutable publisher run
-[42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936)
-published the signed UI and four platform bundles. Fresh protected state
-readback [42964119843](https://github.com/antiartificial/norn-fleet/actions/runs/42964119843)
-matched lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23, and all three
-control identities. Controller-mediated Fleet run
+The existing DigitalOcean staging Fleet runs signed V3 platform release
+`fa301fa5f881b847a26f61a501092f9a9dd090fd`. Controller-mediated run
 [42964798605](https://github.com/antiartificial/norn-fleet/actions/runs/42964798605)
-completed the all-stop upgrade from `34178b8b`. Postflight verified the target,
-exactly one healthy private API backed by etcd, and durable signed API/UI pins
-on all three controls. Controller receipt state is
-`terminal-and-runner-retired`. The promotion interrupted service.
+completed the all-stop upgrade on 2026-11-11. Postflight verified the target,
+exactly one healthy private API backed by etcd, and signed API/UI pins on all
+three controls. Promotion interrupted service.
 
-The last read-only provider inventory, at 04:49 UTC, found all eleven
-work-context staging Droplets active. The release postflight is the freshest
-API/control-health proof; it did not probe a responding Nomad workload or
-qualify online upgrade. Controller-mediated workload admission and resize,
-same-target/unknown-identity recovery cases, and online platform upgrade remain
-open. No overall V3 launch date is set. The platform release itself was
-deployed on 2026-11-11. Mini remains an independent direct lane; new-Fleet
-Genesis/bootstrap is separate from this existing Fleet update.
+The latest recorded protected read-only preflight,
+[42991147601](https://github.com/antiartificial/norn-fleet/actions/runs/42991147601),
+passed at 09:06 UTC. It checked release signatures, live etcd and installed
+components, and exactly one healthy private API. It skipped promotion and all
+write steps. At 20:24 UTC, a fresh read-only provider inventory found all nine
+Fleet nodes and both management nodes active. The public `/version` endpoint
+returned HTTP 200 and reported allocation
+`de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. This is point-in-time provider
+and endpoint evidence. It does not bind the allocation to app-node identities
+or establish workload admission, ACL/network policy, route health, or
+continuous availability.
 
-## Current Mini status (2026-11-10 15:26 UTC)
+The protected `work-staging-workload-readback.yml` workflow is active in
+GitHub, but it has no runs. At 20:46 UTC, no repository- or `work-staging`-
+scoped `NORN_WORKLOAD_READBACK_*` variables or secrets were configured. The
+first controller-admitted workload has not launched. Its date is uncommitted.
+The open gates are reviewed and bound protected inputs, live workload/ACL/
+network readback, terminal-artifact retrieval after controller restart,
+full-executor recovery with real Nomad and ingress effects, and a responding
+controller-admitted canary with correlated durable receipts. Workload resize
+and online platform-upgrade qualification follow that canary. Fresh-Fleet
+Genesis/bootstrap is separate; Mini is an independent direct lane.
+
+## Latest Mini status (read back 2026-11-10 15:26 UTC)
 
 The independent Mini runs immutable signed release
 `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The direct controller
@@ -341,15 +348,21 @@ completed on 2026-11-11 and is recorded above.
 
 ## Release timing
 
-No V3 launch date is committed. The DO platform release and postflight are
-complete through the protected controller lane. Remaining program gates are
-controller-driven DO workload admission, mixed-version resize and recovery,
-online-upgrade qualification, and fresh-Fleet provider recovery. The Mini
-direct deployment is successful by
-the owner-stated criterion: the V3 API and `vigil-gateway` both responded.
-Queued-upgrade recovery and Git-driven workload admission remain Mini follow-up
-work, tracked separately from that success. Do not treat provider-active
-Droplets or the historical soak as current service-health evidence.
+- **Mini direct V3 deployment:** completed 2026-11-10 under the owner's
+  criterion: V3 was active, the API returned HTTP 200, and `vigil-gateway`
+  returned HTTP 200. This is the latest cited readback, not a continuous
+  health claim. Mini queue recovery and Git-driven admission remain separate.
+- **DO V3 platform release:** completed 2026-11-11 through the controller's
+  all-stop path. The upgrade caused a service interruption. Online platform
+  upgrade remains unqualified.
+- **First controller-admitted DO workload:** no date committed. Set a window
+  after protected readback and recovery gates pass and operator availability
+  is known. Declare launch only after a controller-admitted workload responds
+  and its durable receipts prove same-intent recovery.
+- **Overall V3 program:** no launch date committed. DO workload resize,
+  online platform upgrade, and fresh-Fleet provider recovery remain open
+  milestones after or alongside the first workload launch. The Mini is
+  independent of the DO Fleet.
 
 ## Historical snapshot (2026-11-10 10:50 UTC; superseded)
 

@@ -1,5 +1,33 @@
 # Norn v3 launch history
 
+## DO launch status rechecked (2026-11-11 20:46 UTC)
+
+A read-only `doctl --context work` check at 20:24 UTC found all nine tagged
+`staging/nyc3` Fleet nodes and both management nodes active. The public
+`https://staging.tkmkt-dev.com/version` endpoint returned HTTP 200 with
+allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. These observations prove provider
+power and a public endpoint response at that time. They do not bind the
+allocation to app-node identities or prove workload admission, ACL/network
+policy, or continuous health.
+
+The controller-mediated platform deployment to signed source
+`fa301fa5f881b847a26f61a501092f9a9dd090fd` completed on 2026-11-11 through
+all-stop run
+[42964798605](https://github.com/antiartificial/norn-fleet/actions/runs/42964798605).
+Read-only preflight
+[42991147601](https://github.com/antiartificial/norn-fleet/actions/runs/42991147601)
+passed at 09:06 UTC and skipped all write steps. A 20:46 UTC GitHub inspection
+found the protected workload-readback workflow active but with no runs and no
+repository- or `work-staging`-scoped `NORN_WORKLOAD_READBACK_*` variables or
+secrets. No controller-admitted workload launch is recorded. The first
+workload and overall V3 launch dates remain uncommitted. The next gates are
+protected input review and live readback, terminal-artifact replay after
+controller restart, full-executor restart with real Nomad and ingress effects,
+and one responding controller-admitted canary with correlated durable
+receipts. Resize and online platform upgrade follow the canary; Mini and
+fresh-Fleet Genesis remain separate lanes.
+
 ## DO V3 platform updated through the release controller (2026-11-11 05:21 UTC)
 
 Norn source `fa301fa5f881b847a26f61a501092f9a9dd090fd` passed full protected

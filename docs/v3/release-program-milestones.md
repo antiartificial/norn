@@ -1,83 +1,69 @@
 # V3 release program milestones
 
-Status: active work map, refreshed 2026-11-11 05:22 UTC. The existing DO Fleet
-V3 platform release was deployed on 2026-11-11. No overall V3 launch date is
-set; timing remains gate-based while workload admission/resize, recovery proof,
-and online platform upgrades remain open. This checklist orders the [release
-fitness and controller plan](release-fitness-and-controller-plan.md). It does not
-authorize deployment, provider mutation, or credential use.
+Status: active work map, refreshed 2026-11-11 20:46 UTC against Norn `main`
+`d1bf9381` and current Fleet evidence. The DO V3 platform release completed
+on 2026-11-11. The first controller-admitted DO workload launch and the overall
+V3 program have no committed dates. Track dates by lane and set a workload
+window only after its live readback and recovery gates pass.
+
+This checklist orders the [release fitness and controller plan](release-fitness-and-controller-plan.md). It does not authorize deployment, provider mutation, or credential use.
 
 ## Reuse release lessons before repeating work
 
 Keep this milestone map and the operator runbooks procedural. Consult the
 [launch state](LAUNCH-STATE.md) for current gates and
-[launch history](LAUNCH-HISTORY.md) for dated observations, the
-[Mini upgrade observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md)
-for the direct-lane recovery sequence, the
-[upgrade lessons](online-upgrade-lessons-2026-11-07.md) for platform-wide
-capability gaps, and the
+[launch history](LAUNCH-HISTORY.md) for dated observations. Read the
+[Mini upgrade observation](m6-mini-v3-forward-upgrade-observation-2026-11-07.md),
+[upgrade lessons](online-upgrade-lessons-2026-11-07.md), and
 [M5 workload protocol](m5-workload-release-protocol-2026-11-07.md) before
-repeating workload changes. Before a rerun, compare the prior attempt's exact
-source, intent, state and resource identities, terminal evidence, and stated
-redo conditions with current inputs. A historical pass is not current runtime
-evidence; a timeout or empty readback is not proof that an external effect did
-not happen.
+repeating those operations. Before a rerun, compare the prior source, intent,
+state and resource identities, terminal evidence, and redo conditions with
+current inputs. A historical pass is not current runtime evidence.
 
-Current gate snapshot (2026-11-11 05:21 UTC): the independent Mini runs signed
-release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52. The owner-stated
-Mini success bar is met: the direct V3 release is active, API health returned
-HTTP 200, and the Norn-managed `vigil-gateway` workload allocation was running
-with its `/health` endpoint returning HTTP 200. Other app health remains mixed;
-three queued platform upgrades stopped before promotion, and the Git-to-Norn
-workload admission path is not end-to-end qualified. Track those as separate
-reliability and admission follow-ups, not as failure of the completed Mini
-direct deployment. Seven old Fleet dispatch receipts remain queued after a
-supported reconciliation lookup failed closed with a binding mismatch. Mini
-is not part of a Fleet and has no Fleet workload-resize lane.
+## Current release status
 
-The `work` DigitalOcean context is TurnKey Marketing (`webdev@tkmkt.com`); the
-separate `norn-pilot` context is personal. A read-only provider inventory at
-04:49 UTC on Nov 11 found all eleven `work`-context staging Fleet Droplets
-active. Protected release-state readback
-[run 42964119843](https://github.com/antiartificial/norn-fleet/actions/runs/42964119843)
-matched raw state SHA `8cf77ae4…19060c`, lineage `9201526d…4a68dc580`, serial
-23, and all three control identities. Norn source `fa301fa5` passed all 12
-qualification jobs in run
-[42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596)
-and was published as an immutable signed release with four platform bundles in
-run [42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936).
-Controller-mediated Fleet run
-[42964798605](https://github.com/antiartificial/norn-fleet/actions/runs/42964798605)
-then completed the all-stop upgrade from `34178b8b` to `fa301fa5`. Its postflight
-verified the target release, exactly one healthy private API with etcd backend,
-and durable API/UI pins on all three controls. The controller's terminal
-receipt confirms the one-use runner retired. Service was interrupted during
-promotion. These are post-upgrade API/control proofs; the provider inventory is
-not a fresh Nomad, route, or workload probe.
+The independent Mini direct lane met the owner's success criterion on
+2026-11-10: signed V3 was active, its API returned HTTP 200, and the
+Norn-managed `vigil-gateway` workload returned HTTP 200. Mixed app health and
+queued-upgrade recovery remain separate follow-ups. The Mini is not part of a
+Fleet and has no Fleet resize lane.
 
-The controller recovery fixes in Fleet PRs #979–#981 are merged. Gate-install
-[run 42951258208](https://github.com/antiartificial/norn-fleet/actions/runs/42951258208)
-installed the reviewed controller/discovery modules; the Linux gate stayed
-disabled, the one-use runner retired, both controller journals cleared, and
-the queue had no eligible intent. The platform release is deployed through the
-controller. Application admission/resize, stronger same-target and unknown-
-identity recovery proofs, and online platform upgrade remain open. Fresh-Fleet
-Genesis/bootstrap is a separate lane and is not required to update this
-existing staging Fleet.
+The DO staging Fleet is the only Fleet in this program. Its V3 platform release
+`fa301fa5f881b847a26f61a501092f9a9dd090fd` completed through the controller's
+all-stop lane on 2026-11-11. Promotion interrupted service. The latest
+recorded protected read-only preflight, run
+[42991147601](https://github.com/antiartificial/norn-fleet/actions/runs/42991147601),
+passed at 09:06 UTC. At 20:24 UTC, all nine Fleet nodes and both management
+nodes were provider-active, and the public `/version` endpoint returned HTTP
+200. That endpoint observation does not bind its allocation to app nodes or
+prove workload admission, ACLs, routes, or continuous health.
 
-The latest full offline state-model sweep checked 30 configurations. Twenty-
-eight passed their configured rules; the two deliberately buggy Mini
-configurations reproduced the expected hold. This is protocol evidence, not
-live service or workload qualification.
+The first workload launch has not happened. At 20:46 UTC, GitHub showed the
+protected readback workflow active but with no runs; the protected
+`NORN_WORKLOAD_READBACK_*` variables and secrets were absent. Input review and
+binding, a successful workload/ACL/network readback, terminal-artifact replay
+after controller restart, full-executor recovery with real Nomad and ingress
+effects, and a controller-admitted responding canary remain open. The launch
+date stays uncommitted until those gates pass and an operator window is known.
+
+Workload resize and online platform upgrade are DO follow-on capabilities after
+the first canary. Fresh-Fleet creation and Genesis/bootstrap are separate
+lanes. PR #996 joins synthetic recovery records to the artifact contract but
+does not qualify the full nine-node recovery path. PR #997's exact-ID disposal
+is fixture-tested only; persistent staging has no sanctioned whole-Fleet
+destroy lane. General and Stateful remain the selected roles for a future new
+Fleet, while sizing, capacity, cost, and admission rules remain open. See the
+[launch state](LAUNCH-STATE.md) for the claim boundaries and evidence links.
+
 ## Parallel workstreams
 
 | Workstream | Current evidence | Next proof |
 |---|---|---|
 | Protected platform release | Source `fa301fa5` passed all 12 qualification jobs in run [42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596); protected run [42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936) published the immutable signed release with UI and four OS/architecture bundles. | Keep exact-SHA qualification and publication separate from controller deployment for each release. |
 | Mini direct | Successful under the owner-stated bar: signed `34178b8b` is active at schema 52, API health returned HTTP 200, and the running Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. Other app health remains mixed. | Keep queued-upgrade recovery and Git-driven workload admission as separate follow-ups. Do not include Fleet workload resizing in the Mini lane. |
-| Existing DO Fleet | The controller-mediated upgrade to signed source `fa301fa5` completed through the all-stop lane in Fleet run [#42964798605](https://github.com/antiartificial/norn-fleet/actions/runs/42964798605), bound to protected state readback [#42964119843](https://github.com/antiartificial/norn-fleet/actions/runs/42964119843). Postflight verified one healthy private API with etcd backend and durable release pins on all three controls; the terminal receipt confirms runner retirement. The last provider inventory found all 11 tagged staging Droplets active at 04:49 UTC. No workload response was checked by the release postflight. | Keep this existing Fleet as the target. Join controller-mediated application admission to live workload/route proof and mixed-version resize. Prove same-target recovery and fail-closed behavior for unknown bytes/host identity. Implement and qualify the online platform lane; keep all-stop as the working path. Fresh-Fleet Genesis/bootstrap remains separate. |
+| Existing DO Fleet | V3 platform `fa301fa5` is deployed through the controller all-stop lane. Provider and public endpoint checks passed at 20:24 UTC; no app-to-host, ACL, route, or workload binding is proven. | Bind the protected workload inputs, run the signed workload/ACL/network readback, replay its terminal artifact after controller restart, qualify full-executor restart with real Nomad/ingress effects, then admit one responding stateless canary. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
-| DO workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending or held releases retain them. PR #419 adds a real-etcd composition test spanning durable stage reservation, one-use create authorization, delayed target binding, successor claim, and route-loss recovery through terminal receipt across two etcd client restarts; its Nomad and route effects are simulated. Merged PR [#421](https://github.com/antiartificial/norn/pull/421) (commit `b357f6a`) adds a disposable loopback qualification that drives the production target-stage helper against real Nomad, drops the successful create response, hides the first readback, then proves the successor binds Nomad's actual initial job version 0 and nonzero modify index without a second registration. It fixes missing deployment/spec provenance metadata in the target builder. Exact-head CI passed, including API Go tests, Fleet pilot workload, and three-node durable replica qualification. Full private-input/executor recovery, Nomad health and ingress qualification, fresh signed HTTP admission, and DO workload admission/resize remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, and capacity 4 reaches the modeled terminal receipt. | Join HTTP admission to real etcd, signed qualification, completed staging deployment, and control-owned active-route lineage. Extend disposable driver qualification through private-input open/stage, target health, route, and old-cohort stop; then qualify a database-free canary and mixed-version resize on DO under controller gates. Keep stateful compatibility separate. This resize lane applies to the DO staging Fleet, not the Mini. |
+| DO workload resize/release | Offline admission, recovery, and mixed-version models cover important boundaries. No live controller-admitted workload or resize has run on staging. | First close the readback, artifact replay, and full-executor recovery gates. Then qualify the canary and the capacity/placement overlap required for mixed-version resize. Keep stateful writer compatibility separate. |
 | Offline state models | All 30 checked-in configurations were rerun on Nov 10 with each config mapped to its owning TLA spec. Twenty-eight passed; the two intentionally buggy Mini descendant configs each reproduced the expected three-transition later-upgrade hold. The corrected Mini config passed five invariants and deadlock. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
 
 Mini is an independent node, not a Fleet member. DO staging is the only Fleet
