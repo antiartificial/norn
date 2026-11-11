@@ -35,6 +35,22 @@ func TestWorkloadReleasePlanBindsObservedNomadRevisionBeforeResolvingIntent(t *t
 	}
 }
 
+func TestWorkloadReleasePlanAcceptsNomadInitialJobVersionZero(t *testing.T) {
+	intent := workloadReleaseFixture()
+	intent.TargetJobVersion, intent.TargetJobModifyIndex = 0, 0
+	plan := WorkloadReleasePlan{SchemaVersion: WorkloadReleasePlanSchema, Intent: intent}
+	request := workloadReleaseTargetReadbackRequest(intent)
+	observation := nomad.DeploymentJobObservation{State: nomad.DeploymentJobFound, Version: 0, JobModifyIndex: 7}
+	binding, err := plan.BindObservedTarget("effect-stage-1", 2, request, observation)
+	if err != nil {
+		t.Fatalf("initial Nomad revision binding: %v", err)
+	}
+	resolved, err := plan.Resolve(binding, "effect-stage-1", 2)
+	if err != nil || resolved.TargetJobVersion != 0 || resolved.TargetJobModifyIndex != 7 {
+		t.Fatalf("initial Nomad revision did not resolve from its nonzero modify index: intent=%+v err=%v", resolved, err)
+	}
+}
+
 func TestWorkloadReleasePlanAndStageBindingRejectUntrustedCoordinates(t *testing.T) {
 	intent := workloadReleaseFixture()
 	intent.TargetJobVersion = 0

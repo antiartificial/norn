@@ -31,6 +31,8 @@ func TestBuildWorkloadReleaseTargetJobPlanIsExactCreateOnlySource(t *testing.T) 
 		t.Fatalf("target plan was not a deterministic create-only request: first=%+v second=%+v", first.Request, second.Request)
 	}
 	if first.Job.Meta[nomad.DeploymentJobDigestMeta] != first.Request.JobDigest ||
+		first.Job.Meta[nomad.DeploymentIDMeta] != plan.Intent.TargetDeploymentID ||
+		first.Job.Meta[nomad.SpecDigestMeta] != plan.Intent.TargetSpecDigest ||
 		first.Job.Meta[nomad.DeploymentOperationIDMeta] != plan.Intent.TargetOperationID ||
 		first.Job.Meta[nomad.DeploymentExecutionIDMeta] != plan.Intent.TargetExecutionID {
 		t.Fatalf("target job metadata differs from its exact request: %#v", first.Job.Meta)
@@ -122,6 +124,8 @@ func workloadReleaseTargetPlanFixture(t *testing.T) (pipeline.WorkloadReleasePla
 		t.Fatal(err)
 	}
 	nomad.ApplyDesiredReplicaCounts(job, map[string]int{intent.Process: intent.TargetReplicas})
+	job.Meta[nomad.DeploymentIDMeta] = intent.TargetDeploymentID
+	job.Meta[nomad.SpecDigestMeta] = intent.TargetSpecDigest
 	job.Meta[nomad.DeploymentOperationIDMeta] = intent.TargetOperationID
 	job.Meta[nomad.DeploymentExecutionIDMeta] = intent.TargetExecutionID
 	digest, err := nomad.DigestDeploymentJob(job)
