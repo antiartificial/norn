@@ -1,7 +1,7 @@
 # V3 release fitness and controller plan
 
-Status: proposed execution order, reconciled against repository, provider-source,
-and authenticated Mini and DO provider evidence on 2026-11-10 15:26 UTC. This
+Status: proposed execution order, reconciled against repository, protected DO
+release evidence, and authenticated Mini and DO provider evidence on 2026-11-11 UTC. This
 plan authorizes no deployment or provider mutation.
 
 The goal is to release Norn V3 through repeatable controllers with a small,
@@ -22,11 +22,11 @@ into a pass. Do not dispatch a write workflow until its preceding gate passes.
 | Area | Reconciled status | What remains unproven |
 |---|---|---|
 | Mini direct V3 | The independent Mini runs signed release `34178b8b90d52a2fa3f138ffae2dfc63744197e1`, schema 52, after a successful direct controller upgrade. At 15:26 UTC, `/api/health` returned 200 and the running Norn-managed `vigil-gateway` allocation returned 200 from `/health`; this meets the owner-stated Mini deployment success bar. | Other workload health remains mixed. Three queued upgrades failed before promotion at the host-agent stability gate; their operation-window cause is unexplained. Git-driven workload admission remains unqualified. These are separate follow-ups, and workload resize is not a Mini lane. See [current Mini status](LAUNCH-STATE.md#current-mini-status-2026-11-10-1526-utc). |
-| DO staging Fleet | A 14:53 UTC `doctl --context work` inventory found all eleven staging Droplets active: two management, three control, two ingress, four app. The completed 72h35m soak remains historical qualification evidence. | Current DO Norn/API, etcd, Nomad/Consul, route, and workload health remain unverified. Provider-active state and historical soak are not runtime proof. See [current DO staging evidence](LAUNCH-STATE.md#current-do-staging-fleet-status-2026-11-10-1458-utc). |
-| DO Genesis/readback | The protected readback is enabled but remains fail-closed. Runs [42827741033](https://github.com/antiartificial/norn-fleet/actions/runs/42827741033) and [42831291445](https://github.com/antiartificial/norn-fleet/actions/runs/42831291445) verified backend bytes, serial-22-to-23 route continuity, and effective Ansible transport, then failed installed-source verification before reading Genesis data. | Install and verify the reviewed controller source with services dormant, admit the bootstrap through the signed effect controller, and obtain fresh state/route/host-key-bound receipts before new readback. Bootstrap is disabled; do not bypass either gate. |
+| DO staging Fleet | The 14:53 UTC `doctl --context work` inventory found all eleven staging Droplets active. Protected readback [42943628535](https://github.com/antiartificial/norn-fleet/actions/runs/42943628535) passed against current protected state and controls. | Norn API and etcd passed postflight after the controller-mediated upgrade; current Nomad/Consul, route, and workload response are not verified by that platform receipt. Provider inventory and historical soak are not workload evidence. |
+| DO Genesis/readback | Protected intent/journal readback [42898054171](https://github.com/antiartificial/norn-fleet/actions/runs/42898054171) passed and confirmed the signed Genesis intent plus dormant journal. State/control handoff [42943628535](https://github.com/antiartificial/norn-fleet/actions/runs/42943628535) later passed for the platform release. | No Genesis execution or fresh-Fleet provider create was performed. Bootstrap execution/recovery, provider creation, and future General + Stateful sizing remain open. |
 | Fresh DO Fleet | The last recorded protected source check supports General and Stateful as future fresh-Fleet app-pool roles (`general`, `stateful`). Current DO staging remains one app pool; no fresh two-pool provider profile is configured. | Sizing, capacity, cost, placement, stateful recovery, exact provider identity, integrated persistent apply/recovery, bootstrap, and terminal receipt remain open. The owner-attested scope contract is offline evidence and does not prove actual grants on the runner token. Per-service credential lifecycle is incomplete; persistent staging has no whole-Fleet destroy lane. Genesis installs on existing infrastructure and does not create provider resources. |
-| DO Norn release | The protected release runbook defines an all-stop, forward-only platform release path with exact artifacts, state, host keys, and a one-use runner. The latest recorded release run was cancelled before executing release steps. | Current health, fresh Genesis readback, a current end-to-end release receipt, and mixed Norn control-version operation remain unqualified. |
-| Workload changes | Replica scale 2→3→2, app-node drain, and the 72h35m soak are historical evidence. Admission replay, successor-claim recovery, accepted-source/SOPS pinning, and receipt-bound encrypted-input cleanup have offline and real-etcd coverage at separate boundaries. All 30 checked-in statechart configurations were rerun on 2026-11-10: 28 passed; the two intentionally buggy Mini descendant configs reproduced their expected hold. The corrected Mini model passed its configured rules, including the new operation-mode gate. | Fresh authenticated HTTP admission joined to real etcd, real signed qualification and active-route lineage is open, as are full worker/controller process recovery, delayed production-driver behavior, live Nomad/ingress qualification, and mixed-version rollout on DO. Stateful writer/schema/data compatibility remains separate. |
+| DO Norn release | Controller upgrade [42945021070](https://github.com/antiartificial/norn-fleet/actions/runs/42945021070) completed for signed target `34178b8b90d52a2fa3f138ffae2dfc63744197e1`; postflight verified singleton private API backed by healthy etcd and durable API/UI pins on all three controls. The all-stop promotion interrupted service. | Online platform upgrade, workload response after this platform release, and mixed Norn control-version operation remain unqualified. |
+| Workload changes | Admission, immutable source/SOPS input capture, target staging, successor claim, exact target binding, and receipt cleanup have implementation and offline/etcd coverage at separate boundaries. The workload-stage recovery statechart passes eight checks over 26 states/31 transitions. | A real worker restart composed through Nomad target staging, delayed production-driver behavior, disposable Nomad/ingress qualification, live DO workload release/resize, and mixed-version rollout remain open. Stateful writer/schema/data compatibility remains separate. |
 
 The M0 evidence ledger is reconciled in [LAUNCH-STATE.md](LAUNCH-STATE.md).
 Mini API health, generation finalization, workload health, DO provider
@@ -35,13 +35,14 @@ provider inventory do not establish present service health. Earlier records
 remain as dated history; M0 completion means evidence is classified accurately,
 not that the DO Fleet is currently healthy.
 
-## Step 1. Reconcile the evidence ledger — M0 complete
+## Step 1. Reconcile the evidence ledger — M0 complete, refreshed 2026-11-11
 
-Inspect the exact signed release, controller, recovery, state-readback, soak,
-and workflow receipts in Norn and norn-fleet. Confirm whether the post-merge
-Genesis readback actually ran. Refresh only protected read-only evidence for
-the DO management route, three control APIs, etcd quorum, Norn capabilities,
-and service health. Do not run an apply, restart, or release.
+The protected state/control readback [42943628535](https://github.com/antiartificial/norn-fleet/actions/runs/42943628535)
+passed. The controller-mediated platform release [42945021070](https://github.com/antiartificial/norn-fleet/actions/runs/42945021070)
+then verified the signed target, private API/etcd postflight, and durable pins
+on all three controls. Its all-stop promotion interrupted service. Use fresh
+protected read-only evidence for current health; this dated receipt does not
+prove current Nomad, Consul, route, or workload health.
 
 Record one row per claim with repository and commit, workflow/run ID, intent or
 receipt digest, target hosts, timestamp, observed result, and confidence. Reconcile
@@ -49,26 +50,26 @@ the PR #939 status in `LAUNCH-STATE.md` with the merge present in norn-fleet.
 Preserve the known timeouts and unclassified etcd failure as open findings until
 a newer read-only diagnostic resolves them.
 
-The latest post-fix readback is now known: run `42418784411` passed protected
-input checks and private transport, then held because a required Norn source
-commit is absent from the management host's protected repository. The error
-does not identify whether the capability commit or target commit is missing.
+Historical readback [42418784411](https://github.com/antiartificial/norn-fleet/actions/runs/42418784411)
+held because required Norn source was absent from the management host's
+protected repository. Later readback [42943628535](https://github.com/antiartificial/norn-fleet/actions/runs/42943628535)
+passed against its exact protected state and controls; neither result is a
+fresh-Fleet creation receipt.
 
 **Gate:** the DO fleet is either `healthy and current` with fresh read-only
 receipts or `held` with exact failing probes and no mutation. The soak is shown
 as completed qualification evidence, not as present-tense health.
 
-Current state: the soak is complete. A fresh explicit-context provider
-inventory found eleven active staging Droplets, but protected DO API/runtime
-health remains unconfirmed. The local `norn-pilot` `doctl` context belongs to a
-different account; read-only inventory used explicit `work` context. The latest
-Genesis readbacks failed installed-source verification before reading Genesis
-data; see the launch ledger for exact runs and the current bootstrap hold.
+Current state: the historical soak is complete; the explicit-context provider
+inventory found eleven active staging Droplets; and the controller-mediated
+platform release postflight passed for Norn API and etcd. Current application
+runtime and workload response remain unverified. The local `norn-pilot`
+`doctl` context belongs to a different account; the inventory used explicit
+`work` context. See the launch ledger for exact timestamps and boundaries.
 
-The local Fleet source now distinguishes “target commit absent” from
-“capability commit absent” in this pre-effect check, with synthetic regression
-coverage. That diagnostic change has not been installed on the management host
-or merged and does not supply either missing object.
+Earlier source-readback failures and their diagnostic fix remain historical
+lessons; they were superseded for the platform release by the successful
+state/control readback and signed all-stop release above.
 
 ## Step 2. Freeze lane contracts and release boundaries
 
