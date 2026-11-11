@@ -92,6 +92,18 @@ chart and report were regenerated from the checked-in spec and view.
 
 ## Runtime test evidence
 
+Merged PR [#421](https://github.com/antiartificial/norn/pull/421) adds a
+disposable loopback qualification of the production target-stage helper against
+a real Nomad agent. The test allows the job registration to succeed, drops its
+response, masks the first readback, closes and recreates the etcd client, then
+claims the same durable intent with a successor. The successor binds the actual
+Nomad job at initial version `0` with a nonzero modify index, and the test
+asserts Nomad received only one registration. Exact-head CI also passed the
+Fleet pilot workload and three-node durable replica qualification. This proves
+the staging boundary and its lost-response recovery; it does not exercise fresh
+HTTP admission, private-input opening, target health, ingress, or the full
+production worker runtime.
+
 The receipt CAS integration test now reconstructs a fresh etcd client and
 `V3OperationStore` after revoking the original claim. The reconstructed store
 reloads the durable receipt, recovers the expired operation, and advances that
