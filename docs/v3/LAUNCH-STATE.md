@@ -65,7 +65,41 @@ Queue-based upgrade, controller-mediated new workload admission, and workload
 resize remain open gates. See [launch history](LAUNCH-HISTORY.md) for direct
 upgrade evidence and the dated failure sequence.
 
-## Current DO staging Fleet status (2026-11-10 14:58 UTC)
+## DO V3 platform release and controller recovery (2026-11-11 03:16 UTC)
+
+The protected state readback
+[42943628535](https://github.com/antiartificial/norn-fleet/actions/runs/42943628535)
+passed at lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23. The
+controller-mediated platform upgrade
+[42945021070](https://github.com/antiartificial/norn-fleet/actions/runs/42945021070)
+completed on merged Fleet source `2d168140c842d8614fe093c9ece28b458926eeaa`.
+It promoted signed Norn release
+`34178b8b90d52a2fa3f138ffae2dfc63744197e1` through the all-stop lane. Its
+postflight verified exactly one healthy private API backed by etcd, the
+target release, and durable API/UI pins on all three controls. The all-stop
+promotion interrupted service. Online upgrade remains unqualified.
+
+This proves the V3 platform release and its postflight at that run's time. It
+does not prove that an application workload responded after the upgrade.
+Controller-driven workload admission, mixed-version rollout and resize, and
+stateful MySQL compatibility remain open. The Mini is an independent direct
+lane and is not part of this Fleet.
+
+Fleet PRs [#979](https://github.com/antiartificial/norn-fleet/pull/979),
+[#980](https://github.com/antiartificial/norn-fleet/pull/980), and
+[#981](https://github.com/antiartificial/norn-fleet/pull/981) fixed terminal
+intent discovery, packaged receipt validation in the pinned discovery module,
+and allowed a protected module refresh with an unchanged Linux gate digest.
+Gate-install run
+[42951258208](https://github.com/antiartificial/norn-fleet/actions/runs/42951258208)
+installed the updated controller modules. Runner 1036 retired with a terminal
+receipt, both controller journals cleared, and the installed controller read
+the intent queue with zero eligible entries. The LaunchAgent restarted with
+the reviewed modules. The remote runner service remained inactive and
+disabled. This management-host install changed no Fleet node, workload, or
+provider infrastructure.
+
+## DO staging provider inventory (2026-11-10 14:58 UTC)
 
 A read-only `doctl --context work` inventory at 14:53 UTC reported all eleven
 staging Droplets active in `nyc3`: two management nodes, three controls, two
@@ -259,13 +293,12 @@ the committed WAL sidecar. The Ansible recap was `changed=0`, with no failed or
 unreachable hosts; the one-use runner was retired and the controller receipt
 reconciled to terminal.
 
-This closes the Genesis journal readback gate and confirms the journal records
-an approved signed release intent. It is readback evidence only: it does not
-prove the Genesis service is installed/active, the V3 platform API or cluster
-services are healthy, or an application workload responds. DO platform release
-postflight and workload qualification remain open; do not call the staging
-Fleet online until those live checks pass. The Mini remains an independent
-direct lane and is not part of this Fleet status.
+This closed the Genesis journal readback gate and confirmed that the journal
+records an approved signed release intent. At that time, it did not prove that
+the Genesis service was active or that Norn and workloads were healthy. The
+later platform postflight is recorded above. It proved the target API and etcd
+backend, but no application workload response has been checked. The Mini
+remains an independent direct lane and is not part of this Fleet status.
 
 ## DO Norn release state revalidated (2026-11-10 20:53 UTC)
 
@@ -275,20 +308,18 @@ passed against the retained raw state at lineage
 `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23. The backend object matched
 the owner-retained bytes and reviewed SHA. A new private release-input
 candidate was assembled and validated offline from that exact snapshot and
-the reviewed one-hop host-key continuity receipt. This proves input
-consistency only: the release workflow's live host-continuity and installed
-source/health preflight have not run. The precise currently installed Norn
-release remains unverified, so no upgrade was dispatched. Next, perform a
-read-only, controller-mediated live release preflight; proceed to the protected
-forward-only release only after it identifies the exact installed source and
-healthy transition state.
+the reviewed one-hop host-key continuity receipt. At that time, the readback
+proved input consistency only. The live source and health preflight had not
+run, so no upgrade was dispatched. The follow-up controller-mediated release
+completed on 2026-11-11 and is recorded above.
 
 ## Release timing
 
-No V3 launch date is committed. Remaining program gates are live DO Norn
-source/health preflight, a protected platform release and postflight, DO-only
-workload admission and resize qualification, and fresh-Fleet provider
-recovery. The Mini direct deployment is successful by
+No V3 launch date is committed. The DO platform release and postflight are
+complete through the protected controller lane. Remaining program gates are
+controller-driven DO workload admission, mixed-version resize and recovery,
+online-upgrade qualification, and fresh-Fleet provider recovery. The Mini
+direct deployment is successful by
 the owner-stated criterion: the V3 API and `vigil-gateway` both responded.
 Queued-upgrade recovery and Git-driven workload admission remain Mini follow-up
 work, tracked separately from that success. Do not treat provider-active

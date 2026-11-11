@@ -17,6 +17,39 @@ or qualify Git-driven admission. The three queued-upgrade failures remain a
 separate controller-recovery follow-up. No workload, platform, or provider
 mutation was performed during these checks.
 
+## DO V3 platform release and controller recovery installed (2026-11-11 03:16 UTC)
+
+Protected state readback
+[42943628535](https://github.com/antiartificial/norn-fleet/actions/runs/42943628535)
+passed at lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23. The
+controller-mediated platform upgrade
+[42945021070](https://github.com/antiartificial/norn-fleet/actions/runs/42945021070)
+completed against Fleet source `2d168140c842d8614fe093c9ece28b458926eeaa`.
+It promoted signed Norn release
+`34178b8b90d52a2fa3f138ffae2dfc63744197e1` through the all-stop lane. The
+postflight verified the target version, exactly one healthy private API backed
+by etcd, and durable API/UI pins on all three controls. The all-stop promotion
+interrupted service. Online upgrade remains unqualified.
+
+Fleet PRs [#979](https://github.com/antiartificial/norn-fleet/pull/979),
+[#980](https://github.com/antiartificial/norn-fleet/pull/980), and
+[#981](https://github.com/antiartificial/norn-fleet/pull/981) fixed terminal
+intent discovery, kept receipt validation in the pinned discovery module, and
+allowed a protected module refresh without changing the Linux gate. Gate
+install run
+[42951258208](https://github.com/antiartificial/norn-fleet/actions/runs/42951258208)
+installed the reviewed controller and discovery modules. Runner 1036 retired
+with a terminal receipt, both controller journals cleared, and the installed
+controller scanned the intent queue with zero eligible entries. The
+LaunchAgent restarted with the reviewed modules. The Linux runner service
+remained inactive and disabled. No Fleet node, workload, or provider
+infrastructure changed during controller installation.
+
+The platform postflight does not prove that an application workload responded.
+Controller-driven workload admission, mixed-version rollout and resize, online
+upgrade, and fresh-Fleet creation remain separate open gates. The Mini is an
+independent direct lane.
+
 ## DO provider inventory refreshed; dormant bootstrap did not start (2026-11-10 14:58 UTC)
 
 A read-only `doctl --context work` inventory at 14:53 UTC found all eleven
