@@ -228,10 +228,13 @@ model abstracts its HTTP identity and mutable evidence lookups; handler-level
 tests cover fresh acceptance and exact retry. PRs #335/#337 cover authenticated
 HTTP replay with real etcd and handler/adapter reconstruction. PR #339 covers
 the shared reconciler across an etcd-backed successor claim after route effect
-response loss, using controlled external-effect fakes. Full production
-executor/worker restart recovery, fresh HTTP admission with real qualification
-and private-input persistence, and private-input deletion/retention remain
-open. Store-level same-key concurrency is covered by the separate
+response loss, using controlled external-effect fakes. PR #419 composes the
+durable one-use target-create marker and exact target binding with that route
+recovery path across two etcd client restarts; create/readback and route effects
+remain simulated. Full production executor/worker restart recovery, fresh HTTP
+admission with real qualification and private-input persistence, disposable
+Nomad/ingress qualification, and private-input deletion/retention remain open.
+Store-level same-key concurrency is covered by the separate
 concurrent-admission model and etcd regression test.
 
 The model also treats the workload envelope key as a recoverability input.
