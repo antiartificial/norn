@@ -103,8 +103,10 @@ successor claim, and completes the production shared
 `reconcileWorkloadRelease` lifecycle without duplicating the route write. Its
 scheduler, route, health, and drain effects are controlled fakes; it does not
 exercise `etcdWorkloadReleaseExecutor`, production Nomad/ingress adapters, or
-full worker-runtime wiring. Those gates and private-input retention remain
-open.
+full worker-runtime wiring. Those gates remain open. The accepted encrypted
+input is deleted only after a terminal receipt; the store integration test
+also reconstructs a successor claim and reconciles the write-once deletion
+receipt.
 
 Reproduce the lost-route-response/restart case against a disposable local etcd
 endpoint with:
@@ -222,7 +224,7 @@ encrypted source and snapshot remain the inputs for recovery. Repository
 history and artifact provenance still come from the signed qualification;
 this pin captures the job-driving spec, not a complete Git checkout. A key
 inventory reports all retained IDs. Startup preflight checks configured keys against retained
-IDs; deletion/retention policy is not yet implemented. The authenticated
+IDs; historical-key rotation and retention policy is not yet implemented. The authenticated
 request producer that computes this digest is implemented by PR #319. The
 model abstracts its HTTP identity and mutable evidence lookups; handler-level
 tests cover fresh acceptance and exact retry. PRs #335/#337 cover authenticated
@@ -233,9 +235,22 @@ durable one-use target-create marker and exact target binding with that route
 recovery path across two etcd client restarts; create/readback and route effects
 remain simulated. Full production executor/worker restart recovery, fresh HTTP
 admission with real qualification and private-input persistence, disposable
-Nomad/ingress qualification, and private-input deletion/retention remain open.
+end-to-end Nomad/ingress, target health, route/drain qualification, and
+historical-key rotation/retention remain open. Receipt-bound terminal private
+input deletion and successor reconciliation are implemented and covered by
+the private-input-retention integration test.
 Store-level same-key concurrency is covered by the separate
 concurrent-admission model and etcd regression test.
+
+The loopback disposable-Nomad qualification exercises the production
+target-stage helper with real etcd and a real Nomad agent. It drops the
+successful job-registration response, returns one delayed not-found readback,
+then requires a successor claim to adopt the same create marker and bind the
+actual Nomad revision without resubmitting. This qualification also established
+that Nomad's initial job version is zero; a nonzero modify index distinguishes
+the observed target from the unbound plan. It does not exercise the full
+production executor, private-input decryption, target health, ingress route,
+or old-cohort drain.
 
 The model also treats the workload envelope key as a recoverability input.
 If a successor cannot load the historical key before exact target binding, it

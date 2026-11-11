@@ -78,7 +78,7 @@ func (p WorkloadReleasePlan) BindObservedTarget(effectID string, claimGeneration
 		request.SpecDigest != p.Intent.TargetSpecDigest || request.OperationID != p.Intent.TargetOperationID ||
 		request.ExecutionID != p.Intent.TargetExecutionID || strings.TrimPrefix(p.Intent.TargetJobDigest, "sha256:") != request.JobDigest ||
 		request.ImageTag != p.Intent.TargetImage || request.ExpectedJobModifyIndex != 0 ||
-		observation.State != nomad.DeploymentJobFound || observation.Version == 0 || observation.JobModifyIndex == 0 {
+		observation.State != nomad.DeploymentJobFound || observation.JobModifyIndex == 0 {
 		return WorkloadReleaseStagedTarget{}, fmt.Errorf("workload release target observation is incomplete")
 	}
 	bound := WorkloadReleaseStagedTarget{
@@ -104,7 +104,7 @@ func (b WorkloadReleaseStagedTarget) CanonicalObservationDigest() (string, error
 	if b.SchemaVersion != WorkloadReleaseStagedTargetSchema || !validReleaseDigest(b.PlanDigest) ||
 		strings.TrimSpace(b.EffectID) == "" || strings.TrimSpace(b.TargetJobID) == "" ||
 		strings.TrimSpace(b.TargetOperationID) == "" || strings.TrimSpace(b.TargetExecutionID) == "" ||
-		!validReleaseDigest(b.TargetJobDigest) || b.TargetJobVersion == 0 || b.TargetJobModifyIndex == 0 ||
+		!validReleaseDigest(b.TargetJobDigest) || b.TargetJobModifyIndex == 0 ||
 		b.Observation.State != nomad.DeploymentJobFound || b.Observation.Version != b.TargetJobVersion ||
 		b.Observation.JobModifyIndex != b.TargetJobModifyIndex || b.ClaimGeneration <= 0 {
 		return "", fmt.Errorf("workload release staged target binding is incomplete")

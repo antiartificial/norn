@@ -98,6 +98,8 @@ func buildWorkloadReleaseTargetJobPlan(plan WorkloadReleasePlan, spec *model.Inf
 	if job.Meta == nil {
 		job.Meta = map[string]string{}
 	}
+	job.Meta[nomad.DeploymentIDMeta] = intent.TargetDeploymentID
+	job.Meta[nomad.SpecDigestMeta] = intent.TargetSpecDigest
 	job.Meta[nomad.DeploymentOperationIDMeta] = intent.TargetOperationID
 	job.Meta[nomad.DeploymentExecutionIDMeta] = intent.TargetExecutionID
 	digest, err := nomad.DigestDeploymentJob(job)
