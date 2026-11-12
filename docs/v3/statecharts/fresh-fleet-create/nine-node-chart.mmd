@@ -1,0 +1,78 @@
+---
+title: "Fresh Fleet nine-node create and recovery"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: inputs
+    lg1: apply
+    lg2: held
+    lg3: bootstrap
+    lg4: done
+  }
+  class lg0 blue
+  class lg1 teal
+  class lg2 orange
+  class lg3 purple
+  class lg4 yellow
+  s0: Inputs #8212; plan pending#59; capacity/state pending#59; provider/SSH pending
+  s1: Inputs #8212; plan pending#59; capacity/state pending#59; provider/SSH attested
+  s2: Inputs #8212; plan reviewed#59; capacity/state pending#59; provider/SSH pending
+  s3: Inputs #8212; plan pending#59; capacity/state bound#59; provider/SSH pending
+  s4: Inputs #8212; plan reviewed#59; capacity/state pending#59; provider/SSH attested
+  s5: Inputs #8212; plan pending#59; capacity/state bound#59; provider/SSH attested
+  s6: Inputs #8212; plan reviewed#59; capacity/state bound#59; provider/SSH pending
+  s7: Inputs #8212; plan reviewed#59; capacity/state bound#59; provider/SSH attested
+  s8: One reviewed nine-node apply intent is bound
+  s9: One-use apply running against reviewed nine-node plan
+  s10: Apply runner retired#59; controller restart required
+  s11: Controller restarted#59; exact provider/state readback required
+  s12: Eight-node readback matches#59; same-intent recovery may resume
+  s13: Provider/state readback differs#59; hold for reconciliation
+  s14: Create only the exact missing node under same intent
+  s15: Nine provider IDs match nine state entries
+  s16: Configure all nine nodes from exact inventory
+  s17: Retire one-use runner before terminal receipt
+  s18: Nine nodes configured#59; terminal receipt written
+  [*] --> s0
+  s0 --> s1: attest provider account and pin SSH identity
+  s0 --> s2: review the exact plan and digest
+  s0 --> s3: bind capacity and backend lineage
+  s1 --> s4: review the exact plan and digest
+  s1 --> s5: bind capacity and backend lineage
+  s2 --> s4: attest provider account and pin SSH identity
+  s2 --> s6: bind capacity and backend lineage
+  s3 --> s5: attest provider account and pin SSH identity
+  s3 --> s6: review the exact plan and digest
+  s4 --> s7: bind capacity and backend lineage
+  s5 --> s7: review the exact plan and digest
+  s6 --> s7: attest provider account and pin SSH identity
+  s7 --> s8: bind one intent to the reviewed plan and state
+  s8 --> s9: consume one-use apply authorization
+  s9 --> s10: lose apply response after partial create#59; retire runner
+  s10 --> s11: restart controller with durable intent and failure receipt
+  s11 --> s12: read exact provider and state identities
+  s11 --> s13: read exact provider and state identities
+  s12 --> s14: bind fresh recovery authorization to same intent and remainder
+  s14 --> s15: verify all nine identities before bootstrap
+  s15 --> s16: prepare PKI after exact readback
+  s16 --> s17: retire one-use runner after bootstrap
+  s17 --> s18: write terminal receipt after runner retirement
+  class s0 blue
+  class s1 blue
+  class s2 blue
+  class s3 blue
+  class s4 blue
+  class s5 blue
+  class s6 blue
+  class s7 blue
+  class s8 teal
+  class s9 teal
+  class s10 orange
+  class s11 orange
+  class s12 orange
+  class s13 orange
+  class s14 orange
+  class s15 purple
+  class s16 purple
+  class s17 purple
+  class s18 yellow
