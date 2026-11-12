@@ -14,7 +14,9 @@ The focused admission integration suite passed, then all eight
 handler/store reconstruction. This proves fail-closed refusal at the route
 gate, not successful fresh admission, private-input acceptance through HTTP,
 or live DO workload admission. The temporary etcd container was stopped after
-the run. No provider or host action ran.
+the run. PR [#457](https://github.com/antiartificial/norn/pull/457) merged to
+`master` at 18:18 UTC as `ec91740c`, recording this test and the related
+milestone corrections. No provider or host action ran.
 
 ## DO staging runtime rechecked (2026-11-12 17:53 UTC)
 

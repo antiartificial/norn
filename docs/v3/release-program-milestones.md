@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 18:11 UTC (latest DO runtime observation: 17:53 UTC). Documentation PRs #454 and #455 recorded evidence and changed no runtime state. The existing DO staging Fleet's V3 platform release is deployed through the controller (2026-11-11). A read-only `doctl --context work` check at 17:53 confirmed the TurnKey Marketing work account active and all eleven Norn staging Droplets active: two management, three control, two ingress, and four app nodes. Platform `/version` returned HTTP 200 with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. Canary `/route-proof` returned HTTP 200 with `norn-fleet-canary`; `/version` returned HTTP 200 with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `de960b60d29f`, and allocation `079ea126-ed26-9943-02cc-afa6f7d3f255`. These point-in-time responses prove endpoint response only; they do not prove V3 signed admission, allocation-to-current-host binding, or continuous health. At 18:07 UTC, a focused authenticated HTTP admission test against disposable real etcd returned the expected 409 when the control-owned serving route was absent, and verified that no durable acceptance was written. All eight admission tests reran at 18:11 UTC against disposable etcd and passed. This is negative-gate evidence only; successful fresh admission remains unqualified.
+Status: refreshed 2026-11-12 18:22 UTC (latest DO runtime observation: 17:53 UTC). Documentation PRs #454 and #455 recorded evidence and changed no runtime state. Admission gate PR [#457](https://github.com/antiartificial/norn/pull/457) merged at 18:18 UTC as `ec91740c`; it added a real-etcd refusal integration and corrected release evidence, with no runtime action. The existing DO staging Fleet's V3 platform release is deployed through the controller (2026-11-11). A read-only `doctl --context work` check at 17:53 confirmed the TurnKey Marketing work account active and all eleven Norn staging Droplets active: two management, three control, two ingress, and four app nodes. Platform `/version` returned HTTP 200 with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. Canary `/route-proof` returned HTTP 200 with `norn-fleet-canary`; `/version` returned HTTP 200 with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `de960b60d29f`, and allocation `079ea126-ed26-9943-02cc-afa6f7d3f255`. These point-in-time responses prove endpoint response only; they do not prove V3 signed admission, allocation-to-current-host binding, or continuous health. At 18:07 UTC, a focused authenticated HTTP admission test against disposable real etcd returned the expected 409 when the control-owned serving route was absent, and verified that no durable acceptance was written. All eight admission tests reran at 18:11 UTC against disposable etcd and passed. This is negative-gate evidence only; successful fresh admission remains unqualified.
 
 The full API module suite
 passed locally at 11:27 UTC, including Fresh-Fleet route and admission-handler
@@ -508,8 +508,11 @@ control versions or workload readiness from this platform postflight alone.
   pending and held inputs for recovery.
 - [ ] Join fresh authenticated HTTP admission to real etcd with a real signed
   qualification, completed staging deployment, control-owned active-route
-  lineage, and durable private-input readback. Existing tests cover these
-  boundaries separately, not in one fresh acceptance path.
+  lineage, and durable private-input readback. PR #457 covers the negative
+  route gate through authenticated HTTP and real etcd: absent owned route
+  returns 409 and creates no durable acceptance. Qualification remains a
+  narrow fixture in that test; successful fresh acceptance and private-input
+  readback through HTTP remain unqualified.
 - [ ] Exercise the production executor and worker across process/lease loss
   and lost external-effect responses. The policy for a permanently held
   operation is now modeled in the
