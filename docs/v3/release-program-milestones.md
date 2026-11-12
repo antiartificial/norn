@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 13:10 UTC. The existing DO staging Fleet's V3
+Status: refreshed 2026-11-12 13:26 UTC. The existing DO staging Fleet's V3
 platform release is deployed through the controller (2026-11-11). At 12:58,
 all eleven Norn staging Droplets were active; public platform `/version`
 returned HTTP 200 in 0.256 seconds and reported version
@@ -45,9 +45,9 @@ run; the only recorded run is failed candidate-branch push
 [43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
 with zero jobs. Norn-Fleet documentation PR
 [#1022](https://github.com/antiartificial/norn-fleet/pull/1022) records this
-refresh and remains open; its contract CI was still running at the time of the
-query. Neither the documentation PR nor its CI changes the readback gate or
-qualifies a protected run. The offline readback model was rerun at 11:34
+refresh and merged as `c21f3abb` at 13:26 UTC after its contract and Socket
+checks passed. The documentation update does not change the readback gate or
+qualify a protected run. The offline readback model was rerun at 11:34
 on matching `norn-fleet` main: 70 states/120 steps. The provenance model
 explored 16 states/16 steps, and eight unsafe provenance mutants failed at
 their expected invariants. These model checks do not qualify runtime.
@@ -73,7 +73,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (status refreshed 2026-11-12 13:10 UTC; provider inventory and public platform endpoint refreshed 12:58 UTC; public canary endpoint last probed 12:26 UTC; GitHub environment binding names audited 12:52 UTC; workflow history checked 13:10 UTC; API and workload-readback offline suites passed 11:27–11:28 UTC; workload models checked 11:34 UTC; Fresh-Fleet source, API tests, real-etcd handoff test, and authority model checked 12:10–12:12 UTC; effect-grant route/status handlers and recovery passed focused and full local API/real-etcd tests at 12:24 UTC; Fleet apply-graph/Fresh-Fleet war-game tests passed 12:30 UTC; protected CI for PR #437 passed at exact head `ff055988` and it merged as `f41f70cc` at 12:41 UTC; no release publication or deployment)
+## Current gate snapshot (status refreshed 2026-11-12 13:26 UTC; provider inventory and public platform endpoint refreshed 12:58 UTC; public canary endpoint last probed 12:26 UTC; GitHub environment binding names audited 12:52 UTC; workflow history checked 13:10 UTC; API and workload-readback offline suites passed 11:27–11:28 UTC; workload models checked 11:34 UTC; Fresh-Fleet source, API tests, real-etcd handoff test, and authority model checked 12:10–12:12 UTC; effect-grant route/status handlers and recovery passed focused and full local API/real-etcd tests at 12:24 UTC; Fleet apply-graph/Fresh-Fleet war-game tests passed 12:30 UTC; protected CI for PR #437 passed at exact head `ff055988` and it merged as `f41f70cc` at 12:41 UTC; no release publication or deployment)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
@@ -104,8 +104,8 @@ not happen.
   credentials or the protected runner.
   The 13:10 UTC workflow-history query found no protected readback run. Its
   only recorded run is the failed candidate-branch push above, which started
-  zero jobs. Fleet PR #1022 is an open documentation update, and its contract
-  CI was still running at query time. Neither provides protected readback
+  zero jobs. Fleet PR #1022 merged as `c21f3abb` after its contract and Socket
+  checks passed. That documentation update provides no protected readback
   evidence. No durable V3 admission receipt has been observed for this canary.
   The next gates
   are reviewed protected inputs and credential provenance, signed
