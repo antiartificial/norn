@@ -1,17 +1,16 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 14:49 UTC (latest DO runtime observation: 14:29 UTC). The existing DO staging Fleet's V3
+Status: refreshed 2026-11-12 14:55 UTC (latest DO runtime observation: 14:53 UTC). The existing DO staging Fleet's V3
 platform release is deployed through the controller (2026-11-11). A read-only
-`doctl --context work` check at 14:29 found the expected work account active
+`doctl --context work` check at 14:53 found the expected work account active
 and all eleven Norn staging Droplets active: two management, three control,
 two ingress, and four app nodes. Platform `/version` returned HTTP 200 in
-0.304 seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and
-version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. At 14:29, canary
-`/route-proof` returned HTTP 200 in 0.337 seconds with `norn-fleet-canary`; `/version` returned HTTP 200 in 0.323 seconds with source
+0.183 seconds with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and
+version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. At 14:53, canary
+`/route-proof` returned HTTP 200 in 0.164 seconds with `norn-fleet-canary`; `/version` returned HTTP 200 in 0.179 seconds with source
 `be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `515ddcea44b8`, and
-allocation `6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`. Its reported node and
-allocation differ from the 14:10 read, reinforcing the need to bind workload
-identity to current host and receipt evidence. These point-in-time
+allocation `6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`; its node and allocation
+match the 14:29 response. The platform allocation changed since 14:29. These point-in-time
 responses prove platform and workload endpoints responded; they do not prove
 V3 signed admission, allocation-to-current-host binding, or continuous health.
 The full API module suite
@@ -91,22 +90,22 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (status refreshed 2026-11-12 14:49 UTC; provider inventory, platform endpoint, and canary endpoints refreshed 14:29 UTC; GitHub environment binding names audited 14:29 UTC; workflow history checked 14:29 UTC; API and workload-readback offline suites passed 11:27–11:28 UTC; workload models checked 11:34 UTC; Fresh-Fleet source, API tests, real-etcd handoff test, and authority model checked 12:10–12:12 UTC; effect-grant route/status handlers and recovery passed focused and full local API/real-etcd tests at 12:24 UTC; Fleet apply-graph/Fresh-Fleet war-game tests passed 12:30 UTC; protected CI for PR #437 passed at exact head `ff055988` and it merged as `f41f70cc` at 12:41 UTC; Norn milestone PR #443 passed all applicable exact-head checks and merged as `f6a49993` at 14:47 UTC; Fleet issuer-review model PR #1024 passed its contract and Socket checks and merged as `3a7bbd3b` at 14:49 UTC; no release publication or deployment)
+## Current gate snapshot (status refreshed 2026-11-12 14:55 UTC; provider inventory, platform endpoint, and canary endpoints refreshed 14:53 UTC; GitHub environment binding names audited 14:29 UTC; workflow history checked 14:29 UTC; API and workload-readback offline suites passed 11:27–11:28 UTC; workload models checked 11:34 UTC; Fresh-Fleet source, API tests, real-etcd handoff test, and authority model checked 12:10–12:12 UTC; effect-grant route/status handlers and recovery passed focused and full local API/real-etcd tests at 12:24 UTC; Fleet apply-graph/Fresh-Fleet war-game tests passed 12:30 UTC; protected CI for PR #437 passed at exact head `ff055988` and it merged as `f41f70cc` at 12:41 UTC; Norn milestone PR #443 passed all applicable exact-head checks and merged as `f6a49993` at 14:47 UTC; Fleet issuer-review model PR #1024 passed its contract and Socket checks and merged as `3a7bbd3b` at 14:49 UTC; milestone PR #444 with both merge records passed exact-head checks and merged as `e2946c5e` at 14:54 UTC; no release publication or deployment)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
   one healthy private API backed by etcd and signed API/UI pins on all three
   controls. Promotion interrupted service; online upgrade is not qualified.
 - **DO staging observation:** the explicit `work` account was active (UUID
-  prefix `17f40050`). At 14:29 UTC all eleven Norn staging Droplets were
+  prefix `17f40050`). At 14:53 UTC all eleven Norn staging Droplets were
   active (two management, three control, two ingress, four app). Platform
-  `/version` returned HTTP 200 in 0.304 seconds with allocation
-  `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+  `/version` returned HTTP 200 in 0.183 seconds with allocation
+  `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
   `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The public canary's `/route-proof`
-  returned HTTP 200 in 0.337 seconds (`norn-fleet-canary`); `/version` returned
-  HTTP 200 in 0.323 seconds with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`,
+  returned HTTP 200 in 0.164 seconds (`norn-fleet-canary`); `/version` returned
+  HTTP 200 in 0.179 seconds with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`,
   node `515ddcea44b8`, and allocation `6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`.
-  Node and allocation differ from the 14:10 observation. These point-in-time
+  The platform allocation changed since 14:29. These point-in-time
   responses do not prove allocation-to-current-host binding, V3 signed
   admission, or continuous control-plane health. The public-pilot verifier's
   12/12 reads at 02:40:57 UTC remain the latest recorded MySQL pilot check.
@@ -182,7 +181,7 @@ separate claims.
 |---|---|---|
 | Protected platform release | Source `fa301fa5` passed all 12 qualification jobs in run [42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596); protected run [42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936) published the immutable signed release with UI and four OS/architecture bundles. | Keep exact-SHA qualification and publication separate from controller deployment for each release. |
 | Mini direct | Successful under the owner-stated bar: signed `34178b8b` is active at schema 52, API health returned HTTP 200, and the running Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. Other app health remains mixed. | Keep queued-upgrade recovery and Git-driven workload admission as separate follow-ups. Do not include Fleet workload resizing in the Mini lane. |
-| Existing DO Fleet | Signed source `fa301fa5` is deployed through the controller; postflight verified one healthy private etcd-backed API and signed API/UI pins on all three controls. At 14:29 all eleven staging Droplets were active; platform and canary endpoints returned HTTP 200. Canary node/allocation differ from 14:10, so current-host binding is still unproved. The 14:29 name-only audit against main `b1437997` found 18 required variables missing; it read no values or file contents. No protected readback has run; the only workflow run is failed candidate push `43117232561` with zero jobs. Issuer scope/lifecycle review is outstanding, and the manifest validator does not enforce freshness. | Provision and verify protected inputs and credential provenance; run signed workload/ACL/network readback with authorized run-scoped reader issuance; prove terminal-artifact replay and full-executor recovery; bind the responding canary to durable same-intent admission receipts. Then qualify mixed-version resize and online upgrade. Fresh-Fleet Genesis/bootstrap remains separate. |
+| Existing DO Fleet | Signed source `fa301fa5` is deployed through the controller; postflight verified one healthy private etcd-backed API and signed API/UI pins on all three controls. At 14:53 all eleven staging Droplets were active; platform and canary endpoints returned HTTP 200. Platform allocation changed since 14:29; same canary node/allocation observed. Host lineage is not proved by these public endpoints. The 14:29 name-only audit against main `b1437997` found 18 required variables missing; it read no values or file contents. No protected readback has run; the only workflow run is failed candidate push `43117232561` with zero jobs. Issuer scope/lifecycle review is outstanding, and the manifest validator does not enforce freshness. | Provision and verify protected inputs and credential provenance; run signed workload/ACL/network readback with authorized run-scoped reader issuance; prove terminal-artifact replay and full-executor recovery; bind the responding canary to durable same-intent admission receipts. Then qualify mixed-version resize and online upgrade. Fresh-Fleet Genesis/bootstrap remains separate. |
 Nomad/Consul ACL issuer credentials are privileged: Nomad requires a
 `management` token, while the Consul accessor pin does not establish reduced
 issuer scope. Review exact grant and lifecycle before dispatch. The only readback
@@ -422,10 +421,10 @@ qualifies a billable fresh-Fleet deployment.
 ### M3. Re-establish DO controller readiness and prove live state
 
 - [x] Refresh provider inventory and protected state handoff. The latest
-  read-only `doctl --context work` inventory at 14:29 UTC found all eleven
+  read-only `doctl --context work` inventory at 14:53 UTC found all eleven
   staging Droplets active (two management, three control, two ingress, four
   app); platform `/version` and canary `/route-proof` and `/version` returned
-  HTTP 200 at 14:29 UTC, as recorded above. The protected readback evidence
+  HTTP 200 at 14:53 UTC, as recorded above. The protected readback evidence
   remains the 11:17 UTC provider refresh and release-state readback
   [42964119843](https://github.com/antiartificial/norn-fleet/actions/runs/42964119843)
   passed at lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23, and
@@ -567,7 +566,7 @@ work must wait:
 |---|---|---|
 | Fresh-Fleet topology and integrated replay | Five-node disposable profile and credential fixture | General + Stateful role validation/inventory/Nomad bootstrap now exist in protected `norn-fleet` main; current DO remains 3+2+4 with one app pool. The two-pool model captures the workflow contract but not provider handlers or a fresh profile; join protected apply/recovery, exact state/provider identities, and post-recovery bootstrap. |
 | Credential lifecycle follow-up | Fresh-Fleet integrated replay | Joined executor fixture covers mirror, scoped grant, interruption cleanup, retry, and redaction; reconcile exact per-service rotation/expiry/revocation and path-level owner/mode evidence. |
-| M3 DO controller and Genesis readback | All offline M1/M2 work | Existing-Fleet controller readiness and dormant Genesis journal readback are complete; Fresh-Fleet activation remains separate and unapproved. Current provider and endpoint reads at 14:29 found all eleven staging Droplets active and the platform/canary endpoints responding. Canary node/allocation changed since 14:10. The 14:29 name-only audit found 18 required workload-readback variables missing. Nomad/Consul issuer scope and review freshness remain owner gates. Do not dispatch until inputs, provenance, signed intent, and bounded ACL token issuance are reviewed. |
+| M3 DO controller and Genesis readback | All offline M1/M2 work | Existing-Fleet controller readiness and dormant Genesis journal readback are complete; Fresh-Fleet activation remains separate and unapproved. Current provider and endpoint reads at 14:53 found all eleven staging Droplets active and platform/canary endpoints responding. Platform allocation changed since 14:29; canary node/allocation matched its 14:29 read. Host lineage is still unproved. The 14:29 name-only audit found 18 required workload-readback variables missing. Nomad/Consul issuer scope and review freshness remain owner gates. Do not dispatch until inputs, provenance, signed intent, and bounded ACL token issuance are reviewed. |
 | M5 workload contract and model replay | M2 harness and workload protocol | Offline compatibility work can continue; live qualification waits for M3 and M4 and must serialize on the DO testbed. |
 | V2 caller migration plan | Offline controller and docs work | Map each caller to its replacement contract; retain fixtures until supported V2 baseline migration and recovery are covered. |
 
