@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Disposable integration qualification for the V3 workload-release target
-# stage boundary. It uses loopback etcd/Consul/Nomad and removes its state.
+# Disposable integration qualification for V3 workload-release restart
+# recovery through target staging and route/drain receipt boundaries. It uses
+# loopback etcd/Consul/Nomad and removes its state.
 set -euo pipefail
 
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/norn-workload-release-stage.XXXXXX")"
@@ -101,4 +102,4 @@ export NORN_TEST_NOMAD_ADDR="http://127.0.0.1:$nomad_http_port"
 export NORN_TEST_DEPLOYMENT_IMAGE="$workload_image"
 export NORN_TEST_NOMAD_DOCKER=1
 cd "$(dirname "${BASH_SOURCE[0]}")/../api"
-go test . -run '^TestWorkloadReleaseStageRecoversLostNomadResponseAfterEtcdRestart$' -count=1 -v
+go test . -run '^(TestWorkloadReleaseReconcilerRecoversRouteLostResponseAfterRestartEtcd|TestWorkloadReleaseStageAndRouteRecoverSameIntentAcrossEtcdRestarts|TestWorkloadReleaseStageRecoversLostNomadResponseAfterEtcdRestart)$' -count=1 -v

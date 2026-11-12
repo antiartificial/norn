@@ -1,19 +1,18 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 17:03 UTC (latest DO runtime observation: 17:03 UTC). The existing DO staging Fleet's V3
+Status: refreshed 2026-11-12 17:16 UTC (latest DO runtime observation: 17:16 UTC). The existing DO staging Fleet's V3
 platform release is deployed through the controller (2026-11-11). A read-only
-`doctl --context work` check at 17:03 found the expected work account active
+`doctl --context work` check at 17:16 found the expected work account active
 and all eleven Norn staging Droplets active: two management, three control,
 two ingress, and four app nodes. Platform `/version` returned HTTP 200 in
-0.187 seconds with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and
-version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. At 17:03, canary
-`/route-proof` returned HTTP 200 in 0.182 seconds with `norn-fleet-canary`;
-`/version` returned HTTP 200 in 0.169 seconds with source
-`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `de960b60d29f`, and allocation
-`079ea126-ed26-9943-02cc-afa6f7d3f255`. Platform allocation and canary
-node/allocation differ from the 16:26 sample. These point-in-time responses
-prove platform and workload endpoints responded; they do not prove V3 signed
-admission, allocation-to-current-host binding, or continuous health.
+0.266 seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and
+version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. Canary `/route-proof`
+returned HTTP 200 in 0.256 seconds with `norn-fleet-canary`; `/version`
+returned HTTP 200 in 0.228 seconds with source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `515ddcea44b8`, and allocation
+`6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`. These point-in-time responses prove
+the endpoints responded; they do not prove V3 signed admission,
+allocation-to-current-host binding, or continuous health.
 
 The full API module suite
 passed locally at 11:27 UTC, including Fresh-Fleet route and admission-handler
@@ -99,23 +98,22 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (status, provider inventory, platform/canary endpoints, and names-only environment audit refreshed 2026-11-12 17:03 UTC; workflow history last queried at 16:26 UTC because the later query hit the GitHub API rate limit; offline model and exact-head CI evidence is listed under each workstream; Fleet readback runbook PR #1028 merged as `11e4611c` at 16:54 UTC; Norn restart-evidence PR #450 merged as `ae28d8bb` at 16:55 UTC and lane guide PR #451 merged as `239cd8de` at 17:01 UTC; no release publication or deployment action ran for these documentation updates)
+## Current gate snapshot (provider inventory and platform/canary endpoints refreshed 2026-11-12 17:16 UTC; names-only environment audit refreshed 17:03 UTC; local restart qualifications refreshed 17:15 UTC; workflow history last queried at 16:26 UTC because the later query hit the GitHub API rate limit; offline model and exact-head CI evidence is listed under each workstream; Fleet readback runbook PR #1028 merged as `11e4611c` at 16:54 UTC; Norn restart-evidence PR #450 merged as `ae28d8bb` at 16:55 UTC and lane guide PR #451 merged as `239cd8de` at 17:01 UTC; no release publication or deployment action ran for these documentation updates)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
   one healthy private API backed by etcd and signed API/UI pins on all three
   controls. Promotion interrupted service; online upgrade is not qualified.
 - **DO staging observation:** the explicit `work` account was active (UUID
-  prefix `17f40050`). At 17:03 UTC all eleven Norn staging Droplets were
+  prefix `17f40050`). At 17:16 UTC all eleven Norn staging Droplets were
   active (two management, three control, two ingress, four app). Platform
-  `/version` returned HTTP 200 in 0.187 seconds with allocation
-  `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
-  `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The public canary's `/route-proof`
-  returned HTTP 200 in 0.182 seconds (`norn-fleet-canary`); `/version` returned
-  HTTP 200 in 0.169 seconds with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`,
-  node `de960b60d29f`, and allocation `079ea126-ed26-9943-02cc-afa6f7d3f255`.
-  The platform allocation and canary node/allocation differ from the 16:26
-  sample. These point-in-time responses do not prove allocation-to-current-host
+  `/version` returned HTTP 200 in 0.266 seconds with allocation
+  `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+  `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The canary's `/route-proof`
+  returned HTTP 200 in 0.256 seconds (`norn-fleet-canary`); `/version` returned
+  HTTP 200 in 0.228 seconds with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`,
+  node `515ddcea44b8`, and allocation `6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`.
+  These point-in-time responses do not prove allocation-to-current-host
   binding, V3 signed admission, or continuous control-plane health. The
   public-pilot verifier's 12/12 reads at 02:40:57 UTC remain the latest
   recorded MySQL pilot check.
@@ -195,10 +193,10 @@ separate claims.
 |---|---|---|
 | Protected platform release | Signed source `fa301fa5f881b847a26f61a501092f9a9dd090fd` passed the 12-job qualification and was published, then deployed to the DO Fleet through the all-stop controller upgrade. Postflight proved the private etcd-backed API and signed API/UI pins on all three controls. | Keep exact-source qualification, publication, and controller promotion distinct. Online upgrade remains unqualified because the completed promotion interrupted service. |
 | Mini direct | Independent Mini met the owner-defined bar on 2026-11-10: signed V3 active, API healthy, and `vigil-gateway` returned HTTP 200. Other workload health and queued-upgrade recovery are separate follow-ups. | Revisit queued-upgrade recovery and Git-driven admission separately. The Mini is not a Fleet member and has no Fleet resize lane. |
-| Existing DO Fleet and workload admission | At 17:03 UTC all eleven Norn-tagged Droplets were active; platform `/version`, canary `/route-proof`, and canary `/version` returned HTTP 200. Platform allocation and canary node/allocation differ from the 16:26 sample; public responses do not prove host lineage. A 17:03 names-only audit against `norn-fleet` main `11e4611c` found only `NORN_WORKLOAD_READBACK_ENABLED` missing among seven referenced variables; all three referenced state secrets are present. The secret root is configured, but the audit read no values and did not validate files, provenance, or runner access. The latest successful workflow-history query at 16:26 found only failed candidate push `43117232561` with zero jobs; the later history query was rate-limited. PRs #1024, #1025, #1027, and readback runbook PR #1028 merged; the first durable V3 admission receipt is still absent. | Owner-review and verify protected inputs and ACL/provider provenance before setting the enable gate. Run signed readback, retrieve terminal evidence after restart, qualify full-executor recovery through Nomad/ingress, and bind the responding canary to durable same-intent admission receipts. The first controller-admitted workload remains unscheduled. |
+| Existing DO Fleet and workload admission | At 17:16 UTC all eleven Norn-tagged Droplets were active; platform `/version`, canary `/route-proof`, and canary `/version` returned HTTP 200. Platform allocation and canary node/allocation differ from earlier samples; these public responses do not prove host lineage. A separate 17:03 names-only audit against `norn-fleet` main `11e4611c` found only `NORN_WORKLOAD_READBACK_ENABLED` missing among seven referenced variables; all three referenced state secrets are present. The secret root is configured, but the audit read no values and did not validate files, provenance, or runner access. The latest successful workflow-history query at 16:26 found only failed candidate push `43117232561` with zero jobs; the later history query was rate-limited. PRs #1024, #1025, #1027, and readback runbook PR #1028 merged; the first durable V3 admission receipt is still absent. | Owner-review and verify protected inputs and ACL/provider provenance before setting the enable gate. Run signed readback, retrieve terminal evidence after restart, qualify full-executor recovery through Nomad/ingress, and bind the responding canary to durable same-intent admission receipts. The first controller-admitted workload remains unscheduled. |
 | Fresh-Fleet bootstrap | General + Stateful application-pool roles are supported in topology validation, inventory, and bootstrap. The nine-node offline model passed 10 invariants across 39 states/58 steps; the Norn authority model passed nine invariants and deadlock across 19 states/21 steps. Norn PR #437 merged effect-grant/status routes behind default-off gates. Fleet PR #1024 added issuer-review mutants. No Fresh-Fleet provider apply or protected creation workflow has run. | Connect the reviewed one-use grant to the provider executor and protected workflow; qualify partial inventory, ambiguous effects, controller/runner loss, exact provider identity, post-recovery bootstrap, and future General + Stateful sizing/stateful recovery. |
-| DO workload resize/release | The staging-only producer remains opt-in and undeployed. PR #421 qualified the production target-stage helper against disposable real Nomad with dropped create response and hidden first readback; the successor bound the actual job revision without duplicate registration. At 16:48 UTC, the restart-specific qualification also passed with disposable etcd and Nomad: after the successful create response was dropped, a delayed readback was hidden, and the etcd client restarted, the successor adopted the same reservation and durably bound Nomad's exact job version and modify index with one registration. Mixed-version models hold at capacity 3 and reach terminal receipt at capacity 4. Full private-input/executor recovery, health/ingress, fresh signed admission, and live DO resize remain open. | Join admission to signed qualification; extend disposable driver proof through private-input staging, target health, route, and old-cohort stop. Then qualify a stateless canary and mixed-version resize on DO. Keep stateful compatibility separate. |
-| Controller recovery and offline models | Norn PR #433 models held-operation abandonment, retention of private inputs through terminal receipt, and key retirement after retained operations no longer depend on them. Baseline and unsafe mutants were checked. At 16:48 UTC, two restart integration tests passed against disposable local etcd with test drivers for external effects: lost route-response recovery and composed target-stage/route recovery across client restarts. A third passed against disposable etcd and a real local Nomad agent: after dropping the successful target create response and hiding first readback, the successor recovered across an etcd client restart, adopted the same reservation, bound the exact Nomad job version/modify index, and avoided duplicate registration. This is target-stage recovery evidence, not full private-input/health/ingress recovery or deployed-controller qualification. | Prove terminal-artifact replay after restart and full-executor recovery through real Nomad/ingress. Then qualify online platform upgrade. Preserve the all-stop lane as the currently qualified option. |
+| DO workload resize/release | The staging-only producer remains opt-in and undeployed. PR #421 qualified the production target-stage helper against disposable real Nomad with dropped create response and hidden first readback; the successor bound the actual job revision without duplicate registration. At 17:15 UTC, the repeatable restart script passed three tests: real-local-Nomad target-create recovery and two etcd-backed route/drain cases. The composed case recovers the same intent through terminal receipt, applies worker-style fenced operation completion, restarts the client/store, and verifies the exact terminal receipt plus succeeded-operation replay. Route/drain effects use a test driver. The mixed-version model cannot reach target-only routing or terminal receipt at capacity 3 for two old plus two target allocations; capacity 4 reaches terminal receipt. Full private-input/executor recovery, health/ingress, fresh signed admission, and live DO resize remain open. | Join admission to signed qualification; extend disposable driver proof through private-input staging, target health, route, and old-cohort stop. Then qualify a stateless canary and mixed-version resize on DO. Keep stateful compatibility separate. |
+| Controller recovery and offline models | Norn PR #433 models held-operation abandonment, retention of private inputs through terminal receipt, and key retirement after retained operations no longer depend on them. Baseline and unsafe mutants were checked. At 17:15 UTC, the repeatable restart script passed three tests against disposable local services. The composed etcd-backed stage/route/drain test reopens the client/store after terminalization and verifies the unchanged receipt and succeeded operation. The real-local-Nomad test separately recovers a dropped target create response and delayed readback across an etcd client restart, binding the exact job revision without duplicate registration. External route/drain effects use a test driver; this is not live controller-process, ingress, or full-executor qualification. | Prove the full executor through health and ingress across a process restart, then qualify the same-intent route/drain receipts on staging. Online platform upgrade remains open. Preserve the all-stop lane as the currently qualified option. |
 
 Mini is an independent node, not a Fleet member. DO staging is the only Fleet
 in this release program. Replica and app-pool resizing belong to the DO

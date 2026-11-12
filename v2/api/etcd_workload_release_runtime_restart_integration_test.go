@@ -155,6 +155,7 @@ func TestWorkloadReleaseReconcilerRecoversRouteLostResponseAfterRestartEtcd(t *t
 // This composes the durable target-create boundary with route/drain recovery:
 // a successor must adopt the same ambiguous target create, bind its exact
 // readback, and then finish the same release intent after another restart.
+// A final store reconstruction must replay the terminal receipt unchanged.
 func TestWorkloadReleaseStageAndRouteRecoverSameIntentAcrossEtcdRestarts(t *testing.T) {
 	endpoints := strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_ENDPOINTS"))
 	if endpoints == "" {
@@ -345,6 +346,33 @@ func TestWorkloadReleaseStageAndRouteRecoverSameIntentAcrossEtcdRestarts(t *test
 	}
 	if observer.calls != 2 || state.routeWrites[1] != 1 || state.routeCalls[1] != 2 || state.stopWrites != 1 {
 		t.Fatalf("recovery effects: target readbacks=%d route writes=%v calls=%v stops=%d", observer.calls, state.routeWrites, state.routeCalls, state.stopWrites)
+	}
+	if err := operations.FinishClaimedOperationWithAppLock(ctx, finalClaim, lock, result.Status, result.Message, result.Metadata); err != nil {
+		t.Fatalf("persist worker terminal result: %v", err)
+	}
+	terminalRecord, terminalReceipt, err := finalProcess.loadReceipt(ctx)
+	if err != nil || terminalRecord == nil || terminalReceipt.Phase != pipeline.WorkloadReleaseComplete ||
+		terminalReceipt.RouteStep != len(resolved.RouteSteps)-1 || len(terminalReceipt.DrainedOldIDs) != len(resolved.OldAllocationIDs) {
+		t.Fatalf("terminal release receipt=%+v record=%+v err=%v", terminalReceipt, terminalRecord, err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close completed controller etcd client: %v", err)
+	}
+	client = newClient()
+	operations, err = etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedProcess := workloadReleaseEtcdReceiptDriver{operations: operations, state: state, intent: resolved, operationID: operation.ID}
+	replayedRecord, replayedReceipt, err := restartedProcess.loadReceipt(ctx)
+	if err != nil || replayedRecord == nil || replayedRecord.Revision != terminalRecord.Revision ||
+		replayedRecord.ReceiptDigest != terminalRecord.ReceiptDigest || string(replayedRecord.Receipt) != string(terminalRecord.Receipt) ||
+		replayedReceipt.Phase != pipeline.WorkloadReleaseComplete {
+		t.Fatalf("terminal receipt replay after restart=%+v record=%+v err=%v", replayedReceipt, replayedRecord, err)
+	}
+	replayedOperation, err := operations.GetOperation(ctx, operation.ID)
+	if err != nil || replayedOperation == nil || replayedOperation.ID != operation.ID || replayedOperation.Status != model.OperationSucceeded {
+		t.Fatalf("terminal operation replay after restart=%+v err=%v", replayedOperation, err)
 	}
 }
 

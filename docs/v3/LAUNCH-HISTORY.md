@@ -1,5 +1,43 @@
 # Norn v3 launch history
 
+## DO runtime rechecked; local recovery qualification rerun (2026-11-12 17:16 UTC)
+
+The explicit read-only `doctl --context work` account remained active (UUID
+prefix `17f40050`). The staging-environment tag returned two management
+Droplets; the Fleet tag returned nine nodes (three control, two ingress, four
+app). All eleven were active. Platform
+`/version` returned HTTP 200 in 0.266 seconds with allocation
+`de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. Canary `/route-proof` returned
+HTTP 200 in 0.256 seconds (`norn-fleet-canary`); `/version` returned HTTP 200
+in 0.228 seconds with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, node
+`515ddcea44b8`, and allocation `6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`. These
+point-in-time reads do not establish host lineage, signed workload admission,
+or continuous health. The platform allocation changed since the earlier
+17:03 sample; the canary also reported a different node/allocation.
+
+The repeatable `bash v2/scripts/test-workload-release-stage-nomad.sh`
+qualification passed all three tests again at 17:15 UTC against disposable
+local etcd, Consul, and Nomad. It verifies exact terminal receipt and succeeded
+operation replay after etcd client/store reconstruction, plus recovery of a
+lost successful Nomad create response without duplicate registration. The
+route/drain effects use a test driver, so this is not controller-process or
+live-ingress qualification. No DO or provider mutation ran.
+
+## Workload-release terminal receipt replay qualified locally (2026-11-12 17:11 UTC)
+
+The repeatable `bash v2/scripts/test-workload-release-stage-nomad.sh`
+qualification passed all three restart tests against disposable local etcd,
+Consul, and Nomad. The composed etcd-backed stage/route/drain test now applies
+the worker's app-lock-fenced terminal operation write, reconstructs the client
+and operation store, then verifies the same terminal receipt revision/digest
+and succeeded operation replay. The separate Nomad test drops a successful
+target create response, hides first readback, and proves successor adoption of
+the original reservation and exact Nomad job revision without a duplicate
+registration. Route/drain effects in the composed test use a test driver; this
+does not prove a live controller restart, ingress recovery, or DO admission.
+No DO or provider action ran.
+
 ## DO staging runtime and readback-gate refresh (2026-11-12 17:03 UTC)
 
 The explicit read-only `doctl --context work` account check remained active
