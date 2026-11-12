@@ -359,15 +359,22 @@ completed on 2026-11-11 and is recorded above.
 
 ## Release timing
 
-No V3 launch date is committed. The DO platform release and postflight are
-complete through the protected controller lane. Remaining program gates are
-controller-driven DO workload admission, mixed-version resize and recovery,
-online-upgrade qualification, and fresh-Fleet provider recovery. The Mini
-direct deployment is successful by
-the owner-stated criterion: the V3 API and `vigil-gateway` both responded.
-Queued-upgrade recovery and Git-driven workload admission remain Mini follow-up
-work, tracked separately from that success. Do not treat provider-active
-Droplets or the historical soak as current service-health evidence.
+The DO V3 platform deployment date is 2026-11-11. The first controller-admitted
+workload has not launched; its launch date is uncommitted and has no calendar
+forecast. The remaining gates for that first workload are the reviewed
+protected inputs and credential provenance, signed read-only workload/ACL/
+network readback, terminal-artifact replay after controller restart,
+full-executor recovery through real Nomad and ingress effects, admission review,
+and a responding stateless canary with durable same-intent receipts. See the
+[release program milestones](release-program-milestones.md) for sequencing.
+
+Mixed-version workload resize, online platform upgrade, and fresh-Fleet
+Genesis/bootstrap are separate follow-on capabilities; they are not first-
+workload launch-date gates. The independent Mini deployment meets the
+owner-stated success criterion: the V3 API and `vigil-gateway` both responded.
+Its queued-upgrade recovery and Git-driven workload admission remain separate
+Mini follow-ups. Provider-active Droplets or a historical soak do not prove
+current service or workload health.
 
 ## Historical snapshot (2026-11-10 10:50 UTC; superseded)
 

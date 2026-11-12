@@ -22,13 +22,16 @@ program milestones for current gate disposition; [execution milestones](executio
 retain the earlier M0–M9 plan and are historical context unless a current gate
 explicitly links to them. The proposal and older dated handoffs preserve
 rationale and historical state.
-The Mini's first direct V3 upgrade completed on 2026-11-07; on 2026-11-10 it
-advanced to signed release `34178b8b` through the direct controller lane. The
-API, platform smoke, host status, and host doctor pass; the separate queued
-upgrade path remains unresolved. See [current launch evidence](LAUNCH-STATE.md#current-mini-status-2026-11-10-1526-utc).
-DO staging Droplets were provider-active at the latest readback, but current
-Fleet service health is unverified. No V3 launch date is committed; see the
-current launch state and release milestones for open gates.
+The independent Mini meets its owner-defined direct-lane success bar: signed
+V3 is active, the API is healthy, and `vigil-gateway` responded. Its mixed
+application health and queued-upgrade recovery remain separate follow-ups.
+The DO staging Fleet's signed V3 platform release was deployed through the
+controller on 2026-11-11. A Nov 12 01:00 UTC read-only observation found all
+nine tagged Fleet Droplets active and public `/version` responding, but no
+controller-admitted application workload has yet been proven. The first
+workload launch date is uncommitted with no calendar forecast; follow
+[launch state](LAUNCH-STATE.md) and [release milestones](release-program-milestones.md)
+for the current gates. Mini is independent and has no Fleet resize lane.
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 
