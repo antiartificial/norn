@@ -53,6 +53,9 @@ admission or change the live DO workload status.
 All eight focused admission tests, including real-etcd HTTP replay after
 handler/store reconstruction, passed again against disposable etcd at 18:11
 UTC. The temporary test container was stopped afterward.
+The test and milestone corrections merged in Norn PR
+[#457](https://github.com/antiartificial/norn/pull/457) at 18:18 UTC as
+`ec91740c`; no release publication or runtime change followed.
 
 At 17:15 UTC, the repeatable local restart qualification verified that the
 composed etcd-backed stage/route/drain test replays the exact terminal receipt
@@ -386,8 +389,9 @@ reconciled to terminal.
 This closed the Genesis journal readback gate and confirmed that the journal
 records an approved signed release intent. At that time, it did not prove that
 the Genesis service was active or that Norn and workloads were healthy. The
-later platform postflight is recorded above. It proved the target API and etcd
-backend, but no application workload response has been checked. The Mini
+later platform postflight established the target API and etcd backend; no
+application response had yet been checked at that historical point. Subsequent
+runtime observations are recorded at the top of this document. The Mini
 remains an independent direct lane and is not part of this Fleet status.
 
 ## DO Norn release state revalidated (2026-11-10 20:53 UTC)
@@ -405,21 +409,21 @@ completed on 2026-11-11 and is recorded above.
 
 ## Release timing
 
-The DO V3 platform deployment date is 2026-11-11. The latest public platform
-`/version` request at 2026-11-12 12:26 UTC and canary `/route-proof` and
-`/version` probes returned HTTP 200. The canary response names one node and
-allocation; the earlier five-sample check reached two allocations on two
-nodes. The bounded public-pilot verifier passed 12/12 reads
-at 02:40:57 UTC and observed two allocation IDs. These responses do not prove
-the canary's V3 controller admission. The V3-admission-qualified workload date
-is uncommitted and has no calendar forecast. The remaining gates are the
-reviewed protected inputs and credential provenance, signed workload/ACL/
-network readback (GET-only evidence plus explicitly authorized, expiring,
-run-scoped Nomad and Consul reader-token issuance), terminal-artifact replay
-after controller restart, full-executor recovery through real Nomad and ingress
-effects, and binding the responding stateless canary to durable same-intent
-receipts. See the
-[release program milestones](release-program-milestones.md) for sequencing.
+The DO V3 platform deployment date is 2026-11-11. The latest recorded runtime
+observation is 2026-11-12 17:53 UTC: all eleven staging Droplets were active,
+platform `/version` returned HTTP 200, and the canary `/route-proof` and
+`/version` endpoints returned HTTP 200. These are point-in-time endpoint and
+power checks; they do not prove allocation-to-current-host binding, signed
+controller admission, or continuous health. The first V3-admission-qualified
+workload date is uncommitted and has no calendar forecast. Protected workload
+readback remains disabled; the 17:25 UTC names-only audit found
+`NORN_WORKLOAD_READBACK_ENABLED` absent.
+Remaining gates are owner review and validation of protected inputs and ACL
+credential provenance, signed workload/ACL/network readback, terminal-artifact
+replay after controller restart, full-executor recovery through real Nomad and
+ingress effects, admission review, and durable same-intent receipts binding a
+responding canary. See the [release program milestones](release-program-milestones.md)
+for sequencing.
 
 Mixed-version workload resize, online platform upgrade, and fresh-Fleet
 Genesis/bootstrap are separate follow-on capabilities; they are not first-
