@@ -1,5 +1,24 @@
 # Norn v3 launch history
 
+## DO staging read-only refresh (2026-11-12 13:33 UTC)
+
+Using explicit DigitalOcean context `work`, a read-only inventory found all
+eleven Norn staging Droplets active: two management, three control, two
+ingress, and four app nodes. Account UUID
+`17f40050233d1cd4962b44050e82a0dd01f8dff7` was active. Platform
+`https://staging.tkmkt-dev.com/version` returned HTTP 200 in 0.267 seconds
+with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The public canary
+`https://norn-fleet-canary.tkmkt-dev.com/route-proof` returned HTTP 200 with
+body `norn-fleet-canary`; `/version` returned HTTP 200 with source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `de960b60d29f`, and
+allocation `079ea126-ed26-9943-02cc-afa6f7d3f255`. These probes establish
+point-in-time endpoint responses, not V3 signed admission or allocation-to-host
+binding. The names-only `work-staging` audit still finds 18 required bindings
+missing. Workflow history contains one failed candidate-branch push with zero
+jobs and no protected readback run. No provider mutation, workflow dispatch, or
+deployment ran.
+
 ## DO staging read-only refresh (2026-11-12 12:58 UTC)
 
 Using explicit DigitalOcean context `work`, the read-only inventory found all
