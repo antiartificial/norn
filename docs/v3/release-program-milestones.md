@@ -1,12 +1,14 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 04:02 UTC. The existing DO staging Fleet's V3
-platform release is deployed through the controller (2026-11-11). The first
-controller-admitted workload is not proven; its date is uncommitted and has
-no calendar forecast. Do not present the platform deployment date as the
-workload or overall V3 launch date. This map orders the [release fitness and
-controller plan](release-fitness-and-controller-plan.md); live actions remain
-subject to protected workflow, intent, and state gates.
+Status: refreshed 2026-11-12 04:39 UTC. The existing DO staging Fleet's V3
+platform release is deployed through the controller (2026-11-11). The latest
+provider/runtime observation recorded here remains 04:02 UTC; this refresh
+adds the merged held-operation recovery model and does not claim a new live
+probe. The first controller-admitted workload is not proven; its date is
+uncommitted and has no calendar forecast. Do not present the platform
+deployment date as the workload or overall V3 launch date. This map orders
+the [release fitness and controller plan](release-fitness-and-controller-plan.md);
+live actions remain subject to protected workflow, intent, and state gates.
 
 ## Reuse release lessons before repeating work
 
@@ -24,7 +26,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (2026-11-12 04:02 UTC)
+## Current gate snapshot (live evidence last observed 2026-11-12 04:02 UTC)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
@@ -66,6 +68,13 @@ not happen.
 - **Follow-on Fleet work:** workload resize/mixed-version rollout and online
   platform upgrade remain open. Fresh-Fleet Genesis/bootstrap is a separate
   lane. None has a committed launch date.
+
+- **Offline recovery modeling:** merged PR #433 adds a bounded M5 model for
+  abandoning a permanently held workload operation, retaining its private
+  inputs until a terminal abandonment receipt, and retiring decryption keys
+  only when no retained operation depends on them. The baseline and three
+  unsafe mutants were checked; this is policy/model evidence, not an
+  implemented controller path or live recovery qualification.
 
 The `work` DigitalOcean context is TurnKey Marketing; `norn-pilot` is personal.
 The DO staging Fleet is the only Fleet in this release program. Provider power,
@@ -392,8 +401,15 @@ control versions or workload readiness from this platform postflight alone.
   lineage, and durable private-input readback. Existing tests cover these
   boundaries separately, not in one fresh acceptance path.
 - [ ] Exercise the production executor and worker across process/lease loss
-  and lost external-effect responses. Define how a permanently held operation
-  is abandoned and when its retained inputs and decryption keys may be retired.
+  and lost external-effect responses. The policy for a permanently held
+  operation is now modeled in the
+  [workload abandonment statechart](statecharts/workload-release-abandonment/README.md):
+  abandonment requires a terminal receipt, retained private inputs remain
+  available until that receipt, and a decryption key cannot be retired while
+  any retained operation depends on it. Baseline and three unsafe-mutant
+  checks pass. Implement the policy in the controller and exercise it across
+  process/lease loss before closing this gate; the model alone does not prove
+  runtime behavior.
 
 **Exit:** data, routes, acknowledgements, and desired/observed capacity remain
 correct through restart, drain, failure, and retry.
