@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 17:35 UTC (latest DO runtime observation: 17:16 UTC). The existing DO staging Fleet's V3
+Status: refreshed 2026-11-12 17:43 UTC (latest DO runtime observation: 17:16 UTC). Norn documentation PR [#454](https://github.com/antiartificial/norn/pull/454) merged at 17:43 UTC as `2852307d`; it records the 17:35 statechart rerun and does not change runtime state. The existing DO staging Fleet's V3
 platform release is deployed through the controller (2026-11-11). A read-only
 `doctl --context work` check at 17:16 found the expected work account active
 and all eleven Norn staging Droplets active: two management, three control,
@@ -98,7 +98,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (provider inventory and platform/canary endpoints refreshed 2026-11-12 17:16 UTC; names-only environment audit and latest-30 workflow-history query refreshed 17:25 UTC; local restart qualifications refreshed 17:15 UTC; statechart suite rerun at 17:35 UTC; Fleet readback runbook PR #1028 merged as `11e4611c` at 16:54 UTC; Norn restart-evidence PR #450 merged as `ae28d8bb` at 16:55 UTC and lane guide PR #451 merged as `239cd8de` at 17:01 UTC; no release publication or deployment action ran for these documentation updates)
+## Current gate snapshot (provider inventory and platform/canary endpoints refreshed 2026-11-12 17:16 UTC; names-only environment audit and latest-30 workflow-history query refreshed 17:25 UTC; local restart qualifications refreshed 17:15 UTC; statechart suite rerun at 17:35 UTC; Fleet readback runbook PR #1028 merged as `11e4611c` at 16:54 UTC; Norn restart-evidence PR #450 merged as `ae28d8bb` at 16:55 UTC, lane guide PR #451 merged as `239cd8de` at 17:01 UTC, and statechart evidence PR #454 merged as `2852307d` at 17:43 UTC; no release publication or deployment action ran for these documentation updates)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
