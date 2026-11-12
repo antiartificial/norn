@@ -1,5 +1,17 @@
 # Norn v3 launch history
 
+## DO staging read-only refresh (2026-11-12 12:58 UTC)
+
+Using explicit DigitalOcean context `work`, the read-only inventory found all
+eleven Norn staging Droplets active: two management, three control, two
+ingress, and four app nodes. Public
+`https://staging.tkmkt-dev.com/version` returned HTTP 200 in 0.256 seconds
+with version `af0f054358d9b9c7b68ea25132b52ee5eb099e12` and allocation
+`de4645bf-25c0-93bd-124b-5e7f9c8cda05`. This confirms provider power state
+and a responding platform API at that time. The canary was not re-probed; its
+latest recorded `/route-proof` and `/version` responses remain from 12:26 UTC.
+No provider mutation, workflow dispatch, or deployment ran.
+
 ## DO workload-readback bindings rechecked (2026-11-12 12:52 UTC)
 
 Reran the repository's name-only audit from protected `norn-fleet` `main`
