@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 17:16 UTC)
+## Current DO Fleet status (2026-11-12 17:53 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -10,17 +10,18 @@ controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
 The explicit read-only `doctl --context work` account readback matched the
-TurnKey Marketing work-staging account (UUID prefix `17f40050`). At 17:16 UTC
+TurnKey Marketing work-staging account (UUID prefix `17f40050`). At 17:53 UTC
 all eleven Norn staging Droplets were active: two management, three control,
-two ingress, and four app nodes. Platform `/version` returned HTTP 200 in
-0.266 seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and
-version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The separate canary's
-`/route-proof` returned HTTP 200 in 0.256 seconds with body
-`norn-fleet-canary`; `/version` returned HTTP 200 in 0.228 seconds with source
-`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `515ddcea44b8`, and allocation
-`6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`. These public point-in-time responses
-do not prove allocation-to-host lineage, V3 signed admission, or continuous
-health. The public-pilot verifier's 12/12 reads at 02:40:57 UTC remain the
+two ingress, and four app nodes. Platform `/version` returned HTTP 200 with
+allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The separate canary's
+`/route-proof` returned HTTP 200 with body `norn-fleet-canary`; `/version`
+returned HTTP 200 with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`,
+node `de960b60d29f`, and allocation
+`079ea126-ed26-9943-02cc-afa6f7d3f255`. The platform allocation was unchanged
+from 17:16; the canary node and allocation changed. These public point-in-time
+responses do not prove allocation-to-host lineage, V3 signed admission, or
+continuous health. The public-pilot verifier's 12/12 reads at 02:40:57 UTC remain the
 latest recorded MySQL pilot check.
 
 Fleet PR #1027 merged as `27d7b33f` and derives protected readback file and
