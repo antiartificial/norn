@@ -1,8 +1,8 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 02:16 UTC. The existing DO staging Fleet's V3
+Status: refreshed 2026-11-12 02:40 UTC. The existing DO staging Fleet's V3
 platform release is deployed through the controller (2026-11-11). The first
-controller-admitted workload is not launched; its date is uncommitted and has
+controller-admitted workload is not proven; its date is uncommitted and has
 no calendar forecast. Do not present the platform deployment date as the
 workload or overall V3 launch date. This map orders the [release fitness and
 controller plan](release-fitness-and-controller-plan.md); live actions remain
@@ -24,16 +24,17 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (2026-11-12 02:16 UTC)
+## Current gate snapshot (2026-11-12 02:40 UTC)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
   one healthy private API backed by etcd and signed API/UI pins on all three
   controls. Promotion interrupted service; online upgrade is not qualified.
-- **DO staging observation:** all nine tagged Fleet Droplets were active and
-  public `/version` returned HTTP 200 at the observation time. This is
-  point-in-time provider and endpoint evidence; it does not prove a responding
-  application, route-to-host binding, or continuous health.
+- **DO staging observation:** all nine tagged Fleet Droplets were active at 02:38 UTC and public `/version`
+  returned HTTP 200. The public-pilot verifier passed 12/12 reads at 02:40:57
+  UTC and observed two distinct allocation IDs. This proves the existing public
+  MySQL pilot responds through its route; it does not establish allocation-to-
+  current-host binding, controller admission, or continuous health.
 - **First workload:** all 18 readback-specific variable names were absent from
   the repository and `work-staging`; no protected readback ran, no intent is
   queued, and no controller-admitted canary has been observed. The next gates
@@ -62,7 +63,7 @@ separate claims.
 |---|---|---|
 | Protected platform release | Source `fa301fa5` passed all 12 qualification jobs in run [42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596); protected run [42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936) published the immutable signed release with UI and four OS/architecture bundles. | Keep exact-SHA qualification and publication separate from controller deployment for each release. |
 | Mini direct | Successful under the owner-stated bar: signed `34178b8b` is active at schema 52, API health returned HTTP 200, and the running Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. Other app health remains mixed. | Keep queued-upgrade recovery and Git-driven workload admission as separate follow-ups. Do not include Fleet workload resizing in the Mini lane. |
-| Existing DO Fleet | Signed source `fa301fa5` is deployed through the controller. Postflight verified one healthy private API with etcd backend and signed API/UI pins on all three controls. At 02:16 UTC Nov 12, nine tagged Fleet Droplets were active and public `/version` returned HTTP 200 in 0.327 seconds with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a`; no app workload response, route-to-host binding, or continuous health is established. The 02:16 UTC name-only audit found all 18 readback-specific protected input names absent from the repository and environment; no protected readback or controller-admitted canary has run. | Provision and review protected readback inputs and credential provenance; run signed read-only workload/ACL/network readback; prove terminal-artifact replay and full-executor recovery; review admission and launch a responding stateless canary. Then qualify mixed-version resize and online upgrade. Keep all-stop as the qualified platform lane. Fresh-Fleet Genesis/bootstrap remains separate. |
+| Existing DO Fleet | Signed source `fa301fa5` is deployed through the controller. Postflight verified one healthy private API with etcd backend and signed API/UI pins on all three controls. At 02:38 UTC Nov 12, nine tagged Fleet Droplets were active and public `/version` returned HTTP 200 in 0.340 seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05`. The read-only public-pilot verifier passed 12/12 reads at 02:40:57 UTC and observed two distinct allocation IDs; this proves the existing MySQL pilot responds, but does not bind it to current app hosts or establish controller admission. The 02:16 UTC name-only audit found all 18 readback-specific protected input names absent from the repository and environment; no protected readback or controller-admitted canary has run. | Provision and review protected readback inputs and credential provenance; run signed read-only workload/ACL/network readback; prove terminal-artifact replay and full-executor recovery; review admission and launch a responding stateless canary. Then qualify mixed-version resize and online upgrade. Keep all-stop as the qualified platform lane. Fresh-Fleet Genesis/bootstrap remains separate. |
 | Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
 | DO workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending or held releases retain them. PR #419 adds a real-etcd composition test spanning durable stage reservation, one-use create authorization, delayed target binding, successor claim, and route-loss recovery through terminal receipt across two etcd client restarts; its Nomad and route effects are simulated. Merged PR [#421](https://github.com/antiartificial/norn/pull/421) (commit `b357f6a`) adds a disposable loopback qualification that drives the production target-stage helper against real Nomad, drops the successful create response, hides the first readback, then proves the successor binds Nomad's actual initial job version 0 and nonzero modify index without a second registration. It fixes missing deployment/spec provenance metadata in the target builder. Exact-head CI passed, including API Go tests, Fleet pilot workload, and three-node durable replica qualification. Full private-input/executor recovery, Nomad health and ingress qualification, fresh signed HTTP admission, and DO workload admission/resize remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, and capacity 4 reaches the modeled terminal receipt. | Join HTTP admission to real etcd, signed qualification, completed staging deployment, and control-owned active-route lineage. Extend disposable driver qualification through private-input open/stage, target health, route, and old-cohort stop; then qualify a database-free canary and mixed-version resize on DO under controller gates. Keep stateful compatibility separate. This resize lane applies to the DO staging Fleet, not the Mini. |
 | Offline state models | All 30 checked-in configurations were rerun on Nov 10 with each config mapped to its owning TLA spec. Twenty-eight passed; the two intentionally buggy Mini descendant configs each reproduced the expected three-transition later-upgrade hold. The corrected Mini config passed five invariants and deadlock. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
