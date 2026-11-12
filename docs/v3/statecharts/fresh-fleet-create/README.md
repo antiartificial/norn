@@ -46,3 +46,41 @@ rotation/revocation details are not modeled. It omits eventual consistency,
 timeouts, provider locks, costs, DNS/TLS, management peering, credential values,
 Ansible internals, and cleanup deadlines. The model's successful check does not
 authorize a live create or prove that a live account token is least privilege.
+
+## Exact nine-node create and recovery contract (2026-11-12)
+
+The companion `FreshFleetNineNodeRecovery.tla` model names the nine
+control/ingress/app nodes (3 + 2 + 4) individually. It binds one reviewed plan
+and state lineage to one intent and one-use apply. The normal recovery branch
+loses the response after eight nodes, retires the apply runner, restarts the
+controller, reads back exact provider and state identities, binds a fresh
+recovery authorization to the same intent and exact remainder, creates the
+ninth node, proves all nine identities, bootstraps, retires the runner, and
+writes a terminal receipt. A second branch loses the final state write; the
+provider/state mismatch remains held and cannot enter recovery or bootstrap.
+
+Reproduce the companion model in a new output directory:
+
+```sh
+JAVA=/Users/arti/.local/share/mise/installs/java/temurin-25.0.5+8.0.LTS/bin/java \
+  bun /Users/arti/.agents/skills/statechart/scripts/statechart.ts \
+  "$PWD/FreshFleetNineNodeRecovery.tla" \
+  --config "$PWD/FreshFleetNineNodeRecovery.cfg" \
+  --view "$PWD/nine-node-view.ts" \
+  --out "$PWD/nine-node-reproduced"
+```
+
+TLC explored 39 states and 58 steps. Ten invariants and the deadlock check
+passed. The chart draws 19 states and 23 arrows; it collapses per-node create
+and configure loops and repeated input actions, which TLC still explores. See
+[`nine-node-chart.mmd`](nine-node-chart.mmd) and
+[`nine-node-report.md`](nine-node-report.md).
+
+This is an offline protocol contract, not evidence that the protected workflow
+implements the sequence. It models a single app pool of four nodes, excludes
+the two management nodes from the nine-node plan, and does not select the
+future General + Stateful two-app-pool profile. Provider/state identities and
+failure timing are synthetic; real provider apply/recovery, credentials, SSH,
+Ansible, controller restart, terminal artifact replay, and live workload
+readiness still need implementation-facing qualification. The mismatch branch
+fails closed but does not model how a reviewed reconciliation resolves it.

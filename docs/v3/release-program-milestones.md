@@ -1,13 +1,14 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 04:55 UTC. The existing DO staging Fleet's V3
-platform release is deployed through the controller (2026-11-11). A fresh
-read-only provider/API observation at 04:55 UTC found all eleven Norn staging
-Droplets active and public `/version` responding HTTP 200; this does not prove
-controller-admitted workload readiness. The first controller-admitted workload
-is not proven; its date is uncommitted and has no calendar forecast. Do not
-present the platform deployment date as the workload or overall V3 launch
-date. This map orders
+Status: refreshed 2026-11-12 05:50 UTC. The existing DO staging Fleet's V3
+platform release is deployed through the controller (2026-11-11). The latest
+recorded read-only provider/API observation (04:55 UTC) found all eleven Norn
+staging Droplets active and public `/version` responding HTTP 200; this does
+not prove controller-admitted workload readiness. Repository, CI, and state-
+model status was refreshed at 05:50 UTC; it does not constitute a new provider
+or runtime observation. The first controller-admitted workload is not proven;
+its date is uncommitted and has no calendar forecast. Do not present the
+platform deployment date as the workload or overall V3 launch date. This map orders
 the [release fitness and controller plan](release-fitness-and-controller-plan.md);
 live actions remain subject to protected workflow, intent, and state gates.
 
@@ -27,7 +28,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (live provider/API evidence last observed 2026-11-12 04:55 UTC)
+## Current gate snapshot (provider/API evidence last observed 2026-11-12 04:55 UTC; repository/CI/offline-model status checked 05:50 UTC)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
@@ -91,9 +92,9 @@ separate claims.
 | Protected platform release | Source `fa301fa5` passed all 12 qualification jobs in run [42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596); protected run [42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936) published the immutable signed release with UI and four OS/architecture bundles. | Keep exact-SHA qualification and publication separate from controller deployment for each release. |
 | Mini direct | Successful under the owner-stated bar: signed `34178b8b` is active at schema 52, API health returned HTTP 200, and the running Norn-managed `vigil-gateway` allocation returned HTTP 200 from `/health`. Other app health remains mixed. | Keep queued-upgrade recovery and Git-driven workload admission as separate follow-ups. Do not include Fleet workload resizing in the Mini lane. |
 | Existing DO Fleet | Signed source `fa301fa5` is deployed through the controller. Postflight verified one healthy private API with etcd backend and signed API/UI pins on all three controls. At 04:55 UTC Nov 12, all eleven Norn staging Droplets (including two management nodes) were active; public `/version` returned HTTP 200 in 0.176 seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05`. The public-pilot verifier's 12/12 reads at 02:40:57 UTC remain the latest recorded MySQL pilot check; neither that nor `/version` proves controller admission or app-host binding. A current name-only audit found all 18 readback-specific environment binding names missing from `work-staging`; it read no values. No protected readback or controller-admitted canary has run. | Review and bind protected readback inputs and credential provenance; run signed workload/ACL/network readback; prove terminal-artifact replay and full-executor recovery; review admission and launch a responding stateless canary. Then qualify mixed-version resize and online upgrade. Fresh-Fleet Genesis/bootstrap remains separate. |
-| Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Complete synthetic parser/serializer and persistent apply/recovery coverage; settle SKU, region, capacity, cost, placement, and stateful recovery before proposing a profile. |
+| Fresh-Fleet bootstrap | General and Stateful app-pool roles are supported by topology validation, generated inventory, and bootstrap. Fleet PR [#1018](https://github.com/antiartificial/norn-fleet/pull/1018) merged as `9479a7f` after its exact-head contract check and both Socket checks passed. A companion nine-node offline statechart was checked on Nov 12: 39 states, 58 steps, ten invariants and deadlock passed; its mismatch branch holds instead of admitting recovery. This is protocol-model evidence, not provider apply or workflow integration proof. No two-pool profile, sizes, capacity bounds, or cost envelope is selected; current staging remains 3+2+4 with one app pool. | Join persistent apply/recovery and exact provider/state readback in implementation-facing tests; prove post-recovery bootstrap and receipt replay. Then settle SKU, region, capacity, cost, placement, and stateful recovery before proposing the future General + Stateful profile. |
 | DO workload resize/release | The authenticated staging-only producer is opt-in and not deployed. PR #351 pins the exact job-driving app spec and encrypted SOPS snapshot; completed releases remove encrypted inputs with a receipt-bound tombstone, while pending or held releases retain them. PR #419 adds a real-etcd composition test spanning durable stage reservation, one-use create authorization, delayed target binding, successor claim, and route-loss recovery through terminal receipt across two etcd client restarts; its Nomad and route effects are simulated. Merged PR [#421](https://github.com/antiartificial/norn/pull/421) (commit `b357f6a`) adds a disposable loopback qualification that drives the production target-stage helper against real Nomad, drops the successful create response, hides the first readback, then proves the successor binds Nomad's actual initial job version 0 and nonzero modify index without a second registration. It fixes missing deployment/spec provenance metadata in the target builder. Exact-head CI passed, including API Go tests, Fleet pilot workload, and three-node durable replica qualification. Full private-input/executor recovery, Nomad health and ingress qualification, fresh signed HTTP admission, and DO workload admission/resize remain open. Mixed-version models pass at capacities 3 and 4; capacity 3 holds, and capacity 4 reaches the modeled terminal receipt. | Join HTTP admission to real etcd, signed qualification, completed staging deployment, and control-owned active-route lineage. Extend disposable driver qualification through private-input open/stage, target health, route, and old-cohort stop; then qualify a database-free canary and mixed-version resize on DO under controller gates. Keep stateful compatibility separate. This resize lane applies to the DO staging Fleet, not the Mini. |
-| Offline state models | All 30 checked-in configurations were rerun on Nov 10 with each config mapped to its owning TLA spec. Twenty-eight passed; the two intentionally buggy Mini descendant configs each reproduced the expected three-transition later-upgrade hold. The corrected Mini config passed five invariants and deadlock. Models cover Mini, DO release/readback, fresh Fleet, online upgrade, admission, routing, recovery, and resize. | Replay implementation-facing boundaries against controller tests. Statechart results do not prove runtime refinement or service health. |
+| Offline state models | All 30 checked-in configurations were rerun on Nov 10 with each config mapped to its owning TLA spec. Twenty-eight passed; the two intentionally buggy Mini descendant configs each reproduced the expected three-transition later-upgrade hold. The corrected Mini config passed five invariants and deadlock. The new nine-node Fresh-Fleet companion model was checked Nov 12: 39 states, 58 steps, ten invariants and deadlock passed; its 19-state/23-arrow chart shows both exact same-intent recovery and a provider/state mismatch hold. The chart collapses per-node create/configure loops and repeated input actions while TLC explores them. | Replay implementation-facing boundaries against provider/controller tests, including state-write lag, exact identity readback, recovery nonce binding, bootstrap ordering, and durable terminal receipt. Statechart results do not prove runtime refinement or service health. |
 
 Mini is an independent node, not a Fleet member. DO staging is the only Fleet
 in this release program. Replica and app-pool resizing belong to the DO
@@ -146,11 +147,16 @@ effects. Fresh-Fleet provider creation is not conflated with Genesis.
   tests separately cover controller-install pins and three-control SSH.
 - [x] Exercise production durable `converge`/`recover` handlers after a lost
   response for the existing Fleet's exact app-03 scale effect.
+- [x] Model the nine-node control/ingress/app create and recovery contract,
+  including exact plan/state lineage binding, same-intent recovery, a provider/
+  state write mismatch hold, bootstrap ordering, and terminal receipt. The
+  companion statechart passed 10 invariants and deadlock across 39 states and
+  58 steps on 2026-11-12. This is offline protocol evidence only.
 - [ ] Join persistent staging provider apply/recovery handlers, durable
-  same-intent receipt, exact state/provider identity, and post-recovery
-  bootstrap into one synthetic workflow. Bind it to the current nine-node
-  control/ingress/app single-app-pool source (the provider inventory also has
-  two management nodes); keep the future two-pool contract separate.
+  same-intent receipt, exact state/provider identity readback, and post-recovery
+  bootstrap into implementation-facing tests. The current model uses the
+  nine-node control/ingress/app source; the provider inventory also has two
+  management nodes. Keep the future two-pool contract separate.
 - [x] Exercise the separate disposable-root saved-plan retirement and
   final-zero recovery contracts; these tests do not authorize teardown of
   persistent work-staging and the lane is not live-qualified.
