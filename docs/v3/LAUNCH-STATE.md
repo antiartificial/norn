@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 03:41 UTC)
+## Current DO Fleet status (2026-11-12 04:02 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -9,9 +9,9 @@ healthy private API backed by etcd, and signed API/UI pins on all three
 controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
-The latest read-only provider observation at 03:41 UTC found all nine tagged
-Fleet Droplets active. Public `/version` returned HTTP 200 in 0.176 seconds
-with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+The latest read-only provider observation at 04:02 UTC found all nine tagged
+Fleet Droplets active. Public `/version` returned HTTP 200 in 0.231 seconds
+with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
 `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The public-pilot verifier passed
 12/12 reads at 02:40:57 UTC and observed two distinct allocation IDs (ID-set
 SHA-256 `85b8fe7c7e4903c61e8a33fa64d39f18b273b9c9ea0221fac6a3af8eab2a4c64`).
@@ -30,11 +30,13 @@ This proves the signed intent path is implemented and qualified at the code
 level; it does not establish that the existing public pilot was admitted
 through V3 or bind its allocations to current app hosts.
 
-A 03:41 UTC name-only audit found all 18 workload-readback-specific input names
-absent from repository and `work-staging` variable and secret lists; it read no
-values. Five shared Fleet variables and three state backend secrets are present in the
-protected environment. Workflow history contains one failed candidate-branch `push` record with
-zero jobs; no protected workload readback has run. No controller-admitted
+A 04:02 UTC name-only audit found all 18 workload-readback-specific environment
+binding names missing from GitHub Actions repository-level and `work-staging`
+configuration; it read no values. The five shared Fleet variables and three
+state backend secrets are present, but this audit does not validate their paths
+or contents. Workflow
+history contains one failed candidate-branch `push` record with zero jobs; no
+protected workload readback has run. No controller-admitted
 canary has been observed. The first
 controller-admitted workload launch date remains uncommitted with no calendar
 forecast. The earlier November 16 target is withdrawn.
