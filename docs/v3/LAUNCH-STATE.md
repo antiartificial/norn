@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 12:26 UTC)
+## Current DO Fleet status (2026-11-12 16:26 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -10,58 +10,47 @@ controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
 The explicit read-only `doctl --context work` account readback matched the
-documented TurnKey Marketing work-staging account (UUID prefix `17f40050`),
-not the personal `norn-pilot` account. At 12:26 UTC all eleven Norn staging
-Droplets were active: two management, three control, two ingress, and four
-app nodes. Public `/version` returned HTTP 200 in 0.254 seconds with
-allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
-`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The separate public canary's
-`/route-proof` and `/version` both returned HTTP 200; the version response
-reported source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, node
-`de960b60d29f`, and allocation `079ea126-ed26-9943-02cc-afa6f7d3f255`.
-This confirms a public staging workload is serving at this time, but does not
-prove it passed the new V3 signed admission/readback path, resolve its earlier
-failed deployment receipt, or establish DO API, etcd, Nomad/Consul, or
-continuous health. The public-pilot
-verifier's 12/12 reads at 02:40:57 UTC remain the latest recorded MySQL pilot
-check; it observed two allocation IDs (ID-set SHA-256
-`85b8fe7c7e4903c61e8a33fa64d39f18b273b9c9ea0221fac6a3af8eab2a4c64`).
+TurnKey Marketing work-staging account (UUID prefix `17f40050`). At 16:26 UTC
+all eleven Norn staging Droplets were active: two management, three control,
+two ingress, and four app nodes. Public `/version` returned HTTP 200 in 0.192
+seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The separate canary's
+`/route-proof` returned HTTP 200 in 0.187 seconds with body
+`norn-fleet-canary`; `/version` returned HTTP 200 in 0.201 seconds with source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `515ddcea44b8`, and allocation
+`6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`. The platform allocation changed since
+the 16:15 sample, while the canary node and allocation match that sample.
+These public point-in-time responses do not prove allocation-to-host lineage,
+V3 signed admission, or continuous health. The public-pilot verifier's 12/12
+reads at 02:40:57 UTC remain the latest recorded MySQL pilot check.
 
-Fleet PR #1006 merged owner-reviewed provenance claims into the signed
-workload-readback inputs. Exact-head contract run
-[43129488861](https://github.com/antiartificial/norn-fleet/actions/runs/43129488861)
-passed 4,148 tests (105 skipped) and 329 executor-recovery tests (5 skipped);
-both Socket checks passed. The one-use effect-runner contract documents
-workload-readback dispatch with all 21 signed digest bindings (Fleet PR #1008);
-Fleet PR #1010 refreshed the launch evidence.
-This proves the signed intent path is implemented and qualified at the code
-level; it does not establish that the existing public pilot was admitted
-through V3 or bind its allocations to current app hosts.
-
-The 11:22 UTC name-only audit against the current readback workflow found 18
-required `work-staging` variable names missing, including the enable switch
-and readback input paths. Five shared variables and three state backend
-secret names were present. It read no values and did not validate paths,
-contents, digests, provenance, or runner access. The readback remains disabled
-and cannot run as configured. Workflow run
+Fleet PR #1027 merged as `27d7b33f` and derives protected readback file and
+receipt paths from `NORN_FLEET_SECRET_DIR`. A fresh names-only audit against
+`norn-fleet` main `27d7b33f` compared the workflow's referenced names with all
+repository and `work-staging` environment variable and secret names: six of
+seven referenced variables are present, with only
+`NORN_WORKLOAD_READBACK_ENABLED` missing; all three referenced state-backend
+secrets are present. The configured secret root is absolute and has no trailing
+slash. The audit read no values and did not inspect protected files, their
+modes or contents, signed digests, credential provenance, or runner access.
+The enable gate is absent, so the protected workload-readback workflow remains
+disabled. Its run history still contains only failed candidate-branch push
 [43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
-is a failed candidate-branch `push` with zero jobs; it was not the required
-protected `workflow_dispatch`. No protected V3 workload readback has run.
-The responding public canary is not
-evidence of its signed admission receipt. The first V3-admission-qualified
-workload launch date remains uncommitted with no calendar forecast. The earlier
-November 16 target is withdrawn.
+with zero jobs; no protected V3 workload readback has run. The responding
+public canary is not evidence of a signed admission receipt. The first
+V3-admission-qualified workload launch date remains uncommitted, with no
+calendar forecast; the earlier November 16 target is withdrawn.
 
-The next DO gates are to provision and review the exact protected inputs and
-credential provenance, execute the signed workload/ACL/network readback (GET-
-only evidence reads plus explicitly authorized, expiring, run-scoped Nomad and
-Consul reader-token issuance), retrieve its terminal artifact after controller restart, qualify
-full-executor recovery through real Nomad and ingress effects, review/enable
-admission, and prove the responding stateless canary has durable same-intent
-receipts through the V3 path. Workload resize and online platform upgrade remain
-follow-on Fleet capabilities; neither is required for that first workload.
-The Mini is an independent direct lane. Fresh-Fleet Genesis/bootstrap is a
-separate lane from this existing Fleet update.
+The next DO gates are owner review and verification of the exact protected
+inputs and ACL credential provenance, a signed workload/ACL/network readback
+(GET-only evidence reads plus explicitly authorized, expiring, run-scoped
+Nomad and Consul reader-token issuance), terminal-artifact retrieval after
+controller restart, full-executor recovery through real Nomad and ingress
+effects, admission review, and durable same-intent receipts binding the
+responding canary. Workload resize and online platform upgrade remain follow-on
+Fleet capabilities; neither is required for the first workload. The Mini is an
+independent direct lane. Fresh-Fleet Genesis/bootstrap is separate from this
+existing-Fleet update.
 
 ## Managed MySQL stateful staging candidate (2026-11-12 03:41 UTC)
 
