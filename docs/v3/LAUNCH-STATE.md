@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 01:57 UTC)
+## Current DO Fleet status (2026-11-12 02:16 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -9,8 +9,8 @@ healthy private API backed by etcd, and signed API/UI pins on all three
 controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
-The latest read-only provider observation at 01:57 UTC found all nine tagged
-Fleet Droplets active. Public `/version` returned HTTP 200 in 0.258 seconds
+The latest read-only provider observation at 02:16 UTC found all nine tagged
+Fleet Droplets active. Public `/version` returned HTTP 200 in 0.327 seconds
 with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
 `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. This is point-in-time provider
 and endpoint evidence only; it does not establish allocation-to-host binding,
@@ -20,18 +20,18 @@ Fleet PR #1006 merged owner-reviewed provenance claims into the signed
 workload-readback inputs. Exact-head contract run
 [43129488861](https://github.com/antiartificial/norn-fleet/actions/runs/43129488861)
 passed 4,148 tests (105 skipped) and 329 executor-recovery tests (5 skipped);
-both Socket checks passed. The one-use effect-runner contract now documents
-workload-readback dispatch with all 21 signed digest bindings (Fleet PR #1008).
+both Socket checks passed. The one-use effect-runner contract documents
+workload-readback dispatch with all 21 signed digest bindings (Fleet PR #1008);
+Fleet PR #1009 refreshed the launch evidence.
 This proves the signed intent path is implemented and qualified at the code
 level, not that a live readback or workload ran.
 
-A 01:53 UTC name-only audit found all 18 workload-readback-specific variable
+A 02:16 UTC name-only audit found all 18 workload-readback-specific variable
 names absent from both repository and `work-staging`; it read no values. Five
 shared Fleet variables and three state backend secrets are present in the
-protected environment. Workflow history still contains only one failed
-candidate-branch `push` record with zero jobs; no protected workload readback
-has run. No workload-readback intent is queued, and no controller-admitted
-canary has been observed. The first workload launch date remains uncommitted
+protected environment. Workflow history contains one failed candidate-branch `push` record with
+zero jobs; no protected workload readback has run. No workload-readback intent
+is queued, and no controller-admitted canary has been observed. The first workload launch date remains uncommitted
 with no calendar forecast. The earlier November 16 target is withdrawn.
 
 The next DO gates are to provision and review the exact protected inputs and
