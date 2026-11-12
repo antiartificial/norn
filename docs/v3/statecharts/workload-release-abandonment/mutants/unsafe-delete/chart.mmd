@@ -1,0 +1,79 @@
+---
+title: "Held workload release: abandon safely and retain shared keys"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: Work
+    lg1: Held
+    lg2: Terminal
+    lg3: Retired
+    lg4: Breaks InputDeletionRequiresTerminalDisposition
+    lg5: Breaks InputDeletionRequiresTerminalDisposition in some cases
+    lg6: Path to the InputDeletionRequiresTerminalDisposition bug
+  }
+  class lg0 blue
+  class lg1 orange
+  class lg2 teal
+  class lg3 purple
+  class lg4 breaks
+  class lg5 mayBreak
+  class lg6 bugPath
+  s0: Release active#59; input retained
+  s1: Completion receipt durable#59; inputs retained
+  s2: Held#59; effects unresolved#59; input retained
+  s3: Completed input deleted#59; shared key still pinned
+  s4: Held#59; input deleted before terminal disposition
+  s5: Held#59; worker lost#59; effects unresolved#59; input retained
+  s6: Held#59; effects read back#59; explicit authority pending
+  s7: Inputs tombstoned#59; key-reference proof pending
+  s8: Held#59; abandonment authorized#59; receipt pending
+  s9: Abandonment receipt durable#59; inputs retained
+  s10: No retained key references#59; safe to retire key
+  s11: Abandoned input deleted#59; shared key still pinned
+  s12: No retained input references#59; key retired
+  [*] --> s0
+  s0 --> s1: controller records the complete release receipt
+  s0 --> s2: release enters a durable hold
+  s1 --> s3: delete this input and write its receipt-bound tombstone
+  s2 --> s4: unsafe path deletes inputs while the operation remains held
+  s2 --> s5: worker lease is lost
+  s2 --> s6: readback proves external effects settled
+  s1 --> s7: delete this input and write its receipt-bound tombstone
+  s3 --> s7: another operation deletes its input with a terminal receipt
+  s2 --> s7: unsafe path deletes inputs while the operation remains held
+  s4 --> s7: another operation deletes its input with a terminal receipt
+  s5 --> s4: unsafe path deletes inputs while the operation remains held
+  s5 --> s2: successor claims read-only reconciliation
+  s6 --> s4: unsafe path deletes inputs while the operation remains held
+  s6 --> s8: owner signs explicit abandonment authority
+  s7 --> s10: controller verifies no retained record uses this key
+  s5 --> s7: unsafe path deletes inputs while the operation remains held
+  s6 --> s7: unsafe path deletes inputs while the operation remains held
+  s8 --> s9: controller records the abandonment receipt
+  s8 --> s4: unsafe path deletes inputs while the operation remains held
+  s9 --> s11: delete this input and write its receipt-bound tombstone
+  s10 --> s12: retire the now-unreferenced key version
+  s8 --> s7: unsafe path deletes inputs while the operation remains held
+  s4 --> s11: controller records the abandonment receipt
+  s9 --> s7: delete this input and write its receipt-bound tombstone
+  s11 --> s7: another operation deletes its input with a terminal receipt
+  classDef breaks fill:#ffecee,stroke:#e72e3b,stroke-width:2.5px,color:#cd2834
+  classDef mayBreak fill:#fff3e6,stroke:#e8730c,stroke-width:2.5px,color:#b85a06
+  class s0 blue
+  class s0 bugPath
+  class s1 teal
+  class s2 orange
+  class s2 bugPath
+  class s3 teal
+  class s4 orange
+  class s4 breaks
+  class s4 bugPath
+  class s5 orange
+  class s6 orange
+  class s7 mayBreak
+  class s8 orange
+  class s9 teal
+  class s10 mayBreak
+  class s11 teal
+  class s12 purple
+  class s12 mayBreak

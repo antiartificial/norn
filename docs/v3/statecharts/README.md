@@ -50,6 +50,13 @@ deadlock passed. The model abstracts the implementation's 30-sample bound,
 binary/signature checks, and real Launchd behavior; see the focused model
 README.
 
+At 04:29 UTC on 2026-11-12, a held workload-release abandonment model checked
+38 states / 77 steps, four safety invariants, and deadlock. It proposes
+readback and explicit authority before abandonment, retains encrypted input
+until a durable terminal disposition, and requires a no-references inventory
+before retiring a shared key-ring version. Three unsafe mutants reproduce the
+expected violations. This policy is not yet implemented.
+
 | Lane | Result | Model status | Main limit |
 |---|---:|---|---|
 | Existing DO platform release | 299 states, 1,036 steps; 10 invariants pass (rerun 2026-11-10) | Existing all-stop, forward-only release model | Does not cover Genesis installation or fresh provider creation |
@@ -87,6 +94,7 @@ README.
 - [Concurrent workload admission replay](workload-release-concurrent-admission/README.md)
 - [Workload admission replay after response loss and restart](workload-release-admission/README.md)
 - [Simultaneous workload release HTTP admission](workload-release-http-concurrency/README.md)
+- [Held workload release abandonment and key retention](workload-release-abandonment/README.md)
 
 ## Findings to carry into implementation
 

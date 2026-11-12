@@ -1,0 +1,54 @@
+---
+title: "Held workload release: abandon safely and retain shared keys"
+---
+stateDiagram-v2
+  state "Legend" as legend {
+    lg0: Work
+    lg1: Held
+    lg2: Terminal
+    lg3: Retired
+  }
+  class lg0 blue
+  class lg1 orange
+  class lg2 teal
+  class lg3 purple
+  s0: Release active#59; input retained
+  s1: Completion receipt durable#59; inputs retained
+  s2: Held#59; effects unresolved#59; input retained
+  s3: Completed input deleted#59; shared key still pinned
+  s4: Held#59; worker lost#59; effects unresolved#59; input retained
+  s5: Held#59; effects read back#59; explicit authority pending
+  s6: Inputs tombstoned#59; key-reference proof pending
+  s7: Held#59; abandonment authorized#59; receipt pending
+  s8: Abandonment receipt durable#59; inputs retained
+  s9: No retained key references#59; safe to retire key
+  s10: Abandoned input deleted#59; shared key still pinned
+  s11: No retained input references#59; key retired
+  [*] --> s0
+  s0 --> s1: controller records the complete release receipt
+  s0 --> s2: release enters a durable hold
+  s1 --> s3: delete this input and write its receipt-bound tombstone
+  s2 --> s4: worker lease is lost
+  s2 --> s5: readback proves external effects settled
+  s1 --> s6: delete this input and write its receipt-bound tombstone
+  s3 --> s6: another operation deletes its input with a terminal receipt
+  s4 --> s2: successor claims read-only reconciliation
+  s5 --> s7: owner signs explicit abandonment authority
+  s6 --> s9: controller verifies no retained record uses this key
+  s7 --> s8: controller records the abandonment receipt
+  s8 --> s10: delete this input and write its receipt-bound tombstone
+  s9 --> s11: retire the now-unreferenced key version
+  s8 --> s6: delete this input and write its receipt-bound tombstone
+  s10 --> s6: another operation deletes its input with a terminal receipt
+  class s0 blue
+  class s1 teal
+  class s2 orange
+  class s3 teal
+  class s4 orange
+  class s5 orange
+  class s6 teal
+  class s7 orange
+  class s8 teal
+  class s9 teal
+  class s10 teal
+  class s11 purple
