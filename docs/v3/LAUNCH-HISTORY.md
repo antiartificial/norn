@@ -1,5 +1,17 @@
 # Norn v3 launch history
 
+## DO workload-readback bindings rechecked (2026-11-12 12:52 UTC)
+
+Reran the repository's name-only audit from protected `norn-fleet` `main`
+against the `work-staging` GitHub environment and current
+`work-staging-workload-readback.yml`. Eighteen required environment binding
+names are missing, including the enable flag and dedicated input-file paths.
+The five shared workflow variables and three state-backend secret names are
+present. The audit read no values and did not validate paths, file contents,
+digests, provenance, or runner access. No workflow was dispatched, and no
+provider or fleet mutation occurred. The protected readback remains
+unconfigured; these name bindings alone do not make it ready to run.
+
 ## Fresh-Fleet Norn authority merged (2026-11-12 12:41 UTC)
 
 Norn PR [#437](https://github.com/antiartificial/norn/pull/437) merged to
