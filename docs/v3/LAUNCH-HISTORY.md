@@ -1,5 +1,20 @@
 # Norn v3 launch history
 
+## Workload-release restart recovery exercised locally (2026-11-12 16:48 UTC)
+
+Three existing workload-release restart integration tests passed against
+disposable local services. Two used a test driver with local etcd: one recovered
+a lost route-effect response after worker lease revocation and successor claim;
+the other composed target-stage and route/drain recovery across etcd client
+restarts and reached a terminal receipt without duplicate effect writes. The
+third used local etcd and a Docker-capable disposable Nomad agent: a proxy
+dropped Nomad's successful target-create response and hid the first readback;
+after etcd client restart, the successor adopted the existing effect
+reservation, bound Nomad's exact job version and modify index, and did not
+register a duplicate job. This qualifies target-stage recovery through real
+disposable Nomad, not the full private-input, health/ingress, old-cohort drain,
+or deployed-controller path. No DO or provider action ran.
+
 ## DO staging refresh and readback configuration audit (2026-11-12 16:26 UTC)
 
 Using the explicit `work` DigitalOcean context, the read-only account check
