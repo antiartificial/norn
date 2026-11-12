@@ -1,6 +1,6 @@
 # V3 platform release lanes and workload resizing
 
-Status: operator guidance reconciled 2026-11-12 17:16 UTC against the release
+Status: operator guidance reconciled 2026-11-12 17:25 UTC against the release
 ledger and Fleet main `11e4611c`; Fleet runbook PR #1028 merged at 16:54 UTC.
 The latest read-only DO runtime observation recorded in the ledger is 17:16
 UTC. A local restart qualification at 17:15 verified terminal receipt and
