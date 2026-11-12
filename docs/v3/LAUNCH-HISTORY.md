@@ -1,5 +1,16 @@
 # Norn v3 launch history
 
+## Protected workload-readback gate remains closed (2026-11-12 17:25 UTC)
+
+The live Fleet main remains `11e4611cd9a28472a1c6b2a237ad18a796b54faf`.
+A names-only audit compared the current protected workflow references with
+repository and `work-staging` variable/secret names: six of seven variables
+and all three secrets are present; `NORN_WORKLOAD_READBACK_ENABLED` remains
+absent. No values, protected files, modes, or credential contents were read.
+A query of the latest 30 Fleet workflow runs found no workload-readback
+dispatch. This is a bounded recent-history check, not a complete archive audit.
+No workflow dispatch or provider action ran.
+
 ## DO runtime rechecked; local recovery qualification rerun (2026-11-12 17:16 UTC)
 
 The explicit read-only `doctl --context work` account remained active (UUID

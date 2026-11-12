@@ -25,7 +25,7 @@ latest recorded MySQL pilot check.
 
 Fleet PR #1027 merged as `27d7b33f` and derives protected readback file and
 receipt paths from `NORN_FLEET_SECRET_DIR`; runbook refresh PR #1028 merged as
-`11e4611c`. A 17:03 names-only audit against current main compared the
+`11e4611c`. A 17:25 names-only audit against current main compared the
 workflow's referenced names with repository and `work-staging` environment
 variable and secret names: six of seven referenced variables are present,
 with only `NORN_WORKLOAD_READBACK_ENABLED` missing; all three referenced
@@ -33,10 +33,13 @@ state-backend secrets are present. Main's workflow file matches the audited
 copy. The audit read no values and did not inspect protected files, their
 modes or contents, signed digests, credential provenance, or runner access.
 The enable gate is absent, so the protected workload-readback workflow remains
-disabled. The 16:26 workflow-history query found only failed candidate-branch
-push [43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
-with zero jobs. No later history query succeeded in this refresh. The
-responding public canary is not evidence of a signed admission receipt. The
+disabled. A query at 17:25 of the latest 30 Fleet workflow runs found no
+workload-readback dispatch; this bounded recent-history check is not a
+complete archive audit. The 16:26 candidate-specific query found failed
+candidate-branch push
+[43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
+with zero jobs. The responding public canary is not evidence of a signed
+admission receipt. The
 first V3-admission-qualified workload launch date remains uncommitted, with no
 calendar forecast; the earlier November 16 target is withdrawn.
 
