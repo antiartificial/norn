@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 02:40 UTC. The existing DO staging Fleet's V3
+Status: refreshed 2026-11-12 02:56 UTC. The existing DO staging Fleet's V3
 platform release is deployed through the controller (2026-11-11). The first
 controller-admitted workload is not proven; its date is uncommitted and has
 no calendar forecast. Do not present the platform deployment date as the
@@ -24,7 +24,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (2026-11-12 02:40 UTC)
+## Current gate snapshot (2026-11-12 02:56 UTC)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
@@ -44,6 +44,16 @@ not happen.
   and a responding stateless canary with durable same-intent receipts. See
   [current launch state](LAUNCH-STATE.md) for evidence and
   [launch history](LAUNCH-HISTORY.md) for dated records.
+- **Managed MySQL candidate:** its InfraSpec declares
+  `norn-fleet-mysql.tkmkt-dev.com`; protected catalog promotion
+  ([42312866244](https://github.com/antiartificial/norn-fleet/actions/runs/42312866244))
+  and three-control readback
+  ([42341905690](https://github.com/antiartificial/norn-fleet/actions/runs/42341905690))
+  succeeded, and DNS resolves to `159.89.243.220`. The current TLS probe
+  returns the Traefik default certificate. The managed release toggle is
+  `false`, with no protected release dispatch or Norn-owned A/B deployment.
+  This stateful candidate is a separate follow-up and does not qualify the
+  first stateless controller-admitted workload.
 - **Mini:** independent direct lane; its owner-defined success bar is met
   (signed V3 active, API healthy, and `vigil-gateway` responded). Mixed health
   and queued-upgrade recovery remain separate follow-ups. Mini is not a Fleet

@@ -31,7 +31,9 @@ nine tagged Fleet Droplets active and public `/version` responding. A 12-read
 public-pilot check at 02:40:57 UTC observed two distinct allocations; the
 existing MySQL pilot responds, while controller admission remains unproven. The first
 controller-admitted workload launch date is uncommitted with no calendar
-forecast; follow
+forecast. The separate managed MySQL app catalog is promoted and read back,
+and its hostname resolves, but TLS still presents the Traefik default
+certificate. The managed app has not been released. Follow
 [launch state](LAUNCH-STATE.md) and [release milestones](release-program-milestones.md)
 for the current gates. Mini is independent and has no Fleet resize lane.
 

@@ -49,6 +49,24 @@ follow-on Fleet capabilities; neither is required for that first workload.
 The Mini is an independent direct lane. Fresh-Fleet Genesis/bootstrap is a
 separate lane from this existing Fleet update.
 
+## Managed MySQL stateful staging candidate (2026-11-12 02:54 UTC)
+
+The source InfraSpec declares `deploy: true` and the distinct hostname
+`norn-fleet-mysql.tkmkt-dev.com`. Protected catalog promotion
+[42312866244](https://github.com/antiartificial/norn-fleet/actions/runs/42312866244)
+and three-control readback
+[42341905690](https://github.com/antiartificial/norn-fleet/actions/runs/42341905690)
+completed successfully. DNS resolves to `159.89.243.220`.
+
+The hostname still presents the Traefik default TLS certificate. The protected
+TLS workflow has no run, `NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED` is
+`false`, and the release workflow has no `workflow_dispatch` run. No
+Norn-owned version A or B deployment or rollback has been qualified. The
+catalog and DNS evidence do not prove app runtime. See the
+[managed MySQL activation runbook](m6-managed-mysql-staging-catalog.md) and
+[rollback runbook](m6-staging-app-rollback.md). This stateful candidate is
+separate from the first stateless controller-admitted DO canary.
+
 ## Current Mini status (2026-11-10 15:26 UTC)
 
 The independent Mini runs immutable signed release
