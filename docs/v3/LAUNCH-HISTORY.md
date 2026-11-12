@@ -1,16 +1,28 @@
 # Norn v3 launch history
 
+## Fresh-Fleet Norn authority merged (2026-11-12 12:41 UTC)
+
+Norn PR [#437](https://github.com/antiartificial/norn/pull/437) merged to
+`master` as `f41f70cc` from exact head `ff055988`. Protected run
+[43219500086](https://github.com/antiartificial/norn/actions/runs/43219500086)
+passed API Go, CLI Go, UI, OpenAPI, workflow lint, platform gate, app catalog,
+and Fleet pilot workload checks. Companion run
+[43219500056](https://github.com/antiartificial/norn/actions/runs/43219500056)
+passed three-client durable-replica qualification. The API feature remains
+default-off. No signed release, DO deployment, Fresh-Fleet provider executor,
+or create workflow was published or run. This is protected source
+qualification, not live Fresh-Fleet qualification.
+
 ## Fresh-Fleet workflow graph and fail-closed war-game rerun (2026-11-12 12:30 UTC)
 
 In the existing local `norn-fleet` worktree, the apply-graph and Fresh-Fleet
 war-game suites passed 11 tests in 18.770 seconds. The graph requires the
 persistent-staging effect guard before apply; synthetic eight-of-nine create
 recovery remains held, and the workflow test uses a fake Norn attempt
-authority. No provider call or workflow dispatch occurred. Documentation now
-records that the Norn typed grant-route candidate is present only in a separate
-unmerged, unpublished worktree; the protected Norn release deployed to DO
-cannot yet serve it. Provider-executor and protected-workflow integration
-remain open.
+authority. No provider call or workflow dispatch occurred. The Norn typed
+grant-route candidate has since merged, but remains unpublished and undeployed;
+the protected Norn release deployed to DO cannot yet serve it. Provider-executor
+and protected-workflow integration remain open.
 
 ## DO staging read-only refresh (2026-11-12 12:26 UTC)
 
