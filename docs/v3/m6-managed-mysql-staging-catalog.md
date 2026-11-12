@@ -1,11 +1,55 @@
 # Managed MySQL staging catalog activation
 
-This draft selects `norn-fleet-mysql.tkmkt-dev.com` as the distinct managed app origin and makes its InfraSpec publishable. The direct pilot and Fleet canary already occupy `/version` and `/route-proof` on their respective hosts. This source change only produces a provenance-bound catalog bundle from the protected `norn-app-catalog.yml` publisher after merge. It does not select that catalog on controls, create DNS, install a certificate, submit a job, or change ingress.
+## Current status (2026-11-12)
 
-Before promotion, read back the current work-staging load balancer target and create the exact DNS record for this hostname through the DNS controller. On 2 November 2026, `tkmkt-dev.com` delegated to `ns1`, `ns2`, and `ns3.digitalocean.com`; those authoritative servers returned `159.89.243.220` for both existing staging hosts and no A or CAA answer for the proposed MySQL host. The work DigitalOcean context identified load balancer `e9902566-3412-43a6-a4f8-9a4a03652439` at that address, with TLS passthrough to ingress-01 (`610012099`) and ingress-02 (`610012096`). Recheck all values at effect time. Cloudflare is not authoritative for this zone. The current `work` `doctl` token receives HTTP 403 for domain listing, so a domain-scoped DigitalOcean credential in the work account is required; the `norn-pilot` context belongs to another zone and must not be used.
+The managed app source is publishable and has `deploy: true` at
+`norn-fleet-mysql.tkmkt-dev.com`. Fleet promoted the catalog in protected run
+[42312866244](https://github.com/antiartificial/norn-fleet/actions/runs/42312866244)
+and read it back in
+[42341905690](https://github.com/antiartificial/norn-fleet/actions/runs/42341905690).
+The hostname resolves to `159.89.243.220`.
 
-The protected DNS executor should first require that the exact name has no existing A/AAAA/CNAME record, then use `doctl compute domain records create tkmkt-dev.com --record-type A --record-name norn-fleet-mysql --record-data <fresh load-balancer IP>`. Retain the returned record ID and verify A, AAAA, CNAME and CAA against all three authoritative nameservers. CAA was absent at the last readback; if it appears, prove it permits the chosen ACME issuer before requesting a certificate. The local Certbot installation has `dns-cloudflare` but no DigitalOcean authenticator; the Cloudflare plugin cannot prove this domain. Use a protected Certbot DNS-01 controller with `--manual-auth-hook` and `--manual-cleanup-hook` invoking scoped `doctl` TXT create/delete, persisting the exact TXT record ID, polling authoritative `_acme-challenge.norn-fleet-mysql.tkmkt-dev.com`, and cleaning only that ID. It should publish the issued fullchain/key as owner-only protected material, not expose them in workflow logs. Install and read back a valid certificate covering this hostname on **both** ingress nodes through a protected executor. The existing observed canary and staging leaf certificates cover only their own names, so their TLS proof cannot be reused. Confirm both SNI endpoints through the load balancer and, if private node access is available, directly on each ingress. Verify that no router already owns this exact host. Leave the managed release flag off.
+The managed app has not been released. A current TLS probe returns the Traefik
+default certificate for this hostname. The protected TLS workflow has no run,
+`NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED` is `false`, and the release
+workflow has no `workflow_dispatch` run. There is no Norn-owned version A or B
+deployment and no rollback proof. Keep this stateful app track separate from
+the first stateless controller-admitted DO canary.
 
-Then review the successful protected publisher run at the merged source SHA, its single `work-staging-app-catalog-<sourceSHA>` artifact, the InfraSpec SHA, archive SHA and provenance JSON. Dispatch Fleet `work-staging-app-catalog-promote.yml` only with a fresh protected state snapshot, console-attested host keys, exact old catalog SHA, one-use runner and matching owner authorization. Read back the same selected catalog bytes on all three controls. Promotion does not deploy the app.
+## Activation sequence
+
+The catalog promotion and DNS steps below are complete. Use this sequence for
+the remaining activation work. Recheck every live binding at effect time.
+
+On 2 November 2026, `tkmkt-dev.com` delegated to `ns1`, `ns2`, and
+`ns3.digitalocean.com`. The work DigitalOcean context identified load balancer
+`e9902566-3412-43a6-a4f8-9a4a03652439` at `159.89.243.220`, with TLS passthrough
+to ingress-01 (`610012099`) and ingress-02 (`610012096`). Cloudflare is not
+authoritative for this zone. The `norn-pilot` context belongs to another zone
+and must not be used.
+
+The protected DNS executor created the A record. The current DNS answer is
+`159.89.243.220`. Verify A, AAAA, CNAME, and CAA against all three
+authoritative nameservers before certificate issuance. If CAA exists, prove it
+permits the selected ACME issuer.
+
+The local Certbot installation has `dns-cloudflare` but no DigitalOcean
+authenticator. The Cloudflare plugin cannot prove this domain. Use a protected
+Certbot DNS-01 controller with `--manual-auth-hook` and
+`--manual-cleanup-hook` that invoke scoped `doctl` TXT create/delete. Persist
+the exact TXT record ID, poll authoritative
+`_acme-challenge.norn-fleet-mysql.tkmkt-dev.com`, and clean only that ID.
+Publish the issued fullchain and key as owner-only protected material. Do not
+expose them in workflow logs. Install and read back a valid certificate for
+this hostname on both ingress nodes through a protected executor. The latest
+SNI probe returned `CN=TRAEFIK DEFAULT CERT`; the TLS gate remains open.
+Confirm both SNI endpoints through the load balancer and, if private node
+access is available, directly on each ingress. Verify that no router already
+owns this host. Keep the managed release flag off.
+
+The protected catalog publisher, promotion, and three-control readback have
+completed. Review the publisher artifact, InfraSpec SHA, archive SHA, and
+provenance JSON from the protected publisher run when tracing that release.
+Catalog selection does not deploy the app.
 
 Before the first Norn-owned release, install and verify the `staging-app-runtime` zero-service database profile and app deploy worker, the four revision-job-scoped Nomad Variable keys for the managed job, MySQL TLS identity, and the protected CI release binding. Keep the web database identity limited to application data reads and writes; schema migration is a separate identity. Run the protected staging release for version A, verify durable operation success, two healthy allocations, public `/version` and `/route-proof`, and a database-backed record roundtrip. A second source-only pilot app commit becomes version B while the same InfraSpec, database and route remain selected. Measure continuity during B, then use the protected staging rollback lane to restore the exact A deployment. Do not use the older direct Nomad job as an A/B release target.

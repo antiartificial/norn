@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 02:16 UTC)
+## Current DO Fleet status (2026-11-12 02:40 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -9,12 +9,15 @@ healthy private API backed by etcd, and signed API/UI pins on all three
 controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
-The latest read-only provider observation at 02:16 UTC found all nine tagged
-Fleet Droplets active. Public `/version` returned HTTP 200 in 0.327 seconds
-with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
-`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. This is point-in-time provider
-and endpoint evidence only; it does not establish allocation-to-host binding,
-Nomad workload response, or controller admission.
+The latest read-only provider observation at 02:38 UTC found all nine tagged
+Fleet Droplets active. Public `/version` returned HTTP 200 in 0.340 seconds
+with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The public-pilot verifier passed
+12/12 reads at 02:40:57 UTC and observed two distinct allocation IDs (ID-set
+SHA-256 `85b8fe7c7e4903c61e8a33fa64d39f18b273b9c9ea0221fac6a3af8eab2a4c64`).
+This proves the existing public MySQL pilot responds through its route; it does
+not bind those allocations to current app hosts or establish V3 controller
+admission.
 
 Fleet PR #1006 merged owner-reviewed provenance claims into the signed
 workload-readback inputs. Exact-head contract run
@@ -22,17 +25,19 @@ workload-readback inputs. Exact-head contract run
 passed 4,148 tests (105 skipped) and 329 executor-recovery tests (5 skipped);
 both Socket checks passed. The one-use effect-runner contract documents
 workload-readback dispatch with all 21 signed digest bindings (Fleet PR #1008);
-Fleet PR #1009 refreshed the launch evidence.
+Fleet PR #1010 refreshed the launch evidence.
 This proves the signed intent path is implemented and qualified at the code
-level, not that a live readback or workload ran.
+level; it does not establish that the existing public pilot was admitted
+through V3 or bind its allocations to current app hosts.
 
 A 02:16 UTC name-only audit found all 18 workload-readback-specific variable
 names absent from both repository and `work-staging`; it read no values. Five
 shared Fleet variables and three state backend secrets are present in the
 protected environment. Workflow history contains one failed candidate-branch `push` record with
 zero jobs; no protected workload readback has run. No workload-readback intent
-is queued, and no controller-admitted canary has been observed. The first workload launch date remains uncommitted
-with no calendar forecast. The earlier November 16 target is withdrawn.
+is queued, and no controller-admitted canary has been observed. The first
+controller-admitted workload launch date remains uncommitted with no calendar
+forecast. The earlier November 16 target is withdrawn.
 
 The next DO gates are to provision and review the exact protected inputs and
 credential provenance, execute the signed read-only workload/ACL/network
@@ -43,6 +48,24 @@ same-intent receipts. Workload resize and online platform upgrade remain
 follow-on Fleet capabilities; neither is required for that first workload.
 The Mini is an independent direct lane. Fresh-Fleet Genesis/bootstrap is a
 separate lane from this existing Fleet update.
+
+## Managed MySQL stateful staging candidate (2026-11-12 02:54 UTC)
+
+The source InfraSpec declares `deploy: true` and the distinct hostname
+`norn-fleet-mysql.tkmkt-dev.com`. Protected catalog promotion
+[42312866244](https://github.com/antiartificial/norn-fleet/actions/runs/42312866244)
+and three-control readback
+[42341905690](https://github.com/antiartificial/norn-fleet/actions/runs/42341905690)
+completed successfully. DNS resolves to `159.89.243.220`.
+
+The hostname still presents the Traefik default TLS certificate. The protected
+TLS workflow has no run, `NORN_MANAGED_MYSQL_STAGING_RELEASE_ENABLED` is
+`false`, and the release workflow has no `workflow_dispatch` run. No
+Norn-owned version A or B deployment or rollback has been qualified. The
+catalog and DNS evidence do not prove app runtime. See the
+[managed MySQL activation runbook](m6-managed-mysql-staging-catalog.md) and
+[rollback runbook](m6-staging-app-rollback.md). This stateful candidate is
+separate from the first stateless controller-admitted DO canary.
 
 ## Current Mini status (2026-11-10 15:26 UTC)
 
@@ -359,9 +382,11 @@ completed on 2026-11-11 and is recorded above.
 
 ## Release timing
 
-The DO V3 platform deployment date is 2026-11-11. The first controller-admitted
-workload has not launched; its launch date is uncommitted and has no calendar
-forecast. The remaining gates for that first workload are the reviewed
+The DO V3 platform deployment date is 2026-11-11. The existing public MySQL
+pilot responds through its route (12/12 reads, two allocation IDs, checked
+2026-11-12 02:40:57 UTC). Its V3 controller admission is unproven. The first
+controller-admitted workload launch date is uncommitted and has no calendar
+forecast. The remaining gates are the reviewed
 protected inputs and credential provenance, signed read-only workload/ACL/
 network readback, terminal-artifact replay after controller restart,
 full-executor recovery through real Nomad and ingress effects, admission review,
