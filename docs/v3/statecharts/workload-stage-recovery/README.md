@@ -42,14 +42,29 @@ The sequence matches the implementation boundaries in
 - `TestWorkloadReleaseReconcilerRecoversRouteLostResponseAfterRestartEtcd`
   closes and reopens the etcd client, transfers the expired operation lease,
   and checks same-intent route recovery through the shared reconciler.
+- `TestWorkloadReleaseStageAndRouteRecoverSameIntentAcrossEtcdRestarts`
+  composes the reserved target-create boundary with route/drain reconciliation
+  across successive client/store reconstructions. External effects use a test
+  driver. After worker-style fenced terminalization, it reconstructs the store
+  again and verifies the exact terminal receipt and succeeded operation replay.
+- `TestWorkloadReleaseStageRecoversLostNomadResponseAfterEtcdRestart` sends the
+  production target-stage helper to a disposable Docker-capable Nomad agent. A
+  proxy drops Nomad's successful create response and hides the first readback;
+  after an etcd client restart, the successor adopts the original reservation,
+  binds Nomad's exact job version and modify index, and does not register a
+  duplicate job.
 
-Together these tests cover adjacent durable boundaries; they do not compose a
-real worker restart through Nomad target staging. The model also omits real
-Nomad ACLs and retention, request cancellation and delay bounds, production
-ingress, placement/capacity, secret-key rotation, and live DO traffic. An
-absent readback after the attempt marker remains unresolved: the worker must
-keep reconciling or hold and must not resubmit. This is offline safety evidence,
-not disposable-driver or staging qualification.
+Run the three restart qualifications with
+`bash v2/scripts/test-workload-release-stage-nomad.sh`. The route/drain and
+terminal-replay composition uses a test driver; the separate Nomad test proves
+the target-stage create/readback recovery boundary against a real local Nomad
+agent. They do not yet compose a real Nomad target through health, production
+ingress, old-cohort drain, and terminal operation commit in one worker run. The
+model also omits real Nomad ACLs and retention, request cancellation and delay
+bounds, production ingress, placement/capacity, secret-key rotation, and live
+DO traffic. An absent readback after the attempt marker remains unresolved:
+the worker must keep reconciling or hold and must not resubmit. This is offline
+safety and disposable-local qualification, not staging qualification.
 
 The chart hides three same-label readback/reconciliation stutters and two
 model actions that do not change a user-visible release phase. TLC still checks
