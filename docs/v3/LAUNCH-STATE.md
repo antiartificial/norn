@@ -1,30 +1,48 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-11 05:21 UTC)
+## Current DO Fleet status (2026-11-12 01:00 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
-source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. Exact-source qualification
-run [42963040596](https://github.com/antiartificial/norn/actions/runs/42963040596)
-passed all 12 jobs; immutable publisher run
-[42963531936](https://github.com/antiartificial/norn/actions/runs/42963531936)
-published the signed UI and four platform bundles. Fresh protected state
-readback [42964119843](https://github.com/antiartificial/norn-fleet/actions/runs/42964119843)
-matched lineage `9201526d-4ce8-c70b-6a70-7e94a68dc580`, serial 23, and all three
-control identities. Controller-mediated Fleet run
-[42964798605](https://github.com/antiartificial/norn-fleet/actions/runs/42964798605)
-completed the all-stop upgrade from `34178b8b`. Postflight verified the target,
-exactly one healthy private API backed by etcd, and durable signed API/UI pins
-on all three controls. Controller receipt state is
-`terminal-and-runner-retired`. The promotion interrupted service.
+source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
+all-stop upgrade completed on 2026-11-11; it verified the target release, one
+healthy private API backed by etcd, and signed API/UI pins on all three
+controls. The promotion interrupted service. Online platform upgrade remains
+unqualified.
 
-The last read-only provider inventory, at 04:49 UTC, found all eleven
-work-context staging Droplets active. The release postflight is the freshest
-API/control-health proof; it did not probe a responding Nomad workload or
-qualify online upgrade. Controller-mediated workload admission and resize,
-same-target/unknown-identity recovery cases, and online platform upgrade remain
-open. No overall V3 launch date is set. The platform release itself was
-deployed on 2026-11-11. Mini remains an independent direct lane; new-Fleet
-Genesis/bootstrap is separate from this existing Fleet update.
+The latest read-only provider observation at 01:00 UTC found all nine tagged
+Fleet Droplets active. Public `/version` returned HTTP 200 in 0.433 seconds
+with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. This is point-in-time provider
+and endpoint evidence only; it does not establish allocation-to-host binding,
+Nomad workload response, or controller admission.
+
+Fleet PR #1006 merged owner-reviewed provenance claims into the signed
+workload-readback inputs. Exact-head contract run
+[43129488861](https://github.com/antiartificial/norn-fleet/actions/runs/43129488861)
+passed 4,148 tests (105 skipped) and 329 executor-recovery tests (5 skipped);
+both Socket checks passed. The one-use effect-runner contract now documents
+workload-readback dispatch with all 21 signed digest bindings (Fleet PR #1008).
+This proves the signed intent path is implemented and qualified at the code
+level, not that a live readback or workload ran.
+
+A 01:00 UTC name-only audit found all 18 workload-readback-specific variable
+names absent from both repository and `work-staging`; it read no values. Five
+shared Fleet variables and three state backend secrets are present in the
+protected environment. Workflow history still contains only one failed
+candidate-branch `push` record with zero jobs; no protected workload readback
+has run. No workload-readback intent is queued, and no controller-admitted
+canary has been observed. The first workload launch date remains uncommitted
+with no calendar forecast. The earlier November 16 target is withdrawn.
+
+The next DO gates are to provision and review the exact protected inputs and
+credential provenance, execute the signed read-only workload/ACL/network
+readback, retrieve its terminal artifact after controller restart, qualify
+full-executor recovery through real Nomad and ingress effects, review/enable
+admission, and launch one responding stateless canary with durable
+same-intent receipts. Workload resize and online platform upgrade remain
+follow-on Fleet capabilities; neither is required for that first workload.
+The Mini is an independent direct lane. Fresh-Fleet Genesis/bootstrap is a
+separate lane from this existing Fleet update.
 
 ## Current Mini status (2026-11-10 15:26 UTC)
 
