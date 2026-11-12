@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 01:00 UTC)
+## Current DO Fleet status (2026-11-12 01:57 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -9,9 +9,9 @@ healthy private API backed by etcd, and signed API/UI pins on all three
 controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
-The latest read-only provider observation at 01:00 UTC found all nine tagged
-Fleet Droplets active. Public `/version` returned HTTP 200 in 0.433 seconds
-with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+The latest read-only provider observation at 01:57 UTC found all nine tagged
+Fleet Droplets active. Public `/version` returned HTTP 200 in 0.258 seconds
+with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
 `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. This is point-in-time provider
 and endpoint evidence only; it does not establish allocation-to-host binding,
 Nomad workload response, or controller admission.
@@ -25,7 +25,7 @@ workload-readback dispatch with all 21 signed digest bindings (Fleet PR #1008).
 This proves the signed intent path is implemented and qualified at the code
 level, not that a live readback or workload ran.
 
-A 01:00 UTC name-only audit found all 18 workload-readback-specific variable
+A 01:53 UTC name-only audit found all 18 workload-readback-specific variable
 names absent from both repository and `work-staging`; it read no values. Five
 shared Fleet variables and three state backend secrets are present in the
 protected environment. Workflow history still contains only one failed
