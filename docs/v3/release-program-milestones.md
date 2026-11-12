@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status: refreshed 2026-11-12 14:41 UTC. The existing DO staging Fleet's V3
+Status: refreshed 2026-11-12 14:49 UTC (latest DO runtime observation: 14:29 UTC). The existing DO staging Fleet's V3
 platform release is deployed through the controller (2026-11-11). A read-only
 `doctl --context work` check at 14:29 found the expected work account active
 and all eleven Norn staging Droplets active: two management, three control,
@@ -91,7 +91,7 @@ redo conditions with current inputs. A historical pass is not current runtime
 evidence; a timeout or empty readback is not proof that an external effect did
 not happen.
 
-## Current gate snapshot (status refreshed 2026-11-12 14:41 UTC; provider inventory, platform endpoint, and canary endpoints refreshed 14:29 UTC; GitHub environment binding names audited 14:29 UTC; workflow history checked 14:29 UTC; API and workload-readback offline suites passed 11:27–11:28 UTC; workload models checked 11:34 UTC; Fresh-Fleet source, API tests, real-etcd handoff test, and authority model checked 12:10–12:12 UTC; effect-grant route/status handlers and recovery passed focused and full local API/real-etcd tests at 12:24 UTC; Fleet apply-graph/Fresh-Fleet war-game tests passed 12:30 UTC; protected CI for PR #437 passed at exact head `ff055988` and it merged as `f41f70cc` at 12:41 UTC; Norn documentation PR #443 checks passed at exact head `29278148` and remain unmerged; Fleet issuer-review model PR #1024 contract check remains in progress; no release publication or deployment)
+## Current gate snapshot (status refreshed 2026-11-12 14:49 UTC; provider inventory, platform endpoint, and canary endpoints refreshed 14:29 UTC; GitHub environment binding names audited 14:29 UTC; workflow history checked 14:29 UTC; API and workload-readback offline suites passed 11:27–11:28 UTC; workload models checked 11:34 UTC; Fresh-Fleet source, API tests, real-etcd handoff test, and authority model checked 12:10–12:12 UTC; effect-grant route/status handlers and recovery passed focused and full local API/real-etcd tests at 12:24 UTC; Fleet apply-graph/Fresh-Fleet war-game tests passed 12:30 UTC; protected CI for PR #437 passed at exact head `ff055988` and it merged as `f41f70cc` at 12:41 UTC; Norn milestone PR #443 passed all applicable exact-head checks and merged as `f6a49993` at 14:47 UTC; Fleet issuer-review model PR #1024 passed its contract and Socket checks and merged as `3a7bbd3b` at 14:49 UTC; no release publication or deployment)
 
 - **DO platform:** signed release `fa301fa5f881b847a26f61a501092f9a9dd090fd`
   is running after the controller-mediated all-stop upgrade. Postflight proved
@@ -161,16 +161,20 @@ The DO staging Fleet is the only Fleet in this release program. Provider power,
 API health, workload response, route assurance, and release publication are
 separate claims.
 
-- **Issuer review model:** Norn documentation PR [#443](https://github.com/antiartificial/norn/pull/443)
-  passed all applicable required checks at exact head `29278148` and is still
-  open; it documents the existing privileged Nomad/Consul issuer and freshness
-  gap. Fleet model PR [#1024](https://github.com/antiartificial/norn-fleet/pull/1024)
+- **Issuer review model:** Norn milestone PR [#443](https://github.com/antiartificial/norn/pull/443)
+  passed all applicable required checks at exact head `7290d72a` and merged as
+  `f6a49993` at 14:47 UTC; it documents the existing privileged Nomad/Consul
+  passed all applicable checks at exact head `7290d72a` and merged as
+  `f6a49993` at 14:47 UTC; it documents the existing privileged Nomad/Consul
+  issuer and freshness gap. Fleet model PR [#1024](https://github.com/antiartificial/norn-fleet/pull/1024)
   adds offline checks for exact current issuer review, issuer rotation, and
-  Nomad token class. Its local 91-test readback suite and 4-test binding audit
-  passed, and the TLA baseline/mutants checked as expected. The protected
-  contract check remains in progress (checked at 14:41 UTC). Neither PR changes live
-  staging or closes the protected readback, credential review, or admission
-  gates.
+  Nomad token class; its contract and Socket checks passed, and it merged as
+  `3a7bbd3b` at 14:49 UTC. The local 91-test readback suite and 4-test binding
+  audit passed. The TLA baseline checked 11 states/14 steps; the unverified
+  Consul-scope and stale-review mutants violated the expected safeguards, while
+  the wrong Nomad token class held before signing. These checks expose the
+  existing validator freshness gap; they do not change live staging or close
+  protected readback, credential review, or admission gates.
 
 ## Parallel workstreams
 
