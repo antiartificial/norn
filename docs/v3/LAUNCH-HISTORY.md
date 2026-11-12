@@ -1,5 +1,19 @@
 # Norn v3 launch history
 
+## DO staging runtime rechecked (2026-11-12 17:53 UTC)
+
+The explicit read-only `doctl --context work` account was active for TurnKey
+Marketing. All eleven Norn staging Droplets were active: two management,
+three control, two ingress, and four app nodes. Platform `/version` returned
+HTTP 200 with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. Canary `/route-proof` returned
+HTTP 200 (`norn-fleet-canary`); `/version` returned HTTP 200 with source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `de960b60d29f`, and allocation
+`079ea126-ed26-9943-02cc-afa6f7d3f255`. The platform allocation was unchanged
+from 17:16; the canary node and allocation changed. These point-in-time public
+responses do not prove allocation-to-host lineage, signed workload admission,
+or continuous health. No provider or host action ran.
+
 ## Release-lane statecharts reproduced offline (2026-11-12 17:35 UTC)
 
 The statechart skill reran eleven configurations covering ten Mini, DO, and
