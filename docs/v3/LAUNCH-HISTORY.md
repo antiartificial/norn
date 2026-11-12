@@ -1,5 +1,21 @@
 # Norn v3 launch history
 
+## DO staging read-only refresh (2026-11-12 04:02 UTC)
+
+A read-only `doctl --context work` inventory found all nine tagged
+`norn:tk-staging-nyc3` Fleet Droplets active. Public
+`https://staging.tkmkt-dev.com/version` returned HTTP 200 in 0.231 seconds
+with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The binding audit found the five
+shared Fleet variables and three state backend secrets present, with all 18
+readback-specific environment binding names missing from GitHub Actions
+repository and `work-staging` configuration; no values were read.
+The only workload-readback run remains a failed candidate-branch `push` with
+zero jobs. This confirms provider power state and a public response at that
+time, not controller admission, allocation-to-host binding, continuous health,
+or recovery. No protected readback or controller-admitted canary has run; the
+launch date remains uncommitted.
+
 ## DO staging read-only refresh (2026-11-12 03:41 UTC)
 
 A read-only `doctl --context work` inventory found all nine tagged
@@ -11,8 +27,9 @@ state and a public workload response at that time. It does not bind the
 allocation to current app-node identities or prove controller admission,
 continuous health, or recovery. The public-pilot verifier passed 12/12 reads
 at 02:40:57 UTC and observed two allocation IDs. A 03:41 name-only audit found
-all 18 workload-readback input names absent from repository and `work-staging`
-variable and secret lists; it read no values. The only workload-readback run
+all 18 workload-readback-specific environment binding names missing from
+GitHub Actions repository-level and `work-staging` configuration; it read no
+values. The only workload-readback run
 remains a failed candidate-branch `push` with zero jobs. No protected readback
 or controller-admitted canary has run. The launch date remains uncommitted.
 
