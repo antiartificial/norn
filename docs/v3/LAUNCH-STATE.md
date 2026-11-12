@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 04:02 UTC)
+## Current DO Fleet status (2026-11-12 04:55 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -9,15 +9,17 @@ healthy private API backed by etcd, and signed API/UI pins on all three
 controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
-The latest read-only provider observation at 04:02 UTC found all nine tagged
-Fleet Droplets active. Public `/version` returned HTTP 200 in 0.231 seconds
-with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
-`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The public-pilot verifier passed
-12/12 reads at 02:40:57 UTC and observed two distinct allocation IDs (ID-set
-SHA-256 `85b8fe7c7e4903c61e8a33fa64d39f18b273b9c9ea0221fac6a3af8eab2a4c64`).
-This proves the existing public MySQL pilot responds through its route; it does
-not bind those allocations to current app hosts or establish V3 controller
-admission.
+The latest read-only `doctl --context work` provider observation at 04:55 UTC
+found all eleven Norn staging Droplets active: two management, three control,
+two ingress, and four app nodes. Public `/version` returned HTTP 200 in 0.176
+seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. This proves provider-reported
+power state and an endpoint response at that time; it does not bind the
+allocation to current app hosts or establish workload quality, controller
+admission, or continuous health. The public-pilot verifier's 12/12 reads at
+02:40:57 UTC remain the latest recorded MySQL pilot check; it observed two
+allocation IDs (ID-set SHA-256
+`85b8fe7c7e4903c61e8a33fa64d39f18b273b9c9ea0221fac6a3af8eab2a4c64`).
 
 Fleet PR #1006 merged owner-reviewed provenance claims into the signed
 workload-readback inputs. Exact-head contract run

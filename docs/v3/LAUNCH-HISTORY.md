@@ -1,5 +1,21 @@
 # Norn v3 launch history
 
+## DO staging read-only refresh (2026-11-12 04:55 UTC)
+
+A read-only `doctl --context work` inventory found all eleven Norn staging
+Droplets active: two management, three control, two ingress, and four app
+nodes. Public `https://staging.tkmkt-dev.com/version` returned HTTP 200 in
+0.176 seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and
+version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The current name-only
+audit found five shared Fleet variables and three state backend secrets
+present, while all 18 readback-specific bindings are missing from protected
+`work-staging`; it read no values and did not validate paths or contents. The
+public-pilot verifier's 12/12 reads at 02:40:57 UTC remain the latest recorded
+MySQL pilot check. The `/version` response does not establish controller
+admission, allocation-to-host binding, continuous health, or recovery. No
+protected workload readback or controller-admitted canary has run; the launch
+date remains uncommitted.
+
 ## DO staging read-only refresh (2026-11-12 04:02 UTC)
 
 A read-only `doctl --context work` inventory found all nine tagged
