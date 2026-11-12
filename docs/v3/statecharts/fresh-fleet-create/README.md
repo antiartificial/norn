@@ -84,3 +84,17 @@ failure timing are synthetic; real provider apply/recovery, credentials, SSH,
 Ansible, controller restart, terminal artifact replay, and live workload
 readiness still need implementation-facing qualification. The mismatch branch
 fails closed but does not model how a reviewed reconciliation resolves it.
+
+## Norn pre-registration authority gap
+
+The Norn pre-registration authority slice now records the create intent,
+protected dispatch binding, attempt, verifier admission, grant, recovery
+evidence, terminal receipt, and atomic create-fence-to-target-fence handoff.
+Default-off routes and real-etcd tests cover those records, including lost
+responses. This remains separate from the existing registered-target executor
+and app-delete co-permit: no provider executor consumes the Fresh-Fleet grant,
+and the protected workflow does not yet drive this lifecycle end to end. See
+the Norn-specific [pre-registration authority model](../fresh-fleet-norn-authority/README.md)
+for its trust limits and test evidence. Fresh-Fleet provider effects remain
+disabled until provider-executor and protected-workflow integration is
+implemented and qualified.

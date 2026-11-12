@@ -41,6 +41,37 @@ remain open. The private-input key inventory is checked at startup when its
 dedicated capability is enabled; that capability remains disabled by default.
 This note authorizes no live workload, route, or provider change.
 
+## Current DO qualification status (2026-11-12)
+
+The existing DO canary currently returns HTTP 200 from `/route-proof` and
+`/version`; five version reads at 11:17 UTC reached two allocations on two
+nodes at source `be5ca5d…`. This confirms a workload is serving, but the
+deployment workflow's terminal receipt has not been re-read and the response
+does not prove admission through the new V3 workload protocol. The 11:22 UTC
+name-only audit of the protected readback workflow found 18 required
+`work-staging` variable names missing. No values were read; no protected
+readback was dispatched. The observed candidate-branch push run
+[43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
+failed with no jobs and is not a readback attempt.
+
+The offline readback/ACL/ingress/controller suite passed 146 tests against
+`norn-fleet` `main` at `a2262959`. On that same commit, the workload-readback
+statechart passed 70 states/120 steps with nine invariants and deadlock; the
+input-provenance model passed 16 states/16 steps with 15 invariants and
+deadlock, and all eight deliberate mutants failed at their named invariants.
+These checks use models, fake APIs, and local fixtures; they do not qualify
+live credential provenance, protected runner files, or terminal-artifact
+replay.
+The protected workflow performs GET-only workload/provider evidence reads but
+also issues expiring run-scoped Nomad and Consul reader tokens after signed
+preflight; that bounded ACL write must be explicitly authorized and included
+in the intent. Use the current [release ledger](LAUNCH-STATE.md) and
+[protected input procedure](https://github.com/antiartificial/norn-fleet/blob/main/docs/runbooks/work-staging-norn-release.md#workload-readback-integration-gate-and-launch-date)
+before staging inputs. Do not reuse contraction-scoped ACL credentials or the
+broad app-runtime observer bundle. The workflow remains disabled until each
+input's source, transformation, digest, scope, and recovery behavior has been
+reviewed and bound.
+
 ## Current verification — 2026-11-09
 
 Norn PR [#311](https://github.com/antiartificial/norn/pull/311) merged at
@@ -150,7 +181,7 @@ evidence that Nomad, Consul, Norn, application routes, or workloads are healthy.
 | M5-C: atomic release admission | Implemented, not deployed: PR #319 adds an opt-in staging-only managed-operator endpoint. It accepts only qualification ID and target replica count, resolves exact replay before mutable reads, derives serving lineage/current Fleet target/approved policy/source/SOPS snapshot, and calls private acceptance with the Nomad observer. PR #321 covers fresh admission, exact retry, and CI-principal rejection with deterministic fakes. PR #324 covers simultaneous same-key acceptance across two independent etcd clients. The handler concurrency test forces two initial replay misses and checks one fresh result plus one same-ID replay using a fake atomic store. PR #335 covers authenticated same-key replay through the real handler and etcd after a dropped response, with the prior acceptance seeded through the real store. PR #337 rebuilds the handler and etcd adapters before replay. | Prove fresh admission through the handler and real etcd with real qualification and private-input persistence. Then qualify workload worker/controller restart and production-driver recovery. Install only after DO M3/M4 and exact-source/private-input recovery design pass. | Store concurrency, fake-store handler concurrency, and real-etcd handler replay across handler/adapter reconstruction now pass at their separate boundaries. Fresh handler acceptance, full runtime recovery, and production-driver qualification remain required. | M5-A/B |
 | M5-D: private stage and binding | Partial: signed-plan-bound stage effect, shared app gate, one-use attempt marker, successor-claim recovery, exact database-free job builder from pinned accepted source, operation-bound SOPS input decryption, private Nomad secret staging, create-only CAS, exact readback, and strict-intent downstream wiring implemented locally. Retained input-key preflight now checks V3 etcd before its deploy worker starts. Offline orchestration tests prove secret-stage failure, claim loss after secret staging, and marker transaction failure all prevent create; absent readback holds, and a later exact readback is adopted without a second registration. Full API Go suite passes. Delayed-request/production-driver cases are not yet qualified. | Extend deterministic worker fault cases for every stage/create/readback/bind boundary, then run the same protocol against a version-pinned disposable Nomad/ingress stack with delayed acceptance and lost responses. | Fault matrix proves exact-target adoption after lost response or durable conservative hold, never a duplicate create; no route changes during stage. | M5-E test harness |
 | M5-E: production-driver qualification | Not run. | Exercise the complete controller with disposable Nomad/ingress, real configured ACL policy, delayed requests, response loss, controller restart, and route/readback faults. | Version-pinned evidence for stage, route, health, drain, same-intent recovery, and service probes; no unresolved effects. | M5-D implementation |
-| M5-F: DO staging workload release | Partial: historical 2→3→2 scale, sequential drain, and canary probes passed; the 2026-11-08 public route serves source `be5ca5d…` across two reported allocations. The durable second-release operation receipt has not been re-read, and mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; after M5-A–E, run fixed-image resize and mixed-version recovery through the release-owned admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |
+| M5-F: DO staging workload release | Partial: historical 2→3→2 scale and sequential drain passed. The 2026-11-12 11:17 UTC public canary probe returned 200 for `/route-proof` and `/version` across two allocations on two nodes at source `be5ca5d…`. GitHub run [41364735627](https://github.com/antiartificial/norn/actions/runs/41364735627) for that source failed at the durable Norn deployment wait; its operation receipt has not been re-read, so the live route does not close the receipt gap. Mixed-version recovery is not qualified. | Reconcile the failed operation against current DO Norn/Nomad receipts; review/bind the 18 missing workload-readback environment inputs and authorize the run-scoped Nomad/Consul reader-token issuance; then qualify full executor recovery and fixed-image mixed-version release through the V3 admission protocol. | Correlated signed operation, exact image/route/drain receipts, healthy probes, no stranded allocations, and recovery evidence. Stateful MySQL compatibility remains a separate later gate. | M5-A–E completion and receipt readback |
 | M5-G: independent Mini V3 upgrade | Complete for the 2026-11-07 direct V3 adoption; the 2026-11-09 read-only Mini refresh confirms API/host `ok` on signed repair release `d4dc88e…`. The latest assurance receipt is still dated Sep 6, and 25 incidents remain. | Retain the signed adoption/controller-repair receipts and repeat candidate-specific backup, compatibility, and postflight checks for every future Mini release. Keep Mini independent of Fleet. | Signed target `bba290d…`, controller journal and preservation receipt, schema-51 postflight, and current API/host readback on signed repair source `d4dc88e…`. This does not establish uninterrupted service, fresh route assurance, or rollback across future incompatible schema changes. | Documentation; M6 low-interruption/rollback work |
 
 Remaining M5-A counterexample replay, full M5-B worker restart/source recovery, and explicit held-operation abandonment are the next offline priorities. PR #319 exposes an operator action, so keep its

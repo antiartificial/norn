@@ -1,0 +1,64 @@
+---
+title: "Fresh Fleet create authority before target registration"
+---
+stateDiagram-v2
+  direction LR
+  state "At the same time" as all {
+    state "Norn" as r0 {
+      s0: unbound
+      s1: intent-bound
+      s2: dispatch-bound
+      s3: attempt-running
+      s4: initial-admitted
+      s5: initial-grant-consumed
+      s6: initial-consume-response-lost
+      s7: response-lost
+      s8: held
+      s9: recovery-ready
+      s10: recovery-readback-recorded
+      s11: recovery-running
+      s12: recovery-admitted
+      s13: remainder-grant-consumed
+      s14: complete-readback-needed
+      s15: target-registration-ready
+      s16: terminal-receipt-recorded
+      s17: complete
+      [*] --> s0
+      s0 --> s1: bind exact reviewed create intent
+      s1 --> s2: bind the exact protected runner dispatch
+      s2 --> s3: start pre-registration attempt
+      s3 --> s4: verify empty state and admit the initial remainder
+      s4 --> s5: consume exact one-use create grant
+      s5 --> s6: lose grant-consume response
+      s5 --> s7: create eight nodes, lose response
+      s6 --> s5: read consumed-grant status without replay
+      s7 --> s8: hold on mismatched readback [when Provider is 7 nodes observed]
+      s7 --> s9: read exact provider and state remainder [when Provider is 8 nodes observed]
+      s9 --> s10: record exact verifier recovery readback
+      s10 --> s11: restart under same intent
+      s11 --> s12: verify provider and state readback for this attempt
+      s12 --> s13: consume grant for exact one-node remainder
+      s13 --> s14: create ninth node
+      s14 --> s15: verify all nine provider and state identities
+      s15 --> s16: record complete terminal receipt
+      s16 --> s17: register target and transfer authority fence
+    }
+    --
+    state "Provider" as r1 {
+      s18: empty
+      s19: 7 nodes observed
+      s20: 8 nodes observed
+      s21: 9 nodes observed
+      [*] --> s18
+      s18 --> s19: create eight nodes, lose response [when Norn is initial-grant-consumed]
+      s18 --> s20: create eight nodes, lose response [when Norn is initial-grant-consumed]
+      s20 --> s21: create ninth node [when Norn is remainder-grant-consumed]
+    }
+    --
+    state "Target" as r2 {
+      s22: not registered
+      s23: registered
+      [*] --> s22
+      s22 --> s23: register target and transfer authority fence [when Norn is terminal-receipt-recorded and Provider is 9 nodes observed]
+    }
+  }

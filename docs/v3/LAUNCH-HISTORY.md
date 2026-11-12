@@ -1,5 +1,137 @@
 # Norn v3 launch history
 
+## Fresh-Fleet workflow graph and fail-closed war-game rerun (2026-11-12 12:30 UTC)
+
+In the existing local `norn-fleet` worktree, the apply-graph and Fresh-Fleet
+war-game suites passed 11 tests in 18.770 seconds. The graph requires the
+persistent-staging effect guard before apply; synthetic eight-of-nine create
+recovery remains held, and the workflow test uses a fake Norn attempt
+authority. No provider call or workflow dispatch occurred. Documentation now
+records that the Norn typed grant-route candidate is present only in a separate
+unmerged, unpublished worktree; the protected Norn release deployed to DO
+cannot yet serve it. Provider-executor and protected-workflow integration
+remain open.
+
+## DO staging read-only refresh (2026-11-12 12:26 UTC)
+
+The `doctl --context work` inventory returned all eleven named Norn staging
+Droplets active: two management, three control, two ingress, and four app
+nodes. Public `https://staging.tkmkt-dev.com/version` returned HTTP 200 in
+0.254 seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and
+version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`.
+
+The public canary `/route-proof` and `/version` endpoints both returned HTTP
+200. The version response reported source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `de960b60d29f`, and
+allocation `079ea126-ed26-9943-02cc-afa6f7d3f255`. This is a fresh point-in-time
+workload response. It does not prove V3 signed admission/readback, current
+control-plane or etcd health, continuous serving, or resolve the earlier
+failed deployment receipt. No provider or deployment mutation ran.
+
+## Fresh-Fleet effect-grant routes and ambiguous-response recovery checked locally (2026-11-12 12:24 UTC)
+
+Default-off routes now expose verifier grant issue/readback and exact
+runner-bound consume/status. A consumed-grant status response returns only the
+grant digest and consumed flag, not a second successful grant record. This
+gives the runner a status readback after a lost consume response without
+replaying the one-use authorization. Issue response loss recovers only the exact matching,
+unconsumed grant. A lost consume response returns an error; the runner must
+read status and reconcile before any provider effect or successor admission.
+
+Focused route tests passed, including rejection of a wrong runner binding and
+checking that status JSON contains no grant field. Three focused real-etcd
+tests passed for issue/consume one-use behavior, committed issue recovery,
+ambiguous consume without grant-record replay, and terminal receipt/target-fence
+handoff recovery. The full `v2/api` module suite passed. These are local code
+and storage checks only. No protected CI, provider executor/workflow, DO
+readback, or provider effect ran; those integration and launch gates remain
+open.
+
+## Fresh-Fleet terminal receipt and target-fence handoff checked offline (2026-11-12 12:10–12:12 UTC)
+
+Norn now records immutable complete-inventory terminal evidence only for the
+current create attempt after its exact admission and one-use grant are
+consumed. The verifier-scoped target-registration route then atomically writes
+the ordinary Fleet target, cluster alias, and free target fence while
+retiring that intent's pre-registration cluster fence. Ordinary registration
+still refuses all unrelated active create fences. The new routes remain behind
+the existing default-off feature and executor-lane gates; this work performed
+no provider effect or DO change.
+
+A focused real-etcd test passed against disposable etcd 3.7.3 on macOS. It
+rejects an eight-of-nine terminal receipt, recovers simulated lost responses
+after terminal write and target handoff, verifies exact replay and target
+alias/fence readback, and confirms the create fence is retired. The full `v2/api`
+module suite passed locally at 12:12 UTC. The updated Norn-specific authority
+statechart passed nine invariants and deadlock across 19 states/21 steps; its
+explicit terminal receipt transition now precedes target registration. These
+are code and deterministic protocol checks only. Norn treats provider/state
+inventory digests as verifier assertions: no protected provider workflow,
+fresh-Fleet apply, protected CI run, or provider-backed inventory check occurred.
+Verifier provenance, a new protected rerun after runner loss, provider-executor
+and workflow integration, and the live DO workload-admission gate remain open.
+
+## DO staging live read-only refresh (2026-11-12 11:17 UTC)
+
+The explicit `doctl --context work` account readback matched the documented
+TurnKey Marketing work-staging account (UUID prefix `17f40050`), not the
+personal `norn-pilot` account. All eleven staging Droplets were active: two
+management, three control, two ingress, and four app nodes. Public
+`https://staging.tkmkt-dev.com/version` returned HTTP 200 in 0.260 seconds,
+source version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`, and allocation
+`c776c80f-6ba8-0992-a552-bfc21c441f8a`.
+
+The separate public canary `https://norn-fleet-canary.tkmkt-dev.com` returned
+HTTP 200 from `/route-proof` with body `norn-fleet-canary` and from
+`/version` with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`. Five
+`/version` samples reached two allocation IDs on two node IDs. This confirms
+that the staging canary workload is serving at this time. It does not prove
+that the new V3 signed workload-admission/readback path authorized it, provide
+the earlier failed deployment's terminal receipt, or establish DO API, etcd,
+Nomad/Consul, or continuous health. No provider or deployment mutation ran.
+
+## Workload-readback binding names (2026-11-12 11:22 UTC)
+
+Re-ran the repository's name-only audit against the current protected
+`work-staging` environment and current `work-staging-workload-readback.yml` in
+`antiartificial/norn-fleet`. Five shared variables and the three state backend
+secret names referenced by that workflow are present. Eighteen required
+workflow variables are missing, including `NORN_WORKLOAD_READBACK_ENABLED`
+and the contract, inventory, ingress host-key, Nomad/Consul ACL and CA/cert/key,
+observer, provider-token, provenance, and receipt-directory paths. No variable
+or secret values were read, and this audit does not validate paths, contents,
+digests, provenance, or whether the runner can access the files. The protected
+readback remains disabled and cannot run as configured. No workflow was
+dispatched.
+
+At 11:28 UTC, the documented 15-module workload-readback, ACL, ingress,
+controller, and gate-installer suite passed all 146 tests against
+`norn-fleet` protected `main` at `a22629597558c0098a920ae69e0f739ad68aef22`.
+These are deterministic tests with fake APIs and local controller fixtures;
+they do not qualify live credentials, the protected DO runner, successful
+artifact retrieval, or controller restart against a real readback.
+
+At 11:34 UTC, two statecharts were rerun from the same exact checkout. The
+workload-readback model passed nine safety invariants and deadlock across 70
+states/120 steps. The input-provenance model passed 15 invariants and deadlock
+across 16 states/16 steps; all eight intentional mutants produced their named
+counterexample. Outputs were written under `/tmp/norn-workload-readback-tlc-20261112`
+and `/tmp/norn-readback-provenance-tlc-20261112`. These models verify protocol
+properties, not runner files, credential provenance, or live staging behavior.
+
+## DO staging read-only refresh (2026-11-12 10:45–10:46 UTC)
+
+A read-only `doctl --context work compute droplet list` inventory found all
+eleven Norn staging Droplets active: two management, three control, two
+ingress, and four app nodes. Public
+`https://staging.tkmkt-dev.com/version` returned HTTP 200 in 0.250 seconds
+with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`, unchanged from 04:55 UTC. This
+confirms provider-reported power state and one public response at that time;
+it does not bind the allocation to current app hosts or prove controller
+admission, continuous health, workload quality, or recovery. No protected
+workload readback or controller-admitted canary was run.
+
 ## DO staging read-only refresh (2026-11-12 04:55 UTC)
 
 A read-only `doctl --context work` inventory found all eleven Norn staging

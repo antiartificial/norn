@@ -34,6 +34,7 @@
       "fleet:app-delete-verify",
       "fleet:saved-plan-effect-verify",
       "fleet:protected-terminal-verify",
+      "fleet:create-verify",
       "admin"
     ],
     "stepUp": {
