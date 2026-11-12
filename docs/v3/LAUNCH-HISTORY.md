@@ -1,5 +1,21 @@
 # Norn v3 launch history
 
+## DO staging read-only refresh (2026-11-12 03:41 UTC)
+
+A read-only `doctl --context work` inventory found all nine tagged
+`norn:tk-staging-nyc3` Fleet Droplets active. Public
+`https://staging.tkmkt-dev.com/version` returned HTTP 200 in 0.176 seconds
+with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. This confirms provider power
+state and a public workload response at that time. It does not bind the
+allocation to current app-node identities or prove controller admission,
+continuous health, or recovery. The public-pilot verifier passed 12/12 reads
+at 02:40:57 UTC and observed two allocation IDs. A 03:41 name-only audit found
+all 18 workload-readback input names absent from repository and `work-staging`
+variable and secret lists; it read no values. The only workload-readback run
+remains a failed candidate-branch `push` with zero jobs. No protected readback
+or controller-admitted canary has run. The launch date remains uncommitted.
+
 ## DO staging read-only refresh (2026-11-12 03:03 UTC)
 
 A read-only `doctl --context work` inventory found all nine tagged

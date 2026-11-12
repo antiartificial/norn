@@ -26,9 +26,9 @@ The independent Mini meets its owner-defined direct-lane success bar: signed
 V3 is active, the API is healthy, and `vigil-gateway` responded. Its mixed
 application health and queued-upgrade recovery remain separate follow-ups.
 The DO staging Fleet's signed V3 platform release was deployed through the
-controller on 2026-11-11. A Nov 12 03:03 UTC read-only observation found all
+controller on 2026-11-11. A Nov 12 03:41 UTC read-only observation found all
 nine tagged Fleet Droplets active and public `/version` returned HTTP 200 in
-0.307 seconds. A 12-read public-pilot check at 02:40:57 UTC observed two
+0.176 seconds. A 12-read public-pilot check at 02:40:57 UTC observed two
 distinct allocations; the
 existing MySQL pilot responds, while controller admission remains unproven. The first
 controller-admitted workload launch date is uncommitted with no calendar
