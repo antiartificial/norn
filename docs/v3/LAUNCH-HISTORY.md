@@ -1,5 +1,35 @@
 # Norn v3 launch history
 
+## DO staging refresh and readback configuration audit (2026-11-12 16:26 UTC)
+
+Using the explicit `work` DigitalOcean context, the read-only account check
+matched UUID prefix `17f40050`; all eleven Norn-tagged staging Droplets were
+active (two management, three control, two ingress, four app). Public
+`https://staging.tkmkt-dev.com/version` returned HTTP 200 in 0.192 seconds
+with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and platform version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. Canary
+`https://norn-fleet-canary.tkmkt-dev.com/route-proof` returned HTTP 200 in
+0.187 seconds with body `norn-fleet-canary`; `/version` returned HTTP 200 in
+0.201 seconds with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, node
+`515ddcea44b8`, and allocation `6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`.
+The platform allocation changed since 16:15; the canary node and allocation
+match that sample. These are point-in-time endpoint proofs, not V3 admission,
+allocation-to-host lineage, or continuous health evidence.
+
+Against `norn-fleet` main `27d7b33f`, a names-only audit compared all seven
+variable references and three secret references in
+`work-staging-workload-readback.yml` with repository and `work-staging`
+environment configuration. Six variable names are configured; only
+`NORN_WORKLOAD_READBACK_ENABLED` is absent. All three state-backend secret
+names are configured. The `NORN_FLEET_SECRET_DIR` value was not displayed; a metadata-only check
+confirmed it is absolute and has no trailing slash. The audit
+did not verify protected file existence, modes, contents, digests, credential
+provenance, or runner access. Readback remains disabled. Workflow history still
+contains only failed candidate push
+[43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
+with zero jobs and no protected readback. No workflow dispatch or provider
+mutation ran.
+
 ## DO staging read-only refresh (2026-11-12 13:33 UTC)
 
 Using explicit DigitalOcean context `work`, a read-only inventory found all
