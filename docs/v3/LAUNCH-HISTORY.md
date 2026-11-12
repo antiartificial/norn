@@ -1,5 +1,21 @@
 # Norn v3 launch history
 
+## Fresh HTTP admission refuses an unowned serving route (2026-11-12 18:07 UTC)
+
+The authenticated workload-release HTTP handler was exercised against
+disposable real etcd for Fleet placement, approved policy, operator identity,
+and current serving-route reads. With no control-owned serving route present,
+the handler returned HTTP 409 `workload_release_route_unavailable`; durable
+replay lookup confirmed that no acceptance was recorded. The qualification
+lookup used a narrow fixture because the test stops at the absent-route gate.
+The focused admission integration suite passed, then all eight
+`TestEtcdWorkloadReleaseAdmission` cases were rerun against disposable etcd at
+18:11 UTC and passed, including this refusal case and durable replay after
+handler/store reconstruction. This proves fail-closed refusal at the route
+gate, not successful fresh admission, private-input acceptance through HTTP,
+or live DO workload admission. The temporary etcd container was stopped after
+the run. No provider or host action ran.
+
 ## DO staging runtime rechecked (2026-11-12 17:53 UTC)
 
 The explicit read-only `doctl --context work` account was active for TurnKey

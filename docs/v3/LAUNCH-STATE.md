@@ -44,6 +44,16 @@ admission receipt. The
 first V3-admission-qualified workload launch date remains uncommitted, with no
 calendar forecast; the earlier November 16 target is withdrawn.
 
+At 18:07 UTC, the focused authenticated HTTP admission integration used
+disposable real etcd for placement, policy, identity, and serving-route reads.
+With no owned serving route, it returned HTTP 409 and a durable replay lookup
+confirmed that no acceptance was recorded. The qualification lookup was a
+narrow fixture. This negative-gate result does not qualify successful fresh
+admission or change the live DO workload status.
+All eight focused admission tests, including real-etcd HTTP replay after
+handler/store reconstruction, passed again against disposable etcd at 18:11
+UTC. The temporary test container was stopped afterward.
+
 At 17:15 UTC, the repeatable local restart qualification verified that the
 composed etcd-backed stage/route/drain test replays the exact terminal receipt
 and succeeded operation after client/store reconstruction. Route and drain
