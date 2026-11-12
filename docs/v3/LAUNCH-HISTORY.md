@@ -1,5 +1,21 @@
 # Norn v3 launch history
 
+## Release-lane statecharts reproduced offline (2026-11-12 17:35 UTC)
+
+The statechart skill reran eleven configurations covering ten Mini, DO, and
+Fresh-Fleet protocols from the current tree. Mini direct: 90 states / 179
+steps; Mini host-agent gate: 56 / 138; DO all-stop platform release: 299 /
+1,036; existing-Fleet Genesis: 69 / 107; proposed online upgrade: 97 / 251;
+mixed-version resize: capacity four 103 / 275 and capacity three 24 / 52;
+Fresh-Fleet create: 308 / 813; nine-node recovery: 102 / 210; General +
+Stateful pools: 45 / 98; pre-registration Norn authority: 19 / 21. Every
+configured invariant and deadlock check passed. Capacity three still has no
+target-only route or terminal release path. Outputs are in
+`/tmp/norn-*-20261112`; checked-in model and chart sources were not changed.
+These bounded models do not qualify provider credentials, workflow wiring,
+live controller recovery, Nomad placement, or online availability. No provider
+or host action ran.
+
 ## Protected workload-readback gate remains closed (2026-11-12 17:25 UTC)
 
 The live Fleet main remains `11e4611cd9a28472a1c6b2a237ad18a796b54faf`.
