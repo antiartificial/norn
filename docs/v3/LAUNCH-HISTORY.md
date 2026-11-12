@@ -1,5 +1,29 @@
 # Norn v3 launch history
 
+## DO staging runtime and readback-gate refresh (2026-11-12 17:03 UTC)
+
+The explicit read-only `doctl --context work` account check remained active
+(UUID prefix `17f40050`). All eleven staging Droplets were active: two
+management, three control, two ingress, and four app nodes. Platform
+`/version` returned HTTP 200 in 0.187 seconds, reporting allocation
+`c776c80f-6ba8-0992-a552-bfc21c441f8a` and version
+`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The canary `/route-proof` returned
+HTTP 200 in 0.182 seconds (`norn-fleet-canary`); `/version` returned HTTP 200
+in 0.169 seconds with source `be5ca5d969ccf3509e62ce04a833516bb5c204db`, node
+`de960b60d29f`, and allocation `079ea126-ed26-9943-02cc-afa6f7d3f255`. The
+platform allocation and canary node/allocation differ from the 16:26 sample;
+these public responses do not establish host lineage, signed admission, or
+continuous health.
+
+A names-only audit compared the workload-readback workflow at current
+`norn-fleet` main `11e4611c` with repo and `work-staging` environment
+configuration. Six of seven referenced variable names and all three secret
+names are configured; `NORN_WORKLOAD_READBACK_ENABLED` is absent. Main's
+workflow file matches the audited copy. No variable values, secret values, or
+protected files were read, and no workflow dispatch or provider action ran.
+The readback gate remains closed; issuer provenance, file contents and modes,
+runner access, and a durable V3 admission receipt remain unverified.
+
 ## Workload-release restart recovery exercised locally (2026-11-12 16:48 UTC)
 
 Three existing workload-release restart integration tests passed against

@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-## Current DO Fleet status (2026-11-12 16:26 UTC)
+## Current DO Fleet status (2026-11-12 17:03 UTC)
 
 The existing DigitalOcean staging Fleet is running the signed V3 platform at
 source `fa301fa5f881b847a26f61a501092f9a9dd090fd`. The controller-mediated
@@ -10,35 +10,35 @@ controls. The promotion interrupted service. Online platform upgrade remains
 unqualified.
 
 The explicit read-only `doctl --context work` account readback matched the
-TurnKey Marketing work-staging account (UUID prefix `17f40050`). At 16:26 UTC
+TurnKey Marketing work-staging account (UUID prefix `17f40050`). At 17:03 UTC
 all eleven Norn staging Droplets were active: two management, three control,
-two ingress, and four app nodes. Public `/version` returned HTTP 200 in 0.192
-seconds with allocation `de4645bf-25c0-93bd-124b-5e7f9c8cda05` and version
-`af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The separate canary's
-`/route-proof` returned HTTP 200 in 0.187 seconds with body
-`norn-fleet-canary`; `/version` returned HTTP 200 in 0.201 seconds with source
-`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `515ddcea44b8`, and allocation
-`6b4b9efa-ca9a-2dc6-3e0b-d7cc3e27bcf8`. The platform allocation changed since
-the 16:15 sample, while the canary node and allocation match that sample.
-These public point-in-time responses do not prove allocation-to-host lineage,
-V3 signed admission, or continuous health. The public-pilot verifier's 12/12
-reads at 02:40:57 UTC remain the latest recorded MySQL pilot check.
+two ingress, and four app nodes. Platform `/version` returned HTTP 200 in
+0.187 seconds with allocation `c776c80f-6ba8-0992-a552-bfc21c441f8a` and
+version `af0f054358d9b9c7b68ea25132b52ee5eb099e12`. The separate canary's
+`/route-proof` returned HTTP 200 in 0.182 seconds with body
+`norn-fleet-canary`; `/version` returned HTTP 200 in 0.169 seconds with source
+`be5ca5d969ccf3509e62ce04a833516bb5c204db`, node `de960b60d29f`, and allocation
+`079ea126-ed26-9943-02cc-afa6f7d3f255`. The platform allocation and canary
+node/allocation differ from the 16:26 sample. These public point-in-time
+responses do not prove allocation-to-host lineage, V3 signed admission, or
+continuous health. The public-pilot verifier's 12/12 reads at 02:40:57 UTC
+remain the latest recorded MySQL pilot check.
 
 Fleet PR #1027 merged as `27d7b33f` and derives protected readback file and
-receipt paths from `NORN_FLEET_SECRET_DIR`. A fresh names-only audit against
-`norn-fleet` main `27d7b33f` compared the workflow's referenced names with all
-repository and `work-staging` environment variable and secret names: six of
-seven referenced variables are present, with only
-`NORN_WORKLOAD_READBACK_ENABLED` missing; all three referenced state-backend
-secrets are present. The configured secret root is absolute and has no trailing
-slash. The audit read no values and did not inspect protected files, their
+receipt paths from `NORN_FLEET_SECRET_DIR`; runbook refresh PR #1028 merged as
+`11e4611c`. A 17:03 names-only audit against current main compared the
+workflow's referenced names with repository and `work-staging` environment
+variable and secret names: six of seven referenced variables are present,
+with only `NORN_WORKLOAD_READBACK_ENABLED` missing; all three referenced
+state-backend secrets are present. Main's workflow file matches the audited
+copy. The audit read no values and did not inspect protected files, their
 modes or contents, signed digests, credential provenance, or runner access.
 The enable gate is absent, so the protected workload-readback workflow remains
-disabled. Its run history still contains only failed candidate-branch push
-[43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
-with zero jobs; no protected V3 workload readback has run. The responding
-public canary is not evidence of a signed admission receipt. The first
-V3-admission-qualified workload launch date remains uncommitted, with no
+disabled. The 16:26 workflow-history query found only failed candidate-branch
+push [43117232561](https://github.com/antiartificial/norn-fleet/actions/runs/43117232561)
+with zero jobs. No later history query succeeded in this refresh. The
+responding public canary is not evidence of a signed admission receipt. The
+first V3-admission-qualified workload launch date remains uncommitted, with no
 calendar forecast; the earlier November 16 target is withdrawn.
 
 The next DO gates are owner review and verification of the exact protected
