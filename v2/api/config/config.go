@@ -26,6 +26,10 @@ type Config struct {
 	// FleetSavedPlanEffectEnabled mounts the default-off, attempt-bound
 	// saved-OpenTofu-plan contraction adapter. It is not the raw DELETE lane.
 	FleetSavedPlanEffectEnabled bool
+	// FleetCreateEnabled exposes default-off pre-registration Fleet intent,
+	// dispatch, attempt, admission, recovery, grant, receipt, and target-handoff
+	// routes. It does not enable a provider executor or provider effects.
+	FleetCreateEnabled bool
 	// FleetSavedPlanProjection* is a separate service-owned Ed25519 signing key
 	// for the non-authorizing Fleet inbox projection. It must never reuse the
 	// audit HMAC or an Actions/provider credential; the configured service UID
@@ -348,6 +352,7 @@ func Load() *Config {
 		FleetEtcdExecutorEnabled:                     envBoolOr("NORN_FLEET_ETCD_EXECUTOR_ENABLED", false),
 		FleetAppDeleteCoPermitEnabled:                envBoolOr("NORN_FLEET_APP_DELETE_CO_PERMIT_ENABLED", false),
 		FleetSavedPlanEffectEnabled:                  envBoolOr("NORN_FLEET_SAVED_PLAN_EFFECT_ENABLED", false),
+		FleetCreateEnabled:                           envBoolOr("NORN_FLEET_CREATE_ENABLED", false),
 		FleetSavedPlanProjectionPrivateKeyFile:       strings.TrimSpace(os.Getenv("NORN_FLEET_SAVED_PLAN_PROJECTION_PRIVATE_KEY_FILE")),
 		FleetSavedPlanProjectionPublicKeySHA256:      strings.ToLower(strings.TrimSpace(os.Getenv("NORN_FLEET_SAVED_PLAN_PROJECTION_PUBLIC_KEY_SHA256"))),
 		FleetSavedPlanProjectionSignerUID:            envIntOr("NORN_FLEET_SAVED_PLAN_PROJECTION_SIGNER_UID", -1),

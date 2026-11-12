@@ -97,7 +97,7 @@ func (s *V3OperationStore) planFleetTargetMutation(ctx context.Context, acceptan
 		if err != nil {
 			return fleetTargetMutationPlan{}, err
 		}
-		_, plan, err := s.prepareFleetTargetRegistration(ctx, identity, admission.TargetID, operationID, clusterNames, environments, unique)
+		_, plan, err := s.prepareFleetTargetRegistration(ctx, identity, admission.TargetID, operationID, clusterNames, environments, unique, "")
 		return plan, err
 	case store.FleetTargetMutationRelease:
 		release := admission.Release

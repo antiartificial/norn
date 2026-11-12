@@ -224,7 +224,7 @@ const fleetTargetRegisterAttempts = 8
 // RegisterFleetTarget. committed=false with a nil error means the Txn's
 // compares failed and nothing was written.
 func (s *V3OperationStore) registerFleetTargetOnce(ctx context.Context, canon lifecycle.TargetIdentity, targetID, operationID string, clusterNames, environments, unique []string) (*FleetTarget, bool, error) {
-	target, plan, err := s.prepareFleetTargetRegistration(ctx, canon, targetID, operationID, clusterNames, environments, unique)
+	target, plan, err := s.prepareFleetTargetRegistration(ctx, canon, targetID, operationID, clusterNames, environments, unique, "")
 	if err != nil {
 		return nil, false, err
 	}
@@ -248,7 +248,7 @@ type fleetTargetMutationPlan struct {
 
 // prepareFleetTargetRegistration is the read-decide half of one registration
 // round. An empty plan means an idempotent replay: nothing to write.
-func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, canon lifecycle.TargetIdentity, targetID, operationID string, clusterNames, environments, unique []string) (*FleetTarget, fleetTargetMutationPlan, error) {
+func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, canon lifecycle.TargetIdentity, targetID, operationID string, clusterNames, environments, unique []string, allowCreateIntentID string) (*FleetTarget, fleetTargetMutationPlan, error) {
 	none := fleetTargetMutationPlan{}
 	registryKey := s.fleetTargetRegistryKey()
 	registryResponse, err := s.kv.Get(ctx, registryKey)
@@ -327,7 +327,7 @@ func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, c
 		return &target, none, nil
 	}
 
-	inFlightCompares, inFlight, err := s.fleetTargetInFlightCompares(ctx, targetID, clusterNames, environments)
+	inFlightCompares, inFlight, err := s.fleetTargetInFlightCompares(ctx, targetID, clusterNames, environments, allowCreateIntentID)
 	if err != nil {
 		return nil, none, err
 	}
@@ -389,11 +389,12 @@ func (s *V3OperationStore) prepareFleetTargetRegistration(ctx context.Context, c
 // mirroring fleetTargetInFlightSQL), and returns the two prefix compares the
 // caller's registration Txn must include so a plan that goes in flight
 // after this scan, but before the Txn commits, cannot slip through.
-func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, targetID string, clusterNames, environments []string) ([]clientv3.Cmp, bool, error) {
+func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, targetID string, clusterNames, environments []string, allowCreateIntentID string) ([]clientv3.Cmp, bool, error) {
 	preparationPrefix := s.fleetGitHubDispatchPreparationsPrefix()
 	bindingPrefix := s.fleetRunnerDispatchesPrefix()
 	offlinePrefix := s.fleetOfflineDispatchesPrefix()
 	fencePrefix := s.prefix + "/v3/fleet-target-fences/"
+	createFencePrefix := s.fleetCreateFencePrefix()
 	preparations, err := s.kv.Get(ctx, preparationPrefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, false, err
@@ -410,11 +411,16 @@ func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, targ
 	if err != nil {
 		return nil, false, err
 	}
+	createFences, err := s.kv.Get(ctx, createFencePrefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, false, err
+	}
 	compares := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(preparationPrefix).WithPrefix(), "<", preparations.Header.Revision+1),
 		clientv3.Compare(clientv3.ModRevision(bindingPrefix).WithPrefix(), "<", bindings.Header.Revision+1),
 		clientv3.Compare(clientv3.ModRevision(offlinePrefix).WithPrefix(), "<", offlineBindings.Header.Revision+1),
 		clientv3.Compare(clientv3.ModRevision(fencePrefix).WithPrefix(), "<", fences.Header.Revision+1),
+		clientv3.Compare(clientv3.ModRevision(createFencePrefix).WithPrefix(), "<", createFences.Header.Revision+1),
 	}
 
 	clusterSet := make(map[string]bool, len(clusterNames))
@@ -424,6 +430,23 @@ func (s *V3OperationStore) fleetTargetInFlightCompares(ctx context.Context, targ
 	environmentSet := make(map[string]bool, len(environments))
 	for _, environment := range environments {
 		environmentSet[environment] = true
+	}
+	for _, kv := range createFences.Kvs {
+		var createFence fleetCreateFenceRecord
+		if err := decodeV3Record(kv.Value, &createFence); err != nil ||
+			createFence.SchemaVersion != fleetCreateFenceSchema || createFence.Intent.Validate() != nil {
+			return nil, false, fmt.Errorf("fresh Fleet create fence is corrupt")
+		}
+		intentDigest, err := createFence.Intent.Digest()
+		if err != nil || intentDigest != createFence.IntentSHA256 {
+			return nil, false, fmt.Errorf("fresh Fleet create fence intent digest mismatch")
+		}
+		if clusterSet[createFence.Intent.Cluster] {
+			if createFence.Intent.IntentID == allowCreateIntentID {
+				continue
+			}
+			return compares, true, nil
+		}
 	}
 
 	for _, kv := range preparations.Kvs {

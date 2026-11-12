@@ -215,6 +215,17 @@ func TestFleetSavedPlanEffectIsExplicitAndDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestFleetCreateRoutesAreExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_FLEET_CREATE_ENABLED", "")
+	if Load().FleetCreateEnabled {
+		t.Fatal("fresh Fleet create routes enabled by default")
+	}
+	t.Setenv("NORN_FLEET_CREATE_ENABLED", "true")
+	if !Load().FleetCreateEnabled {
+		t.Fatal("explicit fresh Fleet create gate was ignored")
+	}
+}
+
 func TestFleetOfflineVerifierReadIsExplicitAndDisabledByDefault(t *testing.T) {
 	t.Setenv("NORN_FLEET_OFFLINE_VERIFIER_READ_ENABLED", "")
 	if cfg := Load(); cfg.FleetOfflineVerifierReadEnabled {

@@ -76,6 +76,9 @@ const (
 	// ScopeFleetProtectedTerminalVerify permits only independent inspection of
 	// an exact protected Fleet runner's signed terminal receipt.
 	ScopeFleetProtectedTerminalVerify = "fleet:protected-terminal-verify"
+	// ScopeFleetCreateVerify is exclusive to the independent work-staging
+	// verifier that records create intent and exact GitHub dispatch readback.
+	ScopeFleetCreateVerify = "fleet:create-verify"
 )
 
 var accessTokenScopes = map[string]struct{}{
@@ -90,11 +93,12 @@ var accessTokenScopes = map[string]struct{}{
 	ScopeFleetAppDeleteVerify:         {},
 	ScopeFleetSavedPlanEffectVerify:   {},
 	ScopeFleetProtectedTerminalVerify: {},
+	ScopeFleetCreateVerify:            {},
 	ScopeReleaseAttest:                {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeCatalogActivate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetDeploymentRecover, ScopeFleetOfflineAttempt, ScopeFleetOfflineVerify, ScopeFleetAppDeleteVerify, ScopeFleetSavedPlanEffectVerify, ScopeFleetProtectedTerminalVerify, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeCatalogActivate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeFleetExecute, ScopeFleetDeploymentRecover, ScopeFleetOfflineAttempt, ScopeFleetOfflineVerify, ScopeFleetAppDeleteVerify, ScopeFleetSavedPlanEffectVerify, ScopeFleetProtectedTerminalVerify, ScopeFleetCreateVerify, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own
@@ -306,6 +310,9 @@ func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Durat
 	}
 	if containsScope(normalized, ScopeFleetProtectedTerminalVerify) && (len(normalized) != 1 || subject != "fleet-protected-terminal-verifier:work-staging") {
 		return nil, fmt.Errorf("protected terminal verifier scope requires its dedicated work-staging identity alone")
+	}
+	if containsScope(normalized, ScopeFleetCreateVerify) && (len(normalized) != 1 || subject != "fleet-create-verifier:work-staging") {
+		return nil, fmt.Errorf("Fleet create verifier scope requires its dedicated work-staging identity alone")
 	}
 	issuedAt = issuedAt.UTC()
 	return &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl)}, nil
