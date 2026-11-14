@@ -9,29 +9,31 @@ The working target is the week of 2026-11-16. No launch date is committed.
 
 | Item | Verified state | Limit |
 | --- | --- | --- |
-| DO staging | A fresh read-only `doctl --context work` check matched the reviewed work account and found all eleven Norn Droplets active: two management, three control, two ingress, and four app nodes. Platform `/version` and canary `/route-proof` returned HTTP 200 on 2026-11-14. | Point-in-time provider and public responses do not prove private host lineage or continuous availability. |
+| DO staging | Protected read-only provider readback [run 43579022248](https://github.com/antiartificial/norn-fleet/actions/runs/43579022248) succeeded on Fleet main `3b37d0d7`. | It does not prove SSH key readiness, private API health, workload admission, or online-upgrade behavior. |
 | Deployed platform | The last qualified DO promotion deployed signed `fa301fa5` through the all-stop controller on 2026-11-11. | That promotion interrupted service. No online upgrade has been accepted. |
 | Published candidate | `cdf2081e` passed [all twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). The published Linux bundle was independently signature and hash verified. | Publication does not deploy the candidate. |
-| Fleet controller source | [PR #1036](https://github.com/antiartificial/norn-fleet/pull/1036) merged as `f482f21f` after full contract and component checks passed. | The online workflow remains hard-disabled. Source merge does not install or activate it. |
+| Fleet controller source | [PR #1041](https://github.com/antiartificial/norn-fleet/pull/1041) merged as `3b37d0d7` after all required checks passed. | The online profile is still unbound in the installed controller configuration. Source merge does not authorize or run the online workflow. |
 | Joined guest rehearsal | [Run 43552764721](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) ran signed `fa301fa5` against three native TLS/RBAC etcd members, with one active API and two passive controls. Every signed API/UI pin and all 44 UI files matched. Cleanup completed. | This is baseline and quorum evidence. It did not run the full signed upgrade controller. |
-| Exact upgrade pair | [Run 43553952979](https://github.com/antiartificial/norn-fleet/actions/runs/43553952979) qualified bidirectional plan storage and target-only recovery for signed `fa301fa5` to `cdf2081e` on merged Fleet main. | Helper wait timings omit parts of the action interval. The independent observer must measure complete effects and workload continuity. |
-| Installed controller | Read-only inspection found the management controller running with an older installed source closure. | The verified online modules and protected inputs still need installation. This is management tooling, not a Mini upgrade. |
+| Exact signed pair | [Producer run 43578855161](https://github.com/antiartificial/norn-fleet/actions/runs/43578855161) succeeded on main `3b37d0d7` for `fa301fa5` to `cdf2081e`. | Pair evidence does not qualify the full online controller or prove live workload continuity. |
+| Installed controller | Read-only verification matched the controller's installed 61-file closure to Fleet `3b37d0d7`, including expected certificate-path rendering in the LaunchAgent. | The protected configuration is unchanged and its online profile remains unbound. The controller is not ready to dispatch an online operation. |
+| Full disposable executor | [Run 43579208799](https://github.com/antiartificial/norn-fleet/actions/runs/43579208799) completed with failure on main `3b37d0d7`. The initial passive-control readback failed before any member effect. The workflow cleaned up all disposable resources and the observer. | The run does not qualify the executor. Diagnose and fix the standby API readback before another full run. |
 
 ## Launch completion steps
 
 The remaining launch evidence is:
 
-1. The complete disposable controller rehearsal uses real signatures, release
-   bytes, SSH effects, an independent observer, and durable receipts across a
-   runner restart. Any synthetic GitHub admission metadata stays explicitly
-   fixture-only and cannot qualify production admission.
-2. The installed controller and gate inputs match the verified source, file
-   digests, host identities, credential provenance, and fresh state readback.
-3. The live controller upgrades passive controls first and the API owner last.
-   Independent measurements cover API handoff and existing workload traffic.
-   Terminal receipts and recovery inputs remain available after restart.
-4. Accepted evidence is retained outside the Fleet before controlled teardown
-   of disposable staging. Fresh creation can remain undeployed until needed.
+1. The full disposable executor rehearsal reaches a terminal qualified result
+   with real signed releases, SSH effects, an independent observer, and durable
+   receipts across runner restart. Fixture-only GitHub metadata cannot qualify
+   production admission.
+2. The installed controller has the reviewed source closure and protected
+   inputs, and its online profile is explicitly bound to fresh state and host
+   evidence.
+3. The live controller updates passive controls first and the API owner last.
+   Independent measurements cover API handoff and the existing workload route.
+   The controller retains terminal receipts and recovery inputs after restart.
+4. The operator retains accepted evidence outside the Fleet before teardown of
+   disposable staging. Fresh-Fleet creation can remain undeployed until needed.
 
 The existing all-stop lane remains the qualified fallback. Application nodes
 and workload sizes stay unchanged during this platform release.
