@@ -15,18 +15,19 @@ online-upgrade proof; no launch date is committed.
 | Published candidate | `cdf2081e` passed [all twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). The published Linux bundle was independently signature and hash verified. | Publication does not deploy the candidate. |
 | Fleet controller source | Main `24c1d64b` is installed in the management controller. Its installed closure and protected configuration were verified; the online profile remains unbound. | The profile is not bound and the live online-release path has not been enabled. |
 | Joined guest rehearsal | [Run 43552764721](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) ran signed `fa301fa5` against three native TLS/RBAC etcd members, with one active API and two passive controls. Every signed API/UI pin and all 44 UI files matched. Cleanup completed. | This is baseline and quorum evidence. It did not run the full signed upgrade controller. |
-| Exact signed pair | [Producer run 43639472306](https://github.com/antiartificial/norn-fleet/actions/runs/43639472306) passed on `a91c8468` for `fa301fa5` to `cdf2081e`; local fixture-only signature/admission checks passed. | Renew source-bound evidence after the required helper correction. This is not live upgrade or workload-continuity proof. |
+| Exact signed pair | [Producer run 43646209830](https://github.com/antiartificial/norn-fleet/actions/runs/43646209830) passed for `fa301fa5` to `cdf2081e` on exact Fleet source `093057fe` and retained its artifact. Local cryptographic checks passed with fixtures only. | The pair does not qualify full execution, restart recovery, or a different executor source. |
 | Read-only release preflight | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) succeeded with `preflight_only=true`. The fresh readback was 9 seconds old at signing/dispatch. Live etcd and component checks plus exactly one healthy private API passed. The durable terminal receipt confirms exact runner retirement. | The workflow correctly skipped the upgrade and all post-write steps. No release or provider mutation occurred; this does not qualify online upgrade. |
-| Online-release candidate | Fleet [PR #1045](https://github.com/antiartificial/norn-fleet/pull/1045) and [PR #1046](https://github.com/antiartificial/norn-fleet/pull/1046) merged with component and repository checks passing. [PR #1047](https://github.com/antiartificial/norn-fleet/pull/1047) merged the helper inventories, but [full run 43639820018](https://github.com/antiartificial/norn-fleet/actions/runs/43639820018) still stopped in host-authority preflight before journal open. | The actual Ansible copy loop selected four files despite the controller supplying eight. [PR #1048](https://github.com/antiartificial/norn-fleet/pull/1048) binds that loop to the controller manifest and corrects inherited privilege escalation in controller receipt copies. It merged as `093057fe` after exact-head CI and 479 local online tests passed. No member release ran; all seven run-owned resources were removed. Joined execution and completed-member restart remain unqualified. |
+| Online-release candidate | [Full run 43646494386](https://github.com/antiartificial/norn-fleet/actions/runs/43646494386) failed. Its child exited 0, but the sanitized `runnerResult` was unavailable or malformed. After failure evidence was collected, all seven run-owned resources were absent and the observer stopped. | Member progress is not established and the failure cause is unproven. [PR #1049](https://github.com/antiartificial/norn-fleet/pull/1049), head `77448cbe`, addresses the offline-proven nested-step input and shared-source mode and preservation defects, plus diagnostic reason and role drift. Its 486 local online tests and 14 qualifier tests passed; CI is pending. Full execution and completed-member restart remain unqualified. |
 
 ## Launch completion steps
 
 The remaining launch evidence is:
 
-1. Freeze corrected controller/workflow source `093057fe`
-   while the live release gate remains off. Refresh the signed-pair evidence for
-   that exact executor source, then qualify joined execution, completed-member
-   restart/replay, independent observation and retained terminal evidence.
+1. Keep the live release gate off. Review PR #1049 and qualify the selected
+   exact executor source with a matching signed pair, joined execution,
+   completed-member restart/replay, independent observation, and retained
+   terminal evidence. The refreshed controller candidate remains disabled and
+   unqualified.
 2. Bind the installed controller profile only after those prerequisites pass
    and the state/host evidence is freshly verified.
 3. Prove the live online update on DO staging: passive controls first, API
