@@ -8,6 +8,7 @@
     "v2/api/fleet/fleetcreate/effect.go",
     "v2/api/handler/fleet_create.go"
   ],
+  "algorithm": "go-ast-type-and-constant-prefix/v1",
   "allBaselineOldSHA256": "35013a0e0150eac0741737153171ca4a1d3f0adca27c507a903f1d147aa9dfb1",
   "allBaselineTargetSHA256": "92ec293f04163c501776c821195d768951fc8bd81dab6cdbe03bd4e52e2a7af6",
   "baselineDeclarations": 2478,
@@ -19,5 +20,6 @@
   ],
   "oldRef": "fa301fa5f881b847a26f61a501092f9a9dd090fd",
   "scope": "Source review aid only, not schema compatibility proof. Baseline AST types and constant declaration prefixes in non-test API source; function behavior, key paths, additions, runtime encodings and reader/writer epochs require separate review",
-  "targetRef": "ec01f28c1e531bab06e60c9b8c987aeef92dc668"
+  "targetRef": "ec01f28c1e531bab06e60c9b8c987aeef92dc668",
+  "toolchain": "go1.26.10"
 }
