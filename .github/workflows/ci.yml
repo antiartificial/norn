@@ -172,5 +172,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.26.10
+      - name: Test online compatibility source audit
+        run: GO111MODULE=off GOWORK=off go test ./v2/scripts/compatibility-source-audit
       - name: Lint GitHub Actions workflows
         run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
