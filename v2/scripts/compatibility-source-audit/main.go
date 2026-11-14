@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -131,7 +132,7 @@ func main() {
 			withoutB[k] = b[k]
 		}
 	}
-	result := map[string]any{"oldRef": old, "targetRef": new, "baselineFiles": len(base), "baselineDeclarations": len(a), "changedExistingDeclarations": changes, "addedDeclarationsInExistingFiles": added, "addedFiles": addedFiles, "allBaselineOldSHA256": hash(a), "allBaselineTargetSHA256": hash(b), "baselineExcludingRuntimeConfigOldSHA256": hash(withoutA), "baselineExcludingRuntimeConfigTargetSHA256": hash(withoutB), "scope": "Source review aid only, not schema compatibility proof. Baseline AST types and constant declaration prefixes in non-test API source; function behavior, key paths, additions, runtime encodings and reader/writer epochs require separate review"}
+	result := map[string]any{"toolchain": runtime.Version(), "algorithm": "go-ast-type-and-constant-prefix/v1", "oldRef": old, "targetRef": new, "baselineFiles": len(base), "baselineDeclarations": len(a), "changedExistingDeclarations": changes, "addedDeclarationsInExistingFiles": added, "addedFiles": addedFiles, "allBaselineOldSHA256": hash(a), "allBaselineTargetSHA256": hash(b), "baselineExcludingRuntimeConfigOldSHA256": hash(withoutA), "baselineExcludingRuntimeConfigTargetSHA256": hash(withoutB), "scope": "Source review aid only, not schema compatibility proof. Baseline AST types and constant declaration prefixes in non-test API source; function behavior, key paths, additions, runtime encodings and reader/writer epochs require separate review"}
 	raw, e := json.MarshalIndent(result, "", "  ")
 	if e != nil {
 		panic(e)

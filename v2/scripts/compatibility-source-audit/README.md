@@ -3,8 +3,8 @@
 From the repository root, compare two immutable source revisions:
 
 ```sh
-GO111MODULE=off GOWORK=off go run v2/scripts/compatibility-source-audit/main.go OLD_SHA TARGET_SHA
-GO111MODULE=off GOWORK=off go test ./v2/scripts/compatibility-source-audit
+GOTOOLCHAIN=go1.26.10 GO111MODULE=off GOWORK=off go run v2/scripts/compatibility-source-audit/main.go OLD_SHA TARGET_SHA
+GOTOOLCHAIN=go1.26.10 GO111MODULE=off GOWORK=off go test ./v2/scripts/compatibility-source-audit
 ```
 
 This reads Git objects, not working-tree files. It inventories baseline non-test
