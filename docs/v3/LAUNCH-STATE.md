@@ -23,9 +23,10 @@ online-upgrade proof; no launch date is committed.
 
 The remaining launch evidence is:
 
-1. Finish the exact-head old-control and contract checks, then qualify one
-   joined signed executor run with independent observation, completed-member
-   restart/replay, and retained terminal evidence.
+1. Finish exact-head checks and freeze the reviewed controller/workflow source
+   while the live release gate remains off. Refresh the signed-pair evidence for
+   that exact executor source, then qualify joined execution, completed-member
+   restart/replay, independent observation and retained terminal evidence.
 2. Bind the installed controller profile only after those prerequisites pass
    and the state/host evidence is freshly verified.
 3. Prove the live online update on DO staging: passive controls first, API
