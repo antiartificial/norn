@@ -34,12 +34,12 @@ when the reviewer cannot answer the question from retained evidence.
 | Gate | Reviewer checks | Evidence to retain | Hold when |
 | --- | --- | --- | --- |
 | Scope | Name the lane, target, allowed interruption, success condition, and excluded work. Identify actions that require a separate operator choice. | Signed intent or reviewed test plan with exact target identity and acceptance bounds. | The scope combines independent lanes or leaves a destructive choice implicit. |
-| Inputs and provenance | List every input the executor consumes. For each, record its authority, source, transformation, consumer, secrecy, file mode, expiry, and recovery rule. Bind the final bytes or canonical value by digest. | Input inventory, transformation checks, source/run identity, and redacted presence or digest evidence. | Any input appears from ambient state, an unbound path, an unexplained default, or a secret-bearing log. |
-| Source and runtime | Distinguish product source, workflow source, executor source, publisher source, and installed files. Check the exact dependency/import closure, interpreter, service manager, process environment, and installer behavior. | Exact commit and workflow identities, install manifest, child-process environment test, and installed-file digest checks. | Tests use a different executable path, omit an installed dependency, or depend on shell-only environment that the service does not receive. |
+| Inputs and provenance | List every input the executor consumes. For each, record its authority, source, transformation, consumer, secrecy, file mode, expiry, and recovery rule. Bind the final bytes or canonical value by digest. | Input inventory, transformation checks, source/run identity, and redacted presence or digest evidence. | Any input appears from undeclared ambient state, an unbound path, an unexplained default, or a secret-bearing log. |
+| Source and runtime | Distinguish product source, workflow source, executor source, publisher source, and installed files. Check every shipped dependency/import closure, interpreter, service manager, process environment, and installer behavior. Execute each remote or installed entrypoint using only its declared staged files, with the repository unavailable to imports; include authority, recovery and retirement paths. | Exact commit and workflow identities, install manifest, child-process environment test, and installed-file digest checks. | Tests use a different executable path, omit an installed dependency, or depend on shell-only environment that the service does not receive. |
 | Contracts and model | Check serialized schemas, event order, identity binding, terminal states, and forbidden transitions. Run counterexamples for stale, reordered, partial, and malformed inputs. Write down model assumptions. | Schema tests, model result, named mutants, bounds, and assumptions. | The implementation can accept a state the model excludes, or the model's assumptions are presented as observed facts. |
-| Preparation and mutation | Separate reversible preparation from the first external effect. Require durable authorization and a unique prepared identity before mutation. Check the remote fence, seal, permissions, and crash durability where the design relies on them. | Journal transitions, prepared-input identity and seal, filesystem checks, and crash-point tests. | A preparation retry can overwrite another attempt, or an effect can begin before its durable permit exists. |
-| Effect result | After each external mutation, independently read the exact target. Treat a lost response as ambiguous until readback resolves it. Prove remote quiescence before claiming no write. | Target-bound readback and effect receipt, including the source or version actually running. | The controller retries a mutation from old bytes or infers success or no-write from a local timeout alone. |
-| Observation | Start independent observation before effects and keep it through the signed postflight window. Check user-facing workload behavior as well as private control and API health. Measure gaps and outages against the approved policy. | Ordered samples bound to operation, policy, workload identity, and time window. | A root endpoint alone stands in for workload health, or observation stops while an effect can still be running. |
+| Preparation and mutation | Separate retry-safe preparation from the protected mutation. Preparation can write staging records; bind and fence those writes too. Bind prepared inputs and persist authorization before the protected mutation. Check the remote fence, seal, permissions, and crash durability where the design relies on them. | Journal transitions, prepared-input identity and seal, filesystem checks, and crash-point tests. | A preparation retry can overwrite another attempt, or an effect can begin before its durable permit exists. |
+| Effect result | After each external mutation, independently read the exact target. Treat a lost response as ambiguous until readback resolves it. Rule out a surviving effect before claiming no write. | Target-bound readback and effect receipt, including the source or version actually running. | The controller retries a mutation from old bytes or infers success or no-write from a local timeout alone. |
+| Observation | Start independent observation before effects and keep it through the declared postflight window. Check the user-visible result as well as controller health; for a service release, include workload and private API checks. Measure gaps and outages against the approved policy. | Ordered samples bound to operation, policy, workload identity, and time window. | A root endpoint alone stands in for workload health, or observation stops while an effect can still be running. |
 | Recovery and close | Crash at relevant durable boundaries, restart the executor, and replay terminal evidence. Preserve inputs and journals until the terminal artifact is authenticated and retained off the disposable target. | Same-operation resume result, terminal receipt digest, retention location, cleanup receipt, and expiry disposition. | Recovery mints a different operation, deletes ambiguous state, or cleanup runs before evidence retention. Expired authority stays held until a separately authorized successor is bound. |
 
 Not every system needs a Fleet signature, owner key, systemd unit, or cloud
@@ -56,22 +56,23 @@ apply, and record why.
    file permissions, secret redaction, and the actual service-child environment.
 2. Run focused component tests against the real adapter or its disposable
    dependency. Inject malformed results and lost responses.
-3. Run the complete executor from its normal entry point against disposable
-   dependencies. Use the reviewed source, actual verifiers, and the declared
-   service context. Do not fabricate successful receipts.
-4. Stop or restart the controller at preparation, effect-start, target
+3. Freeze the reviewed source and installer inputs before joined qualification.
+   Keep live enablement off. Qualify the product publisher separately from the
+   executor, and bind their exact identities and connecting artifact. A source
+   correction creates a new candidate; identify which evidence must be renewed.
+4. Run the complete executor from its normal entry point against disposable
+   dependencies. Use actual verifiers and the declared service context. Do not
+   fabricate successful receipts. Distinguish harness, preflight, member effect
+   and cleanup failures using retained phase and task evidence.
+5. Stop or restart the controller at preparation, effect-start, target
    readback, postflight, and terminal-retention boundaries. Resume the same
    intent and prove that completed effects do not run twice. Keep independent
    observation alive across executor loss when the operation can continue.
-5. Replay the terminal artifact after restart. Check that cleanup does not
+6. Replay the terminal artifact after restart. Check that cleanup does not
    remove inputs needed to explain or recover the operation.
-6. Freeze the exact source before any protected or live run. Re-run the required
-   checks at that source. A publisher qualification and publication do not
-   qualify a separate executor; bind both identities and the artifact that
-   connects them.
-7. Run live only after the disposable path passes. Use fresh readback, measure
-   user-facing service continuity, retain the receipt elsewhere, and label
-   every unobserved workload or recovery path as open.
+7. Run live only after the applicable disposable path passes. Use fresh readback,
+   measure the user-visible result and any interruption, retain the receipt
+   elsewhere, and label every unobserved workload or recovery path as open.
 
 An expected failure is useful evidence only when the test names the violated
 condition and proves that no forbidden effect followed. A green test count or
@@ -99,4 +100,4 @@ Open limits and next gate:
 
 Use names and digests for sensitive inputs. Do not copy secret values, full
 environment dumps, private command lines, or raw provider responses into the
-record. Link detailed logs or dated evidence instead.
+record. Link redacted detailed logs or dated evidence instead.
