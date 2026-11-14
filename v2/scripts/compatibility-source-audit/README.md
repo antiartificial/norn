@@ -5,6 +5,7 @@ From the repository root, compare two immutable source revisions:
 ```sh
 GOTOOLCHAIN=go1.26.10 GO111MODULE=on GOWORK=off go run v2/scripts/compatibility-source-audit/main.go OLD_SHA TARGET_SHA
 GOTOOLCHAIN=go1.26.10 GO111MODULE=on GOWORK=off go test v2/scripts/compatibility-source-audit/main.go v2/scripts/compatibility-source-audit/main_test.go
+GOTOOLCHAIN=go1.26.10 GO111MODULE=on GOWORK=off go run v2/scripts/compatibility-source-audit/main.go OLD_SHA TARGET_SHA --catalog release/online-compatibility.json
 ```
 
 This reads Git objects, not working-tree files. It inventories baseline non-test
@@ -20,6 +21,18 @@ changed baseline declaration is runtime `config.Config`; it adds a Fleet-create
 scope and four production files. Matching baseline hashes after excluding
 runtime configuration do not establish compatibility. Review added records,
 function behavior, key paths, conditional writes, encodings, feature gates and
-reader/writer epochs separately. Run the signed old/new runtime qualification
-before issuing a compatibility declaration. This report cannot authorize a
-release or populate a schema fingerprint by itself.
+reader/writer epochs separately. A source-reviewed declaration may accompany an immutable candidate proposal.
+The actual signed old/new pair must pass runtime qualification before controller
+promotion. This report cannot authorize promotion or populate a schema
+fingerprint by itself.
+
+The optional `--catalog FILE` mode audits a source-owned online-compatibility
+declaration. It compares every cataloged struct field's JSON name, Go type and
+exact JSON tag, plus `model.OperationStatus`, against both Git source refs. It
+also verifies the catalog SHA-256 fields. This is limited to the named plan
+catalog and does not imply compatibility for other database or API schemas.
+
+The source declaration describes only the named plan catalog and endpoints.
+It does not qualify workload continuity, general database schemas or stateful
+applications. Publication, runtime qualification and controller promotion are
+separate steps.
