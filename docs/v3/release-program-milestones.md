@@ -45,6 +45,9 @@ retain the broader feature program. The
 [release runbook](https://github.com/antiartificial/norn-fleet/blob/main/docs/runbooks/work-staging-norn-release.md)
 contains procedures. [Launch history](LAUNCH-HISTORY.md) and the archive below
 preserve dated results and failed attempts.
+Use the [executor qualification rubric](executor-qualification-rubric.md)
+when reviewing controller evidence. It distinguishes model, component,
+disposable, recovery, and live proof without changing these milestone states.
 
 The complete program still requires verified input contracts, offline failure
 coverage, live readiness checks, controller receipts, postflight, and recovery
