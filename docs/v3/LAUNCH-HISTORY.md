@@ -1,5 +1,30 @@
 # Norn v3 launch history
 
+## Online Fleet launch checkpoint (2026-11-14 UTC)
+
+The launch priority changed to controller-mediated online updates of the
+existing DO staging platform. Workload admission, fresh creation, resizing,
+and Mini follow-ups no longer gate that launch milestone.
+
+Signed Norn `cdf2081e` passed all twelve qualification jobs and immutable
+publication. Fleet PR #1036 merged as `f482f21f` after full CI. The signed
+`fa301fa5` baseline passed the joined three-member etcd guest rehearsal, and
+exact-pair producer 43553952979 passed bidirectional plan storage and
+control-fencing checks. No live online promotion followed. The full disposable
+controller/restart rehearsal and installed controller update remain pending.
+
+Read-only work-account inspection found all eleven staging Droplets active.
+Public platform `/version` and canary `/route-proof` returned HTTP 200.
+These checks did not refresh private API/source lineage or prove continuity.
+The running management controller's installed closure predates the new online
+modules. No DO or Mini change ran for this checkpoint.
+
+The prior long status pages are preserved in the
+[launch-state archive](LAUNCH-STATE-ARCHIVE-2026-11-12.md) and
+[program archive](release-program-milestones-archive-2026-11-12.md).
+Current status is in [launch state](LAUNCH-STATE.md) and the
+[milestone map](release-program-milestones.md).
+
 ## Fresh HTTP admission refuses an unowned serving route (2026-11-12 18:07 UTC)
 
 The authenticated workload-release HTTP handler was exercised against
