@@ -2,8 +2,8 @@
 
 Status reviewed 2026-11-14 UTC. The current launch gate is an online,
 controller-mediated DO platform upgrade with measured workload continuity and
-recoverable terminal evidence. The working target is the week of 2026-11-16.
-The launch date remains conditional on that proof.
+recoverable terminal evidence. The working target remains the week of
+2026-11-16, conditional on that proof.
 
 The existing DO Fleet is the disposable staging testbed. The independent Mini
 already met its deployment success bar and does not gate this launch. Fresh
@@ -16,23 +16,24 @@ after the online platform milestone.
 | --- | --- | --- |
 | Publish the qualified candidate | Complete | Signed `cdf2081e` passed [twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). |
 | Qualify source and joined runtime | Complete for reviewed components | Fleet [PR #1041](https://github.com/antiartificial/norn-fleet/pull/1041) merged as `3b37d0d7`. The [joined signed baseline and quorum proof](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) passed with cleanup. |
-| Produce the exact signed pair | Complete for the pair producer | [Run 43578855161](https://github.com/antiartificial/norn-fleet/actions/runs/43578855161) succeeded on main `3b37d0d7` for `fa301fa5` to `cdf2081e`. This does not qualify the online executor. |
-| Read back DO staging | Complete for read-only provider state | [Run 43579022248](https://github.com/antiartificial/norn-fleet/actions/runs/43579022248) succeeded on main `3b37d0d7`. It does not prove SSH readiness, private API health, workload admission, or online-upgrade behavior. |
-| Exercise the full disposable executor | Failed run; repair needed | [Run 43579208799](https://github.com/antiartificial/norn-fleet/actions/runs/43579208799) completed with failure at the initial passive-control readback, before member effects. Cleanup and artifact upload succeeded. Fix the standby API readback before another full run. Fixture-only admission metadata cannot qualify production admission. |
-| Install and bind the controller | Source installed; profile pending | Read-only verification matched the controller's installed 61-file closure to Fleet `3b37d0d7`, including expected certificate-path rendering in the LaunchAgent. The protected configuration is unchanged and the online profile is unbound. |
-| Accept the DO online upgrade | Pending, launch gate | Controller promotion, measured API handoff and workload continuity, recovery proof, and off-Fleet evidence retention. The live workflow stays disabled until its prerequisites pass. |
+| Produce the exact signed pair | Complete for the pair producer | [Run 43610317278](https://github.com/antiartificial/norn-fleet/actions/runs/43610317278) succeeded on main `56c9d6a5` for `fa301fa5` to `cdf2081e`. This does not qualify the online executor. |
+| Read back DO staging | Complete for read-only provider state | [Run 43618560028](https://github.com/antiartificial/norn-fleet/actions/runs/43618560028) succeeded on main `24c1d64b` and bound current provider/state evidence. |
+| Run read-only release preflight | Complete for preflight only | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) passed live etcd/component checks and the exactly-one-healthy-private-API check. The readback was 9 seconds old at signing/dispatch; durable terminal receipt verified exact runner retirement. Upgrade and post-write steps were skipped. |
+| Exercise the full disposable executor | Failed; repair in progress | [Run 43610703647](https://github.com/antiartificial/norn-fleet/actions/runs/43610703647) failed importing etcd health before member verification. Cleanup completed. The etcd health contract fix and target API/UI controller staging are in progress. |
+| Install and bind the controller | Source installed; profile unbound | Fleet main `24c1d64b` is installed and its closure/configuration verified. The online profile remains unbound; live release is not enabled. |
+| Accept the DO online upgrade | Pending, launch gate | Complete a successful full executor rehearsal, then prove passive-first/API-owner-last promotion, measured API handoff and workload continuity, recovery, and off-Fleet evidence retention. No online upgrade has been accepted. |
 | Retire disposable staging | After accepted upgrade | Controlled teardown after required receipts and recovery inputs are retained elsewhere. No teardown has run for this work. |
 
 ## Parallel workstreams
 
 | Workstream | Current evidence | Next proof |
 | --- | --- | --- |
-| Existing DO platform | Protected read-only provider readback succeeded on main `3b37d0d7`. The last qualified promotion was the all-stop `fa301fa5` deployment. | Complete the full disposable executor rehearsal, bind the installed controller profile, then prove the live online upgrade and workload route. |
+| Existing DO platform | Protected readback `43618560028` and read-only preflight `43618699939` succeeded on main `24c1d64b`. Preflight proved live etcd/components and one healthy private API; upgrade/post-write steps were skipped. The last qualified promotion remains the all-stop `fa301fa5` deployment. | Repair etcd health import and target API/UI staging; qualify the full executor, then bind the profile and prove online upgrade plus workload continuity. |
 | Mini direct | Owner success bar met on 2026-11-10. The Mini is independent of the Fleet. | Separate repair and Git-driven workload admission follow-ups. No Fleet resizing. |
 | V3 workload admission | Negative admission, durable replay, and offline input/provenance checks exist. Current source and tests do not establish a live controller-admitted canary receipt. | Verify protected inputs and credential provenance, then bind a responding workload to durable same-intent admission receipts. This follows the platform launch. |
 | Fresh-Fleet creation | General and Stateful roles, topology checks, authority models, and default-off API work exist. The published candidate includes the new source. No fresh provider creation is qualified. | Connect one-use grants to the provider executor and protected workflow. Qualify partial inventory, ambiguous effects, recovery, and bootstrap. Creation may stay undeployed until needed. |
 | Workload resizing | Disposable real-Nomad and etcd-backed recovery checks and mixed-version capacity models exist. No live DO resize is qualified. | Complete real executor, health, ingress, and old-cohort-stop proof, then qualify a stateless DO resize. Keep stateful compatibility separate. |
-| Controller recovery | Journals, fenced effects, independent observation, and offline recovery checks exist. The latest full disposable executor run failed before member effects at the standby API readback; the observer and disposable resources were cleaned up. | Fix the readback and repeat the full executor run. Then verify any remaining process-loss, terminal-replay, and replacement-run recovery gaps. |
+| Controller recovery | Read-only preflight `43618699939` produced a validated durable terminal receipt and exact runner retirement. Full disposable executor `43610703647` failed during etcd health import before member verification; disposable resources were cleaned up. | Fix the etcd health contract and target API/UI staging, rerun the full executor, then close remaining process-loss, terminal-replay, and replacement-run recovery gaps. |
 | V2-only retirement | Cleanup follows successful V3 adoption. | Remove unused V2 code and tests while preserving versioned contracts still used by V3. |
 
 ## Evidence and operating detail
