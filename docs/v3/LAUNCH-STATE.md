@@ -2,7 +2,8 @@
 
 Status reviewed 2026-11-14 UTC. The launch priority remains a controller-mediated
 online upgrade of the existing DO staging Fleet while its workloads keep
-serving. The working target is the week of 2026-11-16, conditional on the
+serving. Any brief API interruption must stay within the signed observation
+policy. The working target is the week of 2026-11-16, conditional on the
 online-upgrade proof; no launch date is committed.
 
 ## Current evidence
@@ -14,8 +15,7 @@ online-upgrade proof; no launch date is committed.
 | Published candidate | `cdf2081e` passed [all twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). The published Linux bundle was independently signature and hash verified. | Publication does not deploy the candidate. |
 | Fleet controller source | Main `24c1d64b` is installed in the management controller. Its installed closure and protected configuration were verified; the online profile remains unbound. | The profile is not bound and the live online-release path has not been enabled. |
 | Joined guest rehearsal | [Run 43552764721](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) ran signed `fa301fa5` against three native TLS/RBAC etcd members, with one active API and two passive controls. Every signed API/UI pin and all 44 UI files matched. Cleanup completed. | This is baseline and quorum evidence. It did not run the full signed upgrade controller. |
-| Exact signed pair | [Producer run 43578855161](https://github.com/antiartificial/norn-fleet/actions/runs/43578855161) succeeded on main `3b37d0d7` for `fa301fa5` to `cdf2081e`. | Pair evidence does not qualify the full online controller or prove live workload continuity. |
-| Protected state readback | [Run 43618560028](https://github.com/antiartificial/norn-fleet/actions/runs/43618560028) succeeded on main `24c1d64b` and verified the live provider/state bindings. | Readback is point-in-time input evidence, not release or workload proof. |
+| Exact signed pair | [Producer run 43610317278](https://github.com/antiartificial/norn-fleet/actions/runs/43610317278) succeeded on main `56c9d6a5` for `fa301fa5` to `cdf2081e`. | Pair evidence does not qualify the full online controller or prove live workload continuity. |
 | Read-only release preflight | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) succeeded with `preflight_only=true`. The fresh readback was 9 seconds old at signing/dispatch. Live etcd and component checks plus exactly one healthy private API passed. The durable terminal receipt confirms exact runner retirement. | The workflow correctly skipped the upgrade and all post-write steps. No release or provider mutation occurred; this does not qualify online upgrade. |
 | Full disposable executor | [Run 43610703647](https://github.com/antiartificial/norn-fleet/actions/runs/43610703647) failed while importing etcd health, before member verification. Its disposable resources were cleaned up. | The etcd health contract fix and target API/UI controller staging are in progress. No full executor or online-upgrade acceptance exists yet. |
 
