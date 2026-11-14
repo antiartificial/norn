@@ -1,0 +1,23 @@
+{
+  "addedDeclarationsInExistingFiles": [
+    "v2/api/handler/tokens.go:const:ScopeFleetCreateVerify"
+  ],
+  "addedFiles": [
+    "v2/api/etcd_fleet_create_http.go",
+    "v2/api/etcdstore/v3_fleet_create_intent.go",
+    "v2/api/fleet/fleetcreate/effect.go",
+    "v2/api/handler/fleet_create.go"
+  ],
+  "allBaselineOldSHA256": "35013a0e0150eac0741737153171ca4a1d3f0adca27c507a903f1d147aa9dfb1",
+  "allBaselineTargetSHA256": "92ec293f04163c501776c821195d768951fc8bd81dab6cdbe03bd4e52e2a7af6",
+  "baselineDeclarations": 2478,
+  "baselineExcludingRuntimeConfigOldSHA256": "dec37259b0e1e74ac25cc00589efc4619984459f49c18df1179e04ed8c301d78",
+  "baselineExcludingRuntimeConfigTargetSHA256": "dec37259b0e1e74ac25cc00589efc4619984459f49c18df1179e04ed8c301d78",
+  "baselineFiles": 681,
+  "changedExistingDeclarations": [
+    "v2/api/config/config.go:type:Config"
+  ],
+  "oldRef": "fa301fa5f881b847a26f61a501092f9a9dd090fd",
+  "scope": "Source review aid only, not schema compatibility proof. Baseline AST types and constant declaration prefixes in non-test API source; function behavior, key paths, additions, runtime encodings and reader/writer epochs require separate review",
+  "targetRef": "ec01f28c1e531bab06e60c9b8c987aeef92dc668"
+}
