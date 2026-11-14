@@ -17,15 +17,16 @@ online-upgrade proof; no launch date is committed.
 | Joined guest rehearsal | [Run 43552764721](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) ran signed `fa301fa5` against three native TLS/RBAC etcd members, with one active API and two passive controls. Every signed API/UI pin and all 44 UI files matched. Cleanup completed. | This is baseline and quorum evidence. It did not run the full signed upgrade controller. |
 | Exact signed pair | [Producer run 43610317278](https://github.com/antiartificial/norn-fleet/actions/runs/43610317278) succeeded on main `56c9d6a5` for `fa301fa5` to `cdf2081e`. | Pair evidence does not qualify the full online controller or prove live workload continuity. |
 | Read-only release preflight | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) succeeded with `preflight_only=true`. The fresh readback was 9 seconds old at signing/dispatch. Live etcd and component checks plus exactly one healthy private API passed. The durable terminal receipt confirms exact runner retirement. | The workflow correctly skipped the upgrade and all post-write steps. No release or provider mutation occurred; this does not qualify online upgrade. |
-| Full disposable executor | [Run 43610703647](https://github.com/antiartificial/norn-fleet/actions/runs/43610703647) failed while importing etcd health, before member verification. Its disposable resources were cleaned up. | The etcd health contract fix and target API/UI controller staging are in progress. No full executor or online-upgrade acceptance exists yet. |
+| Online-release candidate | Fleet [PR #1045](https://github.com/antiartificial/norn-fleet/pull/1045) merged as `1e0d56d0`, with the same tree as reviewed candidate `44466022`. The candidate has 550 local tests across 74 modules and 10 expected preparation-model outcomes (3 safe cases, 7 unsafe mutants). Exact-head native-etcd [run 43629495129](https://github.com/antiartificial/norn-fleet/actions/runs/43629495129), observer-runtime [run 43629495075](https://github.com/antiartificial/norn-fleet/actions/runs/43629495075), three-guest [run 43629495185](https://github.com/antiartificial/norn-fleet/actions/runs/43629495185), old-control [run 43629495177](https://github.com/antiartificial/norn-fleet/actions/runs/43629495177), and repository [run 43629495119](https://github.com/antiartificial/norn-fleet/actions/runs/43629495119) passed. | These are component proofs, not one joined signed upgrade. Completed-member restart/replay and terminal recovery remain unqualified. [PR #1046](https://github.com/antiartificial/norn-fleet/pull/1046) finalizes the workflow source behind the still-disabled configuration gate before final-source rehearsals. |
 
 ## Launch completion steps
 
 The remaining launch evidence is:
 
-1. Repair the fixture etcd health contract and stage the target API/UI through
-   the controller; rerun the full disposable executor with signed inputs,
-   independent observation, and durable recovery evidence.
+1. Review PR #1046 and freeze the reviewed controller/workflow source
+   while the live release gate remains off. Refresh the signed-pair evidence for
+   that exact executor source, then qualify joined execution, completed-member
+   restart/replay, independent observation and retained terminal evidence.
 2. Bind the installed controller profile only after those prerequisites pass
    and the state/host evidence is freshly verified.
 3. Prove the live online update on DO staging: passive controls first, API
