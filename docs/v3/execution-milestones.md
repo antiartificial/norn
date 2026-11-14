@@ -7,10 +7,16 @@ contract and exit criteria.
 
 ## Release contract
 
-The initial v3 release supports two independent deployment paths:
+The current launch milestone is the online upgrade of the existing DO staging
+Fleet. Its working target is the week of 2026-11-16, subject to controller,
+restart, and measured continuity proof. The broader program below also covers
+fresh creation, workload admission, resizing, and database lifecycle work.
+Those follow-on features are not prerequisites for this platform launch.
+
+The broader program tracks two independent deployment paths:
 
 1. Existing single-machine Mini: v2/PostgreSQL → v3/PostgreSQL, preserving running workloads and application data.
-2. Empty DigitalOcean HA Fleet: fresh v3 with three etcd members on the control nodes and independent application databases.
+2. DigitalOcean HA Fleet: online v3 control upgrades in existing staging. Fresh creation with three etcd control members and independent application databases remains a separate qualification.
 
 The existing Mini runs as an independent single-node development control plane
 on its existing PostgreSQL database. It is not a member of the DigitalOcean
