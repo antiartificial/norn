@@ -1,0 +1,799 @@
+{
+  "api": {
+    "newRead": {
+      "max": 1,
+      "min": 1
+    },
+    "newWrite": {
+      "max": 1,
+      "min": 1
+    },
+    "oldRead": {
+      "max": 1,
+      "min": 1
+    },
+    "oldWrite": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "migrationIDs": [],
+  "migrationStrategy": "none",
+  "newSchemaSHA256": "8f1e86942c146cf207274e4a2ac4ba17967323127962bf2f3229eff729cece4d",
+  "oldSchemaSHA256": "8f1e86942c146cf207274e4a2ac4ba17967323127962bf2f3229eff729cece4d",
+  "oldSourceSHA": "fa301fa5f881b847a26f61a501092f9a9dd090fd",
+  "schema": {
+    "newRead": {
+      "max": 1,
+      "min": 1
+    },
+    "newWrite": {
+      "max": 1,
+      "min": 1
+    },
+    "oldRead": {
+      "max": 1,
+      "min": 1
+    },
+    "oldWrite": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "schemaCatalog": {
+    "apiEndpoints": [
+      {
+        "method": "GET",
+        "path": "/api/v1/fleet/plans",
+        "response": "fleet.PlanListResponse{plans:[]model.Operation,count:int}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/fleet/node-pools/{pool}/plan",
+        "request": "fleet.PlanRequest",
+        "response": "model.Operation"
+      }
+    ],
+    "apiMajor": 1,
+    "baselineSourceSHA": "fa301fa5f881b847a26f61a501092f9a9dd090fd",
+    "catalogRevision": 1,
+    "dynamicMapProjections": {
+      "model.Operation.metadata": {
+        "keys": [
+          "planDigest",
+          "planId",
+          "signature"
+        ],
+        "valueTypes": {
+          "planDigest": "string",
+          "planId": "string",
+          "signature": "string"
+        }
+      },
+      "model.Operation.payload": {
+        "kind": "fleet.capacity-plan",
+        "schemaType": "fleet.CapacityPlan"
+      }
+    },
+    "enums": [
+      {
+        "id": "model.OperationStatus",
+        "values": [
+          "canceled",
+          "failed",
+          "queued",
+          "running",
+          "succeeded"
+        ]
+      }
+    ],
+    "excluded": [
+      "Every API route outside the two shared capacity-plan endpoints listed above.",
+      "Fresh Fleet create routes and every /v3/fleet-create-* key, including norn.fleet-create-cluster-fence/v1; these remain disabled and absent.",
+      "Other etcd, PostgreSQL, application workload, provider, and state schemas; no global database epoch or migration is asserted.",
+      "The Consul session/lock protocol is behavioral control ownership evidence, not a persisted Norn JSON schema.",
+      "The JSON v3FleetTargetFence record: it has no schemaVersion and is not read or written by this plan-storage proof."
+    ],
+    "opaque": [
+      "Fleet plan Action, Strategy, and Finding strings are not closed enums in these Go types.",
+      "model.Operation.Payload and Metadata are dynamic maps; this catalog binds only the fleet.capacity-plan projection and the planId/planDigest/signature metadata used here.",
+      "time.Time uses the Go encoding/json RFC3339 representation; time values are not a global schema epoch."
+    ],
+    "planKind": "fleet.capacity-plan",
+    "schemaVersion": "norn.online-fleet-plan-schema-catalog/v1",
+    "types": [
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"generation\"",
+            "name": "generation",
+            "type": "int64"
+          },
+          {
+            "jsonTag": "json:\"operation\"",
+            "name": "operation",
+            "type": "model.Operation"
+          }
+        ],
+        "id": "etcdstore.v3Record"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"action\"",
+            "name": "action",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"cluster\"",
+            "name": "cluster",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"current\"",
+            "name": "current",
+            "type": "fleet.NodePool"
+          },
+          {
+            "jsonTag": "json:\"digest\"",
+            "name": "digest",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"findings\"",
+            "name": "findings",
+            "type": "[]fleet.Finding"
+          },
+          {
+            "jsonTag": "json:\"id\"",
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"pool\"",
+            "name": "pool",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"proposed\"",
+            "name": "proposed",
+            "type": "fleet.NodePool"
+          },
+          {
+            "jsonTag": "json:\"protectedApplyPrestate,omitempty\"",
+            "name": "protectedApplyPrestate",
+            "type": "*fleet.ProtectedApplyPrestate"
+          },
+          {
+            "jsonTag": "json:\"protectedApplyTransitionRule,omitempty\"",
+            "name": "protectedApplyTransitionRule",
+            "type": "*fleet.ProtectedApplyTransitionRule"
+          },
+          {
+            "jsonTag": "json:\"reason,omitempty\"",
+            "name": "reason",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"schemaVersion\"",
+            "name": "schemaVersion",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"signature,omitempty\"",
+            "name": "signature",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"sourceDigest\"",
+            "name": "sourceDigest",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"strategy\"",
+            "name": "strategy",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"temporaryRunnerSSH,omitempty\"",
+            "name": "temporaryRunnerSSH",
+            "type": "*bool"
+          },
+          {
+            "jsonTag": "json:\"workflowUrl,omitempty\"",
+            "name": "workflowUrl",
+            "type": "string"
+          }
+        ],
+        "id": "fleet.CapacityPlan",
+        "schemaVersion": "norn.fleet-capacity-plan/v1"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"code\"",
+            "name": "code",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"field\"",
+            "name": "field",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"message\"",
+            "name": "message",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"remediation,omitempty\"",
+            "name": "remediation",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"severity\"",
+            "name": "severity",
+            "type": "string"
+          }
+        ],
+        "id": "fleet.Finding"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"desired\"",
+            "name": "desired",
+            "type": "int"
+          },
+          {
+            "jsonTag": "json:\"labels,omitempty\"",
+            "name": "labels",
+            "type": "map[string]string"
+          },
+          {
+            "jsonTag": "json:\"max\"",
+            "name": "max",
+            "type": "int"
+          },
+          {
+            "jsonTag": "json:\"min\"",
+            "name": "min",
+            "type": "int"
+          },
+          {
+            "jsonTag": "json:\"replacement,omitempty\"",
+            "name": "replacement",
+            "type": "fleet.Replacement"
+          },
+          {
+            "jsonTag": "json:\"size\"",
+            "name": "size",
+            "type": "string"
+          }
+        ],
+        "id": "fleet.NodePool"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"desired,omitempty\"",
+            "name": "desired",
+            "type": "*int"
+          },
+          {
+            "jsonTag": "json:\"protectedApplyPrestate,omitempty\"",
+            "name": "protectedApplyPrestate",
+            "type": "*fleet.ProtectedApplyPrestate"
+          },
+          {
+            "jsonTag": "json:\"protectedApplyTransitionRule,omitempty\"",
+            "name": "protectedApplyTransitionRule",
+            "type": "*fleet.ProtectedApplyTransitionRule"
+          },
+          {
+            "jsonTag": "json:\"reason,omitempty\"",
+            "name": "reason",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"size,omitempty\"",
+            "name": "size",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"strategy,omitempty\"",
+            "name": "strategy",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"temporaryRunnerSSH,omitempty\"",
+            "name": "temporaryRunnerSSH",
+            "type": "*bool"
+          }
+        ],
+        "id": "fleet.PlanRequest"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"providerAccountUUID\"",
+            "name": "providerAccountUUID",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"providerTargetId\"",
+            "name": "providerTargetId",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"providerTargetState\"",
+            "name": "providerTargetState",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"spaces\"",
+            "name": "spaces",
+            "type": "fleet.ProtectedApplyStateSpaces"
+          }
+        ],
+        "id": "fleet.ProtectedApplyPrestate"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"bucket\"",
+            "name": "bucket",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"key\"",
+            "name": "key",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"lineage\"",
+            "name": "lineage",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"rawSHA256\"",
+            "name": "rawSHA256",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"serial\"",
+            "name": "serial",
+            "type": "int64"
+          },
+          {
+            "jsonTag": "json:\"versionId\"",
+            "name": "versionId",
+            "type": "string"
+          }
+        ],
+        "id": "fleet.ProtectedApplyStateSpaces"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"providerTargetState\"",
+            "name": "providerTargetState",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"stateChange\"",
+            "name": "stateChange",
+            "type": "string"
+          }
+        ],
+        "id": "fleet.ProtectedApplyTransitionRule"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"drainTimeout,omitempty\"",
+            "name": "drainTimeout",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"requireCapacityHeadroom,omitempty\"",
+            "name": "requireCapacityHeadroom",
+            "type": "bool"
+          },
+          {
+            "jsonTag": "json:\"requireReadiness,omitempty\"",
+            "name": "requireReadiness",
+            "type": "bool"
+          },
+          {
+            "jsonTag": "json:\"strategy,omitempty\"",
+            "name": "strategy",
+            "type": "string"
+          }
+        ],
+        "id": "fleet.Replacement"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"app\"",
+            "name": "app",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"commitSha,omitempty\"",
+            "name": "commitSha",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"database,omitempty\"",
+            "name": "database",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"deploymentId,omitempty\"",
+            "name": "deploymentId",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"imageTag,omitempty\"",
+            "name": "imageTag",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"keep,omitempty\"",
+            "name": "keep",
+            "type": "*int"
+          },
+          {
+            "jsonTag": "json:\"preRestoreSnapshot,omitempty\"",
+            "name": "preRestoreSnapshot",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"pruned,omitempty\"",
+            "name": "pruned",
+            "type": "[]string"
+          },
+          {
+            "jsonTag": "json:\"ref,omitempty\"",
+            "name": "ref",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"snapshot,omitempty\"",
+            "name": "snapshot",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"step,omitempty\"",
+            "name": "step",
+            "type": "string"
+          }
+        ],
+        "id": "model.AppOperationReceipt"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"action,omitempty\"",
+            "name": "action",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"cluster,omitempty\"",
+            "name": "cluster",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"commitSha,omitempty\"",
+            "name": "commitSha",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"evidenceDigest,omitempty\"",
+            "name": "evidenceDigest",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"phase,omitempty\"",
+            "name": "phase",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"planDigest,omitempty\"",
+            "name": "planDigest",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"planId\"",
+            "name": "planId",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"planSha256,omitempty\"",
+            "name": "planSha256",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"pool,omitempty\"",
+            "name": "pool",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"signature,omitempty\"",
+            "name": "signature",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"sourceDigest,omitempty\"",
+            "name": "sourceDigest",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"stateSerial,omitempty\"",
+            "name": "stateSerial",
+            "type": "int64"
+          },
+          {
+            "jsonTag": "json:\"workflowUrl,omitempty\"",
+            "name": "workflowUrl",
+            "type": "string"
+          }
+        ],
+        "id": "model.FleetOperationReceipt"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"exitCode,omitempty\"",
+            "name": "exitCode",
+            "type": "*int"
+          },
+          {
+            "jsonTag": "json:\"output,omitempty\"",
+            "name": "output",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"outputTruncated,omitempty\"",
+            "name": "outputTruncated",
+            "type": "bool"
+          }
+        ],
+        "id": "model.HostAssuranceReceipt"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"app,omitempty\"",
+            "name": "app",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"attempts,omitempty\"",
+            "name": "attempts",
+            "type": "int"
+          },
+          {
+            "jsonTag": "json:\"finishedAt,omitempty\"",
+            "name": "finishedAt",
+            "type": "*time.Time"
+          },
+          {
+            "jsonTag": "json:\"id\"",
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"kind\"",
+            "name": "kind",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"lastError,omitempty\"",
+            "name": "lastError",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"-\"",
+            "name": "lockGeneration",
+            "type": "int64"
+          },
+          {
+            "jsonTag": "json:\"lockedBy,omitempty\"",
+            "name": "lockedBy",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"lockedUntil,omitempty\"",
+            "name": "lockedUntil",
+            "type": "*time.Time"
+          },
+          {
+            "jsonTag": "json:\"maxAttempts,omitempty\"",
+            "name": "maxAttempts",
+            "type": "int"
+          },
+          {
+            "jsonTag": "json:\"message,omitempty\"",
+            "name": "message",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"metadata,omitempty\"",
+            "name": "metadata",
+            "type": "map[string]interface{}"
+          },
+          {
+            "jsonTag": "json:\"nextAttemptAt,omitempty\"",
+            "name": "nextAttemptAt",
+            "type": "time.Time"
+          },
+          {
+            "jsonTag": "json:\"payload,omitempty\"",
+            "name": "payload",
+            "type": "map[string]interface{}"
+          },
+          {
+            "jsonTag": "json:\"receipt,omitempty\"",
+            "name": "receipt",
+            "type": "*model.OperationReceipt"
+          },
+          {
+            "jsonTag": "json:\"ref,omitempty\"",
+            "name": "ref",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"risk,omitempty\"",
+            "name": "risk",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"sagaId,omitempty\"",
+            "name": "sagaId",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"source,omitempty\"",
+            "name": "source",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"startedAt\"",
+            "name": "startedAt",
+            "type": "time.Time"
+          },
+          {
+            "jsonTag": "json:\"status\"",
+            "name": "status",
+            "type": "model.OperationStatus"
+          },
+          {
+            "jsonTag": "json:\"updatedAt\"",
+            "name": "updatedAt",
+            "type": "time.Time"
+          }
+        ],
+        "id": "model.Operation"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"app,omitempty\"",
+            "name": "app",
+            "type": "*model.AppOperationReceipt"
+          },
+          {
+            "jsonTag": "json:\"finishedAt,omitempty\"",
+            "name": "finishedAt",
+            "type": "*time.Time"
+          },
+          {
+            "jsonTag": "json:\"fleet,omitempty\"",
+            "name": "fleet",
+            "type": "*model.FleetOperationReceipt"
+          },
+          {
+            "jsonTag": "json:\"host,omitempty\"",
+            "name": "host",
+            "type": "*model.HostAssuranceReceipt"
+          },
+          {
+            "jsonTag": "json:\"kind\"",
+            "name": "kind",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"outcome\"",
+            "name": "outcome",
+            "type": "model.OperationStatus"
+          },
+          {
+            "jsonTag": "json:\"platform,omitempty\"",
+            "name": "platform",
+            "type": "*model.PlatformOperationReceipt"
+          },
+          {
+            "jsonTag": "json:\"schemaVersion\"",
+            "name": "schemaVersion",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"startedAt\"",
+            "name": "startedAt",
+            "type": "time.Time"
+          },
+          {
+            "jsonTag": "json:\"summary\"",
+            "name": "summary",
+            "type": "string"
+          }
+        ],
+        "id": "model.OperationReceipt",
+        "schemaVersion": "norn.operation-receipt/v1"
+      },
+      {
+        "fields": [
+          {
+            "jsonTag": "json:\"drainMode,omitempty\"",
+            "name": "drainMode",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"exitCode,omitempty\"",
+            "name": "exitCode",
+            "type": "*int"
+          },
+          {
+            "jsonTag": "json:\"mode,omitempty\"",
+            "name": "mode",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"output,omitempty\"",
+            "name": "output",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"outputTruncated,omitempty\"",
+            "name": "outputTruncated",
+            "type": "bool"
+          },
+          {
+            "jsonTag": "json:\"ref,omitempty\"",
+            "name": "ref",
+            "type": "string"
+          },
+          {
+            "jsonTag": "json:\"sha,omitempty\"",
+            "name": "sha",
+            "type": "string"
+          }
+        ],
+        "id": "model.PlatformOperationReceipt"
+      }
+    ]
+  },
+  "schemaCatalogSHA256": "8f1e86942c146cf207274e4a2ac4ba17967323127962bf2f3229eff729cece4d",
+  "schemaVersion": "norn.norn-online-compatibility-declaration/v2",
+  "scope": {
+    "api": "shared capacity-plan endpoints only",
+    "controlOwnership": "Consul session/lock behavior is separately measured; no Fleet target-fence JSON compatibility claim",
+    "freshFleetCreate": {
+      "enforcement": "controller fresh private readback before every member effect",
+      "environmentFlag": "NORN_FLEET_CREATE_ENABLED",
+      "etcdPrefix": "/v3/fleet-create-fences/",
+      "requiredState": "absent",
+      "requiredValue": false
+    },
+    "rangeSemantics": {
+      "api": "HTTP route major for the apiEndpoints enumerated in schemaCatalog",
+      "schema": "revision of the named schemaCatalog only; not a global database epoch"
+    },
+    "schemaCatalogRevision": 1,
+    "statefulWorkloadCompatibility": "not-tested",
+    "workloadRouteContinuity": "not-tested"
+  }
+}
