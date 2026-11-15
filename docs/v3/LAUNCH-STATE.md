@@ -1,6 +1,6 @@
 # Norn v3 launch state
 
-Status reviewed 2026-11-14 UTC. The launch priority remains a controller-mediated
+Status reviewed 2026-11-15 UTC. The launch priority remains a controller-mediated
 online upgrade of the existing DO staging Fleet while its workloads keep
 serving. Any brief API interruption must stay within the signed observation
 policy. The working target is the week of 2026-11-16, conditional on the
@@ -15,16 +15,16 @@ online-upgrade proof; no launch date is committed.
 | Published candidate | `cdf2081e` passed [all twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). The published Linux bundle was independently signature and hash verified. | Publication does not deploy the candidate. |
 | Fleet controller source | Main `24c1d64b` is installed in the management controller. Its installed closure and protected configuration were verified; the online profile remains unbound. | The profile is not bound and the live online-release path has not been enabled. |
 | Joined guest rehearsal | [Run 43552764721](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) ran signed `fa301fa5` against three native TLS/RBAC etcd members, with one active API and two passive controls. Every signed API/UI pin and all 44 UI files matched. Cleanup completed. | This is baseline and quorum evidence. It did not run the full signed upgrade controller. |
-| Exact signed pair | [Producer run 43646209830](https://github.com/antiartificial/norn-fleet/actions/runs/43646209830) passed for `fa301fa5` to `cdf2081e` on exact Fleet source `093057fe` and retained its artifact. Local cryptographic checks passed with fixtures only. | The pair does not qualify full execution, restart recovery, or a different executor source. |
+| Exact signed pair | [Producer run 43660225984](https://github.com/antiartificial/norn-fleet/actions/runs/43660225984) passed on frozen Fleet source `453d13d6` for `fa301fa5` to `cdf2081e`. Its authenticated artifact and all five local cryptographic/input checks are retained. | Fixture-only checks do not qualify full execution or live workload continuity. |
 | Read-only release preflight | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) succeeded with `preflight_only=true`. The fresh readback was 9 seconds old at signing/dispatch. Live etcd and component checks plus exactly one healthy private API passed. The durable terminal receipt confirms exact runner retirement. | The workflow correctly skipped the upgrade and all post-write steps. No release or provider mutation occurred; this does not qualify online upgrade. |
-| Online-release candidate | [Full run 43646494386](https://github.com/antiartificial/norn-fleet/actions/runs/43646494386) failed. Its child exited 0, but the sanitized `runnerResult` was unavailable or malformed. After failure evidence was collected, all seven run-owned resources were absent and the observer stopped. | Member progress is not established and the failure cause is unproven. [PR #1049](https://github.com/antiartificial/norn-fleet/pull/1049), head `e76b285b`, addresses the offline-proven nested-step input and shared-source mode and preservation defects, plus diagnostic reason and role drift. Its 486 local online tests, 14 qualifier tests, and nine installer tests passed. The installer pin is refreshed and its check now runs before long CI qualification; exact-head CI is pending. Full execution and completed-member restart remain unqualified. |
+| Online-release candidate | [PR #1050](https://github.com/antiartificial/norn-fleet/pull/1050) merged as `453d13d6` after contract, signed runtime, systemd, readback, security and root Linux ownership checks passed. Local checks passed 500 online tests and 57 qualifier tests. [Full run 43660848131](https://github.com/antiartificial/norn-fleet/actions/runs/43660848131) completed preparation, then held at the first passive member stop task. One member invocation and an ambiguous effect are retained; all seven disposable resources were cleaned up. The source is not qualified for live execution. | Previous [run 43655236253](https://github.com/antiartificial/norn-fleet/actions/runs/43655236253) held in preparation with zero member invocations; its evidence and cleanup are retained. No live online upgrade has been accepted. |
 
 ## Launch completion steps
 
 The remaining launch evidence is:
 
-1. Keep the live release gate off. Review PR #1049 and qualify the selected
-   exact executor source with a matching signed pair, joined execution,
+1. Qualify frozen controller/workflow source `453d13d6` while the live gate
+   remains off. Bind the exact executor source with a matching signed pair, joined execution,
    completed-member restart/replay, independent observation, and retained
    terminal evidence. The refreshed controller candidate remains disabled and
    unqualified.
@@ -34,12 +34,22 @@ The remaining launch evidence is:
    owner last, with measured private API handoff and the existing workload
    route responding through the update. Retain terminal receipts and recovery
    inputs across restart.
-4. Retain accepted evidence outside the Fleet before any later teardown of
-   disposable staging. Fresh-Fleet creation can remain undeployed until needed.
+4. Retain accepted evidence outside the Fleet, then retire the staging Fleet
+   through an exact-state, controller-mediated plan. Keep the separate management
+   authority/runner and its database, state backends, and recreation credentials.
+   The current retirement executor targets other disposable roots; the current
+   staging root still needs its scoped retirement path.
 
 The existing all-stop lane remains the available fallback, but it does not
 meet the online-upgrade launch gate. Application nodes and workload sizes stay
 unchanged during this platform release.
+
+The owner accepts a successful controller-mediated update on this staging
+Fleet as the pilot fitness result. Further workload soak, fresh-Fleet deployment
+and resizing do not gate that evaluation or the subsequent Fleet retirement.
+The configured retirement scope is nine Fleet Droplets and its two application
+database clusters, plus owned load-balancer/network resources; the saved plan
+and fresh inventory must establish the final deletion set.
 
 ## Other lanes
 

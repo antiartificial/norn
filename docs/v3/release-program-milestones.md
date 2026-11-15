@@ -1,6 +1,6 @@
 # V3 release program milestones
 
-Status reviewed 2026-11-14 UTC. The current launch gate is an online,
+Status reviewed 2026-11-15 UTC. The current launch gate is an online,
 controller-mediated DO platform upgrade with measured workload continuity and
 recoverable terminal evidence. The working target remains the week of
 2026-11-16, conditional on that proof.
@@ -10,30 +10,36 @@ already met its deployment success bar and does not gate this launch. Fresh
 creation, workload admission, resizing, and stateful application work continue
 after the online platform milestone.
 
+After the successful controller-mediated update, retire this pilot Fleet.
+Management remains available for future Fleet creation. Extra workload soak,
+fresh creation and resizing are follow-ons, not gates for this pilot evaluation.
+The configured Fleet scope is nine Droplets and two application database
+clusters; actual provider IDs and the saved destroy plan determine deletion.
+
 ## Launch milestones
 
 | Milestone | State | Exit evidence |
 | --- | --- | --- |
 | Publish the qualified candidate | Complete | Signed `cdf2081e` passed [twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). |
 | Qualify source and joined runtime | Complete for reviewed components | Fleet [PR #1041](https://github.com/antiartificial/norn-fleet/pull/1041) merged as `3b37d0d7`. The [joined signed baseline and quorum proof](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) passed with cleanup. |
-| Produce the exact signed pair | Complete for `093057fe` | [Run 43646209830](https://github.com/antiartificial/norn-fleet/actions/runs/43646209830) passed for signed `fa301fa5` to `cdf2081e` on Fleet `093057fe` and retained its artifact. Local cryptographic checks passed with fixtures only. A different executor source needs matching evidence. |
+| Produce the exact signed pair | Complete for `453d13d6` | [Run 43660225984](https://github.com/antiartificial/norn-fleet/actions/runs/43660225984) passed for signed `fa301fa5` to `cdf2081e`. Authenticated artifact and five local cryptographic/input checks are retained; this is fixture-only evidence. |
 | Read back DO staging | Complete for read-only provider state | [Run 43618560028](https://github.com/antiartificial/norn-fleet/actions/runs/43618560028) succeeded on main `24c1d64b` and bound current provider/state evidence. |
 | Run read-only release preflight | Complete for preflight only | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) passed live etcd/component checks and the exactly-one-healthy-private-API check. The readback was 9 seconds old at signing/dispatch; durable terminal receipt verified exact runner retirement. Upgrade and post-write steps were skipped. |
-| Exercise the full disposable executor | Failed; member progress unknown | [Run 43646494386](https://github.com/antiartificial/norn-fleet/actions/runs/43646494386) failed although its child exited 0. Sanitized `runnerResult` was unavailable or malformed. After failure evidence, all seven run-owned resources were absent and the observer stopped. The cause is unproven. [PR #1049](https://github.com/antiartificial/norn-fleet/pull/1049) at `e76b285b` addresses offline-proven nested-step and shared-source defects, and diagnostic reason and role drift. Its 486 online, 14 qualifier and nine installer tests passed locally. The refreshed installer pin passes its early CI check; exact-head CI is pending. |
+| Exercise the full disposable executor | Held at first passive member stop | [Run 43660848131](https://github.com/antiartificial/norn-fleet/actions/runs/43660848131) uses merged [PR #1050](https://github.com/antiartificial/norn-fleet/pull/1050) source `453d13d6`. Preparation completed, then the first passive member stop task failed. The durable journal records one member invocation and an ambiguous effect; all seven disposable resources were cleaned up. The source remains unqualified for live execution. |
 | Install and bind the controller | Source installed; profile unbound | Fleet main `24c1d64b` is installed and its closure/configuration verified. The online profile remains unbound; live release is not enabled. |
 | Accept the DO online upgrade | Pending, launch gate | Complete a successful full executor rehearsal, then prove passive-first/API-owner-last promotion, measured API handoff and workload continuity, recovery, and off-Fleet evidence retention. No online upgrade has been accepted. |
-| Retire disposable staging | After accepted upgrade | Controlled teardown after required receipts and recovery inputs are retained elsewhere. No teardown has run for this work. |
+| Retire disposable staging | After accepted controller upgrade; Fleet-only path being prepared | The owner authorizes Fleet-only teardown after the successful pilot update. Bind the exact staging state, account/project and resource deletion set, quiesce writers, retain evidence externally, and verify provider/state zero. Keep management authority/runner/DB, state backends and recreation credentials. Existing retirement code supports other disposable roots and cannot yet retire this protected staging root. |
 
 ## Parallel workstreams
 
 | Workstream | Current evidence | Next proof |
 | --- | --- | --- |
-| Existing DO platform | Protected readback `43618560028` and read-only preflight `43618699939` passed without upgrades. The last qualified promotion remains all-stop `fa301fa5`. Full run `43646494386` failed with member progress unknown. | Review PR #1049, then qualify the selected exact source with a matching pair, full executor and restart/replay evidence. The refreshed controller candidate remains disabled and unqualified. Prove DO online continuity after binding prerequisites pass. |
+| Existing DO platform | Signed target `cdf2081e` is published. Fleet source `453d13d6` passed exact-head component CI and signed-pair checks; full executor run `43660848131` held at the first passive member stop after preparation succeeded. The last qualified live promotion remains all-stop `fa301fa5`. | Qualify the full controller path, bind the operator profile and fresh host/state evidence, then run the online staging update with observed workload continuity. Its success satisfies this pilot fitness evaluation. |
 | Mini direct | Owner success bar met on 2026-11-10. The Mini is independent of the Fleet. | Separate repair and Git-driven workload admission follow-ups. No Fleet resizing. |
 | V3 workload admission | Negative admission, durable replay, and offline input/provenance checks exist. Current source and tests do not establish a live controller-admitted canary receipt. | Verify protected inputs and credential provenance, then bind a responding workload to durable same-intent admission receipts. This follows the platform launch. |
 | Fresh-Fleet creation | General and Stateful roles, topology checks, authority models, and default-off API work exist. The published candidate includes the new source. No fresh provider creation is qualified. | Connect one-use grants to the provider executor and protected workflow. Qualify partial inventory, ambiguous effects, recovery, and bootstrap. Creation may stay undeployed until needed. |
 | Workload resizing | Disposable real-Nomad and etcd-backed recovery checks and mixed-version capacity models exist. No live DO resize is qualified. | Complete real executor, health, ingress, and old-cohort-stop proof, then qualify a stateless DO resize. Keep stateful compatibility separate. |
-| Controller recovery | Read-only preflight `43618699939` produced a validated terminal receipt and exact runner retirement. Full run `43646494386` failed with sanitized `runnerResult` unavailable or malformed; member progress is unknown. | Qualify full execution, completed-member restart/replay and terminal artifact retention. Replacement-run and live DO recovery remain open. |
+| Controller recovery | Read-only preflight `43618699939` produced a validated terminal receipt and exact runner retirement. Full run `43655236253` recorded a preparation hold with zero member calls. Source `453d13d6` adds joined preparation coverage and atomic observer IPC. | Prove exact-source full execution, completed-member restart/replay and retained terminal evidence. Do not substitute component checks for live upgrade proof. |
 | V2-only retirement | Cleanup follows successful V3 adoption. | Remove unused V2 code and tests while preserving versioned contracts still used by V3. |
 
 ## Evidence and operating detail
