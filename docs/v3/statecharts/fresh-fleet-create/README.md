@@ -73,7 +73,7 @@ JAVA=/Users/arti/.local/share/mise/installs/java/temurin-25.0.5+8.0.LTS/bin/java
 TLC explored 39 states and 58 steps. Ten invariants and the deadlock check
 passed. The chart draws 19 states and 23 arrows; it collapses per-node create
 and configure loops and repeated input actions, which TLC still explores. See
-[`nine-node-chart.mmd`](nine-node-chart.mmd) and
+[`nine-node-chart.mmd`](https://github.com/antiartificial/norn/blob/master/docs/v3/statecharts/fresh-fleet-create/nine-node-chart.mmd) and
 [`nine-node-report.md`](nine-node-report.md).
 
 This is an offline protocol contract, not evidence that the protected workflow

@@ -3,28 +3,63 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 
 export default withMermaid(
   defineConfig({
-    title: 'Norn Docs',
-    description: 'Control plane for self-hosted infrastructure',
+    title: 'Norn 3.0.0',
+    description: 'Fleet architecture, online platform upgrades, and recoverable operations',
     base: '/norn/',
     head: [
       ['link', { rel: 'icon', type: 'image/svg+xml', href: '/norn/favicon.svg' }],
     ],
     themeConfig: {
       nav: [
-        { text: 'Guide', link: '/v2/guide/getting-started' },
-        { text: 'Architecture', link: '/v2/architecture/overview' },
-        { text: 'Fleet', link: '/v2/infrastructure/fleet' },
-        { text: 'CLI', link: '/v2/cli/' },
-        { text: 'Operations', link: '/v2/operations/deploying' },
+        { text: 'V3 guide', link: '/v3/guide/getting-started' },
+        { text: 'Architecture', link: '/v3/architecture/overview' },
+        { text: 'Release status', link: '/v3/release-program-milestones' },
         {
-          text: 'v2',
+          text: 'Versions',
           items: [
-            { text: 'v2 (latest)', link: '/v2/guide/getting-started' },
-            { text: 'v1', link: '/v1/guide/getting-started' },
+            { text: 'V3 · Norn 3.0.0', link: '/v3/' },
+            { text: 'V2 documentation', link: '/v2/' },
+            { text: 'V1 documentation', link: '/v1/guide/getting-started' },
           ],
         },
       ],
       sidebar: {
+        '/v3/': [
+          {
+            text: 'Norn 3.0.0',
+            items: [
+              { text: 'Overview', link: '/v3/' },
+              { text: 'Start with V3', link: '/v3/guide/getting-started' },
+              { text: 'Capability status', link: '/v3/reference/capabilities' },
+              { text: 'Version identity', link: '/v3/reference/versioning' },
+            ],
+          },
+          {
+            text: 'Architecture',
+            items: [
+              { text: 'Runtime and authority', link: '/v3/architecture/overview' },
+              { text: 'Repository boundaries', link: '/v3/architecture/repository-boundaries' },
+            ],
+          },
+          {
+            text: 'Operations',
+            items: [
+              { text: 'Online platform upgrades', link: '/v3/operations/online-upgrades' },
+              { text: 'Recovery and qualification', link: '/v3/operations/recovery' },
+              { text: 'Launch state', link: '/v3/LAUNCH-STATE' },
+              { text: 'Release milestones', link: '/v3/release-program-milestones' },
+            ],
+          },
+          {
+            text: 'Design history',
+            collapsed: true,
+            items: [
+              { text: 'Planning records', link: '/v3/README' },
+              { text: 'Decision records', link: '/v3/architecture-roadmap' },
+              { text: 'Launch history', link: '/v3/LAUNCH-HISTORY' },
+            ],
+          },
+        ],
         '/v2/': [
           {
             text: 'Guide',
@@ -152,7 +187,7 @@ export default withMermaid(
         provider: 'local',
       },
       editLink: {
-        pattern: 'https://github.com/antiartificial/norn/edit/main/docs/:path',
+        pattern: 'https://github.com/antiartificial/norn/edit/master/docs/:path',
         text: 'Edit this page on GitHub',
       },
     },

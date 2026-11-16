@@ -24,7 +24,7 @@ rules: one create maximum, durable marker before create, exact readback before
 binding, healthy bound target before routing, old drain only after target route
 and health proof, terminal receipt after the drain, no completion with an
 unresolved create, and no deadlock. The chart is in
-[`reproduced-2026-11-11/chart.mmd`](reproduced-2026-11-11/chart.mmd), and TLC's report is
+[`reproduced-2026-11-11/chart.mmd`](https://github.com/antiartificial/norn/blob/master/docs/v3/statecharts/workload-stage-recovery/reproduced-2026-11-11/chart.mmd), and TLC's report is
 in [`reproduced-2026-11-11/report.md`](reproduced-2026-11-11/report.md).
 
 The sequence matches the implementation boundaries in

@@ -1,15 +1,18 @@
 # Norn
 
-Norn is a local-first control plane for running applications on Nomad and
-Consul. It gives operators one API, CLI, web dashboard, and native-client
-contract for application delivery, regional ingress, durable maintenance,
-host recovery, and fleet planning.
+Norn 3.0.0 is the first tested Fleet milestone: a controller-managed online
+platform upgrade with a workload continuing to respond. The 2026-11-16
+DigitalOcean pilot completed its upgrade and retirement with management retained.
 
-Norn v2 is the active implementation. The Kubernetes/minikube-based v1 tree is
-frozen and retained only for historical compatibility; its documentation lives
-under [`docs/v1`](docs/v1/guide/getting-started.md).
+[Read the V3 documentation](https://antiartificial.github.io/norn/v3/) for
+architecture, capability status, operations, and version identity. V1 and V2
+docs remain available. The current V3 implementation still lives under `v2/`;
+that source path is independent of the product version and `/api/v1` contract.
+The final 3.0.0 tag has not been published by this documentation update.
 
-[Read the Norn v2 documentation](https://antiartificial.github.io/norn/)
+The independent self-hosted Mini and the Fleet have separate lifecycles.
+The proposed [repository split](docs/v3/architecture/repository-boundaries.md)
+keeps their runtime concerns separate while preserving explicit contracts.
 
 ## What Norn manages
 

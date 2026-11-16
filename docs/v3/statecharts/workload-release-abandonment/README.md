@@ -24,7 +24,10 @@ The baseline checks 38 states / 77 steps, four safety invariants, and deadlock.
 Three mutants reproduce violations: abandoning before effect readback or owner
 authorization, deleting an input while its release remains held, and retiring
 a key while another input still depends on it. Their shortest paths are in
-[`mutants/`](mutants/); the baseline statechart is in [`baseline/`](baseline/).
+[unsafe-delete report](mutants/unsafe-delete/report.md),
+[unsafe-key-retire report](mutants/unsafe-key-retire/report.md), and
+[unsafe-abandon report](mutants/unsafe-abandon/report.md). The
+[baseline report](baseline/report.md) records the safe model.
 
 ## Current implementation boundary
 

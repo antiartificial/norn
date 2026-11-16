@@ -1,42 +1,15 @@
 # Norn v3 planning package
 
-**Current release work:** start with [Norn v3 launch state](LAUNCH-STATE.md)
-for current gates and the next actions. Dated observations and superseded
-snapshots are retained separately in [launch history](LAUNCH-HISTORY.md).
-For sequencing and exit criteria, use the
-[release program milestones](release-program-milestones.md) and
-[execution milestones](execution-milestones.md). For lane procedures and
-contracts, see the [release fitness and controller plan](release-fitness-and-controller-plan.md),
-[release lanes and workload resizing guide](release-lanes-and-workload-resizing.md),
-[DO staging topology audit](staging-topology-source-audit-2026-11-08.md),
-[future two-app-pool contract](fresh-fleet-two-app-pool-contract.md), and
-[M5 workload release protocol](m5-workload-release-protocol-2026-11-07.md).
-Mini is an independent node, not a Fleet member; the DigitalOcean staging
-environment is the only Fleet in this work. The
-[V2 surface retirement inventory](v2-surface-retirement-inventory-2026-11-07.md)
-maps callers and recovery coverage before legacy routes or tests are removed.
-Older handoffs preserve rationale and prior state.
+For current product documentation, start with [Norn 3.0.0](index.md).
+This page indexes the planning records and their historical proposals.
+The [launch state](LAUNCH-STATE.md) and [release milestones](release-program-milestones.md)
+record the successful 2026-11-16 online upgrade and completed pilot retirement.
+Management remains separate and available. V1 and V2 documentation is retained.
 
-The architecture below began as a proposal on 2026-09-22. Use the new release
-program milestones for current gate disposition; [execution milestones](execution-milestones.md)
-retain the earlier M0–M9 plan and are historical context unless a current gate
-explicitly links to them. The proposal and older dated handoffs preserve
-rationale and historical state.
-The independent Mini meets its owner-defined direct-lane success bar: signed
-V3 is active, the API is healthy, and `vigil-gateway` responded. Its mixed
-application health and queued-upgrade recovery remain separate follow-ups.
-The DO staging Fleet's signed V3 platform release was deployed through the
-controller on 2026-11-11. A Nov 12 04:02 UTC read-only observation found all
-nine tagged Fleet Droplets active and public `/version` returned HTTP 200 in
-0.231 seconds. A 12-read public-pilot check at 02:40:57 UTC observed two
-distinct allocations; the
-existing MySQL pilot responds, while controller admission remains unproven. The first
-controller-admitted workload launch date is uncommitted with no calendar
-forecast. The separate managed MySQL app catalog is promoted and read back,
-and its hostname resolves, but TLS still presents the Traefik default
-certificate. The managed app has not been released. Follow
-[launch state](LAUNCH-STATE.md) and [release milestones](release-program-milestones.md)
-for the current gates. Mini is independent and has no Fleet resize lane.
+Older proposals below are design history. An accepted decision does not itself
+establish live qualification. Use the [capability reference](reference/capabilities.md)
+for the current boundary and the [repository split](architecture/repository-boundaries.md)
+for proposed Fleet/self-hosted ownership.
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 
