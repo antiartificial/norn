@@ -11,9 +11,9 @@ export default withMermaid(
     ],
     themeConfig: {
       nav: [
-        { text: 'V3 guide', link: '/v3/guide/getting-started' },
+        { text: 'Why Norn', link: '/v3/guide/why-norn' },
         { text: 'Architecture', link: '/v3/architecture/overview' },
-        { text: 'Release status', link: '/v3/release-program-milestones' },
+        { text: 'Get started', link: '/v3/guide/getting-started' },
         {
           text: 'Versions',
           items: [
@@ -29,7 +29,9 @@ export default withMermaid(
             text: 'Norn 3.0.0',
             items: [
               { text: 'Overview', link: '/v3/' },
-              { text: 'Start with V3', link: '/v3/guide/getting-started' },
+              { text: 'Why Norn', link: '/v3/guide/why-norn' },
+              { text: 'Get started', link: '/v3/guide/getting-started' },
+              { text: 'Application definitions', link: '/v3/guide/applications' },
               { text: 'Capability status', link: '/v3/reference/capabilities' },
               { text: 'Version identity', link: '/v3/reference/versioning' },
             ],
@@ -44,6 +46,9 @@ export default withMermaid(
           {
             text: 'Operations',
             items: [
+              { text: 'Daily workflow', link: '/v3/operations/workflow' },
+              { text: 'Operation semantics', link: '/v3/operations/operations' },
+              { text: 'Fleet operations', link: '/v3/operations/fleet' },
               { text: 'Online platform upgrades', link: '/v3/operations/online-upgrades' },
               { text: 'Recovery and qualification', link: '/v3/operations/recovery' },
               { text: 'Launch state', link: '/v3/LAUNCH-STATE' },

@@ -3,7 +3,7 @@
 Norn separates application control, infrastructure effects, and the management
 authority that can recover the Fleet. The tested Fleet uses etcd for control
 state. Application databases and the management database are separate resources.
-The independent self-hosted Mini uses PostgreSQL for its control state.
+The self-hosted strategy uses PostgreSQL for its control state.
 
 ```mermaid
 flowchart TB

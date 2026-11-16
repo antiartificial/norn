@@ -1,6 +1,8 @@
 # V3 capability status
 
-Reviewed 2026-11-16. This reference describes the first Fleet milestone.
+Reviewed 2026-11-16. Norn includes application discovery, preflight, deployment,
+service visibility, secrets/dependency bindings, events, and recovery interfaces.
+This reference records the first Fleet milestone and its qualification limits.
 A passing source test, published artifact, and live-qualified operation are
 separate kinds of evidence.
 
@@ -15,7 +17,7 @@ separate kinds of evidence.
 | Application hosting | An existing Fleet canary responded through the platform upgrade. | The first durable controller-admitted workload receipt remains unqualified. Hosting and new controller admission are different claims. |
 | Fresh Fleet creation | Topology validation, General and Stateful pool roles, models, and default-off controller work exist. | No fresh protected provider creation is live-qualified by this pilot. |
 | Workload resizing | Mixed-version models and disposable Nomad recovery checks exist. | No live DO mixed-version resize is qualified. Stateful compatibility requires its own proof. |
-| Independent Mini | Met the owner's signed-release, healthy-API, and responding-workload bar on 2026-11-10. | Independent lifecycle and PostgreSQL control state. It has no Fleet resize lane. |
+| Self-hosted strategy | Single-host operation with PostgreSQL control state, application hosting, and direct host maintenance. | Separate upgrade/recovery lifecycle. Fleet quorum and pool resizing do not apply. |
 
 ## Version names are independent
 

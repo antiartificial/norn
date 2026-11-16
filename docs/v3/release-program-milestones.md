@@ -3,8 +3,8 @@
 Status reviewed 2026-11-16 UTC. The DO **online-upgrade and pilot-retirement
 milestones are complete**. Upgrade and terminal cleanup succeeded on 2026-11-16;
 provider readback at 15:27 UTC confirmed exact Fleet absence with management
-retained. The independent Mini met its owner-defined bar on 2026-11-10 and
-does not gate this work.
+retained. The self-hosted deployment met its recorded acceptance bar on 2026-11-10
+and has an independent lifecycle.
 
 ## Launch milestones
 
@@ -33,7 +33,7 @@ billing settlement were not established by the final infrastructure readback.
 | Workstream | Current evidence | Next proof |
 | --- | --- | --- |
 | Existing DO platform | Live online upgrade 43852466595 accepted on 2026-11-16; all three controls verified on signed cdf2081e with workload continuity. | Pilot retired with management retained. Future recreation needs deliberate refresh and reviewed plan before ordinary apply is re-enabled. |
-| Mini direct | Owner success bar met on 2026-11-10. The Mini is independent of the Fleet. | Separate repair and Git-driven workload admission follow-ups. No Fleet resizing. |
+| Self-hosted direct | Recorded deployment acceptance bar met on 2026-11-10. Self-hosted operation is independent of the Fleet. | Separate repair and Git-driven workload admission follow-ups. No Fleet resizing. |
 | V3 workload admission | Negative admission, durable replay, and offline input/provenance checks exist. Current source and tests do not establish a live controller-admitted canary receipt. | Verify protected inputs and credential provenance, then bind a responding workload to durable same-intent admission receipts. This follows the platform launch. |
 | Fresh-Fleet creation | General and Stateful roles, topology checks, authority models, and default-off API work exist. The published candidate includes the new source. No fresh provider creation is qualified. | Connect one-use grants to the provider executor and protected workflow. Qualify partial inventory, ambiguous effects, recovery, and bootstrap. Creation may stay undeployed until needed. |
 | Workload resizing | Disposable real-Nomad and etcd-backed recovery checks and mixed-version capacity models exist. No live DO resize is qualified. | Complete real executor, health, ingress, and old-cohort-stop proof, then qualify a stateless DO resize. Keep stateful compatibility separate. |

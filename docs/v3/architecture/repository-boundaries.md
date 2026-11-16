@@ -13,7 +13,7 @@ No product-code split has been executed.
 
 | Repository | Responsibility | Excluded responsibility |
 | --- | --- | --- |
-| Fleet platform, evolved from `norn` | Fleet API/runtime, etcd control store, Linux release artifacts, application contracts, Fleet clients, and qualification | Mac launch agents, Mini-only repair and local PostgreSQL control lifecycle |
+| Fleet platform, evolved from `norn` | Fleet API/runtime, etcd control store, Linux release artifacts, application contracts, Fleet clients, and qualification | Mac launch agents, single-host repair and local PostgreSQL control lifecycle |
 | Self-hosted product, extracted separately | Independent-node runtime, Mac integration, local PostgreSQL control lifecycle, direct upgrades, and its tests/docs | Provider apply, Fleet quorum, and pool resizing |
 | Existing private `norn-fleet` | Provider resources, protected executors, inventory/bootstrap, desired infrastructure, and infrastructure recovery evidence | A duplicate implementation of the platform API or domain rules |
 
@@ -42,7 +42,7 @@ using the actual serialized output.
 2. Establish independent build/test entrypoints and one qualification record
    for each product. Preserve the currently qualified artifact and source.
 3. Extract self-hosted code with history and its own release trust. Keep the
-   working Mini unchanged until its replacement artifact is qualified.
+   existing self-hosted installation unchanged until its replacement artifact is qualified.
 4. Move Fleet source to a clear root layout and update all imports, workflows,
    packaging paths, source audits, and generated clients in the same change.
 5. Delete dead implementations and duplicate tests after their callers have
