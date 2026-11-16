@@ -1,304 +1,101 @@
 # Norn
 
-Norn 3.0.0 is the first tested Fleet milestone: a controller-managed online
-platform upgrade with a workload continuing to respond. The 2026-11-16
-DigitalOcean pilot completed its upgrade and retirement with management retained.
+Norn is an application control plane for people who need to deploy services and
+keep operating them. Define an app once, rehearse a change, follow its deployment,
+and inspect the result through one API, CLI, and dashboard.
 
-[Read the V3 documentation](https://antiartificial.github.io/norn/v3/) for
-architecture, capability status, operations, and version identity. V1 and V2
-docs remain available. The current V3 implementation still lives under `v2/`;
-that source path is independent of the product version and `/api/v1` contract.
-The final 3.0.0 tag has not been published by this documentation update.
+Nomad schedules workloads, Consul provides service discovery and health, and
+Norn connects application source, secrets, dependencies, readiness, and recovery.
+**Norn 3.0.0** adds the first live-qualified Fleet online platform-upgrade path.
 
-The independent self-hosted Mini and the Fleet have separate lifecycles.
-The proposed [repository split](docs/v3/architecture/repository-boundaries.md)
-keeps their runtime concerns separate while preserving explicit contracts.
+[Get started](docs/v3/guide/getting-started.md) ·
+[Why Norn](docs/v3/guide/why-norn.md) ·
+[Architecture](docs/v3/architecture/overview.md) ·
+[Documentation](https://antiartificial.github.io/norn/v3/)
 
-## What Norn manages
+## From an application definition to a running service
 
-- Multi-process apps described by `infraspec.yaml`: HTTP services, workers,
-  cron jobs, and functions.
-- Nomad allocations and Consul service registration across one or more regions.
-- Consul-backed Traefik ingress, health-gated traffic weights, canaries, and
-  independently tracked regional rollback.
-- Durable deploy, rollback, snapshot, retention, restore, schema-migration,
-  platform-upgrade, and host-assurance operations stored in PostgreSQL.
-- SOPS-encrypted app secrets, dependency provisioning, Cloudflare endpoints,
-  service discovery, and Prometheus/Grafana integration.
-- Beacon events, incidents, notifications, recovery evidence, and signed
-  production mutation receipts.
-- Private GitOps fleet planning without putting cloud-provider credentials in
-  the Norn control plane.
+| Task | What Norn provides |
+| --- | --- |
+| Discover | App and service state, allocations, endpoints, secret status, logs, and events |
+| Rehearse | Source preparation, build/test checks, and input validation before promotion |
+| Deploy | Recorded stages through configured snapshots/migrations, scheduler submission, readiness, and routing |
+| Drain | Active-work and capacity checks before platform maintenance or node removal |
+| Recover | Operation history, snapshots, rollback, explicit readback, and retained evidence |
 
-## Architecture
+An `infraspec.yaml` describes source, build, HTTP services, workers, scheduled
+jobs, functions, resources, health, secrets, and dependency bindings. New drafts
+stay disabled until reviewed. Follow the [application guide](docs/v3/guide/applications.md)
+and [daily workflow](docs/v3/operations/workflow.md).
 
-```text
-Web UI / macOS / mobile / CLI
-              |
-        Norn API + workers
-              |
-     PostgreSQL durable state
-              |
-      Nomad + Consul + Traefik
-              |
-       Application allocations
+## Choose your release strategy
 
-Private norn-fleet repository
-              |
- GitHub review + OpenTofu runner
-              |
-      Cloud nodes enroll in Norn
+**Self-hosted** provides a lighter single-host experience with local runtime
+integration and PostgreSQL control state. **Fleet** provides multiple nodes,
+etcd-backed control state, external management, and protected infrastructure
+execution. Application databases remain separate from control state.
+
+```mermaid
+flowchart LR
+  clients[API clients, CLI and dashboard] --> norn[Norn application control]
+  norn --> runtime[Nomad, Consul and ingress]
+  runtime --> apps[Application workloads]
+  norn --> state[Control state: PostgreSQL or etcd by strategy]
+  management[External Fleet management and protected runner] -->|Bound release| norn
+  management --> adapter[Provider adapter]
+  adapter --> nodes[Fleet infrastructure]
 ```
 
-`norn-fleet` owns desired cloud infrastructure such as providers, regions, VM
-sizes, networking, and node-pool capacity. Norn validates that configuration,
-creates durable capacity plans, links reviewed GitHub workflows, observes node
-enrollment and readiness, and drains replaced nodes. Provider and Terraform
-state credentials remain in the protected infrastructure runner.
+Provider credentials stay in the protected infrastructure executor. The private
+`norn-fleet` repository owns desired infrastructure, provider adapters, and
+bootstrap. DigitalOcean is the current implemented and qualified adapter.
+Additional providers require their own implementations and qualification;
+provider-agnostic ownership does not mean multi-cloud support is complete.
 
-## Prerequisites
+See [Fleet operations](docs/v3/operations/fleet.md),
+[online platform upgrades](docs/v3/operations/online-upgrades.md), and
+[capability status](docs/v3/reference/capabilities.md). The successful upgrade
+qualified one source pair and topology. Fresh creation, controller workload
+admission, mixed-version resizing, and stateful compatibility retain separate
+qualification requirements.
 
-| Tool | Supported baseline | Purpose |
-|---|---:|---|
-| Go | 1.26.10 | API, CLI, and host agent |
-| Node.js | 24 LTS | Dashboard and documentation |
-| pnpm | 10+ | Front-end dependencies |
-| PostgreSQL | 16+ | Durable control-plane state |
-| Docker | 24+ | Local development builds |
-| Apple Container | optional | Native macOS 26 development connector |
-| Nomad | 1.9+ | Scheduling |
-| Consul | 1.20+ | Discovery and health |
-| SOPS + age | 3.9+ / 1.2+ | Secret encryption |
+## Build a local development environment
 
-Production deployments also require the TLS, ACL, external-database,
-immutable-artifact, audit, and recovery-drill evidence described in
-[Production Readiness](docs/v2/operations/production-readiness.md).
+Use Go 1.26.10, Node.js 24, pnpm 10+, PostgreSQL 16+, Docker, Nomad, Consul,
+and SOPS with age. Run from the active implementation directory:
 
-## Build and run locally
-
-```bash
-git clone git@github.com:antiartificial/norn.git
+```sh
+git clone https://github.com/antiartificial/norn.git
 cd norn/v2
-
 make doctor
-make build      # norn-api, norn, and norn-host-agent
-pnpm --dir ui install
-make ui         # production dashboard assets
+make build
+pnpm --dir ui install --frozen-lockfile
+make ui
 ```
 
-For interactive UI development, run `pnpm dev` from `v2/ui`; the API listens on
-`127.0.0.1:8800` by default and Vite listens on `127.0.0.1:5173`.
+Continue with the [V3 getting-started guide](docs/v3/guide/getting-started.md)
+to start the local runtime and inspect your first app. This development setup
+is not a production Fleet bootstrap or security configuration.
 
-Create the control-plane database before starting the API. Norn applies its own
-schema migrations on startup:
+## Documentation and release identity
 
-```bash
-createdb norn_v2
-export NORN_DATABASE_URL='postgresql:///norn_v2?sslmode=disable'
-make up         # local Consul, Nomad, and API
-```
+- [Why Norn](docs/v3/guide/why-norn.md)
+- [Getting started](docs/v3/guide/getting-started.md)
+- [Application definitions](docs/v3/guide/applications.md)
+- [Daily operations](docs/v3/operations/workflow.md)
+- [Operation semantics](docs/v3/operations/operations.md)
+- [Fleet operations](docs/v3/operations/fleet.md)
+- [Recovery and qualification](docs/v3/operations/recovery.md)
+- [Version and signed-artifact identity](docs/v3/reference/versioning.md)
+- [Release evidence](docs/v3/release-program-milestones.md)
 
-The local-socket URL connects as the current operating-system user, which owns
-the database created above; the PostgreSQL server still controls its local
-authentication policy. The code's `norn:norn` TCP default is only suitable when
-that PostgreSQL login and ownership have been created explicitly. Start the
-dashboard separately with `pnpm --dir ui dev`; the v2 `make dev` target runs
-only the API in the foreground.
+The `v3.0.0` source tag identifies this product milestone and its documentation.
+Controllers still select immutable signed artifacts by full source SHA and
+manifest identity. A source tag does not publish or deploy a new bundle.
 
-See [Getting Started](docs/v2/guide/getting-started.md) for complete setup and
-configuration guidance.
-
-## Define an app
-
-Norn discovers `infraspec.yaml` files beneath `NORN_APPS_DIR`. New applications
-default to `deploy: false`; review and validate the generated spec before
-explicitly enabling deployments.
-
-```yaml
-name: hello-world
-deploy: false
-
-repo:
-  url: git@github.com:you/hello-world.git
-  branch: main
-  autoDeploy: false
-
-build:
-  dockerfile: Dockerfile
-  test: go test ./...
-
-primaryRegion: primary
-regions:
-  primary:
-    nomadRegion: global
-    datacenters: [dc1]
-    trafficWeight: 100
-
-processes:
-  web:
-    command: ./hello-world
-    port: 8080
-    health:
-      path: /health
-    scaling:
-      min: 2
-    resources:
-      cpu: 200
-      memory: 256
-    metrics:
-      enabled: true
-      path: /metrics
-
-infrastructure:
-  postgres:
-    database: hello_world
-
-secrets:
-  - DATABASE_URL
-
-endpoints:
-  - url: https://hello.example.com
-```
-
-Normal service processes target all declared regions by default. Cron and other
-singleton processes remain in `primaryRegion` unless their process placement is
-explicitly narrowed. Endpoint-backed services can run multiple allocations
-behind the regional Traefik origin; traffic is promoted only after application
-readiness succeeds.
-
-Validate and rehearse the disabled draft:
-
-```bash
-norn validate --file /path/to/infraspec.yaml
-norn preflight hello-world <commit-sha>
-```
-
-Then enable the reviewed spec from the Apps dashboard or the versioned control
-API. The current CLI has no deployment-gate subcommand:
-
-```bash
-curl --fail-with-body -X PUT \
-  -H 'Content-Type: application/json' \
-  -d '{"enabled":true}' \
-  http://127.0.0.1:8800/api/v1/apps/hello-world/deployment
-
-norn deploy hello-world <commit-sha>
-```
-
-Add `Authorization: Bearer $NORN_API_TOKEN` to the API request when explicit
-authentication is enabled. Disabled drafts remain visible and preflightable,
-but runtime deploy and recovery paths ignore them until this gate is enabled.
-
-Use an immutable, pushed commit SHA for operational changes. `HEAD` remains a
-convenient development alias, but it is not a reproducible release reference.
-
-## Daily operator workflow
-
-```bash
-norn status
-norn app hello-world
-norn services manifest
-norn operations --active
-norn events active
-norn events reconcile --dry-run
-norn deploy steps <deployment-id>
-norn logs hello-world
-```
-
-App changes run through the durable operations queue. Accepted or queued means
-the worker still has work to perform; follow the operation or saga to a terminal
-state and then probe the user-facing readiness path.
-
-### Durable application recovery
-
-```bash
-norn snapshots hello-world
-norn snapshots hello-world restore <unique-compact-utc-timestamp> --yes --pre-restore
-norn rollback hello-world
-```
-
-The versioned `/api/v1` control API and web/native clients can also queue manual
-snapshots, reviewed pruning, preferred exact-inventory-filename restores with
-mandatory safety snapshots,
-standalone migrations, and rollback. Idempotency keys and PostgreSQL receipts
-let clients reconnect after an ambiguous response without duplicating the
-mutation. The current CLI restore command uses the legacy synchronous route and
-accepts a compact UTC timestamp only when it matches one inventory entry. Local
-snapshot files are node-local; HA production systems should use managed database
-PITR or off-host object storage.
-
-### Platform and host recovery
-
-Resolve an exact pushed commit before upgrading Norn itself:
-
-```bash
-release_sha=$(git rev-parse origin/master)
-norn platform queue-preflight "$release_sha"
-norn platform queue-upgrade "$release_sha"
-norn platform releases
-norn platform rebuild "$release_sha" --verify
-norn smoke platform
-```
-
-The independent host agent executes queued platform maintenance and survives
-the API restart. Platform commands add common Homebrew tool directories when
-invoked through a thin SSH shell, so the release build can still find Node,
-pnpm, Go, SOPS, and related tools without a manually amended remote `PATH`.
-
-On a persistent macOS host, install and inspect the recovery lane:
-
-```bash
-norn host install --repo /path/to/norn
-norn host recover
-norn host assure
-norn host status
-norn host doctor
-```
-
-Recovery starts Docker, Consul, Nomad, and Norn in dependency order. Assurance
-then checks explicitly required applications, minimum allocation counts,
-routes, and real HTTP entrypoints; it repairs only resources allowed by the
-installed policy and emits Beacon failure/recovery evidence.
-
-## Fleet planning
-
-Point Norn at a read-only checkout of the private fleet repository:
-
-```bash
-export NORN_FLEET_CONFIG=/srv/norn-fleet/environments/production/nyc3/cluster.yaml
-
-norn fleet validate "$NORN_FLEET_CONFIG"
-norn fleet pools
-norn fleet plan app --desired 4 --reason 'launch headroom'
-norn fleet github pr <plan-id>
-# Review and merge the protected pull request and plan workflow.
-norn fleet github apply <plan-id>
-```
-
-Capacity plans are durable, signed in production, and bound to the fleet source
-digest. Retrying GitHub actions recovers the deterministic pull request or
-existing workflow run rather than creating duplicate infrastructure changes.
-See [Fleet GitOps](docs/v2/infrastructure/fleet.md) for setup, contraction, and
-reconciliation semantics.
-
-## Documentation map
-
-- [Why Norn](docs/v2/guide/why-norn.md)
-- [InfraSpec reference](docs/v2/guide/infraspec-reference.md)
-- [Architecture overview](docs/v2/architecture/overview.md)
-- [Native control protocol](docs/v2/architecture/control-protocol.md)
-- [Deploy pipeline](docs/v2/architecture/deploy-pipeline.md)
-- [Durable operations](docs/v2/operations/operations.md)
-- [Snapshots and schema changes](docs/v2/operations/snapshots.md)
-- [Host recovery and assurance](docs/v2/operations/host-recovery.md)
-- [Linux HA acceptance lab](docs/v2/operations/ha-lab.md)
-- [CLI reference](docs/v2/cli/commands.md)
-- [Current release recap](docs/v2/guide/release-recap.md)
-
-## v1 archive
-
-The root-level `api/`, `cli/`, `ui/`, `worker/`, and Kubernetes-oriented
-Makefile belong to frozen v1. They remain in the repository to preserve its
-tagged history, but new development, deployment, and documentation should use
-`v2/` and `docs/v2/`. Do not use the v1 Kubernetes instructions to operate a v2
-Nomad/Consul host.
+[V1](docs/v1/guide/getting-started.md) and [V2](docs/v2/index.md) docs are retained.
+The root `api/`, `cli/`, and `ui/` trees are the frozen Kubernetes implementation.
+Current API, CLI, dashboard, and platform scripts live under `v2/`; new product
+documentation lives under `docs/v3/`. Neither the directory name nor `/api/v1`
+is a product release number. The proposed [repository split](docs/v3/architecture/repository-boundaries.md)
+separates Fleet and self-hosted lifecycle code without duplicating contracts.

@@ -1,8 +1,8 @@
 # Version and release identity
 
 The V3 documentation uses **Norn 3.0.0** for the first tested Fleet milestone,
-completed on 2026-11-16. This documentation update does not publish a final
-version tag, rebuild a bundle, or change the bytes of a signed release.
+completed on 2026-11-16. The annotated `v3.0.0` source tag identifies the product source and its
+documentation. It does not rebuild or change a signed deployment artifact.
 
 | Identity | Current value or meaning |
 | --- | --- |
@@ -10,7 +10,7 @@ version tag, rebuild a bundle, or change the bytes of a signed release.
 | Qualified target source | `cdf2081e10ed117563aeb3a35d19c0baede1f42d` |
 | Published immutable release | `platform-cdf2081e10ed117563aeb3a35d19c0baede1f42d`, currently a GitHub prerelease |
 | Existing V3 version tag | `v3.0.0-rc.1-control`, on an older source commit |
-| Final 3.0.0 tag | Not published by this documentation change |
+| Product source tag | `v3.0.0`, annotated on the documentation-complete source revision |
 | Active source layout | `v2/api`, `v2/cli`, `v2/ui`, and `v2/scripts` |
 | Current versioned control API | `/api/v1`, alongside still-used compatibility routes |
 

@@ -2,44 +2,71 @@
 layout: home
 hero:
   name: Norn 3.0.0
-  text: A control plane for Fleet workloads
-  tagline: Upgrade the platform while workloads keep serving. Keep infrastructure authority, application state, and recovery evidence explicit.
+  text: Discover, deploy, and operate your applications
+  tagline: One application definition. A visible path from preflight to service readiness. Self-hosted or Fleet, with explicit recovery when changes go wrong.
   actions:
     - theme: brand
-      text: Start with V3
+      text: Get started
       link: /v3/guide/getting-started
     - theme: alt
-      text: Architecture
-      link: /v3/architecture/overview
+      text: Why Norn
+      link: /v3/guide/why-norn
     - theme: alt
-      text: Release evidence
-      link: /v3/release-program-milestones
+      text: Explore the architecture
+      link: /v3/architecture/overview
 features:
-  - title: Online platform upgrades
-    details: The DigitalOcean pilot upgraded three controls through a controller, with independent workload observation and retained terminal evidence.
-    link: /v3/operations/online-upgrades
-  - title: Separate operational authority
-    details: Management and its runner remain outside the workload Fleet so they can observe, recover, and retire it.
-    link: /v3/architecture/overview
-  - title: Explicit capability status
-    details: Distinguish the tested platform upgrade from fresh creation, controller workload admission, and resizing that still need qualification.
-    link: /v3/reference/capabilities
-  - title: Recoverable operations
-    details: Bind intents to exact sources and identities. Read back ambiguous effects before deciding whether another action is safe.
+  - title: Discover
+    details: See app health, services, endpoints, allocations, secrets status, and operational events in one control plane.
+    link: /v3/operations/workflow
+  - title: Rehearse
+    details: Prepare and test a candidate before changing the serving workload. Catch build failures and missing inputs early.
+    link: /v3/operations/workflow#validate-and-rehearse-a-candidate
+  - title: Deploy
+    details: Follow build, configured data changes, scheduler submission, readiness, and routing through recorded deployment stages.
+    link: /v3/operations/workflow#deploy-and-verify-service
+  - title: Drain
+    details: Inspect active work and capacity before maintenance. Keep platform updates and workload changes explicit.
+    link: /v3/operations/workflow#drain-before-maintenance
+  - title: Recover
+    details: Use the original operation, snapshots, and effect readback to resolve failures without blindly repeating mutations.
     link: /v3/operations/recovery
+  - title: Operate a Fleet
+    details: Keep provider authority in protected execution and upgrade Norn controls while observing workload continuity.
+    link: /v3/operations/fleet
 ---
 
-## The first Fleet release
+## Your application, with an operational history
 
-Norn 3.0.0 names the Fleet milestone completed on 2026-11-16. The staging
-pilot passed its live online upgrade, then was retired with management retained.
-The signed artifact remains identified by its full source SHA. The final 3.0.0
-tag has not been published. See [version identity](reference/versioning.md).
+Norn connects an `infraspec.yaml` to application discovery, source and build,
+health checks, secrets, deployment progress, and recovery. The API, CLI, and
+dashboard let you inspect what is serving and what a change actually did.
+Nomad schedules the workloads, Consul tracks discovery and health, and ingress
+routes requests to application allocations.
 
-These pages describe the current architecture and its qualification limits.
-The [planning records](README.md), [launch state](LAUNCH-STATE.md), and
-[release milestones](release-program-milestones.md) retain decisions and evidence.
+Start with [why Norn](/v3/guide/why-norn), define an
+[application](/v3/guide/applications), or follow the
+[operator workflow](/v3/operations/workflow).
 
-[V2 documentation](../v2/index.md) and [V1 documentation](../v1/guide/getting-started.md)
-remain available. Versioned HTTP routes and source directory names have their
-own meanings; `/api/v1` and `v2/` do not identify the product release.
+## Two release strategies
+
+Choose **self-hosted** for a lighter single-host experience with local runtime
+integration. Choose **Fleet** for multiple nodes, separate management and
+controller-driven platform operations. They share application/control concepts
+and have distinct deployment and recovery procedures.
+
+DigitalOcean is the current provider adapter, not the product boundary.
+The architecture separates provider effects; other adapters are future work.
+See [capability status](/v3/reference/capabilities) for the difference between
+implemented behavior and live-qualified operations.
+
+## What V3 establishes
+
+The first Fleet milestone proved a controller-managed online Norn upgrade while
+an existing workload continued responding. The [architecture](/v3/architecture/overview)
+explains the design; [release evidence](/v3/release-program-milestones) records
+that qualification and its limits. Version tags and signed deployment artifacts
+have separate [identities](/v3/reference/versioning).
+
+[V2 documentation](/v2/) and [V1 documentation](/v1/guide/getting-started)
+remain available. Current source lives under `v2/`; that path and `/api/v1`
+identify code layout and an API contract, not the product version.

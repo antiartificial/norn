@@ -2,6 +2,7 @@ package contract
 
 import (
 	"os"
+	"path"
 	"strings"
 	"testing"
 
@@ -373,7 +374,7 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	}
 	workflow := string(raw)
 	for _, required := range []string{
-		`tags: ["v*"]`,
+		`tags: ["v*-hello-norn-mysql"]`,
 		`workflow_dispatch:`,
 		`source_sha:`,
 		`m8_completion_receipt_sha256:`,
@@ -391,7 +392,7 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 		`inputs.controller_intent_sha256 != ''`,
 		`inputs.m8_completion_receipt_sha256 == vars.NORN_M8_COMPLETION_RECEIPT_SHA256`,
 		`format('release-hello-norn-mysql-staging-{0}-{1}', github.sha, inputs.m8_completion_receipt_sha256)`,
-		`startsWith(github.ref, 'refs/tags/v') && github.ref_protected`,
+		`startsWith(github.ref, 'refs/tags/v') && endsWith(github.ref, '-hello-norn-mysql') && github.ref_protected`,
 		`antiartificial/norn/.github/workflows/norn-app-release.yml@` + managedReleaseReusableSHA,
 		`expected_runner_name: norn-work-staging-work${{ github.run_id }}-runner`,
 		`controller_intent_sha256: ${{ inputs.controller_intent_sha256 }}`,
@@ -414,9 +415,31 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &caller); err != nil {
 		t.Fatalf("parse release caller workflow: %v", err)
 	}
-	if len(caller.On.Push.Tags) != 1 || caller.On.Push.Tags[0] != "v*" || len(caller.On.Push.Branches) != 0 {
-		t.Fatalf("release push triggers must be production tags only, got %#v", caller.On.Push)
+	if len(caller.On.Push.Tags) != 1 || caller.On.Push.Tags[0] != "v*-hello-norn-mysql" || len(caller.On.Push.Branches) != 0 {
+		t.Fatalf("release push triggers must be application-specific production tags only, got %#v", caller.On.Push)
 	}
+
+	for _, tag := range []string{"v3.0.0", "v3.0.1", "v3.0.0-control", "v3.0.0-platform", "v3.0.0-rc.1-control", "platform-" + strings.Repeat("a", 40)} {
+		for _, pattern := range caller.On.Push.Tags {
+			matched, err := path.Match(pattern, tag)
+			if err != nil || matched {
+				t.Errorf("platform tag %q must not select the sample application: match=%v err=%v", tag, matched, err)
+			}
+		}
+	}
+	appTag := "v1.0.0-hello-norn-mysql"
+	if matched, err := path.Match(caller.On.Push.Tags[0], appTag); err != nil || !matched {
+		t.Fatalf("application release tag must still select its workflow: match=%v err=%v", matched, err)
+	}
+	// The immutable production publisher accepts only refs/tags/v*.
+	if matched, err := path.Match("refs/tags/v*", "refs/tags/"+appTag); err != nil || !matched {
+		t.Fatal("application tag must preserve the pinned publisher's v prefix")
+	}
+	wantProductionIf := "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && endsWith(github.ref, '-hello-norn-mysql') && github.ref_protected"
+	if caller.Jobs["production"].If != wantProductionIf {
+		t.Fatalf("application production tag gate changed: %q", caller.Jobs["production"].If)
+	}
+
 	dispatchIntent, ok := caller.On.WorkflowDispatch.Inputs["controller_intent_sha256"]
 	if !ok || !dispatchIntent.Required {
 		t.Fatal("workflow_dispatch must require the signed controller intent hash")
