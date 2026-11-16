@@ -1,45 +1,43 @@
 # V3 release program milestones
 
-Status reviewed 2026-11-15 UTC. The current launch gate is an online,
-controller-mediated DO platform upgrade with measured workload continuity and
-recoverable terminal evidence. The working target remains the week of
-2026-11-16, conditional on that proof.
-
-The existing DO Fleet is the disposable staging testbed. The independent Mini
-already met its deployment success bar and does not gate this launch. Fresh
-creation, workload admission, resizing, and stateful application work continue
-after the online platform milestone.
-
-After the successful controller-mediated update, retire this pilot Fleet.
-Management remains available for future Fleet creation. Extra workload soak,
-fresh creation and resizing are follow-ons, not gates for this pilot evaluation.
-The configured Fleet scope is nine Droplets and two application database
-clusters; actual provider IDs and the saved destroy plan determine deletion.
+Status reviewed 2026-11-16 UTC. The DO **online-upgrade and pilot-retirement
+milestones are complete**. Upgrade and terminal cleanup succeeded on 2026-11-16;
+provider readback at 15:27 UTC confirmed exact Fleet absence with management
+retained. The independent Mini met its owner-defined bar on 2026-11-10 and
+does not gate this work.
 
 ## Launch milestones
 
 | Milestone | State | Exit evidence |
 | --- | --- | --- |
-| Publish the qualified candidate | Complete | Signed `cdf2081e` passed [twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). |
-| Qualify source and joined runtime | Complete for reviewed components | Fleet [PR #1041](https://github.com/antiartificial/norn-fleet/pull/1041) merged as `3b37d0d7`. The [joined signed baseline and quorum proof](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) passed with cleanup. |
-| Produce the exact signed pair | Complete for `453d13d6` | [Run 43660225984](https://github.com/antiartificial/norn-fleet/actions/runs/43660225984) passed for signed `fa301fa5` to `cdf2081e`. Authenticated artifact and five local cryptographic/input checks are retained; this is fixture-only evidence. |
-| Read back DO staging | Complete for read-only provider state | [Run 43618560028](https://github.com/antiartificial/norn-fleet/actions/runs/43618560028) succeeded on main `24c1d64b` and bound current provider/state evidence. |
-| Run read-only release preflight | Complete for preflight only | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) passed live etcd/component checks and the exactly-one-healthy-private-API check. The readback was 9 seconds old at signing/dispatch; durable terminal receipt verified exact runner retirement. Upgrade and post-write steps were skipped. |
-| Exercise the full disposable executor | Held at first passive member stop | [Run 43660848131](https://github.com/antiartificial/norn-fleet/actions/runs/43660848131) uses merged [PR #1050](https://github.com/antiartificial/norn-fleet/pull/1050) source `453d13d6`. Preparation completed, then the first passive member stop task failed. The durable journal records one member invocation and an ambiguous effect; all seven disposable resources were cleaned up. The source remains unqualified for live execution. |
-| Install and bind the controller | Source installed; profile unbound | Fleet main `24c1d64b` is installed and its closure/configuration verified. The online profile remains unbound; live release is not enabled. |
-| Accept the DO online upgrade | Pending, launch gate | Complete a successful full executor rehearsal, then prove passive-first/API-owner-last promotion, measured API handoff and workload continuity, recovery, and off-Fleet evidence retention. No online upgrade has been accepted. |
-| Retire disposable staging | After accepted controller upgrade; Fleet-only path being prepared | The owner authorizes Fleet-only teardown after the successful pilot update. Bind the exact staging state, account/project and resource deletion set, quiesce writers, retain evidence externally, and verify provider/state zero. Keep management authority/runner/DB, state backends and recreation credentials. Existing retirement code supports other disposable roots and cannot yet retire this protected staging root. |
+| Publish the qualified candidate | Complete | Signed cdf2081e passed [twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). |
+| Qualify and admit the exact pair | Complete for the live executor | [Compatibility 43851271049](https://github.com/antiartificial/norn-fleet/actions/runs/43851271049), protected owner-private [state readback 43851955369](https://github.com/antiartificial/norn-fleet/actions/runs/43851955369), fresh active-owner evidence and a signed intent admitted the actual upgrade on Fleet executor bdf522cc. |
+| Recover the earlier preparation hold | Complete | The controller fenced the held attempt before member invocation, proved all controls still on the old signed release, retained evidence and retired its runner. The succeeding upgrade used a fresh intent. This recovery was not itself upgrade qualification. |
+| Accept the DO online upgrade | Complete, 2026-11-16 | [Live run 43852466595](https://github.com/antiartificial/norn-fleet/actions/runs/43852466595) ended online-qualified. All three controls were verified on cdf2081e, passive controls first and the API owner last. API ownership moved Control 03 to Control 01. The accepted window recorded 399 observer samples and 673 separate public probes without observed workload outage, API handoff gap or sampling gap. |
+| Finish terminal controller cleanup | Complete, 2026-11-16 | [Fleet PR #1089](https://github.com/antiartificial/norn-fleet/pull/1089) repaired handoff-directory validation and installed a separately pinned adapter. [PR #1090](https://github.com/antiartificial/norn-fleet/pull/1090) repaired Git trust for the verified original and repair checkouts. Both are merged. The controller saved terminal-and-runner-retired success at 12:25 UTC, cleared its active journal, and retained all three host-authority retirement receipts. Worker and observer are stopped. The accepted upgrade was not rerun. |
+| Retire disposable staging | Complete, 2026-11-16 | Owner-authorized exact-ID `doctl` deletion followed by provider readback: nine Fleet Droplets, two application databases, dedicated ingress load balancer, Fleet firewalls/VPC and Fleet-to-management peering absent. Two management Droplets active, management database online, runner reachable over pinned SSH, authority online on Tailscale. Spaces, state/evidence and credentials retained; ordinary Fleet apply disabled. This is direct retirement evidence, not live qualification of the saved-plan retirement controller. |
+
+The longer 45-minute public monitor recorded nine timed-out probes after the
+accepted upgrade window, among 2,679 probes. Its last probe and a fresh public
+check succeeded; management observation remained policy-healthy. Their cause
+is unresolved. Retain them separately from the zero-failure upgrade window.
+
+The owner chose direct `doctl` retirement while GitHub billing/capacity blocks
+required CI for [Fleet PR #1091](https://github.com/antiartificial/norn-fleet/pull/1091).
+That prerequisite and live qualification of saved-plan retirement remain
+follow-ups; they do not reopen this completed pilot. Authority API health and
+billing settlement were not established by the final infrastructure readback.
 
 ## Parallel workstreams
 
 | Workstream | Current evidence | Next proof |
 | --- | --- | --- |
-| Existing DO platform | Signed target `cdf2081e` is published. Fleet source `453d13d6` passed exact-head component CI and signed-pair checks; full executor run `43660848131` held at the first passive member stop after preparation succeeded. The last qualified live promotion remains all-stop `fa301fa5`. | Qualify the full controller path, bind the operator profile and fresh host/state evidence, then run the online staging update with observed workload continuity. Its success satisfies this pilot fitness evaluation. |
+| Existing DO platform | Live online upgrade 43852466595 accepted on 2026-11-16; all three controls verified on signed cdf2081e with workload continuity. | Pilot retired with management retained. Future recreation needs deliberate refresh and reviewed plan before ordinary apply is re-enabled. |
 | Mini direct | Owner success bar met on 2026-11-10. The Mini is independent of the Fleet. | Separate repair and Git-driven workload admission follow-ups. No Fleet resizing. |
 | V3 workload admission | Negative admission, durable replay, and offline input/provenance checks exist. Current source and tests do not establish a live controller-admitted canary receipt. | Verify protected inputs and credential provenance, then bind a responding workload to durable same-intent admission receipts. This follows the platform launch. |
 | Fresh-Fleet creation | General and Stateful roles, topology checks, authority models, and default-off API work exist. The published candidate includes the new source. No fresh provider creation is qualified. | Connect one-use grants to the provider executor and protected workflow. Qualify partial inventory, ambiguous effects, recovery, and bootstrap. Creation may stay undeployed until needed. |
 | Workload resizing | Disposable real-Nomad and etcd-backed recovery checks and mixed-version capacity models exist. No live DO resize is qualified. | Complete real executor, health, ingress, and old-cohort-stop proof, then qualify a stateless DO resize. Keep stateful compatibility separate. |
-| Controller recovery | Read-only preflight `43618699939` produced a validated terminal receipt and exact runner retirement. Full run `43655236253` recorded a preparation hold with zero member calls. Source `453d13d6` adds joined preparation coverage and atomic observer IPC. | Prove exact-source full execution, completed-member restart/replay and retained terminal evidence. Do not substitute component checks for live upgrade proof. |
+| Controller recovery | The earlier preparation hold was recovered before any member invocation. The succeeding live upgrade has retained signed intent, authenticated artifact, journal and observation evidence. | Terminal handoff and worker/observer cleanup are complete. Keep offline crash models distinct from live fault-injection proof. |
 | V2-only retirement | Cleanup follows successful V3 adoption. | Remove unused V2 code and tests while preserving versioned contracts still used by V3. |
 
 ## Evidence and operating detail
@@ -59,6 +57,7 @@ The complete program still requires verified input contracts, offline failure
 coverage, live readiness checks, controller receipts, postflight, and recovery
 for every supported lane. Completing the narrower online platform launch does
 not complete those follow-on workstreams.
+
 
 <details>
 <summary>Historical section links</summary>
