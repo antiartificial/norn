@@ -2,7 +2,7 @@
 layout: home
 
 hero:
-  name: Norn
+  name: Norn V2
   text: Control plane for self-hosted apps
   tagline: Rehearse and recover app changes, plan fleet capacity, and upgrade the platform without taking workloads down.
   actions:
