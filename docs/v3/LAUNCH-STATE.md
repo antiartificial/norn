@@ -1,72 +1,38 @@
 # Norn v3 launch state
 
-Status reviewed 2026-11-15 UTC. The launch priority remains a controller-mediated
-online upgrade of the existing DO staging Fleet while its workloads keep
-serving. Any brief API interruption must stay within the signed observation
-policy. The working target is the week of 2026-11-16, conditional on the
-online-upgrade proof; no launch date is committed.
+Status reviewed 2026-11-16 UTC. The DO staging **live online upgrade and
+pilot retirement are complete**. The online upgrade passed on 2026-11-16;
+exact-scope provider readback at 15:27 UTC confirmed retirement. Management
+remains available for future Fleet work.
 
 ## Current evidence
 
 | Item | Verified state | Limit |
 | --- | --- | --- |
-| DO staging | Protected read-only provider readback [run 43618560028](https://github.com/antiartificial/norn-fleet/actions/runs/43618560028) succeeded on Fleet main `24c1d64b`; the signed readback is bound to the current state and provider identities. | It does not prove workload continuity or online-upgrade behavior. |
-| Deployed platform | The last qualified DO promotion deployed signed `fa301fa5` through the all-stop controller on 2026-11-11. | That promotion interrupted service. No online upgrade has been accepted. |
-| Published candidate | `cdf2081e` passed [all twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [immutable publication](https://github.com/antiartificial/norn/actions/runs/43552024315). The published Linux bundle was independently signature and hash verified. | Publication does not deploy the candidate. |
-| Fleet controller source | Main `24c1d64b` is installed in the management controller. Its installed closure and protected configuration were verified; the online profile remains unbound. | The profile is not bound and the live online-release path has not been enabled. |
-| Joined guest rehearsal | [Run 43552764721](https://github.com/antiartificial/norn-fleet/actions/runs/43552764721) ran signed `fa301fa5` against three native TLS/RBAC etcd members, with one active API and two passive controls. Every signed API/UI pin and all 44 UI files matched. Cleanup completed. | This is baseline and quorum evidence. It did not run the full signed upgrade controller. |
-| Exact signed pair | [Producer run 43660225984](https://github.com/antiartificial/norn-fleet/actions/runs/43660225984) passed on frozen Fleet source `453d13d6` for `fa301fa5` to `cdf2081e`. Its authenticated artifact and all five local cryptographic/input checks are retained. | Fixture-only checks do not qualify full execution or live workload continuity. |
-| Read-only release preflight | [Run 43618699939](https://github.com/antiartificial/norn-fleet/actions/runs/43618699939) succeeded with `preflight_only=true`. The fresh readback was 9 seconds old at signing/dispatch. Live etcd and component checks plus exactly one healthy private API passed. The durable terminal receipt confirms exact runner retirement. | The workflow correctly skipped the upgrade and all post-write steps. No release or provider mutation occurred; this does not qualify online upgrade. |
-| Online-release candidate | [PR #1050](https://github.com/antiartificial/norn-fleet/pull/1050) merged as `453d13d6` after contract, signed runtime, systemd, readback, security and root Linux ownership checks passed. Local checks passed 500 online tests and 57 qualifier tests. [Full run 43660848131](https://github.com/antiartificial/norn-fleet/actions/runs/43660848131) completed preparation, then held at the first passive member stop task. One member invocation and an ambiguous effect are retained; all seven disposable resources were cleaned up. The source is not qualified for live execution. | Previous [run 43655236253](https://github.com/antiartificial/norn-fleet/actions/runs/43655236253) held in preparation with zero member invocations; its evidence and cleanup are retained. No live online upgrade has been accepted. |
+| Deployed platform | [Live run 43852466595](https://github.com/antiartificial/norn-fleet/actions/runs/43852466595) upgraded all three controls from signed fa301fa5 to cdf2081e through Fleet executor bdf522cc. Its 19-event receipt ended online-qualified. | This qualifies the existing Fleet platform upgrade, not fresh creation, workload resizing or every application. |
+| Continuity | The accepted window contains 399 management-observer samples and 673 separate public probes with no observed workload outage, API handoff gap or sampling gap. API ownership moved Control 03 to Control 01. | Nine later public-probe timeouts occurred outside that window; their cause is unresolved. The last public probe succeeded and management observation remained policy-healthy. Do not describe the entire 45-minute monitor as uninterrupted. |
+| Signed release and admission | cdf2081e passed [twelve qualification jobs](https://github.com/antiartificial/norn/actions/runs/43551678343) and [publication](https://github.com/antiartificial/norn/actions/runs/43552024315). [Exact-pair qualification 43851271049](https://github.com/antiartificial/norn-fleet/actions/runs/43851271049) and [state readback 43851955369](https://github.com/antiartificial/norn-fleet/actions/runs/43851955369) admitted the live operation. | Future operations still require fresh source, state, owner and signature bindings. |
+| Recovery and final cleanup | Preparation-only recovery and the succeeding upgrade have retained evidence off-Fleet. | The controller saved its success receipt and cleared the active journal at 12:25 UTC; all three host-authority retirement receipts are retained. The worker and observer are stopped. [PR #1089](https://github.com/antiartificial/norn-fleet/pull/1089) repaired directory validation; [PR #1090](https://github.com/antiartificial/norn-fleet/pull/1090) repaired original-source Git ownership. These repairs are merged; the accepted upgrade was not rerun. |
+| Pilot retirement | Owner-authorized exact-ID `doctl` retirement complete. Nine Fleet Droplets, both application database clusters, dedicated ingress load balancer, Fleet firewalls/VPC and management-to-Fleet peering are absent. Two management Droplets remain active, management database online; runner pinned SSH succeeds and authority is online on Tailscale. | The saved-plan retirement controller was not live-qualified. Spaces, state, evidence and credentials were retained; ordinary Fleet apply is disabled to prevent accidental recreation. Authority API health was not established by this readback. |
+| Independent Mini | Met the owner's signed-V3/API/responding-workload bar on 2026-11-10. | Mini repair and Git admission do not gate Fleet launch; Fleet resizing does not apply to it. |
 
-## Launch completion steps
+## Pilot complete and follow-up boundary
 
-The remaining launch evidence is:
+The launch-critical online-upgrade and disposable-pilot retirement milestones
+are complete. GitHub billing/capacity still blocks required CI for retirement
+controller prerequisite [PR #1091](https://github.com/antiartificial/norn-fleet/pull/1091),
+but no longer blocks this retired pilot. The owner explicitly chose direct
+`doctl` cleanup. Do not treat that cleanup as saved-plan controller qualification.
+Future creation requires deliberate state refresh, source review and plan
+approval before re-enabling ordinary Fleet apply; retained state is historical.
 
-1. Qualify frozen controller/workflow source `453d13d6` while the live gate
-   remains off. Bind the exact executor source with a matching signed pair, joined execution,
-   completed-member restart/replay, independent observation, and retained
-   terminal evidence. The refreshed controller candidate remains disabled and
-   unqualified.
-2. Bind the installed controller profile only after those prerequisites pass
-   and the state/host evidence is freshly verified.
-3. Prove the live online update on DO staging: passive controls first, API
-   owner last, with measured private API handoff and the existing workload
-   route responding through the update. Retain terminal receipts and recovery
-   inputs across restart.
-4. Retain accepted evidence outside the Fleet, then retire the staging Fleet
-   through an exact-state, controller-mediated plan. Keep the separate management
-   authority/runner and its database, state backends, and recreation credentials.
-   The current retirement executor targets other disposable roots; the current
-   staging root still needs its scoped retirement path.
+Application nodes and workload sizes were unchanged during the platform
+upgrade. Fresh-Fleet creation, workload admission, mixed-version resizing and
+stateful compatibility continue after this pilot milestone.
 
-The existing all-stop lane remains the available fallback, but it does not
-meet the online-upgrade launch gate. Application nodes and workload sizes stay
-unchanged during this platform release.
-
-The owner accepts a successful controller-mediated update on this staging
-Fleet as the pilot fitness result. Further workload soak, fresh-Fleet deployment
-and resizing do not gate that evaluation or the subsequent Fleet retirement.
-The configured retirement scope is nine Fleet Droplets and its two application
-database clusters, plus owned load-balancer/network resources; the saved plan
-and fresh inventory must establish the final deletion set.
-
-## Other lanes
-
-The independent Mini met its owner-defined success bar on 2026-11-10: signed
-V3 ran, its API was healthy, and `vigil-gateway` responded. Mini repair and
-Git-driven workload admission are follow-ups. The Mini has no Fleet resize lane.
-
-Fresh-Fleet creation, V3 workload admission, mixed-version workload resizing,
-stateful application compatibility, and V2-only cleanup remain separate
-workstreams. Fresh Fleets default to General and Stateful application pools.
-The current staging pool is not changed by that default.
-
-The [release milestone map](release-program-milestones.md) tracks those
-workstreams. The [Fleet readiness record](https://github.com/antiartificial/norn-fleet/blob/main/docs/v3-release-readiness-milestones-2026-11-08.md)
-and [release runbook](https://github.com/antiartificial/norn-fleet/blob/main/docs/runbooks/work-staging-norn-release.md)
-contain implementation and operating detail. Dated observations remain in
-[launch history](LAUNCH-HISTORY.md) and the archive below.
+See [release program milestones](release-program-milestones.md) and the
+[Fleet retirement runbook](https://github.com/antiartificial/norn-fleet/blob/main/docs/runbooks/disposable-fleet-retirement-and-cost.md)
+for the workstream overview and execution boundary.
 
 <details>
 <summary>Historical section links</summary>
