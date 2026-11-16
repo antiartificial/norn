@@ -94,7 +94,9 @@ Controllers still select immutable signed artifacts by full source SHA and
 manifest identity. A source tag does not publish or deploy a new bundle.
 
 [V1](docs/v1/guide/getting-started.md) and [V2](docs/v2/index.md) docs are retained.
-The root `api/`, `cli/`, and `ui/` trees are the frozen Kubernetes implementation.
+The retired Kubernetes implementation is preserved in the
+[`v3.0.0` source tag](https://github.com/antiartificial/norn/tree/v3.0.0).
+The root Makefile forwards runtime commands to the active implementation.
 Current API, CLI, dashboard, and platform scripts live under `v2/`; new product
 documentation lives under `docs/v3/`. Neither the directory name nor `/api/v1`
 is a product release number. The proposed [repository split](docs/v3/architecture/repository-boundaries.md)

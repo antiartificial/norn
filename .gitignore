@@ -1,10 +1,6 @@
 # Build artifacts
 bin/
 dist/
-api/api
-
-# Snapshots
-api/snapshots/*.dump
 
 # Go
 *.exe
